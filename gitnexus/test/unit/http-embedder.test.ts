@@ -1,7 +1,11 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getEmbeddingDims, isEmbedderReady } from '../../src/mcp/core/embedder.js';
 
 const ENV_KEYS = [
+  'GITNEXUS_HOME',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -15,9 +19,13 @@ describe('HTTP embedding backend', () => {
   // Save original env state before any test mutates it
   const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
-  afterEach(() => {
+  afterEach(async () => {
+    const tmpHome = process.env.GITNEXUS_HOME;
     vi.unstubAllGlobals();
     vi.resetModules();
+    if (tmpHome && tmpHome !== savedEnv.GITNEXUS_HOME) {
+      await fs.rm(tmpHome, { recursive: true, force: true });
+    }
     // Restore env vars to pre-test state so a mid-test throw can't leak
     for (const key of ENV_KEYS) {
       if (savedEnv[key] === undefined) {
@@ -42,6 +50,26 @@ describe('HTTP embedding backend', () => {
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
       const mod = await import('../../src/mcp/core/embedder.js');
       expect(mod.isEmbedderReady()).toBe(true);
+    });
+
+    it('reads HTTP mode from saved embedding config', async () => {
+      const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-http-config-'));
+      process.env.GITNEXUS_HOME = tmpHome;
+      await fs.writeFile(
+        path.join(tmpHome, 'config.json'),
+        JSON.stringify({
+          embedding: {
+            baseUrl: 'http://localhost:8080/v1',
+            model: 'config-model',
+            dimensions: 1024,
+          },
+        }),
+        'utf-8',
+      );
+
+      const mod = await import('../../src/mcp/core/embedder.js');
+      expect(mod.isEmbedderReady()).toBe(true);
+      expect(mod.getEmbeddingDims()).toBe(1024);
     });
 
     it('reads custom dimensions from environment', async () => {
@@ -92,6 +120,45 @@ describe('HTTP embedding backend', () => {
       const body = JSON.parse((fetch as any).mock.calls[0][1].body);
       expect(body.model).toBe('test-model');
       expect(body.input).toEqual(['test text']);
+      expect(result).toBeInstanceOf(Float32Array);
+      expect(result.length).toBe(384);
+    });
+
+    it('sends requests using saved embedding config', async () => {
+      const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-http-config-'));
+      process.env.GITNEXUS_HOME = tmpHome;
+      await fs.writeFile(
+        path.join(tmpHome, 'config.json'),
+        JSON.stringify({
+          embedding: {
+            baseUrl: 'http://config-test:8080/v1/',
+            model: 'config-model',
+            apiKey: 'config-key',
+            dimensions: 384,
+          },
+        }),
+        'utf-8',
+      );
+
+      const mockEmbedding = Array.from({ length: 384 }, (_, i) => i * 0.001);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockEmbedding }] }),
+        }),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const result = await embedText('config text');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = (fetch as any).mock.calls[0];
+      const body = JSON.parse(init.body);
+      expect(url).toBe('http://config-test:8080/v1/embeddings');
+      expect(body.model).toBe('config-model');
+      expect(body.input).toEqual(['config text']);
+      expect(init.headers.Authorization).toBe('Bearer config-key');
       expect(result).toBeInstanceOf(Float32Array);
       expect(result.length).toBe(384);
     });
@@ -265,7 +332,9 @@ describe('HTTP embedding backend', () => {
       expect(EMBEDDING_DIMS).toBe(384);
     });
 
-    it('reads dimensions from environment variable', async () => {
+    it('reads dimensions from HTTP embedding environment configuration', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
       process.env.GITNEXUS_EMBEDDING_DIMS = '1024';
       const { EMBEDDING_DIMS } = await import('../../src/core/lbug/schema.js');
       expect(EMBEDDING_DIMS).toBe(1024);

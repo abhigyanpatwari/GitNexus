@@ -15,9 +15,18 @@ import fs from 'fs/promises';
 import { createRequire } from 'node:module';
 import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
 import {
+  AnalyzeJobService,
+  EmbedJobService,
+  IndexJobQueryService,
+  RepoLockManager,
+  type AnalyzeJob,
+  type IndexJobKind,
+  type IndexJobSnapshot,
+  type JobManager,
+} from '../core/index-jobs/index.js';
+import {
   executeQuery,
   executePrepared,
-  executeWithReusedStatement,
   streamQuery,
   closeLbug,
   withLbugDb,
@@ -30,10 +39,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
-import { fork } from 'child_process';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { JobManager } from './analyze-job.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { getCloneDir } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -424,6 +430,26 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+const serializeJob = (job: AnalyzeJob) => ({
+  id: job.id,
+  status: job.status,
+  repoUrl: job.repoUrl,
+  repoPath: job.repoPath,
+  repoName: job.repoName,
+  progress: job.progress,
+  error: job.error,
+  startedAt: job.startedAt,
+  completedAt: job.completedAt,
+});
+
+const serializeIndexJob = (job: IndexJobSnapshot) => ({
+  kind: job.kind,
+  ...serializeJob(job),
+});
+
+const isIndexJobKind = (value: string): value is IndexJobKind =>
+  value === 'analyze' || value === 'embed';
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
@@ -462,23 +488,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const backend = new LocalBackend();
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
-  const jobManager = new JobManager();
-
-  // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
-  // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
-  const activeRepoPaths = new Set<string>();
-
-  const acquireRepoLock = (repoPath: string): string | null => {
-    if (activeRepoPaths.has(repoPath)) {
-      return `Another job is already active for this repository`;
-    }
-    activeRepoPaths.add(repoPath);
-    return null;
-  };
-
-  const releaseRepoLock = (repoPath: string): void => {
-    activeRepoPaths.delete(repoPath);
-  };
+  const repoLocks = new RepoLockManager();
+  const analyzeJobs = new AnalyzeJobService({
+    backendInit: async () => {
+      await backend.init();
+    },
+    repoLocks,
+    logger: console,
+  });
+  const embedJobs = new EmbedJobService({ repoLocks });
+  const jobQueries = new IndexJobQueryService()
+    .register('analyze', analyzeJobs.jobManager)
+    .register('embed', embedJobs.jobManager);
 
   /**
    * Maximum time the hold-queue will wait for an active analysis job to complete.
@@ -518,7 +539,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         clientGone = true;
       });
 
-      for (const job of jobManager.listJobs()) {
+      for (const job of jobQueries.listJobs('analyze')) {
         const isMatch =
           job.repoName?.toLowerCase() === lower ||
           (job.repoUrl && path.basename(job.repoUrl).replace('.git', '').toLowerCase() === lower) ||
@@ -532,7 +553,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }
           for (let wait = 0; wait < HOLD_QUEUE_TIMEOUT_SECS; wait++) {
             if (clientGone) return null; // client disconnected — stop polling
-            const currentJob = jobManager.getJob(job.id);
+            const currentJob = analyzeJobs.getJob(job.id);
             if (!currentJob || currentJob.status === 'failed') break;
             if (currentJob.status === 'complete') {
               await backend.init();
@@ -660,7 +681,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
       const lockKey = getStoragePath(entry.path);
-      const lockErr = acquireRepoLock(lockKey);
+      const lockErr = repoLocks.acquire(lockKey);
       if (lockErr) {
         res.status(409).json({ error: lockErr });
         return;
@@ -696,7 +717,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         res.json({ deleted: entry.name });
       } finally {
-        releaseRepoLock(lockKey);
+        repoLocks.release(lockKey);
       }
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to delete repo' });
@@ -1174,185 +1195,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }
       }
 
-      const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
-
-      // If job was already running (dedup), just return its id
-      if (job.status !== 'queued') {
-        res.status(202).json({ jobId: job.id, status: job.status });
-        return;
-      }
-
-      // Mark as active synchronously to prevent race with concurrent requests
-      jobManager.updateJob(job.id, { status: 'cloning' });
-
-      // Start async work — don't await
-      (async () => {
-        let targetPath = repoLocalPath;
-        try {
-          // Clone if URL provided
-          if (repoUrl && !repoLocalPath) {
-            const repoName = extractRepoName(repoUrl);
-            targetPath = getCloneDir(repoName);
-
-            jobManager.updateJob(job.id, {
-              status: 'cloning',
-              repoName,
-              progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
-            });
-
-            await cloneOrPull(repoUrl, targetPath, (progress) => {
-              jobManager.updateJob(job.id, {
-                progress: { phase: progress.phase, percent: 5, message: progress.message },
-              });
-            });
-          }
-
-          if (!targetPath) {
-            throw new Error('No target path resolved');
-          }
-
-          // Acquire shared repo lock (keyed on storagePath to match embed handler)
-          const analyzeLockKey = getStoragePath(targetPath);
-          const lockErr = acquireRepoLock(analyzeLockKey);
-          if (lockErr) {
-            jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
-            return;
-          }
-
-          jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
-
-          // ── Worker fork with auto-retry ──────────────────────────────
-          //
-          // Forks a child process with 8GB heap. If the worker crashes
-          // (OOM, native addon segfault, etc.), it retries up to
-          // MAX_WORKER_RETRIES times with exponential backoff before
-          // marking the job as permanently failed.
-          //
-          // In dev mode (tsx), registers the tsx ESM hook via a file://
-          // URL so the child can compile TypeScript on-the-fly.
-
-          const MAX_WORKER_RETRIES = 2;
-          const callerPath = fileURLToPath(import.meta.url);
-          const isDev = callerPath.endsWith('.ts');
-          const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
-          const workerPath = path.join(path.dirname(callerPath), workerFile);
-          const tsxHookArgs: string[] = isDev
-            ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
-            : [];
-
-          const forkWorker = () => {
-            const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed')
-              return;
-
-            const child = fork(workerPath, [], {
-              execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
-              stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-            });
-
-            // Capture stderr for crash diagnostics
-            let stderrChunks = '';
-            child.stderr?.on('data', (chunk: Buffer) => {
-              stderrChunks += chunk.toString();
-              if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
-            });
-
-            child.on('message', (msg: any) => {
-              if (msg.type === 'progress') {
-                jobManager.updateJob(job.id, {
-                  status: 'analyzing',
-                  progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
-                });
-              } else if (msg.type === 'complete') {
-                releaseRepoLock(analyzeLockKey);
-                // Reinitialize backend BEFORE marking complete — ensures the new
-                // repo is queryable when the client receives the SSE complete event.
-                backend
-                  .init()
-                  .then(() => {
-                    jobManager.updateJob(job.id, {
-                      status: 'complete',
-                      repoName: msg.result.repoName,
-                    });
-                  })
-                  .catch((err) => {
-                    console.error('backend.init() failed after analyze:', err);
-                    jobManager.updateJob(job.id, {
-                      status: 'failed',
-                      error: 'Server failed to reload after analysis. Try again.',
-                    });
-                  });
-              } else if (msg.type === 'error') {
-                releaseRepoLock(analyzeLockKey);
-                jobManager.updateJob(job.id, {
-                  status: 'failed',
-                  error: msg.message,
-                });
-              }
-            });
-
-            child.on('error', (err) => {
-              releaseRepoLock(analyzeLockKey);
-              jobManager.updateJob(job.id, {
-                status: 'failed',
-                error: `Worker process error: ${err.message}`,
-              });
-            });
-
-            child.on('exit', (code) => {
-              const j = jobManager.getJob(job.id);
-              if (!j || j.status === 'complete' || j.status === 'failed') return;
-
-              // Worker crashed — attempt retry if under the limit
-              if (j.retryCount < MAX_WORKER_RETRIES) {
-                j.retryCount++;
-                const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
-                const lastErr = stderrChunks.trim().split('\n').pop() || '';
-                console.warn(
-                  `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
-                    (lastErr ? `: ${lastErr}` : ''),
-                );
-                jobManager.updateJob(job.id, {
-                  status: 'analyzing',
-                  progress: {
-                    phase: 'retrying',
-                    percent: j.progress.percent,
-                    message: `Worker crashed, retrying (${j.retryCount}/${MAX_WORKER_RETRIES})...`,
-                  },
-                });
-                stderrChunks = '';
-                setTimeout(forkWorker, delay);
-              } else {
-                // Exhausted retries — permanent failure
-                releaseRepoLock(analyzeLockKey);
-                jobManager.updateJob(job.id, {
-                  status: 'failed',
-                  error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
-                });
-              }
-            });
-
-            // Register child for cancellation + timeout tracking
-            jobManager.registerChild(job.id, child);
-
-            // Send start command to child
-            child.send({
-              type: 'start',
-              repoPath: targetPath,
-              options: { force: !!force, embeddings: !!embeddings },
-            });
-          };
-
-          forkWorker();
-        } catch (err: any) {
-          if (targetPath) releaseRepoLock(getStoragePath(targetPath));
-          jobManager.updateJob(job.id, {
-            status: 'failed',
-            error: err.message || 'Analysis failed',
-          });
-        }
-      })();
-
+      const job = analyzeJobs.startJob({
+        repoUrl,
+        repoPath: repoLocalPath,
+        force: !!force,
+        embeddings: !!embeddings,
+      });
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: any) {
       if (err.message?.includes('already in progress')) {
@@ -1365,30 +1213,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // GET /api/analyze/:jobId — poll job status
   app.get('/api/analyze/:jobId', (req, res) => {
-    const job = jobManager.getJob(req.params.jobId);
+    const job = analyzeJobs.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    res.json({
-      id: job.id,
-      status: job.status,
-      repoUrl: job.repoUrl,
-      repoPath: job.repoPath,
-      repoName: job.repoName,
-      progress: job.progress,
-      error: job.error,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-    });
+    res.json(serializeJob(job));
   });
 
   // GET /api/analyze/:jobId/progress — SSE stream (shared helper)
-  mountSSEProgress(app, '/api/analyze/:jobId/progress', jobManager);
+  mountSSEProgress(app, '/api/analyze/:jobId/progress', analyzeJobs.jobManager);
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job
   app.delete('/api/analyze/:jobId', (req, res) => {
-    const job = jobManager.getJob(req.params.jobId);
+    const job = analyzeJobs.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1397,13 +1235,47 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    jobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    analyzeJobs.cancelJob(req.params.jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
-  // ── Embedding endpoints ────────────────────────────────────────────
+  // GET /api/jobs — lightweight job discovery across analyze/embed managers
+  app.get('/api/jobs', (req, res) => {
+    const kindParam = typeof req.query.kind === 'string' ? req.query.kind : undefined;
+    if (kindParam && !isIndexJobKind(kindParam)) {
+      res.status(400).json({ error: 'Invalid "kind" query parameter' });
+      return;
+    }
+    const kind = kindParam as IndexJobKind | undefined;
 
-  const embedJobManager = new JobManager();
+    const repo = typeof req.query.repo === 'string' ? req.query.repo.trim().toLowerCase() : '';
+    const jobs = jobQueries
+      .listJobs(kind)
+      .filter((job) => {
+        if (!repo) return true;
+        return (
+          job.repoName?.toLowerCase().includes(repo) ||
+          job.repoPath?.toLowerCase().includes(repo) ||
+          job.repoUrl?.toLowerCase().includes(repo)
+        );
+      })
+      .map(serializeIndexJob);
+
+    res.json({ jobs });
+  });
+
+  // GET /api/jobs/:jobId — fetch a job without knowing its manager
+  app.get('/api/jobs/:jobId', (req, res) => {
+    const job = jobQueries.getJob(req.params.jobId);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    res.json(serializeIndexJob(job));
+  });
+
+  // ── Embedding endpoints ────────────────────────────────────────────
 
   // POST /api/embed — trigger server-side embedding generation
   app.post('/api/embed', async (req, res) => {
@@ -1414,83 +1286,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Check shared repo lock — prevent concurrent analyze + embed on same repo
-      const repoLockPath = entry.storagePath;
-      const lockErr = acquireRepoLock(repoLockPath);
-      if (lockErr) {
-        res.status(409).json({ error: lockErr });
-        return;
-      }
-
-      const job = embedJobManager.createJob({ repoPath: entry.storagePath });
-      embedJobManager.updateJob(job.id, {
+      const job = await embedJobs.startJob({
         repoName: entry.name,
-        status: 'analyzing' as any,
-        progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
+        storagePath: entry.storagePath,
       });
-
-      // 30-minute timeout for embedding jobs (same as analyze jobs)
-      const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
-      const embedTimeout = setTimeout(() => {
-        const current = embedJobManager.getJob(job.id);
-        if (current && current.status !== 'complete' && current.status !== 'failed') {
-          releaseRepoLock(repoLockPath);
-          embedJobManager.updateJob(job.id, {
-            status: 'failed',
-            error: 'Embedding timed out (30 minute limit)',
-          });
-        }
-      }, EMBED_TIMEOUT_MS);
-
-      // Run embedding pipeline asynchronously
-      (async () => {
-        try {
-          const lbugPath = path.join(entry.storagePath, 'lbug');
-          await withLbugDb(lbugPath, async () => {
-            const { runEmbeddingPipeline } =
-              await import('../core/embeddings/embedding-pipeline.js');
-            await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, (p) => {
-              embedJobManager.updateJob(job.id, {
-                progress: {
-                  phase:
-                    p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
-                  percent: p.percent,
-                  message:
-                    p.phase === 'loading-model'
-                      ? 'Loading embedding model...'
-                      : p.phase === 'embedding'
-                        ? `Embedding nodes (${p.percent}%)...`
-                        : p.phase === 'indexing'
-                          ? 'Creating vector index...'
-                          : p.phase === 'ready'
-                            ? 'Embeddings complete'
-                            : `${p.phase} (${p.percent}%)`,
-                },
-              });
-            });
-          });
-
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
-          const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
-            embedJobManager.updateJob(job.id, { status: 'complete' });
-          }
-        } catch (err: any) {
-          clearTimeout(embedTimeout);
-          releaseRepoLock(repoLockPath);
-          const current = embedJobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
-            embedJobManager.updateJob(job.id, {
-              status: 'failed',
-              error: err.message || 'Embedding generation failed',
-            });
-          }
-        }
-      })();
-
-      res.status(202).json({ jobId: job.id, status: 'analyzing' });
+      res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: any) {
       if (err.message?.includes('already in progress')) {
         res.status(409).json({ error: err.message });
@@ -1502,28 +1302,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // GET /api/embed/:jobId — poll embedding job status
   app.get('/api/embed/:jobId', (req, res) => {
-    const job = embedJobManager.getJob(req.params.jobId);
+    const job = embedJobs.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    res.json({
-      id: job.id,
-      status: job.status,
-      repoName: job.repoName,
-      progress: job.progress,
-      error: job.error,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-    });
+    res.json(serializeJob(job));
   });
 
   // GET /api/embed/:jobId/progress — SSE stream (shared helper)
-  mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobManager);
+  mountSSEProgress(app, '/api/embed/:jobId/progress', embedJobs.jobManager);
 
   // DELETE /api/embed/:jobId — cancel embedding job
   app.delete('/api/embed/:jobId', (req, res) => {
-    const job = embedJobManager.getJob(req.params.jobId);
+    const job = embedJobs.getJob(req.params.jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -1532,7 +1324,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(400).json({ error: `Job already ${job.status}` });
       return;
     }
-    embedJobManager.cancelJob(req.params.jobId, 'Cancelled by user');
+    embedJobs.cancelJob(req.params.jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
@@ -1556,8 +1348,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     const shutdown = async () => {
       console.log('\nShutting down...');
       server.close();
-      jobManager.dispose();
-      embedJobManager.dispose();
+      analyzeJobs.dispose();
+      embedJobs.dispose();
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();

@@ -378,6 +378,91 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     },
   },
   {
+    name: 'refresh_repos',
+    description: `Force GitNexus to re-read the global registry and refresh its in-memory repository cache.
+
+WHEN TO USE: After indexing a new repo, removing a repo, or when you want to confirm the MCP server sees the latest registry state without restarting.
+
+Returns: refreshed flag, repo count, and the current repo list snapshot.`,
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'get_index_job',
+    description: `Fetch the current status of a background index job created by analyze_repo or rebuild_embeddings.
+
+WHEN TO USE: Poll long-running analyze/embed jobs started from MCP.
+
+Returns: job kind, status, repo metadata, progress, timestamps, and any error message.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: {
+          type: 'string',
+          description: 'Background job identifier returned by a write tool',
+        },
+      },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'analyze_repo',
+    description: `Start a background repository analysis job from MCP.
+
+WHEN TO USE: Initialize or rebuild a project index without leaving the MCP workflow.
+
+Provide either a local absolute path or a git URL. Returns a job ID for polling via get_index_job.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute local path to analyze' },
+        url: { type: 'string', description: 'Git URL to clone/analyze' },
+        force: { type: 'boolean', description: 'Force a full rebuild', default: false },
+        embeddings: {
+          type: 'boolean',
+          description: 'Generate embeddings as part of analysis',
+          default: false,
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'rebuild_embeddings',
+    description: `Start a background embedding rebuild job for an indexed repository.
+
+WHEN TO USE: Enable or regenerate semantic search vectors after analysis, or switch to a configured remote embedding provider without using shell environment variables.
+
+Optional embedding fields can be persisted to ~/.gitnexus/config.json before the rebuild. Returns a job ID for polling via get_index_job.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+        provider: {
+          type: 'string',
+          description: 'Embedding provider (local, openai, openrouter, azure, custom)',
+          enum: ['local', 'openai', 'openrouter', 'azure', 'custom'],
+        },
+        baseUrl: { type: 'string', description: 'OpenAI-compatible base URL for /v1 embeddings' },
+        model: { type: 'string', description: 'Embedding model name' },
+        apiKey: { type: 'string', description: 'Embedding API key / bearer token' },
+        dimensions: { type: 'number', description: 'Expected embedding dimensions' },
+        saveConfig: {
+          type: 'boolean',
+          description:
+            'Persist provided embedding settings into ~/.gitnexus/config.json before rebuilding (default: true when overrides are provided)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'group_list',
     description: `List all configured repository groups, or return details for one group (repos, manifest links).
 

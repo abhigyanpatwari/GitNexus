@@ -6,6 +6,7 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { resolveEmbeddingConfigSync } from '../../core/embeddings/config.js';
 import {
   isHttpMode,
   getHttpDimensions,
@@ -116,7 +117,7 @@ export const embedQuery = async (query: string): Promise<number[]> => {
  * Get embedding dimensions
  */
 export const getEmbeddingDims = (): number => {
-  return getHttpDimensions() ?? 384;
+  return isHttpMode() ? (getHttpDimensions() ?? 384) : resolveEmbeddingConfigSync().dimensions;
 };
 
 /**

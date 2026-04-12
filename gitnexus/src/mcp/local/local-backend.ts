@@ -25,9 +25,17 @@ import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  type CLIEmbeddingConfig,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import {
+  AnalyzeJobService,
+  EmbedJobService,
+  IndexJobQueryService,
+  RepoLockManager,
+  type IndexJobSnapshot,
+} from '../../core/index-jobs/index.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -182,6 +190,25 @@ export class LocalBackend {
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
   private groupToolSvc: GroupService | null = null;
+  private readonly repoLocks: RepoLockManager;
+  private readonly analyzeJobs: AnalyzeJobService;
+  private readonly embedJobs: EmbedJobService;
+  private readonly jobQueries: IndexJobQueryService;
+
+  constructor() {
+    this.repoLocks = new RepoLockManager();
+    this.analyzeJobs = new AnalyzeJobService({
+      backendInit: async () => {
+        await this.refreshRepos();
+      },
+      repoLocks: this.repoLocks,
+      logger: console,
+    });
+    this.embedJobs = new EmbedJobService({ repoLocks: this.repoLocks });
+    this.jobQueries = new IndexJobQueryService()
+      .register('analyze', this.analyzeJobs.jobManager)
+      .register('embed', this.embedJobs.jobManager);
+  }
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -201,6 +228,8 @@ export class LocalBackend {
 
   /** Close all pooled LadybugDB connections (CLI one-shot; optional for long-lived MCP). */
   async dispose(): Promise<void> {
+    this.analyzeJobs.dispose();
+    this.embedJobs.dispose();
     await closeLbug();
   }
 
@@ -458,6 +487,10 @@ export class LocalBackend {
       return this.listRepos();
     }
 
+    if (this.isWriteTool(method)) {
+      return this.handleWriteTool(method, params || {});
+    }
+
     if (method.startsWith('group_')) {
       return this.handleGroupTool(method, params || {});
     }
@@ -495,6 +528,125 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      default:
+        throw new Error(`Unknown tool: ${method}`);
+    }
+  }
+
+  private isWriteTool(method: string): boolean {
+    return (
+      method === 'refresh_repos' ||
+      method === 'get_index_job' ||
+      method === 'analyze_repo' ||
+      method === 'rebuild_embeddings'
+    );
+  }
+
+  private serializeIndexJob(job: IndexJobSnapshot) {
+    return {
+      kind: job.kind,
+      id: job.id,
+      status: job.status,
+      repoUrl: job.repoUrl,
+      repoPath: job.repoPath,
+      repoName: job.repoName,
+      progress: job.progress,
+      error: job.error,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+    };
+  }
+
+  private async handleWriteTool(method: string, params: any): Promise<any> {
+    switch (method) {
+      case 'refresh_repos': {
+        await this.refreshRepos();
+        return {
+          refreshed: true,
+          repoCount: this.repos.size,
+          repos: [...this.repos.values()].map((repo) => ({
+            name: repo.name,
+            path: repo.repoPath,
+            indexedAt: repo.indexedAt,
+          })),
+        };
+      }
+      case 'get_index_job': {
+        const jobId = typeof params?.jobId === 'string' ? params.jobId.trim() : '';
+        if (!jobId) {
+          throw new Error('"jobId" is required');
+        }
+        const job = this.jobQueries.getJob(jobId);
+        if (!job) {
+          throw new Error(`Job "${jobId}" not found`);
+        }
+        return this.serializeIndexJob(job);
+      }
+      case 'analyze_repo': {
+        const repoUrl = typeof params?.url === 'string' ? params.url.trim() : undefined;
+        const repoPath = typeof params?.path === 'string' ? params.path.trim() : undefined;
+        if (!repoUrl && !repoPath) {
+          throw new Error('Provide "url" (git URL) or "path" (local path)');
+        }
+        if (repoPath) {
+          if (!path.isAbsolute(repoPath)) {
+            throw new Error('"path" must be an absolute path');
+          }
+          if (path.normalize(repoPath) !== path.resolve(repoPath)) {
+            throw new Error('"path" must not contain traversal sequences');
+          }
+        }
+
+        const job = this.analyzeJobs.startJob({
+          repoUrl,
+          repoPath,
+          force: !!params?.force,
+          embeddings: !!params?.embeddings,
+        });
+        return {
+          kind: 'analyze',
+          jobId: job.id,
+          status: job.status,
+          repoUrl,
+          repoPath,
+        };
+      }
+      case 'rebuild_embeddings': {
+        const repo = await this.resolveRepo(params?.repo);
+        const embedding: CLIEmbeddingConfig = {};
+        if (typeof params?.provider === 'string' && params.provider.trim()) {
+          embedding.provider = params.provider.trim() as CLIEmbeddingConfig['provider'];
+        }
+        if (typeof params?.baseUrl === 'string' && params.baseUrl.trim()) {
+          embedding.baseUrl = params.baseUrl.trim();
+        }
+        if (typeof params?.model === 'string' && params.model.trim()) {
+          embedding.model = params.model.trim();
+        }
+        if (typeof params?.apiKey === 'string' && params.apiKey.trim()) {
+          embedding.apiKey = params.apiKey.trim();
+        }
+        if (typeof params?.dimensions === 'number') {
+          embedding.dimensions = params.dimensions;
+        }
+
+        const hasOverrides = Object.keys(embedding).length > 0;
+        const saveConfig = hasOverrides ? params?.saveConfig !== false : false;
+
+        const job = await this.embedJobs.startJob({
+          repoName: repo.name,
+          storagePath: repo.storagePath,
+          embedding: hasOverrides ? embedding : undefined,
+          saveConfig,
+        });
+        return {
+          kind: 'embed',
+          jobId: job.id,
+          status: job.status,
+          repo: repo.name,
+          savedConfig: saveConfig,
+        };
+      }
       default:
         throw new Error(`Unknown tool: ${method}`);
     }

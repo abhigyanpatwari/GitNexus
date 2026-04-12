@@ -37,6 +37,9 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+  loadCLIConfig: vi.fn().mockResolvedValue({}),
+  loadCLIConfigSync: vi.fn().mockReturnValue({}),
+  saveCLIConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Also mock the search modules to avoid loading onnxruntime
@@ -157,6 +160,91 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('list_repos', {});
     expect(Array.isArray(result)).toBe(true);
     expect(result[0].name).toBe('test-project');
+  });
+
+  it('dispatches refresh_repos without repo resolution', async () => {
+    const result = await backend.callTool('refresh_repos', {});
+    expect(result.refreshed).toBe(true);
+    expect(result.repoCount).toBe(1);
+    expect(result.repos[0].name).toBe('test-project');
+  });
+
+  it('dispatches get_index_job', async () => {
+    (backend as any).jobQueries.getJob = vi.fn().mockReturnValue({
+      kind: 'analyze',
+      id: 'job-1',
+      status: 'analyzing',
+      repoName: 'test-project',
+      progress: { phase: 'analyzing', percent: 50, message: 'Halfway' },
+      startedAt: 1,
+      retryCount: 0,
+    });
+
+    const result = await backend.callTool('get_index_job', { jobId: 'job-1' });
+    expect(result.kind).toBe('analyze');
+    expect(result.id).toBe('job-1');
+    expect(result.progress.percent).toBe(50);
+  });
+
+  it('dispatches analyze_repo with an absolute path', async () => {
+    (backend as any).analyzeJobs.startJob = vi.fn().mockReturnValue({
+      id: 'job-2',
+      status: 'queued',
+    });
+
+    const result = await backend.callTool('analyze_repo', {
+      path: 'C:\\tmp\\new-repo',
+      force: true,
+      embeddings: true,
+    });
+
+    expect((backend as any).analyzeJobs.startJob).toHaveBeenCalledWith({
+      repoUrl: undefined,
+      repoPath: 'C:\\tmp\\new-repo',
+      force: true,
+      embeddings: true,
+    });
+    expect(result.jobId).toBe('job-2');
+    expect(result.kind).toBe('analyze');
+  });
+
+  it('rejects analyze_repo when path is relative', async () => {
+    await expect(backend.callTool('analyze_repo', { path: './relative' })).rejects.toThrow(
+      '"path" must be an absolute path',
+    );
+  });
+
+  it('dispatches rebuild_embeddings with provider overrides', async () => {
+    (backend as any).embedJobs.startJob = vi.fn().mockResolvedValue({
+      id: 'job-3',
+      status: 'analyzing',
+    });
+
+    const result = await backend.callTool('rebuild_embeddings', {
+      repo: 'test-project',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'text-embedding-3-large',
+      apiKey: 'secret',
+      dimensions: 3072,
+      saveConfig: true,
+    });
+
+    expect((backend as any).embedJobs.startJob).toHaveBeenCalledWith({
+      repoName: 'test-project',
+      storagePath: '/tmp/.gitnexus/test-project',
+      embedding: {
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'text-embedding-3-large',
+        apiKey: 'secret',
+        dimensions: 3072,
+      },
+      saveConfig: true,
+    });
+    expect(result.kind).toBe('embed');
+    expect(result.jobId).toBe('job-3');
+    expect(result.savedConfig).toBe(true);
   });
 
   it('throws for unknown tool name', async () => {

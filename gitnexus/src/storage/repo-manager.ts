@@ -6,6 +6,7 @@
  * so the MCP server can discover indexed repos from any cwd.
  */
 
+import { readFileSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -320,6 +321,16 @@ export const listRegisteredRepos = async (opts?: {
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 
+export type CLIEmbeddingProvider = 'local' | 'openai' | 'openrouter' | 'azure' | 'custom';
+
+export interface CLIEmbeddingConfig {
+  provider?: CLIEmbeddingProvider;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  dimensions?: number;
+}
+
 export interface CLIConfig {
   apiKey?: string;
   model?: string;
@@ -330,6 +341,7 @@ export interface CLIConfig {
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */
   isReasoningModel?: boolean;
+  embedding?: CLIEmbeddingConfig;
 }
 
 /**
@@ -345,6 +357,19 @@ export const getGlobalConfigPath = (): string => {
 export const loadCLIConfig = async (): Promise<CLIConfig> => {
   try {
     const raw = await fs.readFile(getGlobalConfigPath(), 'utf-8');
+    return JSON.parse(raw) as CLIConfig;
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * Load CLI config synchronously from ~/.gitnexus/config.json.
+ * Used by startup-time configuration paths that cannot await.
+ */
+export const loadCLIConfigSync = (): CLIConfig => {
+  try {
+    const raw = readFileSync(getGlobalConfigPath(), 'utf-8');
     return JSON.parse(raw) as CLIConfig;
   } catch {
     return {};

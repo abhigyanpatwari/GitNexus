@@ -20,6 +20,7 @@ import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import { resolveEmbeddingConfigSync } from './config.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 
 /**
@@ -250,13 +251,13 @@ export const isEmbedderReady = (): boolean => {
 
 /**
  * Get the effective embedding dimensions.
- * In HTTP mode, uses GITNEXUS_EMBEDDING_DIMS if set, otherwise the default.
+ * Resolved from overrides/config/env with local defaults as fallback.
  */
 export const getEmbeddingDimensions = (): number => {
   if (isHttpMode()) {
     return getHttpDimensions() ?? DEFAULT_EMBEDDING_CONFIG.dimensions;
   }
-  return DEFAULT_EMBEDDING_CONFIG.dimensions;
+  return resolveEmbeddingConfigSync().dimensions;
 };
 
 /**

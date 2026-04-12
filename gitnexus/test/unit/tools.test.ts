@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 16 tools are defined (per-repo + group_*)
+ * - All 20 tools are defined (read tools + write tools + group_*)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -19,8 +19,8 @@ const GROUP_TOOLS = new Set([
 ]);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 5 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(16);
+  it('exports all tools (11 core + 4 write + 5 group)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(20);
   });
 
   it('contains all expected tool names', () => {
@@ -35,6 +35,10 @@ describe('GITNEXUS_TOOLS', () => {
         'rename',
         'impact',
         'api_impact',
+        'refresh_repos',
+        'get_index_job',
+        'analyze_repo',
+        'rebuild_embeddings',
       ]),
     );
   });
@@ -95,10 +99,31 @@ describe('GITNEXUS_TOOLS', () => {
     for (const tool of GITNEXUS_TOOLS) {
       if (tool.name === 'list_repos') continue;
       if (GROUP_TOOLS.has(tool.name)) continue;
+      if (['refresh_repos', 'get_index_job', 'analyze_repo'].includes(tool.name)) continue;
       expect(tool.inputSchema.properties.repo).toBeDefined();
       expect(tool.inputSchema.properties.repo.type).toBe('string');
       expect(tool.inputSchema.required).not.toContain('repo');
     }
+  });
+
+  it('write tools expose the expected required fields', () => {
+    const getJobTool = GITNEXUS_TOOLS.find((t) => t.name === 'get_index_job')!;
+    expect(getJobTool.inputSchema.required).toEqual(['jobId']);
+
+    const analyzeRepoTool = GITNEXUS_TOOLS.find((t) => t.name === 'analyze_repo')!;
+    expect(analyzeRepoTool.inputSchema.properties.path).toBeDefined();
+    expect(analyzeRepoTool.inputSchema.properties.url).toBeDefined();
+    expect(analyzeRepoTool.inputSchema.properties.force).toBeDefined();
+    expect(analyzeRepoTool.inputSchema.properties.embeddings).toBeDefined();
+
+    const rebuildTool = GITNEXUS_TOOLS.find((t) => t.name === 'rebuild_embeddings')!;
+    expect(rebuildTool.inputSchema.properties.repo).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.provider).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.baseUrl).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.model).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.apiKey).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.dimensions).toBeDefined();
+    expect(rebuildTool.inputSchema.properties.saveConfig).toBeDefined();
   });
 
   it('group_contracts has optional repo filter', () => {

@@ -5,45 +5,20 @@
  * Imported by both the core embedder (batch) and MCP embedder (query).
  */
 
+import { resolveEmbeddingConfigSync, type ResolvedEmbeddingConfig } from './config.js';
+
 const HTTP_TIMEOUT_MS = 30_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_BATCH_SIZE = 64;
-const DEFAULT_DIMS = 384;
-
-interface HttpConfig {
-  baseUrl: string;
-  model: string;
-  apiKey: string;
-  dimensions?: number;
-}
 
 /**
- * Build config from the current process.env snapshot.
- * Returns null when GITNEXUS_EMBEDDING_URL + GITNEXUS_EMBEDDING_MODEL are unset.
- * Not cached — env vars are read fresh so late configuration takes effect.
+ * Resolve HTTP embedding config from overrides/config/env on every call.
+ * Returns null when HTTP mode is not active.
  */
-const readConfig = (): HttpConfig | null => {
-  const baseUrl = process.env.GITNEXUS_EMBEDDING_URL;
-  const model = process.env.GITNEXUS_EMBEDDING_MODEL;
-  if (!baseUrl || !model) return null;
-
-  const rawDims = process.env.GITNEXUS_EMBEDDING_DIMS;
-  let dimensions: number | undefined;
-  if (rawDims !== undefined) {
-    const parsed = parseInt(rawDims, 10);
-    if (Number.isNaN(parsed) || parsed <= 0) {
-      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
-    }
-    dimensions = parsed;
-  }
-
-  return {
-    baseUrl: baseUrl.replace(/\/+$/, ''),
-    model,
-    apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY ?? 'unused',
-    dimensions,
-  };
+const readConfig = (): ResolvedEmbeddingConfig | null => {
+  const config = resolveEmbeddingConfigSync();
+  return config.mode === 'http' ? config : null;
 };
 
 /**
@@ -56,6 +31,19 @@ export const isHttpMode = (): boolean => readConfig() !== null;
  * if HTTP mode is not active or no explicit dimensions are set.
  */
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
+
+const getDimensionHint = (config: ResolvedEmbeddingConfig, actualDimensions: number): string => {
+  switch (config.explicitDimensionsSource) {
+    case 'overrides':
+      return 'Update the embedding dimensions override to match your model output.';
+    case 'config':
+      return 'Update embedding.dimensions in ~/.gitnexus/config.json to match your model output.';
+    case 'env':
+      return 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.';
+    default:
+      return `Set GITNEXUS_EMBEDDING_DIMS=${actualDimensions} to match your model output.`;
+  }
+};
 
 /**
  * Return a safe representation of a URL for error messages.
@@ -168,14 +156,11 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
       const vec = new Float32Array(item.embedding);
       // Fail fast on dimension mismatch rather than inserting bad vectors
       // into the FLOAT[N] column which would cause a cryptic Kuzu error.
-      const expected = config.dimensions ?? DEFAULT_DIMS;
+      const expected = config.dimensions;
       if (vec.length !== expected) {
-        const hint = config.dimensions
-          ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
-          : `Set GITNEXUS_EMBEDDING_DIMS=${vec.length} to match your model output.`;
         throw new Error(
           `Embedding dimension mismatch: endpoint returned ${vec.length}d vector, ` +
-            `but expected ${expected}d. ${hint}`,
+            `but expected ${expected}d. ${getDimensionHint(config, vec.length)}`,
         );
       }
 
@@ -206,14 +191,11 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
   const embedding = items[0].embedding;
   // Same dimension checks as httpEmbed — catch mismatches before they
   // reach the Kuzu FLOAT[N] cast in search queries.
-  const expected = config.dimensions ?? DEFAULT_DIMS;
+  const expected = config.dimensions;
   if (embedding.length !== expected) {
-    const hint = config.dimensions
-      ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
-      : `Set GITNEXUS_EMBEDDING_DIMS=${embedding.length} to match your model output.`;
     throw new Error(
       `Embedding dimension mismatch: endpoint returned ${embedding.length}d vector, ` +
-        `but expected ${expected}d. ${hint}`,
+        `but expected ${expected}d. ${getDimensionHint(config, embedding.length)}`,
     );
   }
   return embedding;
