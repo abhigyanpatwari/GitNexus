@@ -1141,6 +1141,53 @@ export const DART_QUERIES = `
       (identifier) @call.name))
   (selector (argument_part))) @call
 
+; ── Calls: await direct (await doSomething()) ────────────────────────────────
+(await_expression
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: await method chain (await obj.method()) ───────────────────────────
+(await_expression
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.name))) @call
+
+; ── Calls: named argument (foo(child: buildX())) ─────────────────────────────
+(named_argument
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: inside list literals ([buildA(), buildB()]) ───────────────────────
+(list_literal
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: cascade (obj..add(x)..sort()) ─────────────────────────────────────
+(cascade_section
+  (cascade_selector (identifier) @call.name)
+  (argument_part)) @call
+
+; ── Calls: static/const field initializers (const _svc = MyService()) ────────
+(static_final_declaration
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: arrow function body (=> buildWidget()) ────────────────────────────
+(function_body "=>"
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
+; ── Calls: lambda body (() => doSomething()) ─────────────────────────────────
+(function_expression_body
+  (identifier) @call.name
+  .
+  (selector (argument_part))) @call
+
 ; ── Re-exports (export 'foo.dart') ───────────────────────────────────────────
 (import_or_export
   (library_export

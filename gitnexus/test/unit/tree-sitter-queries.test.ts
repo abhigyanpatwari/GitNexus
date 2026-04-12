@@ -11,6 +11,7 @@ import {
   RUST_QUERIES,
   PHP_QUERIES,
   SWIFT_QUERIES,
+  DART_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
 
 describe('tree-sitter queries', () => {
@@ -290,6 +291,69 @@ describe('tree-sitter queries', () => {
 
     it('captures actors as classes', () => {
       expect(SWIFT_QUERIES).toContain('"actor"');
+    });
+  });
+
+  describe('Dart queries', () => {
+    it('captures class, mixin, extension, enum declarations', () => {
+      expect(DART_QUERIES).toContain('@definition.class');
+      expect(DART_QUERIES).toContain('@definition.trait');
+      expect(DART_QUERIES).toContain('@definition.enum');
+    });
+
+    it('captures top-level functions and methods', () => {
+      expect(DART_QUERIES).toContain('@definition.function');
+      expect(DART_QUERIES).toContain('@definition.method');
+    });
+
+    it('captures constructors including factory constructors', () => {
+      expect(DART_QUERIES).toContain('@definition.constructor');
+      expect(DART_QUERIES).toContain('factory_constructor_signature');
+    });
+
+    it('captures field declarations and getters/setters', () => {
+      expect(DART_QUERIES).toContain('@definition.property');
+      expect(DART_QUERIES).toContain('getter_signature');
+      expect(DART_QUERIES).toContain('setter_signature');
+    });
+
+    it('captures import statements', () => {
+      expect(DART_QUERIES).toContain('@import');
+      expect(DART_QUERIES).toContain('library_import');
+    });
+
+    it('captures heritage (extends, implements, with)', () => {
+      expect(DART_QUERIES).toContain('@heritage.extends');
+    });
+
+    it('captures direct calls and method chains', () => {
+      expect(DART_QUERIES).toContain('expression_statement');
+      expect(DART_QUERIES).toContain('unconditional_assignable_selector');
+      expect(DART_QUERIES).toContain('@call');
+    });
+
+    it('captures await expressions as calls', () => {
+      expect(DART_QUERIES).toContain('await_expression');
+    });
+
+    it('captures named argument calls (widget children)', () => {
+      expect(DART_QUERIES).toContain('named_argument');
+    });
+
+    it('captures list literal calls (widget children lists)', () => {
+      expect(DART_QUERIES).toContain('list_literal');
+    });
+
+    it('captures cascade calls (obj..method())', () => {
+      expect(DART_QUERIES).toContain('cascade_section');
+    });
+
+    it('captures arrow function body calls (=> expr)', () => {
+      expect(DART_QUERIES).toContain('function_body "=>"');
+    });
+
+    it('captures lambda body calls (() => expr)', () => {
+      expect(DART_QUERIES).toContain('function_expression_body');
     });
   });
 });
