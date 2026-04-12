@@ -15,15 +15,16 @@ import Parser from 'tree-sitter';
 
 /**
  * One pattern owned by a language plugin. Each pattern owns a tree-sitter
- * S-expression query. The query MUST contain a capture named `@value`
- * whose node text is the literal we want to extract (string/template/etc).
+ * S-expression query. Plugins can freely choose which capture names to
+ * use — the scanner exposes every capture in the returned `captures`
+ * map and does not privilege any particular name.
  *
  * `TMeta` is the plugin-specific payload the orchestrator receives back
  * when this pattern matches — e.g. for topic extraction it carries the
  * broker name, role, confidence, symbol name.
  */
 export interface PatternSpec<TMeta> {
-  /** Tree-sitter S-expression. MUST contain a `@value` capture. */
+  /** Tree-sitter S-expression. */
   query: string;
   /** Plugin-specific payload returned on every match. */
   meta: TMeta;
@@ -66,17 +67,23 @@ export interface CompiledPattern<TMeta> {
 }
 
 /**
- * One match returned by `scanFile`. The orchestrator receives the raw
- * literal text (still including any surrounding quotes) together with
- * the plugin meta, and is responsible for calling `unquoteLiteral` /
- * emitting a domain object (ExtractedContract, Route, ...).
+ * Map from capture name → syntax node. Every named capture the query
+ * binds is exposed as an entry. If a query captures the same name more
+ * than once (unusual), the first occurrence wins — plugins that need
+ * all occurrences should use distinct capture names or fall back to
+ * `match.captures` array directly by iterating `query.matches()`
+ * themselves.
+ */
+export type CaptureMap = Record<string, Parser.SyntaxNode>;
+
+/**
+ * One match returned by `scanFile` / `runCompiledPatterns`. The caller
+ * receives the full capture map plus the plugin meta, and is
+ * responsible for turning it into a domain object.
  */
 export interface ScanMatch<TMeta> {
   meta: TMeta;
-  /** The node captured as `@value` (the literal). */
-  valueNode: Parser.SyntaxNode;
-  /** Raw text of the captured value node — caller must unquote. */
-  valueText: string;
+  captures: CaptureMap;
 }
 
 /**
@@ -103,9 +110,38 @@ export function compilePatterns<TMeta>(bundle: LanguagePatterns<TMeta>): Compile
 }
 
 /**
- * Parse `content` as source code of the plugin's language and run every
- * compiled pattern against the resulting AST. Returns one `ScanMatch` per
- * matched `@value` capture, carrying the plugin's meta payload.
+ * Run every compiled pattern in `plugin` against an already-parsed
+ * tree. Use this when a plugin needs multiple query bundles against
+ * the same file (e.g. one query for class-level prefixes and another
+ * for method-level annotations) and wants to avoid re-parsing.
+ */
+export function runCompiledPatterns<TMeta>(
+  plugin: CompiledPatterns<TMeta>,
+  tree: Parser.Tree,
+): ScanMatch<TMeta>[] {
+  const out: ScanMatch<TMeta>[] = [];
+  for (const compiled of plugin.patterns) {
+    let matches: Parser.QueryMatch[];
+    try {
+      matches = compiled.query.matches(tree.rootNode);
+    } catch {
+      continue;
+    }
+    for (const match of matches) {
+      const captures: CaptureMap = {};
+      for (const cap of match.captures) {
+        if (!(cap.name in captures)) captures[cap.name] = cap.node;
+      }
+      out.push({ meta: compiled.meta, captures });
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse `content` with the plugin's grammar and run every compiled
+ * pattern against the AST. Returns one `ScanMatch` per matched query
+ * occurrence, carrying the plugin's meta payload.
  *
  * Errors are swallowed at the file level (malformed file must not abort
  * the whole extract). Individual pattern failures are swallowed too so
@@ -116,34 +152,14 @@ export function scanFile<TMeta>(
   plugin: CompiledPatterns<TMeta>,
   content: string,
 ): ScanMatch<TMeta>[] {
-  const out: ScanMatch<TMeta>[] = [];
   let tree: Parser.Tree;
   try {
     parser.setLanguage(plugin.language);
     tree = parser.parse(content);
   } catch {
-    return out;
+    return [];
   }
-
-  for (const compiled of plugin.patterns) {
-    let matches: Parser.QueryMatch[];
-    try {
-      matches = compiled.query.matches(tree.rootNode);
-    } catch {
-      continue;
-    }
-    for (const match of matches) {
-      const valueCapture = match.captures.find((c) => c.name === 'value');
-      if (!valueCapture) continue;
-      out.push({
-        meta: compiled.meta,
-        valueNode: valueCapture.node,
-        valueText: valueCapture.node.text,
-      });
-    }
-  }
-
-  return out;
+  return runCompiledPatterns(plugin, tree);
 }
 
 /**

@@ -91,7 +91,9 @@ export class TopicExtractor implements ContractExtractor {
 
       const matches = scanFile(parser, provider, content);
       for (const match of matches) {
-        const topicName = unquoteLiteral(match.valueText);
+        const valueNode = match.captures.value;
+        if (!valueNode) continue;
+        const topicName = unquoteLiteral(valueNode.text);
         if (!topicName) continue;
         out.push(makeContract(topicName, match.meta, rel));
       }

@@ -1,8 +1,34 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { glob } from 'glob';
+import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
+import { getPluginForFile, HTTP_SCAN_GLOB, type HttpDetection } from './http-patterns/index.js';
+
+/**
+ * Language-agnostic orchestrator for HTTP route (provider + consumer)
+ * contract extraction. Two strategies, in order of preference per role:
+ *
+ * 1. **Graph-assisted (Strategy A)** — if a per-repo LadybugDB executor
+ *    is available, read `HANDLES_ROUTE` / `FETCHES` Cypher edges that
+ *    the ingestion pipeline already produced via tree-sitter. This is
+ *    the preferred path because the graph has richer symbol metadata
+ *    (real uids, class/method structure, etc.).
+ *
+ * 2. **Source-scan fallback (Strategy B)** — parse files directly with
+ *    the per-language plugin registry in `./http-patterns/`. Used when
+ *    the graph has no routes/fetches for this repo (e.g. a repo that
+ *    hasn't been indexed yet, or whose indexer doesn't know the
+ *    framework). Each plugin owns its tree-sitter grammar and query
+ *    sources — this orchestrator imports NO grammars or query strings.
+ *
+ * Adding a new language for Strategy B is a one-file edit in
+ * `http-patterns/index.ts`: register a new `HttpLanguagePlugin` and
+ * widen `HTTP_SCAN_GLOB` if needed.
+ */
+
+// ─── Graph-assisted queries ──────────────────────────────────────────
 
 const HANDLES_ROUTE_QUERY = `
 MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
@@ -23,6 +49,15 @@ WHERE sym.startLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath, labels(sym) AS labels
 ORDER BY sym.startLine`;
 
+// ─── Path normalization (shared between provider / consumer paths) ──
+
+/**
+ * Canonicalize a provider-side HTTP path for contract-id generation:
+ *   - strip query string
+ *   - lower-case
+ *   - drop trailing slash
+ *   - collapse `:id`, `{id}`, `[id]` path params into a single `{param}`
+ */
 export function normalizeHttpPath(p: string): string {
   let s = p.trim().split('?')[0].toLowerCase().replace(/\/+$/, '');
   s = s.replace(/:\w+/g, '{param}');
@@ -31,19 +66,35 @@ export function normalizeHttpPath(p: string): string {
   return s;
 }
 
-function methodFromRouteReason(reason: string): string | null {
-  const r = reason || '';
-  if (/GetMapping|decorator-Get/i.test(r)) return 'GET';
-  if (/PostMapping|decorator-Post/i.test(r)) return 'POST';
-  if (/PutMapping|decorator-Put/i.test(r)) return 'PUT';
-  if (/DeleteMapping|decorator-Delete/i.test(r)) return 'DELETE';
-  if (/PatchMapping|decorator-Patch/i.test(r)) return 'PATCH';
-  return null;
+/**
+ * Consumer-side normalization is more aggressive:
+ *   - template literals (`${x}`) → `{param}`
+ *   - strip protocol + host if the URL is absolute
+ *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
+ */
+function normalizeConsumerPath(url: string): string {
+  const templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+  let pathOnly = templated;
+  if (/^https?:\/\//i.test(templated)) {
+    try {
+      pathOnly = new URL(templated).pathname;
+    } catch {
+      pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
+    }
+  }
+  const normalized = normalizeHttpPath(pathOnly || '/');
+  const segments = normalized
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => (/^\d+$/.test(segment) ? '{param}' : segment));
+  return `/${segments.join('/')}`.replace(/\/+$/, '') || '/';
 }
 
 function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
 }
+
+// ─── File read helper (path-traversal safe) ──────────────────────────
 
 function readSafe(repoPath: string, rel: string): string | null {
   const abs = path.resolve(repoPath, rel);
@@ -57,31 +108,15 @@ function readSafe(repoPath: string, rel: string): string | null {
   }
 }
 
-function pickJavaHandlerName(
-  content: string,
-  routePath: string,
-  httpMethod: string,
-): string | null {
-  const tail = routePath.split('/').filter(Boolean).pop() || '';
-  const mapNames: Record<string, string> = {
-    GET: 'GetMapping',
-    POST: 'PostMapping',
-    PUT: 'PutMapping',
-    DELETE: 'DeleteMapping',
-    PATCH: 'PatchMapping',
-  };
-  const ann = mapNames[httpMethod] || 'GetMapping';
-  const lines = content.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.includes(`@${ann}`)) continue;
-    if (!line.includes(`"${tail}"`) && !line.includes(`'${tail}'`) && tail && !line.includes(tail))
-      continue;
-    for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
-      const m = lines[j].match(/(?:public|protected|private)\s+[\w<>,\s\[\]]+\s+(\w+)\s*\(/);
-      if (m) return m[1];
-    }
-  }
+// ─── Graph row helpers ───────────────────────────────────────────────
+
+function methodFromRouteReason(reason: string): string | null {
+  const r = reason || '';
+  if (/GetMapping|decorator-Get/i.test(r)) return 'GET';
+  if (/PostMapping|decorator-Post/i.test(r)) return 'POST';
+  if (/PutMapping|decorator-Put/i.test(r)) return 'PUT';
+  if (/DeleteMapping|decorator-Delete/i.test(r)) return 'DELETE';
+  if (/PatchMapping|decorator-Patch/i.test(r)) return 'PATCH';
   return null;
 }
 
@@ -114,6 +149,8 @@ function pickSymbolUid(
   };
 }
 
+// ─── Orchestrator ────────────────────────────────────────────────────
+
 export class HttpRouteExtractor implements ContractExtractor {
   type = 'http' as const;
 
@@ -124,20 +161,67 @@ export class HttpRouteExtractor implements ContractExtractor {
   async extract(
     dbExecutor: CypherExecutor | null,
     repoPath: string,
-    repo: RepoHandle,
+    _repo: RepoHandle,
   ): Promise<ExtractedContract[]> {
-    const graphP = dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, repoPath) : [];
-    const providers = graphP.length > 0 ? graphP : await this.extractProvidersSourceScan(repoPath);
+    // Parse each file at most once and reuse the plugin results across
+    // both graph-assisted enrichment and source-scan emission.
+    const parser = new Parser();
+    const cachedDetections = new Map<string, HttpDetection[]>();
+    const getDetections = (rel: string): HttpDetection[] => {
+      const cached = cachedDetections.get(rel);
+      if (cached) return cached;
+      const plugin = getPluginForFile(rel);
+      if (!plugin) {
+        cachedDetections.set(rel, []);
+        return [];
+      }
+      const content = readSafe(repoPath, rel);
+      if (!content) {
+        cachedDetections.set(rel, []);
+        return [];
+      }
+      try {
+        parser.setLanguage(plugin.language);
+        const tree = parser.parse(content);
+        const detections = plugin.scan(tree);
+        cachedDetections.set(rel, detections);
+        return detections;
+      } catch {
+        cachedDetections.set(rel, []);
+        return [];
+      }
+    };
 
-    const graphC = dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, repoPath) : [];
-    const consumers = graphC.length > 0 ? graphC : await this.extractConsumersSourceScan(repoPath);
+    const graphProviders =
+      dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
+    const providers =
+      graphProviders.length > 0
+        ? graphProviders
+        : this.extractProvidersSourceScan(await this.scanFiles(repoPath), getDetections);
+
+    const graphConsumers =
+      dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
+    const consumers =
+      graphConsumers.length > 0
+        ? graphConsumers
+        : this.extractConsumersSourceScan(await this.scanFiles(repoPath), getDetections);
 
     return [...providers, ...consumers];
   }
 
+  private async scanFiles(repoPath: string): Promise<string[]> {
+    return glob(HTTP_SCAN_GLOB, {
+      cwd: repoPath,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      nodir: true,
+    });
+  }
+
+  // ─── Graph-assisted providers ──────────────────────────────────────
+
   private async extractProvidersGraph(
     db: CypherExecutor,
-    repoPath: string,
+    getDetections: (rel: string) => HttpDetection[],
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
     let rows: Record<string, unknown>[];
@@ -152,16 +236,26 @@ export class HttpRouteExtractor implements ContractExtractor {
       const routePath = String(row.routePath ?? '');
       const routeSource = String(row.routeSource ?? row.routeReason ?? '');
       let method = methodFromRouteReason(routeSource);
-      const content = readSafe(repoPath, filePath);
-      if (!method && content) {
-        method = this.inferMethodFromFileScan(content, routePath, 'provider');
+
+      // Fallback: look up method + handler name from the plugin's scan
+      // of the handler file. This replaces the old regex-based
+      // `inferMethodFromFileScan` and `pickJavaHandlerName` helpers —
+      // tree-sitter gives both pieces of information structurally.
+      const detections = filePath ? getDetections(filePath) : [];
+      const providerDetections = detections.filter((d) => d.role === 'provider');
+      let handlerName: string | null = null;
+      if (!method || !handlerName) {
+        const normalizedRoute = normalizeHttpPath(routePath);
+        const match = providerDetections.find((d) => normalizeHttpPath(d.path) === normalizedRoute);
+        if (match) {
+          if (!method) method = match.method;
+          handlerName = match.name;
+        }
       }
       if (!method) method = 'GET';
 
       const pathNorm = normalizeHttpPath(routePath);
       const cid = contractIdFor(method, pathNorm);
-      const handlerName =
-        content && routePath ? pickJavaHandlerName(content, routePath, method) : null;
 
       let symbolUid = '';
       let symbolName = path.basename(filePath) || 'handler';
@@ -201,189 +295,44 @@ export class HttpRouteExtractor implements ContractExtractor {
     return out;
   }
 
-  private inferMethodFromFileScan(
-    content: string,
-    routePath: string,
-    _role: string,
-  ): string | null {
-    const tail = routePath.split('/').filter(Boolean).pop() || '';
-    for (const m of ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const) {
-      const mapNames: Record<string, string> = {
-        GET: 'GetMapping',
-        POST: 'PostMapping',
-        PUT: 'PutMapping',
-        DELETE: 'DeleteMapping',
-        PATCH: 'PatchMapping',
-      };
-      if (
-        content.includes(`@${mapNames[m]}`) &&
-        (content.includes(tail) || routePath.includes(tail))
-      ) {
-        return m;
-      }
-    }
-    return null;
-  }
+  // ─── Source-scan providers ─────────────────────────────────────────
 
-  private async extractProvidersSourceScan(repoPath: string): Promise<ExtractedContract[]> {
-    const files = await glob('**/*.{ts,tsx,js,jsx,java,vue,svelte,php,py,go}', {
-      cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
-      nodir: true,
-    });
+  private extractProvidersSourceScan(
+    files: string[],
+    getDetections: (rel: string) => HttpDetection[],
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
-      const content = readSafe(repoPath, rel);
-      if (!content) continue;
-      out.push(...this.scanSpringProviders(content, rel));
-      out.push(...this.scanNestProviders(content, rel));
-      out.push(...this.scanExpressProviders(content, rel));
-      out.push(...this.scanGoProviders(content, rel));
-      out.push(...this.scanLaravelProviders(content, rel));
-      out.push(...this.scanFastApiProviders(content, rel));
+      const detections = getDetections(rel);
+      for (const d of detections) {
+        if (d.role !== 'provider') continue;
+        const pathNorm = normalizeHttpPath(d.path);
+        out.push({
+          contractId: contractIdFor(d.method, pathNorm),
+          type: 'http',
+          role: 'provider',
+          symbolUid: '',
+          symbolRef: { filePath: rel, name: d.name ?? 'handler' },
+          symbolName: d.name ?? 'handler',
+          confidence: d.confidence,
+          meta: {
+            method: d.method,
+            path: pathNorm,
+            pathSegments: pathNorm.split('/').filter(Boolean),
+            extractionStrategy: 'source_scan',
+            framework: d.framework,
+          },
+        });
+      }
     }
     return this.dedupeContracts(out);
   }
 
-  private dedupeContracts(items: ExtractedContract[]): ExtractedContract[] {
-    const seen = new Set<string>();
-    const out: ExtractedContract[] = [];
-    for (const c of items) {
-      const k = `${c.contractId}|${c.symbolRef.filePath}|${c.symbolRef.name}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(c);
-    }
-    return out;
-  }
-
-  private scanSpringProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    let classPrefix = '';
-    const classRm = content.match(/@RequestMapping\s*\(\s*"([^"]+)"/);
-    if (classRm) classPrefix = classRm[1].replace(/\/+$/, '');
-
-    const re = /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*"([^"]+)"/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      let p = m[2];
-      if (classPrefix) p = `${classPrefix}/${p.replace(/^\//, '')}`;
-      const pathNorm = normalizeHttpPath(p);
-      const sub = content.slice(m.index);
-      const nameM = sub.match(/(?:public|protected|private)\s+[\w<>,\s\[\]]+\s+(\w+)\s*\(/);
-      const name = nameM ? nameM[1] : m[0];
-      out.push(this.makeProvider(filePath, method, pathNorm, name, 0.8));
-    }
-    return out;
-  }
-
-  private scanExpressProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const re = /(?:router|app)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      const pathNorm = normalizeHttpPath(m[2]);
-      out.push(this.makeProvider(filePath, method, pathNorm, 'handler', 0.8));
-    }
-    return out;
-  }
-
-  private scanLaravelProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const re = /Route::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      const pathNorm = normalizeHttpPath(m[2]);
-      out.push(this.makeProvider(filePath, method, pathNorm, 'route', 0.8));
-    }
-    return out;
-  }
-
-  private scanFastApiProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const re = /@app\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      const pathNorm = normalizeHttpPath(m[2]);
-      out.push(this.makeProvider(filePath, method, pathNorm, 'handler', 0.8));
-    }
-    return out;
-  }
-
-  private scanNestProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const controllerMatch = content.match(/@Controller\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/);
-    const controllerPrefix = controllerMatch ? controllerMatch[1].replace(/\/+$/, '') : '';
-    const re = /@(Get|Post|Put|Delete|Patch)\s*\(\s*['"`]?([^'"`)]*)['"`]?\s*\)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      const routePath = String(m[2] || '');
-      const fullPath = controllerPrefix
-        ? `${controllerPrefix}/${routePath.replace(/^\/+/, '')}`
-        : routePath;
-      const pathNorm = normalizeHttpPath(fullPath.startsWith('/') ? fullPath : `/${fullPath}`);
-      const sub = content.slice(m.index);
-      const nameMatch = sub.match(
-        /(?:public|protected|private)?\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{/,
-      );
-      const name = nameMatch ? nameMatch[1] : m[0];
-      out.push(this.makeProvider(filePath, method, pathNorm, name, 0.8));
-    }
-    return out;
-  }
-
-  private scanGoProviders(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const frameworkRe =
-      /(?:^|\W)\w+\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)/gim;
-    let m: RegExpExecArray | null;
-    while ((m = frameworkRe.exec(content)) !== null) {
-      out.push(this.makeProvider(filePath, m[1].toUpperCase(), normalizeHttpPath(m[2]), m[3], 0.8));
-    }
-
-    const handleFuncRe =
-      /(?:http|\w+)\.HandleFunc\s*\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)\s*\)(?:\s*\.\s*Methods\s*\(\s*['"](\w+)['"]\s*\))?/gim;
-    while ((m = handleFuncRe.exec(content)) !== null) {
-      const method = (m[3] || 'GET').toUpperCase();
-      out.push(this.makeProvider(filePath, method, normalizeHttpPath(m[1]), m[2], 0.8));
-    }
-
-    return out;
-  }
-
-  private makeProvider(
-    filePath: string,
-    method: string,
-    pathNorm: string,
-    name: string,
-    confidence: number,
-  ): ExtractedContract {
-    const cid = contractIdFor(method, pathNorm);
-    return {
-      contractId: cid,
-      type: 'http',
-      role: 'provider',
-      symbolUid: '',
-      symbolRef: { filePath, name },
-      symbolName: name,
-      confidence,
-      meta: {
-        method,
-        path: pathNorm,
-        pathSegments: pathNorm.split('/').filter(Boolean),
-        extractionStrategy: 'source_scan',
-      },
-    };
-  }
+  // ─── Graph-assisted consumers ──────────────────────────────────────
 
   private async extractConsumersGraph(
     db: CypherExecutor,
-    repoPath: string,
+    getDetections: (rel: string) => HttpDetection[],
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
     let rows: Record<string, unknown>[];
@@ -397,11 +346,14 @@ export class HttpRouteExtractor implements ContractExtractor {
       const routePath = String(row.routePath ?? '');
       const pathNorm = normalizeHttpPath(routePath);
       let method = 'GET';
-      const content = readSafe(repoPath, filePath);
-      if (content) {
-        const inferred = this.inferFetchMethod(content, pathNorm);
-        if (inferred) method = inferred;
-      }
+      // Prefer the plugin's detected method if we can find a matching
+      // fetch/axios call in the same file.
+      const detections = filePath ? getDetections(filePath) : [];
+      const inferred = detections.find(
+        (d) => d.role === 'consumer' && normalizeConsumerPath(d.path) === pathNorm,
+      );
+      if (inferred) method = inferred.method;
+
       const cid = contractIdFor(method, pathNorm);
       let symbolUid = '';
       let symbolName = 'fetch';
@@ -439,193 +391,47 @@ export class HttpRouteExtractor implements ContractExtractor {
     return out;
   }
 
-  private inferFetchMethod(content: string, pathNorm: string): string | null {
-    const esc = pathNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const fetchRe = new RegExp(
-      `fetch\\s*\\(\\s*['"\`]([^'"\`]*${esc}[^'"\`]*)['"\`]\\s*,\\s*\\{[^}]*method:\\s*['"](\\w+)['"]`,
-      'i',
-    );
-    const m = content.match(fetchRe);
-    if (m) return m[2].toUpperCase();
-    return null;
-  }
+  // ─── Source-scan consumers ─────────────────────────────────────────
 
-  private async extractConsumersSourceScan(repoPath: string): Promise<ExtractedContract[]> {
-    const files = await glob('**/*.{ts,tsx,js,jsx,vue,svelte,py,java,go}', {
-      cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**'],
-      nodir: true,
-    });
+  private extractConsumersSourceScan(
+    files: string[],
+    getDetections: (rel: string) => HttpDetection[],
+  ): ExtractedContract[] {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
-      const content = readSafe(repoPath, rel);
-      if (!content) continue;
-      out.push(...this.scanFetchConsumers(content, rel));
-      out.push(...this.scanAxiosConsumers(content, rel));
-      out.push(...this.scanPythonRequestsConsumers(content, rel));
-      out.push(...this.scanJavaConsumers(content, rel));
-      out.push(...this.scanGoConsumers(content, rel));
+      const detections = getDetections(rel);
+      for (const d of detections) {
+        if (d.role !== 'consumer') continue;
+        const pathNorm = normalizeConsumerPath(d.path);
+        out.push({
+          contractId: contractIdFor(d.method, pathNorm),
+          type: 'http',
+          role: 'consumer',
+          symbolUid: '',
+          symbolRef: { filePath: rel, name: 'fetch' },
+          symbolName: 'fetch',
+          confidence: d.confidence,
+          meta: {
+            method: d.method,
+            path: pathNorm,
+            extractionStrategy: 'source_scan',
+            framework: d.framework,
+          },
+        });
+      }
     }
     return this.dedupeContracts(out);
   }
 
-  private scanFetchConsumers(content: string, filePath: string): ExtractedContract[] {
+  private dedupeContracts(items: ExtractedContract[]): ExtractedContract[] {
+    const seen = new Set<string>();
     const out: ExtractedContract[] = [];
-    const re =
-      /fetch\s*\(\s*['"`]([^'"`]+)['"`](?:\s*,\s*\{[^}]*method:\s*['"](\w+)['"][^}]*\})?\s*\)/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const pathNorm = normalizeHttpPath(this.templateToPattern(m[1]));
-      const method = (m[2] || 'GET').toUpperCase();
-      out.push(this.makeConsumer(filePath, method, pathNorm, 0.7));
+    for (const c of items) {
+      const k = `${c.contractId}|${c.symbolRef.filePath}|${c.symbolRef.name}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(c);
     }
     return out;
-  }
-
-  private templateToPattern(url: string): string {
-    return url.replace(/\$\{[^}]+\}/g, '{param}');
-  }
-
-  private normalizeConsumerPath(url: string): string {
-    const templated = this.templateToPattern(url.trim());
-    let pathOnly = templated;
-    if (/^https?:\/\//i.test(templated)) {
-      try {
-        pathOnly = new URL(templated).pathname;
-      } catch {
-        pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
-      }
-    }
-
-    const normalized = normalizeHttpPath(pathOnly || '/');
-    const segments = normalized
-      .split('/')
-      .filter(Boolean)
-      .map((segment) => {
-        if (/^\d+$/.test(segment)) return '{param}';
-        return segment;
-      });
-    return `/${segments.join('/')}`.replace(/\/+$/, '') || '/';
-  }
-
-  private scanAxiosConsumers(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const re = /axios\.(get|post|put|delete|patch)\s*\(\s*[`'"]([^`'"]+)[`'"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
-      const method = m[1].toUpperCase();
-      const pathNorm = this.normalizeConsumerPath(m[2]);
-      out.push(this.makeConsumer(filePath, method, pathNorm, 0.7));
-    }
-    return out;
-  }
-
-  private scanPythonRequestsConsumers(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const methodRe = /requests\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = methodRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
-      );
-    }
-
-    const genericRe = /requests\.request\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
-    while ((m = genericRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
-      );
-    }
-
-    return out;
-  }
-
-  private scanJavaConsumers(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const restTemplateMethods: Array<[RegExp, string]> = [
-      [/restTemplate\.getFor(?:Object|Entity)\s*\(\s*['"]([^'"]+)['"]/gi, 'GET'],
-      [/restTemplate\.postFor(?:Object|Entity)\s*\(\s*['"]([^'"]+)['"]/gi, 'POST'],
-      [/restTemplate\.put\s*\(\s*['"]([^'"]+)['"]/gi, 'PUT'],
-      [/restTemplate\.delete\s*\(\s*['"]([^'"]+)['"]/gi, 'DELETE'],
-      [/restTemplate\.patchForObject\s*\(\s*['"]([^'"]+)['"]/gi, 'PATCH'],
-    ];
-    for (const [re, method] of restTemplateMethods) {
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(content)) !== null) {
-        out.push(this.makeConsumer(filePath, method, this.normalizeConsumerPath(m[1]), 0.7));
-      }
-    }
-
-    const webClientMethodRe =
-      /webClient\.method\s*\(\s*HttpMethod\.(GET|POST|PUT|DELETE|PATCH)\s*,\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = webClientMethodRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
-      );
-    }
-
-    const okHttpRe =
-      /new\s+Request\.Builder\s*\(\)\s*\.url\s*\(\s*['"]([^'"]+)['"]\s*\)(?:\s*\.\s*method\s*\(\s*['"](\w+)['"])?/gim;
-    while ((m = okHttpRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(
-          filePath,
-          (m[2] || 'GET').toUpperCase(),
-          this.normalizeConsumerPath(m[1]),
-          0.7,
-        ),
-      );
-    }
-
-    return out;
-  }
-
-  private scanGoConsumers(content: string, filePath: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-    const httpMethodRe = /\bhttp\.(Get|Post|Head)\s*\(\s*['"]([^'"]+)['"]/gi;
-    let m: RegExpExecArray | null;
-    while ((m = httpMethodRe.exec(content)) !== null) {
-      const method = m[1].toUpperCase() === 'HEAD' ? 'GET' : m[1].toUpperCase();
-      out.push(this.makeConsumer(filePath, method, this.normalizeConsumerPath(m[2]), 0.7));
-    }
-
-    const newRequestRe = /\bhttp\.NewRequest\s*\(\s*['"](\w+)['"]\s*,\s*['"]([^'"]+)['"]/gi;
-    while ((m = newRequestRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
-      );
-    }
-
-    const restyRe = /\b\w+\.R\(\)\.(Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi;
-    while ((m = restyRe.exec(content)) !== null) {
-      out.push(
-        this.makeConsumer(filePath, m[1].toUpperCase(), this.normalizeConsumerPath(m[2]), 0.7),
-      );
-    }
-
-    return out;
-  }
-
-  private makeConsumer(
-    filePath: string,
-    method: string,
-    pathNorm: string,
-    confidence: number,
-  ): ExtractedContract {
-    return {
-      contractId: contractIdFor(method, pathNorm),
-      type: 'http',
-      role: 'consumer',
-      symbolUid: '',
-      symbolRef: { filePath, name: 'fetch' },
-      symbolName: 'fetch',
-      confidence,
-      meta: {
-        method,
-        path: pathNorm,
-        extractionStrategy: 'source_scan',
-      },
-    };
   }
 }
