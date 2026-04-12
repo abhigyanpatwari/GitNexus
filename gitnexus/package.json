@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
