@@ -1,0 +1,3 @@
+vendor/tree-sitter-proto/build/
+vendor/tree-sitter-proto/node_modules/
+vendor/tree-sitter-proto/package-lock.json
