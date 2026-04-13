@@ -71,7 +71,21 @@ export interface PipelinePhase<TOutput = unknown> {
   execute(ctx: PipelineContext, deps: ReadonlyMap<string, PhaseResult<unknown>>): Promise<TOutput>;
 }
 
-/** Helper to extract the output type from a resolved dependency map entry. */
+/**
+ * Helper to extract the typed output of a dependency phase.
+ *
+ * Type safety note: This uses an `as T` cast because the DAG runner stores
+ * heterogeneous phase outputs in a single `Map<string, PhaseResult<unknown>>`.
+ * The cast is safe as long as callers use the correct output type for the
+ * named phase. Mismatches will surface as runtime type errors, not compile-time
+ * errors — this is an intentional trade-off for a static DAG without
+ * a dynamic type registry.
+ *
+ * @param deps       The resolved dependency map from the runner
+ * @param phaseName  The name of the upstream phase whose output you need
+ * @returns          The typed output of the phase
+ * @throws           If the phase is not found in the dependency map
+ */
 export function getPhaseOutput<T>(
   deps: ReadonlyMap<string, PhaseResult<unknown>>,
   phaseName: string,

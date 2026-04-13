@@ -2,6 +2,10 @@
  * Cross-file binding propagation — extracted from pipeline.ts.
  *
  * Seeds downstream files with resolved type bindings from upstream exports.
+ * Files are processed in topological import order so upstream bindings
+ * are available when downstream files are re-resolved.
+ *
+ * @module
  */
 
 import {
@@ -18,6 +22,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { topologicalLevelSort } from '../pipeline.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
+import { AST_CACHE_CAP } from './constants.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -25,8 +30,6 @@ const isDev = process.env.NODE_ENV === 'development';
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
 /** Hard cap on files re-processed during cross-file propagation. */
 const MAX_CROSS_FILE_REPROCESS = 2000;
-/** Max AST trees to keep in LRU cache */
-const AST_CACHE_CAP = 50;
 
 /**
  * Cross-file binding propagation.

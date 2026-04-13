@@ -16,6 +16,8 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { runCrossFileBindingPropagation } from './cross-file-impl.js';
 
+const isDev = process.env.NODE_ENV === 'development';
+
 export interface CrossFileOutput {
   /** Number of files re-processed during cross-file propagation. */
   filesReprocessed: number;
@@ -31,8 +33,6 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
   ): Promise<CrossFileOutput> {
     const { exportedTypeMap, allPaths, totalFiles, bindingAccumulator, resolutionContext } =
       getPhaseOutput<ParseOutput>(deps, 'parse');
-
-    const isDev = process.env.NODE_ENV === 'development';
 
     // Log and dispose binding accumulator — all consumers have completed
     if (isDev) {

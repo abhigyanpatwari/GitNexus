@@ -1,14 +1,15 @@
 /**
- * Parse implementation — extracted from pipeline.ts.
+ * Parse implementation — chunked parse + resolve loop.
  *
- * Contains the chunked parse + resolve loop and its helper functions:
- * - synthesizeWildcardImportBindings
- * - runChunkedParseAndResolve (renamed export)
- * - extractORMQueriesInline
+ * This is the core parsing engine of the ingestion pipeline. It reads
+ * source files in byte-budget chunks (~20MB each), parses via worker
+ * pool (or sequential fallback), resolves imports/calls/heritage per
+ * chunk, and synthesizes wildcard import bindings.
  *
- * This module is consumed by the parse phase (`parse.ts`) and exists
- * to keep the phase file focused on DAG wiring while the heavy implementation
- * lives here.
+ * Consumed by the parse phase (`parse.ts`) — the phase file handles
+ * DAG wiring while the heavy implementation lives here.
+ *
+ * @module
  */
 
 import {
@@ -43,8 +44,6 @@ import { createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { SupportedLanguages } from 'gitnexus-shared';
-import { providers, getProviderForFile } from '../languages/index.js';
 import { createWorkerPool, WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -64,207 +63,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { AST_CACHE_CAP } from './constants.js';
+import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
+import { extractORMQueriesInline } from './orm-extraction.js';
+
 const isDev = process.env.NODE_ENV === 'development';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /** Max bytes of source content to load per parse chunk. */
 const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
-
-/** Max AST trees to keep in LRU cache */
-const AST_CACHE_CAP = 50;
-
-/** Node labels that represent top-level importable symbols. */
-const IMPORTABLE_SYMBOL_LABELS = new Set([
-  'Function',
-  'Class',
-  'Interface',
-  'Struct',
-  'Enum',
-  'Trait',
-  'TypeAlias',
-  'Const',
-  'Static',
-  'Record',
-  'Union',
-  'Typedef',
-  'Macro',
-]);
-
-/** Max synthetic bindings per importing file. */
-const MAX_SYNTHETIC_BINDINGS_PER_FILE = 1000;
-
-/** Pre-computed language sets derived from providers at module load. */
-const WILDCARD_LANGUAGES = new Set(
-  Object.values(providers)
-    .filter((p) => p.importSemantics === 'wildcard')
-    .map((p) => p.id),
-);
-const SYNTHESIS_LANGUAGES = new Set(
-  Object.values(providers)
-    .filter((p) => p.importSemantics !== 'named')
-    .map((p) => p.id),
-);
-
-function isWildcardImportLanguage(lang: SupportedLanguages): boolean {
-  return WILDCARD_LANGUAGES.has(lang);
-}
-
-function needsSynthesis(lang: SupportedLanguages): boolean {
-  return SYNTHESIS_LANGUAGES.has(lang);
-}
-
-// ── Wildcard synthesis ─────────────────────────────────────────────────────
-
-/** Synthesize namedImportMap entries for languages with whole-module imports. */
-function synthesizeWildcardImportBindings(
-  graph: KnowledgeGraph,
-  ctx: ReturnType<typeof createResolutionContext>,
-): number {
-  const exportedSymbolsByFile = new Map<string, { name: string; filePath: string }[]>();
-  graph.forEachNode((node) => {
-    if (!node.properties?.isExported) return;
-    if (!IMPORTABLE_SYMBOL_LABELS.has(node.label)) return;
-    const fp = node.properties.filePath;
-    const name = node.properties.name;
-    if (!fp || !name) return;
-    let symbols = exportedSymbolsByFile.get(fp);
-    if (!symbols) {
-      symbols = [];
-      exportedSymbolsByFile.set(fp, symbols);
-    }
-    symbols.push({ name, filePath: fp });
-  });
-
-  if (exportedSymbolsByFile.size === 0) return 0;
-
-  const FILE_PREFIX = 'File:';
-  const graphImports = new Map<string, Set<string>>();
-  graph.forEachRelationship((rel) => {
-    if (rel.type !== 'IMPORTS') return;
-    if (!rel.sourceId.startsWith(FILE_PREFIX) || !rel.targetId.startsWith(FILE_PREFIX)) return;
-    const srcFile = rel.sourceId.slice(FILE_PREFIX.length);
-    const tgtFile = rel.targetId.slice(FILE_PREFIX.length);
-    const lang = getLanguageFromFilename(srcFile);
-    if (!lang || !isWildcardImportLanguage(lang)) return;
-    if (ctx.importMap.get(srcFile)?.has(tgtFile)) return;
-    let set = graphImports.get(srcFile);
-    if (!set) {
-      set = new Set();
-      graphImports.set(srcFile, set);
-    }
-    set.add(tgtFile);
-  });
-
-  let totalSynthesized = 0;
-
-  const synthesizeForFile = (filePath: string, importedFiles: Iterable<string>) => {
-    let fileBindings = ctx.namedImportMap.get(filePath);
-    let fileCount = fileBindings?.size ?? 0;
-
-    for (const importedFile of importedFiles) {
-      const exportedSymbols = exportedSymbolsByFile.get(importedFile);
-      if (!exportedSymbols) continue;
-
-      for (const sym of exportedSymbols) {
-        if (fileCount >= MAX_SYNTHETIC_BINDINGS_PER_FILE) return;
-        if (fileBindings?.has(sym.name)) continue;
-
-        if (!fileBindings) {
-          fileBindings = new Map();
-          ctx.namedImportMap.set(filePath, fileBindings);
-        }
-        fileBindings.set(sym.name, {
-          sourcePath: importedFile,
-          exportedName: sym.name,
-        });
-        fileCount++;
-        totalSynthesized++;
-      }
-    }
-  };
-
-  for (const [filePath, importedFiles] of ctx.importMap) {
-    const lang = getLanguageFromFilename(filePath);
-    if (!lang || !isWildcardImportLanguage(lang)) continue;
-    synthesizeForFile(filePath, importedFiles);
-  }
-
-  for (const [filePath, importedFiles] of graphImports) {
-    synthesizeForFile(filePath, importedFiles);
-  }
-
-  const buildPythonModuleAliasForFile = (callerFile: string, importedFiles: Iterable<string>) => {
-    let aliasMap = ctx.moduleAliasMap.get(callerFile);
-    for (const importedFile of importedFiles) {
-      const lastSlash = importedFile.lastIndexOf('/');
-      const base = lastSlash >= 0 ? importedFile.slice(lastSlash + 1) : importedFile;
-      const dot = base.lastIndexOf('.');
-      const stem = dot >= 0 ? base.slice(0, dot) : base;
-      if (!stem) continue;
-      if (!aliasMap) {
-        aliasMap = new Map();
-        ctx.moduleAliasMap.set(callerFile, aliasMap);
-      }
-      aliasMap.set(stem, importedFile);
-    }
-  };
-
-  for (const [filePath, importedFiles] of ctx.importMap) {
-    const provider = getProviderForFile(filePath);
-    if (!provider || provider.importSemantics !== 'namespace') continue;
-    buildPythonModuleAliasForFile(filePath, importedFiles);
-  }
-
-  return totalSynthesized;
-}
-
-// ── Inline ORM extraction ──────────────────────────────────────────────────
-
-const PRISMA_QUERY_RE =
-  /\bprisma\.(\w+)\.(findMany|findFirst|findUnique|findUniqueOrThrow|findFirstOrThrow|create|createMany|update|updateMany|delete|deleteMany|upsert|count|aggregate|groupBy)\s*\(/g;
-const SUPABASE_QUERY_RE =
-  /\bsupabase\.from\s*\(\s*['"](\w+)['"]\s*\)\s*\.(select|insert|update|delete|upsert)\s*\(/g;
-
-function extractORMQueriesInline(
-  filePath: string,
-  content: string,
-  out: ExtractedORMQuery[],
-): void {
-  const hasPrisma = content.includes('prisma.');
-  const hasSupabase = content.includes('supabase.from');
-  if (!hasPrisma && !hasSupabase) return;
-
-  if (hasPrisma) {
-    PRISMA_QUERY_RE.lastIndex = 0;
-    let m;
-    while ((m = PRISMA_QUERY_RE.exec(content)) !== null) {
-      const model = m[1];
-      if (model.startsWith('$')) continue;
-      out.push({
-        filePath,
-        orm: 'prisma',
-        model,
-        method: m[2],
-        lineNumber: content.substring(0, m.index).split('\n').length - 1,
-      });
-    }
-  }
-
-  if (hasSupabase) {
-    SUPABASE_QUERY_RE.lastIndex = 0;
-    let m;
-    while ((m = SUPABASE_QUERY_RE.exec(content)) !== null) {
-      out.push({
-        filePath,
-        orm: 'supabase',
-        model: m[1],
-        method: m[2],
-        lineNumber: content.substring(0, m.index).split('\n').length - 1,
-      });
-    }
-  }
-}
 
 // ── Main parse + resolve function ──────────────────────────────────────────
 

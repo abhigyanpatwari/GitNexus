@@ -13,6 +13,7 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { generateId } from '../../../lib/utils.js';
 import type { ExtractedORMQuery } from '../workers/parse-worker.js';
+import type { KnowledgeGraph } from '../../graph/types.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -40,7 +41,7 @@ export const ormPhase: PipelinePhase<ORMOutput> = {
 };
 
 function processORMQueries(
-  graph: import('../../graph/types.js').KnowledgeGraph,
+  graph: KnowledgeGraph,
   queries: ExtractedORMQuery[],
 ): ORMOutput {
   const modelNodes = new Map<string, string>();
