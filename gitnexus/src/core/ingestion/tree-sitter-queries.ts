@@ -1251,6 +1251,34 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+// Perl queries - works with @ganezdragon/tree-sitter-perl 1.1.1
+// Based on tree-sitter-perl highlights.scm and GitNexus patterns
+export const PERL_QUERIES = `
+; ── Packages (namespaces) ────────────────────────────────────────────────────
+(package_statement
+  (package_name) @name) @definition.namespace
+
+; ── Subroutines (functions) ──────────────────────────────────────────────────
+(function_definition
+  (identifier) @name) @definition.function
+
+; ── Use statements (imports) ─────────────────────────────────────────────────
+(use_no_statement
+  (package_name) @call.name) @call
+
+; ── Use parent statements (inheritance) ──────────────────────────────────────
+(use_parent_statement
+  (string_single_quoted) @call.name) @call
+
+; ── Method calls ─────────────────────────────────────────────────────────────
+(method_invocation
+  (identifier) @call.name) @call
+
+; ── Function calls ──────────────────────────────────────────────────────────
+(call_expression
+  (identifier) @call.name) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1268,6 +1296,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
+  [SupportedLanguages.Perl]: PERL_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

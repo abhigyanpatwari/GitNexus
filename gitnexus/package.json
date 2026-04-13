@@ -69,7 +69,7 @@
     "mnemonist": "^0.39.0",
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
-    "tree-sitter": "^0.21.1",
+    "tree-sitter": "^0.22.4",
     "tree-sitter-c": "0.23.2",
     "tree-sitter-c-sharp": "^0.23.1",
     "tree-sitter-cpp": "^0.23.4",
@@ -84,13 +84,13 @@
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
+    "@ganezdragon/tree-sitter-perl": "^1.1.1",
     "tree-sitter-dart": "github:UserNobody14/tree-sitter-dart#80e23c07b64494f7e21090bb3450223ef0b192f4",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
     "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {
-    "gitnexus-shared": "file:../gitnexus-shared",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
@@ -98,6 +98,8 @@
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "@vitest/coverage-v8": "^4.0.18",
+    "gitnexus-shared": "file:../gitnexus-shared",
+    "graphology-types": "^0.24.8",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"

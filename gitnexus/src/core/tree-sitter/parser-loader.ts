@@ -13,22 +13,41 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 
-// tree-sitter-swift and tree-sitter-dart are optionalDependencies — may not be installed
-const _require = createRequire(import.meta.url);
-let Swift: any = null;
-try {
-  Swift = _require('tree-sitter-swift');
-} catch {}
-let Dart: any = null;
-try {
-  Dart = _require('tree-sitter-dart');
-} catch {}
+/**
+ * Load an optional tree-sitter grammar, handling both CommonJS and ESM modules.
+ * ESM modules with top-level await cannot be loaded via createRequire(), so we
+ * fall back to dynamic import() for those cases.
+ */
+async function tryLoadGrammar(packageName: string): Promise<any> {
+  const _require = createRequire(import.meta.url);
+  try {
+    return _require(packageName);
+  } catch (err: any) {
+    if (err?.code === 'ERR_REQUIRE_ASYNC_MODULE') {
+      // Handle ESM modules with top-level await (e.g. @ganezdragon/tree-sitter-perl v1.1.1)
+      try {
+        const mod = await import(packageName);
 
-// tree-sitter-kotlin is an optionalDependency — may not be installed
-let Kotlin: any = null;
-try {
-  Kotlin = _require('tree-sitter-kotlin');
-} catch {}
+        // For @ganezdragon/tree-sitter-perl, use directly without ESM wrapper
+        if (packageName === '@ganezdragon/tree-sitter-perl') {
+          return mod.default || mod;
+        }
+
+        // ESM modules should be used directly without unwrapping default export
+        return mod.default;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+// Load optional dependencies — may not be installed or may be ESM modules
+const Swift: any = await tryLoadGrammar('tree-sitter-swift');
+const Dart: any = await tryLoadGrammar('tree-sitter-dart');
+const Kotlin: any = await tryLoadGrammar('tree-sitter-kotlin');
+const Perl: any = await tryLoadGrammar('@ganezdragon/tree-sitter-perl');
 
 let parser: Parser | null = null;
 
@@ -46,6 +65,7 @@ const languageMap: Record<string, any> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  ...(Perl ? { [SupportedLanguages.Perl]: Perl } : {}),
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
