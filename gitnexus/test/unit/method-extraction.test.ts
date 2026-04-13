@@ -4710,3 +4710,112 @@ end
     expect(rustMethodConfig.staticOwnerTypes).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// U5: Runtime guard — misconfigured staticOwnerTypes must throw at construction
+// ---------------------------------------------------------------------------
+
+import type { MethodExtractionConfig } from '../../src/core/ingestion/method-types.js';
+
+/**
+ * Minimal stub config factory. Caller overrides `typeDeclarationNodes` and
+ * `staticOwnerTypes` to exercise the guard; everything else is a no-op.
+ */
+function makeStubConfig(overrides: Partial<MethodExtractionConfig> = {}): MethodExtractionConfig {
+  return {
+    language: SupportedLanguages.Kotlin,
+    typeDeclarationNodes: [],
+    methodNodeTypes: [],
+    bodyNodeTypes: [],
+    extractName: () => undefined,
+    extractReturnType: () => undefined,
+    extractParameters: () => [],
+    extractVisibility: () => 'public',
+    isStatic: () => false,
+    isAbstract: () => false,
+    isFinal: () => false,
+    ...overrides,
+  };
+}
+
+describe('createMethodExtractor — staticOwnerTypes guard (U5)', () => {
+  it('throws when companion_object is in typeDeclarationNodes but staticOwnerTypes is missing', () => {
+    const config = makeStubConfig({
+      typeDeclarationNodes: ['class_declaration', 'companion_object'],
+      // staticOwnerTypes intentionally omitted
+    });
+    expect(() => createMethodExtractor(config)).toThrow(/companion_object/);
+  });
+
+  it('throws when object_declaration is in typeDeclarationNodes but staticOwnerTypes is missing', () => {
+    const config = makeStubConfig({
+      typeDeclarationNodes: ['object_declaration'],
+    });
+    expect(() => createMethodExtractor(config)).toThrow(/object_declaration/);
+  });
+
+  it('throws when singleton_class is listed but staticOwnerTypes contains wrong entries', () => {
+    const config = makeStubConfig({
+      typeDeclarationNodes: ['class', 'singleton_class'],
+      staticOwnerTypes: new Set(['companion_object']), // wrong — missing singleton_class
+    });
+    expect(() => createMethodExtractor(config)).toThrow(/singleton_class/);
+  });
+
+  it('names the language in the error message when available', () => {
+    const config = makeStubConfig({
+      language: SupportedLanguages.Kotlin,
+      typeDeclarationNodes: ['companion_object'],
+    });
+    expect(() => createMethodExtractor(config)).toThrow(/kotlin/i);
+  });
+
+  // Happy paths — real configs must continue to construct cleanly.
+
+  it('accepts the current Kotlin config (companion_object + object_declaration covered)', () => {
+    expect(() => createMethodExtractor(kotlinMethodConfig)).not.toThrow();
+  });
+
+  it('accepts the current Ruby config (singleton_class covered)', () => {
+    expect(() => createMethodExtractor(rubyMethodConfig)).not.toThrow();
+  });
+
+  it('accepts configs with no static-implying node types (Java, Python)', () => {
+    expect(() => createMethodExtractor(javaMethodConfig)).not.toThrow();
+    expect(() => createMethodExtractor(pythonMethodConfig)).not.toThrow();
+  });
+
+  it('accepts all currently registered language configs', () => {
+    const configs: MethodExtractionConfig[] = [
+      javaMethodConfig,
+      kotlinMethodConfig,
+      csharpMethodConfig,
+      typescriptMethodConfig,
+      javascriptMethodConfig,
+      cppMethodConfig,
+      pythonMethodConfig,
+      rubyMethodConfig,
+      rustMethodConfig,
+      dartMethodConfig,
+      phpMethodConfig,
+      swiftMethodConfig,
+      goMethodConfig,
+    ];
+    for (const cfg of configs) {
+      expect(
+        () => createMethodExtractor(cfg),
+        `config for ${cfg.language} must construct cleanly`,
+      ).not.toThrow();
+    }
+  });
+
+  // Edge case — explicit empty Set is the documented opt-out convention.
+
+  it('allows explicit opt-out via staticOwnerTypes: new Set() (empty Set)', () => {
+    const config = makeStubConfig({
+      typeDeclarationNodes: ['companion_object'],
+      staticOwnerTypes: new Set(), // explicit opt-out: "yes I know, I handle static-ness elsewhere"
+    });
+    expect(() => createMethodExtractor(config)).not.toThrow();
+  });
+});
