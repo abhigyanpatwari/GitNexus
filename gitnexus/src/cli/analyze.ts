@@ -32,13 +32,15 @@ function ensureHeap(): boolean {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
-  const flags = [HEAP_FLAG];
-  if (!nodeOpts.includes('--stack-size')) flags.push(STACK_FLAG);
+  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+,
+  // so pass it only as a direct CLI argument, not via the environment.
+  const cliFlags = [HEAP_FLAG];
+  if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   try {
-    execFileSync(process.execPath, [...flags, ...process.argv.slice(1)], {
+    execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
       stdio: 'inherit',
-      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${flags.join(' ')}`.trim() },
+      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
   } catch (e: any) {
     process.exitCode = e.status ?? 1;

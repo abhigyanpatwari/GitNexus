@@ -5,17 +5,12 @@ import os from 'os';
 import fs from 'fs';
 
 describe('--skip-git CLI flag', () => {
-  // Vitest forks pool may inject --stack-size= into NODE_OPTIONS, which Node
-  // rejects in child processes.  Strip it so spawned `node` invocations work.
-  const cleanEnv = { ...process.env, NODE_OPTIONS: '' };
-
   it('Commander maps --skip-git to options.skipGit (not --no-git inversion)', () => {
     // Verify the CLI defines --skip-git and --skip-agents-md in analyze help.
     const helpOutput = execSync('node dist/cli/index.js analyze --help', {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
       timeout: 10000,
-      env: cleanEnv,
     });
 
     expect(helpOutput).toContain('--skip-git');
@@ -32,7 +27,6 @@ describe('--skip-git CLI flag', () => {
         cwd: path.resolve(__dirname, '../..'),
         encoding: 'utf8',
         timeout: 10000,
-        env: cleanEnv,
       });
       // Should not reach here
       expect.unreachable('Should have exited with non-zero');
