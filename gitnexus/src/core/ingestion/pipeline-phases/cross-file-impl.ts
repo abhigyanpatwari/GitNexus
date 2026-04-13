@@ -56,7 +56,7 @@ export async function runCrossFileBindingPropagation(
   const { levels, cycleCount } = topologicalLevelSort(ctx.importMap);
 
   if (isDev && cycleCount > 0) {
-    console.log(`🔄 ${cycleCount} files in import cycles (skipped for cross-file propagation)`);
+    console.log(`🔄 ${cycleCount} files in import cycles (processed last in undefined order)`);
   }
 
   let filesWithGaps = 0;

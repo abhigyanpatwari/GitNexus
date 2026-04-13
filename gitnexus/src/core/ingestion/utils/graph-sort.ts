@@ -18,7 +18,8 @@ export type IndependentFileGroup = readonly string[];
  * Groups files by topological level using Kahn's algorithm.
  *
  * Files in the same level have no mutual dependencies — safe to process in parallel.
- * Files in import cycles are returned as a final group (no cross-cycle propagation).
+ * Files involved in import cycles are appended as a final level and processed
+ * last in an undefined order (best-effort propagation, no ordering guarantees).
  *
  * @param importMap  Map of file → set of files it imports
  * @returns          Levels (topologically ordered groups) and count of files in cycles

@@ -1,7 +1,7 @@
 /**
  * MRO (Method Resolution Order) Processor
  *
- * Walks the inheritance DAG (EXTENDS/IMPLEMENTS edges), collects methods from
+ * Walks the inheritance graph (EXTENDS/IMPLEMENTS edges), collects methods from
  * each ancestor via HAS_METHOD edges, detects method-name collisions across
  * parents, and applies language-specific resolution rules to emit METHOD_OVERRIDES edges.
  *

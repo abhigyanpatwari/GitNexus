@@ -60,6 +60,10 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       'structure',
     );
 
+    // Populate totalFiles on the shared context so downstream phases
+    // can read it for progress reporting without declaring a `parse` dependency.
+    ctx.totalFiles = totalFiles;
+
     const result = await runChunkedParseAndResolve(
       ctx.graph,
       scannedFiles,

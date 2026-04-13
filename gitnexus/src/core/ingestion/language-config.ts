@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { ImportConfigs } from './import-resolvers/types.js';
 
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './utils/env.js';
 
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES

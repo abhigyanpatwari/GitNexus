@@ -7,7 +7,7 @@
  *   - A nested SymbolTable (file + callable name indexes) wrapped so
  *     that `add()` fans out into the registries via the dispatch table
  *
- * ## DAG direction
+ * ## Dependency direction
  *
  *     gitnexus-shared (NodeLabel)             — leaf
  *          ↑

@@ -6,7 +6,7 @@ import {
 } from '../../src/core/ingestion/model/semantic-model.js';
 
 describe('SymbolTable', () => {
-  // SM-23 DAG: SymbolTable is now a pure leaf with no registry knowledge.
+  // SM-23: SymbolTable is now a pure leaf with no registry knowledge.
   // Tests that exercise owner-scoped lookups (lookupClassByName,
   // lookupMethodByOwner, lookupFieldByOwner, lookupClassByQualifiedName,
   // lookupImplByName) must go through SemanticModel which composes

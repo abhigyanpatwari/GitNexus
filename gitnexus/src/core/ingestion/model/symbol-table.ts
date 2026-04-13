@@ -1,8 +1,8 @@
 /**
  * Symbol Table — file-indexed + callable-name symbol storage.
  *
- * This module is a PURE LEAF in the ingestion DAG. It owns two orthogonal
- * O(1) indexes:
+ * This module is a PURE LEAF in the ingestion dependency hierarchy. It owns
+ * two orthogonal O(1) indexes:
  *
  *   1. fileIndex      — Map<filePath, Map<name, SymbolDefinition[]>>
  *                       for same-file lookups (Tier 1 resolution)
@@ -10,12 +10,12 @@
  *                       for name-keyed callable lookups (Tier 3 widen)
  *
  * SymbolTable deliberately knows NOTHING about the owner-scoped registries
- * (types, methods, fields) that sit above it in the DAG. Those registries
- * live in `model/` and depend on SymbolTable, not the other way around.
- * {@link createSemanticModel} composes this pure SymbolTable with the
+ * (types, methods, fields) that sit above it in the dependency graph. Those
+ * registries live in `model/` and depend on SymbolTable, not the other way
+ * around. {@link createSemanticModel} composes this pure SymbolTable with the
  * registries and wraps `add()` to fan out registrations into both layers.
  *
- * DAG direction (strictly enforced):
+ * Dependency direction (strictly enforced):
  *
  *     gitnexus-shared (NodeLabel)       — leaf type
  *          ↑
@@ -31,7 +31,7 @@
  *
  * No arrow ever points downward from this file. If you are tempted to
  * import from `./model/` here, you are going the wrong way — move the
- * logic up the DAG instead.
+ * logic up the dependency chain instead.
  */
 
 import type { NodeLabel } from 'gitnexus-shared';

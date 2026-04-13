@@ -393,7 +393,7 @@ describe('heritage false-positive guard', () => {
 
 // These two describe blocks (`lookupExactFull` and `SM-16: SymbolTable.getFiles()`)
 // intentionally use `createSymbolTable()` directly instead of going through
-// `createSemanticModel()`. The behaviors under test belong to the pure DAG
+// `createSemanticModel()`. The behaviors under test belong to the pure
 // leaf — file/callable indexes, getFiles iterator — and do not involve the
 // owner-scoped registries. Testing them on the bare leaf keeps the unit
 // isolated. Do not migrate these blocks to createSemanticModel() "for
@@ -863,7 +863,7 @@ describe('SM-16: Tier 3 global — lookupClassByName + lookupImplByName + lookup
   });
 
   it('Rust: Impl is separate from Class-like types — does not affect heritage (lookupClassByName)', () => {
-    // SM-23 DAG: registry lookups go through SemanticModel; SymbolTable
+    // SM-23: registry lookups go through SemanticModel; SymbolTable
     // is a pure leaf with no registry knowledge.
     const model = createSemanticModel();
     model.symbols.add('src/user.rs', 'User', 'Struct:src/user.rs:User', 'Struct');

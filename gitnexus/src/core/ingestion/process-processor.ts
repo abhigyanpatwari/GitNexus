@@ -15,8 +15,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './utils/env.js';
 
 // ============================================================================
 // CONFIGURATION

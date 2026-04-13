@@ -96,7 +96,14 @@ export async function runPipeline(
       console.log(`▶ Phase: ${phase.name}`);
     }
 
-    const output = await phase.execute(ctx, results);
+    // Only expose declared dependencies — prevents hidden coupling to undeclared phases.
+    const declaredDeps = new Map<string, PhaseResult<unknown>>();
+    for (const depName of phase.deps) {
+      const depResult = results.get(depName);
+      if (depResult) declaredDeps.set(depName, depResult);
+    }
+
+    const output = await phase.execute(ctx, declaredDeps);
     const durationMs = Date.now() - start;
 
     results.set(phase.name, {

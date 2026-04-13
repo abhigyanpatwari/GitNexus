@@ -11,5 +11,6 @@
  *  Shared between parse-impl.ts and cross-file-impl.ts. */
 export const AST_CACHE_CAP = 50;
 
-/** Whether we're running in development mode (enables verbose console logging). */
-export const isDev = process.env.NODE_ENV === 'development';
+// Re-export isDev from its canonical location in utils/env.ts so that
+// existing phase-file imports (`from './constants.js'`) continue to work.
+export { isDev } from '../utils/env.js';

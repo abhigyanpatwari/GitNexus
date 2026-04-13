@@ -10,8 +10,6 @@
  */
 
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
-import { getPhaseOutput } from './types.js';
-import type { ParseOutput } from './parse.js';
 import { computeMRO } from '../mro-processor.js';
 import { isDev } from './constants.js';
 
@@ -24,13 +22,13 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile', 'parse'],
+  deps: ['crossFile'],
 
   async execute(
     ctx: PipelineContext,
-    deps: ReadonlyMap<string, PhaseResult<unknown>>,
+    _deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<MROOutput> {
-    const { totalFiles } = getPhaseOutput<ParseOutput>(deps, 'parse');
+    const { totalFiles } = ctx;
 
     ctx.onProgress({
       phase: 'enriching',

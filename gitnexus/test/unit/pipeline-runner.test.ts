@@ -14,6 +14,7 @@ function makeCtx(): PipelineContext {
     graph: createKnowledgeGraph(),
     onProgress: () => {},
     pipelineStart: Date.now(),
+    totalFiles: 0,
   };
 }
 
@@ -186,6 +187,37 @@ describe('runPipeline', () => {
     const results = await runPipeline(phases, makeCtx());
     expect(results.get('step4')?.output).toBe(4);
     expect(order).toEqual(['step0', 'step1', 'step2', 'step3', 'step4']);
+  });
+
+  it('only exposes declared deps to each phase', async () => {
+    const phaseA: PipelinePhase<string> = {
+      name: 'a',
+      deps: [],
+      async execute() {
+        return 'resultA';
+      },
+    };
+
+    const phaseB: PipelinePhase<string> = {
+      name: 'b',
+      deps: ['a'],
+      async execute() {
+        return 'resultB';
+      },
+    };
+
+    // C depends on B but not A — should not see A's result
+    const phaseC: PipelinePhase<string> = {
+      name: 'c',
+      deps: ['b'],
+      async execute(_ctx, deps) {
+        expect(deps.has('b')).toBe(true);
+        expect(deps.has('a')).toBe(false);
+        return 'resultC';
+      },
+    };
+
+    await runPipeline([phaseA, phaseB, phaseC], makeCtx());
   });
 });
 

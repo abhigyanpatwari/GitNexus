@@ -24,8 +24,7 @@ import type {
 } from './import-resolvers/types.js';
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './utils/env.js';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
