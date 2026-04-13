@@ -25,7 +25,7 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile'],
+  deps: ['crossFile', 'parse'],
 
   async execute(
     ctx: PipelineContext,

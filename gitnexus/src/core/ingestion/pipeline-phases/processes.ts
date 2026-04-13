@@ -26,7 +26,7 @@ export interface ProcessesOutput {
 
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
-  deps: ['communities', 'routes', 'tools'],
+  deps: ['communities', 'routes', 'tools', 'parse'],
 
   async execute(
     ctx: PipelineContext,

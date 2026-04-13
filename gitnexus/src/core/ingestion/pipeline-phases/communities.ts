@@ -22,7 +22,7 @@ export interface CommunitiesOutput {
 
 export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
   name: 'communities',
-  deps: ['mro'],
+  deps: ['mro', 'parse'],
 
   async execute(
     ctx: PipelineContext,
