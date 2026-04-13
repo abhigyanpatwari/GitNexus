@@ -87,7 +87,13 @@ function buildLineOffsets(content: string): number[] {
   return offsets;
 }
 
-/** Binary search for 0-based line number at a given character offset (O(log n)). */
+/**
+ * Binary search for 0-based line number at a given character offset.
+ *
+ * Returns the number of newlines that occur before `offset` in the content,
+ * which is the 0-based line number. When `offset` is beyond the last newline,
+ * returns `lineOffsets.length` (i.e., the last line index).
+ */
 function lineNumberAtOffset(lineOffsets: number[], offset: number): number {
   let lo = 0;
   let hi = lineOffsets.length;
