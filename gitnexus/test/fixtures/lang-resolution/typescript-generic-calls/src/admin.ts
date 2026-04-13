@@ -1,11 +1,7 @@
-import { verifyToken } from './token';
+import { verifyToken, BasePayload } from './token';
 
 interface AdminPayload extends BasePayload {
   role: string;
-}
-
-interface BasePayload {
-  sub: string;
 }
 
 export async function authenticateAdmin(token: string): Promise<AdminPayload> {
