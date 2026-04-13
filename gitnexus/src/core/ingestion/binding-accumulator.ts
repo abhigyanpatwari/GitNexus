@@ -36,9 +36,12 @@
  * or (b) post-process worker-path entries through a follow-up resolution
  * pass after the main-thread `SymbolTable` is complete.
  *
- * **Lifecycle contract**: `append → finalize → consume → dispose`. See
- * `finalize()` and `dispose()` for the state machine. Disposal is
- * orthogonal to finalization: either order is legal.
+ * **Lifecycle contract**: single-use — `append* → finalize → consume → dispose`.
+ * After `dispose()` the accumulator is permanently dead: any mutating call
+ * (`appendFile`) throws, and read methods return empty/undefined as if the
+ * accumulator had never been appended to. The instance is not recyclable;
+ * construct a new one for a new pipeline run. Finalization and disposal are
+ * orthogonal state dimensions and may be invoked in either order.
  */
 
 export interface BindingEntry {
@@ -176,16 +179,15 @@ export class BindingAccumulator {
         '[BindingAccumulator] appendFile after finalize — no further appends allowed',
       );
     }
+    // Single-use lifecycle: once disposed, the accumulator is dead. A
+    // post-dispose append almost always indicates a missed wiring step
+    // (the consumer is reading state that was supposed to be released),
+    // so convert the silent use-after-dispose into a loud failure.
+    if (this._disposed) {
+      throw new Error('BindingAccumulator: use after dispose');
+    }
     if (entries.length === 0) {
       return;
-    }
-    // Contract consistency: if this accumulator was previously disposed
-    // without being finalized, `dispose()` is documented to leave it
-    // "behaving like a fresh one" for subsequent appends. Clear the
-    // `_disposed` flag here so the `disposed` getter tracks the actual
-    // live state, not a stale signal from the prior lifecycle cycle.
-    if (this._disposed) {
-      this._disposed = false;
     }
     // Note on the file-scope-only invariant:
     // The accumulator does NOT reject function-scope entries at this
@@ -259,28 +261,30 @@ export class BindingAccumulator {
 
   /**
    * Release the accumulator's heap footprint. Clears both internal storage
-   * maps and resets `_totalBindings` to zero. Idempotent and orthogonal to
-   * `finalize()` — calling `dispose()` does not change the finalized state.
+   * maps and resets `_totalBindings` to zero. Idempotent — calling twice
+   * is a no-op. Orthogonal to `finalize()` — calling `dispose()` does not
+   * change the finalized state.
    *
-   * Post-dispose contract: all read methods return empty/undefined state
-   * matching a never-appended-to accumulator. Specifically:
+   * **Single-use lifecycle.** This is a one-way terminal transition: the
+   * accumulator is not recyclable. Any subsequent `appendFile` call throws
+   * (`'BindingAccumulator: use after dispose'`), regardless of whether
+   * `finalize()` was called first. Post-dispose reads do not throw —
+   * they return empty/undefined state matching a never-appended-to
+   * accumulator:
    *   - `fileCount === 0`
    *   - `totalBindings === 0`
    *   - `files()` yields an empty iterator
    *   - `getFile(x)` returns `undefined` for all `x`
    *   - `fileScopeEntries(x)` returns `[]` for all `x`
+   *   - `fileScopeGet(x, y)` returns `undefined` for all `x, y`
    *   - `estimateMemoryBytes()` returns `0`
    *
-   * If `dispose()` is called **before** `finalize()`, subsequent `appendFile`
-   * calls succeed — the accumulator behaves like a fresh one. If called
-   * **after** `finalize()`, subsequent `appendFile` calls throw the existing
-   * "finalized" error.
-   *
-   * Lifecycle note: the pipeline disposes the accumulator after both Phase 9
-   * consumers (`processCallsFromExtracted`, `processAssignmentsFromExtracted`)
-   * and the ExportedTypeMap enrichment loop have completed, so the heap is
-   * released before Phase 14 (`runCrossFileBindingPropagation`) and
-   * `runGraphAnalysisPhases` begin their long-running work.
+   * Lifecycle note: the pipeline disposes the accumulator inside the
+   * `finally` of the `crossFile` phase, which is scheduled after every
+   * other accumulator consumer (Phase 9 call/assignment processing and
+   * the ExportedTypeMap enrichment loop). The dispose call therefore
+   * runs once, on both the happy path and the throw path of the
+   * crossFile phase.
    */
   dispose(): void {
     this._allByFile.clear();

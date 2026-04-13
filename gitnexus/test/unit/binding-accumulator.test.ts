@@ -593,18 +593,16 @@ describe('BindingAccumulator', () => {
       expect(acc.totalBindings).toBe(0);
     });
 
-    it('works before finalize() — accumulator behaves like a fresh one after dispose', () => {
+    it('appendFile after dispose throws with the expected message', () => {
+      // Single-use lifecycle: dispose is terminal. Any subsequent append is
+      // a programming error (the consumer is treating a released accumulator
+      // as if it were live). Convert the silent failure into a loud one.
       const acc = new BindingAccumulator();
       acc.appendFile('src/a.ts', [{ scope: '', varName: 'x', typeName: 'X' }]);
       acc.dispose();
-      // Not finalized, so appends still work post-dispose.
       expect(() =>
         acc.appendFile('src/b.ts', [{ scope: '', varName: 'y', typeName: 'Y' }]),
-      ).not.toThrow();
-      expect(acc.fileCount).toBe(1);
-      expect(acc.totalBindings).toBe(1);
-      expect(acc.getFile('src/b.ts')).toHaveLength(1);
-      expect(acc.getFile('src/a.ts')).toBeUndefined();
+      ).toThrow('BindingAccumulator: use after dispose');
     });
 
     it('works after finalize() — append still throws, reads return empty', () => {
@@ -612,11 +610,13 @@ describe('BindingAccumulator', () => {
       acc.appendFile('src/a.ts', [{ scope: '', varName: 'x', typeName: 'X' }]);
       acc.finalize();
       acc.dispose();
-      // Finalized, so appends throw even post-dispose.
+      // Finalized takes precedence — the finalize check runs first in
+      // appendFile, so the error is the "finalize" one, not the
+      // "use after dispose" one.
       expect(() =>
         acc.appendFile('src/b.ts', [{ scope: '', varName: 'y', typeName: 'Y' }]),
       ).toThrow(/finalize/);
-      // But reads return empty.
+      // Reads still return empty.
       expect(acc.fileCount).toBe(0);
       expect(acc.totalBindings).toBe(0);
       expect(acc.getFile('src/a.ts')).toBeUndefined();
