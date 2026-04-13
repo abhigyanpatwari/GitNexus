@@ -285,6 +285,7 @@ export const loadGraphToLbug = async (
       if (!ws) {
         const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
         ws = createWriteStream(pairCsvPath, 'utf-8');
+        ws.setMaxListeners(50);
         ws.write(relHeader + '\n');
         pairWriteStreams.set(pairKey, ws);
         relsByPairMeta.set(pairKey, { csvPath: pairCsvPath, rows: 0 });
