@@ -541,11 +541,11 @@ describe('computeMRO', () => {
     });
 
     it('handles very deep single-inheritance chain without stack overflow', () => {
-      // Chain of 500 classes: C0 ← C1 ← C2 ← ... ← C499
+      // Chain of 2000 classes: C0 ← C1 ← C2 ← ... ← C1999
       // The iterative c3Linearize handles this without blowing the stack.
-      // (The recursive version overflows at ~10K+ levels.)
+      // (The recursive version overflows at ~1K–5K levels depending on platform.)
       const graph = createKnowledgeGraph();
-      const DEPTH = 500;
+      const DEPTH = 2000;
       for (let i = 0; i < DEPTH; i++) {
         addClass(graph, `C${i}`, 'python');
       }

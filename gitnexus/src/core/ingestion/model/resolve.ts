@@ -120,14 +120,12 @@ export function c3Linearize(
     }
 
     // ── MERGE phase ───────────────────────────────────────────────
+    // directParents is guaranteed non-empty here — the ENTER phase already
+    // handles the empty-parents case and pops the frame before switching
+    // to MERGE.
     stack.pop();
 
-    const directParents = parentMap.get(frame.id);
-    if (!directParents || directParents.length === 0) {
-      visiting.delete(frame.id);
-      cache.set(frame.id, []);
-      continue;
-    }
+    const directParents = parentMap.get(frame.id)!;
 
     // Build parent linearizations from cache
     const parentLinearizations: string[][] = [];

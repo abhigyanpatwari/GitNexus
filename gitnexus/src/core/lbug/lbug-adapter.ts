@@ -301,7 +301,11 @@ export const loadGraphToLbug = async (
       }
     });
     rl.on('close', resolve);
-    rl.on('error', reject);
+    rl.on('error', (err) => {
+      // Destroy all open write streams to avoid resource leaks
+      for (const ws of pairWriteStreams.values()) ws.destroy();
+      reject(err);
+    });
   });
 
   // Close all per-pair write streams before COPY
@@ -319,7 +323,7 @@ export const loadGraphToLbug = async (
 
     let pairIdx = 0;
     let failedPairEdges = 0;
-    const failedPairCsvPaths: string[] = [];
+    const failedPairCsvPaths = new Set<string>();
 
     for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPairMeta) {
       pairIdx++;
@@ -346,18 +350,18 @@ export const loadGraphToLbug = async (
             `${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`,
           );
           failedPairEdges += rows;
-          failedPairCsvPaths.push(pairCsvPath);
+          failedPairCsvPaths.add(pairCsvPath);
         }
       }
       // Only delete if not in failedPairCsvPaths (needed for fallback)
-      if (!failedPairCsvPaths.includes(pairCsvPath)) {
+      if (!failedPairCsvPaths.has(pairCsvPath)) {
         try {
           await fs.unlink(pairCsvPath);
         } catch {}
       }
     }
 
-    if (failedPairCsvPaths.length > 0) {
+    if (failedPairCsvPaths.size > 0) {
       log(`Inserting ${failedPairEdges} edges individually (missing schema pairs)`);
       // Read failed pair files and merge for fallback inserts
       const allLines: string[] = [relHeader];
