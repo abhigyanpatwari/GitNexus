@@ -14,7 +14,6 @@ function makeCtx(): PipelineContext {
     graph: createKnowledgeGraph(),
     onProgress: () => {},
     pipelineStart: Date.now(),
-    totalFiles: 0,
   };
 }
 

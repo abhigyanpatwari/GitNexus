@@ -32,12 +32,6 @@ export interface PipelineContext {
   readonly options?: PipelineOptions;
   /** Pipeline start timestamp (for elapsed-time logging). */
   readonly pipelineStart: number;
-  /**
-   * Total files discovered during the structure/parse phases.
-   * Set once by the parse phase; subsequent phases read it for progress reporting.
-   * Avoids forcing late-stage phases to declare a `parse` dependency just to read this count.
-   */
-  totalFiles: number;
 }
 
 // ── Phase result wrapper ───────────────────────────────────────────────────

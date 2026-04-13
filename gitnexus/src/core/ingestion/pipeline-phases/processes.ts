@@ -14,6 +14,7 @@ import { getPhaseOutput } from './types.js';
 import type { CommunitiesOutput } from './communities.js';
 import type { RoutesOutput } from './routes.js';
 import type { ToolsOutput } from './tools.js';
+import type { ParseOutput } from './parse.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { isDev } from './constants.js';
@@ -24,13 +25,13 @@ export interface ProcessesOutput {
 
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
-  deps: ['communities', 'routes', 'tools'],
+  deps: ['communities', 'routes', 'tools', 'parse'],
 
   async execute(
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ProcessesOutput> {
-    const { totalFiles } = ctx;
+    const { totalFiles } = getPhaseOutput<ParseOutput>(deps, 'parse');
     const { communityResult } = getPhaseOutput<CommunitiesOutput>(deps, 'communities');
     const { routeRegistry } = getPhaseOutput<RoutesOutput>(deps, 'routes');
     const { toolDefs } = getPhaseOutput<ToolsOutput>(deps, 'tools');

@@ -10,6 +10,8 @@
  */
 
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
+import { getPhaseOutput } from './types.js';
+import type { ParseOutput } from './parse.js';
 import { processCommunities, type CommunityDetectionResult } from '../community-processor.js';
 import { isDev } from './constants.js';
 
@@ -19,13 +21,13 @@ export interface CommunitiesOutput {
 
 export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
   name: 'communities',
-  deps: ['mro'],
+  deps: ['mro', 'parse'],
 
   async execute(
     ctx: PipelineContext,
-    _deps: ReadonlyMap<string, PhaseResult<unknown>>,
+    deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CommunitiesOutput> {
-    const { totalFiles } = ctx;
+    const { totalFiles } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     ctx.onProgress({
       phase: 'communities',

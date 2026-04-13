@@ -26,7 +26,6 @@ function makeCtx(): PipelineContext {
     graph: {} as PipelineContext['graph'],
     onProgress: () => {},
     pipelineStart: 0,
-    totalFiles: 0,
   };
 }
 

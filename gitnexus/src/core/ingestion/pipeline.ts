@@ -100,7 +100,6 @@ export const runPipelineFromRepo = async (
     onProgress,
     options,
     pipelineStart,
-    totalFiles: 0,
   });
 
   // Extract final results for the PipelineResult contract
