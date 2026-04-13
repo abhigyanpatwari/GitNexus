@@ -19,7 +19,6 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
-import type { ExportedTypeMap } from '../call-processor.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
 import type {
   ExtractedFetchCall,
@@ -32,7 +31,17 @@ import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 
 export interface ParseOutput {
-  exportedTypeMap: ExportedTypeMap;
+  /**
+   * Read-only snapshot of exported type bindings keyed by file path.
+   *
+   * Fully populated by `parse` (sequential path via `enrichExportedTypeMap`
+   * and worker path via `buildExportedTypeMapFromGraph` in the main thread).
+   * Downstream phases — including `crossFile` — receive it as a true
+   * `ReadonlyMap`; `crossFile` builds its own mutable working copy locally
+   * for per-file re-resolution writes, so this snapshot is never mutated
+   * after parse returns.
+   */
+  readonly exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly allFetchCalls: readonly ExtractedFetchCall[];
   readonly allExtractedRoutes: readonly ExtractedRoute[];
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];

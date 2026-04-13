@@ -13,7 +13,6 @@ import {
   buildImportedReturnTypes,
   buildImportedRawReturnTypes,
   type ExportedTypeMap,
-  buildExportedTypeMapFromGraph,
 } from '../call-processor.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
@@ -39,21 +38,24 @@ const MAX_CROSS_FILE_REPROCESS = 2000;
 export async function runCrossFileBindingPropagation(
   graph: KnowledgeGraph,
   ctx: ReturnType<typeof createResolutionContext>,
-  exportedTypeMap: ExportedTypeMap,
+  parseExportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>,
   allPathSet: ReadonlySet<string>,
   totalFiles: number,
   repoPath: string,
   pipelineStart: number,
   onProgress: (progress: PipelineProgress) => void,
 ): Promise<number> {
-  // For the worker path, buildTypeEnv runs inside workers without SymbolTable,
-  // so exported bindings must be collected from graph + SymbolTable in main thread.
-  if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
-    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
-    for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
-  }
+  if (parseExportedTypeMap.size === 0 || ctx.namedImportMap.size === 0) return 0;
 
-  if (exportedTypeMap.size === 0 || ctx.namedImportMap.size === 0) return 0;
+  // Build a local mutable working copy. Per-file re-resolution below mutates
+  // this map (each `processCalls` writes that file's exports back into it so
+  // later iterations in the same level/loop can resolve transitive bindings).
+  // Owning a local copy here keeps `ParseOutput.exportedTypeMap` truly
+  // read-only at the phase boundary — no cast, no shared-mutable handoff.
+  const exportedTypeMap: ExportedTypeMap = new Map();
+  for (const [fp, exports] of parseExportedTypeMap) {
+    exportedTypeMap.set(fp, new Map(exports));
+  }
 
   const { levels, cycleCount } = topologicalLevelSort(ctx.importMap);
 
@@ -93,6 +95,14 @@ export async function runCrossFileBindingPropagation(
     return 0;
   }
 
+  // Intentionally reports `phase: 'parsing'` rather than a separate
+  // 'crossFile' phase: cross-file re-resolution is logically a continuation of
+  // the parsing/resolution work and is bucketed under "parsing" in any
+  // telemetry that groups events by phase name. Kept consistent with the
+  // upstream `parse` phase's progress events so the UI shows one continuous
+  // progress segment instead of a phase flicker. If a future change splits
+  // this out into its own phase, also rename `parse-impl.ts` per-chunk
+  // progress events accordingly.
   onProgress({
     phase: 'parsing',
     percent: 82,

@@ -5,14 +5,16 @@
  * happy path:
  *   1. gapRatio < CROSS_FILE_SKIP_THRESHOLD → returns 0 without reprocess.
  *   2. MAX_CROSS_FILE_REPROCESS cap → outer level loop breaks.
- *   3. exportedTypeMap empty + graph has nodes → fallback populates map.
+ *   3. parse-supplied exportedTypeMap is NEVER mutated by crossFile (cross
+ *      file builds its own local working copy for re-resolution writes).
  *   4. namedImportMap.size === 0 → returns 0 immediately.
  *
  * Note: `processCalls`, `readFileContents`, and `isLanguageAvailable` are
  * mocked so the test doesn't require tree-sitter or filesystem access.
- * `buildExportedTypeMapFromGraph`, `buildImportedReturnTypes`, and
- * `buildImportedRawReturnTypes` are preserved via `importOriginal` so the
- * graph-fallback branch (scenario 3) exercises real code.
+ * `buildImportedReturnTypes` and `buildImportedRawReturnTypes` are preserved
+ * via `importOriginal`. The graph-fallback enrichment that used to live here
+ * was moved into parse-impl's `runChunkedParseAndResolve` so the parse phase
+ * hands crossFile a fully-populated, truly read-only map.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -119,54 +121,45 @@ describe('runCrossFileBindingPropagation', () => {
     expect(processCallsMock).not.toHaveBeenCalled();
   });
 
-  it('runs buildExportedTypeMapFromGraph fallback when exportedTypeMap empty but graph populated', async () => {
+  it('does not mutate the parse-supplied exportedTypeMap (works on a local copy)', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();
 
-    // Populate graph with an exported symbol that has a resolvable
-    // returnType via the symbol table — this is what
-    // buildExportedTypeMapFromGraph needs to emit an entry.
-    ctx.model.symbols.add('upstream.ts', 'getUser', 'Function:upstream.ts:getUser', 'Function', {
-      returnType: 'User',
-    });
-    graph.addNode({
-      id: 'Function:upstream.ts:getUser',
-      label: 'Function',
-      properties: {
-        name: 'getUser',
-        filePath: 'upstream.ts',
-        startLine: 1,
-        endLine: 5,
-        isExported: true,
-      },
-    });
+    // Seed a single upstream export and a downstream importer so the gap
+    // ratio crosses the skip threshold and processCalls (mocked) is invoked.
+    const parseExports: ExportedTypeMap = new Map([['upstream.ts', new Map([['User', 'User']])]]);
+    const parseExportsSnapshot = new Map(
+      Array.from(parseExports, ([k, v]) => [k, new Map(v)] as const),
+    );
 
-    // Downstream imports the symbol but under a name that the fallback
-    // won't match → gap detection finds no gaps → function returns 0,
-    // but NOT before the fallback has populated exportedTypeMap.
     const bindings = new Map();
-    bindings.set('getUser', { sourcePath: 'upstream.ts', exportedName: 'getUser' });
+    bindings.set('User', { sourcePath: 'upstream.ts', exportedName: 'User' });
     ctx.namedImportMap.set('downstream.ts', bindings);
-
-    const exportedTypeMap: ExportedTypeMap = new Map(); // EMPTY — triggers fallback
-
-    // totalFiles large enough that single gap < threshold (3 needed for 100)
-    const totalFiles = 100;
+    ctx.importMap.set('upstream.ts', new Set());
+    ctx.importMap.set('downstream.ts', new Set(['upstream.ts']));
 
     await runCrossFileBindingPropagation(
       graph,
       ctx,
-      exportedTypeMap,
+      parseExports,
       new Set(['downstream.ts', 'upstream.ts']),
-      totalFiles,
+      10,
       '/repo',
       Date.now(),
       () => {},
     );
 
-    // The fallback populated exportedTypeMap with the graph-derived entry.
-    expect(exportedTypeMap.size).toBeGreaterThan(0);
-    expect(exportedTypeMap.get('upstream.ts')?.get('getUser')).toBe('User');
+    // Outer map identity preserved, sizes unchanged, inner Maps unchanged —
+    // crossFile must operate on its own working copy.
+    expect(parseExports.size).toBe(parseExportsSnapshot.size);
+    for (const [k, v] of parseExportsSnapshot) {
+      const after = parseExports.get(k);
+      expect(after).toBeDefined();
+      expect(after!.size).toBe(v.size);
+      for (const [innerK, innerV] of v) {
+        expect(after!.get(innerK)).toBe(innerV);
+      }
+    }
   });
 
   it('caps processing at MAX_CROSS_FILE_REPROCESS (2000)', async () => {

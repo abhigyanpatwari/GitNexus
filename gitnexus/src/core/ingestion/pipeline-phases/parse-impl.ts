@@ -30,6 +30,7 @@ import {
   processAssignmentsFromExtracted,
   processRoutesFromExtracted,
   seedCrossFileReceiverTypes,
+  buildExportedTypeMapFromGraph,
   type ExportedTypeMap,
 } from '../call-processor.js';
 import { buildHeritageMap } from '../model/heritage-map.js';
@@ -233,6 +234,12 @@ export async function runChunkedParseAndResolve(
   );
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
+  // Tracks whether per-chunk or fallback wildcard-binding synthesis already
+  // ran, so the unconditional final call below can be skipped when redundant.
+  // synthesizeWildcardImportBindings is graph-global; once any chunk runs it
+  // after parsing wildcard files, later non-wildcard chunks add no work for
+  // it, and later wildcard chunks re-run it themselves.
+  let hasSynthesized = false;
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
@@ -299,7 +306,10 @@ export async function runChunkedParseAndResolve(
           repoPath,
           importCtx,
         );
-        if (chunkNeedsSynthesis[chunkIdx]) synthesizeWildcardImportBindings(graph, ctx);
+        if (chunkNeedsSynthesis[chunkIdx]) {
+          synthesizeWildcardImportBindings(graph, ctx);
+          hasSynthesized = true;
+        }
         if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
           const { enrichedCount } = seedCrossFileReceiverTypes(
             chunkWorkerData.calls,
@@ -448,7 +458,10 @@ export async function runChunkedParseAndResolve(
   // Disposal of the accumulator remains with `crossFile` (owned by U2). We do
   // NOT call `bindingAccumulator.dispose()` here.
   try {
-    if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
+    if (sequentialChunkPaths.length > 0) {
+      synthesizeWildcardImportBindings(graph, ctx);
+      hasSynthesized = true;
+    }
     const allSequentialHeritage: ExtractedHeritage[] = [];
     const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
     for (const chunkPaths of sequentialChunkPaths) {
@@ -533,11 +546,24 @@ export async function runChunkedParseAndResolve(
     }
   }
 
-  const synthesized = synthesizeWildcardImportBindings(graph, ctx);
-  if (isDev && synthesized > 0) {
-    console.log(
-      `🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`,
-    );
+  if (!hasSynthesized) {
+    const synthesized = synthesizeWildcardImportBindings(graph, ctx);
+    if (isDev && synthesized > 0) {
+      console.log(
+        `🔗 Synthesized ${synthesized} additional wildcard import bindings (Go/Ruby/C++/Swift/Python)`,
+      );
+    }
+  }
+
+  // Worker-path enrichment: if exportedTypeMap is empty (e.g. the worker pool
+  // built TypeEnv inside workers without access to SymbolTable), reconstruct
+  // the map from graph nodes + SymbolTable here in the main thread before
+  // handing the (now read-only) map to downstream phases. Doing it here means
+  // crossFile receives a fully-populated map and never needs to mutate it for
+  // initial-graph enrichment.
+  if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
+    const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
+    for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
 
   allPathObjects.length = 0;
