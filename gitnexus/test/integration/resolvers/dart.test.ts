@@ -521,10 +521,7 @@ describe.skipIf(!dartAvailable)('Dart await call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'dart-await-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-await-calls'), () => {});
   }, 60000);
 
   it('detects fetchUser and processData as functions', () => {
@@ -554,10 +551,7 @@ describe.skipIf(!dartAvailable)('Dart widget-tree call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'dart-widget-tree-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-widget-tree-calls'), () => {});
   }, 60000);
 
   it('detects buildHeader, buildBody, buildFooter as functions', () => {
