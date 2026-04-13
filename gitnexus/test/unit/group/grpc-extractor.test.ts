@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import * as path from 'node:path';
@@ -731,6 +731,120 @@ describe('resolveProtoConflict', () => {
 
   it('test_no_candidates_returns_null', () => {
     expect(resolveProtoConflict('Svc', 'src/main.go', [])).toBeNull();
+  });
+
+  it('test_all_zero_tie_returns_null', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const candidates = [
+      makeInfo('pkgA', 'totally/unrelated/a/svc.proto'),
+      makeInfo('pkgB', 'completely/different/b/svc.proto'),
+    ];
+    const result = resolveProtoConflict('Svc', 'src/main.go', candidates);
+    expect(result).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  it('test_positive_score_tie_returns_null', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Both candidates share `src/proto` with the source dir — equal shared runs.
+    const candidates = [
+      makeInfo('pkgA', 'src/proto/a/svc.proto'),
+      makeInfo('pkgB', 'src/proto/b/svc.proto'),
+    ];
+    const result = resolveProtoConflict('Svc', 'src/proto/main.go', candidates);
+    expect(result).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  it('test_three_way_zero_tie_returns_null', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const candidates = [
+      makeInfo('pkgA', 'aaa/svc.proto'),
+      makeInfo('pkgB', 'bbb/svc.proto'),
+      makeInfo('pkgC', 'ccc/svc.proto'),
+    ];
+    const result = resolveProtoConflict('Svc', 'src/main.go', candidates);
+    expect(result).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  it('test_unique_winner_among_ties', () => {
+    // Winner with shared run 2 (services/auth), two losers with score 0.
+    const candidates = [
+      makeInfo('winner', 'services/auth/proto/svc.proto'),
+      makeInfo('loserA', 'totally/unrelated/a/svc.proto'),
+      makeInfo('loserB', 'elsewhere/b/svc.proto'),
+    ];
+    const result = resolveProtoConflict('Svc', 'services/auth/src/server.ts', candidates);
+    expect(result?.package).toBe('winner');
+  });
+
+  it('test_ambiguous_emits_single_warn_with_service_and_paths', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const candidates = [
+      makeInfo('pkgA', 'totally/unrelated/a/svc.proto'),
+      makeInfo('pkgB', 'completely/different/b/svc.proto'),
+    ];
+    resolveProtoConflict('MyService', 'src/main.go', candidates);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toContain('MyService');
+    expect(msg).toContain('src/main.go');
+    expect(msg).toContain('totally/unrelated/a/svc.proto');
+    expect(msg).toContain('completely/different/b/svc.proto');
+    warnSpy.mockRestore();
+  });
+});
+
+describe('GrpcExtractor.extract ambiguous proto resolution', () => {
+  let tmpDir: string;
+  let extractor: GrpcExtractor;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-grpc-ambig-'));
+    extractor = new GrpcExtractor();
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeRepo = (repoPath: string): RepoHandle => ({
+    id: 'test-repo',
+    path: '',
+    repoPath,
+    storagePath: '',
+  });
+
+  it('test_ambiguous_short_name_across_unrelated_protos_yields_no_source_contract', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Two unrelated proto files defining the same short name `UserService` in
+    // unrelated directories, neither sharing path segments with the Go source.
+    await fsp.mkdir(path.join(tmpDir, 'billing-team', 'proto'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'billing-team', 'proto', 'user.proto'),
+      'package billing.v1;\nservice UserService { rpc GetUser (R) returns (R); }',
+    );
+    await fsp.mkdir(path.join(tmpDir, 'auth-team', 'proto'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'auth-team', 'proto', 'user.proto'),
+      'package auth.v1;\nservice UserService { rpc GetUser (R) returns (R); }',
+    );
+    // Consumer in an unrelated directory.
+    await fsp.mkdir(path.join(tmpDir, 'apps', 'gateway'), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, 'apps', 'gateway', 'client.go'),
+      'package main\nfunc init() { client := pb.NewUserServiceClient(conn) }',
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+    // No source-attributed contract for UserService should be emitted.
+    const sourceContracts = contracts.filter(
+      (c) => c.meta.source === 'go_client' && c.meta.service === 'UserService',
+    );
+    expect(sourceContracts).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 

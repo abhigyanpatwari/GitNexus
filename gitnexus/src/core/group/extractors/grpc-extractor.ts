@@ -314,7 +314,7 @@ export async function buildProtoMap(repoPath: string): Promise<Map<string, Proto
 }
 
 export function resolveProtoConflict(
-  _serviceName: string,
+  serviceName: string,
   sourceFilePath: string,
   candidates: ProtoServiceInfo[],
 ): ProtoServiceInfo | null {
@@ -322,17 +322,29 @@ export function resolveProtoConflict(
   if (candidates.length === 1) return candidates[0];
 
   const sourceDir = normalizeProtoPath(path.dirname(sourceFilePath));
-  let best = candidates[0];
-  let bestScore = -1;
-  for (const c of candidates) {
+  const scored = candidates.map((c) => {
     const protoDir = normalizeProtoPath(path.dirname(c.protoPath));
-    const sharedRun = longestSharedSegmentRun(sourceDir, protoDir);
-    if (sharedRun > bestScore) {
-      bestScore = sharedRun;
-      best = c;
-    }
+    return { candidate: c, score: longestSharedSegmentRun(sourceDir, protoDir) };
+  });
+
+  let maxScore = -1;
+  for (const s of scored) {
+    if (s.score > maxScore) maxScore = s.score;
   }
-  return best;
+  const winners = scored.filter((s) => s.score === maxScore);
+
+  // Path heuristic cannot uniquely identify a winner — refuse to guess.
+  // Ties (including all-zero ties) would otherwise silently merge unrelated
+  // services under a fabricated package-qualified contract id.
+  if (winners.length !== 1) {
+    const paths = candidates.map((c) => c.protoPath).join(', ');
+    console.warn(
+      `[grpc-extractor] Ambiguous proto resolution for service "${serviceName}" from ${sourceFilePath}: ${winners.length} candidates tied at score ${maxScore} among [${paths}] — skipping canonical contract`,
+    );
+    return null;
+  }
+
+  return winners[0].candidate;
 }
 
 export function serviceContractId(pkg: string, serviceName: string): string {
@@ -410,7 +422,8 @@ export class GrpcExtractor implements ContractExtractor {
         continue;
       }
       for (const d of detections) {
-        out.push(this.detectionToContract(d, rel, protoMap));
+        const contract = this.detectionToContract(d, rel, protoMap);
+        if (contract) out.push(contract);
       }
     }
 
@@ -428,9 +441,13 @@ export class GrpcExtractor implements ContractExtractor {
     d: GrpcDetection,
     filePath: string,
     protoMap: Map<string, ProtoServiceInfo[]>,
-  ): ExtractedContract {
-    const candidates = protoMap.get(d.serviceName);
-    const proto = resolveProtoConflict(d.serviceName, filePath, candidates ?? []);
+  ): ExtractedContract | null {
+    const candidates = protoMap.get(d.serviceName) ?? [];
+    const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
+    // If there were proto candidates but resolution was ambiguous, skip
+    // contract emission rather than fabricating a package-qualified id from
+    // an arbitrary candidate. resolveProtoConflict already warned.
+    if (candidates.length > 0 && proto === null) return null;
     const pkg = proto?.package ?? '';
     const cid = d.methodName
       ? contractId(pkg, d.serviceName, d.methodName)
