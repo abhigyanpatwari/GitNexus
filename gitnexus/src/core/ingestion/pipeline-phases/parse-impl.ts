@@ -431,74 +431,106 @@ export async function runChunkedParseAndResolve(
     await workerPool?.terminate();
   }
 
-  // Sequential fallback chunks
-  if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
-  const allSequentialHeritage: ExtractedHeritage[] = [];
-  const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
-  for (const chunkPaths of sequentialChunkPaths) {
-    const chunkContents = await readFileContents(repoPath, chunkPaths);
-    const chunkFiles = chunkPaths
-      .filter((p) => chunkContents.has(p))
-      .map((p) => ({ path: p, content: chunkContents.get(p)! }));
-    cachedSequentialChunkFiles.push(chunkFiles);
-    astCache = createASTCache(chunkFiles.length);
-    const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
-    for (const h of sequentialHeritage) allSequentialHeritage.push(h);
+  // Sequential fallback chunks.
+  //
+  // U6: wrap the fallback loop and the finalize/enrich steps in a try/finally
+  // so cleanup still runs on a mid-fallback throw. The `finally` guarantees:
+  //   1. `astCache.clear()` releases any tree-sitter trees held by the most
+  //      recently allocated per-chunk cache, mirroring the per-chunk
+  //      `astCache.clear()` calls on the happy path.
+  //   2. `bindingAccumulator.finalize()` runs before `crossFile` disposes the
+  //      accumulator downstream — callers that inspect partial TypeEnv state
+  //      (or consume it via `enrichExportedTypeMap` on a partial recovery)
+  //      still see a finalized accumulator.
+  //   3. `enrichExportedTypeMap` runs so any bindings already accumulated
+  //      are propagated into `exportedTypeMap` even if the fallback aborted.
+  //
+  // Disposal of the accumulator remains with `crossFile` (owned by U2). We do
+  // NOT call `bindingAccumulator.dispose()` here.
+  try {
+    if (sequentialChunkPaths.length > 0) synthesizeWildcardImportBindings(graph, ctx);
+    const allSequentialHeritage: ExtractedHeritage[] = [];
+    const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
+    for (const chunkPaths of sequentialChunkPaths) {
+      const chunkContents = await readFileContents(repoPath, chunkPaths);
+      const chunkFiles = chunkPaths
+        .filter((p) => chunkContents.has(p))
+        .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+      cachedSequentialChunkFiles.push(chunkFiles);
+      astCache = createASTCache(chunkFiles.length);
+      const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
+      for (const h of sequentialHeritage) allSequentialHeritage.push(h);
+      astCache.clear();
+    }
+    const sequentialHeritageMap =
+      allSequentialHeritage.length > 0
+        ? buildHeritageMap(allSequentialHeritage, ctx, getHeritageStrategyForLanguage)
+        : undefined;
+
+    for (let chunkIdx = 0; chunkIdx < sequentialChunkPaths.length; chunkIdx++) {
+      const chunkFiles = cachedSequentialChunkFiles[chunkIdx];
+      astCache = createASTCache(chunkFiles.length);
+      const rubyHeritage = await processCalls(
+        graph,
+        chunkFiles,
+        astCache,
+        ctx,
+        undefined,
+        exportedTypeMap,
+        undefined,
+        undefined,
+        undefined,
+        sequentialHeritageMap,
+        bindingAccumulator,
+      );
+      await processHeritage(graph, chunkFiles, astCache, ctx);
+      if (rubyHeritage.length > 0) {
+        await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+      }
+      const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
+      if (chunkFetchCalls.length > 0) {
+        for (const item of chunkFetchCalls) allFetchCalls.push(item);
+      }
+      for (const f of chunkFiles) {
+        extractORMQueriesInline(f.path, f.content, allORMQueries);
+      }
+      astCache.clear();
+      cachedSequentialChunkFiles[chunkIdx] = [];
+    }
+
+    // Log resolution cache stats
+    if (isDev) {
+      const rcStats = ctx.getStats();
+      const total = rcStats.cacheHits + rcStats.cacheMisses;
+      const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
+      console.log(
+        `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
+      );
+    }
+  } finally {
+    // Clearing an already-empty cache is a no-op, so this is idempotent-safe
+    // on the happy path where every per-chunk block already cleared astCache.
     astCache.clear();
-  }
-  const sequentialHeritageMap =
-    allSequentialHeritage.length > 0
-      ? buildHeritageMap(allSequentialHeritage, ctx, getHeritageStrategyForLanguage)
-      : undefined;
 
-  for (let chunkIdx = 0; chunkIdx < sequentialChunkPaths.length; chunkIdx++) {
-    const chunkFiles = cachedSequentialChunkFiles[chunkIdx];
-    astCache = createASTCache(chunkFiles.length);
-    const rubyHeritage = await processCalls(
-      graph,
-      chunkFiles,
-      astCache,
-      ctx,
-      undefined,
-      exportedTypeMap,
-      undefined,
-      undefined,
-      undefined,
-      sequentialHeritageMap,
-      bindingAccumulator,
-    );
-    await processHeritage(graph, chunkFiles, astCache, ctx);
-    if (rubyHeritage.length > 0) {
-      await processHeritageFromExtracted(graph, rubyHeritage, ctx);
+    // Run finalize + enrichment inside try/catch so a cleanup failure never
+    // masks the original fallback error. finalize must precede crossFile's
+    // dispose (U2) and enrichExportedTypeMap depends on finalized bindings.
+    try {
+      bindingAccumulator.finalize();
+      const enriched = enrichExportedTypeMap(bindingAccumulator, graph, exportedTypeMap);
+      if (isDev && enriched > 0) {
+        console.log(
+          `🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`,
+        );
+      }
+    } catch (enrichErr) {
+      if (isDev) {
+        console.warn(
+          'Post-fallback finalize/enrich failed during cleanup:',
+          (enrichErr as Error).message,
+        );
+      }
     }
-    const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
-    if (chunkFetchCalls.length > 0) {
-      for (const item of chunkFetchCalls) allFetchCalls.push(item);
-    }
-    for (const f of chunkFiles) {
-      extractORMQueriesInline(f.path, f.content, allORMQueries);
-    }
-    astCache.clear();
-    cachedSequentialChunkFiles[chunkIdx] = [];
-  }
-
-  // Log resolution cache stats
-  if (isDev) {
-    const rcStats = ctx.getStats();
-    const total = rcStats.cacheHits + rcStats.cacheMisses;
-    const hitRate = total > 0 ? ((rcStats.cacheHits / total) * 100).toFixed(1) : '0';
-    console.log(
-      `🔍 Resolution cache: ${rcStats.cacheHits} hits, ${rcStats.cacheMisses} misses (${hitRate}% hit rate)`,
-    );
-  }
-
-  bindingAccumulator.finalize();
-
-  const enriched = enrichExportedTypeMap(bindingAccumulator, graph, exportedTypeMap);
-  if (isDev && enriched > 0) {
-    console.log(
-      `🔗 Worker TypeEnv enrichment: ${enriched} fixpoint-inferred exports added to ExportedTypeMap`,
-    );
   }
 
   const synthesized = synthesizeWildcardImportBindings(graph, ctx);
