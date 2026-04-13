@@ -121,9 +121,12 @@ export class ManifestExtractor {
     // match "/suborders", and a gRPC manifest entry in a repo with any
     // .proto file would attach to a random proto symbol.
     //
-    // If resolveSymbol returns null, the extractor creates a contract with
-    // an empty symbolUid/ref — cross-impact still works via name-based
-    // matching through the `hint` path in runGroupImpact.
+    // If resolveSymbol returns null, the extractor falls back to a
+    // deterministic synthetic uid via `manifestSymbolUid(repo, contractId)`
+    // (see the function's docstring for why synthetic rather than empty).
+    // Cross-impact still works: the bridge query joins on the synthetic
+    // uid, and the local impact engine derives the same uid for the
+    // unresolved symbol — name-based hints are the additional safety net.
     try {
       let rows: Record<string, unknown>[];
       if (link.type === 'http') {
@@ -219,6 +222,29 @@ export class ManifestExtractor {
     return null;
   }
 
+  /**
+   * Build a canonical contract id for a manifest link.
+   *
+   * HTTP is the only type with two valid forms:
+   *   - Explicit method: `"GET::/api/orders"` → `"http::GET::/api/orders"`
+   *     (matches exactly against `HttpRouteExtractor` provider/consumer
+   *     contracts, which are also keyed by `http::<METHOD>::<path>`).
+   *   - Method-agnostic: `"/api/orders"` → `"http::*::/api/orders"`
+   *     — the `*` is a wildcard and is intended to match any concrete
+   *     HTTP method on that path. Wildcard-aware matching is the
+   *     responsibility of the sync / cross-impact layer (see #793);
+   *     downstream code should treat `http::*::<path>` as matching
+   *     every `http::<METHOD>::<path>` for the same path.
+   *
+   * Recommend the explicit-method form in group.yaml whenever the
+   * manifest author knows the method — it round-trips through exact
+   * equality matching without requiring wildcard logic downstream.
+   *
+   * NOTE on exhaustiveness: the switch covers every current
+   * `ContractType` variant and falls through to a `never` assertion so
+   * TypeScript fails the build if a new variant is added without a
+   * corresponding case.
+   */
   private buildContractId(type: ContractType, contract: string): string {
     switch (type) {
       case 'http': {
@@ -233,6 +259,10 @@ export class ManifestExtractor {
         return `lib::${contract}`;
       case 'custom':
         return `custom::${contract}`;
+      default: {
+        const _exhaustive: never = type;
+        throw new Error(`Unhandled ContractType: ${String(_exhaustive)}`);
+      }
     }
   }
 }
