@@ -257,10 +257,28 @@ export const loadGraphToLbug = async (
   let totalValidRels = 0;
 
   await new Promise<void>((resolve, reject) => {
+    const inputStream = createReadStream(csvResult.relCsvPath, 'utf-8');
     const rl = createInterface({
-      input: createReadStream(csvResult.relCsvPath, 'utf-8'),
+      input: inputStream,
       crlfDelay: Infinity,
     });
+
+    // Track which streams are already waiting for drain to prevent
+    // listener accumulation. rl.pause() is not synchronous — buffered
+    // line events continue firing after pause(), and without this guard
+    // each line targeting the same pairKey would add another drain listener.
+    const waitingForDrain = new Set<string>();
+
+    let settled = false;
+    const cleanup = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      inputStream.destroy();
+      for (const ws of pairWriteStreams.values()) ws.destroy();
+      reject(err);
+    };
+
     let isFirst = true;
     rl.on('line', (line) => {
       if (isFirst) {
@@ -285,7 +303,14 @@ export const loadGraphToLbug = async (
       if (!ws) {
         const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
         ws = createWriteStream(pairCsvPath, 'utf-8');
+        // Safety net — even with the waitingForDrain guard, keep a generous
+        // limit to avoid false warnings from edge cases.
         ws.setMaxListeners(50);
+        // If any per-pair WriteStream errors (disk full, EMFILE, etc.),
+        // tear down everything and reject the Promise. Without this handler,
+        // a stream error while rl is paused waiting for drain would cause
+        // the drain callback to never fire and the Promise to hang forever.
+        ws.on('error', cleanup);
         ws.write(relHeader + '\n');
         pairWriteStreams.set(pairKey, ws);
         relsByPairMeta.set(pairKey, { csvPath: pairCsvPath, rows: 0 });
@@ -296,17 +321,25 @@ export const loadGraphToLbug = async (
       // Handle backpressure: pause reading when the write buffer is full,
       // resume when the stream drains. Prevents unbounded memory growth
       // on repos with millions of relationships.
-      if (!ok) {
+      // Guard with waitingForDrain to ensure only one drain listener is
+      // registered per stream at a time — rl.pause() doesn't stop buffered
+      // line events immediately.
+      if (!ok && !waitingForDrain.has(pairKey)) {
+        waitingForDrain.add(pairKey);
         rl.pause();
-        ws.once('drain', () => rl.resume());
+        ws.once('drain', () => {
+          waitingForDrain.delete(pairKey);
+          rl.resume();
+        });
       }
     });
-    rl.on('close', resolve);
-    rl.on('error', (err) => {
-      // Destroy all open write streams to avoid resource leaks
-      for (const ws of pairWriteStreams.values()) ws.destroy();
-      reject(err);
+    rl.on('close', () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
     });
+    rl.on('error', cleanup);
   });
 
   // Close all per-pair write streams before COPY
