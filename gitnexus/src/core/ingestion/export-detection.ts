@@ -244,5 +244,8 @@ export const swiftExportChecker: ExportChecker = (node, _name) => {
 /** Ruby: all top-level definitions are public (no export syntax). */
 export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
+/** Perl: public unless marked private with underscore prefix (basic convention). */
+export const perlExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');

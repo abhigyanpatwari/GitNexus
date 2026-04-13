@@ -21,6 +21,7 @@ import { csharpProvider } from './csharp.js';
 import { cProvider, cppProvider } from './c-cpp.js';
 import { phpProvider } from './php.js';
 import { rubyProvider } from './ruby.js';
+import { perlProvider } from './perl.js';
 import { swiftProvider } from './swift.js';
 import { dartProvider } from './dart.js';
 import { vueProvider } from './vue.js';
@@ -39,6 +40,7 @@ export const providers = {
   [SupportedLanguages.CPlusPlus]: cppProvider,
   [SupportedLanguages.PHP]: phpProvider,
   [SupportedLanguages.Ruby]: rubyProvider,
+  [SupportedLanguages.Perl]: perlProvider,
   [SupportedLanguages.Swift]: swiftProvider,
   [SupportedLanguages.Dart]: dartProvider,
   [SupportedLanguages.Vue]: vueProvider,

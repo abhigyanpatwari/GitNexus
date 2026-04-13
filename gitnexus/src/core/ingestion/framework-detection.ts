@@ -891,6 +891,20 @@ export const AST_FRAMEWORK_PATTERNS_BY_LANGUAGE = {
       patterns: FRAMEWORK_AST_PATTERNS.riverpod,
     },
   ],
+  [SupportedLanguages.Perl]: [
+    {
+      framework: 'mojolicious',
+      entryPointMultiplier: 2.8,
+      reason: 'mojolicious-web-framework',
+      patterns: ['get', 'post', 'put', 'delete', 'patch', 'websocket', 'any'],
+    },
+    {
+      framework: 'catalyst',
+      entryPointMultiplier: 2.5,
+      reason: 'catalyst-mvc-framework',
+      patterns: ['action', 'controller', 'forward', 'detach'],
+    },
+  ],
   [SupportedLanguages.Vue]: [], // Vue uses TypeScript AST framework detection
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no AST framework patterns
 } satisfies Record<SupportedLanguages, AstFrameworkPatternConfig[]>;

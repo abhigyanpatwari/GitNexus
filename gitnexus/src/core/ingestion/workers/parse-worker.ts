@@ -21,24 +21,35 @@ import type { ExtractedHeritage } from '../model/heritage-map.js';
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
-// tree-sitter-swift is an optionalDependency — may not be installed
-const _require = createRequire(import.meta.url);
-let Swift: TreeSitterLanguage | null = null;
-try {
-  Swift = _require('tree-sitter-swift');
-} catch {}
+/**
+ * Load an optional tree-sitter grammar, handling both CommonJS and ESM modules.
+ * ESM modules with top-level await cannot be loaded via createRequire(), so we
+ * fall back to dynamic import() for those cases.
+ */
+async function tryLoadGrammar(packageName: string): Promise<TreeSitterLanguage | null> {
+  const _require = createRequire(import.meta.url);
+  try {
+    return _require(packageName);
+  } catch (err: any) {
+    if (err?.code === 'ERR_REQUIRE_ASYNC_MODULE') {
+      // Handle ESM modules with top-level await (e.g. @ganezdragon/tree-sitter-perl v1.1.1)
+      try {
+        const mod = await import(packageName);
+        // ESM modules should be used directly without unwrapping default export
+        return mod.default;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
 
-// tree-sitter-dart is an optionalDependency — may not be installed
-let Dart: TreeSitterLanguage | null = null;
-try {
-  Dart = _require('tree-sitter-dart');
-} catch {}
-
-// tree-sitter-kotlin is an optionalDependency — may not be installed
-let Kotlin: TreeSitterLanguage | null = null;
-try {
-  Kotlin = _require('tree-sitter-kotlin');
-} catch {}
+// Load optional dependencies — may not be installed or may be ESM modules
+const Swift: TreeSitterLanguage | null = await tryLoadGrammar('tree-sitter-swift');
+const Dart: TreeSitterLanguage | null = await tryLoadGrammar('tree-sitter-dart');
+const Kotlin: TreeSitterLanguage | null = await tryLoadGrammar('tree-sitter-kotlin');
+const Perl: TreeSitterLanguage | null = await tryLoadGrammar('@ganezdragon/tree-sitter-perl');
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   FUNCTION_NODE_TYPES,
@@ -298,22 +309,23 @@ type WorkerIncomingMessage =
 const parser = new Parser();
 
 const languageMap: Record<string, TreeSitterLanguage> = {
-  [SupportedLanguages.JavaScript]: JavaScript,
-  [SupportedLanguages.TypeScript]: TypeScript.typescript,
-  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
-  [SupportedLanguages.Python]: Python,
-  [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
-  [SupportedLanguages.CPlusPlus]: CPP,
-  [SupportedLanguages.CSharp]: CSharp,
-  [SupportedLanguages.Go]: Go,
-  [SupportedLanguages.Rust]: Rust,
-  ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
-  [SupportedLanguages.PHP]: PHP.php_only,
-  [SupportedLanguages.Ruby]: Ruby,
-  [SupportedLanguages.Vue]: TypeScript.typescript,
-  ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
-  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  [SupportedLanguages.JavaScript]: JavaScript as TreeSitterLanguage,
+  [SupportedLanguages.TypeScript]: TypeScript.typescript as TreeSitterLanguage,
+  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx as TreeSitterLanguage,
+  [SupportedLanguages.Python]: Python as TreeSitterLanguage,
+  [SupportedLanguages.Java]: Java as TreeSitterLanguage,
+  [SupportedLanguages.C]: C as TreeSitterLanguage,
+  [SupportedLanguages.CPlusPlus]: CPP as TreeSitterLanguage,
+  [SupportedLanguages.CSharp]: CSharp as TreeSitterLanguage,
+  [SupportedLanguages.Go]: Go as TreeSitterLanguage,
+  [SupportedLanguages.Rust]: Rust as TreeSitterLanguage,
+  ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin as TreeSitterLanguage } : {}),
+  [SupportedLanguages.PHP]: PHP.php_only as TreeSitterLanguage,
+  [SupportedLanguages.Ruby]: Ruby as TreeSitterLanguage,
+  ...(Perl ? { [SupportedLanguages.Perl]: Perl as TreeSitterLanguage } : {}),
+  [SupportedLanguages.Vue]: TypeScript.typescript as TreeSitterLanguage,
+  ...(Dart ? { [SupportedLanguages.Dart]: Dart as TreeSitterLanguage } : {}),
+  ...(Swift ? { [SupportedLanguages.Swift]: Swift as TreeSitterLanguage } : {}),
 };
 
 /**

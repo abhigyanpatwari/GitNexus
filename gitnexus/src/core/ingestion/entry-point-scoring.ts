@@ -226,6 +226,16 @@ export const ENTRY_POINT_PATTERNS = {
     /^onEvent$/, // BLoC event handler
     /^mapEventToState$/, // Legacy BLoC pattern
   ],
+  [SupportedLanguages.Perl]: [
+    /^new$/, // Constructor method
+    /^import$/, // Import/export functions
+    /^main$/, // Main subroutine
+    /^run$/, // Run method
+    /^AUTOLOAD$/, // Perl autoload method
+    /^BEGIN$/, // Perl BEGIN block
+    /^END$/, // Perl END block
+    /^handler$/, // Web handlers
+  ],
   [SupportedLanguages.Vue]: [], // Vue uses TypeScript queries — entry points handled via TS patterns
   [SupportedLanguages.Cobol]: [], // Standalone regex processor — no tree-sitter entry points
 } satisfies Record<SupportedLanguages, RegExp[]>;
