@@ -111,10 +111,10 @@ export function c3Linearize(
           allParentsCached = false;
         }
       }
-      // If all parents are already cached, fall through to MERGE immediately
-      if (allParentsCached) {
-        // Fall through (frame.phase is already MERGE, it's at stack top)
-      } else {
+      // If all parents are already cached, proceed directly to the MERGE
+      // phase below (frame.phase is already MERGE, frame is at stack top).
+      // Otherwise, loop back to process the newly-pushed parent frames first.
+      if (!allParentsCached) {
         continue;
       }
     }

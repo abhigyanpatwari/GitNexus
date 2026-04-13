@@ -289,9 +289,16 @@ export const loadGraphToLbug = async (
         pairWriteStreams.set(pairKey, ws);
         relsByPairMeta.set(pairKey, { csvPath: pairCsvPath, rows: 0 });
       }
-      ws.write(line + '\n');
+      const ok = ws.write(line + '\n');
       relsByPairMeta.get(pairKey)!.rows++;
       totalValidRels++;
+      // Handle backpressure: pause reading when the write buffer is full,
+      // resume when the stream drains. Prevents unbounded memory growth
+      // on repos with millions of relationships.
+      if (!ok) {
+        rl.pause();
+        ws.once('drain', () => rl.resume());
+      }
     });
     rl.on('close', resolve);
     rl.on('error', reject);
@@ -300,7 +307,8 @@ export const loadGraphToLbug = async (
   // Close all per-pair write streams before COPY
   await Promise.all(
     Array.from(pairWriteStreams.values()).map(
-      (ws) => new Promise<void>((resolve) => ws.end(() => resolve())),
+      (ws) =>
+        new Promise<void>((resolve, reject) => ws.end((err: Error | undefined) => (err ? reject(err) : resolve()))),
     ),
   );
 

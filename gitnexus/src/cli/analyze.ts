@@ -310,7 +310,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('  Suggestions:');
       console.error('    1. Add large vendored/generated directories to .gitnexusignore');
       console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
-      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=8192"');
+      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
       console.error('');
     }
 
