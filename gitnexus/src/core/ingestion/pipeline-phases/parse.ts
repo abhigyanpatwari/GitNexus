@@ -28,6 +28,7 @@ import type {
   ExtractedToolDef,
   ExtractedORMQuery,
 } from '../workers/parse-worker.js';
+import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 
 export interface ParseOutput {
@@ -38,6 +39,8 @@ export interface ParseOutput {
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
+  /** Resolution context from the parse phase — carries importMap, namedImportMap, etc. */
+  resolutionContext: ReturnType<typeof createResolutionContext>;
   /** Pass-through: all file paths for downstream phases. */
   allPaths: string[];
   /** Pass-through: total file count for progress reporting. */

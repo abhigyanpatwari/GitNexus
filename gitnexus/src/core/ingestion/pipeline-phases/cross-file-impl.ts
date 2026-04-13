@@ -11,7 +11,7 @@ import {
   type ExportedTypeMap,
   buildExportedTypeMapFromGraph,
 } from '../call-processor.js';
-import { createResolutionContext } from '../model/resolution-context.js';
+import type { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
@@ -34,6 +34,7 @@ const AST_CACHE_CAP = 50;
  */
 export async function runCrossFileBindingPropagation(
   graph: KnowledgeGraph,
+  ctx: ReturnType<typeof createResolutionContext>,
   exportedTypeMap: ExportedTypeMap,
   allPaths: string[],
   totalFiles: number,
@@ -41,10 +42,6 @@ export async function runCrossFileBindingPropagation(
   pipelineStart: number,
   onProgress: (progress: PipelineProgress) => void,
 ): Promise<number> {
-  // Re-create a resolution context for cross-file propagation
-  // This is needed because the parse phase's context is not accessible here
-  const ctx = createResolutionContext();
-
   // For the worker path, buildTypeEnv runs inside workers without SymbolTable,
   // so exported bindings must be collected from graph + SymbolTable in main thread.
   if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {

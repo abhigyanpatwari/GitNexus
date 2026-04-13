@@ -299,6 +299,7 @@ export async function runChunkedParseAndResolve(
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
+  resolutionContext: ReturnType<typeof createResolutionContext>;
 }> {
   const ctx = createResolutionContext();
   const symbolTable = ctx.model.symbols;
@@ -376,7 +377,7 @@ export async function runChunkedParseAndResolve(
     (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
   ) {
     try {
-      let workerUrl = new URL('./workers/parse-worker.js', import.meta.url);
+      let workerUrl = new URL('../workers/parse-worker.js', import.meta.url);
       // When running under vitest, import.meta.url points to src/ where no .js exists.
       // Fall back to the compiled dist/ worker so the pool can spawn real worker threads.
       const thisDir = fileURLToPath(new URL('.', import.meta.url));
@@ -714,5 +715,6 @@ export async function runChunkedParseAndResolve(
     allToolDefs,
     allORMQueries,
     bindingAccumulator,
+    resolutionContext: ctx,
   };
 }

@@ -29,7 +29,7 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CrossFileOutput> {
-    const { exportedTypeMap, allPaths, totalFiles, bindingAccumulator } =
+    const { exportedTypeMap, allPaths, totalFiles, bindingAccumulator, resolutionContext } =
       getPhaseOutput<ParseOutput>(deps, 'parse');
 
     const isDev = process.env.NODE_ENV === 'development';
@@ -51,6 +51,7 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
 
     const filesReprocessed = await runCrossFileBindingPropagation(
       ctx.graph,
+      resolutionContext,
       exportedTypeMap,
       allPaths,
       totalFiles,
