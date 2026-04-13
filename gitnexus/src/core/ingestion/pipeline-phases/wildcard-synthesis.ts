@@ -149,11 +149,39 @@ export function synthesizeWildcardImportBindings(
     }
   };
 
-  // Synthesize from ctx.importMap (Ruby, C/C++, Swift file-based imports)
+  // Synthesize from ctx.importMap (Ruby, C/C++, Swift file-based imports).
+  // For C/C++, #include is transitive: if a.c includes b.h and b.h includes
+  // c.h, then a.c has access to all symbols from c.h.  Expand the include
+  // closure before synthesizing so that cross-file calls resolve correctly
+  // through header chains (e.g. db.c → server.h → dict.h → dictFind).
   for (const [filePath, importedFiles] of ctx.importMap) {
     const lang = getLanguageFromFilename(filePath);
     if (!lang || !isWildcardImportLanguage(lang)) continue;
-    synthesizeForFile(filePath, importedFiles);
+
+    if (lang === SupportedLanguages.C || lang === SupportedLanguages.CPlusPlus) {
+      const transitiveClosure = new Set<string>();
+      const queue = [...importedFiles];
+      while (queue.length > 0) {
+        const file = queue.pop()!;
+        if (transitiveClosure.has(file)) continue;
+        transitiveClosure.add(file);
+        const nested = ctx.importMap.get(file);
+        if (nested) {
+          for (const n of nested) {
+            if (!transitiveClosure.has(n)) queue.push(n);
+          }
+        }
+        const nestedGraph = graphImports.get(file);
+        if (nestedGraph) {
+          for (const n of nestedGraph) {
+            if (!transitiveClosure.has(n)) queue.push(n);
+          }
+        }
+      }
+      synthesizeForFile(filePath, transitiveClosure);
+    } else {
+      synthesizeForFile(filePath, importedFiles);
+    }
   }
 
   // Synthesize from graph IMPORTS edges (Go and other wildcard-import languages)

@@ -436,6 +436,42 @@ describe('Phase 9 — Cross-File Call-Result Binding: C++', () => {
   });
 });
 
+describe('Cross-File Call Resolution: pure C transitive #include', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'c-cross-file'), () => {});
+  }, 60000);
+
+  it('detects dictFind and dictFetchValue functions', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('dictFind');
+    expect(getNodesByLabel(result, 'Function')).toContain('dictFetchValue');
+  });
+
+  it('detects lookupKey and dbGet in db.c', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('lookupKey');
+    expect(getNodesByLabel(result, 'Function')).toContain('dbGet');
+  });
+
+  it('resolves dictFind() call in db.c to dict via transitive header chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossFileCall = calls.find(
+      (c) =>
+        c.target === 'dictFind' && c.source === 'lookupKey' && c.targetFilePath.includes('dict'),
+    );
+    expect(crossFileCall).toBeDefined();
+  });
+
+  it('resolves dictFetchValue() call in db.c to dict via transitive header chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossFileCall = calls.find(
+      (c) =>
+        c.target === 'dictFetchValue' && c.source === 'dbGet' && c.targetFilePath.includes('dict'),
+    );
+    expect(crossFileCall).toBeDefined();
+  });
+});
+
 describe('Phase 9 — Cross-File Call-Result Binding: C#', () => {
   let result: PipelineResult;
 
