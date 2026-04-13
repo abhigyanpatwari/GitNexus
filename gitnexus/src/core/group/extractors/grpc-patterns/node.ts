@@ -82,12 +82,28 @@ const NEW_QUALIFIED_CTOR_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// Detect whether the file uses `loadPackageDefinition` (gRPC dynamic
+// proto loader). Matches either a bare call or an `obj.loadPackageDefinition(...)`
+// call. Plugin gates the qualified-constructor consumer on this —
+// structural check avoids materializing `tree.rootNode.text` for every file.
+const LOAD_PACKAGE_DEFINITION_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: [
+        (identifier) @fn (#eq? @fn "loadPackageDefinition")
+        (member_expression property: (property_identifier) @fn (#eq? @fn "loadPackageDefinition"))
+      ])
+  `,
+};
+
 interface NodeGrpcPatternBundle {
   grpcMethod: CompiledPatterns<Record<string, never>>;
   grpcClient: CompiledPatterns<Record<string, never>>;
   getService: CompiledPatterns<Record<string, never>>;
   newSimpleCtor: CompiledPatterns<Record<string, never>>;
   newQualifiedCtor: CompiledPatterns<Record<string, never>>;
+  loadPackageDefinition: CompiledPatterns<Record<string, never>>;
 }
 
 function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
@@ -103,6 +119,7 @@ function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
     getService: mk(GET_SERVICE_SPEC, 'get-service'),
     newSimpleCtor: mk(NEW_SIMPLE_CTOR_SPEC, 'new-simple-ctor'),
     newQualifiedCtor: mk(NEW_QUALIFIED_CTOR_SPEC, 'new-qualified-ctor'),
+    loadPackageDefinition: mk(LOAD_PACKAGE_DEFINITION_SPEC, 'load-package-definition'),
   };
 }
 
@@ -255,8 +272,10 @@ function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetec
   // ─── Consumer: loadPackageDefinition dynamic proto loader ────────
   // Only emit when the file uses loadPackageDefinition, otherwise a
   // generic `new foo.bar.Something()` in unrelated code would falsely
-  // register as a gRPC consumer.
-  const usesLoadPackage = tree.rootNode.text.includes('loadPackageDefinition');
+  // register as a gRPC consumer. Check structurally via a dedicated
+  // query — avoids materializing `tree.rootNode.text` for the whole
+  // file (expensive on large files).
+  const usesLoadPackage = runCompiledPatterns(bundle.loadPackageDefinition, tree).length > 0;
   if (usesLoadPackage) {
     for (const match of runCompiledPatterns(bundle.newQualifiedCtor, tree)) {
       const ctorNode = match.captures.ctor;

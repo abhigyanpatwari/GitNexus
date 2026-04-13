@@ -17,21 +17,22 @@ import {
  *
  * Two parts:
  *
- * 1. **`.proto` parsing** — done in-process by a small string-sanitizing
- *    parser (see `stripProtoCommentsAndStrings` + `extractServiceBlocks`
- *    below). NOT tree-sitter-based because no `tree-sitter-proto`
- *    grammar is installed in the repo. The parser preserves offsets so
+ * 1. **`.proto` parsing** — tree-sitter when `tree-sitter-proto` is
+ *    installed (optionalDependency vendored in `vendor/tree-sitter-proto/`),
+ *    via the `.proto` entry in `grpc-patterns/` and `hasProtoPlugin`.
+ *    When the grammar isn't available (platform incompatibility, native
+ *    build failure) the orchestrator falls back to the in-process
+ *    string-sanitizing parser defined below (`stripProtoCommentsAndStrings`
+ *    + `extractServiceBlocks`). The fallback preserves offsets so any
  *    downstream regex scans run against a sanitized copy without
- *    affecting the line numbers of the original. Kept as a pragmatic
- *    exception to the "no regex in extractors" rule until / unless
- *    maintainers want to add a proto grammar.
+ *    affecting line numbers of the original.
  *
  * 2. **Source-scan providers / consumers** — delegated to per-language
  *    plugins in `./grpc-patterns/`. The orchestrator imports NO
  *    tree-sitter grammars or query strings — each plugin owns its own.
  */
 
-// ─── .proto parsing (not tree-sitter) ────────────────────────────────
+// ─── .proto fallback parser (used only when tree-sitter-proto is absent) ───
 
 function readSafe(repoPath: string, rel: string): string | null {
   const abs = path.resolve(repoPath, rel);
@@ -372,23 +373,29 @@ export class GrpcExtractor implements ContractExtractor {
     // ─── Proto files — definitive provider source ─────────────────
     // When tree-sitter-proto is available, .proto files are handled by
     // the plugin loop below (they're in GRPC_SCAN_GLOB). Otherwise
-    // fall back to the manual string-sanitizing parser.
+    // emit provider contracts directly from the proto map that
+    // `buildProtoContext` already built — no second glob / parse pass.
     if (!hasProtoPlugin) {
-      const protoFiles = await glob('**/*.proto', {
-        cwd: repoPath,
-        ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
-        nodir: true,
-      });
-      for (const rel of protoFiles) {
-        const content = readSafe(repoPath, rel);
-        if (content) {
-          out.push(
-            ...this.parseProtoFile(
-              content,
-              rel,
-              protoContext.packagesByProto.get(normalizeProtoPath(rel)) ?? '',
-            ),
-          );
+      for (const infos of protoMap.values()) {
+        for (const info of infos) {
+          for (const methodName of info.methods) {
+            const cid = contractId(info.package, info.serviceName, methodName);
+            out.push(
+              makeContract(
+                cid,
+                'provider',
+                info.protoPath,
+                `${info.serviceName}.${methodName}`,
+                0.85,
+                {
+                  package: info.package,
+                  service: info.serviceName,
+                  method: methodName,
+                  source: 'proto',
+                },
+              ),
+            );
+          }
         }
       }
     }
@@ -420,29 +427,6 @@ export class GrpcExtractor implements ContractExtractor {
     }
 
     return this.dedupe(out);
-  }
-
-  private parseProtoFile(content: string, filePath: string, pkg: string): ExtractedContract[] {
-    const out: ExtractedContract[] = [];
-
-    for (const { name: serviceName, body } of extractServiceBlocks(content)) {
-      const rpcRe = /rpc\s+(\w+)\s*\(/g;
-      let rpcMatch: RegExpExecArray | null;
-      while ((rpcMatch = rpcRe.exec(body)) !== null) {
-        const methodName = rpcMatch[1];
-        const cid = contractId(pkg, serviceName, methodName);
-        out.push(
-          makeContract(cid, 'provider', filePath, `${serviceName}.${methodName}`, 0.85, {
-            package: pkg,
-            service: serviceName,
-            method: methodName,
-            source: 'proto',
-          }),
-        );
-      }
-    }
-
-    return out;
   }
 
   /**

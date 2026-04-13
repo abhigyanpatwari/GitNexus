@@ -63,7 +63,10 @@ export function normalizeHttpPath(p: string): string {
   s = s.replace(/:\w+/g, '{param}');
   s = s.replace(/\{[^}]+\}/g, '{param}');
   s = s.replace(/\[[^\]]+\]/g, '{param}');
-  return s;
+  // Preserve root: after stripping trailing slashes, the root "/"
+  // collapses to "" which would produce malformed contract ids like
+  // `http::GET::`. Restore a single slash for the root case.
+  return s === '' ? '/' : s;
 }
 
 /**
@@ -192,19 +195,28 @@ export class HttpRouteExtractor implements ContractExtractor {
       }
     };
 
+    // Glob the source-scan file list at most once per extract() —
+    // both provider and consumer fallback paths share the same list.
+    let scannedFiles: string[] | null = null;
+    const getScannedFiles = async (): Promise<string[]> => {
+      if (scannedFiles) return scannedFiles;
+      scannedFiles = await this.scanFiles(repoPath);
+      return scannedFiles;
+    };
+
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
     const providers =
       graphProviders.length > 0
         ? graphProviders
-        : this.extractProvidersSourceScan(await this.scanFiles(repoPath), getDetections);
+        : this.extractProvidersSourceScan(await getScannedFiles(), getDetections);
 
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
     const consumers =
       graphConsumers.length > 0
         ? graphConsumers
-        : this.extractConsumersSourceScan(await this.scanFiles(repoPath), getDetections);
+        : this.extractConsumersSourceScan(await getScannedFiles(), getDetections);
 
     return [...providers, ...consumers];
   }
@@ -212,7 +224,7 @@ export class HttpRouteExtractor implements ContractExtractor {
   private async scanFiles(repoPath: string): Promise<string[]> {
     return glob(HTTP_SCAN_GLOB, {
       cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/vendor/**'],
       nodir: true,
     });
   }
