@@ -50,6 +50,13 @@ This repository is a **monorepo** with two main products: the **CLI / MCP packag
 |----------------------|-----------|
 | CLI commands / flags | `gitnexus/src/cli/` (`index.ts`, per-command modules). |
 | Parsing or graph construction | `gitnexus/src/core/ingestion/pipeline-phases/` (individual phase files), `pipeline.ts` (orchestrator). |
+| Graph schema / DB access | `gitnexus/src/core/lbug/` (`schema.ts`, `lbug-adapter.ts`), `gitnexus/src/mcp/core/lbug-adapter.ts` if MCP-specific. |
+| MCP protocol, tools, resources | `gitnexus/src/mcp/server.ts`, `tools.ts`, `resources.ts`. |
+| Search ranking | `gitnexus/src/core/search/` (BM25, hybrid fusion). |
+| Embeddings | `gitnexus/src/core/embeddings/`, phases in `analyze.ts`. |
+| Wiki generation | `gitnexus/src/core/wiki/`. |
+| Web UI behavior | `gitnexus-web/src/` (components, workers, graph client). |
+| CI | `.github/workflows/*.yml`, `.github/actions/setup-gitnexus/`. |
 
 ## Pipeline Phase DAG
 
@@ -108,13 +115,6 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 The runner (`pipeline-phases/runner.ts`) validates the DAG at startup (detects cycles and missing deps via topological sort), then executes phases in dependency order. Each phase receives:
 - `ctx: PipelineContext` — shared graph, repoPath, progress callback
 - `deps: Map<string, PhaseResult>` — outputs from all upstream phases
-| Graph schema / DB access | `gitnexus/src/core/lbug/` (`schema.ts`, `lbug-adapter.ts`), `gitnexus/src/mcp/core/lbug-adapter.ts` if MCP-specific. |
-| MCP protocol, tools, resources | `gitnexus/src/mcp/server.ts`, `tools.ts`, `resources.ts`. |
-| Search ranking | `gitnexus/src/core/search/` (BM25, hybrid fusion). |
-| Embeddings | `gitnexus/src/core/embeddings/`, phases in `analyze.ts`. |
-| Wiki generation | `gitnexus/src/core/wiki/`. |
-| Web UI behavior | `gitnexus-web/src/` (components, workers, graph client). |
-| CI | `.github/workflows/*.yml`, `.github/actions/setup-gitnexus/`. |
 
 ## Known limitations
 

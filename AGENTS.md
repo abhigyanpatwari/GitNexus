@@ -1,10 +1,10 @@
-<!-- version: 1.2.0 -->
+<!-- version: 1.3.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
   Last updated: 2026-03-22
 -->
 
-Last reviewed: 2026-03-24
+Last reviewed: 2026-04-13
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -54,6 +54,7 @@ Generic “core standards” playbooks are often long and stack-specific. For th
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
 | 2026-03-24 | 1.2.0 | Fixed gitnexus:start block duplication (was inlined in Reference Docs bullet). |
 | 2026-03-23 | 1.1.0 | Updated agent instructions (sections, references, Cursor layout). |
 | 2026-03-22 | 1.0.0 | Added structured agent header and changelog. |
@@ -63,7 +64,7 @@ Generic “core standards” playbooks are often long and stack-specific. For th
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (3975 symbols, 10043 relationships, 245 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (4325 symbols, 10556 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
