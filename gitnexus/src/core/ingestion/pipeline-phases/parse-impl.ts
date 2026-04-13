@@ -63,7 +63,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { AST_CACHE_CAP, isDev } from './constants.js';
+import { isDev } from './constants.js';
 import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
 
@@ -509,6 +509,14 @@ export async function runChunkedParseAndResolve(
   }
 
   allPathObjects.length = 0;
+  // Safe to reset importCtx caches here: `importCtx` (ImportResolutionContext)
+  // is a scratch workspace used only during import path resolution. The
+  // `resolutionContext` (`ctx`) returned below is a distinct object — it owns
+  // the fully-populated, post-parse `importMap` / `namedImportMap` /
+  // `packageMap` / `moduleAliasMap` / `model`, and never references
+  // `importCtx`. Cross-file re-resolution in cross-file-impl.ts consumes only
+  // `ctx` (via `processCalls`), so clearing the suffix index / resolveCache /
+  // normalizedFileList here cannot lose import matches downstream.
   importCtx.resolveCache.clear();
   importCtx.index = EMPTY_INDEX;
   importCtx.normalizedFileList = [];
