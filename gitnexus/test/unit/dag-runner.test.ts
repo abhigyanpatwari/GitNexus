@@ -1,0 +1,206 @@
+import { describe, it, expect } from 'vitest';
+import { runPipelineDAG } from '../../src/core/ingestion/pipeline-phases/runner.js';
+import type {
+  PipelinePhase,
+  PipelineContext,
+  PhaseResult,
+} from '../../src/core/ingestion/pipeline-phases/types.js';
+import { getPhaseOutput } from '../../src/core/ingestion/pipeline-phases/types.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+
+function makeCtx(): PipelineContext {
+  return {
+    repoPath: '/tmp/test',
+    graph: createKnowledgeGraph(),
+    onProgress: () => {},
+    pipelineStart: Date.now(),
+  };
+}
+
+describe('runPipelineDAG', () => {
+  it('executes phases in dependency order', async () => {
+    const order: string[] = [];
+
+    const phaseA: PipelinePhase<string> = {
+      name: 'a',
+      deps: [],
+      async execute() {
+        order.push('a');
+        return 'resultA';
+      },
+    };
+
+    const phaseB: PipelinePhase<string> = {
+      name: 'b',
+      deps: ['a'],
+      async execute(_ctx, deps) {
+        const a = getPhaseOutput<string>(deps, 'a');
+        order.push('b');
+        return `${a}+B`;
+      },
+    };
+
+    const phaseC: PipelinePhase<string> = {
+      name: 'c',
+      deps: ['a'],
+      async execute(_ctx, deps) {
+        const a = getPhaseOutput<string>(deps, 'a');
+        order.push('c');
+        return `${a}+C`;
+      },
+    };
+
+    const phaseD: PipelinePhase<string> = {
+      name: 'd',
+      deps: ['b', 'c'],
+      async execute(_ctx, deps) {
+        const b = getPhaseOutput<string>(deps, 'b');
+        const c = getPhaseOutput<string>(deps, 'c');
+        order.push('d');
+        return `${b}|${c}`;
+      },
+    };
+
+    const results = await runPipelineDAG([phaseD, phaseA, phaseC, phaseB], makeCtx());
+
+    // A must run before B and C; B and C must run before D
+    expect(order.indexOf('a')).toBeLessThan(order.indexOf('b'));
+    expect(order.indexOf('a')).toBeLessThan(order.indexOf('c'));
+    expect(order.indexOf('b')).toBeLessThan(order.indexOf('d'));
+    expect(order.indexOf('c')).toBeLessThan(order.indexOf('d'));
+
+    // Check outputs are correctly threaded
+    expect(results.get('d')?.output).toBe('resultA+B|resultA+C');
+  });
+
+  it('passes shared PipelineContext to every phase', async () => {
+    const ctx = makeCtx();
+    const seenContexts: PipelineContext[] = [];
+
+    const phase: PipelinePhase<void> = {
+      name: 'test',
+      deps: [],
+      async execute(c) {
+        seenContexts.push(c);
+      },
+    };
+
+    await runPipelineDAG([phase], ctx);
+    expect(seenContexts).toHaveLength(1);
+    expect(seenContexts[0]).toBe(ctx);
+  });
+
+  it('records timing metadata in PhaseResult', async () => {
+    const phase: PipelinePhase<number> = {
+      name: 'slow',
+      deps: [],
+      async execute() {
+        await new Promise((r) => setTimeout(r, 10));
+        return 42;
+      },
+    };
+
+    const results = await runPipelineDAG([phase], makeCtx());
+    const result = results.get('slow')!;
+    expect(result.phaseName).toBe('slow');
+    expect(result.output).toBe(42);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('rejects duplicate phase names', async () => {
+    const phaseA: PipelinePhase = {
+      name: 'dup',
+      deps: [],
+      async execute() {},
+    };
+    const phaseB: PipelinePhase = {
+      name: 'dup',
+      deps: [],
+      async execute() {},
+    };
+
+    await expect(runPipelineDAG([phaseA, phaseB], makeCtx())).rejects.toThrow(
+      /Duplicate phase name/,
+    );
+  });
+
+  it('rejects missing dependencies', async () => {
+    const phase: PipelinePhase = {
+      name: 'orphan',
+      deps: ['nonexistent'],
+      async execute() {},
+    };
+
+    await expect(runPipelineDAG([phase], makeCtx())).rejects.toThrow(/depends on 'nonexistent'/);
+  });
+
+  it('rejects cyclic dependencies', async () => {
+    const phaseA: PipelinePhase = {
+      name: 'x',
+      deps: ['y'],
+      async execute() {},
+    };
+    const phaseB: PipelinePhase = {
+      name: 'y',
+      deps: ['x'],
+      async execute() {},
+    };
+
+    await expect(runPipelineDAG([phaseA, phaseB], makeCtx())).rejects.toThrow(/Cycle detected/);
+  });
+
+  it('executes a single root phase with no deps', async () => {
+    const phase: PipelinePhase<string> = {
+      name: 'root',
+      deps: [],
+      async execute() {
+        return 'hello';
+      },
+    };
+
+    const results = await runPipelineDAG([phase], makeCtx());
+    expect(results.get('root')?.output).toBe('hello');
+  });
+
+  it('handles a linear chain correctly', async () => {
+    const order: string[] = [];
+
+    const phases: PipelinePhase<number>[] = [];
+    for (let i = 0; i < 5; i++) {
+      const idx = i;
+      phases.push({
+        name: `step${i}`,
+        deps: i > 0 ? [`step${i - 1}`] : [],
+        async execute(_ctx, deps) {
+          if (idx > 0) {
+            const prev = getPhaseOutput<number>(deps, `step${idx - 1}`);
+            order.push(`step${idx}`);
+            return prev + 1;
+          }
+          order.push(`step${idx}`);
+          return 0;
+        },
+      });
+    }
+
+    const results = await runPipelineDAG(phases, makeCtx());
+    expect(results.get('step4')?.output).toBe(4);
+    expect(order).toEqual(['step0', 'step1', 'step2', 'step3', 'step4']);
+  });
+});
+
+describe('getPhaseOutput', () => {
+  it('retrieves typed output from dependency map', () => {
+    const deps = new Map<string, PhaseResult<unknown>>();
+    deps.set('test', { phaseName: 'test', output: { value: 42 }, durationMs: 0 });
+
+    const result = getPhaseOutput<{ value: number }>(deps, 'test');
+    expect(result.value).toBe(42);
+  });
+
+  it('throws for missing phase', () => {
+    const deps = new Map<string, PhaseResult<unknown>>();
+
+    expect(() => getPhaseOutput(deps, 'missing')).toThrow(/Phase 'missing' not found/);
+  });
+});

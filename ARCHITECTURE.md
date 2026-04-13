@@ -16,7 +16,7 @@ This repository is a **monorepo** with two main products: the **CLI / MCP packag
 
 1. **Ingestion** (`gitnexus analyze`)  
    - Entry: `gitnexus/src/cli/analyze.ts` → `runPipelineFromRepo` in `gitnexus/src/core/ingestion/pipeline.ts`.  
-   - Walks the git working tree, parses supported languages via **Tree-sitter**, resolves imports/calls/inheritance, detects **communities** and **processes** (execution flows), and builds an in-memory **knowledge graph** (`gitnexus/src/core/graph/`).  
+   - The pipeline is structured as a **DAG (Directed Acyclic Graph)** of named phases (see [Pipeline Phase DAG](#pipeline-phase-dag) below).  
    - Output is loaded into **LadybugDB** under **`.gitnexus/`** at the repo root (`lbug/`, `meta.json`, etc.). Optional **FTS** indexes and **embeddings** attach to the same store.  
    - The repo is registered in **`~/.gitnexus/registry.json`** so MCP can find it from any working directory.
 
@@ -49,7 +49,65 @@ This repository is a **monorepo** with two main products: the **CLI / MCP packag
 | If you are changing… | Start in… |
 |----------------------|-----------|
 | CLI commands / flags | `gitnexus/src/cli/` (`index.ts`, per-command modules). |
-| Parsing or graph construction | `gitnexus/src/core/ingestion/` (pipeline, processors, resolvers, type-extractors). |
+| Parsing or graph construction | `gitnexus/src/core/ingestion/pipeline-phases/` (individual phase files), `pipeline.ts` (orchestrator). |
+
+## Pipeline Phase DAG
+
+The ingestion pipeline is a DAG of named phases. Each phase is defined in its own file under `gitnexus/src/core/ingestion/pipeline-phases/` with explicit dependencies, typed inputs, and typed outputs.
+
+```
+scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
+  → crossFile → mro → communities → processes
+```
+
+### Phase files
+
+| Phase | File | Dependencies | What it does |
+|-------|------|-------------|--------------|
+| `scan` | `scan.ts` | (root) | Walk repo filesystem, collect paths + sizes |
+| `structure` | `structure.ts` | `scan` | Build File/Folder nodes + CONTAINS edges |
+| `markdown` | `markdown.ts` | `structure` | Extract headings and cross-links from .md/.mdx |
+| `cobol` | `cobol.ts` | `structure` | Regex-based COBOL/JCL extraction |
+| `parse` | `parse.ts` + `parse-impl.ts` | `structure`, `markdown`, `cobol` | Chunked tree-sitter parse, import/call/heritage resolution |
+| `routes` | `routes.ts` | `parse` | Route registry (Next.js, Expo, PHP, decorator-based) |
+| `tools` | `tools.ts` | `parse` | MCP/RPC tool detection |
+| `orm` | `orm.ts` | `parse` | Prisma/Supabase ORM query edges |
+| `crossFile` | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm` | Cross-file type propagation in topological order |
+| `mro` | `mro.ts` | `crossFile` | Method Resolution Order, METHOD_OVERRIDES edges |
+| `communities` | `communities.ts` | `mro` | Leiden community detection |
+| `processes` | `processes.ts` | `communities`, `routes`, `tools` | Execution flow detection, Route/Tool → Process links |
+
+### How to add a new phase
+
+1. Create a new file in `pipeline-phases/` (e.g. `my-phase.ts`)
+2. Define a `PipelinePhase<MyOutput>` object with `name`, `deps`, and `execute(ctx, deps)`
+3. Export it from `pipeline-phases/index.ts`
+4. Add it to the `buildPhaseList()` function in `pipeline.ts`
+
+```typescript
+// pipeline-phases/my-phase.ts
+import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
+import { getPhaseOutput } from './types.js';
+import type { ParseOutput } from './parse.js';
+
+export interface MyPhaseOutput { /* ... */ }
+
+export const myPhase: PipelinePhase<MyPhaseOutput> = {
+  name: 'myPhase',
+  deps: ['parse'],   // runs after parse completes
+  async execute(ctx, deps) {
+    const { allPaths } = getPhaseOutput<ParseOutput>(deps, 'parse');
+    // ... do work, write to ctx.graph ...
+    return { /* typed output */ };
+  },
+};
+```
+
+### DAG runner
+
+The runner (`pipeline-phases/runner.ts`) validates the DAG at startup (detects cycles and missing deps via topological sort), then executes phases in dependency order. Each phase receives:
+- `ctx: PipelineContext` — shared graph, repoPath, progress callback
+- `deps: Map<string, PhaseResult>` — outputs from all upstream phases
 | Graph schema / DB access | `gitnexus/src/core/lbug/` (`schema.ts`, `lbug-adapter.ts`), `gitnexus/src/mcp/core/lbug-adapter.ts` if MCP-specific. |
 | MCP protocol, tools, resources | `gitnexus/src/mcp/server.ts`, `tools.ts`, `resources.ts`. |
 | Search ranking | `gitnexus/src/core/search/` (BM25, hybrid fusion). |
