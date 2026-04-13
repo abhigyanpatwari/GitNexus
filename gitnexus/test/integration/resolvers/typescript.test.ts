@@ -153,10 +153,7 @@ describe('TypeScript generic awaited call resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'typescript-generic-calls'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-generic-calls'), () => {});
   }, 60000);
 
   it('resolves authenticateUser → verifyToken via awaited generic call', () => {
@@ -179,9 +176,7 @@ describe('TypeScript generic awaited call resolution', () => {
 
   it('resolves authenticateGuest → verify via awaited generic member call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const guestCall = calls.find(
-      (c) => c.source === 'authenticateGuest' && c.target === 'verify',
-    );
+    const guestCall = calls.find((c) => c.source === 'authenticateGuest' && c.target === 'verify');
     expect(guestCall).toBeDefined();
     expect(guestCall!.targetFilePath).toBe('src/service.ts');
   });
