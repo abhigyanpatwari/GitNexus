@@ -120,9 +120,7 @@ describe('runPipeline', () => {
       async execute() {},
     };
 
-    await expect(runPipeline([phaseA, phaseB], makeCtx())).rejects.toThrow(
-      /Duplicate phase name/,
-    );
+    await expect(runPipeline([phaseA, phaseB], makeCtx())).rejects.toThrow(/Duplicate phase name/);
   });
 
   it('rejects missing dependencies', async () => {
@@ -187,6 +185,106 @@ describe('runPipeline', () => {
     const results = await runPipeline(phases, makeCtx());
     expect(results.get('step4')?.output).toBe(4);
     expect(order).toEqual(['step0', 'step1', 'step2', 'step3', 'step4']);
+  });
+
+  it('wraps phase Error with phase name and preserves cause', async () => {
+    const original = new Error('boom');
+    const phase: PipelinePhase = {
+      name: 'failing',
+      deps: [],
+      async execute() {
+        throw original;
+      },
+    };
+
+    await expect(runPipeline([phase], makeCtx())).rejects.toThrow(/Phase 'failing' failed: boom/);
+
+    try {
+      await runPipeline([phase], makeCtx());
+      throw new Error('expected runPipeline to reject');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/Phase 'failing' failed: boom/);
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+    }
+  });
+
+  it('surfaces phase name when phase throws a non-Error value', async () => {
+    const phaseString: PipelinePhase = {
+      name: 'string-thrower',
+      deps: [],
+      async execute() {
+        throw 'oops';
+      },
+    };
+
+    await expect(runPipeline([phaseString], makeCtx())).rejects.toThrow(
+      /Phase 'string-thrower' failed: oops/,
+    );
+
+    const phaseNumber: PipelinePhase = {
+      name: 'number-thrower',
+      deps: [],
+      async execute() {
+        throw 42;
+      },
+    };
+
+    await expect(runPipeline([phaseNumber], makeCtx())).rejects.toThrow(
+      /Phase 'number-thrower' failed: 42/,
+    );
+  });
+
+  it("emits a terminal 'error' progress event exactly once on phase failure", async () => {
+    const events: { phase: string; message: string; detail?: string }[] = [];
+    const ctx: PipelineContext = {
+      ...makeCtx(),
+      onProgress: (p) => {
+        events.push({ phase: p.phase, message: p.message, detail: p.detail });
+      },
+    };
+
+    const phase: PipelinePhase = {
+      name: 'failing',
+      deps: [],
+      async execute() {
+        throw new Error('kaboom');
+      },
+    };
+
+    await expect(runPipeline([phase], ctx)).rejects.toThrow(/Phase 'failing' failed/);
+
+    const errorEvents = events.filter((e) => e.phase === 'error');
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0].message).toMatch(/failing/);
+    expect(errorEvents[0].detail).toBe('kaboom');
+  });
+
+  it('still rejects when onProgress handler throws during error reporting', async () => {
+    const original = new Error('underlying');
+    const ctx: PipelineContext = {
+      ...makeCtx(),
+      onProgress: () => {
+        throw new Error('handler exploded');
+      },
+    };
+
+    const phase: PipelinePhase = {
+      name: 'failing',
+      deps: [],
+      async execute() {
+        throw original;
+      },
+    };
+
+    try {
+      await runPipeline([phase], ctx);
+      throw new Error('expected runPipeline to reject');
+    } catch (err) {
+      // The original phase error must win, not the handler's error.
+      expect((err as Error).message).toMatch(/Phase 'failing' failed: underlying/);
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+    }
   });
 
   it('only exposes declared deps to each phase', async () => {

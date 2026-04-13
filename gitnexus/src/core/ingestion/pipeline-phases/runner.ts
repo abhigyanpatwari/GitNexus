@@ -103,7 +103,31 @@ export async function runPipeline(
       if (depResult) declaredDeps.set(depName, depResult);
     }
 
-    const output = await phase.execute(ctx, declaredDeps);
+    let output: unknown;
+    try {
+      output = await phase.execute(ctx, declaredDeps);
+    } catch (err) {
+      const originalMessage = err instanceof Error ? err.message : String(err);
+      const wrapped = new Error(`Phase '${phase.name}' failed: ${originalMessage}`, {
+        cause: err,
+      });
+
+      // Emit a terminal 'error' progress event so CLI/MCP consumers see the failure
+      // before the rejection propagates. Best-effort: a throwing handler must not
+      // mask the underlying phase error.
+      try {
+        ctx.onProgress({
+          phase: 'error',
+          percent: 100,
+          message: `Phase '${phase.name}' failed`,
+          detail: originalMessage,
+        });
+      } catch {
+        // Swallow handler errors — preserving the original cause is more important.
+      }
+
+      throw wrapped;
+    }
     const durationMs = Date.now() - start;
 
     results.set(phase.name, {
