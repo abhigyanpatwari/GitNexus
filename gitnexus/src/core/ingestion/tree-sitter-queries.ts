@@ -1148,10 +1148,12 @@ export const DART_QUERIES = `
   (selector (argument_part))) @call
 
 ; ── Calls: await method chain (await obj.method()) ───────────────────────────
+; Requires argument_part to distinguish method calls from field access (await obj.field)
 (await_expression
   (selector
     (unconditional_assignable_selector
-      (identifier) @call.name))) @call
+      (identifier) @call.name))
+  (selector (argument_part))) @call
 
 ; ── Calls: named argument (foo(child: buildX())) ─────────────────────────────
 (named_argument
@@ -1166,11 +1168,14 @@ export const DART_QUERIES = `
   (selector (argument_part))) @call
 
 ; ── Calls: cascade (obj..add(x)..sort()) ─────────────────────────────────────
+; Note: cascade_selector contains identifier directly (no unconditional_assignable_selector
+; wrapper in Dart grammar), so inferCallForm() classifies these as free calls rather than
+; member calls. Cross-file resolution still benefits from the call being recorded.
 (cascade_section
   (cascade_selector (identifier) @call.name)
   (argument_part)) @call
 
-; ── Calls: static/const field initializers (const _svc = MyService()) ────────
+; ── Calls: static final field initializers (static final _svc = MyService()) ──
 (static_final_declaration
   (identifier) @call.name
   .
