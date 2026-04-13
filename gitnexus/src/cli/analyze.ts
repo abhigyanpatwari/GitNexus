@@ -20,8 +20,11 @@ import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
+/** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
+const STACK_KB = 4096;
+const STACK_FLAG = `--stack-size=${STACK_KB}`;
 
-/** Re-exec the process with an 8GB heap if we're currently below that. */
+/** Re-exec the process with an 8GB heap and larger stack if we're currently below that. */
 function ensureHeap(): boolean {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -29,10 +32,13 @@ function ensureHeap(): boolean {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
+  const flags = [HEAP_FLAG];
+  if (!nodeOpts.includes('--stack-size')) flags.push(STACK_FLAG);
+
   try {
-    execFileSync(process.execPath, [HEAP_FLAG, ...process.argv.slice(1)], {
+    execFileSync(process.execPath, [...flags, ...process.argv.slice(1)], {
       stdio: 'inherit',
-      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
+      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${flags.join(' ')}`.trim() },
     });
   } catch (e: any) {
     process.exitCode = e.status ?? 1;
@@ -285,7 +291,29 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.warn = origWarn;
     console.error = origError;
     bar.stop();
-    console.error(`\n  Analysis failed: ${err.message}\n`);
+
+    const msg = err.message || String(err);
+    console.error(`\n  Analysis failed: ${msg}\n`);
+
+    // Provide helpful guidance for known large-repo failure modes
+    if (
+      msg.includes('Maximum call stack size exceeded') ||
+      msg.includes('call stack') ||
+      msg.includes('Map maximum size') ||
+      msg.includes('Invalid array length') ||
+      msg.includes('Invalid string length') ||
+      msg.includes('allocation failed') ||
+      msg.includes('heap out of memory') ||
+      msg.includes('JavaScript heap')
+    ) {
+      console.error('  This error typically occurs on very large repositories.');
+      console.error('  Suggestions:');
+      console.error('    1. Add large vendored/generated directories to .gitnexusignore');
+      console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
+      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=8192"');
+      console.error('');
+    }
+
     process.exitCode = 1;
     return;
   }
