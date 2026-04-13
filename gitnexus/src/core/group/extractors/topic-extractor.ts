@@ -1,9 +1,8 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
+import { readSafe } from './fs-utils.js';
 import { scanFile, unquoteLiteral } from './tree-sitter-scanner.js';
 import {
   TOPIC_SCAN_GLOB,
@@ -27,18 +26,6 @@ import {
  *
  * Adding a new language is a one-file edit in `topic-patterns/index.ts`.
  */
-
-function readSafe(repoPath: string, rel: string): string | null {
-  const abs = path.resolve(repoPath, rel);
-  const base = path.resolve(repoPath);
-  const relToBase = path.relative(base, abs);
-  if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) return null;
-  try {
-    return fs.readFileSync(abs, 'utf-8');
-  } catch {
-    return null;
-  }
-}
 
 function makeContract(topicName: string, meta: TopicMeta, filePath: string): ExtractedContract {
   return {
@@ -71,7 +58,20 @@ export class TopicExtractor implements ContractExtractor {
   ): Promise<ExtractedContract[]> {
     const files = await glob(TOPIC_SCAN_GLOB, {
       cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/vendor/**',
+        '**/dist/**',
+        '**/build/**',
+        // Language-level test file conventions. Go test files
+        // `*_test.go` live next to source; other languages either use
+        // separate test directories (Python's `tests/`, Java's
+        // `src/test/`) or are already covered by the dist/build ignores.
+        // Pushed to the glob level so the orchestrator stays
+        // language-agnostic.
+        '**/*_test.go',
+      ],
       nodir: true,
     });
 
@@ -81,8 +81,6 @@ export class TopicExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
 
     for (const rel of files) {
-      if (rel.endsWith('_test.go')) continue;
-
       const provider = getProviderForFile(rel);
       if (!provider) continue;
 

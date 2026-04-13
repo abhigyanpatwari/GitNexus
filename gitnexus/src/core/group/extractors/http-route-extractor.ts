@@ -1,9 +1,9 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
+import { readSafe } from './fs-utils.js';
 import { getPluginForFile, HTTP_SCAN_GLOB, type HttpDetection } from './http-patterns/index.js';
 
 /**
@@ -95,20 +95,6 @@ function normalizeConsumerPath(url: string): string {
 
 function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
-}
-
-// ─── File read helper (path-traversal safe) ──────────────────────────
-
-function readSafe(repoPath: string, rel: string): string | null {
-  const abs = path.resolve(repoPath, rel);
-  const base = path.resolve(repoPath);
-  const relToBase = path.relative(base, abs);
-  if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) return null;
-  try {
-    return fs.readFileSync(abs, 'utf-8');
-  } catch {
-    return null;
-  }
 }
 
 // ─── Graph row helpers ───────────────────────────────────────────────
@@ -249,20 +235,20 @@ export class HttpRouteExtractor implements ContractExtractor {
       const routeSource = String(row.routeSource ?? row.routeReason ?? '');
       let method = methodFromRouteReason(routeSource);
 
-      // Fallback: look up method + handler name from the plugin's scan
-      // of the handler file. This replaces the old regex-based
-      // `inferMethodFromFileScan` and `pickJavaHandlerName` helpers —
-      // tree-sitter gives both pieces of information structurally.
+      // Look up handler name (and backfill method if missing) from the
+      // plugin's scan of the handler file. This replaces the old
+      // regex-based `inferMethodFromFileScan` and `pickJavaHandlerName`
+      // helpers — tree-sitter gives both pieces of information
+      // structurally. Always run the lookup: even when method is set by
+      // `methodFromRouteReason`, we still need the handler name.
       const detections = filePath ? getDetections(filePath) : [];
       const providerDetections = detections.filter((d) => d.role === 'provider');
       let handlerName: string | null = null;
-      if (!method || !handlerName) {
-        const normalizedRoute = normalizeHttpPath(routePath);
-        const match = providerDetections.find((d) => normalizeHttpPath(d.path) === normalizedRoute);
-        if (match) {
-          if (!method) method = match.method;
-          handlerName = match.name;
-        }
+      const normalizedRoute = normalizeHttpPath(routePath);
+      const match = providerDetections.find((d) => normalizeHttpPath(d.path) === normalizedRoute);
+      if (match) {
+        if (!method) method = match.method;
+        handlerName = match.name;
       }
       if (!method) method = 'GET';
 

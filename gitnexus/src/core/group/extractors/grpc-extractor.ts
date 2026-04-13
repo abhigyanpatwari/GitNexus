@@ -1,9 +1,9 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
+import { readSafe } from './fs-utils.js';
 import {
   GRPC_SCAN_GLOB,
   getPluginForFile,
@@ -33,18 +33,6 @@ import {
  */
 
 // ─── .proto fallback parser (used only when tree-sitter-proto is absent) ───
-
-function readSafe(repoPath: string, rel: string): string | null {
-  const abs = path.resolve(repoPath, rel);
-  const base = path.resolve(repoPath);
-  const relToBase = path.relative(base, abs);
-  if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) return null;
-  try {
-    return fs.readFileSync(abs, 'utf-8');
-  } catch {
-    return null;
-  }
-}
 
 function contractId(pkg: string, service: string, method: string): string {
   const prefix = pkg ? `${pkg}.${service}` : service;

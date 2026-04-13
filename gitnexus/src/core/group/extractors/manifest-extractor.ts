@@ -141,8 +141,13 @@ export class ManifestExtractor {
           { normalized },
         );
       } else if (link.type === 'topic') {
+        // Topic names aren't a first-class NodeLabel in the graph —
+        // topics are referenced by function/method symbols (Kafka
+        // listeners, publishers). Restrict to symbol-like labels to
+        // avoid cross-matching Files/Variables/Imports that happen to
+        // share the topic name.
         rows = await executor(
-          `MATCH (n) WHERE n.name = $contract
+          `MATCH (n:Function|Method|Class|Interface) WHERE n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
@@ -153,12 +158,15 @@ export class ManifestExtractor {
         // variants). Prefer matching by method name when present, otherwise
         // by service name. NO .proto path fallback — that's guaranteed to
         // return a wrong symbol in any repo with more than one proto file.
+        // Label filters scope lookups: methods → Function|Method, services
+        // → Class|Interface (no label match = no silent wrong hits on
+        // File/Variable nodes that happen to share the name).
         const parts = link.contract.split('/');
         const serviceName = parts[0]?.trim() ?? '';
         const methodName = parts[1]?.trim() ?? '';
         if (methodName) {
           rows = await executor(
-            `MATCH (n) WHERE n.name = $methodName
+            `MATCH (n:Function|Method) WHERE n.name = $methodName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -166,7 +174,7 @@ export class ManifestExtractor {
           );
         } else if (serviceName) {
           rows = await executor(
-            `MATCH (n) WHERE n.name = $serviceName
+            `MATCH (n:Class|Interface) WHERE n.name = $serviceName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -178,9 +186,11 @@ export class ManifestExtractor {
       } else if (link.type === 'lib') {
         // Only exact match on the symbol's name. Previous fallback to
         // CONTAINS on n.filePath would promote "react" to "react-native"
-        // or "@types/react" — silent wrong attribution.
+        // or "@types/react" — silent wrong attribution. Restrict to
+        // package-level labels so we don't return arbitrary symbols
+        // named after a library.
         rows = await executor(
-          `MATCH (n) WHERE n.name = $contract
+          `MATCH (n:Package|Module) WHERE n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
