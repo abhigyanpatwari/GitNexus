@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.0.0",
-    "@ladybugdb/core": "^0.15.3",
+    "@ladybugdb/core": "^0.15.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
@@ -90,6 +90,7 @@
     "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {
+    "gitnexus-shared": "file:../gitnexus-shared",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
@@ -97,7 +98,6 @@
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "@vitest/coverage-v8": "^4.0.18",
-    "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"
