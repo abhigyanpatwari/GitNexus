@@ -3,7 +3,8 @@
  *
  * Groups files into topological levels where files within the same level
  * have no mutual import dependencies and can be processed in parallel.
- * Files involved in import cycles are collected into a final group.
+ * Files involved in import cycles are appended as a final group and
+ * processed last in an undefined order (best-effort propagation).
  *
  * Used by cross-file binding propagation to process files in the correct
  * order — upstream exports must be resolved before downstream importers.
