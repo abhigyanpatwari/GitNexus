@@ -11,6 +11,7 @@ export interface BM25SearchResult {
   filePath: string;
   score: number;
   rank: number;
+  nodeIds?: string[];
 }
 
 /**
@@ -23,7 +24,7 @@ async function queryFTSViaExecutor(
   indexName: string,
   query: string,
   limit: number,
-): Promise<Array<{ filePath: string; score: number }>> {
+): Promise<Array<{ filePath: string; score: number; nodeId: string }>> {
   // Escape single quotes and backslashes to prevent Cypher injection
   const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const cypher = `
@@ -40,6 +41,7 @@ async function queryFTSViaExecutor(
       return {
         filePath: node.filePath || '',
         score: typeof score === 'number' ? score : parseFloat(score) || 0,
+        nodeId: node.id || '',
       };
     });
   } catch {
@@ -99,17 +101,13 @@ export const searchFTSFromLbug = async (
     );
   }
 
-  // Merge results by filePath, summing scores for same file
-  const merged = new Map<string, { filePath: string; score: number }>();
+  // Collect all node scores per filePath to track which nodes actually matched
+  const fileNodeScores = new Map<string, Array<{ score: number; nodeId: string }>>();
 
   const addResults = (results: any[]) => {
     for (const r of results) {
-      const existing = merged.get(r.filePath);
-      if (existing) {
-        existing.score += r.score;
-      } else {
-        merged.set(r.filePath, { filePath: r.filePath, score: r.score });
-      }
+      if (!fileNodeScores.has(r.filePath)) fileNodeScores.set(r.filePath, []);
+      fileNodeScores.get(r.filePath)!.push({ score: r.score, nodeId: r.nodeId });
     }
   };
 
@@ -118,6 +116,19 @@ export const searchFTSFromLbug = async (
   addResults(classResults);
   addResults(methodResults);
   addResults(interfaceResults);
+
+  // Sum the top-3 highest-scoring nodes per file and collect their nodeIds.
+  // Summing all nodes naively inflates scores for files with many mediocre
+  // matches (e.g. test files) over files with a single highly-relevant symbol.
+  const merged = new Map<string, { filePath: string; score: number; nodeIds: string[] }>();
+  for (const [filePath, entries] of fileNodeScores) {
+    const top3 = entries.sort((a, b) => b.score - a.score).slice(0, 3);
+    merged.set(filePath, {
+      filePath,
+      score: top3.reduce((acc, e) => acc + e.score, 0),
+      nodeIds: top3.map(e => e.nodeId).filter(id => id),
+    });
+  }
 
   // Sort by score descending and add rank
   const sorted = Array.from(merged.values())
@@ -128,5 +139,6 @@ export const searchFTSFromLbug = async (
     filePath: r.filePath,
     score: r.score,
     rank: index + 1,
+    nodeIds: r.nodeIds,
   }));
 };

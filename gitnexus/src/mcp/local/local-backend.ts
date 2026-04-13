@@ -775,16 +775,30 @@ export class LocalBackend {
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
       try {
-        const symbols = await executeParameterized(
-          repo.id,
-          `
-          MATCH (n)
-          WHERE n.filePath = $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-          LIMIT 3
-        `,
-          { filePath: fullPath },
-        );
+        // Prefer direct nodeId lookup (exact FTS-matched nodes) over filePath fallback.
+        // Without this, LIMIT 3 on filePath returns arbitrary symbols rather than
+        // the nodes that actually scored highest in the BM25 index.
+        const nodeIds = bm25Result.nodeIds?.length ? bm25Result.nodeIds : null;
+        const symbols = nodeIds
+          ? await executeParameterized(
+              repo.id,
+              `
+              MATCH (n)
+              WHERE n.id IN $nodeIds
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+            `,
+              { nodeIds },
+            )
+          : await executeParameterized(
+              repo.id,
+              `
+              MATCH (n)
+              WHERE n.filePath = $filePath
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              LIMIT 3
+            `,
+              { filePath: fullPath },
+            );
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
