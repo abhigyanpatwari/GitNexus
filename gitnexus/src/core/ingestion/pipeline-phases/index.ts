@@ -25,13 +25,3 @@ export { processesPhase, type ProcessesOutput } from './processes.js';
 export { runPipeline } from './runner.js';
 export type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 export { getPhaseOutput } from './types.js';
-
-// ── Shared utilities (consumed by phase implementations) ───────────────────
-
-export { AST_CACHE_CAP, isDev } from './constants.js';
-export {
-  synthesizeWildcardImportBindings,
-  isWildcardImportLanguage,
-  needsSynthesis,
-} from './wildcard-synthesis.js';
-export { extractORMQueriesInline } from './orm-extraction.js';

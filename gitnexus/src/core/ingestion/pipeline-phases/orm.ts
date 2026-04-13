@@ -14,7 +14,7 @@ import type { ParseOutput } from './parse.js';
 import { generateId } from '../../../lib/utils.js';
 import type { ExtractedORMQuery } from '../workers/parse-worker.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface ORMOutput {
   edgesCreated: number;
@@ -41,7 +41,7 @@ export const ormPhase: PipelinePhase<ORMOutput> = {
 
 function processORMQueries(
   graph: KnowledgeGraph,
-  queries: ExtractedORMQuery[],
+  queries: readonly ExtractedORMQuery[],
 ): ORMOutput {
   const modelNodes = new Map<string, string>();
   const seenEdges = new Set<string>();

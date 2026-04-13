@@ -34,15 +34,17 @@ import { runChunkedParseAndResolve } from './parse-impl.js';
 export interface ParseOutput {
   exportedTypeMap: ExportedTypeMap;
   readonly allFetchCalls: readonly ExtractedFetchCall[];
-  allExtractedRoutes: ExtractedRoute[];
-  allDecoratorRoutes: ExtractedDecoratorRoute[];
-  allToolDefs: ExtractedToolDef[];
-  allORMQueries: ExtractedORMQuery[];
+  readonly allExtractedRoutes: readonly ExtractedRoute[];
+  readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
+  readonly allToolDefs: readonly ExtractedToolDef[];
+  readonly allORMQueries: readonly ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
   /** Resolution context from the parse phase — carries importMap, namedImportMap, etc. */
   resolutionContext: ReturnType<typeof createResolutionContext>;
   /** Pass-through: all file paths for downstream phases. */
-  allPaths: string[];
+  readonly allPaths: readonly string[];
+  /** Pass-through: shared `allPathSet` from structure (built once, not per-phase). */
+  readonly allPathSet: ReadonlySet<string>;
   /** Pass-through: total file count for progress reporting. */
   totalFiles: number;
 }
@@ -55,7 +57,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
-    const { scannedFiles, allPaths, totalFiles } = getPhaseOutput<StructureOutput>(
+    const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
       deps,
       'structure',
     );
@@ -74,6 +76,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     return {
       ...result,
       allPaths,
+      allPathSet,
       totalFiles,
     };
   },

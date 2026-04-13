@@ -13,7 +13,7 @@ import { getPhaseOutput } from './types.js';
 import { processCobol, isCobolFile, isJclFile } from '../cobol-processor.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface CobolOutput {
   programs: number;
@@ -29,7 +29,7 @@ export const cobolPhase: PipelinePhase<CobolOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CobolOutput> {
-    const { scannedFiles, allPaths } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, allPathSet } = getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const cobolScanned = scannedFiles.filter((f) => isCobolFile(f.path) || isJclFile(f.path));
 
@@ -44,7 +44,6 @@ export const cobolPhase: PipelinePhase<CobolOutput> = {
     const cobolFiles = cobolScanned
       .filter((f) => cobolContents.has(f.path))
       .map((f) => ({ path: f.path, content: cobolContents.get(f.path)! }));
-    const allPathSet = new Set(allPaths);
     const cobolResult = processCobol(ctx.graph, cobolFiles, allPathSet);
 
     if (isDev) {

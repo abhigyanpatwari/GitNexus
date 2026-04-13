@@ -22,7 +22,10 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { topologicalLevelSort } from '../utils/graph-sort.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
-import { AST_CACHE_CAP, isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
+
+/** Max AST trees to keep in LRU cache for cross-file binding propagation. */
+const AST_CACHE_CAP = 50;
 
 /** Minimum percentage of files that must benefit from cross-file seeding. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;
@@ -37,7 +40,7 @@ export async function runCrossFileBindingPropagation(
   graph: KnowledgeGraph,
   ctx: ReturnType<typeof createResolutionContext>,
   exportedTypeMap: ExportedTypeMap,
-  allPaths: string[],
+  allPathSet: ReadonlySet<string>,
   totalFiles: number,
   repoPath: string,
   pipelineStart: number,
@@ -52,7 +55,6 @@ export async function runCrossFileBindingPropagation(
 
   if (exportedTypeMap.size === 0 || ctx.namedImportMap.size === 0) return 0;
 
-  const allPathSet = new Set(allPaths);
   const { levels, cycleCount } = topologicalLevelSort(ctx.importMap);
 
   if (isDev && cycleCount > 0) {

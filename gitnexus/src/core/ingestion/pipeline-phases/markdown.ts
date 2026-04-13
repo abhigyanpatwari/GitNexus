@@ -13,7 +13,7 @@ import { getPhaseOutput } from './types.js';
 import { processMarkdown } from '../markdown-processor.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface MarkdownOutput {
   /** Number of markdown sections extracted. */
@@ -30,7 +30,7 @@ export const markdownPhase: PipelinePhase<MarkdownOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<MarkdownOutput> {
-    const { scannedFiles, allPaths } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, allPathSet } = getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const mdScanned = scannedFiles.filter((f) => f.path.endsWith('.md') || f.path.endsWith('.mdx'));
 
@@ -45,7 +45,6 @@ export const markdownPhase: PipelinePhase<MarkdownOutput> = {
     const mdFiles = mdScanned
       .filter((f) => mdContents.has(f.path))
       .map((f) => ({ path: f.path, content: mdContents.get(f.path)! }));
-    const allPathSet = new Set(allPaths);
     const mdResult = processMarkdown(ctx.graph, mdFiles, allPathSet);
 
     if (isDev) {

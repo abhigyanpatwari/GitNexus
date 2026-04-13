@@ -17,7 +17,7 @@ import type { ToolsOutput } from './tools.js';
 import type { ParseOutput } from './parse.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface ProcessesOutput {
   processResult: ProcessDetectionResult;

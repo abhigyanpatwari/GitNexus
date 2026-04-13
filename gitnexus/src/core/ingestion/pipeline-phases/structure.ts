@@ -18,6 +18,12 @@ export interface StructureOutput {
   /** Pass-through from scan for downstream phases. */
   scannedFiles: { path: string; size: number }[];
   allPaths: string[];
+  /**
+   * Materialized once here and shared across all downstream consumers
+   * (cobol, markdown, cross-file propagation). Avoids the previous
+   * per-phase `new Set(allPaths)` allocations on multi-thousand-file repos.
+   */
+  allPathSet: ReadonlySet<string>;
   totalFiles: number;
 }
 
@@ -47,6 +53,10 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
-    return { scannedFiles, allPaths, totalFiles };
+    // Build the set once here so cobol, markdown, and cross-file propagation
+    // can all reuse it instead of re-materializing `new Set(allPaths)` each.
+    const allPathSet: ReadonlySet<string> = new Set(allPaths);
+
+    return { scannedFiles, allPaths, allPathSet, totalFiles };
   },
 };

@@ -34,7 +34,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { runCrossFileBindingPropagation } from './cross-file-impl.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface CrossFileOutput {
   /** Number of files re-processed during cross-file propagation. */
@@ -49,7 +49,7 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<CrossFileOutput> {
-    const { exportedTypeMap, allPaths, totalFiles, bindingAccumulator, resolutionContext } =
+    const { exportedTypeMap, allPathSet, totalFiles, bindingAccumulator, resolutionContext } =
       getPhaseOutput<ParseOutput>(deps, 'parse');
 
     try {
@@ -73,7 +73,7 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
         ctx.graph,
         resolutionContext,
         exportedTypeMap,
-        allPaths,
+        allPathSet,
         totalFiles,
         ctx.repoPath,
         ctx.pipelineStart,

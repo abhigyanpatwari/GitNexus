@@ -38,10 +38,6 @@ import {
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
 
-// Re-export topologicalLevelSort from its canonical location for backward compatibility.
-// Unit tests and other modules may import it from pipeline.ts.
-export { topologicalLevelSort } from './utils/graph-sort.js';
-
 export interface PipelineOptions {
   /** Skip MRO, community detection, and process extraction for faster test runs. */
   skipGraphPhases?: boolean;

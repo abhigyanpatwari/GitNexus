@@ -14,7 +14,7 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface ToolDef {
   name: string;

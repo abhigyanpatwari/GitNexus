@@ -44,7 +44,8 @@ import { createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool, WorkerPool } from '../workers/worker-pool.js';
+import { createWorkerPool } from '../workers/worker-pool.js';
+import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
   ExtractedCall,
@@ -63,7 +64,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
 
@@ -78,7 +79,7 @@ type ScannedFile = { path: string; size: number };
 type ProgressFn = (progress: PipelineProgress) => void;
 
 /**
- * Phase 3+4: Chunked parse + resolve loop.
+ * Chunked parse + resolve loop.
  *
  * Reads source in byte-budget chunks (~20MB each). For each chunk:
  * 1. Parse via worker pool (or sequential fallback)
@@ -201,16 +202,15 @@ export async function runChunkedParseAndResolve(
           'parse-worker.js',
         );
         if (fs.existsSync(distWorker)) {
-          workerUrl = pathToFileURL(distWorker) as URL;
+          workerUrl = pathToFileURL(distWorker);
         }
       }
       workerPool = createWorkerPool(workerUrl);
     } catch (err) {
-      if (isDev)
-        console.warn(
-          'Worker pool creation failed, using sequential fallback:',
-          (err as Error).message,
-        );
+      console.warn(
+        'Worker pool creation failed, using sequential fallback:',
+        (err as Error).message,
+      );
     }
   }
 

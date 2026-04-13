@@ -30,7 +30,7 @@ import {
 import { processNextjsFetchRoutes } from '../call-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
@@ -54,8 +54,12 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<RoutesOutput> {
-    const { allPaths, allFetchCalls: parseFetchCalls, allExtractedRoutes, allDecoratorRoutes } =
-      getPhaseOutput<ParseOutput>(deps, 'parse');
+    const {
+      allPaths,
+      allFetchCalls: parseFetchCalls,
+      allExtractedRoutes,
+      allDecoratorRoutes,
+    } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     // Local copy — routes phase must not mutate upstream ParseOutput
     const allFetchCalls = [...parseFetchCalls];
@@ -212,7 +216,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             const existing = ctx.graph.getNode(routeNodeId);
             if (!existing) continue;
 
-            const currentMw = (existing.properties.middleware as string[] | undefined) ?? [];
+            const currentMw = existing.properties.middleware ?? [];
             existing.properties.middleware = [
               ...mwLabel,
               ...currentMw.filter((m) => !mwLabel.includes(m)),

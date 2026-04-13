@@ -13,7 +13,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { processCommunities, type CommunityDetectionResult } from '../community-processor.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 export interface CommunitiesOutput {
   communityResult: CommunityDetectionResult;

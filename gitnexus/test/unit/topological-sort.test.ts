@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { topologicalLevelSort } from '../../src/core/ingestion/pipeline.js';
+import { topologicalLevelSort } from '../../src/core/ingestion/utils/graph-sort.js';
 
 describe('topologicalLevelSort', () => {
   it('returns empty levels for empty graph', () => {
@@ -130,6 +130,16 @@ describe('topologicalLevelSort', () => {
     expect(allFiles).toContain('a.ts');
     expect(allFiles).toContain('b.ts');
     expect(allFiles).toContain('c.ts');
+  });
+
+  it('treats a self-edge (file imports itself) as a cycle', () => {
+    // A imports A — Kahn's never reduces A's pending-imports count below 1,
+    // so A is appended in the cycle group. Preserves prior semantics.
+    const importMap = new Map<string, Set<string>>([['a.ts', new Set(['a.ts'])]]);
+    const { levels, cycleCount } = topologicalLevelSort(importMap);
+    const allFiles = levels.flat();
+    expect(allFiles).toContain('a.ts');
+    expect(cycleCount).toBe(1);
   });
 
   it('all files appear exactly once across all levels', () => {
