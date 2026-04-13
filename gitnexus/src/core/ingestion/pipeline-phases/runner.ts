@@ -13,7 +13,7 @@
  */
 
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
-import { isDev } from './constants.js';
+import { isDev } from '../utils/env.js';
 
 /**
  * Validate that the phases form a valid dependency graph (no cycles, all deps present).
@@ -68,11 +68,73 @@ function topologicalSort(phases: readonly PipelinePhase[]): PipelinePhase[] {
   }
 
   if (sorted.length !== phases.length) {
-    const remaining = [...inDegree.entries()].filter(([, d]) => d > 0).map(([name]) => name);
-    throw new Error(`Cycle detected in pipeline phases: ${remaining.join(', ')}`);
+    const remaining = new Set(
+      [...inDegree.entries()].filter(([, d]) => d > 0).map(([name]) => name),
+    );
+    const cyclePath = findCyclePath(remaining, phaseMap);
+    const dependentsBlocked = remaining.size - new Set(cyclePath).size;
+    let message = `Cycle detected in pipeline phases: ${cyclePath.join(' -> ')}`;
+    if (dependentsBlocked > 0) {
+      message += ` (and ${dependentsBlocked} transitive dependent${dependentsBlocked === 1 ? '' : 's'} blocked)`;
+    }
+    throw new Error(message);
   }
 
   return sorted;
+}
+
+/**
+ * Find a concrete cycle path among the phases that Kahn's algorithm could not drain.
+ *
+ * Kahn's leftovers include both true cycle members AND phases transitively dependent
+ * on them. To produce an actionable error message, we DFS over the leftovers (using
+ * each leftover's `deps` as edges) until we hit a back-edge — that closes the cycle.
+ * The returned list is the cycle in order with the entry node repeated at the end:
+ * `[A, B, C, A]` for `A -> B -> C -> A`.
+ *
+ * Falls back to the raw remaining set (sorted) if no back-edge is found, which
+ * should be unreachable but keeps the error informative.
+ */
+function findCyclePath(
+  remaining: ReadonlySet<string>,
+  phaseMap: ReadonlyMap<string, PipelinePhase>,
+): string[] {
+  for (const start of remaining) {
+    const stack: string[] = [];
+    const onStack = new Set<string>();
+    const visited = new Set<string>();
+
+    const dfs = (name: string): string[] | null => {
+      stack.push(name);
+      onStack.add(name);
+      visited.add(name);
+
+      const phase = phaseMap.get(name);
+      if (phase) {
+        for (const dep of phase.deps) {
+          if (!remaining.has(dep)) continue; // dep already drained — not part of cycle
+          if (onStack.has(dep)) {
+            // Back-edge — slice from the first occurrence of `dep` and close the loop.
+            const cycleStart = stack.indexOf(dep);
+            return [...stack.slice(cycleStart), dep];
+          }
+          if (!visited.has(dep)) {
+            const found = dfs(dep);
+            if (found) return found;
+          }
+        }
+      }
+
+      stack.pop();
+      onStack.delete(name);
+      return null;
+    };
+
+    const cycle = dfs(start);
+    if (cycle) return cycle;
+  }
+  // Unreachable in practice (Kahn proved a cycle exists), but stay defensive.
+  return [...remaining].sort();
 }
 
 /**
@@ -86,7 +148,28 @@ export async function runPipeline(
   phases: readonly PipelinePhase[],
   ctx: PipelineContext,
 ): Promise<ReadonlyMap<string, PhaseResult<unknown>>> {
-  const sorted = topologicalSort(phases);
+  let sorted: PipelinePhase[];
+  try {
+    sorted = topologicalSort(phases);
+  } catch (err) {
+    // Emit a terminal 'error' progress event for graph-validation failures
+    // (cycle detected, duplicate phase, missing dep) so CLI/MCP consumers see
+    // the failure before the rejection propagates. Symmetric with the
+    // per-phase error path below. Best-effort: a throwing handler must not
+    // mask the underlying validation error.
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      ctx.onProgress({
+        phase: 'error',
+        percent: 100,
+        message: 'Pipeline graph validation failed',
+        detail: message,
+      });
+    } catch {
+      // Swallow handler errors — preserving the original cause is more important.
+    }
+    throw err;
+  }
   const results = new Map<string, PhaseResult<unknown>>();
 
   for (const phase of sorted) {

@@ -214,15 +214,34 @@ export interface EnclosingClassInfo {
  *  @param resolveEnclosingOwner  Optional language-specific hook for container remapping.
  *    When provided and a CLASS_CONTAINER_TYPES node is found, this hook is called:
  *    - Return a different SyntaxNode to remap the container (e.g., Ruby singleton_class → class).
- *    - Return null to skip this container and keep walking up.
- *    When omitted, the container node is used as-is. */
+ *    - Return `null` to skip this container and keep walking up.
+ *    - Return the input node (identity) to use the container as-is.
+ *    When omitted, the container node is used as-is.
+ *
+ *    INVARIANT: Implementers SHOULD return either `null`, the input node, or
+ *    another CLASS_CONTAINER_TYPES node. Returning a non-container node is
+ *    permitted but discouraged — it will cause the walk to skip the current
+ *    container and continue from the redirected node's parent. The
+ *    `MAX_ENCLOSING_WALK_ITERATIONS` defense-in-depth guard below prevents
+ *    pathological hooks from creating an infinite loop. */
+const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
+
 export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
+  let iterations = 0;
+  // Tracks container nodes already visited via the hook so a misbehaving hook
+  // that keeps redirecting back to the same container cannot loop forever.
+  const visitedContainers = new Set<SyntaxNode>();
   while (current) {
+    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) {
+      // Defense-in-depth: a real source tree has nowhere near this many ancestors.
+      // Bail out rather than hang ingestion.
+      return null;
+    }
     // Go: method_declaration has a receiver parameter with the struct type
     if (current.type === 'method_declaration') {
       const receiver = current.childForFieldName?.('receiver');
@@ -264,6 +283,14 @@ export const findEnclosingClassInfo = (
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Delegate language-specific container remapping to the provider hook.
       if (resolveEnclosingOwner) {
+        if (visitedContainers.has(current)) {
+          // We've already asked the hook about this container once — a loop
+          // would form (e.g., hook redirects to a child node whose parent is
+          // this same container). Skip and walk up.
+          current = current.parent;
+          continue;
+        }
+        visitedContainers.add(current);
         const resolved = resolveEnclosingOwner(current);
         if (resolved === null) {
           // Provider says skip this container — keep walking up.

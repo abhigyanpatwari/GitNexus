@@ -147,6 +147,88 @@ describe('runPipeline', () => {
     await expect(runPipeline([phaseA, phaseB], makeCtx())).rejects.toThrow(/Cycle detected/);
   });
 
+  it('reports only cycle members (not transitive dependents) in cycle error', async () => {
+    // A <-> B is the actual cycle. C, D, E are downstream and would also have
+    // inDegree > 0 after Kahn's drains, but they are NOT cycle members.
+    const phases: PipelinePhase[] = [
+      { name: 'a', deps: ['b'], async execute() {} },
+      { name: 'b', deps: ['a'], async execute() {} },
+      { name: 'c', deps: ['a'], async execute() {} },
+      { name: 'd', deps: ['c'], async execute() {} },
+      { name: 'e', deps: ['c'], async execute() {} },
+    ];
+
+    let caught: Error | undefined;
+    try {
+      await runPipeline(phases, makeCtx());
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    const msg = caught!.message;
+    // Cycle path must include both A and B
+    expect(msg).toMatch(/Cycle detected in pipeline phases: /);
+    expect(msg).toMatch(/\ba\b/);
+    expect(msg).toMatch(/\bb\b/);
+    // Transitive dependents must NOT appear in the cycle path itself,
+    // they should be summarized in the parenthetical.
+    const pathSection = msg.split('(')[0];
+    expect(pathSection).not.toMatch(/\bc\b/);
+    expect(pathSection).not.toMatch(/\bd\b/);
+    expect(pathSection).not.toMatch(/\be\b/);
+    expect(msg).toMatch(/3 transitive dependents blocked/);
+  });
+
+  it('reports the full path for a 3-phase cycle', async () => {
+    // A -> B -> C -> A
+    const phases: PipelinePhase[] = [
+      { name: 'a', deps: ['c'], async execute() {} },
+      { name: 'b', deps: ['a'], async execute() {} },
+      { name: 'c', deps: ['b'], async execute() {} },
+    ];
+
+    let caught: Error | undefined;
+    try {
+      await runPipeline(phases, makeCtx());
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    const msg = caught!.message;
+    expect(msg).toMatch(/Cycle detected in pipeline phases: /);
+    // All three names must appear
+    expect(msg).toMatch(/\ba\b/);
+    expect(msg).toMatch(/\bb\b/);
+    expect(msg).toMatch(/\bc\b/);
+    // Path uses the " -> " arrow separator
+    expect(msg).toMatch(/ -> /);
+    // No transitive-dependent suffix when every leftover IS a cycle member
+    expect(msg).not.toMatch(/transitive dependent/);
+  });
+
+  it("emits a terminal 'error' progress event on cycle detection", async () => {
+    const events: { phase: string; message: string; detail?: string }[] = [];
+    const ctx: PipelineContext = {
+      ...makeCtx(),
+      onProgress: (p) => {
+        events.push({ phase: p.phase, message: p.message, detail: p.detail });
+      },
+    };
+
+    const phases: PipelinePhase[] = [
+      { name: 'x', deps: ['y'], async execute() {} },
+      { name: 'y', deps: ['x'], async execute() {} },
+    ];
+
+    await expect(runPipeline(phases, ctx)).rejects.toThrow(/Cycle detected/);
+
+    const errorEvents = events.filter((e) => e.phase === 'error');
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0].detail).toMatch(/Cycle detected/);
+  });
+
   it('executes a single root phase with no deps', async () => {
     const phase: PipelinePhase<string> = {
       name: 'root',
