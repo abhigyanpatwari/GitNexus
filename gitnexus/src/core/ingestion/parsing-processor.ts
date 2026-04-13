@@ -203,10 +203,11 @@ const exportCache = new Map<SyntaxNode, boolean>();
 const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
 ): EnclosingClassInfo | null => {
   const cached = classInfoCache.get(node);
   if (cached !== undefined) return cached;
-  const result = findEnclosingClassInfo(node, filePath);
+  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
   classInfoCache.set(node, result);
   return result;
 };
@@ -238,32 +239,29 @@ const seqMethodMapCache = new Map<
   { map: Map<string, MethodInfo>; groups: Map<string, MethodInfo[]> }
 >();
 
-function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
+/** Provider-aware enclosing container lookup.
+ *  Walks up from `node` until a CLASS_CONTAINER_TYPES node is found.
+ *  When `resolveEnclosingOwner` is provided, delegates language-specific
+ *  container remapping (e.g., Ruby singleton_class → enclosing class).
+ *  Without the hook, returns the first matching container directly (raw lookup). */
+function seqFindEnclosingOwnerNode(
+  node: SyntaxNode,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+): SyntaxNode | null {
   let current = node.parent;
   while (current) {
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      // Ruby singleton_class (class << self) has no name field, so owner/class
-      // resolution should skip it and return the enclosing class/module instead.
-      // A file-root `class << self` has no enclosing class/module, so this
-      // intentionally falls through to null rather than synthesizing an owner.
-      if (current.type === 'singleton_class') {
-        current = current.parent;
-        continue;
+      if (resolveEnclosingOwner) {
+        const resolved = resolveEnclosingOwner(current);
+        if (resolved === null) {
+          // Provider says skip this container — keep walking up.
+          current = current.parent;
+          continue;
+        }
+        return resolved;
       }
       return current;
     }
-    current = current.parent;
-  }
-  return null;
-}
-
-/** Raw enclosing container lookup for extractor-only context.
- *  Unlike seqFindEnclosingClassNode(), this intentionally returns
- *  `singleton_class` so Ruby `class << self` methods preserve static context. */
-function seqFindRawEnclosingContainerNode(node: SyntaxNode): SyntaxNode | null {
-  let current = node.parent;
-  while (current) {
-    if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
     current = current.parent;
   }
   return null;
@@ -437,7 +435,11 @@ const processParsingSequential = async (
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
       const enclosingClassInfo = needsOwner
-        ? cachedFindEnclosingClassInfo(nameNode || definitionNodeForRange, file.path)
+        ? cachedFindEnclosingClassInfo(
+            nameNode || definitionNodeForRange,
+            file.path,
+            provider.resolveEnclosingOwner,
+          )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
 
@@ -463,9 +465,9 @@ const processParsingSequential = async (
 
         if (provider.methodExtractor) {
           // Try class-based extraction (method inside a class/struct/trait body).
-          // Ruby `class << self` needs the singleton_class node for `isStatic`,
-          // while owner/class resolution still skips it elsewhere.
-          const methodOwnerNode = seqFindRawEnclosingContainerNode(definitionNode);
+          // Raw lookup (no resolveEnclosingOwner) so the method extractor sees
+          // the actual container node (e.g. singleton_class) for static detection.
+          const methodOwnerNode = seqFindEnclosingOwnerNode(definitionNode);
           if (methodOwnerNode) {
             // Cache extract() results per class node to avoid re-traversing the
             // same class body for every method it contains (O(N) -> O(1) per hit).
@@ -595,7 +597,10 @@ const processParsingSequential = async (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode = seqFindEnclosingClassNode(definitionNode);
+          const classNode = seqFindEnclosingOwnerNode(
+            definitionNode,
+            provider.resolveEnclosingOwner,
+          );
           if (classNode) {
             const fieldMap = seqGetFieldInfo(classNode, provider, {
               typeEnv,

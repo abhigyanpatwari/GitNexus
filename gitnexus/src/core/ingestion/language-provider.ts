@@ -89,6 +89,16 @@ interface LanguageProviderConfig {
     projectConfig: unknown,
   ) => void;
 
+  // ── Enclosing owner resolution ─────────────────────────────────
+  /** Resolve a container node during enclosing-owner tree walks.
+   *  Called when a CLASS_CONTAINER_TYPES node is found while walking up.
+   *  - Return a different SyntaxNode to remap the container (e.g., Ruby
+   *    singleton_class → enclosing class/module).
+   *  - Return null to skip this container and keep walking up.
+   *  - Omit (undefined) to use the container node as-is (default).
+   *  Default: undefined (no remapping). */
+  readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
+
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
    *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the

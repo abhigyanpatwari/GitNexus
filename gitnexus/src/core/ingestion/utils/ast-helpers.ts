@@ -209,10 +209,17 @@ export interface EnclosingClassInfo {
 }
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
- *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct). */
+ *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct).
+ *
+ *  @param resolveEnclosingOwner  Optional language-specific hook for container remapping.
+ *    When provided and a CLASS_CONTAINER_TYPES node is found, this hook is called:
+ *    - Return a different SyntaxNode to remap the container (e.g., Ruby singleton_class → class).
+ *    - Return null to skip this container and keep walking up.
+ *    When omitted, the container node is used as-is. */
 export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   while (current) {
@@ -255,6 +262,21 @@ export const findEnclosingClassInfo = (
       }
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      // Delegate language-specific container remapping to the provider hook.
+      if (resolveEnclosingOwner) {
+        const resolved = resolveEnclosingOwner(current);
+        if (resolved === null) {
+          // Provider says skip this container — keep walking up.
+          current = current.parent;
+          continue;
+        }
+        if (resolved !== current) {
+          // Provider remapped to a different node — re-evaluate from there.
+          current = resolved;
+          continue;
+        }
+      }
+
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
       // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
       // If modifying this block, update the other location too.
@@ -284,26 +306,6 @@ export const findEnclosingClassInfo = (
             className: firstType.text,
           };
         }
-      }
-
-      // Ruby singleton_class (class << self): walk up to the enclosing class/module
-      // to inherit its name. singleton_class has no name field — its receiver is
-      // `self` (node type 'self'), not 'identifier' or 'constant'.
-      if (current.type === 'singleton_class') {
-        let ancestor = current.parent;
-        while (ancestor) {
-          if (ancestor.type === 'class' || ancestor.type === 'module') {
-            const classNameNode = ancestor.childForFieldName?.('name');
-            if (classNameNode) {
-              return {
-                classId: generateId('Class', `${filePath}:${classNameNode.text}`),
-                className: classNameNode.text,
-              };
-            }
-          }
-          ancestor = ancestor.parent;
-        }
-        // No enclosing class/module — skip singleton_class and keep walking up
       }
 
       const nameNode =

@@ -108,6 +108,21 @@ export const rubyProvider = defineLanguage({
   importResolver: resolveRubyImport,
   callRouter: routeRubyCall,
   importSemantics: 'wildcard',
+  resolveEnclosingOwner(node) {
+    // Ruby singleton_class (class << self) should resolve to the enclosing
+    // class or module for owner/container resolution (HAS_METHOD edges, class IDs).
+    if (node.type === 'singleton_class') {
+      let ancestor = node.parent;
+      while (ancestor) {
+        if (ancestor.type === 'class' || ancestor.type === 'module') {
+          return ancestor;
+        }
+        ancestor = ancestor.parent;
+      }
+      return null; // no enclosing class/module — skip
+    }
+    return node; // use as-is for all other container types
+  },
   fieldExtractor: createFieldExtractor(rubyFieldConfig),
   methodExtractor: createMethodExtractor({
     ...rubyMethodConfig,

@@ -561,7 +561,11 @@ const findEnclosingFunctionId = (
           if (override !== null) finalLabel = override;
         }
         // Qualify with enclosing class to match definition-phase node IDs
-        const classInfo = cachedFindEnclosingClassInfo(current, filePath);
+        const classInfo = cachedFindEnclosingClassInfo(
+          current,
+          filePath,
+          provider.resolveEnclosingOwner,
+        );
         const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
@@ -613,6 +617,7 @@ const findEnclosingFunctionId = (
         const classInfo = cachedFindEnclosingClassInfo(
           current.previousSibling ?? current,
           filePath,
+          provider.resolveEnclosingOwner,
         );
         const qualifiedName = classInfo
           ? `${classInfo.className}.${customResult.funcName}`
@@ -663,11 +668,12 @@ const findEnclosingFunctionId = (
 const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
-  const result = findEnclosingClassInfo(node, filePath);
+  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
   classIdCache.set(node, result);
   return result;
 };
@@ -1715,7 +1721,11 @@ const processFileGroup = (
             }
 
             if (routed.kind === 'properties') {
-              const propEnclosingInfo = cachedFindEnclosingClassInfo(captureMap['call'], file.path);
+              const propEnclosingInfo = cachedFindEnclosingClassInfo(
+                captureMap['call'],
+                file.path,
+                provider.resolveEnclosingOwner,
+              );
               const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
               // Enrich routed properties with FieldExtractor metadata
               let routedFieldMap: Map<string, FieldInfo> | undefined;
@@ -1944,7 +1954,11 @@ const processFileGroup = (
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
       const enclosingClassInfo = needsOwner
-        ? cachedFindEnclosingClassInfo(nameNode || definitionNode, file.path)
+        ? cachedFindEnclosingClassInfo(
+            nameNode || definitionNode,
+            file.path,
+            provider.resolveEnclosingOwner,
+          )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
 

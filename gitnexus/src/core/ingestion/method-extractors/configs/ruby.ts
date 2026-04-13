@@ -219,6 +219,7 @@ export const rubyMethodConfig: MethodExtractionConfig = {
   typeDeclarationNodes: ['class', 'module', 'singleton_class'],
   methodNodeTypes: ['method', 'singleton_method'],
   bodyNodeTypes: ['body_statement'],
+  staticOwnerTypes: new Set(['singleton_class']),
 
   extractOwnerName(node) {
     // singleton_class (class << self) inherits the enclosing class/module name

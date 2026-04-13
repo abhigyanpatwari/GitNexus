@@ -16,9 +16,6 @@ import type {
   MethodInfo,
 } from '../method-types.js';
 
-/** Owner node types where member functions are effectively static (JVM/Ruby semantics). */
-const STATIC_OWNER_TYPES = new Set(['companion_object', 'object_declaration', 'singleton_class']);
-
 /**
  * Create a MethodExtractor from a declarative config.
  */
@@ -184,8 +181,10 @@ function buildMethod(
   // Domain invariant: abstract methods cannot be final
   if (isAbstract) isFinal = false;
 
-  // companion_object / object_declaration members are effectively static on JVM
-  const isStatic = STATIC_OWNER_TYPES.has(ownerNode.type) || config.isStatic(node);
+  // Static-owner detection is config-driven: each language declares which
+  // container node types imply static (e.g. Ruby singleton_class, Kotlin companion_object).
+  const isStatic =
+    (config.staticOwnerTypes?.has(ownerNode.type) ?? false) || config.isStatic(node);
 
   return {
     name,
