@@ -13,8 +13,7 @@ import { getPhaseOutput } from './types.js';
 import { processMarkdown } from '../markdown-processor.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface MarkdownOutput {
   /** Number of markdown sections extracted. */

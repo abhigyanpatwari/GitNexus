@@ -42,6 +42,9 @@ export function extractORMQueriesInline(
   const hasSupabase = content.includes('supabase.from');
   if (!hasPrisma && !hasSupabase) return;
 
+  // Pre-compute line number offsets to avoid O(n²) substring+split per match
+  const lineOffsets = buildLineOffsets(content);
+
   if (hasPrisma) {
     PRISMA_QUERY_RE.lastIndex = 0;
     let m;
@@ -53,7 +56,7 @@ export function extractORMQueriesInline(
         orm: 'prisma',
         model,
         method: m[2],
-        lineNumber: content.substring(0, m.index).split('\n').length - 1,
+        lineNumber: lineNumberAtOffset(lineOffsets, m.index),
       });
     }
   }
@@ -67,8 +70,31 @@ export function extractORMQueriesInline(
         orm: 'supabase',
         model: m[1],
         method: m[2],
-        lineNumber: content.substring(0, m.index).split('\n').length - 1,
+        lineNumber: lineNumberAtOffset(lineOffsets, m.index),
       });
     }
   }
+}
+
+// ── Line offset helpers ───────────────────────────────────────────────────
+
+/** Build an array of byte offsets where each newline occurs (O(n) once). */
+function buildLineOffsets(content: string): number[] {
+  const offsets: number[] = [];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') offsets.push(i);
+  }
+  return offsets;
+}
+
+/** Binary search for 0-based line number at a given character offset (O(log n)). */
+function lineNumberAtOffset(lineOffsets: number[], offset: number): number {
+  let lo = 0;
+  let hi = lineOffsets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lineOffsets[mid] < offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }

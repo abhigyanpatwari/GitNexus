@@ -14,8 +14,7 @@ import type { ParseOutput } from './parse.js';
 import { generateId } from '../../../lib/utils.js';
 import type { ExtractedORMQuery } from '../workers/parse-worker.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface ORMOutput {
   edgesCreated: number;

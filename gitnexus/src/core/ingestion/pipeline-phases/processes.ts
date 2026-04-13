@@ -17,8 +17,7 @@ import type { RoutesOutput } from './routes.js';
 import type { ToolsOutput } from './tools.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface ProcessesOutput {
   processResult: ProcessDetectionResult;

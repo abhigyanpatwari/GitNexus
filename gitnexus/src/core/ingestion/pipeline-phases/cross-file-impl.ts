@@ -20,11 +20,9 @@ import { createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { topologicalLevelSort } from '../pipeline.js';
+import { topologicalLevelSort } from '../utils/graph-sort.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
-import { AST_CACHE_CAP } from './constants.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { AST_CACHE_CAP, isDev } from './constants.js';
 
 /** Minimum percentage of files that must benefit from cross-file seeding. */
 const CROSS_FILE_SKIP_THRESHOLD = 0.03;

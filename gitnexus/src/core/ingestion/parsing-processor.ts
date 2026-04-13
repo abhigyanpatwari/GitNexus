@@ -146,18 +146,18 @@ const processParsingWithWorkers = async (
       });
     }
 
-    for (const _item of result.imports) allImports.push(_item);
-    for (const _item of result.calls) allCalls.push(_item);
-    for (const _item of result.assignments) allAssignments.push(_item);
-    for (const _item of result.heritage) allHeritage.push(_item);
-    for (const _item of result.routes) allRoutes.push(_item);
-    for (const _item of result.fetchCalls) allFetchCalls.push(_item);
-    for (const _item of result.decoratorRoutes) allDecoratorRoutes.push(_item);
-    for (const _item of result.toolDefs) allToolDefs.push(_item);
-    if (result.ormQueries) for (const _item of result.ormQueries) allORMQueries.push(_item);
-    for (const _item of result.constructorBindings) allConstructorBindings.push(_item);
+    for (const item of result.imports) allImports.push(item);
+    for (const item of result.calls) allCalls.push(item);
+    for (const item of result.assignments) allAssignments.push(item);
+    for (const item of result.heritage) allHeritage.push(item);
+    for (const item of result.routes) allRoutes.push(item);
+    for (const item of result.fetchCalls) allFetchCalls.push(item);
+    for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
+    for (const item of result.toolDefs) allToolDefs.push(item);
+    if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
+    for (const item of result.constructorBindings) allConstructorBindings.push(item);
     if (result.fileScopeBindings)
-      for (const _item of result.fileScopeBindings) fileScopeBindingsByFile.push(_item);
+      for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
   }
 
   // Merge and log skipped languages from workers

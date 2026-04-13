@@ -1,11 +1,11 @@
 /**
  * Pipeline Phases — barrel export.
  *
- * Exports all phases, the DAG runner, types, and shared utilities
+ * Exports all phases, the runner, types, and shared utilities
  * for the ingestion pipeline.
  */
 
-// ── Phase exports (in DAG order) ───────────────────────────────────────────
+// ── Phase exports (in dependency order) ────────────────────────────────────
 
 export { scanPhase, type ScanOutput } from './scan.js';
 export { structurePhase, type StructureOutput } from './structure.js';
@@ -22,13 +22,13 @@ export { processesPhase, type ProcessesOutput } from './processes.js';
 
 // ── Infrastructure ─────────────────────────────────────────────────────────
 
-export { runPipelineDAG } from './runner.js';
+export { runPipeline } from './runner.js';
 export type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 export { getPhaseOutput } from './types.js';
 
 // ── Shared utilities (consumed by phase implementations) ───────────────────
 
-export { AST_CACHE_CAP } from './constants.js';
+export { AST_CACHE_CAP, isDev } from './constants.js';
 export {
   synthesizeWildcardImportBindings,
   isWildcardImportLanguage,

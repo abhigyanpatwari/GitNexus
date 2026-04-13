@@ -30,8 +30,7 @@ import {
 import { processNextjsFetchRoutes } from '../call-processor.js';
 import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
@@ -55,8 +54,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<RoutesOutput> {
-    const { allPaths, allFetchCalls, allExtractedRoutes, allDecoratorRoutes } =
+    const { allPaths, allFetchCalls: parseFetchCalls, allExtractedRoutes, allDecoratorRoutes } =
       getPhaseOutput<ParseOutput>(deps, 'parse');
+
+    // Local copy — routes phase must not mutate upstream ParseOutput
+    const allFetchCalls = [...parseFetchCalls];
 
     const routeRegistry = new Map<string, RouteEntry>();
 

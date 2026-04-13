@@ -7,7 +7,7 @@
  * chunk, and synthesizes wildcard import bindings.
  *
  * Consumed by the parse phase (`parse.ts`) — the phase file handles
- * DAG wiring while the heavy implementation lives here.
+ * dependency wiring while the heavy implementation lives here.
  *
  * @module
  */
@@ -63,11 +63,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { AST_CACHE_CAP } from './constants.js';
+import { AST_CACHE_CAP, isDev } from './constants.js';
 import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
-
-const isDev = process.env.NODE_ENV === 'development';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -314,12 +312,12 @@ export async function runChunkedParseAndResolve(
             );
           }
         }
-        for (const _item of chunkWorkerData.calls) deferredWorkerCalls.push(_item);
-        for (const _item of chunkWorkerData.heritage) deferredWorkerHeritage.push(_item);
-        for (const _item of chunkWorkerData.constructorBindings)
-          deferredConstructorBindings.push(_item);
+        for (const item of chunkWorkerData.calls) deferredWorkerCalls.push(item);
+        for (const item of chunkWorkerData.heritage) deferredWorkerHeritage.push(item);
+        for (const item of chunkWorkerData.constructorBindings)
+          deferredConstructorBindings.push(item);
         if (chunkWorkerData.assignments?.length) {
-          for (const _item of chunkWorkerData.assignments) deferredAssignments.push(_item);
+          for (const item of chunkWorkerData.assignments) deferredAssignments.push(item);
         }
 
         await Promise.all([
@@ -368,19 +366,19 @@ export async function runChunkedParseAndResolve(
           }
         }
         if (chunkWorkerData.fetchCalls?.length) {
-          for (const _item of chunkWorkerData.fetchCalls) allFetchCalls.push(_item);
+          for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
         if (chunkWorkerData.routes?.length) {
-          for (const _item of chunkWorkerData.routes) allExtractedRoutes.push(_item);
+          for (const item of chunkWorkerData.routes) allExtractedRoutes.push(item);
         }
         if (chunkWorkerData.decoratorRoutes?.length) {
-          for (const _item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(_item);
+          for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
         }
         if (chunkWorkerData.toolDefs?.length) {
-          for (const _item of chunkWorkerData.toolDefs) allToolDefs.push(_item);
+          for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
         }
         if (chunkWorkerData.ormQueries?.length) {
-          for (const _item of chunkWorkerData.ormQueries) allORMQueries.push(_item);
+          for (const item of chunkWorkerData.ormQueries) allORMQueries.push(item);
         }
       } else {
         await processImports(graph, chunkFiles, astCache, ctx, undefined, repoPath, allPaths);
@@ -475,7 +473,7 @@ export async function runChunkedParseAndResolve(
     }
     const chunkFetchCalls = await extractFetchCallsFromFiles(chunkFiles, astCache);
     if (chunkFetchCalls.length > 0) {
-      for (const _item of chunkFetchCalls) allFetchCalls.push(_item);
+      for (const item of chunkFetchCalls) allFetchCalls.push(item);
     }
     for (const f of chunkFiles) {
       extractORMQueriesInline(f.path, f.content, allORMQueries);

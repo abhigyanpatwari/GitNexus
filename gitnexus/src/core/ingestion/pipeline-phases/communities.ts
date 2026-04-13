@@ -13,8 +13,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { processCommunities, type CommunityDetectionResult } from '../community-processor.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface CommunitiesOutput {
   communityResult: CommunityDetectionResult;
@@ -32,13 +31,13 @@ export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
 
     ctx.onProgress({
       phase: 'communities',
-      percent: 82,
+      percent: 84,
       message: 'Detecting code communities...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
     const communityResult = await processCommunities(ctx.graph, (message, progress) => {
-      const communityProgress = 82 + progress * 0.1;
+      const communityProgress = 84 + progress * 0.09;
       ctx.onProgress({
         phase: 'communities',
         percent: Math.round(communityProgress),

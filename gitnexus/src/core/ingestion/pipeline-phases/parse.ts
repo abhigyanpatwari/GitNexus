@@ -33,7 +33,7 @@ import { runChunkedParseAndResolve } from './parse-impl.js';
 
 export interface ParseOutput {
   exportedTypeMap: ExportedTypeMap;
-  allFetchCalls: ExtractedFetchCall[];
+  readonly allFetchCalls: readonly ExtractedFetchCall[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];

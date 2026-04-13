@@ -10,3 +10,6 @@
 /** Max AST trees to keep in LRU cache.
  *  Shared between parse-impl.ts and cross-file-impl.ts. */
 export const AST_CACHE_CAP = 50;
+
+/** Whether we're running in development mode (enables verbose console logging). */
+export const isDev = process.env.NODE_ENV === 'development';

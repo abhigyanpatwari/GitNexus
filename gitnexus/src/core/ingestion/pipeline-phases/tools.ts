@@ -14,8 +14,7 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface ToolDef {
   name: string;

@@ -13,8 +13,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { computeMRO } from '../mro-processor.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './constants.js';
 
 export interface MROOutput {
   entries: number;
@@ -34,8 +33,8 @@ export const mroPhase: PipelinePhase<MROOutput> = {
     const { totalFiles } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     ctx.onProgress({
-      phase: 'parsing',
-      percent: 81,
+      phase: 'enriching',
+      percent: 83,
       message: 'Computing method resolution order...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });

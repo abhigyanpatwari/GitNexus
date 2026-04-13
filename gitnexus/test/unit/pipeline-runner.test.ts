@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runPipelineDAG } from '../../src/core/ingestion/pipeline-phases/runner.js';
+import { runPipeline } from '../../src/core/ingestion/pipeline-phases/runner.js';
 import type {
   PipelinePhase,
   PipelineContext,
@@ -17,7 +17,7 @@ function makeCtx(): PipelineContext {
   };
 }
 
-describe('runPipelineDAG', () => {
+describe('runPipeline', () => {
   it('executes phases in dependency order', async () => {
     const order: string[] = [];
 
@@ -61,7 +61,7 @@ describe('runPipelineDAG', () => {
       },
     };
 
-    const results = await runPipelineDAG([phaseD, phaseA, phaseC, phaseB], makeCtx());
+    const results = await runPipeline([phaseD, phaseA, phaseC, phaseB], makeCtx());
 
     // A must run before B and C; B and C must run before D
     expect(order.indexOf('a')).toBeLessThan(order.indexOf('b'));
@@ -85,7 +85,7 @@ describe('runPipelineDAG', () => {
       },
     };
 
-    await runPipelineDAG([phase], ctx);
+    await runPipeline([phase], ctx);
     expect(seenContexts).toHaveLength(1);
     expect(seenContexts[0]).toBe(ctx);
   });
@@ -100,7 +100,7 @@ describe('runPipelineDAG', () => {
       },
     };
 
-    const results = await runPipelineDAG([phase], makeCtx());
+    const results = await runPipeline([phase], makeCtx());
     const result = results.get('slow')!;
     expect(result.phaseName).toBe('slow');
     expect(result.output).toBe(42);
@@ -119,7 +119,7 @@ describe('runPipelineDAG', () => {
       async execute() {},
     };
 
-    await expect(runPipelineDAG([phaseA, phaseB], makeCtx())).rejects.toThrow(
+    await expect(runPipeline([phaseA, phaseB], makeCtx())).rejects.toThrow(
       /Duplicate phase name/,
     );
   });
@@ -131,7 +131,7 @@ describe('runPipelineDAG', () => {
       async execute() {},
     };
 
-    await expect(runPipelineDAG([phase], makeCtx())).rejects.toThrow(/depends on 'nonexistent'/);
+    await expect(runPipeline([phase], makeCtx())).rejects.toThrow(/depends on 'nonexistent'/);
   });
 
   it('rejects cyclic dependencies', async () => {
@@ -146,7 +146,7 @@ describe('runPipelineDAG', () => {
       async execute() {},
     };
 
-    await expect(runPipelineDAG([phaseA, phaseB], makeCtx())).rejects.toThrow(/Cycle detected/);
+    await expect(runPipeline([phaseA, phaseB], makeCtx())).rejects.toThrow(/Cycle detected/);
   });
 
   it('executes a single root phase with no deps', async () => {
@@ -158,7 +158,7 @@ describe('runPipelineDAG', () => {
       },
     };
 
-    const results = await runPipelineDAG([phase], makeCtx());
+    const results = await runPipeline([phase], makeCtx());
     expect(results.get('root')?.output).toBe('hello');
   });
 
@@ -183,7 +183,7 @@ describe('runPipelineDAG', () => {
       });
     }
 
-    const results = await runPipelineDAG(phases, makeCtx());
+    const results = await runPipeline(phases, makeCtx());
     expect(results.get('step4')?.output).toBe(4);
     expect(order).toEqual(['step0', 'step1', 'step2', 'step3', 'step4']);
   });
