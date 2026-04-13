@@ -312,7 +312,9 @@ export const loadGraphToLbug = async (
   await Promise.all(
     Array.from(pairWriteStreams.values()).map(
       (ws) =>
-        new Promise<void>((resolve, reject) => ws.end((err: Error | undefined) => (err ? reject(err) : resolve()))),
+        new Promise<void>((resolve, reject) =>
+          ws.end((err: Error | undefined) => (err ? reject(err) : resolve())),
+        ),
     ),
   );
 
@@ -346,9 +348,7 @@ export const loadGraphToLbug = async (
           await conn.query(retryQuery);
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          warnings.push(
-            `${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`,
-          );
+          warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
           failedPairEdges += rows;
           failedPairCsvPaths.add(pairCsvPath);
         }
