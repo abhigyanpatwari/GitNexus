@@ -75,6 +75,23 @@ export const TYPESCRIPT_QUERIES = `
   function: (member_expression
     property: (property_identifier) @call.name)) @call
 
+; Generic awaited free call: await fn<T>(args)
+; tree-sitter-typescript parses "await fn<T>(args)" as a call_expression whose
+; "function" field is an await_expression (not a bare identifier), because the
+; grammar resolves the ambiguity between generics and comparisons by consuming
+; "await fn" as an expression before attaching <T> as type_arguments.
+(call_expression
+  function: (await_expression
+    (identifier) @call.name)
+  (type_arguments)) @call
+
+; Generic awaited member call: await obj.fn<T>(args)
+(call_expression
+  function: (await_expression
+    (member_expression
+      property: (property_identifier) @call.name))
+  (type_arguments)) @call
+
 ; Constructor calls: new Foo()
 (new_expression
   constructor: (identifier) @call.name) @call

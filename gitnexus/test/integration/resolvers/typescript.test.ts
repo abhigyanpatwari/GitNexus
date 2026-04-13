@@ -146,6 +146,45 @@ describe('TypeScript call resolution with arity filtering', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generic function call resolution: await fn<T>(args) creates CALLS edges
+// ---------------------------------------------------------------------------
+
+describe('TypeScript generic awaited call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-generic-calls'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves authenticateUser → verifyToken via awaited generic call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const authCall = calls.find(
+      (c) => c.source === 'authenticateUser' && c.target === 'verifyToken',
+    );
+    expect(authCall).toBeDefined();
+    expect(authCall!.targetFilePath).toBe('src/token.ts');
+  });
+
+  it('resolves authenticateAdmin → verifyToken via awaited generic call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const adminCall = calls.find(
+      (c) => c.source === 'authenticateAdmin' && c.target === 'verifyToken',
+    );
+    expect(adminCall).toBeDefined();
+    expect(adminCall!.targetFilePath).toBe('src/token.ts');
+  });
+
+  it('verifyToken has exactly 2 incoming CALLS edges (both callers resolved)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const incoming = calls.filter((c) => c.target === 'verifyToken');
+    expect(incoming.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Member-call resolution: obj.method() resolves through pipeline
 // ---------------------------------------------------------------------------
 
