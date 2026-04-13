@@ -762,7 +762,9 @@ const processBatch = (
         }
       }
     } else {
-      regularFiles.push(...langFiles);
+      // Manual loop (not spread) — `push(...arr)` blows the stack on very
+      // large arrays when langFiles has tens of thousands of entries.
+      for (const f of langFiles) regularFiles.push(f);
     }
 
     // Process regular files for this language
@@ -2194,7 +2196,7 @@ const processFileGroup = (
     // Extract framework routes via provider detection (e.g., Laravel routes.php)
     if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
-      result.routes.push(...extractedRoutes);
+      for (const r of extractedRoutes) result.routes.push(r);
     }
 
     // Extract ORM queries (Prisma, Supabase)

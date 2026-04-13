@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { createReadStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
 import lbug from '@ladybugdb/core';
@@ -247,9 +247,12 @@ export const loadGraphToLbug = async (
   }
 
   // Bulk COPY relationships — split by FROM→TO label pair (LadybugDB requires it)
-  // Stream-read the relation CSV line by line to avoid exceeding V8 max string length
+  // Stream-read the relation CSV line by line and write directly to per-pair
+  // temp files on disk. This avoids accumulating potentially millions of CSV
+  // lines in memory which could exceed V8 Map or array limits on large repos.
   let relHeader = '';
-  const relsByPair = new Map<string, string[]>();
+  const relsByPairMeta = new Map<string, { csvPath: string; rows: number }>();
+  const pairWriteStreams = new Map<string, import('fs').WriteStream>();
   let skippedRels = 0;
   let totalValidRels = 0;
 
@@ -278,37 +281,46 @@ export const loadGraphToLbug = async (
         return;
       }
       const pairKey = `${fromLabel}|${toLabel}`;
-      let list = relsByPair.get(pairKey);
-      if (!list) {
-        list = [];
-        relsByPair.set(pairKey, list);
+      let ws = pairWriteStreams.get(pairKey);
+      if (!ws) {
+        const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
+        ws = createWriteStream(pairCsvPath, 'utf-8');
+        ws.write(relHeader + '\n');
+        pairWriteStreams.set(pairKey, ws);
+        relsByPairMeta.set(pairKey, { csvPath: pairCsvPath, rows: 0 });
       }
-      list.push(line);
+      ws.write(line + '\n');
+      relsByPairMeta.get(pairKey)!.rows++;
       totalValidRels++;
     });
     rl.on('close', resolve);
     rl.on('error', reject);
   });
 
+  // Close all per-pair write streams before COPY
+  await Promise.all(
+    Array.from(pairWriteStreams.values()).map(
+      (ws) => new Promise<void>((resolve) => ws.end(() => resolve())),
+    ),
+  );
+
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
   if (insertedRels > 0) {
-    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPairMeta.size} types`);
 
     let pairIdx = 0;
     let failedPairEdges = 0;
-    const failedPairLines: string[] = [];
+    const failedPairCsvPaths: string[] = [];
 
-    for (const [pairKey, lines] of relsByPair) {
+    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPairMeta) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
-      const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
-      await fs.writeFile(pairCsvPath, relHeader + '\n' + lines.join('\n'), 'utf-8');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
-      if (pairIdx % 5 === 0 || lines.length > 1000) {
-        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
+      if (pairIdx % 5 === 0 || rows > 1000) {
+        log(`Loading edges: ${pairIdx}/${relsByPairMeta.size} types (${fromLabel} -> ${toLabel})`);
       }
 
       try {
@@ -323,20 +335,40 @@ export const loadGraphToLbug = async (
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
           warnings.push(
-            `${fromLabel}->${toLabel} (${lines.length} edges): ${retryMsg.slice(0, 80)}`,
+            `${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`,
           );
-          failedPairEdges += lines.length;
-          failedPairLines.push(...lines);
+          failedPairEdges += rows;
+          failedPairCsvPaths.push(pairCsvPath);
         }
       }
-      try {
-        await fs.unlink(pairCsvPath);
-      } catch {}
+      // Only delete if not in failedPairCsvPaths (needed for fallback)
+      if (!failedPairCsvPaths.includes(pairCsvPath)) {
+        try {
+          await fs.unlink(pairCsvPath);
+        } catch {}
+      }
     }
 
-    if (failedPairLines.length > 0) {
+    if (failedPairCsvPaths.length > 0) {
       log(`Inserting ${failedPairEdges} edges individually (missing schema pairs)`);
-      await fallbackRelationshipInserts([relHeader, ...failedPairLines], validTables, getNodeLabel);
+      // Read failed pair files and merge for fallback inserts
+      const allLines: string[] = [relHeader];
+      for (const failedPath of failedPairCsvPaths) {
+        try {
+          const content = await fs.readFile(failedPath, 'utf-8');
+          const lines = content.split('\n');
+          // Skip header line (first) and empty lines
+          for (let i = 1; i < lines.length; i++) {
+            if (lines[i].trim()) allLines.push(lines[i]);
+          }
+        } catch {}
+        try {
+          await fs.unlink(failedPath);
+        } catch {}
+      }
+      if (allLines.length > 1) {
+        await fallbackRelationshipInserts(allLines, validTables, getNodeLabel);
+      }
     }
   }
 

@@ -60,72 +60,139 @@ export function c3Linearize(
 ): string[] | null {
   if (cache.has(classId)) return cache.get(classId)!;
 
-  // Cycle detection: if we're already computing this class, the hierarchy is cyclic
+  // Iterative C3 linearization using an explicit work stack. The recursive
+  // version overflows the call stack on deep class hierarchies (10K+
+  // levels in large Android/Java codebases).
+  //
+  // Strategy: maintain a stack of { classId, phase } frames. Each frame
+  // goes through two phases:
+  //   ENTER (0) – check cache / cycle, push parent frames to compute first
+  //   MERGE (1) – all parent linearizations are cached, merge them C3-style
+
   const visiting = inProgress ?? new Set<string>();
-  if (visiting.has(classId)) {
-    cache.set(classId, null);
-    return null;
-  }
-  visiting.add(classId);
 
-  const directParents = parentMap.get(classId);
-  if (!directParents || directParents.length === 0) {
-    visiting.delete(classId);
-    cache.set(classId, []);
-    return [];
-  }
+  const ENTER = 0;
+  const MERGE = 1;
+  const stack: Array<{ id: string; phase: number }> = [{ id: classId, phase: ENTER }];
 
-  // Compute linearization for each parent first
-  const parentLinearizations: string[][] = [];
-  for (const pid of directParents) {
-    const pLin = c3Linearize(pid, parentMap, cache, visiting);
-    if (pLin === null) {
-      visiting.delete(classId);
-      cache.set(classId, null);
-      return null;
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+
+    if (frame.phase === ENTER) {
+      // ── ENTER phase ─────────────────────────────────────────────
+      if (cache.has(frame.id)) {
+        stack.pop();
+        continue;
+      }
+
+      if (visiting.has(frame.id)) {
+        // Cycle detected
+        cache.set(frame.id, null);
+        stack.pop();
+        continue;
+      }
+      visiting.add(frame.id);
+
+      const directParents = parentMap.get(frame.id);
+      if (!directParents || directParents.length === 0) {
+        visiting.delete(frame.id);
+        cache.set(frame.id, []);
+        stack.pop();
+        continue;
+      }
+
+      // Switch to MERGE phase and push parents that still need computing
+      frame.phase = MERGE;
+      let allParentsCached = true;
+      for (let i = directParents.length - 1; i >= 0; i--) {
+        const pid = directParents[i];
+        if (!cache.has(pid)) {
+          stack.push({ id: pid, phase: ENTER });
+          allParentsCached = false;
+        }
+      }
+      // If all parents are already cached, fall through to MERGE immediately
+      if (allParentsCached) {
+        // Fall through (frame.phase is already MERGE, it's at stack top)
+      } else {
+        continue;
+      }
     }
-    parentLinearizations.push([pid, ...pLin]);
-  }
 
-  // Add the direct parents list as the final sequence
-  const sequences = [...parentLinearizations, [...directParents]];
-  const result: string[] = [];
+    // ── MERGE phase ───────────────────────────────────────────────
+    stack.pop();
 
-  while (sequences.some((s) => s.length > 0)) {
-    // Find a good head: one that doesn't appear in the tail of any other sequence
-    let head: string | null = null;
-    for (const seq of sequences) {
-      if (seq.length === 0) continue;
-      const candidate = seq[0];
-      const inTail = sequences.some(
-        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
-      );
-      if (!inTail) {
-        head = candidate;
+    const directParents = parentMap.get(frame.id);
+    if (!directParents || directParents.length === 0) {
+      visiting.delete(frame.id);
+      cache.set(frame.id, []);
+      continue;
+    }
+
+    // Build parent linearizations from cache
+    const parentLinearizations: string[][] = [];
+    let failed = false;
+    for (const pid of directParents) {
+      const pLin = cache.get(pid);
+      if (pLin === undefined) {
+        // Should not happen if phases are ordered correctly, but guard anyway
+        failed = true;
         break;
       }
+      if (pLin === null) {
+        // Parent linearization failed (cycle or inconsistent)
+        failed = true;
+        break;
+      }
+      parentLinearizations.push([pid, ...pLin]);
     }
 
-    if (head === null) {
-      // Inconsistent hierarchy
-      visiting.delete(classId);
-      cache.set(classId, null);
-      return null;
+    if (failed) {
+      visiting.delete(frame.id);
+      cache.set(frame.id, null);
+      continue;
     }
 
-    result.push(head);
+    // Add the direct parents list as the final sequence
+    const sequences = [...parentLinearizations, [...directParents]];
+    const result: string[] = [];
 
-    // Remove the chosen head from all sequences
-    for (const seq of sequences) {
-      if (seq.length > 0 && seq[0] === head) {
-        seq.shift();
+    let inconsistent = false;
+    while (sequences.some((s) => s.length > 0)) {
+      // Find a good head: one that doesn't appear in the tail of any other sequence
+      let head: string | null = null;
+      for (const seq of sequences) {
+        if (seq.length === 0) continue;
+        const candidate = seq[0];
+        const inTail = sequences.some(
+          (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
+        );
+        if (!inTail) {
+          head = candidate;
+          break;
+        }
+      }
+
+      if (head === null) {
+        inconsistent = true;
+        break;
+      }
+
+      result.push(head);
+
+      // Remove the chosen head from all sequences
+      for (const seq of sequences) {
+        if (seq.length > 0 && seq[0] === head) {
+          seq.shift();
+        }
       }
     }
+
+    visiting.delete(frame.id);
+    cache.set(frame.id, inconsistent ? null : result);
   }
 
-  visiting.delete(classId);
-  cache.set(classId, result);
-  return result;
+  return cache.get(classId) ?? null;
 }
 
 // `gatherAncestors` is exported so mro-processor.ts can reuse the same
