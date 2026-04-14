@@ -273,9 +273,11 @@ export const loadGraphToLbug = async (
     const cleanup = (err: Error) => {
       if (settled) return;
       settled = true;
-      rl.close();
-      inputStream.destroy();
-      for (const ws of pairWriteStreams.values()) ws.destroy();
+      try { rl.close(); } catch {}
+      try { inputStream.destroy(); } catch {}
+      for (const ws of pairWriteStreams.values()) {
+        try { ws.destroy(); } catch {}
+      }
       reject(err);
     };
 
@@ -303,9 +305,6 @@ export const loadGraphToLbug = async (
       if (!ws) {
         const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
         ws = createWriteStream(pairCsvPath, 'utf-8');
-        // Safety net — even with the waitingForDrain guard, keep a generous
-        // limit to avoid false warnings from edge cases.
-        ws.setMaxListeners(50);
         // If any per-pair WriteStream errors (disk full, EMFILE, etc.),
         // tear down everything and reject the Promise. Without this handler,
         // a stream error while rl is paused waiting for drain would cause
@@ -346,9 +345,10 @@ export const loadGraphToLbug = async (
   await Promise.all(
     Array.from(pairWriteStreams.values()).map(
       (ws) =>
-        new Promise<void>((resolve, reject) =>
-          ws.end((err: Error | undefined) => (err ? reject(err) : resolve())),
-        ),
+        new Promise<void>((resolve, reject) => {
+          ws.once('error', reject);
+          ws.end(() => { ws.removeListener('error', reject); resolve(); });
+        }),
     ),
   );
 
