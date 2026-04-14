@@ -234,6 +234,51 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 - Node.js >= 18
 - Git repository (uses git for commit tracking)
 
+## Troubleshooting
+
+### `Cannot destructure property 'package' of 'node.target' as it is null`
+
+This is a [known npm bug](https://github.com/npm/cli/issues/8126) in certain npm versions. To fix:
+
+```bash
+# 1. Update npm to the latest version
+npm install -g npm@latest
+
+# 2. Clear the npm cache
+npm cache clean --force
+
+# 3. Retry
+npx gitnexus@latest analyze
+```
+
+### Installation fails with native module errors
+
+Some optional language grammars (Dart, Kotlin, Swift) require native compilation. If they fail, GitNexus still works — those languages will be skipped.
+
+If `npm install -g gitnexus` fails on native modules:
+
+```bash
+# Ensure build tools are available (Linux/macOS)
+# Ubuntu/Debian: sudo apt install python3 make g++
+# macOS: xcode-select --install
+
+# Retry installation
+npm install -g gitnexus
+```
+
+### Analysis runs out of memory
+
+For very large repositories:
+
+```bash
+# Increase Node.js heap size
+NODE_OPTIONS="--max-old-space-size=16384" npx gitnexus analyze
+
+# Exclude large directories
+echo "vendor/" >> .gitnexusignore
+echo "dist/" >> .gitnexusignore
+```
+
 ## Privacy
 
 - All processing happens locally on your machine
