@@ -273,10 +273,16 @@ export const loadGraphToLbug = async (
     const cleanup = (err: Error) => {
       if (settled) return;
       settled = true;
-      try { rl.close(); } catch {}
-      try { inputStream.destroy(); } catch {}
+      try {
+        rl.close();
+      } catch {}
+      try {
+        inputStream.destroy();
+      } catch {}
       for (const ws of pairWriteStreams.values()) {
-        try { ws.destroy(); } catch {}
+        try {
+          ws.destroy();
+        } catch {}
       }
       reject(err);
     };
@@ -347,7 +353,10 @@ export const loadGraphToLbug = async (
       (ws) =>
         new Promise<void>((resolve, reject) => {
           ws.once('error', reject);
-          ws.end(() => { ws.removeListener('error', reject); resolve(); });
+          ws.end(() => {
+            ws.removeListener('error', reject);
+            resolve();
+          });
         }),
     ),
   );

@@ -96,10 +96,16 @@ async function splitRelCsvByLabelPair(
     const cleanup = (err: Error) => {
       if (settled) return;
       settled = true;
-      try { rl.close(); } catch {}
-      try { inputStream.destroy(); } catch {}
+      try {
+        rl.close();
+      } catch {}
+      try {
+        inputStream.destroy();
+      } catch {}
       for (const ws of pairStreams.values()) {
-        try { ws.destroy(); } catch {}
+        try {
+          ws.destroy();
+        } catch {}
       }
       reject(err);
     };
@@ -147,7 +153,10 @@ async function splitRelCsvByLabelPair(
       }
     });
     rl.on('close', () => {
-      if (!settled) { settled = true; resolve(); }
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
     });
     rl.on('error', cleanup);
   });
@@ -199,10 +208,11 @@ describe('splitRelCsvByLabelPair', () => {
     ]);
 
     const streams: MockWriteStream[] = [];
-    const result = await splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel,
-      () => { const ws = new MockWriteStream(); streams.push(ws); return ws; },
-    );
+    const result = await splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, () => {
+      const ws = new MockWriteStream();
+      streams.push(ws);
+      return ws;
+    });
 
     expect(result.totalValidRels).toBe(3);
     expect(result.pairMeta.get('Function|Class')?.rows).toBe(2);
@@ -213,7 +223,10 @@ describe('splitRelCsvByLabelPair', () => {
     const csvPath = writeCsv([HEADER, csvLine('Function:a', 'Class:b')]);
 
     const result = await splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel,
+      csvPath,
+      tmpDir,
+      validTables,
+      getNodeLabel,
       () => new MockWriteStream(),
     );
 
@@ -229,7 +242,10 @@ describe('splitRelCsvByLabelPair', () => {
     ]);
 
     const result = await splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel,
+      csvPath,
+      tmpDir,
+      validTables,
+      getNodeLabel,
       () => new MockWriteStream(),
     );
 
@@ -241,7 +257,10 @@ describe('splitRelCsvByLabelPair', () => {
     const csvPath = writeCsv([HEADER, '', csvLine('Function:a', 'Class:b'), '', '']);
 
     const result = await splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel,
+      csvPath,
+      tmpDir,
+      validTables,
+      getNodeLabel,
       () => new MockWriteStream(),
     );
 
@@ -266,9 +285,7 @@ describe('splitRelCsvByLabelPair', () => {
     };
 
     // Start the split — it will pause on first backpressure
-    const promise = splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel, factory,
-    );
+    const promise = splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, factory);
 
     // Give readline time to buffer and fire lines
     await new Promise((r) => setTimeout(r, 50));
@@ -313,9 +330,7 @@ describe('splitRelCsvByLabelPair', () => {
     };
 
     // Error the first stream after both are created
-    const promise = splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel, factory,
-    );
+    const promise = splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, factory);
 
     await new Promise((r) => setTimeout(r, 20));
     if (streams.length > 0) {
@@ -333,7 +348,10 @@ describe('splitRelCsvByLabelPair', () => {
     const csvPath = writeCsv([HEADER]);
 
     const result = await splitRelCsvByLabelPair(
-      csvPath, tmpDir, validTables, getNodeLabel,
+      csvPath,
+      tmpDir,
+      validTables,
+      getNodeLabel,
       () => new MockWriteStream(),
     );
 
