@@ -7,6 +7,7 @@ import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink }
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
+import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { runExactMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -64,6 +65,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const missingRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
   let autoContracts: StoredContract[] = [];
+  let manifestCrossLinks: CrossLink[] = [];
   let dbExecutors: Map<string, CypherExecutor> | undefined;
 
   const eo = opts?.extractorOverride;
@@ -151,6 +153,21 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
         }
       }
+
+      // Process manifest links while DB pools are still open.
+      // ManifestExtractor is fully implemented but was never wired into this
+      // pipeline — config.links were parsed and validated but silently dropped.
+      if (config.links.length > 0) {
+        const manifestEx = new ManifestExtractor();
+        const manifestResult = await manifestEx.extractFromManifest(config.links, dbExecutors);
+        autoContracts.push(...manifestResult.contracts);
+        manifestCrossLinks = manifestResult.crossLinks;
+        if (opts?.verbose) {
+          console.log(
+            `  manifest: ${manifestCrossLinks.length} cross-links from ${config.links.length} declared links`,
+          );
+        }
+      }
     } finally {
       for (const id of [...new Set(openPoolIds)]) {
         await closeLbug(id).catch(() => {});
@@ -159,7 +176,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   }
 
   const { matched, unmatched } = runExactMatch(autoContracts);
-  const crossLinks: CrossLink[] = matched;
+  const crossLinks: CrossLink[] = [...matched, ...manifestCrossLinks];
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
