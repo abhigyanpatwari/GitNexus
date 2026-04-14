@@ -352,9 +352,10 @@ export const loadGraphToLbug = async (
     Array.from(pairWriteStreams.values()).map(
       (ws) =>
         new Promise<void>((resolve, reject) => {
-          ws.once('error', reject);
+          const onError = (err: Error) => reject(err);
+          ws.on('error', onError);
           ws.end(() => {
-            ws.removeListener('error', reject);
+            ws.removeListener('error', onError);
             resolve();
           });
         }),
