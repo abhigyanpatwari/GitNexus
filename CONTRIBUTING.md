@@ -61,12 +61,26 @@ Two publish workflows ship `gitnexus` to npm:
   every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
   changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with
   version `X.Y.Z-rc.N` and a GitHub prerelease, where:
-  - `X.Y.Z` is the current npm `latest` bumped by the `bump` input (default
-    `patch`; `minor` or `major` when kicking off a bigger cycle).
-  - `N` is auto-incremented by querying the registry for existing
-    `X.Y.Z-rc.*` versions. First rc for a given base is `rc.1`.
-  The guard skips re-runs when HEAD already has a `v*-rc.*` git tag; dispatch
-  with `force: true` to override, or with `bump: minor` to start a new cycle.
+  - `X.Y.Z` is selected automatically. On push (and on dispatch with
+    `bump: auto`, the default) the workflow **continues the active rc cycle**:
+    if the registry already has `X.Y.Z-rc.*` versions with `X.Y.Z` > current
+    `latest`, it reuses the highest such base; otherwise it patch-bumps
+    from `latest`. Dispatching with `bump: patch|minor|major` **resets**
+    the cycle from `latest`.
+  - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
+    registry. First rc for a given base is `rc.1`.
+
+  Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
+  `v<RC>` release tag **atomically, before** calling `npm publish`. The guard
+  refuses to re-run once the marker exists, so a post-publish failure will
+  not mint a duplicate rc for the same commit. The `v<RC>` tag points at a
+  detached release commit whose `package.json` matches the npm tarball
+  exactly (traceable releases). Recovery after a partial failure:
+
+  ```bash
+  git push --delete origin rc/<HEAD_SHA> v<RC>
+  # then redispatch the workflow with force: true
+  ```
 
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 
