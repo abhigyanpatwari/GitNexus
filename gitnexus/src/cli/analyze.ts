@@ -315,12 +315,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
       console.error('');
     } else if (
-      msg.includes("Cannot destructure property") ||
-      msg.includes('node.target') ||
-      msg.includes('Cannot read properties of null') ||
       msg.includes('ERESOLVE') ||
       msg.includes('Could not resolve dependency')
     ) {
+      // Note: the original arborist "Cannot destructure property 'package' of
+      // 'node.target'" crash happens inside npm *before* gitnexus code runs,
+      // so it can't be caught here.  This branch handles dependency-resolution
+      // errors that surface at runtime (e.g. dynamic require failures).
       console.error('  This looks like an npm dependency resolution issue.');
       console.error('  Suggestions:');
       console.error('    1. Clear the npm cache:    npm cache clean --force');

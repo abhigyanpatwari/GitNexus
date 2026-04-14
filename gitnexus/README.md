@@ -238,17 +238,22 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 
-This is a [known npm bug](https://github.com/npm/cli/issues/8126) in certain npm versions. To fix:
+This crash was caused by a dependency URL format that is incompatible with
+certain npm/arborist versions ([npm/cli#8126](https://github.com/npm/cli/issues/8126)).
+It is fixed in **gitnexus v1.6.2+**. Upgrade to the latest version:
 
 ```bash
-# 1. Update npm to the latest version
-npm install -g npm@latest
+npx gitnexus@latest analyze          # always uses the newest release
+# — or —
+npm install -g gitnexus@latest       # upgrade a global install
+```
 
-# 2. Clear the npm cache
-npm cache clean --force
+If you still hit npm install issues after upgrading, these generic workarounds
+may help:
 
-# 3. Retry
-npx gitnexus@latest analyze
+```bash
+npm install -g npm@latest            # update npm itself
+npm cache clean --force              # clear a possibly corrupt cache
 ```
 
 ### Installation fails with native module errors
