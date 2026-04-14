@@ -84,7 +84,7 @@
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
-    "tree-sitter-dart": "https://github.com/UserNobody14/tree-sitter-dart/archive/80e23c07b64494f7e21090bb3450223ef0b192f4.tar.gz",
+    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
     "tree-sitter-swift": "^0.6.0"

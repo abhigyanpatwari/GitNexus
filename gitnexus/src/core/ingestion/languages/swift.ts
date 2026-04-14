@@ -5,7 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Swift traits:
- *   - importSemantics: 'wildcard' (Swift imports entire modules)
+ *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
  *   - heritageDefaultEdge: 'IMPLEMENTS' (protocols are more common than class inheritance)
  *   - implicitImportWirer: all files in the same SPM target see each other
  */
@@ -238,7 +238,7 @@ export const swiftProvider = defineLanguage({
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
   importResolver: resolveSwiftImport,
-  importSemantics: 'wildcard',
+  importSemantics: 'wildcard-leaf',
   heritageDefaultEdge: 'IMPLEMENTS',
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({

@@ -245,7 +245,30 @@ export class HttpRouteExtractor implements ContractExtractor {
       const providerDetections = detections.filter((d) => d.role === 'provider');
       let handlerName: string | null = null;
       const normalizedRoute = normalizeHttpPath(routePath);
-      const match = providerDetections.find((d) => normalizeHttpPath(d.path) === normalizedRoute);
+      // Candidates share the same normalized path. When multiple
+      // detections at the same path exist (e.g. GET + POST /api/orders
+      // in one router), a blind `.find()` silently returned the first
+      // verb — attaching the wrong handler and, when method was not
+      // already pinned by the route reason, the wrong method too.
+      // Disambiguate by method when we know it; refuse to guess when
+      // we don't.
+      const candidates = providerDetections.filter(
+        (d) => normalizeHttpPath(d.path) === normalizedRoute,
+      );
+      let match: (typeof candidates)[number] | undefined;
+      const ambiguousCandidates = !method && candidates.length > 1;
+      if (method) {
+        match = candidates.find((d) => d.method === method);
+      } else if (candidates.length === 1) {
+        match = candidates[0];
+      }
+      // else: multiple candidates + unknown method → leave match
+      // undefined so handlerName stays null and skip symbol
+      // enrichment below, keeping the file-basename fallback instead
+      // of letting pickSymbolUid silently pick the first Function /
+      // Method in the file (which reintroduces the mis-attribution
+      // we were trying to avoid). Method stays at the conservative
+      // 'GET' default set below.
       if (match) {
         if (!method) method = match.method;
         handlerName = match.name;
@@ -259,7 +282,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       let symbolName = path.basename(filePath) || 'handler';
       let symPath = filePath;
       const fileId = row.fileId ?? row[0];
-      if (fileId) {
+      if (fileId && !ambiguousCandidates) {
         try {
           const syms = await db(CONTAINS_QUERY, { fileId });
           if (syms.length > 0) {
@@ -347,10 +370,19 @@ export class HttpRouteExtractor implements ContractExtractor {
       // Prefer the plugin's detected method if we can find a matching
       // fetch/axios call in the same file.
       const detections = filePath ? getDetections(filePath) : [];
-      const inferred = detections.find(
+      // Symmetric to the provider path: if multiple consumer calls in
+      // the same file share the same normalized path (e.g. a GET
+      // fetch AND a POST fetch to `/api/orders`), `.find()` silently
+      // picked the first verb and keyed the contract id on the wrong
+      // method. With no upstream method signal here, refuse to guess
+      // when candidates are ambiguous — leave `method` at its
+      // conservative 'GET' default.
+      const consumerCandidates = detections.filter(
         (d) => d.role === 'consumer' && normalizeConsumerPath(d.path) === pathNorm,
       );
-      if (inferred) method = inferred.method;
+      if (consumerCandidates.length === 1) {
+        method = consumerCandidates[0].method;
+      }
 
       const cid = contractIdFor(method, pathNorm);
       let symbolUid = '';

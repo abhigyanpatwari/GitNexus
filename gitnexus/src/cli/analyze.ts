@@ -297,7 +297,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     const msg = err.message || String(err);
     console.error(`\n  Analysis failed: ${msg}\n`);
 
-    // Provide helpful guidance for known large-repo failure modes
+    // Provide helpful guidance for known failure modes
     if (
       msg.includes('Maximum call stack size exceeded') ||
       msg.includes('call stack') ||
@@ -313,6 +313,28 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('    1. Add large vendored/generated directories to .gitnexusignore');
       console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
       console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
+      console.error('');
+    } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
+      // Note: the original arborist "Cannot destructure property 'package' of
+      // 'node.target'" crash happens inside npm *before* gitnexus code runs,
+      // so it can't be caught here.  This branch handles dependency-resolution
+      // errors that surface at runtime (e.g. dynamic require failures).
+      console.error('  This looks like an npm dependency resolution issue.');
+      console.error('  Suggestions:');
+      console.error('    1. Clear the npm cache:    npm cache clean --force');
+      console.error('    2. Update npm:             npm install -g npm@latest');
+      console.error('    3. Reinstall gitnexus:     npm install -g gitnexus@latest');
+      console.error('    4. Or try npx directly:    npx gitnexus@latest analyze');
+      console.error('');
+    } else if (
+      msg.includes('MODULE_NOT_FOUND') ||
+      msg.includes('Cannot find module') ||
+      msg.includes('ERR_MODULE_NOT_FOUND')
+    ) {
+      console.error('  A required module could not be loaded. The installation may be corrupt.');
+      console.error('  Suggestions:');
+      console.error('    1. Reinstall:   npm install -g gitnexus@latest');
+      console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
       console.error('');
     }
 
