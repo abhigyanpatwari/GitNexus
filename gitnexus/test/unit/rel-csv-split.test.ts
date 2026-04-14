@@ -303,39 +303,47 @@ describe('splitRelCsvByLabelPair', () => {
   it('rejects the Promise when a WriteStream emits an error', async () => {
     const csvPath = writeCsv([HEADER, csvLine('Function:a', 'Class:b')]);
 
-    const factory = () => {
-      const ws = new MockWriteStream();
-      // Trigger error after first write
-      setTimeout(() => ws.triggerError(new Error('disk full')), 10);
-      return ws;
-    };
-
-    await expect(
-      splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, factory),
-    ).rejects.toThrow('disk full');
-  });
-
-  it('destroys all streams when one errors (no lingering FDs)', async () => {
-    const csvPath = writeCsv([
-      HEADER,
-      csvLine('Function:a', 'Class:b'),
-      csvLine('File:c', 'Method:d'),
-    ]);
-
     const streams: MockWriteStream[] = [];
     const factory = () => {
       const ws = new MockWriteStream();
+      ws.blocked = true; // hold the promise open via backpressure
       streams.push(ws);
       return ws;
     };
 
-    // Error the first stream after both are created
     const promise = splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, factory);
 
-    await new Promise((r) => setTimeout(r, 20));
-    if (streams.length > 0) {
-      streams[0].triggerError(new Error('EMFILE'));
+    // Wait for readline to process, then error while paused on drain
+    await new Promise((r) => setTimeout(r, 50));
+    expect(streams.length).toBeGreaterThan(0);
+    streams[0].triggerError(new Error('disk full'));
+
+    await expect(promise).rejects.toThrow('disk full');
+  });
+
+  it('destroys all streams when one errors (no lingering FDs)', async () => {
+    // Use enough lines to create two different pair streams
+    const lines = [HEADER];
+    for (let i = 0; i < 10; i++) {
+      lines.push(csvLine(`Function:f${i}`, `Class:c${i}`));
+      lines.push(csvLine(`File:e${i}`, `Method:m${i}`));
     }
+    const csvPath = writeCsv(lines);
+
+    const streams: MockWriteStream[] = [];
+    const factory = () => {
+      const ws = new MockWriteStream();
+      ws.blocked = true; // hold all streams open via backpressure
+      streams.push(ws);
+      return ws;
+    };
+
+    const promise = splitRelCsvByLabelPair(csvPath, tmpDir, validTables, getNodeLabel, factory);
+
+    // Wait for readline to process and create streams
+    await new Promise((r) => setTimeout(r, 50));
+    expect(streams.length).toBeGreaterThanOrEqual(2);
+    streams[0].triggerError(new Error('EMFILE'));
 
     await expect(promise).rejects.toThrow('EMFILE');
 
