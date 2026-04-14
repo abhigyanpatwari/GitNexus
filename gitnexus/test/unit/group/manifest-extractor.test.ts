@@ -423,7 +423,9 @@ describe('ManifestExtractor', () => {
     expect(seenParam).toBe('/');
     // No match → synthetic uid, no crash.
     const provider = result.contracts.find((c) => c.role === 'provider');
-    expect(provider?.symbolUid).toBe('manifest::orders-svc::http::GET::');
+    // buildContractId canonicalizes the empty path to `/` so contract ids
+    // match regardless of trailing-slash variants in the manifest input.
+    expect(provider?.symbolUid).toBe('manifest::orders-svc::http::GET::/');
   });
 
   it('treats empty method portion (::/api/orders) as a bare path', async () => {
@@ -543,6 +545,37 @@ describe('ManifestExtractor', () => {
     const result = await extractor.extractFromManifest(links);
     const provider = result.contracts.find((c) => c.role === 'provider');
     expect(provider?.contractId).toBe('http::GET::/api/orders');
+  });
+
+  it('canonicalizes method casing so get::/api/orders and GET::/api/orders share a contractId', async () => {
+    // Regression for Copilot's review on PR #817: without canonicalization,
+    // `buildContractId` passed raw casing through (`http::get::/api/orders`)
+    // while `parseHttpContract` upper-cased during lookup, fragmenting
+    // cross-impact joins between providers and consumers that happened to
+    // use different casing conventions in their group.yaml.
+    const lower = await extractor.extractFromManifest([
+      {
+        from: 'gateway',
+        to: 'orders-svc',
+        type: 'http',
+        contract: 'get::/api/orders',
+        role: 'consumer',
+      },
+    ]);
+    const upper = await extractor.extractFromManifest([
+      {
+        from: 'gateway',
+        to: 'orders-svc',
+        type: 'http',
+        contract: 'GET::/api/orders',
+        role: 'consumer',
+      },
+    ]);
+    const lowerContractId = lower.contracts.find((c) => c.role === 'provider')?.contractId;
+    const upperContractId = upper.contracts.find((c) => c.role === 'provider')?.contractId;
+    expect(lowerContractId).toBe('http::GET::/api/orders');
+    expect(upperContractId).toBe('http::GET::/api/orders');
+    expect(lowerContractId).toBe(upperContractId);
   });
 
   it('returns empty for no links', async () => {

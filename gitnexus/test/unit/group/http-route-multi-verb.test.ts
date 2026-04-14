@@ -202,6 +202,49 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
     expect(out[0].symbolName).toBe('routes.ts');
   });
 
+  // ── Provider: multi-verb + CONTAINS rows → must still refuse to guess ──
+  it('provider: ambiguous multi-verb skips CONTAINS enrichment (no silent pool[0] pick)', async () => {
+    // Regression test for Copilot's review on PR #817. Before the fix,
+    // the ambiguous-case code path left `handlerName` null but still ran
+    // the CONTAINS DB query, and `pickSymbolUid(syms, null)` silently
+    // picked pool[0] — reintroducing handler mis-attribution via a
+    // different route than `.find()`.
+    FILE_DETECTIONS.set('routes.ts', [
+      detection('provider', 'GET', '/api/orders', 'listOrders'),
+      detection('provider', 'POST', '/api/orders', 'createOrder'),
+    ]);
+
+    const db = vi.fn(async (query: string) => {
+      if (query.includes('HANDLES_ROUTE')) {
+        return [
+          {
+            fileId: 'f1',
+            filePath: 'routes.ts',
+            routePath: '/api/orders',
+            routeSource: 'unknown-reason',
+          },
+        ];
+      }
+      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'createOrder']);
+      return [];
+    });
+
+    const out = await new HttpRouteExtractor().extract(db, '/repo', {
+      name: 'r',
+      url: 'r',
+    } as never);
+    expect(out).toHaveLength(1);
+    // Ambiguous → do not attribute to any real handler in the file.
+    expect(out[0].symbolName).not.toBe('listOrders');
+    expect(out[0].symbolName).not.toBe('createOrder');
+    expect(out[0].symbolUid).toBe('');
+    expect(out[0].symbolName).toBe('routes.ts');
+    expect(out[0].meta.method).toBe('GET');
+    // CONTAINS query must have been skipped entirely under ambiguity.
+    const calls = db.mock.calls.map(([q]) => q as string);
+    expect(calls.some((q) => q.includes('CONTAINS'))).toBe(false);
+  });
+
   // ── Provider: three-verb method known ──────────────────────────────
   it('provider: three verbs at same path with method known still matches correctly', async () => {
     FILE_DETECTIONS.set('routes.ts', [

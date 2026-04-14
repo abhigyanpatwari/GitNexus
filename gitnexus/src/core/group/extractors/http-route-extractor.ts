@@ -256,15 +256,19 @@ export class HttpRouteExtractor implements ContractExtractor {
         (d) => normalizeHttpPath(d.path) === normalizedRoute,
       );
       let match: (typeof candidates)[number] | undefined;
+      const ambiguousCandidates = !method && candidates.length > 1;
       if (method) {
         match = candidates.find((d) => d.method === method);
       } else if (candidates.length === 1) {
         match = candidates[0];
       }
       // else: multiple candidates + unknown method → leave match
-      // undefined so handlerName stays null (file-basename fallback
-      // via pickSymbolUid) and method stays at the conservative 'GET'
-      // default set below.
+      // undefined so handlerName stays null and skip symbol
+      // enrichment below, keeping the file-basename fallback instead
+      // of letting pickSymbolUid silently pick the first Function /
+      // Method in the file (which reintroduces the mis-attribution
+      // we were trying to avoid). Method stays at the conservative
+      // 'GET' default set below.
       if (match) {
         if (!method) method = match.method;
         handlerName = match.name;
@@ -278,7 +282,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       let symbolName = path.basename(filePath) || 'handler';
       let symPath = filePath;
       const fileId = row.fileId ?? row[0];
-      if (fileId) {
+      if (fileId && !ambiguousCandidates) {
         try {
           const syms = await db(CONTAINS_QUERY, { fileId });
           if (syms.length > 0) {

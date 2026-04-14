@@ -284,8 +284,15 @@ export class ManifestExtractor {
   private buildContractId(type: ContractType, contract: string): string {
     switch (type) {
       case 'http': {
-        if (/^[A-Za-z]+::/.test(contract)) return `http::${contract}`;
-        return `http::*::${contract}`;
+        // Canonicalize method casing and path separators so logically
+        // equivalent inputs (`get::/api/orders` vs `GET::/api/orders`,
+        // or trailing-slash variants) produce the same contractId and
+        // matching `manifestSymbolUid` fallback. Without this, raw
+        // user casing leaks into cross-impact join keys and fragments
+        // matches across repos.
+        const { method, path: rawPath } = parseHttpContract(contract);
+        const normalizedPath = normalizeRoutePath(rawPath);
+        return method ? `http::${method}::${normalizedPath}` : `http::*::${normalizedPath}`;
       }
       case 'grpc':
         return `grpc::${contract}`;
