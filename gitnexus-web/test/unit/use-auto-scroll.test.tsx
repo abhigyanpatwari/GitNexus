@@ -267,9 +267,7 @@ describe('useAutoScroll', () => {
   });
 
   it('attaches the observer when the messages wrapper first appears and disconnects on unmount', () => {
-    const { rerender, unmount } = render(
-      <AutoScrollHarness messages={[]} isChatLoading={false} />,
-    );
+    const { rerender, unmount } = render(<AutoScrollHarness messages={[]} isChatLoading={false} />);
 
     expect(screen.queryByTestId('messages-container')).toBeNull();
     expect(resizeObserverInstances).toHaveLength(0);
