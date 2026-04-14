@@ -154,24 +154,28 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         }
       }
 
-      // Process manifest links while DB pools are still open.
-      // ManifestExtractor is fully implemented but was never wired into this
-      // pipeline — config.links were parsed and validated but silently dropped.
-      if (config.links.length > 0) {
-        const manifestEx = new ManifestExtractor();
-        const manifestResult = await manifestEx.extractFromManifest(config.links, dbExecutors);
-        autoContracts.push(...manifestResult.contracts);
-        manifestCrossLinks = manifestResult.crossLinks;
-        if (opts?.verbose) {
-          console.log(
-            `  manifest: ${manifestCrossLinks.length} cross-links from ${config.links.length} declared links`,
-          );
-        }
-      }
     } finally {
       for (const id of [...new Set(openPoolIds)]) {
         await closeLbug(id).catch(() => {});
       }
+    }
+  }
+
+  // Process manifest links declared in group.yaml.
+  // ManifestExtractor is fully implemented but was never wired into this
+  // pipeline — config.links were parsed and validated but silently dropped.
+  // Placed after the DB try/finally: resolveSymbol falls back to synthetic
+  // UIDs when dbExecutors is undefined or a pool is closed, so cross-links
+  // are always generated regardless of whether real DB executors are available.
+  if (config.links.length > 0) {
+    const manifestEx = new ManifestExtractor();
+    const manifestResult = await manifestEx.extractFromManifest(config.links, dbExecutors);
+    autoContracts.push(...manifestResult.contracts);
+    manifestCrossLinks = manifestResult.crossLinks;
+    if (opts?.verbose) {
+      console.log(
+        `  manifest: ${manifestCrossLinks.length} cross-links from ${config.links.length} declared links`,
+      );
     }
   }
 
