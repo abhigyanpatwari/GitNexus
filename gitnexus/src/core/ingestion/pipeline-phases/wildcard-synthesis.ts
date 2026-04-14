@@ -43,6 +43,13 @@ const IMPORTABLE_SYMBOL_LABELS = new Set([
  *  for C/C++ files that include many large headers. */
 const MAX_SYNTHETIC_BINDINGS_PER_FILE = 1000;
 
+/** Max files allowed in a single transitive include closure. Guards against
+ *  OOM on pathological C/C++ codebases (boost, Linux kernel-style monoheaders)
+ *  where a single translation unit can transitively reach many thousands of
+ *  headers. When the cap is hit, BFS expansion stops early — the file still
+ *  synthesizes bindings from the partial closure rather than failing. */
+const MAX_TRANSITIVE_CLOSURE_SIZE = 5000;
+
 /** Import semantics tags whose languages need synthesis of whole-module imports.
  *  `wildcard-transitive` (C/C++) and `wildcard-leaf` (Go, Ruby, Swift, Dart) are
  *  the file-based wildcard strategies. `explicit-reexport` is a scaffold tag —
@@ -105,6 +112,16 @@ export function needsSynthesis(lang: SupportedLanguages): boolean {
  * Cycle-safe: the `closure.has(file)` guard prevents infinite loops on circular
  * header includes, which are valid C/C++ when paired with `#pragma once` or
  * include guards.
+ *
+ * Size-bounded: the closure is capped at `MAX_TRANSITIVE_CLOSURE_SIZE` files to
+ * prevent OOM on pathological codebases (e.g. boost, monoheader kernel code)
+ * where one translation unit can transitively reach tens of thousands of
+ * headers. Partial closures still yield useful bindings for the cluster of
+ * headers closest to the importer, which is what overload resolution and
+ * cross-file call resolution care about.
+ *
+ * Queue implementation: uses a head-index over a growing array (O(1) dequeue)
+ * instead of `Array.prototype.shift()` (O(n)) so deep chains stay linear.
  */
 export function expandTransitiveIncludeClosure(
   directImports: Iterable<string>,
@@ -113,33 +130,35 @@ export function expandTransitiveIncludeClosure(
 ): Set<string> {
   const closure = new Set<string>();
   const queue: string[] = [];
+  let head = 0; // O(1) dequeue: advance the head index instead of shift()-ing.
+
+  const tryEnqueue = (file: string): boolean => {
+    if (closure.has(file)) return true;
+    if (closure.size >= MAX_TRANSITIVE_CLOSURE_SIZE) return false;
+    closure.add(file);
+    queue.push(file);
+    return true;
+  };
+
   // Seed direct imports in declaration order (see JSDoc on order-sensitivity).
   for (const f of directImports) {
-    if (!closure.has(f)) {
-      closure.add(f);
-      queue.push(f);
-    }
+    if (!tryEnqueue(f)) break;
   }
-  // True BFS for transitive reach: FIFO via shift() preserves the "closer
+  // True BFS for transitive reach: head-index FIFO preserves the "closer
   // headers first" ordering that overload resolution depends on.
-  while (queue.length > 0) {
-    const file = queue.shift()!;
+  while (head < queue.length) {
+    if (closure.size >= MAX_TRANSITIVE_CLOSURE_SIZE) break;
+    const file = queue[head++]!;
     const nested = importMap.get(file);
     if (nested) {
       for (const n of nested) {
-        if (!closure.has(n)) {
-          closure.add(n);
-          queue.push(n);
-        }
+        if (!tryEnqueue(n)) break;
       }
     }
     const nestedGraph = graphImports.get(file);
     if (nestedGraph) {
       for (const n of nestedGraph) {
-        if (!closure.has(n)) {
-          closure.add(n);
-          queue.push(n);
-        }
+        if (!tryEnqueue(n)) break;
       }
     }
   }
@@ -238,8 +257,10 @@ export function synthesizeWildcardImportBindings(
    *     across header chains)
    *   - `wildcard-leaf`: synthesize from direct imports only (Go, Ruby, Swift, Dart)
    *   - `explicit-reexport`: scaffold tag; falls through to leaf behavior.
-   *     TODO: implement re-export DAG walk for TS `export *` / Rust `pub use` —
-   *     tracked as the larger TS barrel-file correctness gap (see plan 2026-04-14-001).
+   *     TODO(#821): implement re-export DAG walk for TS `export *` / Rust
+   *     `pub use`. The leaf fallthrough preserves today's TS/Rust behavior
+   *     (their direct imports still synthesize correctly); only the extra
+   *     re-export DAG walk for barrel-file correctness is missing.
    *   - `namespace` / `named`: no-op here (namespace handled in Loop 3 below,
    *     named needs no synthesis).
    *

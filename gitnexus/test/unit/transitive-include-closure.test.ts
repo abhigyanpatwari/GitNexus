@@ -68,6 +68,21 @@ describe('expandTransitiveIncludeClosure', () => {
     expect(closure.size).toBe(0);
   });
 
+  it('caps closure size to prevent OOM on pathological codebases', () => {
+    // Build a synthetic include graph of 10,000 files, each including the next.
+    // The cap (5000) should halt BFS early with a partial but bounded closure.
+    const importMap = new Map<string, ReadonlySet<string>>();
+    for (let i = 0; i < 10_000; i++) {
+      importMap.set(`h${i}.h`, new Set([`h${i + 1}.h`]));
+    }
+    const closure = expandTransitiveIncludeClosure(new Set(['h0.h']), importMap, EMPTY);
+    expect(closure.size).toBe(5000);
+    // Partial closure still starts from the importer's side (BFS ordering).
+    expect(closure.has('h0.h')).toBe(true);
+    expect(closure.has('h1.h')).toBe(true);
+    expect(closure.has('h9999.h')).toBe(false);
+  });
+
   it('deduplicates when a file is reachable through multiple paths (diamond)', () => {
     //   A
     //  / \
