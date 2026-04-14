@@ -74,7 +74,10 @@ jobs:
           # Guard against a manual workflow_dispatch landing on the same
           # commit that was already released by the preceding push run.
           # Tag scheme: v<base>-rc.<N> (e.g., v1.6.2-rc.3).
-          LAST_TAG=$(git tag --list 'v*-rc.*' --sort=-committerdate | head -n1 || true)
+          # creatordate covers both lightweight and annotated tags by their
+          # actual creation time, unlike committerdate which sorts by the
+          # underlying commit timestamp (wrong for out-of-order pushes).
+          LAST_TAG=$(git tag --list 'v*-rc.*' --sort=-creatordate | head -n1 || true)
           if [ -z "$LAST_TAG" ]; then
             echo "No previous rc tag found — first run."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -98,10 +101,13 @@ jobs:
     needs: guard
     if: needs.guard.outputs.should_run == 'true'
     uses: ./.github/workflows/ci.yml
+    # Minimum necessary for workflow_call into ci.yml:
+    # - save-pr-meta is gated on event_name == 'pull_request' and never runs here
+    # - actions: read is kept in case sub-jobs pull workflow artifacts/metadata
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+    secrets: inherit
 
   # ── Publish the rc build to npm + create GitHub prerelease ───────────
   publish:
@@ -145,13 +151,25 @@ jobs:
           set -euo pipefail
 
           # 1. Base = next stable, derived from current `latest` on npm.
-          #    Falls back to package.json when the package has no published
-          #    `latest` yet (first-ever publish scenario).
-          CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>/dev/null || true)"
-          if [ -z "$CURRENT_LATEST" ]; then
-            CURRENT_LATEST="$(node -p "require('./package.json').version")"
-            echo "No published 'latest' found — seeding from package.json: $CURRENT_LATEST"
+          #    Falls back to package.json ONLY on an E404 (package not yet
+          #    published). Any other error (network, auth, malformed
+          #    response) is surfaced immediately so a transient outage
+          #    can't silently pick the wrong base.
+          NPM_STDERR="$(mktemp)"
+          if CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>"$NPM_STDERR")"; then
+            :
+          else
+            if grep -q 'E404' "$NPM_STDERR"; then
+              CURRENT_LATEST="$(node -p "require('./package.json').version")"
+              echo "Package not yet on registry (E404) — seeding from package.json: $CURRENT_LATEST"
+            else
+              echo "::error::npm registry unreachable or returned an unexpected error:" >&2
+              cat "$NPM_STDERR" >&2
+              rm -f "$NPM_STDERR"
+              exit 1
+            fi
           fi
+          rm -f "$NPM_STDERR"
           # Strip any prerelease suffix from the seed to guarantee a clean base.
           CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
 
@@ -227,8 +245,6 @@ jobs:
             git tag "$TAG" "$HEAD_SHA"
             git push origin "$TAG"
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-        id: reltag
 
       - name: Create GitHub prerelease
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
