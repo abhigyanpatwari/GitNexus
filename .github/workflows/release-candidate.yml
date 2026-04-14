@@ -113,7 +113,6 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
-      actions: read
     secrets: inherit
 
   # ── Publish the rc build to npm + create GitHub prerelease ───────────
@@ -257,9 +256,23 @@ jobs:
 
           # 5. Defensive: if the exact version already exists on the registry
           #    (e.g., race with another run), abort before re-publishing.
-          if npm view "$PKG_NAME@$RC_VERSION" version >/dev/null 2>&1; then
+          #    Same E404-only pattern used above — a transient network
+          #    failure must fail loudly, not pretend the version is missing.
+          NPM_STDERR_EXISTS="$(mktemp)"
+          if npm view "$PKG_NAME@$RC_VERSION" version 2>"$NPM_STDERR_EXISTS" >/dev/null; then
+            rm -f "$NPM_STDERR_EXISTS"
             echo "::error::Version $RC_VERSION already exists on npm — aborting."
             exit 1
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR_EXISTS"; then
+              rm -f "$NPM_STDERR_EXISTS"
+              # Version doesn't exist — safe to proceed.
+            else
+              echo "::error::npm registry unreachable for existence check:" >&2
+              cat "$NPM_STDERR_EXISTS" >&2
+              rm -f "$NPM_STDERR_EXISTS"
+              exit 1
+            fi
           fi
 
           echo "base=$BASE"             >> "$GITHUB_OUTPUT"
