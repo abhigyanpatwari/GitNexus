@@ -53,9 +53,10 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 Two publish workflows ship `gitnexus` to npm:
 
-- **Stable** (`.github/workflows/publish.yml`) — triggered by pushing a `v*` tag
-  from `main`. Publishes to the `latest` dist-tag with a changelog-backed
-  GitHub release.
+- **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
+  tag. Publishes to the `latest` dist-tag with a changelog-backed GitHub
+  release. Maintainers are expected to tag from `main` as a convention; the
+  workflow itself does not enforce branch reachability.
 - **Release Candidate** (`.github/workflows/release-candidate.yml`) — runs on
   every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
   changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with

@@ -34,8 +34,9 @@ on:
 permissions: {}
 
 concurrency:
-  # Allow overlapping manual runs to complete; back-to-back push runs on
-  # the same ref still serialize.
+  # Serialize all runs on the same ref (push + workflow_dispatch) to prevent
+  # two publishes racing on the rc counter. Do not cancel an in-progress run
+  # when a newer one is queued — we want the earlier merge to publish first.
   group: release-candidate-${{ github.ref }}
   cancel-in-progress: false
 
@@ -183,7 +184,24 @@ jobs:
           # 3. Query the highest existing rc counter for this base, if any.
           #    `npm view <pkg> versions --json` always returns the full list;
           #    we parse in Node for robust semver handling.
-          VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>/dev/null || echo '[]')"
+          # Same error handling as the version query above: only E404
+          # ("no such package") collapses to an empty list; everything
+          # else fails the step so we don't publish with a wrong counter.
+          NPM_STDERR_VERSIONS="$(mktemp)"
+          if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
+            :
+          else
+            if grep -q 'E404' "$NPM_STDERR_VERSIONS"; then
+              VERSIONS_JSON='[]'
+              echo "No published versions for $PKG_NAME yet (E404)."
+            else
+              echo "::error::Failed to query published versions from npm:" >&2
+              cat "$NPM_STDERR_VERSIONS" >&2
+              rm -f "$NPM_STDERR_VERSIONS"
+              exit 1
+            fi
+          fi
+          rm -f "$NPM_STDERR_VERSIONS"
           # Compute next rc counter in a standalone Node script to avoid
           # fragile shell-vs-JS backslash escaping. Writes the value to a
           # file we then read back.

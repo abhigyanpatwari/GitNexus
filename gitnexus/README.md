@@ -236,10 +236,11 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 
 ## Release candidates
 
-Stable releases publish to the default `latest` dist-tag. Whenever a pull
-request merges into `main`, an automated workflow also publishes a prerelease
-build under the `rc` dist-tag, so early adopters can try in-flight fixes
-without waiting for the next stable cut.
+Stable releases publish to the default `latest` dist-tag. When a pull request
+with non-documentation changes merges into `main`, an automated workflow also
+publishes a prerelease build under the `rc` dist-tag, so early adopters can
+try in-flight fixes without waiting for the next stable cut. (Docs-only
+merges are skipped.)
 
 ```bash
 # Try the latest release candidate (pre-stable — may change at any time)
