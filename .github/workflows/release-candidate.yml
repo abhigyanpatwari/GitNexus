@@ -1,0 +1,250 @@
+name: Release Candidate
+
+on:
+  # Publish a release-candidate build whenever a merge/commit lands on main.
+  # Docs/README-only changes are filtered out so prose updates don't
+  # cut a release.
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semver level to bump from the current npm `latest` to form the rc base'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      force:
+        description: 'Publish even when HEAD already has an rc tag'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# No workflow-level permissions — scoped per job below.
+permissions: {}
+
+concurrency:
+  # Allow overlapping manual runs to complete; back-to-back push runs on
+  # the same ref still serialize.
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Skip when HEAD already has an rc tag (duplicate dispatch) ────────
+  guard:
+    name: Check if release candidate should run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      head_sha: ${{ steps.decide.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          FORCE="${{ inputs.force }}"
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force flag set — running regardless of tag history."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Guard against a manual workflow_dispatch landing on the same
+          # commit that was already released by the preceding push run.
+          # Tag scheme: v<base>-rc.<N> (e.g., v1.6.2-rc.3).
+          LAST_TAG=$(git tag --list 'v*-rc.*' --sort=-committerdate | head -n1 || true)
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous rc tag found — first run."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LAST_SHA=$(git rev-list -n1 "$LAST_TAG")
+          echo "Last rc tag:  $LAST_TAG -> $LAST_SHA"
+          echo "Current HEAD: $HEAD_SHA"
+
+          if [ "$LAST_SHA" = "$HEAD_SHA" ]; then
+            echo "HEAD already released as $LAST_TAG — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commit detected — proceeding."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Reuse the stable CI workflow ─────────────────────────────────────
+  ci:
+    needs: guard
+    if: needs.guard.outputs.should_run == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+
+  # ── Publish the rc build to npm + create GitHub prerelease ───────────
+  publish:
+    name: Publish release candidate to npm
+    needs: [guard, ci]
+    if: needs.guard.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # push rc tag, create release
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: gitnexus/package-lock.json
+
+      - name: Build gitnexus-shared
+        run: npm install && npm run build
+        working-directory: gitnexus-shared
+
+      - name: Install gitnexus dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      - name: Resolve rc version
+        id: version
+        shell: bash
+        working-directory: gitnexus
+        env:
+          BUMP_LEVEL: ${{ inputs.bump || 'patch' }}
+          PKG_NAME: gitnexus
+        run: |
+          set -euo pipefail
+
+          # 1. Base = next stable, derived from current `latest` on npm.
+          #    Falls back to package.json when the package has no published
+          #    `latest` yet (first-ever publish scenario).
+          CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>/dev/null || true)"
+          if [ -z "$CURRENT_LATEST" ]; then
+            CURRENT_LATEST="$(node -p "require('./package.json').version")"
+            echo "No published 'latest' found — seeding from package.json: $CURRENT_LATEST"
+          fi
+          # Strip any prerelease suffix from the seed to guarantee a clean base.
+          CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
+
+          # 2. Bump by the requested semver level (default: patch) to form
+          #    the target base for this rc cycle.
+          BASE="$(npx --yes -p semver@7 semver -i "$BUMP_LEVEL" "$CURRENT_LATEST_CLEAN")"
+          echo "Current latest: $CURRENT_LATEST ($CURRENT_LATEST_CLEAN clean)"
+          echo "Bump level:     $BUMP_LEVEL"
+          echo "RC base:        $BASE"
+
+          # 3. Query the highest existing rc counter for this base, if any.
+          #    `npm view <pkg> versions --json` always returns the full list;
+          #    we parse in Node for robust semver handling.
+          VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>/dev/null || echo '[]')"
+          # Compute next rc counter in a standalone Node script to avoid
+          # fragile shell-vs-JS backslash escaping. Writes the value to a
+          # file we then read back.
+          cat > /tmp/next_rc.mjs <<'NODESCRIPT'
+          const base = process.env.BASE;
+          const prefix = base + "-rc.";
+          let v;
+          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
+          if (!Array.isArray(v)) v = [v];
+          const ns = v
+            .filter(s => typeof s === "string" && s.startsWith(prefix))
+            .map(s => parseInt(s.slice(prefix.length), 10))
+            .filter(n => Number.isInteger(n) && n >= 0);
+          process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
+          NODESCRIPT
+          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
+          RC_VERSION="${BASE}-rc.${NEXT_N}"
+          echo "Computed rc:    $RC_VERSION"
+
+          echo "base=$BASE"          >> "$GITHUB_OUTPUT"
+          echo "rc_n=$NEXT_N"        >> "$GITHUB_OUTPUT"
+          echo "rc_version=$RC_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Apply rc version in-CI
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.version.outputs.rc_version }}" \
+            --no-git-tag-version --allow-same-version
+
+      - name: Build gitnexus
+        run: npm run build
+        working-directory: gitnexus
+
+      - name: Dry-run publish
+        run: npm publish --dry-run --tag rc
+        working-directory: gitnexus
+
+      - name: Publish to npm (rc dist-tag)
+        run: npm publish --provenance --access public --tag rc
+        working-directory: gitnexus
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push rc git tag
+        shell: bash
+        env:
+          RC_VERSION: ${{ steps.version.outputs.rc_version }}
+          HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          TAG="v${RC_VERSION}"
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists locally — skipping tag creation."
+          else
+            git tag "$TAG" "$HEAD_SHA"
+            git push origin "$TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        id: reltag
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
+        with:
+          tag_name: v${{ steps.version.outputs.rc_version }}
+          name: Release Candidate v${{ steps.version.outputs.rc_version }}
+          prerelease: true
+          make_latest: 'false'
+          generate_release_notes: true
+          body: |
+            Automated release candidate build from `main`.
+
+            **npm:** `npm install gitnexus@rc`
+            **Version:** `${{ steps.version.outputs.rc_version }}`
+            **Target base:** `${{ steps.version.outputs.base }}` (rc #${{ steps.version.outputs.rc_n }})
+            **Commit:** ${{ needs.guard.outputs.head_sha }}
+
+            Release candidates are pre-stable builds intended for early testing.
+            Stable releases remain on the `latest` dist-tag.

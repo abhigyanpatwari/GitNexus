@@ -48,3 +48,27 @@ Maintainers may request changes for correctness, tests, performance, or consiste
 ## AI-assisted contributions
 
 If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUDE.md`) and avoid drive-by refactors unrelated to the issue. Prefer incremental, test-backed changes.
+
+## Releases
+
+Two publish workflows ship `gitnexus` to npm:
+
+- **Stable** (`.github/workflows/publish.yml`) — triggered by pushing a `v*` tag
+  from `main`. Publishes to the `latest` dist-tag with a changelog-backed
+  GitHub release.
+- **Release Candidate** (`.github/workflows/release-candidate.yml`) — runs on
+  every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
+  changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with
+  version `X.Y.Z-rc.N` and a GitHub prerelease, where:
+  - `X.Y.Z` is the current npm `latest` bumped by the `bump` input (default
+    `patch`; `minor` or `major` when kicking off a bigger cycle).
+  - `N` is auto-incremented by querying the registry for existing
+    `X.Y.Z-rc.*` versions. First rc for a given base is `rc.1`.
+  The guard skips re-runs when HEAD already has a `v*-rc.*` git tag; dispatch
+  with `force: true` to override, or with `bump: minor` to start a new cycle.
+
+The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
+
+```bash
+npm view gitnexus dist-tags
+```
