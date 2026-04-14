@@ -107,7 +107,7 @@ export const rubyProvider = defineLanguage({
   exportChecker: rubyExportChecker,
   importResolver: resolveRubyImport,
   callRouter: routeRubyCall,
-  importSemantics: 'wildcard',
+  importSemantics: 'wildcard-leaf',
   resolveEnclosingOwner(node) {
     // Ruby singleton_class (class << self) should resolve to the enclosing
     // class or module for owner/container resolution (HAS_METHOD edges, class IDs).

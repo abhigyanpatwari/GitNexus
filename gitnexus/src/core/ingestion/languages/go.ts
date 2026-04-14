@@ -5,7 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Go traits:
- *   - importSemantics: 'wildcard' (Go imports entire packages)
+ *   - importSemantics: 'wildcard-leaf' (Go imports entire packages)
  *   - callRouter: present (Go method calls may need routing)
  */
 
@@ -28,7 +28,7 @@ export const goProvider = defineLanguage({
   typeConfig: goConfig,
   exportChecker: goExportChecker,
   importResolver: resolveGoImport,
-  importSemantics: 'wildcard',
+  importSemantics: 'wildcard-leaf',
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
   classExtractor: createClassExtractor({
