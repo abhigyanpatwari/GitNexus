@@ -314,10 +314,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
       console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
       console.error('');
-    } else if (
-      msg.includes('ERESOLVE') ||
-      msg.includes('Could not resolve dependency')
-    ) {
+    } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
       // Note: the original arborist "Cannot destructure property 'package' of
       // 'node.target'" crash happens inside npm *before* gitnexus code runs,
       // so it can't be caught here.  This branch handles dependency-resolution
