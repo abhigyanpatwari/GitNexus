@@ -583,4 +583,34 @@ describe('ManifestExtractor', () => {
     expect(result.contracts).toHaveLength(0);
     expect(result.crossLinks).toHaveLength(0);
   });
+
+  it('memoizes repeated (repo, type, contract) resolutions so each tuple hits the DB once', async () => {
+    const calls: Array<{ repo: string; cypher: string }> = [];
+    const execFor = (repo: string) => async (cypher: string) => {
+      calls.push({ repo, cypher });
+      return [{ uid: `uid::${repo}`, name: 'handler', filePath: 'src/h.ts' }];
+    };
+
+    const dbExecutors = new Map<string, (c: string) => Promise<Record<string, unknown>[]>>([
+      ['svc/a', execFor('svc/a')],
+      ['svc/b', execFor('svc/b')],
+    ]);
+
+    // Two links declare the same (repo, type, contract) triple on each side,
+    // so naive sequential resolution would run 4 queries; memoization collapses
+    // to 2 (one per distinct repo tuple).
+    const link: GroupManifestLink = {
+      from: 'svc/b',
+      to: 'svc/a',
+      type: 'http',
+      contract: 'GET::/api/orders',
+      role: 'consumer',
+    };
+
+    await extractor.extractFromManifest([link, { ...link }], dbExecutors);
+
+    // One resolution per distinct (repo, type, contract) — not per (link × side).
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls.map((c) => c.repo))).toEqual(new Set(['svc/a', 'svc/b']));
+  });
 });

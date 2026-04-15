@@ -79,17 +79,50 @@ export class ManifestExtractor {
     links: GroupManifestLink[],
     dbExecutors?: Map<string, CypherExecutor>,
   ): Promise<ManifestExtractResult> {
+    // Resolve all (repo, link) pairs in parallel. The previous sequential
+    // await-per-link produced 2N round-trips; parallel resolution uses the
+    // per-repo executor pool directly and scales linearly with manifest size.
+    //
+    // Memoization: a manifest can list the same contract multiple times
+    // (e.g. a consumer and provider declaration, or cross-referenced groups).
+    // Key on (repo, type, contract) — the canonical input to the Cypher
+    // query — so duplicate links resolve to one DB hit.
+    type ResolvedSymbol = { filePath: string; name: string; uid: string } | null;
+    const resolveCache = new Map<string, Promise<ResolvedSymbol>>();
+    const resolveOnce = (repo: string, link: GroupManifestLink): Promise<ResolvedSymbol> => {
+      const key = `${repo}\u0000${link.type}\u0000${link.contract}`;
+      let pending = resolveCache.get(key);
+      if (!pending) {
+        pending = this.resolveSymbol(repo, link, dbExecutors);
+        resolveCache.set(key, pending);
+      }
+      return pending;
+    };
+
+    const perLink = await Promise.all(
+      links.map(async (link) => {
+        const contractId = this.buildContractId(link.type, link.contract);
+        const providerRepo = link.role === 'provider' ? link.from : link.to;
+        const consumerRepo = link.role === 'provider' ? link.to : link.from;
+        const [providerSymbol, consumerSymbol] = await Promise.all([
+          resolveOnce(providerRepo, link),
+          resolveOnce(consumerRepo, link),
+        ]);
+        return { link, contractId, providerRepo, consumerRepo, providerSymbol, consumerSymbol };
+      }),
+    );
+
     const contracts: StoredContract[] = [];
     const crossLinks: CrossLink[] = [];
 
-    for (const link of links) {
-      const contractId = this.buildContractId(link.type, link.contract);
-
-      const providerRepo = link.role === 'provider' ? link.from : link.to;
-      const consumerRepo = link.role === 'provider' ? link.to : link.from;
-
-      const providerSymbol = await this.resolveSymbol(providerRepo, link, dbExecutors);
-      const consumerSymbol = await this.resolveSymbol(consumerRepo, link, dbExecutors);
+    for (const {
+      link,
+      contractId,
+      providerRepo,
+      consumerRepo,
+      providerSymbol,
+      consumerSymbol,
+    } of perLink) {
       const providerRef = providerSymbol || { filePath: '', name: link.contract };
       const consumerRef = consumerSymbol || { filePath: '', name: link.contract };
       // When the resolver finds a real graph symbol we keep its uid, otherwise
