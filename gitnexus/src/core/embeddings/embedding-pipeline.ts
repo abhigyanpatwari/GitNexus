@@ -239,11 +239,11 @@ export const runEmbeddingPipeline = async (
             staleNodeIds.map((nodeId) => ({ nodeId })),
           );
         } catch (err) {
-          // "not found" / "does not exist" = rows already gone — safe to proceed.
+          // "does not exist" = rows already gone — safe to proceed.
           // All other errors risk vector-index corruption (Kuzu requires DELETE-before-INSERT
           // for vector-indexed properties) — propagate so the pipeline aborts cleanly.
           const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('not found') && !msg.includes('does not exist')) {
+          if (!msg.includes('does not exist')) {
             throw new Error(
               `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
             );

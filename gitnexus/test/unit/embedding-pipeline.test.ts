@@ -221,7 +221,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
   it('embeds new nodes not in existingEmbeddings', async () => {
     mockEmbedderSetup();
 
-    const node = makeNode({ id: 'Function:newFn:src/new.ts', filePath: 'src/new.ts' });
+    const node = makeNode({ id: 'Function:newFn:src/new.ts', name: 'newFn', filePath: 'src/new.ts' });
     const existingEmbeddings = new Map<string, string>(); // empty — no prior embeddings
 
     const executeQuery = mockExecuteQuery([node]);

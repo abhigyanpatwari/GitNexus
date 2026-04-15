@@ -158,6 +158,16 @@ let currentDbPath: string | null = null;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
+/**
+ * Check if an error indicates a missing column or table (schema-level problem)
+ * rather than a transient/connection error. Used for legacy DB fallback logic.
+ */
+const isMissingColumnOrTableError = (msg: string): boolean =>
+  msg.includes('does not exist') ||
+  msg.includes('not found') ||
+  // Kuzu-specific: property not found on a node table
+  (msg.includes('property') && msg.includes('contentHash'));
+
 /** Expose the current Database for pool adapter reuse in tests. */
 export const getDatabase = (): lbug.Database | null => db;
 
@@ -914,7 +924,7 @@ export const loadCachedEmbeddings = async (): Promise<{
       // Only fall back for missing-column errors (legacy DBs without contentHash).
       // Rethrow transient / connection errors so callers see them.
       const msg = err?.message ?? '';
-      if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('contentHash')) {
+      if (isMissingColumnOrTableError(msg)) {
         hasContentHash = false;
         rows = await conn.query(
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
@@ -974,7 +984,7 @@ export const fetchExistingEmbeddingHashes = async (
     return map;
   } catch (err: any) {
     const msg = err?.message ?? '';
-    if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('contentHash')) {
+    if (isMissingColumnOrTableError(msg)) {
       // Column or table missing — try fallback without contentHash
       try {
         const rows = await execQuery(
@@ -992,7 +1002,7 @@ export const fetchExistingEmbeddingHashes = async (
         return map;
       } catch (fallbackErr: any) {
         const fallbackMsg = fallbackErr?.message ?? '';
-        if (fallbackMsg.includes('does not exist') || fallbackMsg.includes('not found')) {
+        if (isMissingColumnOrTableError(fallbackMsg)) {
           console.log(
             `[embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
           );
