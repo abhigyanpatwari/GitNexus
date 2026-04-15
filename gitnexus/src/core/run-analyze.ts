@@ -138,7 +138,7 @@ export async function runFullAnalysis(
 
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[] }> = [];
+  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }> = [];
 
   if (options.embeddings && existingMeta && !options.force) {
     try {
@@ -219,10 +219,14 @@ export async function runFullAnalysis(
         const EMBED_BATCH = 200;
         for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
           const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-          const paramsList = batch.map((e) => ({ nodeId: e.nodeId, embedding: e.embedding }));
+          const paramsList = batch.map((e) => ({
+            nodeId: e.nodeId,
+            embedding: e.embedding,
+            contentHash: e.contentHash ?? '',
+          }));
           try {
             await executeWithReusedStatement(
-              `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding`,
+              `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`,
               paramsList,
             );
           } catch {
@@ -251,6 +255,14 @@ export async function runFullAnalysis(
         httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...',
       );
       const { runEmbeddingPipeline } = await import('./embeddings/embedding-pipeline.js');
+      // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
+      let existingEmbeddings: Map<string, string> | undefined;
+      if (cachedEmbeddingNodeIds.size > 0) {
+        existingEmbeddings = new Map<string, string>();
+        for (const e of cachedEmbeddings) {
+          existingEmbeddings.set(e.nodeId, e.contentHash ?? '');
+        }
+      }
       await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -265,7 +277,7 @@ export async function runFullAnalysis(
           progress('embeddings', scaled, label);
         },
         {},
-        cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+        existingEmbeddings,
       );
     }
 

@@ -440,6 +440,7 @@ export const EMBEDDING_SCHEMA = `
 CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
   nodeId STRING,
   embedding FLOAT[${EMBEDDING_DIMS}],
+  contentHash STRING,
   PRIMARY KEY (nodeId)
 )`;
 

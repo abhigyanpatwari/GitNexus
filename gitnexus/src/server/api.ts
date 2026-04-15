@@ -1449,24 +1449,56 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await withLbugDb(lbugPath, async () => {
             const { runEmbeddingPipeline } =
               await import('../core/embeddings/embedding-pipeline.js');
-            // Skip nodes that already have embeddings — Kuzu forbids SET on vector-indexed properties.
-            let skipNodeIds: Set<string> | undefined;
+            // Skip nodes that already have fresh embeddings — Kuzu forbids SET on vector-indexed properties.
+            // We use contentHash to detect stale embeddings that need re-embedding.
+            let existingEmbeddings: Map<string, string> | undefined;
             try {
-              const rows = await executeQuery('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId');
+              const rows = await executeQuery('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.contentHash AS contentHash');
               if (rows && rows.length > 0) {
-                skipNodeIds = new Set(rows.map((r: any) => r.nodeId ?? r[0]).filter(Boolean));
+                existingEmbeddings = new Map<string, string>();
+                for (const r of rows) {
+                  const nodeId = r.nodeId ?? r[0];
+                  const hash = r.contentHash ?? r[1] ?? '';
+                  if (nodeId) {
+                    // Empty/null contentHash means legacy row — treat as stale so it gets re-embedded
+                    existingEmbeddings.set(nodeId, hash || '');
+                  }
+                }
                 console.log(
-                  `[embed] ${skipNodeIds.size} nodes already embedded — skipping in incremental run`,
+                  `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
                 );
               }
             } catch (err: any) {
               // Swallow only "table does not exist" — let real connection errors propagate.
-              // Log so ops can see this path fire if Kuzu ever changes error wording.
+              // Also handle "column does not exist" for pre-upgrade DBs without contentHash.
               const msg = err?.message ?? '';
               if (msg.includes('does not exist') || msg.includes('not found')) {
-                console.log(
-                  `[embed] CodeEmbedding table not yet present — full embedding run (${msg})`,
-                );
+                // Try fallback query without contentHash for legacy DBs
+                try {
+                  const rows = await executeQuery('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId');
+                  if (rows && rows.length > 0) {
+                    existingEmbeddings = new Map<string, string>();
+                    for (const r of rows) {
+                      const nodeId = r.nodeId ?? r[0];
+                      if (nodeId) {
+                        // No contentHash column — treat all as stale
+                        existingEmbeddings.set(nodeId, '');
+                      }
+                    }
+                    console.log(
+                      `[embed] ${existingEmbeddings.size} nodes in legacy DB (no contentHash) — all treated as stale`,
+                    );
+                  }
+                } catch (fallbackErr: any) {
+                  const fallbackMsg = fallbackErr?.message ?? '';
+                  if (fallbackMsg.includes('does not exist') || fallbackMsg.includes('not found')) {
+                    console.log(
+                      `[embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
+                    );
+                  } else {
+                    throw fallbackErr;
+                  }
+                }
               } else {
                 throw err;
               }
@@ -1493,8 +1525,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   },
                 });
               },
-              {}, // config: use defaults (runEmbeddingPipeline signature: executeQuery, executeWithReusedStatement, onProgress, config, skipNodeIds)
-              skipNodeIds,
+              {}, // config: use defaults
+              existingEmbeddings,
             );
           });
 

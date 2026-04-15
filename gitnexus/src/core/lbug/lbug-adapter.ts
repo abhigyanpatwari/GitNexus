@@ -893,18 +893,29 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
  */
 export const loadCachedEmbeddings = async (): Promise<{
   embeddingNodeIds: Set<string>;
-  embeddings: Array<{ nodeId: string; embedding: number[] }>;
+  embeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }>;
 }> => {
   if (!conn) {
     return { embeddingNodeIds: new Set(), embeddings: [] };
   }
 
   const embeddingNodeIds = new Set<string>();
-  const embeddings: Array<{ nodeId: string; embedding: number[] }> = [];
+  const embeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }> = [];
   try {
-    const rows = await conn.query(
-      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
-    );
+    // Try to read contentHash alongside the embedding
+    let rows: any;
+    let hasContentHash = true;
+    try {
+      rows = await conn.query(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding, e.contentHash AS contentHash`,
+      );
+    } catch {
+      // Fallback for legacy DBs without contentHash column
+      hasContentHash = false;
+      rows = await conn.query(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
+      );
+    }
     const result = Array.isArray(rows) ? rows[0] : rows;
     for (const row of await result.getAll()) {
       const nodeId = String(row.nodeId ?? row[0] ?? '');
@@ -917,6 +928,7 @@ export const loadCachedEmbeddings = async (): Promise<{
           embedding: Array.isArray(embedding)
             ? embedding.map(Number)
             : Array.from(embedding as any).map(Number),
+          contentHash: hasContentHash ? (row.contentHash ?? row[2] ?? undefined) : undefined,
         });
       }
     }
