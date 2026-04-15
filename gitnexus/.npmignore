@@ -9,6 +9,10 @@ tsconfig.json
 .gitignore
 node_modules/
 
+# Vendor build artifacts (created during install, not shipped)
+vendor/**/node_modules
+vendor/**/build
+
 # Package lock (consumers use their own)
 package-lock.json
 

@@ -1,0 +1,53 @@
+# release-drafter config — used only for PR autolabeling by
+# `.github/workflows/pr-labeler.yml` (the workflow passes `disable-releaser: true`,
+# so the draft-release side of release-drafter never runs).
+#
+# The labels applied here are the same ones `.github/release.yml` maps to
+# categorized release-notes sections.
+#
+# `sync-labels: true` removes managed autolabels that no longer match the PR —
+# critical for the breaking-change case: if a PR title drops the `!` or the body
+# drops `BREAKING CHANGE:`, the `breaking` label is pulled off automatically.
+
+# Required by release-drafter; not used because releaser is disabled.
+name-template: 'unused'
+tag-template: 'unused'
+template: |
+  $CHANGES
+
+sync-labels: true
+
+autolabeler:
+  - label: enhancement
+    title:
+      - '/^feat(\([^)]+\))?!?:/i'
+  - label: bug
+    title:
+      - '/^fix(\([^)]+\))?!?:/i'
+  - label: performance
+    title:
+      - '/^perf(\([^)]+\))?!?:/i'
+  - label: refactor
+    title:
+      - '/^refactor(\([^)]+\))?!?:/i'
+  - label: documentation
+    title:
+      - '/^docs(\([^)]+\))?!?:/i'
+  - label: test
+    title:
+      - '/^test(\([^)]+\))?!?:/i'
+  - label: ci
+    title:
+      - '/^ci(\([^)]+\))?!?:/i'
+  - label: dependencies
+    title:
+      - '/^(build|deps)(\([^)]+\))?!?:/i'
+  - label: chore
+    title:
+      - '/^(chore|revert)(\([^)]+\))?!?:/i'
+  # Breaking-change marker: either `!` in the type prefix or `BREAKING CHANGE:` in body.
+  - label: breaking
+    title:
+      - '/^[a-z]+(\([^)]+\))?!:/i'
+    body:
+      - '/BREAKING[ -]CHANGE:/i'

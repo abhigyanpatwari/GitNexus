@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Keep third-party Actions SHA pins current. See CONTRIBUTING.md — when
+  # reviewing these bumps, verify the SHA corresponds to the claimed tag by
+  # running `gh api repos/<owner>/<action>/git/refs/tags/<tag>` before merge.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - ci

@@ -7,13 +7,22 @@ on:
 
 # No workflow-level permissions — scoped per job below.
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the
+# same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+      # No pull-requests:write — `ci.yml`'s save-pr-meta job is gated on
+      # `github.event_name == 'pull_request'`, so it never runs during a
+      # tag-triggered publish. Least-privilege for release-critical paths.
 
   publish:
     needs: ci
@@ -23,8 +32,8 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
