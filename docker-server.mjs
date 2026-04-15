@@ -54,6 +54,8 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, {
       'Cache-Control': filePath.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
       'Content-Type': contentTypes[extname(filePath)] || 'application/octet-stream',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     });
     createReadStream(filePath).pipe(res);
   } catch (error) {
