@@ -335,6 +335,23 @@ cd ../gitnexus-web && npm install
 npm run dev
 ```
 
+## Docker
+
+```bash
+docker run --rm \
+  --name gitnexus-web \
+  -p 8080:80 \
+  ghcr.io/abhigyanpatwari/gitnexus-web:latest
+```
+
+Or with Docker Compose:
+
+```bash
+docker compose -f docker/compose.yaml up -d
+```
+
+Docker details, including the example `.env`, compose file, and the source [docker/Dockerfile](docker/Dockerfile), live in [docker/README.md](docker/README.md).
+
 The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, LadybugDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
 
 **Local Backend Mode:** Run `gitnexus serve` and open the web UI locally — it auto-detects the server and shows all your indexed repos, with full AI chat support. No need to re-upload or re-index. The agent's tools (Cypher queries, search, code navigation) route through the backend HTTP API automatically.
