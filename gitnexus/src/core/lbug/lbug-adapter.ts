@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import { createReadStream, createWriteStream } from 'fs';
 import { createInterface } from 'readline';
+import { once } from 'events';
+import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -56,108 +58,80 @@ export const splitRelCsvByLabelPair = async (
   let skippedRels = 0;
   let totalValidRels = 0;
 
-  await new Promise<void>((resolve, reject) => {
-    const inputStream = createReadStream(csvPath, 'utf-8');
-    const rl = createInterface({
-      input: inputStream,
-      crlfDelay: Infinity,
-    });
+  const inputStream = createReadStream(csvPath, 'utf-8');
+  const rl = createInterface({ input: inputStream, crlfDelay: Infinity });
 
-    // Track which streams are already waiting for drain to prevent
-    // listener accumulation. rl.pause() is not synchronous — buffered
-    // line events continue firing after pause(), and without this guard
-    // each line targeting the same pairKey would add another drain listener.
-    const waitingForDrain = new Set<string>();
+  // If any pair WriteStream errors (disk full, EMFILE, etc.) or the input
+  // stream fails, we need to abort the pending `once(ws, 'drain')` await.
+  // An AbortController gives us one signal to cancel all pending waits
+  // without a custom state machine.
+  const abortOnError = new AbortController();
+  let streamError: Error | null = null;
+  const markStreamError = (err: Error): void => {
+    streamError ??= err;
+    abortOnError.abort(err);
+  };
 
-    let settled = false;
-    const cleanup = (err: Error) => {
-      if (settled) return;
-      settled = true;
-      try {
-        rl.close();
-      } catch {}
-      try {
-        inputStream.destroy();
-      } catch {}
-      for (const ws of pairWriteStreams.values()) {
-        try {
-          ws.destroy();
-        } catch {}
-      }
-      reject(err);
-    };
-
+  try {
+    // `for await (const line of rl)` replaces the old manual
+    // on('line')/pause()/resume()/waitingForDrain state machine: readline's
+    // async iterator naturally serializes line delivery with our awaits, so
+    // at most one ws can be in backpressure at a time and we just await its
+    // 'drain' event.
     let isFirst = true;
-    rl.on('line', (line) => {
+    for await (const line of rl) {
+      if (streamError) throw streamError;
       if (isFirst) {
         relHeader = line;
         isFirst = false;
-        return;
+        continue;
       }
-      if (!line.trim()) return;
+      if (!line.trim()) continue;
       const match = line.match(/"([^"]*)","([^"]*)"/);
       if (!match) {
         skippedRels++;
-        return;
+        continue;
       }
       const fromLabel = getNodeLabel(match[1]);
       const toLabel = getNodeLabel(match[2]);
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) {
         skippedRels++;
-        return;
+        continue;
       }
+
       const pairKey = `${fromLabel}|${toLabel}`;
       let ws = pairWriteStreams.get(pairKey);
       if (!ws) {
         const pairCsvPath = path.join(csvDir, `rel_${fromLabel}_${toLabel}.csv`);
         ws = wsFactory(pairCsvPath);
-        // If any per-pair WriteStream errors (disk full, EMFILE, etc.),
-        // tear down everything and reject the Promise. Without this handler,
-        // a stream error while rl is paused waiting for drain would cause
-        // the drain callback to never fire and the Promise to hang forever.
-        ws.on('error', cleanup);
-        ws.write(relHeader + '\n');
+        ws.on('error', markStreamError);
         pairWriteStreams.set(pairKey, ws);
         relsByPairMeta.set(pairKey, { csvPath: pairCsvPath, rows: 0 });
+        if (!ws.write(relHeader + '\n')) {
+          await once(ws, 'drain', { signal: abortOnError.signal });
+        }
       }
-      const ok = ws.write(line + '\n');
+
+      if (!ws.write(line + '\n')) {
+        await once(ws, 'drain', { signal: abortOnError.signal });
+      }
       relsByPairMeta.get(pairKey)!.rows++;
       totalValidRels++;
-      // Handle backpressure: pause reading when the write buffer is full,
-      // resume when the stream drains. Prevents unbounded memory growth
-      // on repos with millions of relationships.
-      // Guard with waitingForDrain to ensure only one drain listener is
-      // registered per stream at a time — rl.pause() doesn't stop buffered
-      // line events immediately. Only resume when ALL streams have drained
-      // to avoid writing into still-full streams.
-      if (!ok && !waitingForDrain.has(pairKey)) {
-        waitingForDrain.add(pairKey);
-        rl.pause();
-        ws.once('drain', () => {
-          waitingForDrain.delete(pairKey);
-          if (waitingForDrain.size === 0) rl.resume();
-        });
-      }
-    });
-    rl.on('close', () => {
-      if (settled) return;
-      settled = true;
-      // Readline 'close' fires when the logical stream ends, but the underlying
-      // fs.ReadStream may still hold its file descriptor briefly — especially
-      // on Windows, where this race caused ENOTEMPTY on subsequent rmdir.
-      // Wait for the input stream's own 'close' event (or resolve immediately
-      // if it's already gone) before returning.
-      if ((inputStream as { closed?: boolean }).closed || inputStream.destroyed) {
-        resolve();
-      } else {
-        inputStream.once('close', () => resolve());
-        // Belt-and-braces: if the fd never emits 'close' for some reason,
-        // proactively close it ourselves.
-        inputStream.destroy();
-      }
-    });
-    rl.on('error', cleanup);
-  });
+    }
+    if (streamError) throw streamError;
+  } catch (err) {
+    // Tear down everything so no fd is left dangling. If the abort was caused
+    // by a stream error, rethrow that error (more actionable than AbortError).
+    for (const ws of pairWriteStreams.values()) ws.destroy();
+    inputStream.destroy();
+    throw streamError ?? err;
+  } finally {
+    // Readline 'close' fires before the underlying fs.ReadStream releases its
+    // fd — on Windows that race caused ENOTEMPTY on the parent dir.
+    // stream/promises.finished is the stdlib "wait until this stream is fully
+    // closed" primitive and handles both success and error paths.
+    await finished(inputStream).catch(() => {});
+  }
 
   return { relHeader, relsByPairMeta, pairWriteStreams, skippedRels, totalValidRels };
 };
@@ -399,19 +373,14 @@ export const loadGraphToLbug = async (
   const { relHeader, relsByPairMeta, pairWriteStreams, skippedRels, totalValidRels } =
     await splitRelCsvByLabelPair(csvResult.relCsvPath, csvDir, validTables, getNodeLabel);
 
-  // Close all per-pair write streams before COPY
+  // Close all per-pair write streams before COPY. `stream/promises.finished`
+  // resolves on the stream's 'finish' event and rejects on 'error' — replaces
+  // a hand-rolled promisification with the stdlib primitive.
   await Promise.all(
-    Array.from(pairWriteStreams.values()).map(
-      (ws) =>
-        new Promise<void>((resolve, reject) => {
-          const onError = (err: Error) => reject(err);
-          ws.on('error', onError);
-          ws.end(() => {
-            ws.removeListener('error', onError);
-            resolve();
-          });
-        }),
-    ),
+    Array.from(pairWriteStreams.values()).map(async (ws) => {
+      ws.end();
+      await finished(ws);
+    }),
   );
 
   const insertedRels = totalValidRels;
