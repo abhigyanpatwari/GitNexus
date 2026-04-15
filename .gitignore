@@ -23,6 +23,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+docker/.env
 
 # Logs
 *.log

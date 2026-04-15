@@ -340,17 +340,36 @@ npm run dev
 ```bash
 docker run --rm \
   --name gitnexus-web \
-  -p 8080:80 \
+  -p 4173:4173 \
   ghcr.io/abhigyanpatwari/gitnexus-web:latest
 ```
 
 Or with Docker Compose:
 
 ```bash
-docker compose -f docker/compose.yaml up -d
+docker compose -f docker-compose.yaml up -d
 ```
 
-Docker details, including the example `.env`, compose file, and the source [docker/Dockerfile](docker/Dockerfile), live in [docker/README.md](docker/README.md).
+Optional env file:
+
+```bash
+cp .env.example .env
+set -a
+source .env
+set +a
+```
+
+Docker files:
+
+- [Dockerfile](Dockerfile) is the source for the published `gitnexus-web` image. It builds `gitnexus-shared` and `gitnexus-web`, then runs the app directly with Vite preview.
+- [docker-compose.yaml](docker-compose.yaml) starts the published image with Docker Compose.
+- [.env.example](.env.example) sets the image name, container name, and exposed port for the example commands.
+
+Notes:
+
+- The published image serves the production frontend only. It does not start `gitnexus serve`.
+- In backend mode, the app still defaults to `http://localhost:4747` unless you change the server URL in the UI.
+- If you do not want an env file, the defaults are `ghcr.io/abhigyanpatwari/gitnexus-web:latest`, container name `gitnexus-web`, and port `4173`.
 
 The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, LadybugDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
 

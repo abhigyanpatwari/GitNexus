@@ -1,7 +1,7 @@
 services:
   gitnexus-web:
-    image: ${IMAGE_NAME:-ghcr.io/abhigyanpatwari/gitnexus-web:latest}
+    image: ${IMAGE_NAME:-ghcr.io/abhigyanpatwari/gitnexus:latest}
     container_name: ${CONTAINER_NAME:-gitnexus-web}
     ports:
-      - "${HOST_PORT:-8080}:80"
+      - "${HOST_PORT:-4173}:4173"
     restart: unless-stopped

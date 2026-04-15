@@ -1,4 +1,7 @@
-FROM node:20-alpine AS builder
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -15,11 +18,13 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-FROM nginx:1.27-alpine AS runtime
+FROM --platform=$TARGETPLATFORM node:20-bookworm-slim AS runtime
 
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /app/gitnexus-web/dist /usr/share/nginx/html
+WORKDIR /app
 
-EXPOSE 80
+COPY --from=builder /app/gitnexus-web/dist ./dist
+COPY docker-server.mjs ./docker-server.mjs
 
-CMD ["nginx", "-g", "daemon off;"]
+EXPOSE 4173
+
+CMD ["node", "docker-server.mjs"]
