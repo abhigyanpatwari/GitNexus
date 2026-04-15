@@ -209,8 +209,9 @@ export const runEmbeddingPipeline = async (
     let nodes = await queryEmbeddableNodes(executeQuery);
 
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
-    // Precomputed hashes are cached so batchInsertEmbeddings can reuse them (avoids double computation).
-    const precomputedHashes = new Map<string, string>();
+    // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them
+    // (avoids double computation).
+    const computedStaleHashes = new Map<string, string>();
     if (existingEmbeddings && existingEmbeddings.size > 0) {
       const beforeCount = nodes.length;
       const staleNodeIds: string[] = [];
@@ -223,7 +224,7 @@ export const runEmbeddingPipeline = async (
         const currentHash = contentHashForNode(n, finalConfig);
         if (currentHash !== existingHash) {
           // Content changed — cache hash for reuse during insert, mark for DELETE + re-embed
-          precomputedHashes.set(n.id, currentHash);
+          computedStaleHashes.set(n.id, currentHash);
           staleNodeIds.push(n.id);
           return true;
         }
@@ -312,7 +313,7 @@ export const runEmbeddingPipeline = async (
       const updates = batch.map((node, i) => ({
         id: node.id,
         embedding: embeddingToArray(embeddings[i]),
-        contentHash: precomputedHashes.get(node.id) ?? contentHashForNode(node, finalConfig),
+        contentHash: computedStaleHashes.get(node.id) ?? contentHashForNode(node, finalConfig),
       }));
 
       await batchInsertEmbeddings(executeWithReusedStatement, updates);

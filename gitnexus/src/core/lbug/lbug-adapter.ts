@@ -166,9 +166,7 @@ const isMissingColumnOrTableError = (msg: string): boolean =>
   msg.includes('does not exist') ||
   // Kuzu-specific: "(table|column|property) ... not found" — narrow enough to avoid
   // matching transient errors like "connection not found" or "key not found".
-  /(table|column|property).*not found/i.test(msg) ||
-  // Kuzu-specific: property not found on a node table
-  (msg.includes('property') && msg.includes('contentHash'));
+  /(table|column|property).*not found/i.test(msg);
 
 /** Expose the current Database for pool adapter reuse in tests. */
 export const getDatabase = (): lbug.Database | null => db;
