@@ -15,6 +15,7 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import R from '@eagleoutice/tree-sitter-r';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
@@ -178,6 +179,8 @@ import {
   DEFAULT_PDG_MAX_FUNCTION_LINES,
   type CfgSkipCounts,
 } from '../cfg/collect.js';
+import { findRFieldOwnerNode, getRTopLevelPropertyOwnerName } from '../field-extractors/r.js';
+import { getRTopLevelMethodOwnerName } from '../method-extractors/r.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -282,6 +285,11 @@ interface ParsedSymbol {
   declaredType?: string;
   templateArguments?: string[];
   ownerId?: string;
+  /** R-specific: deferred owner name hint when enclosingClassId cannot be found
+   *  via AST walk (e.g., setMethod("foo", "ClassName", fn) where ClassName is
+   *  a string argument, not a syntactic parent). Resolved to ownerId in parse-impl.ts
+   *  after all Class symbols are registered in the TypeRegistry. */
+  ownerNameHint?: string;
   visibility?: string;
   isStatic?: boolean;
   isReadonly?: boolean;
@@ -597,6 +605,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  [SupportedLanguages.R]: R,
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
@@ -2808,9 +2817,13 @@ const processFileGroup = (
         // returnType, isAbstract/isFinal/annotations, visibility, and more.
         let enrichedByMethodExtractor = false;
         if (provider.methodExtractor && definitionNode) {
+          // R6/R5 classes are defined via function calls (R6::R6Class(), setRefClass()),
+          // not tree-sitter class syntax, so findEnclosingClassNode can't find them.
+          // findRFieldOwnerNode walks up looking for those function-call patterns.
           const classNode =
             findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path) ??
-            findClassNodeByQualifiedName(definitionNode);
+            findClassNodeByQualifiedName(definitionNode) ??
+            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,
@@ -3009,7 +3022,9 @@ const processFileGroup = (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode = findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path);
+          const classNode =
+            findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path) ??
+            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
           if (classNode) {
             const fieldMap = getFieldInfo(classNode, provider, {
               typeEnv,
@@ -3090,6 +3105,19 @@ const processFileGroup = (
         if (definitionProperties !== undefined) Object.assign(methodProps, definitionProperties);
       }
 
+      // R-specific deferred owner hints for setMethod/property nodes whose parent
+      // AST is a function call (R6Class/setClass/setRefClass/setMethod).
+      // Resolved to an ownerId in parse-impl.ts after all Class symbols are registered.
+      const ownerNameHint =
+        language === SupportedLanguages.R && definitionNode && !enclosingClassId
+          ? nodeLabel === 'Method'
+            ? (getRTopLevelMethodOwnerName(definitionNode) ??
+                getRTopLevelPropertyOwnerName(definitionNode))
+            : nodeLabel === 'Property'
+              ? getRTopLevelPropertyOwnerName(definitionNode)
+              : null
+          : null;
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -3120,6 +3148,8 @@ const processFileGroup = (
           ...(description !== undefined ? { description } : {}),
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
+          ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+          ...(ownerNameHint ? { ownerNameHint } : {}),
         }),
       });
 
@@ -3142,6 +3172,7 @@ const processFileGroup = (
           ? { templateArguments: classTemplateArguments }
           : {}),
         ...(ownerId !== undefined ? { ownerId } : {}),
+        ...(ownerNameHint ? { ownerNameHint } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
