@@ -27,7 +27,8 @@ for (const dir of vendorDirs) {
     if (fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  } catch {
-    // Best-effort cleanup — ignore errors (e.g. permissions, missing dir).
+  } catch (err) {
+    // Best-effort cleanup — warn but don't fail the install.
+    console.warn(`[preinstall] Could not remove ${dir}:`, err.message);
   }
 }
