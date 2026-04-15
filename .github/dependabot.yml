@@ -14,3 +14,63 @@ updates:
     labels:
       - dependencies
       - ci
+
+  # Gitnexus npm deps. Tree-sitter grammar bumps are grouped so we don't get
+  # one PR per grammar every time the ecosystem moves in lockstep. The
+  # tree-sitter RUNTIME is explicitly pinned because upgrading it changes
+  # which grammar ABIs load — upgrade deliberately, not automatically. See
+  # .github/scripts/check-tree-sitter-drift.py for the ABI invariant.
+  - package-ecosystem: npm
+    directory: /gitnexus
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+    groups:
+      tree-sitter-grammars:
+        patterns:
+          - tree-sitter-*
+        exclude-patterns:
+          - tree-sitter
+          - tree-sitter-cli
+    ignore:
+      # Pin the tree-sitter runtime. Bumping 0.21 -> 0.22+ requires
+      # coordinated grammar updates and an ABI review (the vendored
+      # tree-sitter-proto is regenerated against a specific cli version).
+      # Do this by hand.
+      - dependency-name: tree-sitter
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      # tree-sitter-cli follows the runtime's version cadence. Bump when
+      # regenerating vendor/tree-sitter-proto/src/parser.c, not on a schedule.
+      - dependency-name: tree-sitter-cli
+
+  # gitnexus-web (thin frontend client).
+  - package-ecosystem: npm
+    directory: /gitnexus-web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+      - frontend
+
+  # Shared types package.
+  - package-ecosystem: npm
+    directory: /gitnexus-shared
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
