@@ -347,7 +347,7 @@ docker run --rm \
 Or with Docker Compose:
 
 ```bash
-docker compose -f docker-compose.yaml up -d
+docker compose up -d
 ```
 
 Optional env file:
