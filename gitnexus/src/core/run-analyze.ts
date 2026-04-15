@@ -222,7 +222,7 @@ export async function runFullAnalysis(
           const paramsList = batch.map((e) => ({ nodeId: e.nodeId, embedding: e.embedding }));
           try {
             await executeWithReusedStatement(
-              `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`,
+              `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding`,
               paramsList,
             );
           } catch {

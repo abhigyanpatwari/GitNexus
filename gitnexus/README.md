@@ -234,6 +234,29 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
 - Node.js >= 18
 - Git repository (uses git for commit tracking)
 
+## Release candidates
+
+Stable releases publish to the default `latest` dist-tag. When a pull request
+with non-documentation changes merges into `main`, an automated workflow also
+publishes a prerelease build under the `rc` dist-tag, so early adopters can
+try in-flight fixes without waiting for the next stable cut. (Docs-only
+merges are skipped.)
+
+```bash
+# Try the latest release candidate (pre-stable — may change at any time)
+npm install -g gitnexus@rc
+# — or —
+npx gitnexus@rc analyze
+```
+
+Release-candidate versions follow the standard semver prerelease format
+`X.Y.Z-rc.N`, where `X.Y.Z` is the next stable target (bumped from the
+current `latest` by patch by default; `minor` or `major` when kicking off a
+bigger cycle) and `N` increments per published rc. Example sequence:
+`1.6.2-rc.1`, `1.6.2-rc.2`, …, then once `1.6.2` ships stable,
+`1.6.3-rc.1`. See the [Releases page](https://github.com/abhigyanpatwari/GitNexus/releases)
+for the full list; stable `latest` is unaffected.
+
 ## Troubleshooting
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`

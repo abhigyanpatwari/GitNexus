@@ -1449,25 +1449,53 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await withLbugDb(lbugPath, async () => {
             const { runEmbeddingPipeline } =
               await import('../core/embeddings/embedding-pipeline.js');
-            await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, (p) => {
-              embedJobManager.updateJob(job.id, {
-                progress: {
-                  phase:
-                    p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
-                  percent: p.percent,
-                  message:
-                    p.phase === 'loading-model'
-                      ? 'Loading embedding model...'
-                      : p.phase === 'embedding'
-                        ? `Embedding nodes (${p.percent}%)...`
-                        : p.phase === 'indexing'
-                          ? 'Creating vector index...'
-                          : p.phase === 'ready'
-                            ? 'Embeddings complete'
-                            : `${p.phase} (${p.percent}%)`,
-                },
-              });
-            });
+            // Skip nodes that already have embeddings — Kuzu forbids SET on vector-indexed properties.
+            let skipNodeIds: Set<string> | undefined;
+            try {
+              const rows = await executeQuery('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId');
+              if (rows && rows.length > 0) {
+                skipNodeIds = new Set(rows.map((r: any) => r.nodeId ?? r[0]).filter(Boolean));
+                console.log(
+                  `[embed] ${skipNodeIds.size} nodes already embedded — skipping in incremental run`,
+                );
+              }
+            } catch (err: any) {
+              // Swallow only "table does not exist" — let real connection errors propagate.
+              // Log so ops can see this path fire if Kuzu ever changes error wording.
+              const msg = err?.message ?? '';
+              if (msg.includes('does not exist') || msg.includes('not found')) {
+                console.log(
+                  `[embed] CodeEmbedding table not yet present — full embedding run (${msg})`,
+                );
+              } else {
+                throw err;
+              }
+            }
+            await runEmbeddingPipeline(
+              executeQuery,
+              executeWithReusedStatement,
+              (p) => {
+                embedJobManager.updateJob(job.id, {
+                  progress: {
+                    phase:
+                      p.phase === 'ready' ? 'complete' : p.phase === 'error' ? 'failed' : p.phase,
+                    percent: p.percent,
+                    message:
+                      p.phase === 'loading-model'
+                        ? 'Loading embedding model...'
+                        : p.phase === 'embedding'
+                          ? `Embedding nodes (${p.percent}%)...`
+                          : p.phase === 'indexing'
+                            ? 'Creating vector index...'
+                            : p.phase === 'ready'
+                              ? 'Embeddings complete'
+                              : `${p.phase} (${p.percent}%)`,
+                  },
+                });
+              },
+              {}, // config: use defaults (runEmbeddingPipeline signature: executeQuery, executeWithReusedStatement, onProgress, config, skipNodeIds)
+              skipNodeIds,
+            );
           });
 
           clearTimeout(embedTimeout);

@@ -48,3 +48,42 @@ Maintainers may request changes for correctness, tests, performance, or consiste
 ## AI-assisted contributions
 
 If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUDE.md`) and avoid drive-by refactors unrelated to the issue. Prefer incremental, test-backed changes.
+
+## Releases
+
+Two publish workflows ship `gitnexus` to npm:
+
+- **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
+  tag. Publishes to the `latest` dist-tag with a changelog-backed GitHub
+  release. Maintainers are expected to tag from `main` as a convention; the
+  workflow itself does not enforce branch reachability.
+- **Release Candidate** (`.github/workflows/release-candidate.yml`) — runs on
+  every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
+  changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with
+  version `X.Y.Z-rc.N` and a GitHub prerelease, where:
+  - `X.Y.Z` is selected automatically. On push (and on dispatch with
+    `bump: auto`, the default) the workflow **continues the active rc cycle**:
+    if the registry already has `X.Y.Z-rc.*` versions with `X.Y.Z` > current
+    `latest`, it reuses the highest such base; otherwise it patch-bumps
+    from `latest`. Dispatching with `bump: patch|minor|major` **resets**
+    the cycle from `latest`.
+  - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
+    registry. First rc for a given base is `rc.1`.
+
+  Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
+  `v<RC>` release tag **atomically, before** calling `npm publish`. The guard
+  refuses to re-run once the marker exists, so a post-publish failure will
+  not mint a duplicate rc for the same commit. The `v<RC>` tag points at a
+  detached release commit whose `package.json` matches the npm tarball
+  exactly (traceable releases). Recovery after a partial failure:
+
+  ```bash
+  git push --delete origin rc/<HEAD_SHA> v<RC>
+  # then redispatch the workflow with force: true
+  ```
+
+The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
+
+```bash
+npm view gitnexus dist-tags
+```

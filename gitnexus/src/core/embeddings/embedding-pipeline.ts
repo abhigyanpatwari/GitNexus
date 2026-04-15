@@ -100,8 +100,8 @@ const batchInsertEmbeddings = async (
   ) => Promise<void>,
   updates: Array<{ id: string; embedding: number[] }>,
 ): Promise<void> => {
-  // INSERT into separate embedding table - much more memory efficient!
-  const cypher = `CREATE (e:CodeEmbedding {nodeId: $nodeId, embedding: $embedding})`;
+  // MERGE instead of CREATE — idempotent, handles concurrent analyzes and partial prior runs
+  const cypher = `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding`;
   const paramsList = updates.map((u) => ({ nodeId: u.id, embedding: u.embedding }));
   await executeWithReusedStatement(cypher, paramsList);
 };

@@ -315,14 +315,18 @@ export const streamAllCSVsToDisk = async (
     CodeElement: codeElemWriter,
   };
 
-  const seenFileIds = new Set<string>();
+  // Deduplicate all node types — the pipeline can produce duplicate IDs across
+  // all symbol types (Class, Method, Function, etc.), not just File nodes.
+  // A single Set covering every label prevents PK violations on COPY.
+  const seenNodeIds = new Set<string>();
 
   // --- SINGLE PASS over all nodes ---
   for (const node of graph.iterNodes()) {
+    if (seenNodeIds.has(node.id)) continue;
+    seenNodeIds.add(node.id);
+
     switch (node.label) {
       case 'File': {
-        if (seenFileIds.has(node.id)) break;
-        seenFileIds.add(node.id);
         const content = await extractContent(node, contentCache);
         await fileWriter.addRow(
           [
