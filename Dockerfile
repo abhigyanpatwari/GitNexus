@@ -18,7 +18,7 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-FROM --platform=$TARGETPLATFORM node:20-bookworm-slim AS runtime
+FROM node:20-bookworm-slim AS runtime
 
 WORKDIR /app
 
