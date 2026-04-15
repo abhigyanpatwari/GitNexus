@@ -61,6 +61,23 @@ function defaultResolveHandle(allEntries: RegistryEntry[]) {
   };
 }
 
+/**
+ * Dedupe cross-links that point from the same consumer endpoint to the same
+ * provider endpoint for the same contract. Preserves first-seen order so the
+ * caller controls precedence (e.g., pass manifest links first).
+ */
+function dedupeCrossLinks(links: CrossLink[]): CrossLink[] {
+  const seen = new Set<string>();
+  const out: CrossLink[] = [];
+  for (const link of links) {
+    const key = `${link.from.repo}::${link.from.symbolUid}|${link.to.repo}::${link.to.symbolUid}|${link.type}|${link.contractId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(link);
+  }
+  return out;
+}
+
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
@@ -167,6 +184,19 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // UIDs when dbExecutors is undefined or a pool is closed, so cross-links
   // are always generated regardless of whether real DB executors are available.
   if (config.links.length > 0) {
+    // Warn about dangling links that reference repos not declared in config.repos.
+    // They still generate cross-links via synthetic UIDs (determinism is preserved),
+    // but the operator probably meant something that now silently does nothing useful.
+    const knownRepos = new Set(Object.keys(config.repos));
+    for (const link of config.links) {
+      const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
+      if (dangling.length > 0) {
+        console.warn(
+          `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
+        );
+      }
+    }
+
     const manifestEx = new ManifestExtractor();
     const manifestResult = await manifestEx.extractFromManifest(config.links, dbExecutors);
     autoContracts.push(...manifestResult.contracts);
@@ -179,7 +209,12 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   }
 
   const { matched, unmatched } = runExactMatch(autoContracts);
-  const crossLinks: CrossLink[] = [...matched, ...manifestCrossLinks];
+
+  // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
+  // manifest-declared link can also emit a matchType:'exact' CrossLink with the
+  // same endpoints. Prefer the manifest version — it reflects operator intent
+  // and carries matchType:'manifest' which downstream consumers may rely on.
+  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched]);
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {

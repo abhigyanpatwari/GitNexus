@@ -248,6 +248,67 @@ describe('syncGroup', () => {
     expect(manifestLinks[0].from.repo).toBe('app/consumer');
     expect(manifestLinks[0].to.repo).toBe('app/provider');
     expect(manifestLinks[0].confidence).toBe(1.0);
+
+    // With no DB executors available, UIDs fall back to the deterministic
+    // synthetic form `manifest::<repo>::<contractId>`.
+    expect(manifestLinks[0].from.symbolUid).toBe('manifest::app/consumer::http::GET::/api/orders');
+    expect(manifestLinks[0].to.symbolUid).toBe('manifest::app/provider::http::GET::/api/orders');
+
+    // Manifest contracts also participate in runExactMatch; we must not emit a
+    // duplicate matchType:'exact' cross-link for the same endpoint pair.
+    const exactForSameContract = result.crossLinks.filter(
+      (cl) => cl.matchType === 'exact' && cl.contractId === 'http::GET::/api/orders',
+    );
+    expect(exactForSameContract).toHaveLength(0);
+    expect(result.crossLinks).toHaveLength(1);
+  });
+
+  it('manifest links referencing unknown repos still produce cross-links via synthetic UIDs', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'app/known',
+        to: 'app/dangling', // not present in config.repos
+        type: 'http',
+        contract: 'POST::/api/missing',
+        role: 'consumer',
+      },
+    ];
+
+    const config: GroupConfig = {
+      version: 1,
+      name: 'test',
+      description: '',
+      repos: { 'app/known': 'known-repo' },
+      links,
+      packages: {},
+      detect: {
+        http: true,
+        grpc: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(String(msg));
+    try {
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].matchType).toBe('manifest');
+      expect(result.crossLinks[0].to.symbolUid).toBe(
+        'manifest::app/dangling::http::POST::/api/missing',
+      );
+      expect(warnings.some((w) => w.includes('app/dangling'))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
   });
 
   it('writes registry to groupDir when skipWrite is false', async () => {
