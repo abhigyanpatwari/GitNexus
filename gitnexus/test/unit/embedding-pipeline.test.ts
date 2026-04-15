@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
 import { contentHashForNode } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
-import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
-import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
+import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
+import { DEFAULT_EMBEDDING_CONFIG, STALE_HASH_SENTINEL } from '../../src/core/embeddings/types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // contentHashForNode
@@ -58,6 +58,19 @@ describe('contentHashForNode', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// STALE_HASH_SENTINEL
+// ────────────────────────────────────────────────────────────────────────────
+describe('STALE_HASH_SENTINEL', () => {
+  it('is the empty string', () => {
+    expect(STALE_HASH_SENTINEL).toBe('');
+  });
+
+  it('is falsy — enables consistent `hash || STALE_HASH_SENTINEL` patterns', () => {
+    expect(!STALE_HASH_SENTINEL).toBe(true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // runEmbeddingPipeline — exports
 // ────────────────────────────────────────────────────────────────────────────
 describe('runEmbeddingPipeline incremental mode', () => {
@@ -79,6 +92,267 @@ describe('EMBEDDING_SCHEMA', () => {
   it('includes contentHash STRING column', async () => {
     const { EMBEDDING_SCHEMA } = await import('../../src/core/lbug/schema.js');
     expect(EMBEDDING_SCHEMA).toContain('contentHash STRING');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// EMBEDDING_INDEX_NAME export
+// ────────────────────────────────────────────────────────────────────────────
+describe('EMBEDDING_INDEX_NAME', () => {
+  it('is exported from schema.ts', async () => {
+    const { EMBEDDING_INDEX_NAME } = await import('../../src/core/lbug/schema.js');
+    expect(EMBEDDING_INDEX_NAME).toBe('code_embedding_idx');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// runEmbeddingPipeline — incremental filter logic with mocked embedder
+//
+// Tests the three incremental-mode code paths:
+// 1. New node (not in existingEmbeddings) → embedded
+// 2. Unchanged node (hash matches) → skipped
+// 3. Stale node (hash mismatch) → DELETE old → re-embed
+// 4. Zero nodes after filter → createVectorIndex still called
+// ────────────────────────────────────────────────────────────────────────────
+describe('runEmbeddingPipeline incremental filter', () => {
+  // Track mocked calls
+  let queryCalls: string[];
+  let stmtCalls: Array<{ cypher: string; params: Array<Record<string, any>> }>;
+  let progressUpdates: EmbeddingProgress[];
+
+  // Helper node
+  const makeNode = (overrides: Partial<EmbeddableNode> = {}): EmbeddableNode => ({
+    id: 'Function:foo:src/main.ts',
+    name: 'foo',
+    label: 'Function',
+    filePath: 'src/main.ts',
+    content: 'function foo() { return 1; }',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    queryCalls = [];
+    stmtCalls = [];
+    progressUpdates = [];
+    vi.restoreAllMocks();
+  });
+
+  // Mock the embedder module so we never need a real model
+  const mockEmbedderSetup = () => {
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: vi.fn().mockImplementation((texts: string[]) =>
+        Promise.resolve(texts.map(() => new Float32Array(384))),
+      ),
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+
+    // Mock loadVectorExtension (avoids needing the native lbug module)
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+    }));
+  };
+
+  const mockExecuteQuery = (nodes: EmbeddableNode[]) => {
+    return vi.fn().mockImplementation(async (cypher: string) => {
+      queryCalls.push(cypher);
+      // Respond to node queries based on label
+      for (const label of ['Function', 'Class', 'Method', 'Interface', 'File']) {
+        if (cypher.includes(`MATCH (n:${label})`)) {
+          return nodes
+            .filter((n) => n.label === label)
+            .map((n) => ({
+              id: n.id,
+              name: n.name,
+              label: n.label,
+              filePath: n.filePath,
+              content: n.content,
+              startLine: n.startLine,
+              endLine: n.endLine,
+            }));
+        }
+      }
+      return [];
+    });
+  };
+
+  const mockExecuteWithReusedStatement = () => {
+    return vi.fn().mockImplementation(async (cypher: string, params: Array<Record<string, any>>) => {
+      stmtCalls.push({ cypher, params });
+    });
+  };
+
+  const onProgress = (p: EmbeddingProgress) => {
+    progressUpdates.push({ ...p });
+  };
+
+  it('skips unchanged nodes when hash matches', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode();
+    const hash = contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG);
+    const existingEmbeddings = new Map<string, string>([[node.id, hash]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      existingEmbeddings,
+    );
+
+    // No MERGE calls — node was skipped because hash matched
+    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
+    expect(mergeCalls).toHaveLength(0);
+
+    // Pipeline should reach 'ready' state
+    const readyProgress = progressUpdates.find((p) => p.phase === 'ready');
+    expect(readyProgress).toBeDefined();
+    expect(readyProgress!.percent).toBe(100);
+  });
+
+  it('embeds new nodes not in existingEmbeddings', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode({ id: 'Function:newFn:src/new.ts', filePath: 'src/new.ts' });
+    const existingEmbeddings = new Map<string, string>(); // empty — no prior embeddings
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      existingEmbeddings,
+    );
+
+    // Should have a MERGE call to insert the embedding
+    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
+    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+
+    // The inserted row should contain the node id and a contentHash
+    const insertParams = mergeCalls[0].params;
+    expect(insertParams.some((p: any) => p.nodeId === node.id)).toBe(true);
+    expect(insertParams[0].contentHash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('deletes and re-embeds stale nodes (hash mismatch)', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode({ content: 'function foo() { return 42; }' });
+    const staleHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // wrong hash
+    const existingEmbeddings = new Map<string, string>([[node.id, staleHash]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      existingEmbeddings,
+    );
+
+    // Should have a DELETE call for the stale node
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
+    expect(deleteCalls[0].params.some((p: any) => p.nodeId === node.id)).toBe(true);
+
+    // Should also have a MERGE call to re-insert with new hash
+    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
+    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('treats STALE_HASH_SENTINEL as stale — triggers re-embed', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode();
+    // Legacy row: nodeId present but contentHash is STALE_HASH_SENTINEL
+    const existingEmbeddings = new Map<string, string>([[node.id, STALE_HASH_SENTINEL]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      existingEmbeddings,
+    );
+
+    // Should have a DELETE call (stale)
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Should also have a MERGE (re-embed)
+    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
+    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('calls createVectorIndex even when zero nodes need embedding after filter', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode();
+    const hash = contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG);
+    // All existing hashes match — zero nodes to embed
+    const existingEmbeddings = new Map<string, string>([[node.id, hash]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      existingEmbeddings,
+    );
+
+    // The CREATE_VECTOR_INDEX query should have been called via executeQuery
+    const vectorIndexCalls = queryCalls.filter((c) => c.includes('CREATE_VECTOR_INDEX'));
+    expect(vectorIndexCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('throws when DELETE for stale nodes fails with non-trivial error', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode({ content: 'function foo() { return 42; }' });
+    const staleHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const existingEmbeddings = new Map<string, string>([[node.id, staleHash]]);
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = vi.fn().mockRejectedValue(new Error('Connection lost'));
+
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await expect(
+      runEmbeddingPipeline(
+        executeQuery,
+        executeWithReusedStatement,
+        onProgress,
+        {},
+        existingEmbeddings,
+      ),
+    ).rejects.toThrow('vector-index corruption');
   });
 });
 

@@ -32,6 +32,8 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
+import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
+import { STALE_HASH_SENTINEL } from './embeddings/types.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -222,11 +224,11 @@ export async function runFullAnalysis(
           const paramsList = batch.map((e) => ({
             nodeId: e.nodeId,
             embedding: e.embedding,
-            contentHash: e.contentHash ?? '',
+            contentHash: e.contentHash ?? STALE_HASH_SENTINEL,
           }));
           try {
             await executeWithReusedStatement(
-              `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`,
+              `MERGE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`,
               paramsList,
             );
           } catch {
@@ -260,7 +262,7 @@ export async function runFullAnalysis(
       if (cachedEmbeddingNodeIds.size > 0) {
         existingEmbeddings = new Map<string, string>();
         for (const e of cachedEmbeddings) {
-          existingEmbeddings.set(e.nodeId, e.contentHash ?? '');
+          existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
       await runEmbeddingPipeline(
@@ -287,7 +289,7 @@ export async function runFullAnalysis(
     // Count embeddings in the index (cached + newly generated)
     let embeddingCount = 0;
     try {
-      const embResult = await executeQuery(`MATCH (e:CodeEmbedding) RETURN count(e) AS cnt`);
+      const embResult = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`);
       embeddingCount = embResult?.[0]?.cnt ?? 0;
     } catch {
       /* table may not exist if embeddings never ran */

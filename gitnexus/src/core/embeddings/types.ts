@@ -13,6 +13,12 @@ export const EMBEDDABLE_LABELS = ['Function', 'Class', 'Method', 'Interface', 'F
 export type EmbeddableLabel = (typeof EMBEDDABLE_LABELS)[number];
 
 /**
+ * Sentinel value for "no content hash available" — used in legacy DBs and null rows.
+ * Nodes with this hash are always treated as stale and re-embedded.
+ */
+export const STALE_HASH_SENTINEL = '';
+
+/**
  * Check if a label should be embedded
  */
 export const isEmbeddableLabel = (label: string): label is EmbeddableLabel =>

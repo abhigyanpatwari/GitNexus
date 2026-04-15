@@ -27,6 +27,12 @@ import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDABLE_LABELS,
 } from './types.js';
+import {
+  EMBEDDING_TABLE_NAME,
+  EMBEDDING_INDEX_NAME,
+  CREATE_VECTOR_INDEX_QUERY,
+} from '../lbug/schema.js';
+import { loadVectorExtension } from '../lbug/lbug-adapter.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -116,38 +122,25 @@ const batchInsertEmbeddings = async (
   updates: Array<{ id: string; embedding: number[]; contentHash: string }>,
 ): Promise<void> => {
   // MERGE instead of CREATE — idempotent, handles concurrent analyzes and partial prior runs
-  const cypher = `MERGE (e:CodeEmbedding {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`;
+  const cypher = `MERGE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`;
   const paramsList = updates.map((u) => ({ nodeId: u.id, embedding: u.embedding, contentHash: u.contentHash }));
   await executeWithReusedStatement(cypher, paramsList);
 };
 
 /**
  * Create the vector index for semantic search
- * Now indexes the separate CodeEmbedding table
+ * Now indexes the separate CodeEmbedding table.
+ * Delegates extension loading to lbug-adapter's loadVectorExtension(),
+ * which owns the VECTOR extension lifecycle and state tracking.
  */
-let vectorExtensionLoaded = false;
-
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>,
 ): Promise<void> => {
-  // LadybugDB v0.15+ requires explicit VECTOR extension loading (once per session)
-  if (!vectorExtensionLoaded) {
-    try {
-      await executeQuery('INSTALL VECTOR');
-      await executeQuery('LOAD EXTENSION VECTOR');
-      vectorExtensionLoaded = true;
-    } catch {
-      // Extension may already be loaded — CREATE_VECTOR_INDEX will fail clearly if not
-      vectorExtensionLoaded = true;
-    }
-  }
-
-  const cypher = `
-    CALL CREATE_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 'embedding', metric := 'cosine')
-  `;
+  // Delegate to the adapter which tracks loaded state and handles DB reconnect resets
+  await loadVectorExtension();
 
   try {
-    await executeQuery(cypher);
+    await executeQuery(CREATE_VECTOR_INDEX_QUERY);
   } catch (error) {
     // Index might already exist
     if (isDev) {
@@ -242,15 +235,18 @@ export const runEmbeddingPipeline = async (
         }
         try {
           await executeWithReusedStatement(
-            `MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e`,
+            `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`,
             staleNodeIds.map((nodeId) => ({ nodeId })),
           );
         } catch (err) {
-          // Log non-trivial errors — a real connection failure here means stale rows remain
-          // and the subsequent MERGE may violate the Kuzu vector-indexed property constraint.
+          // "not found" / "does not exist" = rows already gone — safe to proceed.
+          // All other errors risk vector-index corruption (Kuzu requires DELETE-before-INSERT
+          // for vector-indexed properties) — propagate so the pipeline aborts cleanly.
           const msg = err instanceof Error ? err.message : String(err);
           if (!msg.includes('not found') && !msg.includes('does not exist')) {
-            console.warn(`[embed] Warning: failed to delete stale embedding rows: ${msg}`);
+            throw new Error(
+              `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
+            );
           }
         }
       }
@@ -401,7 +397,7 @@ export const semanticSearch = async (
 
   // Query the vector index on CodeEmbedding to get nodeIds and distances
   const vectorQuery = `
-    CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
+    CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}', 
       CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${k})
     YIELD node AS emb, distance
     WITH emb, distance

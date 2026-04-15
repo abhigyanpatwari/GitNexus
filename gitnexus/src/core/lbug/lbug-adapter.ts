@@ -12,6 +12,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
+import { STALE_HASH_SENTINEL } from '../embeddings/types.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -964,10 +965,10 @@ export const fetchExistingEmbeddingHashes = async (
     const map = new Map<string, string>();
     for (const r of rows) {
       const nodeId = r.nodeId ?? r[0];
-      const hash = r.contentHash ?? r[1] ?? '';
+      const hash = r.contentHash ?? r[1] ?? STALE_HASH_SENTINEL;
       if (nodeId) {
         // Empty/null contentHash means legacy row — treat as stale so it gets re-embedded
-        map.set(nodeId, hash || '');
+        map.set(nodeId, hash || STALE_HASH_SENTINEL);
       }
     }
     return map;
@@ -983,7 +984,7 @@ export const fetchExistingEmbeddingHashes = async (
         const map = new Map<string, string>();
         for (const r of rows) {
           const nodeId = r.nodeId ?? r[0];
-          if (nodeId) map.set(nodeId, ''); // no contentHash — treat as stale
+          if (nodeId) map.set(nodeId, STALE_HASH_SENTINEL); // no contentHash — treat as stale
         }
         console.log(
           `[embed] ${map.size} nodes in legacy DB (no contentHash) — all treated as stale`,
