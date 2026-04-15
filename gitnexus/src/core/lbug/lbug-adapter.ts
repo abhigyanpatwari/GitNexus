@@ -913,7 +913,7 @@ export const loadCachedEmbeddings = async (): Promise<{
       // Only fall back for missing-column errors (legacy DBs without contentHash).
       // Rethrow transient / connection errors so callers see them.
       const msg = err?.message ?? '';
-      if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('Column')) {
+      if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('contentHash')) {
         hasContentHash = false;
         rows = await conn.query(
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
@@ -973,7 +973,7 @@ export const fetchExistingEmbeddingHashes = async (
     return map;
   } catch (err: any) {
     const msg = err?.message ?? '';
-    if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('Column')) {
+    if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('contentHash')) {
       // Column or table missing — try fallback without contentHash
       try {
         const rows = await execQuery(
