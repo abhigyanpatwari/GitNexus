@@ -372,6 +372,47 @@ describe('GroupService', () => {
         cleanup();
       }
     });
+
+    it('test_groupQuery_subgroupExact_skips_descendant_member_paths', async () => {
+      const tmpDir = path.join(os.tmpdir(), `gitnexus-svc-nest-${Date.now()}`);
+      const groupDir = path.join(tmpDir, 'groups', 'nest-group');
+      fs.mkdirSync(groupDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(groupDir, 'group.yaml'),
+        `version: 1
+name: nest-group
+repos:
+  app/frontend: fe-root
+  app/frontend/mobile: fe-nested
+  app/backend: be1
+`,
+      );
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [{ name: 'p1' }] }));
+        const port = makePort({ query });
+        const svc = new GroupService(port);
+
+        const prefixOnly = (await svc.groupQuery({
+          name: 'nest-group',
+          query: 'x',
+          subgroup: 'app/frontend',
+        })) as { per_repo: Array<{ repo: string }> };
+        expect(prefixOnly.per_repo.map((r) => r.repo).sort()).toEqual(['app/frontend', 'app/frontend/mobile']);
+
+        const exact = (await svc.groupQuery({
+          name: 'nest-group',
+          query: 'x',
+          subgroup: 'app/frontend',
+          subgroupExact: true,
+        })) as { per_repo: Array<{ repo: string }> };
+        expect(exact.per_repo).toHaveLength(1);
+        expect(exact.per_repo[0].repo).toBe('app/frontend');
+      } finally {
+        vi.unstubAllEnvs();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('groupImpact', () => {
@@ -402,6 +443,36 @@ describe('GroupService', () => {
       } finally {
         vi.unstubAllEnvs();
         cleanup();
+      }
+    });
+
+    it('test_groupContext_subgroupExact_skips_descendant_member_paths', async () => {
+      const tmpDir = path.join(os.tmpdir(), `gitnexus-ctx-nest-${Date.now()}`);
+      const groupDir = path.join(tmpDir, 'groups', 'nest-group');
+      fs.mkdirSync(groupDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(groupDir, 'group.yaml'),
+        `version: 1
+name: nest-group
+repos:
+  app/frontend: fe-root
+  app/frontend/mobile: fe-nested
+`,
+      );
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const port = makePort();
+        const svc = new GroupService(port);
+        await svc.groupContext({
+          name: 'nest-group',
+          target: 'X',
+          subgroup: 'app/frontend',
+          subgroupExact: true,
+        });
+        expect(port.context).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllEnvs();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 

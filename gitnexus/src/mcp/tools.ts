@@ -62,7 +62,7 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
-SERVICE (group or single repo): optional monorepo path prefix (POSIX-style, case-sensitive segments). When set, only processes whose symbols have file paths under that prefix are included.`,
+SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -104,7 +104,7 @@ SERVICE (group or single repo): optional monorepo path prefix (POSIX-style, case
           type: 'string',
           minLength: 1,
           description:
-            'Optional monorepo service root (relative path, "/" separators). Prefix-matches symbol file paths; omit for full repo/group scope. Empty string is rejected server-side.',
+            'Optional monorepo service root (relative path, "/" separators). In group mode (@repo), prefix-matches symbol file paths; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
       required: ['query'],
@@ -182,7 +182,7 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
 
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
 
-SERVICE: optional monorepo path prefix (case-sensitive path segments). Prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol (no extra filter on unrelated repos).`,
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -206,7 +206,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). Prefix-ma
           type: 'string',
           minLength: 1,
           description:
-            'Optional monorepo service root (relative path). Prefix-matches symbol file paths in group mode. Empty string is rejected server-side.',
+            'Optional monorepo service root (relative path). Applies in group mode (@repo) only; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
       required: [],
@@ -303,7 +303,7 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match
 
 GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge.
 
-SERVICE: optional monorepo path prefix (case-sensitive path segments). Scopes the local impact walk and cross-repo symbol paths to files under that prefix; omit for full member repo.`,
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -350,7 +350,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). Scopes th
           type: 'string',
           minLength: 1,
           description:
-            'Optional monorepo service root (relative path). Prefix-matches file paths for impact traversal and cross hits. Empty string is rejected server-side.',
+            'Optional monorepo service root (relative path). Applies when "repo" is group mode (@…); ignored for a normal repo name. Empty string is rejected server-side.',
         },
         subgroup: {
           type: 'string',

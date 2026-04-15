@@ -78,9 +78,10 @@ export interface GroupToolPort {
   ): Promise<unknown>;
 }
 
-function repoInSubgroup(repoPath: string, subgroup?: string): boolean {
+function repoInSubgroup(repoPath: string, subgroup?: string, exact?: boolean): boolean {
   if (!subgroup?.trim()) return true;
   const s = subgroup.replace(/\/+$/, '');
+  if (exact) return repoPath === s;
   return repoPath === s || repoPath.startsWith(`${s}/`);
 }
 
@@ -299,6 +300,7 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
+    const subgroupExact = params.subgroupExact === true;
 
     if (!name) {
       return { group: '', error: 'name is required', results: [] };
@@ -324,7 +326,7 @@ export class GroupService {
     const results: GroupContextResult['results'] = [];
 
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
-      if (!repoInSubgroup(repoPath, subgroup)) continue;
+      if (!repoInSubgroup(repoPath, subgroup, subgroupExact)) continue;
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const payload = await this.port.context(repoObj, {
@@ -372,12 +374,13 @@ export class GroupService {
 
     const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
+    const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     const config = await loadGroupConfig(groupDir);
 
     const perRepo: Array<{ repo: string; score: number; processes: unknown[] }> = [];
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
-      if (!repoInSubgroup(repoPath, subgroup)) continue;
+      if (!repoInSubgroup(repoPath, subgroup, subgroupExact)) continue;
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const queryResult = (await this.port.query(repoObj, {

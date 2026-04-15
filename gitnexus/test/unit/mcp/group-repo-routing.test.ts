@@ -88,11 +88,16 @@ repos:
     expect(arg).not.toHaveProperty('repo');
   });
 
-  it('routes query with explicit member path after slash as subgroup', async () => {
+  it('routes query with explicit member path as exact subgroup (no descendant repo bleed)', async () => {
     const backend = new LocalBackend();
     await backend.callTool('query', { repo: '@g1/app/frontend', query: 'x' });
     expect(groupSpyQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'g1', query: 'x', subgroup: 'app/frontend' }),
+      expect.objectContaining({
+        name: 'g1',
+        query: 'x',
+        subgroup: 'app/frontend',
+        subgroupExact: true,
+      }),
     );
   });
 
@@ -122,6 +127,28 @@ repos:
     );
   });
 
+  it('maps MCP symbol name to groupContext target (does not overwrite group name)', async () => {
+    const backend = new LocalBackend();
+    await backend.callTool('context', { repo: '@g1', name: 'MyClass' });
+    expect(groupSpyContext).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'g1', target: 'MyClass' }),
+    );
+  });
+
+  it('returns error for unknown group name', async () => {
+    const backend = new LocalBackend();
+    const out = await backend.callTool('query', { repo: '@no-such-group', query: 'x' });
+    expect(out).toHaveProperty('error');
+    expect(String((out as { error: string }).error)).toMatch(/not found|no such|unknown|exist|ENOENT/i);
+  });
+
+  it('returns error for unknown member path', async () => {
+    const backend = new LocalBackend();
+    const out = await backend.callTool('query', { repo: '@g1/not-a-member', query: 'x' });
+    expect(out).toHaveProperty('error');
+    expect(String((out as { error: string }).error)).toMatch(/Unknown member path/i);
+  });
+
   it('rejects empty service without calling group tools', async () => {
     const backend = new LocalBackend();
     const out = await backend.callTool('query', { repo: '@g1', query: 'x', service: '' });
@@ -134,5 +161,15 @@ repos:
     await expect(backend.callTool('group_query', { name: 'g1', query: 'x' })).rejects.toThrow(
       /Removed tools/,
     );
+  });
+
+  it('removed group_contracts mentions migration', async () => {
+    const backend = new LocalBackend();
+    await expect(backend.callTool('group_contracts', { name: 'g1' })).rejects.toThrow(/Removed tools/);
+  });
+
+  it('removed group_status mentions migration', async () => {
+    const backend = new LocalBackend();
+    await expect(backend.callTool('group_status', { name: 'g1' })).rejects.toThrow(/Removed tools/);
   });
 });
