@@ -9,10 +9,10 @@ import {
   REL_TABLE_NAME,
   SCHEMA_QUERIES,
   EMBEDDING_TABLE_NAME,
+  STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
-import { STALE_HASH_SENTINEL } from '../embeddings/types.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -164,7 +164,9 @@ let vectorExtensionLoaded = false;
  */
 const isMissingColumnOrTableError = (msg: string): boolean =>
   msg.includes('does not exist') ||
-  msg.includes('not found') ||
+  // Kuzu-specific: "(table|column|property) ... not found" — narrow enough to avoid
+  // matching transient errors like "connection not found" or "key not found".
+  /(table|column|property).*not found/i.test(msg) ||
   // Kuzu-specific: property not found on a node table
   (msg.includes('property') && msg.includes('contentHash'));
 
@@ -987,9 +989,7 @@ export const fetchExistingEmbeddingHashes = async (
     if (isMissingColumnOrTableError(msg)) {
       // Column or table missing — try fallback without contentHash
       try {
-        const rows = await execQuery(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
-        );
+        const rows = await execQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`);
         if (!rows || rows.length === 0) return undefined;
         const map = new Map<string, string>();
         for (const r of rows) {

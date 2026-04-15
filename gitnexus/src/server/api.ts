@@ -1451,8 +1451,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               await import('../core/embeddings/embedding-pipeline.js');
             // Fetch existing content hashes for incremental embedding.
             // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-            const { fetchExistingEmbeddingHashes } =
-              await import('../core/lbug/lbug-adapter.js');
+            const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
             const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
             if (existingEmbeddings && existingEmbeddings.size > 0) {
               console.log(

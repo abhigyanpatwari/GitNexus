@@ -439,6 +439,12 @@ export const EMBEDDING_DIMS = _rawDims;
 /** HNSW vector index name for the CodeEmbedding table. */
 export const EMBEDDING_INDEX_NAME = 'code_embedding_idx';
 
+/**
+ * Sentinel value for "no content hash available" — used in legacy DBs and null rows.
+ * Nodes with this hash are always treated as stale and re-embedded.
+ */
+export const STALE_HASH_SENTINEL = '';
+
 export const EMBEDDING_SCHEMA = `
 CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
   nodeId STRING,

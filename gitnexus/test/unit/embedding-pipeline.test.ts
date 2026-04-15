@@ -3,7 +3,8 @@ import { createHash } from 'crypto';
 import { contentHashForNode } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
-import { DEFAULT_EMBEDDING_CONFIG, STALE_HASH_SENTINEL } from '../../src/core/embeddings/types.js';
+import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
+import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // contentHashForNode
@@ -30,9 +31,7 @@ describe('contentHashForNode', () => {
 
   it('matches sha1(generateEmbeddingText(node))', () => {
     const node = makeNode();
-    const expected = createHash('sha1')
-      .update(generateEmbeddingText(node))
-      .digest('hex');
+    const expected = createHash('sha1').update(generateEmbeddingText(node)).digest('hex');
     expect(contentHashForNode(node)).toBe(expected);
   });
 
@@ -135,15 +134,18 @@ describe('runEmbeddingPipeline incremental filter', () => {
     stmtCalls = [];
     progressUpdates = [];
     vi.restoreAllMocks();
+    vi.resetModules();
   });
 
   // Mock the embedder module so we never need a real model
   const mockEmbedderSetup = () => {
     vi.doMock('../../src/core/embeddings/embedder.js', () => ({
       initEmbedder: vi.fn().mockResolvedValue(undefined),
-      embedBatch: vi.fn().mockImplementation((texts: string[]) =>
-        Promise.resolve(texts.map(() => new Float32Array(384))),
-      ),
+      embedBatch: vi
+        .fn()
+        .mockImplementation((texts: string[]) =>
+          Promise.resolve(texts.map(() => new Float32Array(384))),
+        ),
       embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
       embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
       isEmbedderReady: vi.fn().mockReturnValue(true),
@@ -179,9 +181,11 @@ describe('runEmbeddingPipeline incremental filter', () => {
   };
 
   const mockExecuteWithReusedStatement = () => {
-    return vi.fn().mockImplementation(async (cypher: string, params: Array<Record<string, any>>) => {
-      stmtCalls.push({ cypher, params });
-    });
+    return vi
+      .fn()
+      .mockImplementation(async (cypher: string, params: Array<Record<string, any>>) => {
+        stmtCalls.push({ cypher, params });
+      });
   };
 
   const onProgress = (p: EmbeddingProgress) => {
@@ -198,7 +202,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await runEmbeddingPipeline(
       executeQuery,
@@ -221,13 +226,18 @@ describe('runEmbeddingPipeline incremental filter', () => {
   it('embeds new nodes not in existingEmbeddings', async () => {
     mockEmbedderSetup();
 
-    const node = makeNode({ id: 'Function:newFn:src/new.ts', name: 'newFn', filePath: 'src/new.ts' });
+    const node = makeNode({
+      id: 'Function:newFn:src/new.ts',
+      name: 'newFn',
+      filePath: 'src/new.ts',
+    });
     const existingEmbeddings = new Map<string, string>(); // empty — no prior embeddings
 
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await runEmbeddingPipeline(
       executeQuery,
@@ -257,7 +267,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await runEmbeddingPipeline(
       executeQuery,
@@ -287,7 +298,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await runEmbeddingPipeline(
       executeQuery,
@@ -317,7 +329,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await runEmbeddingPipeline(
       executeQuery,
@@ -342,7 +355,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([node]);
     const executeWithReusedStatement = vi.fn().mockRejectedValue(new Error('Connection lost'));
 
-    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
 
     await expect(
       runEmbeddingPipeline(

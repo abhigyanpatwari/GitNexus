@@ -33,7 +33,7 @@ import {
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
-import { STALE_HASH_SENTINEL } from './embeddings/types.js';
+import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -289,7 +289,9 @@ export async function runFullAnalysis(
     // Count embeddings in the index (cached + newly generated)
     let embeddingCount = 0;
     try {
-      const embResult = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`);
+      const embResult = await executeQuery(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+      );
       embeddingCount = embResult?.[0]?.cnt ?? 0;
     } catch {
       /* table may not exist if embeddings never ran */

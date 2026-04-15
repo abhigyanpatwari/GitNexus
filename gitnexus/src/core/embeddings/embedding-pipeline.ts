@@ -123,7 +123,11 @@ const batchInsertEmbeddings = async (
 ): Promise<void> => {
   // MERGE instead of CREATE — idempotent, handles concurrent analyzes and partial prior runs
   const cypher = `MERGE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`;
-  const paramsList = updates.map((u) => ({ nodeId: u.id, embedding: u.embedding, contentHash: u.contentHash }));
+  const paramsList = updates.map((u) => ({
+    nodeId: u.id,
+    embedding: u.embedding,
+    contentHash: u.contentHash,
+  }));
   await executeWithReusedStatement(cypher, paramsList);
 };
 
@@ -217,13 +221,13 @@ export const runEmbeddingPipeline = async (
           return true;
         }
         const currentHash = contentHashForNode(n, finalConfig);
-        precomputedHashes.set(n.id, currentHash);
         if (currentHash !== existingHash) {
-          // Content changed — mark for DELETE, then re-embed
+          // Content changed — cache hash for reuse during insert, mark for DELETE + re-embed
+          precomputedHashes.set(n.id, currentHash);
           staleNodeIds.push(n.id);
           return true;
         }
-        // Hash matches — skip (fresh)
+        // Hash matches — skip (fresh); no need to cache hash for skipped nodes
         return false;
       });
 
