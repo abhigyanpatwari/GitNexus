@@ -87,6 +87,25 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Windows occasionally reports ENOTEMPTY when a just-closed ReadStream
+  // fd hasn't been released yet. Retry a few times with a tiny back-off.
+  // The production fix lives in splitRelCsvByLabelPair (wait for input
+  // stream 'close' before resolving); this retry is defense-in-depth so
+  // the test doesn't flake on slow CI runners.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOTEMPTY' && code !== 'EBUSY' && code !== 'EPERM') throw err;
+      // Spin briefly to let the kernel finish releasing the fd.
+      const until = Date.now() + 50;
+      while (Date.now() < until) {
+        /* busy-wait — sync afterEach can't await */
+      }
+    }
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

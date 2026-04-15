@@ -140,9 +140,20 @@ export const splitRelCsvByLabelPair = async (
       }
     });
     rl.on('close', () => {
-      if (!settled) {
-        settled = true;
+      if (settled) return;
+      settled = true;
+      // Readline 'close' fires when the logical stream ends, but the underlying
+      // fs.ReadStream may still hold its file descriptor briefly — especially
+      // on Windows, where this race caused ENOTEMPTY on subsequent rmdir.
+      // Wait for the input stream's own 'close' event (or resolve immediately
+      // if it's already gone) before returning.
+      if ((inputStream as { closed?: boolean }).closed || inputStream.destroyed) {
         resolve();
+      } else {
+        inputStream.once('close', () => resolve());
+        // Belt-and-braces: if the fd never emits 'close' for some reason,
+        // proactively close it ourselves.
+        inputStream.destroy();
       }
     });
     rl.on('error', cleanup);
