@@ -120,6 +120,9 @@ export function validateGroupImpactParams(params: Record<string, unknown>): {
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath) return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
   if (!target) return { ok: false, error: 'target is required' };
+  if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+    return { ok: false, error: 'service must not be an empty string' };
+  }
   const direction = parseDirection(params.direction);
   if (!direction) return { ok: false, error: 'direction must be upstream or downstream' };
 

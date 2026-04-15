@@ -28,6 +28,7 @@ import {
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -463,8 +464,17 @@ export class LocalBackend {
       return this.handleGroupTool(method, params || {});
     }
 
+    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+    if (
+      (method === 'impact' || method === 'query' || method === 'context') &&
+      typeof p.repo === 'string' &&
+      p.repo.startsWith('@')
+    ) {
+      return this.callToolAtGroupRepo(method, p);
+    }
+
     // Resolve repo from optional param (re-reads registry on miss)
-    const repo = await this.resolveRepo(params?.repo);
+    const repo = await this.resolveRepo((params as { repo?: string } | undefined)?.repo);
 
     switch (method) {
       case 'query':
@@ -2547,15 +2557,64 @@ export class LocalBackend {
         return this.groupList(params);
       case 'group_sync':
         return this.groupSync(params);
-      case 'group_contracts':
-        return this.groupContracts(params);
-      case 'group_query':
-        return this.groupQuery(params);
-      case 'group_status':
-        return this.groupStatus(params);
       default:
-        throw new Error(`Unknown group tool: ${method}`);
+        throw new Error(
+          `Unknown group tool: ${method}. Removed tools: use repo "@<groupName>" on impact, query, or context (optional "/<memberPath>"), or MCP resources.`,
+        );
     }
+  }
+
+  /**
+   * Dispatch impact/query/context when `repo` is `@groupName` or `@groupName/memberPath`
+   * (group mode — not the global indexed-repo `repo` parameter).
+   */
+  private async callToolAtGroupRepo(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.refreshRepos();
+
+    if (
+      params.service !== undefined &&
+      params.service !== null &&
+      String(params.service).trim() === ''
+    ) {
+      return { error: 'service must not be an empty string' };
+    }
+
+    const raw = String(params.repo).slice(1);
+    const slash = raw.indexOf('/');
+    const groupName = (slash === -1 ? raw : raw.slice(0, slash)).trim();
+    const memberRest = slash === -1 ? undefined : raw.slice(slash + 1).trim() || undefined;
+
+    const resolved = await resolveAtGroupMemberRepoPath(groupName, memberRest);
+    if (resolved.ok === false) return { error: resolved.error };
+
+    const svc = this.getGroupService();
+    if (method === 'impact') {
+      return svc.groupImpact({
+        ...params,
+        name: groupName,
+        repo: resolved.repoPath,
+      });
+    }
+    if (method === 'query') {
+      const { repo: _r, ...rest } = params;
+      return svc.groupQuery({
+        ...rest,
+        name: groupName,
+        ...(memberRest ? { subgroup: memberRest } : {}),
+      });
+    }
+    if (method === 'context') {
+      const { repo: _r, ...rest } = params;
+      return svc.groupContext({
+        ...rest,
+        name: groupName,
+        ...(memberRest ? { subgroup: memberRest } : {}),
+      });
+    }
+    throw new Error(`Internal: unsupported group-repo tool ${method}`);
   }
 
   private async groupList(params: Record<string, unknown>): Promise<unknown> {
@@ -2564,20 +2623,6 @@ export class LocalBackend {
 
   private async groupSync(params: Record<string, unknown>): Promise<unknown> {
     return this.getGroupService().groupSync(params);
-  }
-
-  private async groupContracts(params: Record<string, unknown>): Promise<unknown> {
-    return this.getGroupService().groupContracts(params);
-  }
-
-  private async groupQuery(params: Record<string, unknown>): Promise<unknown> {
-    await this.refreshRepos();
-    return this.getGroupService().groupQuery(params);
-  }
-
-  private async groupStatus(params: Record<string, unknown>): Promise<unknown> {
-    await this.refreshRepos();
-    return this.getGroupService().groupStatus(params);
   }
 
   /**

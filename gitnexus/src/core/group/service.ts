@@ -107,6 +107,20 @@ function isStoredContract(raw: unknown): raw is StoredContract {
   );
 }
 
+function filterQueryByServicePrefix(
+  queryResult: { processes?: Array<Record<string, unknown>>; process_symbols?: Array<Record<string, unknown>> },
+  servicePrefix: string,
+): { processes: Array<Record<string, unknown>>; process_symbols: Array<Record<string, unknown>> } {
+  const symbols = (queryResult.process_symbols || []).filter((s) =>
+    fileMatchesServicePrefix(typeof s.filePath === 'string' ? s.filePath : undefined, servicePrefix),
+  );
+  const allowed = new Set(
+    symbols.map((s) => String((s as { process_id?: string }).process_id ?? '')).filter(Boolean),
+  );
+  const processes = (queryResult.processes || []).filter((p) => allowed.has(String(p.id)));
+  return { processes, process_symbols: symbols };
+}
+
 function isCrossLink(raw: unknown): raw is CrossLink {
   if (!raw || typeof raw !== 'object') return false;
   const o = raw as Record<string, unknown>;
@@ -280,6 +294,9 @@ export class GroupService {
     const uid = typeof params.uid === 'string' ? params.uid.trim() : undefined;
     const file_path = typeof params.file_path === 'string' ? params.file_path : undefined;
     const include_content = Boolean(params.include_content);
+    if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+      return { group: name || '', error: 'service must not be an empty string', results: [] };
+    }
     const servicePrefix = normalizeServicePrefix(params.service);
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
@@ -348,6 +365,10 @@ export class GroupService {
     const name = String(params.name ?? '').trim();
     const queryText = String(params.query ?? '').trim();
     if (!name || !queryText) return { error: 'name and query are required' };
+    if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+      return { error: 'service must not be an empty string' };
+    }
+    const servicePrefix = normalizeServicePrefix(params.service);
 
     const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
@@ -364,8 +385,13 @@ export class GroupService {
           limit,
           max_symbols: 10,
           include_content: false,
-        })) as { processes?: Array<Record<string, unknown>> };
-        const processes = queryResult.processes || [];
+        })) as {
+          processes?: Array<Record<string, unknown>>;
+          process_symbols?: Array<Record<string, unknown>>;
+        };
+        const processes = servicePrefix
+          ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
+          : queryResult.processes || [];
         const scored = processes.map((p, idx) => ({
           ...p,
           _rrf_score: 1 / (idx + 1 + 60),

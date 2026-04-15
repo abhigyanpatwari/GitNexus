@@ -65,4 +65,51 @@ describe('group CLI', () => {
     const blanketClosePattern = /closeLbug\s*\(\s*\)/;
     expect(source).not.toMatch(blanketClosePattern);
   });
+
+  it('group impact requires --target and --repo', () => {
+    const c = runGroup(['create', 'impcli']);
+    expect(c.status).toBe(0);
+    const r = runGroup(['impact', 'impcli']);
+    expect(r.status).not.toBe(0);
+  });
+
+  it('group impact runs with Issue #794 style flags (fixture-backed home)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cli-impact-'));
+    try {
+      const gd = path.join(home, 'groups', 'test-group');
+      fs.mkdirSync(gd, { recursive: true });
+      fs.copyFileSync(
+        path.join(repoRoot, 'test', 'fixtures', 'group', 'group.yaml'),
+        path.join(gd, 'group.yaml'),
+      );
+      const r = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          tsxImportUrl,
+          cliEntry,
+          'group',
+          'impact',
+          'test-group',
+          '--target',
+          'health',
+          '--repo',
+          'app/backend',
+          '--json',
+        ],
+        {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          timeout: 20000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, GITNEXUS_HOME: home },
+        },
+      );
+      expect(r.status).not.toBe(0);
+      const msg = `${r.stderr}\n${r.stdout}`;
+      expect(msg).toMatch(/error|indexed|not found|repository/i);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

@@ -2,16 +2,10 @@
 import { describe, it, expect } from 'vitest';
 import { GITNEXUS_TOOLS } from '../../../src/mcp/tools.js';
 
-const GROUP_TOOL_NAMES = [
-  'group_list',
-  'group_sync',
-  'group_contracts',
-  'group_query',
-  'group_status',
-];
+const GROUP_TOOL_NAMES = ['group_list', 'group_sync'];
 
 describe('Group MCP tools', () => {
-  it('all 5 group tools are registered', () => {
+  it('group_list and group_sync are registered', () => {
     for (const name of GROUP_TOOL_NAMES) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === name);
       expect(tool, `tool ${name} should be registered`).toBeDefined();
