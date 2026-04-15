@@ -38,11 +38,11 @@ on:
 # No workflow-level permissions — scoped per job below.
 permissions: {}
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Serialize all runs on the same ref (push + workflow_dispatch) to prevent two publishes
+# racing on the rc counter. cancel-in-progress: false — the earlier merge publishes first.
 concurrency:
-  # Serialize all runs on the same ref (push + workflow_dispatch) to prevent
-  # two publishes racing on the rc counter. Do not cancel an in-progress run
-  # when a newer one is queued — we want the earlier merge to publish first.
-  group: release-candidate-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

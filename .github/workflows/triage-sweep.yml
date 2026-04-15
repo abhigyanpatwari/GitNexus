@@ -47,8 +47,10 @@ permissions:
   issues: write
   pull-requests: write
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Single global slot — newest manual dispatch supersedes any in-flight run.
 concurrency:
-  group: triage-sweep
+  group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:

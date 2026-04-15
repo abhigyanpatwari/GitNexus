@@ -10,9 +10,10 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Serialize per-PR/issue to avoid racing comments.
 concurrency:
-  group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || github.event.issue.id }}
   cancel-in-progress: false
 
 jobs:

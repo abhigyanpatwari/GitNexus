@@ -8,8 +8,9 @@ on:
 permissions:
   pull-requests: write
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 concurrency:
-  group: pr-desc-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
