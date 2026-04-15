@@ -302,7 +302,7 @@ export async function runGroupImpact(
   params: Record<string, unknown>,
 ): Promise<GroupImpactResult | { error: string }> {
   const parsed = validateGroupImpactParams(params);
-  if (!parsed.ok) return { error: parsed.error };
+  if (parsed.ok === false) return { error: parsed.error };
 
   const {
     name,

@@ -245,7 +245,7 @@ export class GroupService {
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     const loaded = await loadContractRegistryResilient(groupDir);
-    if (!loaded.ok) {
+    if (loaded.ok === false) {
       if (loaded.error.includes('No contracts.json')) {
         return { error: `No contracts.json for group "${name}". Run group_sync first.` };
       }
