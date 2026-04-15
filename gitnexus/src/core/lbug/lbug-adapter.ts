@@ -909,12 +909,18 @@ export const loadCachedEmbeddings = async (): Promise<{
       rows = await conn.query(
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding, e.contentHash AS contentHash`,
       );
-    } catch {
-      // Fallback for legacy DBs without contentHash column
-      hasContentHash = false;
-      rows = await conn.query(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
-      );
+    } catch (err: any) {
+      // Only fall back for missing-column errors (legacy DBs without contentHash).
+      // Rethrow transient / connection errors so callers see them.
+      const msg = err?.message ?? '';
+      if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('Column')) {
+        hasContentHash = false;
+        rows = await conn.query(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
+        );
+      } else {
+        throw err;
+      }
     }
     const result = Array.isArray(rows) ? rows[0] : rows;
     for (const row of await result.getAll()) {
@@ -937,6 +943,65 @@ export const loadCachedEmbeddings = async (): Promise<{
   }
 
   return { embeddingNodeIds, embeddings };
+};
+
+/**
+ * Fetch existing embedding hashes from CodeEmbedding table for incremental embedding.
+ * Returns a Map<nodeId, contentHash> suitable for passing to `runEmbeddingPipeline`.
+ * Handles legacy DBs without the `contentHash` column (all rows treated as stale with empty hash).
+ * Returns undefined if the CodeEmbedding table does not exist.
+ *
+ * @param execQuery - Cypher query executor (typically pool-adapter's `executeQuery`)
+ */
+export const fetchExistingEmbeddingHashes = async (
+  execQuery: (cypher: string) => Promise<any[]>,
+): Promise<Map<string, string> | undefined> => {
+  try {
+    const rows = await execQuery(
+      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.contentHash AS contentHash`,
+    );
+    if (!rows || rows.length === 0) return undefined;
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      const nodeId = r.nodeId ?? r[0];
+      const hash = r.contentHash ?? r[1] ?? '';
+      if (nodeId) {
+        // Empty/null contentHash means legacy row — treat as stale so it gets re-embedded
+        map.set(nodeId, hash || '');
+      }
+    }
+    return map;
+  } catch (err: any) {
+    const msg = err?.message ?? '';
+    if (msg.includes('does not exist') || msg.includes('not found') || msg.includes('Column')) {
+      // Column or table missing — try fallback without contentHash
+      try {
+        const rows = await execQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
+        );
+        if (!rows || rows.length === 0) return undefined;
+        const map = new Map<string, string>();
+        for (const r of rows) {
+          const nodeId = r.nodeId ?? r[0];
+          if (nodeId) map.set(nodeId, ''); // no contentHash — treat as stale
+        }
+        console.log(
+          `[embed] ${map.size} nodes in legacy DB (no contentHash) — all treated as stale`,
+        );
+        return map;
+      } catch (fallbackErr: any) {
+        const fallbackMsg = fallbackErr?.message ?? '';
+        if (fallbackMsg.includes('does not exist') || fallbackMsg.includes('not found')) {
+          console.log(
+            `[embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
+          );
+          return undefined;
+        }
+        throw fallbackErr;
+      }
+    }
+    throw err;
+  }
 };
 
 export const closeLbug = async (): Promise<void> => {

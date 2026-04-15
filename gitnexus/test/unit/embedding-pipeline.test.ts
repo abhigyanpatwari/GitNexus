@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createHash } from 'crypto';
 import { contentHashForNode } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
+import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // contentHashForNode
@@ -47,18 +48,19 @@ describe('contentHashForNode', () => {
     // Different filePaths lead to different embedding text ⇒ different hashes
     expect(contentHashForNode(a)).not.toBe(contentHashForNode(b));
   });
+
+  it('produces identical hash regardless of config vs finalConfig when config is empty', () => {
+    const node = makeNode();
+    const hashWithEmptyConfig = contentHashForNode(node, {});
+    const hashWithFullDefaults = contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG);
+    expect(hashWithEmptyConfig).toBe(hashWithFullDefaults);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// runEmbeddingPipeline — incremental mode integration (mocked)
+// runEmbeddingPipeline — exports
 // ────────────────────────────────────────────────────────────────────────────
 describe('runEmbeddingPipeline incremental mode', () => {
-  // We can't run the full pipeline without the model, but we can verify
-  // the logic by importing the function and checking the zero-node path
-  // with a mocked embedder. The test below validates that:
-  // 1. createVectorIndex is called even when totalNodes === 0
-  // 2. stale nodes (hash mismatch) trigger DELETE queries
-
   it('exports contentHashForNode as a named export', async () => {
     const mod = await import('../../src/core/embeddings/embedding-pipeline.js');
     expect(typeof mod.contentHashForNode).toBe('function');
@@ -79,3 +81,9 @@ describe('EMBEDDING_SCHEMA', () => {
     expect(EMBEDDING_SCHEMA).toContain('contentHash STRING');
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// fetchExistingEmbeddingHashes — tested in integration tests (requires native module)
+// The function is tested via lbug-core-adapter integration tests which have the
+// native @ladybugdb/core module available.
+// ────────────────────────────────────────────────────────────────────────────

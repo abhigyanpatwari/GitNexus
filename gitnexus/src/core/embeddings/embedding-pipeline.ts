@@ -211,7 +211,9 @@ export const runEmbeddingPipeline = async (
     // Phase 2: Query embeddable nodes
     let nodes = await queryEmbeddableNodes(executeQuery);
 
-    // Incremental mode: compare content hashes, delete stale rows, skip fresh ones
+    // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
+    // Precomputed hashes are cached so batchInsertEmbeddings can reuse them (avoids double computation).
+    const precomputedHashes = new Map<string, string>();
     if (existingEmbeddings && existingEmbeddings.size > 0) {
       const beforeCount = nodes.length;
       const staleNodeIds: string[] = [];
@@ -221,7 +223,8 @@ export const runEmbeddingPipeline = async (
           // New node — needs embedding
           return true;
         }
-        const currentHash = contentHashForNode(n, config);
+        const currentHash = contentHashForNode(n, finalConfig);
+        precomputedHashes.set(n.id, currentHash);
         if (currentHash !== existingHash) {
           // Content changed — mark for DELETE, then re-embed
           staleNodeIds.push(n.id);
@@ -242,8 +245,13 @@ export const runEmbeddingPipeline = async (
             `MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e`,
             staleNodeIds.map((nodeId) => ({ nodeId })),
           );
-        } catch {
-          // Rows may already be gone — safe to ignore
+        } catch (err) {
+          // Log non-trivial errors — a real connection failure here means stale rows remain
+          // and the subsequent MERGE may violate the Kuzu vector-indexed property constraint.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('not found') && !msg.includes('does not exist')) {
+            console.warn(`[embed] Warning: failed to delete stale embedding rows: ${msg}`);
+          }
         }
       }
 
@@ -304,7 +312,7 @@ export const runEmbeddingPipeline = async (
       const updates = batch.map((node, i) => ({
         id: node.id,
         embedding: embeddingToArray(embeddings[i]),
-        contentHash: contentHashForNode(node, finalConfig),
+        contentHash: precomputedHashes.get(node.id) ?? contentHashForNode(node, finalConfig),
       }));
 
       await batchInsertEmbeddings(executeWithReusedStatement, updates);
