@@ -153,7 +153,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
         }
       }
-
     } finally {
       for (const id of [...new Set(openPoolIds)]) {
         await closeLbug(id).catch(() => {});

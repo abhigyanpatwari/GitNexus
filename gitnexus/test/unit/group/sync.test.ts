@@ -3,7 +3,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { syncGroup, stableRepoPoolId } from '../../../src/core/group/sync.js';
-import type { GroupConfig, StoredContract, RepoHandle, GroupManifestLink } from '../../../src/core/group/types.js';
+import type {
+  GroupConfig,
+  StoredContract,
+  RepoHandle,
+  GroupManifestLink,
+} from '../../../src/core/group/types.js';
 import type { RegistryEntry } from '../../../src/storage/repo-manager.js';
 
 describe('syncGroup', () => {
@@ -220,7 +225,13 @@ describe('syncGroup', () => {
       repos: { 'app/consumer': 'consumer-repo', 'app/provider': 'provider-repo' },
       links,
       packages: {},
-      detect: { http: true, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+      detect: {
+        http: true,
+        grpc: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+      },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
 
