@@ -193,6 +193,7 @@ export class LocalBackend {
         impact: (r, p) => this.impact(r as RepoHandle, p),
         query: (r, p) => this.query(r as RepoHandle, p),
         impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
+        context: (r, p) => this.context(r as RepoHandle, p),
       };
       this.groupToolSvc = new GroupService(port);
     }

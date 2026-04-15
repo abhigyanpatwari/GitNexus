@@ -44,6 +44,10 @@ function makePort(overrides: Partial<GroupToolPort> = {}): GroupToolPort {
     impact: vi.fn(async () => ({ symbols: [] })),
     query: vi.fn(async () => ({ processes: [] })),
     impactByUid: vi.fn(async () => null),
+    context: vi.fn(async () => ({
+      status: 'found',
+      symbol: { filePath: 'services/auth/x.ts', uid: 'u1', name: 'X' },
+    })),
     ...overrides,
   };
 }
@@ -233,6 +237,46 @@ describe('GroupService', () => {
         cleanup();
       }
     });
+
+    it('test_groupContracts_skips_corrupt_contract_rows', async () => {
+      const { groupDir, cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const badJson = `{
+          "version": 1,
+          "generatedAt": "2026-01-01T00:00:00.000Z",
+          "repoSnapshots": {},
+          "missingRepos": [],
+          "contracts": [
+            { "not": "a-contract" },
+            {
+              "contractId": "http::GET::/ok",
+              "type": "http",
+              "repo": "app/backend",
+              "role": "provider",
+              "symbolUid": "u",
+              "symbolRef": { "filePath": "a.ts", "name": "f" },
+              "symbolName": "f",
+              "confidence": 1,
+              "meta": {}
+            }
+          ],
+          "crossLinks": []
+        }`;
+        fs.writeFileSync(path.join(groupDir, 'contracts.json'), badJson, 'utf-8');
+
+        const svc = new GroupService(makePort());
+        const result = (await svc.groupContracts({ name: 'test-group' })) as {
+          contracts: unknown[];
+          skippedCorrupt?: number;
+        };
+        expect(result.contracts).toHaveLength(1);
+        expect(result.skippedCorrupt).toBe(1);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
   });
 
   describe('groupSync', () => {
@@ -323,6 +367,61 @@ describe('GroupService', () => {
 
         expect(result.per_repo).toHaveLength(1);
         expect(result.per_repo[0].repo).toBe('app/backend');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+  });
+
+  describe('groupImpact', () => {
+    it('test_groupImpact_returns_validation_error', async () => {
+      const svc = new GroupService(makePort());
+      const r = (await svc.groupImpact({})) as { error: string };
+      expect(r.error).toContain('name');
+    });
+  });
+
+  describe('groupContext', () => {
+    it('test_groupContext_requires_target_or_uid', async () => {
+      const svc = new GroupService(makePort());
+      const r = await svc.groupContext({ name: 'test-group' });
+      expect(r.error).toContain('target');
+    });
+
+    it('test_groupContext_iterates_repos', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const port = makePort();
+        const svc = new GroupService(port);
+        const r = await svc.groupContext({ name: 'test-group', target: 'MySym' });
+        expect(r.group).toBe('test-group');
+        expect(r.results).toHaveLength(2);
+        expect(port.context).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContext_service_prefix_filters_payload', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const port = makePort({
+          context: vi.fn(async () => ({
+            status: 'found',
+            symbol: { filePath: 'other/path/x.ts', uid: 'u1', name: 'X' },
+          })),
+        });
+        const svc = new GroupService(port);
+        const r = await svc.groupContext({
+          name: 'test-group',
+          target: 'MySym',
+          service: 'services/auth',
+        });
+        expect(r.results.every((x) => Object.keys(x.payload as object).length === 0)).toBe(true);
       } finally {
         vi.unstubAllEnvs();
         cleanup();
