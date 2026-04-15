@@ -36,9 +36,13 @@ on:
     types: [opened, edited, reopened]
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
-# Latest title edit supersedes the prior check.
+# Include `github.event_name` so `pull_request` (validate-title) and
+# `pull_request_target` (autolabel) runs for the same PR do NOT share a slot
+# and therefore cannot cancel each other — a cancelled required-check would
+# permanently block merge until the next title edit.
+# Within each trigger the latest title edit still supersedes the prior run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -90,6 +94,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      # `contents: read` is required — release-drafter's context.config() reads
+      # `.github/release-drafter.yml` from the repo's default branch via the
+      # repo-contents API. Without it the job silently 403s and no labels are
+      # applied. Job-level permissions nullify all unlisted scopes, so an
+      # explicit grant is necessary here.
+      contents: read
       pull-requests: write
     steps:
       # Pinned to v6.0.0. Verify SHA via:

@@ -49,43 +49,24 @@ jobs:
         working-directory: gitnexus-web
 
   # Enforces the convention documented in CONTRIBUTING.md → "GitHub Actions —
-  # Concurrency Convention". Fails the check if any top-level (non-reusable)
-  # workflow is missing a concurrency block or uses a non-conventional group
-  # key. Keeps the convention from drifting as new workflows are added.
+  # Concurrency Convention":
+  #   1. Every entry-point (non-reusable) workflow declares a top-level
+  #      `concurrency:` block.
+  #   2. Reusable workflows (`on: workflow_call` only) do NOT declare one —
+  #      they inherit concurrency from the caller.
+  #   3. The concurrency group key starts with `${{ github.workflow }}` or
+  #      the literal `CI-` prefix (the documented ci.yml exception for
+  #      reusable-workflow-safe grouping).
+  # Reusability is detected by parsing each workflow's `on:` block, not an
+  # allowlist, so new reusable workflows never produce false positives.
   workflow-convention:
     name: Workflow concurrency convention
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Check every entry-point workflow declares a concurrency block
+      - name: Validate workflow concurrency convention
         shell: bash
         run: |
           set -euo pipefail
-          fail=0
-          # Reusable workflows (on: workflow_call only) inherit concurrency
-          # from the caller and MUST NOT declare their own — see CONTRIBUTING.
-          reusable_allow=(
-            ".github/workflows/ci-e2e.yml"
-            ".github/workflows/ci-quality.yml"
-            ".github/workflows/ci-tests.yml"
-          )
-          is_reusable() {
-            for r in "${reusable_allow[@]}"; do [[ "$1" == "$r" ]] && return 0; done
-            return 1
-          }
-          shopt -s nullglob
-          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-            if is_reusable "$f"; then
-              if grep -qE '^concurrency:' "$f"; then
-                echo "::error file=$f::Reusable workflow must not declare its own concurrency block — it inherits from the caller."
-                fail=1
-              fi
-              continue
-            fi
-            if ! grep -qE '^concurrency:' "$f"; then
-              echo "::error file=$f::Missing top-level concurrency block. See CONTRIBUTING.md → GitHub Actions — Concurrency Convention."
-              fail=1
-            fi
-          done
-          exit $fail
+          python3 .github/scripts/check-workflow-concurrency.py .github/workflows
