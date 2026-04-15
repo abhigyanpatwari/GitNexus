@@ -237,14 +237,13 @@ export const runEmbeddingPipeline = async (
         if (isDev) {
           console.log(`🔄 Deleting ${staleNodeIds.length} stale embedding rows for re-embed`);
         }
-        for (const nodeId of staleNodeIds) {
-          try {
-            await executeQuery(
-              `MATCH (e:CodeEmbedding {nodeId: '${nodeId.replace(/'/g, "''")}'}) DELETE e`,
-            );
-          } catch {
-            // Row may already be gone — safe to ignore
-          }
+        try {
+          await executeWithReusedStatement(
+            `MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e`,
+            staleNodeIds.map((nodeId) => ({ nodeId })),
+          );
+        } catch {
+          // Rows may already be gone — safe to ignore
         }
       }
 
