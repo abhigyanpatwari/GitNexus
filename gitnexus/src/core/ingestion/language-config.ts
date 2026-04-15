@@ -224,6 +224,118 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
   return null;
 }
 
+
+/** R package config parsed from DESCRIPTION files in a multi-package repo */
+export interface RPackageConfig {
+  /** Map of package name to directory path relative to repo root */
+  packages: Map<string, string>;
+  /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
+  namespaceInfoByPackageDir: Map<string, RNamespaceInfo>;
+}
+
+export interface RNamespaceInfo {
+  /** True when the package has a readable NAMESPACE file. */
+  hasNamespaceFile: boolean;
+  /** Explicit named exports from export()/exportClasses()/exportMethods()/S3method(). */
+  namedExports: Set<string>;
+  /** Regex patterns from exportPattern("..."). */
+  exportPatterns: string[];
+}
+
+export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig | null> {
+  const packages = new Map<string, string>();
+  const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
+  const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  const maxDepth = 3;
+  const maxDirs = 200;
+  let dirsScanned = 0;
+
+  while (scanQueue.length > 0 && dirsScanned < maxDirs) {
+    const { dir, depth } = scanQueue.shift()!;
+    dirsScanned++;
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && depth < maxDepth) {
+          if (
+            entry.name === 'node_modules' ||
+            entry.name === '.git' ||
+            entry.name === '.Rproj.user'
+          )
+            continue;
+          scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        }
+        if (entry.isFile() && entry.name === 'DESCRIPTION') {
+          try {
+            const descPath = path.join(dir, entry.name);
+            const content = await fs.readFile(descPath, 'utf-8');
+            const pkgMatch = content.match(/^Package:\s*(\S+)/m);
+            if (pkgMatch) {
+              const pkgName = pkgMatch[1];
+              const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+              packages.set(pkgName, pkgDir);
+              if (isDev) {
+                console.log(`Found R package: ${pkgName} at ${pkgDir}`);
+              }
+
+              const nsPath = path.join(dir, 'NAMESPACE');
+              try {
+                const nsContent = await fs.readFile(nsPath, 'utf-8');
+                const namedExports = new Set<string>();
+                const exportPatterns: string[] = [];
+                const lines = nsContent.split(/\r?\n/);
+
+                for (const rawLine of lines) {
+                  const line = rawLine.trim();
+                  if (!line || line.startsWith('#')) continue;
+
+                  const exportArgsMatch = /^(export|exportClasses|exportMethods)\(([^)]*)\)$/.exec(
+                    line,
+                  );
+                  if (exportArgsMatch) {
+                    for (const token of exportArgsMatch[2].split(',')) {
+                      const name = token.trim().replace(/^["']|["']$/g, '');
+                      if (name) namedExports.add(name);
+                    }
+                    continue;
+                  }
+
+                  const s3MethodMatch = /^S3method\(\s*([^,\s]+)\s*,\s*([^)\s]+)\s*\)$/.exec(line);
+                  if (s3MethodMatch) {
+                    namedExports.add(`${s3MethodMatch[1]}.${s3MethodMatch[2]}`);
+                    continue;
+                  }
+
+                  const exportPatternMatch = /^exportPattern\(\s*["'](.+?)["']\s*\)$/.exec(line);
+                  if (exportPatternMatch) {
+                    exportPatterns.push(exportPatternMatch[1]);
+                  }
+                }
+
+                namespaceInfoByPackageDir.set(pkgDir, {
+                  hasNamespaceFile: true,
+                  namedExports,
+                  exportPatterns,
+                });
+              } catch {
+                // No NAMESPACE file or can't read it
+              }
+            }
+          } catch {
+            // Can't read DESCRIPTION
+          }
+        }
+      }
+    } catch {
+      // Can't read directory
+    }
+  }
+
+  if (packages.size === 0) return null;
+  return { packages, namespaceInfoByPackageDir };
+}
+
+
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
@@ -236,5 +348,6 @@ export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs
     composerConfig: await loadComposerConfig(repoRoot),
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
     csharpConfigs: await loadCSharpProjectConfig(repoRoot),
+    rPackageConfig: await loadRPackageConfig(repoRoot),
   };
 }

@@ -31,6 +31,8 @@ import {
   buildCollisionGroups,
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
+import { findRFieldOwnerNode, getRTopLevelPropertyOwnerName } from './field-extractors/r.js';
+import { getRTopLevelMethodOwnerName } from './method-extractors/r.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
   ParseWorkerResult,
@@ -443,6 +445,19 @@ const processParsingSequential = async (
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
 
+      // R-specific deferred owner hints: setMethod("foo", "ClassName", fn) or
+      // R6/R5 class body members. ownerNameHint is resolved to ownerId after
+      // all Class symbols have been registered (post-parse pass).
+      const ownerNameHint =
+        language === SupportedLanguages.R && definitionNode && !enclosingClassId
+          ? nodeLabel === 'Method'
+            ? (getRTopLevelMethodOwnerName(definitionNode) ??
+                getRTopLevelPropertyOwnerName(definitionNode))
+            : nodeLabel === 'Property'
+              ? getRTopLevelPropertyOwnerName(definitionNode)
+              : null
+          : null;
+
       // Qualify method/property IDs with enclosing class name to avoid collisions
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
       const qualifiedName = enclosingClassInfo
@@ -467,7 +482,11 @@ const processParsingSequential = async (
           // Try class-based extraction (method inside a class/struct/trait body).
           // Raw lookup (no resolveEnclosingOwner) so the method extractor sees
           // the actual container node (e.g. singleton_class) for static detection.
-          const methodOwnerNode = seqFindEnclosingOwnerNode(definitionNode);
+          // R6/R5 classes use function-call syntax (R6::R6Class(), setRefClass()),
+          // so fall back to findRFieldOwnerNode when the regular AST walk fails.
+          const methodOwnerNode =
+            seqFindEnclosingOwnerNode(definitionNode) ??
+            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
           if (methodOwnerNode) {
             // Cache extract() results per class node to avoid re-traversing the
             // same class body for every method it contains (O(N) -> O(1) per hit).
@@ -582,6 +601,8 @@ const processParsingSequential = async (
               }
             : {}),
           ...methodProps,
+          ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+          ...(ownerNameHint ? { ownerNameHint } : {}),
         },
       };
 
@@ -597,10 +618,9 @@ const processParsingSequential = async (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode = seqFindEnclosingOwnerNode(
-            definitionNode,
-            provider.resolveEnclosingOwner,
-          );
+          const classNode =
+            seqFindEnclosingOwnerNode(definitionNode, provider.resolveEnclosingOwner) ??
+            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
           if (classNode) {
             const fieldMap = seqGetFieldInfo(classNode, provider, {
               typeEnv,

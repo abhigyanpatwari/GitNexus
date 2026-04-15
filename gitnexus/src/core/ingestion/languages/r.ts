@@ -1,0 +1,180 @@
+/**
+ * R language provider.
+ *
+ * R uses wildcard import semantics — library() and source() bring
+ * everything into scope (no named imports). No special call routing
+ * is needed (unlike Ruby); R imports are parsed as standard import nodes.
+ */
+
+import { SupportedLanguages } from 'gitnexus-shared';
+import { defineLanguage } from '../language-provider.js';
+import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
+import { rExportChecker } from '../export-detection.js';
+import { resolveRImport } from '../import-resolvers/r.js';
+import { R_QUERIES } from '../tree-sitter-queries.js';
+import { RFieldExtractor } from '../field-extractors/r.js';
+import { rMethodExtractor } from '../method-extractors/r.js';
+
+const R_BUILT_INS: ReadonlySet<string> = new Set([
+  // Base R
+  'c',
+  'list',
+  'vector',
+  'matrix',
+  'array',
+  'data.frame',
+  'length',
+  'nrow',
+  'ncol',
+  'dim',
+  'names',
+  'colnames',
+  'rownames',
+  'print',
+  'cat',
+  'paste',
+  'paste0',
+  'sprintf',
+  'message',
+  'warning',
+  'stop',
+  'tryCatch',
+  'withCallingHandlers',
+  'try',
+  'on.exit',
+  'sys.call',
+  'match.arg',
+  // Type checks / coercion
+  'is.null',
+  'is.na',
+  'is.numeric',
+  'is.character',
+  'is.logical',
+  'is.list',
+  'as.character',
+  'as.numeric',
+  'as.integer',
+  'as.logical',
+  'as.data.frame',
+  // Apply family
+  'lapply',
+  'sapply',
+  'vapply',
+  'mapply',
+  'tapply',
+  'apply',
+  'Map',
+  'Reduce',
+  'Filter',
+  // Functional
+  'do.call',
+  'Recall',
+  'match.fun',
+  // I/O
+  'readRDS',
+  'saveRDS',
+  'readLines',
+  'writeLines',
+  'read.csv',
+  'write.csv',
+  // Environment
+  'new.env',
+  'environment',
+  'parent.env',
+  'globalenv',
+  'baseenv',
+  'exists',
+  'get',
+  'assign',
+  'rm',
+  'ls',
+  // String
+  'nchar',
+  'substr',
+  'substring',
+  'gsub',
+  'sub',
+  'grep',
+  'grepl',
+  'regmatches',
+  'trimws',
+  'toupper',
+  'tolower',
+  'startsWith',
+  'endsWith',
+  'strsplit',
+  // Math
+  'sum',
+  'mean',
+  'median',
+  'min',
+  'max',
+  'abs',
+  'sqrt',
+  'log',
+  'exp',
+  'round',
+  'ceiling',
+  'floor',
+  'seq',
+  'seq_len',
+  'seq_along',
+  'rep',
+  'which',
+  'range',
+  'cumsum',
+  'diff',
+  // Logical
+  'any',
+  'all',
+  'xor',
+  'identical',
+  // Sort / order
+  'sort',
+  'order',
+  'rev',
+  'unique',
+  'duplicated',
+  'table',
+  // S4 / R6 internals
+  'setClass',
+  'setGeneric',
+  'setMethod',
+  'setRefClass',
+  'new',
+  'validObject',
+  'is',
+  'extends',
+  'isVirtualClass',
+  'R6Class',
+  // Package / namespace
+  'library',
+  'require',
+  'requireNamespace',
+  'loadNamespace',
+  'getNamespace',
+  'source',
+  'sys.source',
+  'attachNamespace',
+  // Control flow (builtins that appear as calls)
+  'return',
+  'invisible',
+  'missing',
+  'nargs',
+  'Sys.time',
+  'Sys.sleep',
+  'proc.time',
+]);
+
+export const rProvider = defineLanguage({
+  id: SupportedLanguages.R,
+  extensions: ['.R', '.r'],
+  treeSitterQueries: R_QUERIES,
+  typeConfig: rTypeConfig,
+  exportChecker: rExportChecker,
+  importResolver: resolveRImport,
+  importSemantics: 'wildcard-leaf',
+  fieldExtractor: new RFieldExtractor(),
+  methodExtractor: rMethodExtractor,
+  builtInNames: R_BUILT_INS,
+});

@@ -9,6 +9,7 @@ import type {
   GoModuleConfig,
   CSharpProjectConfig,
   ComposerConfig,
+  RPackageConfig,
 } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
@@ -31,6 +32,7 @@ export interface ImportConfigs {
   composerConfig: ComposerConfig | null;
   swiftPackageConfig: SwiftPackageConfig | null;
   csharpConfigs: CSharpProjectConfig[];
+  rPackageConfig: RPackageConfig | null;
 }
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */

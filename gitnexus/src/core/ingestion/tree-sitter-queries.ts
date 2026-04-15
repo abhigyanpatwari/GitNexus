@@ -1250,6 +1250,246 @@ export const DART_QUERIES = `
     (mixins
       (type_identifier) @heritage.trait))) @heritage
 `;
+export const R_QUERIES = `
+; ── Functions (name <- function(...) or name = function(...)) ────────────────
+(binary_operator
+  lhs: (identifier) @name
+  rhs: (function_definition)) @definition.function
+
+; ── S4 Classes (setClass("ClassName", ...)) ──────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.class
+
+; ── R6 Classes via namespace (ClassName <- R6::R6Class(...)) ─────────────────
+(binary_operator
+  lhs: (identifier) @name
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn
+      (#match? @_nsfn "^R6Class$")))) @definition.class
+
+; ── R6 Classes via bare call (ClassName <- R6Class(...)) ─────────────────────
+(binary_operator
+  lhs: (identifier) @name
+  rhs: (call
+    function: (identifier) @_r6fn
+    (#match? @_r6fn "^R6Class$"))) @definition.class
+
+; ── R6 Methods via namespace (inside public/private/active = list(...)) ─────
+(binary_operator
+  lhs: (identifier) @_class
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn2
+      (#match? @_nsfn2 "^R6Class$"))
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section
+        (#match? @_section "^(public|private|active)$")
+        value: (call
+          function: (identifier) @_listfn
+          (#match? @_listfn "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: (function_definition)) @definition.method))))))
+
+; ── R6 Methods via bare call (inside public/private/active = list(...)) ─────
+(binary_operator
+  lhs: (identifier) @_class2
+  rhs: (call
+    function: (identifier) @_r6fn2
+    (#match? @_r6fn2 "^R6Class$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section2
+        (#match? @_section2 "^(public|private|active)$")
+        value: (call
+          function: (identifier) @_listfn2
+          (#match? @_listfn2 "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: (function_definition)) @definition.method))))))
+
+; ── R5 Methods (inside setRefClass(... methods = list(...))) ─────────────────
+(binary_operator
+  lhs: (identifier) @_class3
+  rhs: (call
+    function: (identifier) @_refFn
+    (#match? @_refFn "^setRefClass$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_methods
+        (#match? @_methods "^methods$")
+        value: (call
+          function: (identifier) @_listfn3
+          (#match? @_listfn3 "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: (function_definition)) @definition.method))))))
+
+; ── S4 setGeneric() (generic function declaration) ───────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^setGeneric$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.function
+
+; ── S4 setMethod() (method implementation for a class) ──────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^setMethod$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.method
+
+; ── All function calls ───────────────────────────────────────────────────────
+(call
+  function: (identifier) @call.name) @call
+
+; ── Namespaced calls (pkg::func()) ───────────────────────────────────────────
+(call
+  function: (namespace_operator
+    lhs: (identifier) @call.namespace
+    rhs: (identifier) @call.name)) @call
+
+; ── Member calls via $ (obj$method()) ───────────────────────────────────────
+(call
+  function: (extract_operator
+    rhs: (identifier) @call.name)) @call
+
+; ── Imports (library/require/source) ─────────────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(library|require|source)$")
+  arguments: (arguments
+    (argument
+      value: [(identifier) (string)] @import.source))) @import
+
+; ── Heritage: S4 contains= (single parent) ───────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(setClass|setRefClass)$")
+  arguments: (arguments
+    . (argument
+      value: (string
+        content: (string_content) @heritage.class))
+    (argument
+      name: (identifier) @_arg
+      (#match? @_arg "^(contains|CONTAINS)$")
+      value: (string
+        content: (string_content) @heritage.extends)))) @heritage
+
+; ── Heritage: S4 contains= (multiple parents via c()) ────────────────────────
+(call
+  function: (identifier) @_fn2
+  (#match? @_fn2 "^(setClass|setRefClass)$")
+  arguments: (arguments
+    . (argument
+      value: (string
+        content: (string_content) @heritage.class))
+    (argument
+      name: (identifier) @_arg2
+      (#match? @_arg2 "^(contains|CONTAINS)$")
+      value: (call
+        function: (identifier) @_cfn
+        (#match? @_cfn "^c$")
+        arguments: (arguments
+          (argument
+            value: (string
+              content: (string_content) @heritage.extends))))))) @heritage
+
+; ── Heritage: R6 inherit= via namespace ──────────────────────────────────────
+(binary_operator
+  lhs: (identifier) @heritage.class
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn
+      (#match? @_nsfn "^R6Class$"))
+    arguments: (arguments
+      (argument
+        name: (identifier) @_arg
+        (#match? @_arg "^inherit$")
+        value: (identifier) @heritage.extends)))) @heritage
+
+; ── Heritage: R6 inherit= via bare call ──────────────────────────────────────
+(binary_operator
+  lhs: (identifier) @heritage.class
+  rhs: (call
+    function: (identifier) @_r6fn
+    (#match? @_r6fn "^R6Class$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_arg
+        (#match? @_arg "^inherit$")
+        value: (identifier) @heritage.extends)))) @heritage
+
+; ── R6 Fields via namespace (non-function entries in public/private list()) ──
+(binary_operator
+  lhs: (identifier) @_class
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn
+      (#match? @_nsfn "^R6Class$"))
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section
+        (#match? @_section "^(public|private)$")
+        value: (call
+          function: (identifier) @_listfn
+          (#match? @_listfn "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: [(string) (integer) (float) (true) (false) (null) (identifier) (call) (unary_operator) (binary_operator)] @_val) @definition.property))))))
+
+; ── R6 Fields via bare call ──────────────────────────────────────────────────
+(binary_operator
+  lhs: (identifier) @_class2
+  rhs: (call
+    function: (identifier) @_r6fn
+    (#match? @_r6fn "^R6Class$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section2
+        (#match? @_section2 "^(public|private)$")
+        value: (call
+          function: (identifier) @_listfn2
+          (#match? @_listfn2 "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: [(string) (integer) (float) (true) (false) (null) (identifier) (call) (unary_operator) (binary_operator)] @_val2) @definition.property))))))
+
+; ── S4 slots / representation ────────────────────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_slotArg
+      (#match? @_slotArg "^(representation|slots|fields)$")
+      value: (call
+        function: (identifier) @_listfn
+        (#match? @_listfn "^(list|representation)$")
+        arguments: (arguments
+          (argument
+            name: (identifier) @name) @definition.property)))))
+
+; ── Roxygen2 doc comments ────────────────────────────────────────────────────
+(comment) @comment
+`;
+
 
 import { SupportedLanguages } from 'gitnexus-shared';
 
@@ -1269,5 +1509,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.R]: R_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

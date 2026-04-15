@@ -51,6 +51,7 @@
     "prepack": "node scripts/build.js"
   },
   "dependencies": {
+    "@eagleoutice/tree-sitter-r": "^1.1.2",
     "@huggingface/transformers": "^3.0.0",
     "@ladybugdb/core": "^0.15.2",
     "@modelcontextprotocol/sdk": "^1.0.0",

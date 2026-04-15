@@ -42,6 +42,8 @@ import {
 } from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
+import { loadRPackageConfig } from '../language-config.js';
+import { attachDeferredROwners, refineRExportStatus } from '../r-post-parse.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
@@ -554,6 +556,16 @@ export async function runChunkedParseAndResolve(
       );
     }
   }
+
+  // R post-parse: resolve deferred owner hints + NAMESPACE-based export refinement.
+  // R classes are defined via function calls (R6::R6Class, setClass, setRefClass) so
+  // the worker can't always find the enclosing class during AST walks. Methods/properties
+  // store an `ownerNameHint` (string) instead; we resolve it here against TypeRegistry
+  // (now fully populated) and register into MethodRegistry / FieldRegistry explicitly.
+  attachDeferredROwners(graph, ctx.model, 'Method', 'HAS_METHOD');
+  attachDeferredROwners(graph, ctx.model, 'Property', 'HAS_PROPERTY');
+  const rPackageConfig = await loadRPackageConfig(repoPath);
+  refineRExportStatus(graph, rPackageConfig);
 
   // Worker-path enrichment: if exportedTypeMap is empty (e.g. the worker pool
   // built TypeEnv inside workers without access to SymbolTable), reconstruct

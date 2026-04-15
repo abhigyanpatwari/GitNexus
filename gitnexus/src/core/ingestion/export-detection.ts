@@ -246,3 +246,27 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/** Check for `#' @export` in preceding roxygen2 comment block */
+const hasRoxygenExport = (node: SyntaxNode): boolean => {
+  let sibling = node.previousSibling;
+  while (sibling) {
+    if (sibling.type === 'comment' && sibling.text.startsWith("#'")) {
+      if (/#'\s*@export\b/.test(sibling.text)) return true;
+    } else if (sibling.type !== 'comment' && sibling.isNamed) {
+      break;
+    }
+    sibling = sibling.previousSibling;
+  }
+  return false;
+};
+
+/**
+ * R: roxygen2 @export detection with default-public fallback.
+ * NAMESPACE-aware refinement runs as a post-processing step in parse-impl.ts
+ * (ExportChecker has no file-path context; NAMESPACE detection needs it).
+ */
+export const rExportChecker: ExportChecker = (node, _name) => {
+  if (hasRoxygenExport(node)) return true;
+  return true; // Default: public (refined by post-processing for packages)
+};

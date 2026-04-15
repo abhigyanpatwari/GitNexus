@@ -10,6 +10,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
+import R from '@eagleoutice/tree-sitter-r';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 
@@ -46,6 +47,7 @@ const languageMap: Record<string, any> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  [SupportedLanguages.R]: R,
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
