@@ -48,6 +48,11 @@ jobs:
     permissions:
       contents: read
 
+  global-upgrade:
+    uses: ./.github/workflows/ci-global-upgrade.yml
+    permissions:
+      contents: read
+
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the
   # PR number and job results to post a comment.  We save them as an
@@ -56,7 +61,7 @@ jobs:
   save-pr-meta:
     name: Save PR Metadata
     if: always() && github.event_name == 'pull_request'
-    needs: [quality, tests, e2e]
+    needs: [quality, tests, e2e, global-upgrade]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -67,6 +72,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
+          GLOBAL_UPGRADE: ${{ needs.global-upgrade.result }}
         run: |
           mkdir -p pr-meta
           echo "$PR_NUMBER"  > pr-meta/pr_number
@@ -95,7 +101,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, tests, e2e]
+    needs: [quality, tests, e2e, global-upgrade]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -106,10 +112,12 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
+          GLOBAL_UPGRADE: ${{ needs.global-upgrade.result }}
         run: |
-          echo "Quality:     $QUALITY"
-          echo "Tests:       $TESTS"
-          echo "E2E:         $E2E"
+          echo "Quality:        $QUALITY"
+          echo "Tests:          $TESTS"
+          echo "E2E:            $E2E"
+          echo "Global upgrade: $GLOBAL_UPGRADE"
           if [[ "$QUALITY" != "success" ]] ||
              [[ "$TESTS" != "success" ]]; then
             echo "::error::Quality or test jobs failed"
@@ -117,5 +125,9 @@ jobs:
           fi
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
             echo "::error::E2E job failed"
+            exit 1
+          fi
+          if [[ "$GLOBAL_UPGRADE" != "success" && "$GLOBAL_UPGRADE" != "skipped" ]]; then
+            echo "::error::Global upgrade smoke failed"
             exit 1
           fi
