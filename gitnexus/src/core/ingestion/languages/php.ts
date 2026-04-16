@@ -8,6 +8,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
@@ -242,11 +243,7 @@ export const phpProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),
   variableExtractor: createVariableExtractor(phpVariableConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.PHP,
-    typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'enum_declaration'],
-    ancestorScopeNodeTypes: ['namespace_definition'],
-  }),
+  classExtractor: createClassExtractor(phpClassConfig),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,

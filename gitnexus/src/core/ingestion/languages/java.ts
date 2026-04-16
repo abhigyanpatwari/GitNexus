@@ -9,6 +9,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { javaExportChecker } from '../export-detection.js';
@@ -35,20 +36,5 @@ export const javaProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
   variableExtractor: createVariableExtractor(javaVariableConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Java,
-    typeDeclarationNodes: [
-      'class_declaration',
-      'interface_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-    fileScopeNodeTypes: ['package_declaration'],
-    ancestorScopeNodeTypes: [
-      'class_declaration',
-      'interface_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-  }),
+  classExtractor: createClassExtractor(javaClassConfig),
 });
