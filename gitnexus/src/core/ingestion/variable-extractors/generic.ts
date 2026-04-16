@@ -84,7 +84,10 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
 
       const type = config.extractType(node) ?? null;
       const visibility = config.extractVisibility(node);
-      const isConst = constNodeSet.has(node.type) || config.isConst(node);
+      // isConst/isStatic: node type membership is a hint, but config.isConst/isStatic
+      // has final say. For languages where const and non-const share a node type
+      // (e.g., TS lexical_declaration for both const and let), config.isConst disambiguates.
+      const isConst = config.isConst(node);
       const isStatic = staticNodeSet.has(node.type) || config.isStatic(node);
       const isMutable = config.isMutable(node);
       const scope = determineScope(node);

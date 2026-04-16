@@ -43,9 +43,22 @@ function extractTypeFromPython(node: SyntaxNode): string | undefined {
   const inner = node.firstNamedChild;
   if (!inner) return undefined;
 
+  // Standalone annotated type without assignment: `name: str`
   if (inner.type === 'type') {
     const typeNode = inner.childForFieldName('type') ?? inner.namedChild(1);
     if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+  }
+
+  // Annotated assignment: `name: str = "hello"`
+  // AST: expression_statement > assignment > [identifier, type > identifier, ...]
+  if (inner.type === 'assignment') {
+    for (let i = 0; i < inner.childCount; i++) {
+      const child = inner.child(i);
+      if (child?.type === 'type') {
+        const typeId = child.firstNamedChild;
+        if (typeId) return extractSimpleTypeName(typeId) ?? typeId.text?.trim();
+      }
+    }
   }
 
   return undefined;
@@ -54,7 +67,11 @@ function extractTypeFromPython(node: SyntaxNode): string | undefined {
 function extractVisFromPython(node: SyntaxNode): VariableVisibility {
   const name = extractNameFromPython(node);
   if (!name) return 'public';
-  if (name.startsWith('__') && !name.endsWith('__')) return 'private';
+  // Dunder names (__name__, __all__) are public Python conventions
+  if (name.startsWith('__') && name.endsWith('__')) return 'public';
+  // Double underscore prefix (name mangled) = private
+  if (name.startsWith('__')) return 'private';
+  // Single underscore prefix = protected by convention
   if (name.startsWith('_')) return 'protected';
   return 'public';
 }
