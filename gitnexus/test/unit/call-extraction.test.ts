@@ -47,7 +47,11 @@ function extractCallCaptures(
   parser: Parser,
   code: string,
   language: SupportedLanguages,
-): Array<{ callNode: SyntaxNode; nameNode: SyntaxNode | undefined; calledName: string | undefined }> {
+): Array<{
+  callNode: SyntaxNode;
+  nameNode: SyntaxNode | undefined;
+  calledName: string | undefined;
+}> {
   const provider = getProvider(language);
   const queryStr = provider.treeSitterQueries;
   if (!queryStr) throw new Error(`No query for ${language}`);
@@ -211,11 +215,7 @@ describe('generic call extraction', () => {
 
     it('does not set typeAsReceiverHeuristic', () => {
       parser.setLanguage(TypeScript.typescript);
-      const captures = extractCallCaptures(
-        parser,
-        'User.find()',
-        SupportedLanguages.TypeScript,
-      );
+      const captures = extractCallCaptures(parser, 'User.find()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'find');
       expect(match).toBeDefined();
       const result = extractor.extract(match!.callNode, match!.nameNode!);
@@ -239,11 +239,7 @@ describe('generic call extraction', () => {
 
     it('extracts member call', () => {
       parser.setLanguage(Python);
-      const captures = extractCallCaptures(
-        parser,
-        'user.save()',
-        SupportedLanguages.Python,
-      );
+      const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
       const result = extractor.extract(match!.callNode, match!.nameNode!);
@@ -380,11 +376,7 @@ describe('generic call extraction', () => {
 
     it('extracts free function call', () => {
       parser.setLanguage(PHP.php);
-      const captures = extractCallCaptures(
-        parser,
-        '<?php doStuff(); ?>',
-        SupportedLanguages.PHP,
-      );
+      const captures = extractCallCaptures(parser, '<?php doStuff(); ?>', SupportedLanguages.PHP);
       const match = captures.find((c) => c.calledName === 'doStuff');
       expect(match).toBeDefined();
       const result = extractor.extract(match!.callNode, match!.nameNode!);
@@ -398,11 +390,7 @@ describe('generic call extraction', () => {
 
     it('extracts member call', () => {
       parser.setLanguage(Ruby);
-      const captures = extractCallCaptures(
-        parser,
-        'user.save()',
-        SupportedLanguages.Ruby,
-      );
+      const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.Ruby);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
       const result = extractor.extract(match!.callNode, match!.nameNode!);
@@ -429,9 +417,7 @@ describe('Java method_reference extraction', () => {
       SupportedLanguages.Java,
     );
     // The method_reference should be captured as @call
-    const match = captures.find(
-      (c) => c.callNode.type === 'method_reference',
-    );
+    const match = captures.find((c) => c.callNode.type === 'method_reference');
     if (match) {
       const result = extractor.extract(match.callNode, undefined);
       expect(result).not.toBeNull();
@@ -446,9 +432,7 @@ describe('Java method_reference extraction', () => {
       'class A { void m() { stream.map(User::getName); } }',
       SupportedLanguages.Java,
     );
-    const match = captures.find(
-      (c) => c.callNode.type === 'method_reference',
-    );
+    const match = captures.find((c) => c.callNode.type === 'method_reference');
     if (match) {
       const result = extractor.extract(match.callNode, undefined);
       expect(result).not.toBeNull();
@@ -465,9 +449,7 @@ describe('Java method_reference extraction', () => {
       'class A { void m() { stream.map(this::process); } }',
       SupportedLanguages.Java,
     );
-    const match = captures.find(
-      (c) => c.callNode.type === 'method_reference',
-    );
+    const match = captures.find((c) => c.callNode.type === 'method_reference');
     if (match) {
       const result = extractor.extract(match.callNode, undefined);
       expect(result).not.toBeNull();

@@ -53,10 +53,7 @@ import {
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
-import {
-  extractCallArgTypes,
-  type MixedChainStep,
-} from '../utils/call-analysis.js';
+import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -1847,9 +1844,7 @@ const processFileGroup = (
                 const inferLiteralType = provider.typeConfig?.inferLiteralType;
                 // Skip when no arg list / zero args: nothing to infer for overload typing
                 const argTypes =
-                  inferLiteralType &&
-                  callSite.argCount !== undefined &&
-                  callSite.argCount > 0
+                  inferLiteralType && callSite.argCount !== undefined && callSite.argCount > 0
                     ? extractCallArgTypes(callNode, inferLiteralType, (varName, cn) =>
                         typeEnv.lookup(varName, cn),
                       )

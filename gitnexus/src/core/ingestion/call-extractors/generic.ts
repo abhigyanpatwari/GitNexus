@@ -30,10 +30,7 @@ export function createCallExtractor(config: CallExtractionConfig): CallExtractor
   return {
     language: config.language,
 
-    extract(
-      callNode: SyntaxNode,
-      callNameNode: SyntaxNode | undefined,
-    ): ExtractedCallSite | null {
+    extract(callNode: SyntaxNode, callNameNode: SyntaxNode | undefined): ExtractedCallSite | null {
       // ── Path 1: Language-specific call site ──────────────────────────
       // Non-standard call shapes (e.g. Java `::` method references) are
       // handled entirely by the config hook.  When it returns a result,
@@ -53,8 +50,7 @@ export function createCallExtractor(config: CallExtractionConfig): CallExtractor
 
       const calledName = callNameNode.text;
       const callForm = inferCallForm(callNode, callNameNode);
-      let receiverName =
-        callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
+      let receiverName = callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
       let receiverMixedChain: ExtractedCallSite['receiverMixedChain'];
 
       // When the receiver is a complex expression (call chain, field chain,

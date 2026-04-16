@@ -952,10 +952,7 @@ export const processCalls = async (
 
           if (!resolved) return;
           graph.addRelationship({
-            id: generateId(
-              'CALLS',
-              `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`,
-            ),
+            id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`),
             sourceId,
             targetId: resolved.nodeId,
             type: 'CALLS',
@@ -974,10 +971,7 @@ export const processCalls = async (
             );
             for (const impl of implTargets) {
               graph.addRelationship({
-                id: generateId(
-                  'CALLS',
-                  `${sourceId}:${langCallSite.calledName}->${impl.nodeId}`,
-                ),
+                id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${impl.nodeId}`),
                 sourceId,
                 targetId: impl.nodeId,
                 type: 'CALLS',
