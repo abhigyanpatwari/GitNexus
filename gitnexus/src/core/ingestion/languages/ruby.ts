@@ -17,6 +17,8 @@ import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
 import { resolveRubyImport } from '../import-resolvers/ruby.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { rubyImportConfig } from '../import-resolvers/configs/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
@@ -110,7 +112,7 @@ export const rubyProvider = defineLanguage({
   treeSitterQueries: RUBY_QUERIES,
   typeConfig: rubyConfig,
   exportChecker: rubyExportChecker,
-  importResolver: resolveRubyImport,
+  importResolver: createImportResolver(rubyImportConfig),
   callRouter: routeRubyCall,
   importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(rubyCallConfig),

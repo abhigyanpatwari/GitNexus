@@ -17,6 +17,8 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { resolvePythonImport } from '../import-resolvers/python.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { pythonImportConfig } from '../import-resolvers/configs/python.js';
 import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -64,7 +66,7 @@ export const pythonProvider = defineLanguage({
   treeSitterQueries: PYTHON_QUERIES,
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
-  importResolver: resolvePythonImport,
+  importResolver: createImportResolver(pythonImportConfig),
   namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',

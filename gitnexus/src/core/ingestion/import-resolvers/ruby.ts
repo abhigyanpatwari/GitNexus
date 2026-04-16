@@ -5,7 +5,7 @@
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 
 /**
  * Resolve a Ruby require/require_relative path to a matching .rb file (low-level helper).
@@ -23,12 +23,12 @@ export function resolveRubyImportInternal(
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
 }
 
-/** Ruby: require / require_relative. */
-export function resolveRubyImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Ruby require/require_relative resolution strategy. */
+export const rubyRequireStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   const resolved = resolveRubyImportInternal(
     rawImportPath,
     ctx.normalizedFileList,
@@ -36,4 +36,13 @@ export function resolveRubyImport(
     ctx.index,
   );
   return resolved ? { kind: 'files', files: [resolved] } : null;
+};
+
+/** Ruby: require / require_relative. */
+export function resolveRubyImport(
+  rawImportPath: string,
+  _filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return rubyRequireStrategy(rawImportPath, _filePath, ctx);
 }

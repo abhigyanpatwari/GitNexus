@@ -20,6 +20,8 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
 import { resolveDartImport } from '../import-resolvers/dart.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { dartImportConfig } from '../import-resolvers/configs/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.js';
@@ -94,7 +96,7 @@ export const dartProvider = defineLanguage({
   treeSitterQueries: DART_QUERIES,
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
-  importResolver: resolveDartImport,
+  importResolver: createImportResolver(dartImportConfig),
   importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(dartCallConfig),
   fieldExtractor: createFieldExtractor(dartFieldConfig),

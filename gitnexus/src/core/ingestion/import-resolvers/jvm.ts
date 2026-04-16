@@ -6,7 +6,7 @@
 import type { SuffixIndex } from './utils.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 
 /** Kotlin file extensions for JVM resolver reuse */
@@ -126,12 +126,12 @@ export function resolveJvmMemberImport(
   return null;
 }
 
-/** Java: JVM wildcard -> member import -> standard fallthrough */
-export function resolveJavaImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Java JVM resolution strategy — wildcard and member import resolution. */
+export const javaJvmStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   if (rawImportPath.endsWith('.*')) {
     const matchedFiles = resolveJvmWildcard(
       rawImportPath,
@@ -151,18 +151,27 @@ export function resolveJavaImport(
     );
     if (memberResolved) return { kind: 'files', files: [memberResolved] };
   }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Java);
-}
+  return null;
+};
 
-/**
- * Kotlin: JVM wildcard/member with Java-interop fallback -> top-level function imports -> standard.
- * Kotlin can import from .kt/.kts files OR from .java files (Java interop).
- */
-export function resolveKotlinImport(
+/** Java: JVM wildcard -> member import -> standard fallthrough */
+export function resolveJavaImport(
   rawImportPath: string,
   filePath: string,
   ctx: ResolveCtx,
 ): ImportResult {
+  return javaJvmStrategy(rawImportPath, filePath, ctx)
+    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Java);
+}
+
+/**
+ * Kotlin JVM resolution strategy — wildcard/member with Java-interop + top-level function imports.
+ */
+export const kotlinJvmStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   if (rawImportPath.endsWith('.*')) {
     const matchedFiles = resolveJvmWildcard(
       rawImportPath,
@@ -228,5 +237,18 @@ export function resolveKotlinImport(
       if (dirFiles.length > 0) return { kind: 'files', files: dirFiles };
     }
   }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Kotlin);
+  return null;
+};
+
+/**
+ * Kotlin: JVM wildcard/member with Java-interop fallback -> top-level function imports -> standard.
+ * Kotlin can import from .kt/.kts files OR from .java files (Java interop).
+ */
+export function resolveKotlinImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return kotlinJvmStrategy(rawImportPath, filePath, ctx)
+    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Kotlin);
 }

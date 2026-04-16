@@ -13,6 +13,8 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
 import { resolveCSharpImport } from '../import-resolvers/csharp.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
 import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
@@ -125,7 +127,7 @@ export const csharpProvider = defineLanguage({
   treeSitterQueries: CSHARP_QUERIES,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
-  importResolver: resolveCSharpImport,
+  importResolver: createImportResolver(csharpImportConfig),
   namedBindingExtractor: extractCSharpNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',

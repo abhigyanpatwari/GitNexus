@@ -12,6 +12,7 @@ import type {
 } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
+import type { SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Result of resolving an import via language-specific dispatch.
@@ -53,3 +54,22 @@ export type ImportResolverFn = (
   filePath: string,
   resolveCtx: ResolveCtx,
 ) => ImportResult;
+
+/**
+ * A single import resolution strategy — one step in a composable chain.
+ * Same signature as ImportResolverFn. Returns null to let the next strategy
+ * in the chain try; returns a result (even with empty files) to stop the chain.
+ */
+export type ImportResolverStrategy = ImportResolverFn;
+
+/**
+ * Declarative config for composable import resolution — mirrors the
+ * MethodExtractionConfig / CallExtractionConfig pattern.
+ *
+ * Each language declares an ordered list of strategies to try.
+ * The factory (`createImportResolver`) chains them: first non-null result wins.
+ */
+export interface ImportResolutionConfig {
+  readonly language: SupportedLanguages;
+  readonly strategies: readonly ImportResolverStrategy[];
+}

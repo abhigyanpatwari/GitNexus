@@ -5,7 +5,7 @@
 
 import { tryResolveWithExtensions } from './utils.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 
 /**
@@ -74,6 +74,26 @@ export function resolvePythonImportInternal(
 
   return null;
 }
+
+/**
+ * Python import resolution strategy — PEP 328 relative + proximity-based bare imports.
+ * Returns null to continue chain for non-relative imports.
+ * Absorbs unresolved relative imports (returns empty result to stop the chain).
+ */
+export const pythonImportStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  filePath,
+  ctx,
+) => {
+  const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
+  if (resolved) {
+    ctx.resolveCache.set(`${filePath}::${rawImportPath}`, resolved);
+    return { kind: 'files', files: [resolved] };
+  }
+  // PEP 328: unresolved relative imports should not fall through to suffix matching
+  if (rawImportPath.startsWith('.')) return { kind: 'files', files: [] };
+  return null;
+};
 
 /**
  * Python: relative imports (PEP 328) + proximity-based bare imports.

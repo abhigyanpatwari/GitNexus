@@ -16,6 +16,8 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
 import { goExportChecker } from '../export-detection.js';
 import { resolveGoImport } from '../import-resolvers/go.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { goImportConfig } from '../import-resolvers/configs/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { goConfig as goFieldConfig } from '../field-extractors/configs/go.js';
@@ -32,7 +34,7 @@ export const goProvider = defineLanguage({
   treeSitterQueries: GO_QUERIES,
   typeConfig: goConfig,
   exportChecker: goExportChecker,
-  importResolver: resolveGoImport,
+  importResolver: createImportResolver(goImportConfig),
   importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(goCallConfig),
   fieldExtractor: createFieldExtractor(goFieldConfig),

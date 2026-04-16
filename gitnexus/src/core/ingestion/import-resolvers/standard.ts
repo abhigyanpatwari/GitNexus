@@ -8,7 +8,7 @@ import type { SuffixIndex } from './utils.js';
 import { tryResolveWithExtensions, suffixResolve } from './utils.js';
 import { resolveRustImportInternal } from './rust.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ImportResolverFn, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverFn, ImportResolverStrategy, ResolveCtx } from './types.js';
 import type { TsconfigPaths } from '../language-config.js';
 
 /** Max entries in the resolve cache. Beyond this, entries are evicted.
@@ -189,3 +189,12 @@ export const resolveCImport: ImportResolverFn = (raw, fp, ctx) =>
 /** C++: standard single-file resolution for #include directives. */
 export const resolveCppImport: ImportResolverFn = (raw, fp, ctx) =>
   resolveStandard(raw, fp, ctx, SupportedLanguages.CPlusPlus);
+
+// ============================================================================
+// Strategy factory — composable hook for ImportResolutionConfig
+// ============================================================================
+
+/** Create a reusable standard-resolution strategy for a given language. */
+export function createStandardStrategy(language: SupportedLanguages): ImportResolverStrategy {
+  return (raw, fp, ctx) => resolveStandard(raw, fp, ctx, language);
+}

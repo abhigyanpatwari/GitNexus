@@ -15,6 +15,8 @@ import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
 import { resolveCImport, resolveCppImport } from '../import-resolvers/standard.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { cImportConfig, cppImportConfig } from '../import-resolvers/configs/c-cpp.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 /**
@@ -318,7 +320,7 @@ export const cProvider = defineLanguage({
   treeSitterQueries: C_QUERIES,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: resolveCImport,
+  importResolver: createImportResolver(cImportConfig),
   importSemantics: 'wildcard-transitive',
   callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
@@ -338,7 +340,7 @@ export const cppProvider = defineLanguage({
   treeSitterQueries: CPP_QUERIES,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: resolveCppImport,
+  importResolver: createImportResolver(cppImportConfig),
   importSemantics: 'wildcard-transitive',
   mroStrategy: 'leftmost-base',
   callExtractor: createCallExtractor(cppCallConfig),

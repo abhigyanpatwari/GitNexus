@@ -4,7 +4,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 import type { GoModuleConfig } from '../language-config.js';
 
@@ -57,12 +57,12 @@ export function resolveGoPackage(
   return matches;
 }
 
-/** Go: package-level imports via go.mod module path. */
-export function resolveGoImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Go-specific package resolution strategy — resolves go.mod-based package imports. */
+export const goPackageStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   const goModule = ctx.configs.goModule;
   if (goModule && rawImportPath.startsWith(goModule.modulePath)) {
     const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
@@ -79,5 +79,15 @@ export function resolveGoImport(
     }
     // Fall through if no files found (package might be external)
   }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Go);
+  return null;
+};
+
+/** Go: package-level imports via go.mod module path. */
+export function resolveGoImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return goPackageStrategy(rawImportPath, filePath, ctx)
+    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Go);
 }

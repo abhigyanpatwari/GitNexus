@@ -3,14 +3,14 @@
  * Handles module imports via Package.swift target map.
  */
 
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 
-/** Swift: module imports via Package.swift target map. */
-export function resolveSwiftImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Swift Package.swift target map resolution strategy. */
+export const swiftPackageStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
   if (swiftPackageConfig) {
     const targetDir = swiftPackageConfig.targets.get(rawImportPath);
@@ -29,4 +29,13 @@ export function resolveSwiftImport(
     }
   }
   return null; // External framework (Foundation, UIKit, etc.)
+};
+
+/** Swift: module imports via Package.swift target map. */
+export function resolveSwiftImport(
+  rawImportPath: string,
+  _filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return swiftPackageStrategy(rawImportPath, _filePath, ctx);
 }

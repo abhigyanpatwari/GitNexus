@@ -6,7 +6,7 @@
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 import type { CSharpProjectConfig } from '../language-config.js';
 
@@ -127,12 +127,12 @@ export function resolveCSharpNamespaceDir(
   return null;
 }
 
-/** C#: namespace-based resolution via .csproj configs, with suffix-match fallback. */
-export function resolveCSharpImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** C# namespace-based resolution strategy via .csproj configs. */
+export const csharpNamespaceStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   const csharpConfigs = ctx.configs.csharpConfigs;
   if (csharpConfigs.length > 0) {
     const resolvedFiles = resolveCSharpImportInternal(
@@ -150,5 +150,15 @@ export function resolveCSharpImport(
     }
     if (resolvedFiles.length > 0) return { kind: 'files', files: resolvedFiles };
   }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.CSharp);
+  return null;
+};
+
+/** C#: namespace-based resolution via .csproj configs, with suffix-match fallback. */
+export function resolveCSharpImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return csharpNamespaceStrategy(rawImportPath, filePath, ctx)
+    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.CSharp);
 }

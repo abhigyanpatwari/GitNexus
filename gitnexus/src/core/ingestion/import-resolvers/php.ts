@@ -5,7 +5,7 @@
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import type { ComposerConfig } from '../language-config.js';
 
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
@@ -92,12 +92,12 @@ export function resolvePhpImportInternal(
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
 }
 
-/** PHP: namespace-based resolution via composer.json PSR-4. */
-export function resolvePhpImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** PHP PSR-4 resolution strategy via composer.json autoload mappings. */
+export const phpPsr4Strategy: ImportResolverStrategy = (
+  rawImportPath,
+  _filePath,
+  ctx,
+) => {
   const resolved = resolvePhpImportInternal(
     rawImportPath,
     ctx.configs.composerConfig,
@@ -107,4 +107,13 @@ export function resolvePhpImport(
     ctx.index,
   );
   return resolved ? { kind: 'files', files: [resolved] } : null;
+};
+
+/** PHP: namespace-based resolution via composer.json PSR-4. */
+export function resolvePhpImport(
+  rawImportPath: string,
+  _filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return phpPsr4Strategy(rawImportPath, _filePath, ctx);
 }

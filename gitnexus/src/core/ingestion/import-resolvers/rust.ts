@@ -4,7 +4,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
+import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import { resolveStandard } from './standard.js';
 
 /**
@@ -85,12 +85,12 @@ export function tryRustModulePath(modulePath: string, allFiles: Set<string>): st
   return null;
 }
 
-/** Rust: expand grouped imports: use {crate::a, crate::b} and use crate::models::{User, Repo}. */
-export function resolveRustImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Rust module resolution strategy — handles grouped imports and crate/super/self paths. */
+export const rustModuleStrategy: ImportResolverStrategy = (
+  rawImportPath,
+  filePath,
+  ctx,
+) => {
   // Top-level grouped: use {crate::a, crate::b}
   if (rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
     const inner = rawImportPath.slice(1, -1);
@@ -128,5 +128,15 @@ export function resolveRustImport(
     if (prefixResult) return { kind: 'files', files: [prefixResult] };
   }
 
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Rust);
+  return null;
+};
+
+/** Rust: expand grouped imports: use {crate::a, crate::b} and use crate::models::{User, Repo}. */
+export function resolveRustImport(
+  rawImportPath: string,
+  filePath: string,
+  ctx: ResolveCtx,
+): ImportResult {
+  return rustModuleStrategy(rawImportPath, filePath, ctx)
+    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Rust);
 }

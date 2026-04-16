@@ -14,6 +14,8 @@ import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
 import { resolveKotlinImport } from '../import-resolvers/jvm.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
@@ -106,7 +108,7 @@ export const kotlinProvider = defineLanguage({
   treeSitterQueries: KOTLIN_QUERIES,
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,
-  importResolver: resolveKotlinImport,
+  importResolver: createImportResolver(kotlinImportConfig),
   namedBindingExtractor: extractKotlinNamedBindings,
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',

@@ -19,6 +19,11 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
 import { resolveTypescriptImport, resolveJavascriptImport } from '../import-resolvers/standard.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import {
+  typescriptImportConfig,
+  javascriptImportConfig,
+} from '../import-resolvers/configs/typescript-javascript.js';
 import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
@@ -168,7 +173,7 @@ export const typescriptProvider = defineLanguage({
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: resolveTypescriptImport,
+  importResolver: createImportResolver(typescriptImportConfig),
   namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
@@ -187,7 +192,7 @@ export const javascriptProvider = defineLanguage({
   treeSitterQueries: JAVASCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: resolveJavascriptImport,
+  importResolver: createImportResolver(javascriptImportConfig),
   namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),

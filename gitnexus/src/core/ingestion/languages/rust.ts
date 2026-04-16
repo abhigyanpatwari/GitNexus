@@ -19,6 +19,8 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
 import { rustExportChecker } from '../export-detection.js';
 import { resolveRustImport } from '../import-resolvers/rust.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { rustImportConfig } from '../import-resolvers/configs/rust.js';
 import { extractRustNamedBindings } from '../named-bindings/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -122,7 +124,7 @@ export const rustProvider = defineLanguage({
   treeSitterQueries: RUST_QUERIES,
   typeConfig: rustConfig,
   exportChecker: rustExportChecker,
-  importResolver: resolveRustImport,
+  importResolver: createImportResolver(rustImportConfig),
   namedBindingExtractor: extractRustNamedBindings,
   mroStrategy: 'qualified-syntax',
   callExtractor: createCallExtractor(rustCallConfig),
