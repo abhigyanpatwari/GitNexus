@@ -1,7 +1,7 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -18,9 +18,9 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:20-alpine AS runtime
 
-RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache curl
 
 WORKDIR /app
 
