@@ -615,4 +615,19 @@ describe('VariableExtractor — block-scoped declarations', () => {
     expect(info!.name).toBe('x');
     expect(info!.scope).toBe('block');
   });
+
+  it('Python: rejects non-assignment expression statements (e.g. function calls)', () => {
+    const extractor = createVariableExtractor(pythonVariableConfig);
+    const ctx: VariableExtractorContext = {
+      filePath: 'test.py',
+      language: SupportedLanguages.Python,
+    };
+    parser.setLanguage(Python);
+    const tree = parser.parse('print("hello")');
+    const exprStmt = tree.rootNode.child(0)!;
+    expect(exprStmt.type).toBe('expression_statement');
+    // extract() should return null because this is a call, not an assignment
+    const info = extractor.extract(exprStmt, ctx);
+    expect(info).toBeNull();
+  });
 });
