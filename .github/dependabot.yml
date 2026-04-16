@@ -15,15 +15,16 @@ updates:
       - dependencies
       - ci
 
-  # Gitnexus npm deps. Tree-sitter grammar bumps are grouped so we don't get
-  # one PR per grammar every time the ecosystem moves in lockstep. The
-  # tree-sitter RUNTIME is explicitly pinned because upgrading it changes
-  # which grammar ABIs load — upgrade deliberately, not automatically. See
-  # .github/scripts/check-tree-sitter-drift.py for the ABI invariant.
+  # Gitnexus npm deps — tree-sitter grammars checked daily so we catch
+  # new releases that unblock the tree-sitter 0.25 upgrade ASAP. Grammars
+  # are grouped so lockstep bumps produce a single PR. The tree-sitter
+  # RUNTIME is pinned — upgrade deliberately via the drift check workflow.
+  # See .github/scripts/check-tree-sitter-upgrade-readiness.py for
+  # the upgrade readiness tracker.
   - package-ecosystem: npm
     directory: /gitnexus
     schedule:
-      interval: weekly
+      interval: daily
     open-pull-requests-limit: 10
     commit-message:
       prefix: chore(deps)
@@ -38,10 +39,8 @@ updates:
           - tree-sitter
           - tree-sitter-cli
     ignore:
-      # Pin the tree-sitter runtime. Bumping 0.21 -> 0.22+ requires
-      # coordinated grammar updates and an ABI review (the vendored
-      # tree-sitter-proto is regenerated against a specific cli version).
-      # Do this by hand.
+      # Pin the tree-sitter runtime at 0.21.x until the drift check
+      # reports all grammars are peer-dep compatible with 0.25.
       - dependency-name: tree-sitter
         update-types:
           - version-update:semver-major
