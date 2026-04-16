@@ -25,7 +25,9 @@ function rawGet(port, path) {
     const req = http.request({ host: '127.0.0.1', port, path }, (res) => {
       let body = '';
       res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; });
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
     req.on('error', reject);
@@ -61,7 +63,9 @@ before(async () => {
     env: { ...process.env, PORT: String(serverPort) },
     stdio: 'pipe',
   });
-  child.on('error', (err) => { throw err; });
+  child.on('error', (err) => {
+    throw err;
+  });
 
   await waitForServer(serverPort);
 });

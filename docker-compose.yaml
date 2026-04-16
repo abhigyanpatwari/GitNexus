@@ -3,10 +3,10 @@ services:
     image: ${IMAGE_NAME:-ghcr.io/abhigyanpatwari/gitnexus:latest}
     container_name: ${CONTAINER_NAME:-gitnexus}
     ports:
-      - "${HOST_PORT:-4173}:4173"
+      - '${HOST_PORT:-4173}:4173'
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4173/"]
+      test: ['CMD', 'curl', '-f', 'http://localhost:4173/']
       interval: 30s
       timeout: 5s
       retries: 3
