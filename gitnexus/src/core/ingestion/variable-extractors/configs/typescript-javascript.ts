@@ -4,6 +4,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig } from '../../variable-types.js';
 import type { VariableVisibility } from '../../variable-types.js';
 import { hasKeyword, typeFromAnnotation } from '../../field-extractors/configs/helpers.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * TypeScript/JavaScript variable extraction config.
@@ -49,9 +50,6 @@ function extractVisFromDecl(node: SyntaxNode): VariableVisibility {
   if (hasKeyword(node, 'export')) return 'public';
   return 'private';
 }
-
-// Need to import SyntaxNode type for helper functions
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const shared: Omit<VariableExtractionConfig, 'language'> = {
   constNodeTypes: ['lexical_declaration'],

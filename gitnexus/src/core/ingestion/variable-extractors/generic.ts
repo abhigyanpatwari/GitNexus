@@ -33,8 +33,10 @@ export function createVariableExtractor(config: VariableExtractionConfig): Varia
   ]);
 
   function determineScope(node: SyntaxNode): VariableScope {
-    // Walk up to determine scope: if any ancestor is a function/method/block,
-    // it's block-scoped. If it's at the top level (program/module), it's module/file scoped.
+    // Walk up to determine scope:
+    // - 'module': node is inside a top-level program/module/source_file container
+    // - 'block': node is inside a function, method, or block scope
+    // - 'file': fallback when no recognizable container is found (e.g., standalone snippets)
     let current = node.parent;
     while (current) {
       const t = current.type;

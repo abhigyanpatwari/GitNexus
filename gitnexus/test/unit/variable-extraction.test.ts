@@ -451,6 +451,11 @@ describe('VariableExtractor — Ruby', () => {
 // ---------------------------------------------------------------------------
 
 describe('createVariableExtractor — factory', () => {
+  const factoryCtx: VariableExtractorContext = {
+    filePath: 'test.ts',
+    language: SupportedLanguages.TypeScript,
+  };
+
   it('creates extractor with correct language', () => {
     const extractor = createVariableExtractor(typescriptVariableConfig);
     expect(extractor.language).toBe(SupportedLanguages.TypeScript);
@@ -461,7 +466,7 @@ describe('createVariableExtractor — factory', () => {
     parser.setLanguage(TypeScript.typescript);
     const tree = parser.parse('class Foo {}');
     const node = tree.rootNode.child(0)!;
-    expect(extractor.extract(node, { filePath: 'test.ts', language: SupportedLanguages.TypeScript })).toBeNull();
+    expect(extractor.extract(node, factoryCtx)).toBeNull();
   });
 
   it('line number is 1-based', () => {
@@ -469,7 +474,7 @@ describe('createVariableExtractor — factory', () => {
     parser.setLanguage(TypeScript.typescript);
     const tree = parser.parse('const x = 1;');
     const node = tree.rootNode.child(0)!;
-    const info = extractor.extract(node, { filePath: 'test.ts', language: SupportedLanguages.TypeScript });
+    const info = extractor.extract(node, factoryCtx);
     expect(info).not.toBeNull();
     expect(info!.line).toBe(1);
     expect(info!.sourceFile).toBe('test.ts');
@@ -480,7 +485,7 @@ describe('createVariableExtractor — factory', () => {
     parser.setLanguage(TypeScript.typescript);
     const tree = parser.parse('const x = 1;');
     const node = tree.rootNode.child(0)!;
-    const info = extractor.extract(node, { filePath: 'test.ts', language: SupportedLanguages.TypeScript });
+    const info = extractor.extract(node, factoryCtx);
     expect(info).not.toBeNull();
     // rootNode is 'program' → module scope
     expect(info!.scope).toBe('module');
