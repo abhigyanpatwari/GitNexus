@@ -20,12 +20,16 @@ RUN npm run build --prefix gitnexus-web
 
 FROM node:20-bookworm-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /app/gitnexus-web/dist ./dist
 COPY docker-server.mjs ./docker-server.mjs
+
+RUN chown -R node:node /app
+
+USER node
 
 EXPOSE 4173
 
