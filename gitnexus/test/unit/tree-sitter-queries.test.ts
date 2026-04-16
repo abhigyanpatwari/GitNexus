@@ -425,8 +425,8 @@ describe('tree-sitter queries', () => {
       expect(RUBY_QUERIES).toContain('@definition.const');
     });
 
-    it('Dart captures top_level_variable_declaration', () => {
-      expect(DART_QUERIES).toContain('top_level_variable_declaration');
+    it('Dart captures declaration as @definition.variable', () => {
+      expect(DART_QUERIES).toContain('(declaration');
       expect(DART_QUERIES).toContain('@definition.variable');
     });
   });

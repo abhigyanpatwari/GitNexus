@@ -16,11 +16,11 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
  * - `int x = 5;`
  *
  * tree-sitter-dart uses:
- * - top_level_variable_declaration for file-scope variables
+ * - declaration (with initialized_identifier_list) for file-scope variables
  */
 
 function extractDartVarName(node: SyntaxNode): string | undefined {
-  // top_level_variable_declaration → initialized_variable_definition → identifier
+  // declaration → initialized_variable_definition → identifier
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type === 'initialized_variable_definition') {
@@ -74,7 +74,7 @@ export const dartVariableConfig: VariableExtractionConfig = {
   language: SupportedLanguages.Dart,
   constNodeTypes: [],
   staticNodeTypes: [],
-  variableNodeTypes: ['top_level_variable_declaration', 'declaration'],
+  variableNodeTypes: ['declaration'],
 
   extractName: extractDartVarName,
   extractType: extractDartVarType,

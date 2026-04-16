@@ -1199,7 +1199,7 @@ export const DART_QUERIES = `
     name: (identifier) @name)) @definition.property
 
 ; ── Top-level variable declarations (const maxSize = 100, final x = 5, var y = 0) ──
-(top_level_variable_declaration
+(declaration
   (initialized_identifier_list
     (initialized_identifier
       (identifier) @name))) @definition.variable

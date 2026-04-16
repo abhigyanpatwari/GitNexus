@@ -292,6 +292,7 @@ export const streamAllCSVsToDisk = async (
     'TypeAlias',
     'Const',
     'Static',
+    'Variable',
     'Property',
     'Record',
     'Delegate',
