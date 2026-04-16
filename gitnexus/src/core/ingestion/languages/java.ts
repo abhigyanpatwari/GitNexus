@@ -13,7 +13,6 @@ import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { javaExportChecker } from '../export-detection.js';
-import { resolveJavaImport } from '../import-resolvers/jvm.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
 import { extractJavaNamedBindings } from '../named-bindings/java.js';

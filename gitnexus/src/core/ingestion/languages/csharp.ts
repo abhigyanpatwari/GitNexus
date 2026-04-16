@@ -12,7 +12,6 @@ import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
-import { resolveCSharpImport } from '../import-resolvers/csharp.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
 import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';

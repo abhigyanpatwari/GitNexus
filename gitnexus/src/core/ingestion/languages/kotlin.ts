@@ -13,7 +13,6 @@ import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
-import { resolveKotlinImport } from '../import-resolvers/jvm.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';

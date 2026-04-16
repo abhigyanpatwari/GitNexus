@@ -16,7 +16,6 @@ import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
-import { resolvePythonImport } from '../import-resolvers/python.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { pythonImportConfig } from '../import-resolvers/configs/python.js';
 import { extractPythonNamedBindings } from '../named-bindings/python.js';

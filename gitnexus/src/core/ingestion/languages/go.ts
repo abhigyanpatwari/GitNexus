@@ -15,7 +15,6 @@ import { goClassConfig } from '../class-extractors/configs/go.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
 import { goExportChecker } from '../export-detection.js';
-import { resolveGoImport } from '../import-resolvers/go.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { goImportConfig } from '../import-resolvers/configs/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';

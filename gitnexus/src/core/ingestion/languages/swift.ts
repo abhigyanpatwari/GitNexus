@@ -17,7 +17,6 @@ import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
-import { resolveSwiftImport } from '../import-resolvers/swift.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';

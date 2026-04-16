@@ -19,7 +19,6 @@ import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
-import { resolveDartImport } from '../import-resolvers/dart.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { dartImportConfig } from '../import-resolvers/configs/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';

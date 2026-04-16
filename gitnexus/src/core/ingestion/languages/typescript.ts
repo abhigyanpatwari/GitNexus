@@ -18,7 +18,6 @@ import {
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { resolveTypescriptImport, resolveJavascriptImport } from '../import-resolvers/standard.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import {
   typescriptImportConfig,

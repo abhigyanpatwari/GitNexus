@@ -14,7 +14,6 @@ import { cClassConfig, cppClassConfig } from '../class-extractors/configs/c-cpp.
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
-import { resolveCImport, resolveCppImport } from '../import-resolvers/standard.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { cImportConfig, cppImportConfig } from '../import-resolvers/configs/c-cpp.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';

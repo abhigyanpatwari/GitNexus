@@ -16,7 +16,6 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
-import { resolveRubyImport } from '../import-resolvers/ruby.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { rubyImportConfig } from '../import-resolvers/configs/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
