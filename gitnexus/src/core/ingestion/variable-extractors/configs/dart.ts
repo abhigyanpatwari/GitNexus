@@ -32,6 +32,16 @@ function extractDartVarName(node: SyntaxNode): string | undefined {
         if (gc?.type === 'identifier') return gc.text;
       }
     }
+    // declaration → initialized_identifier_list → initialized_identifier → identifier
+    if (child?.type === 'initialized_identifier_list') {
+      for (let j = 0; j < child.namedChildCount; j++) {
+        const gc = child.namedChild(j);
+        if (gc?.type === 'initialized_identifier') {
+          const ident = gc.namedChildren.find((c: SyntaxNode) => c.type === 'identifier');
+          if (ident) return ident.text;
+        }
+      }
+    }
   }
   return undefined;
 }
@@ -64,7 +74,7 @@ export const dartVariableConfig: VariableExtractionConfig = {
   language: SupportedLanguages.Dart,
   constNodeTypes: [],
   staticNodeTypes: [],
-  variableNodeTypes: ['top_level_variable_declaration'],
+  variableNodeTypes: ['top_level_variable_declaration', 'declaration'],
 
   extractName: extractDartVarName,
   extractType: extractDartVarType,

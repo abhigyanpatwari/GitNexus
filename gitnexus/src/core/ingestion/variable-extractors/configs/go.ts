@@ -35,6 +35,14 @@ function extractGoVarName(node: SyntaxNode): string | undefined {
       }
     }
   }
+  // short_var_declaration: x := 5 → expression_list → identifier
+  if (node.type === 'short_var_declaration') {
+    const left = node.childForFieldName('left');
+    if (left?.type === 'expression_list') {
+      const firstIdent = left.namedChildren.find((c: SyntaxNode) => c.type === 'identifier');
+      if (firstIdent) return firstIdent.text;
+    }
+  }
   return undefined;
 }
 
@@ -53,7 +61,7 @@ export const goVariableConfig: VariableExtractionConfig = {
   language: SupportedLanguages.Go,
   constNodeTypes: ['const_declaration'],
   staticNodeTypes: [],
-  variableNodeTypes: ['var_declaration'],
+  variableNodeTypes: ['var_declaration', 'short_var_declaration'],
 
   extractName: extractGoVarName,
   extractType: extractGoVarType,
