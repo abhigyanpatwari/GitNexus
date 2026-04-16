@@ -3,7 +3,6 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig } from '../../variable-types.js';
 import type { VariableVisibility } from '../../variable-types.js';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * Ruby variable extraction config.

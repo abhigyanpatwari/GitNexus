@@ -80,6 +80,9 @@ export const pythonVariableConfig: VariableExtractionConfig = {
   language: SupportedLanguages.Python,
   constNodeTypes: [],
   staticNodeTypes: [],
+  // expression_statement is broad — isVariableDeclaration returns true for
+  // all expression statements, but extract() safely returns null for
+  // non-assignments since extractNameFromPython returns undefined for them.
   variableNodeTypes: ['expression_statement'],
 
   extractName: extractNameFromPython,

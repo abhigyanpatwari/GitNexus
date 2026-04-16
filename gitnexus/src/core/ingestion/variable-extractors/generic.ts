@@ -22,9 +22,7 @@ import type {
  * Create a VariableExtractor from a declarative config.
  */
 export function createVariableExtractor(config: VariableExtractionConfig): VariableExtractor {
-  const constNodeSet = new Set(config.constNodeTypes);
   const staticNodeSet = new Set(config.staticNodeTypes);
-  const variableNodeSet = new Set(config.variableNodeTypes);
   // Combined set for fast isVariableDeclaration checks
   const allNodeTypes = new Set([
     ...config.constNodeTypes,

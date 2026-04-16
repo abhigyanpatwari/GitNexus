@@ -83,7 +83,9 @@ export const kotlinVariableConfig: VariableExtractionConfig = {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child?.type === 'variable_declaration') {
-        const typeNode = child.namedChildren.find((c: SyntaxNode) => c.type === 'user_type' || c.type === 'nullable_type');
+        const typeNode = child.namedChildren.find(
+          (c: SyntaxNode) => c.type === 'user_type' || c.type === 'nullable_type',
+        );
         if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
       }
     }

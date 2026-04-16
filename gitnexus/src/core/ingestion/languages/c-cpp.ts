@@ -38,10 +38,7 @@ import {
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { cMethodConfig, cppMethodConfig } from '../method-extractors/configs/c-cpp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
-import {
-  cVariableConfig,
-  cppVariableConfig,
-} from '../variable-extractors/configs/c-cpp.js';
+import { cVariableConfig, cppVariableConfig } from '../variable-extractors/configs/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',

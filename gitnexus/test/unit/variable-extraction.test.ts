@@ -81,15 +81,12 @@ describe('VariableExtractor — TypeScript', () => {
     // export_statement wraps lexical_declaration
     const exportStatement = tree.rootNode.child(0)!;
     // The lexical_declaration is the child of export_statement
-    const declNode = exportStatement.namedChildren.find(
-      (c) => c.type === 'lexical_declaration',
-    );
-    if (declNode) {
-      const info = extractor.extract(declNode, ctx);
-      expect(info).not.toBeNull();
-      expect(info!.name).toBe('API_KEY');
-      expect(info!.visibility).toBe('public');
-    }
+    const declNode = exportStatement.namedChildren.find((c) => c.type === 'lexical_declaration');
+    expect(declNode).toBeDefined();
+    const info = extractor.extract(declNode!, ctx);
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe('API_KEY');
+    expect(info!.visibility).toBe('public');
   });
 
   it('rejects non-variable nodes', () => {

@@ -43,7 +43,11 @@ function extractCVarType(node: SyntaxNode): string | undefined {
   // Fallback: first primitive_type or type_identifier child
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child?.type === 'primitive_type' || child?.type === 'type_identifier' || child?.type === 'sized_type_specifier') {
+    if (
+      child?.type === 'primitive_type' ||
+      child?.type === 'type_identifier' ||
+      child?.type === 'sized_type_specifier'
+    ) {
       return child.text?.trim();
     }
   }

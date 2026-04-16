@@ -4,7 +4,6 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig } from '../../variable-types.js';
 import type { VariableVisibility } from '../../variable-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * PHP variable extraction config.

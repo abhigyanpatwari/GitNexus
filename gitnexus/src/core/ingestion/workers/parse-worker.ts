@@ -2125,7 +2125,7 @@ const processFileGroup = (
 
       // Variable/Const/Static metadata extraction via VariableExtractor
       if (
-        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+        (nodeLabel === 'Const' || nodeLabel === 'Static') &&
         definitionNode &&
         provider.variableExtractor
       ) {
@@ -2138,7 +2138,6 @@ const processFileGroup = (
           if (varInfo.type) declaredType = varInfo.type;
           methodProps.visibility = varInfo.visibility;
           methodProps.isStatic = varInfo.isStatic;
-          methodProps.isReadonly = varInfo.isConst;
           methodProps.isConst = varInfo.isConst;
           methodProps.isMutable = varInfo.isMutable;
           methodProps.scope = varInfo.scope;

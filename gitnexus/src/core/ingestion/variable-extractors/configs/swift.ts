@@ -22,8 +22,8 @@ function extractSwiftVarName(node: SyntaxNode): string | undefined {
   // property_declaration → pattern → ... → simple_identifier / identifier
   const pattern = node.namedChildren.find((c: SyntaxNode) => c.type === 'pattern');
   if (pattern) {
-    const ident = pattern.namedChildren.find((c: SyntaxNode) =>
-      c.type === 'simple_identifier' || c.type === 'identifier'
+    const ident = pattern.namedChildren.find(
+      (c: SyntaxNode) => c.type === 'simple_identifier' || c.type === 'identifier',
     );
     if (ident) return ident.text;
   }
