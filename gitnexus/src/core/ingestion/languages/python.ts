@@ -12,6 +12,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
@@ -65,10 +66,6 @@ export const pythonProvider = defineLanguage({
   mroStrategy: 'c3',
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   methodExtractor: createMethodExtractor(pythonMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Python,
-    typeDeclarationNodes: ['class_definition'],
-    ancestorScopeNodeTypes: ['class_definition'],
-  }),
+  classExtractor: createClassExtractor(pythonClassConfig),
   builtInNames: BUILT_INS,
 });

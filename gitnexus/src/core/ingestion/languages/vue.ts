@@ -13,6 +13,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { vueClassConfig } from '../class-extractors/configs/typescript-javascript.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
@@ -56,21 +57,7 @@ const VUE_SPECIFIC_BUILT_INS = [
 
 const VUE_BUILT_INS: ReadonlySet<string> = new Set([...TS_BUILT_INS, ...VUE_SPECIFIC_BUILT_INS]);
 
-const vueClassExtractor = createClassExtractor({
-  language: SupportedLanguages.Vue,
-  typeDeclarationNodes: [
-    'class_declaration',
-    'abstract_class_declaration',
-    'interface_declaration',
-    'enum_declaration',
-  ],
-  ancestorScopeNodeTypes: [
-    'class_declaration',
-    'abstract_class_declaration',
-    'interface_declaration',
-    'enum_declaration',
-  ],
-});
+const vueClassExtractor = createClassExtractor(vueClassConfig);
 
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,

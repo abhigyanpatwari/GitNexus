@@ -13,6 +13,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { rustClassConfig } from '../class-extractors/configs/rust.js';
 import { defineLanguage } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
@@ -125,10 +126,6 @@ export const rustProvider = defineLanguage({
     ...rustMethodConfig,
     extractFunctionName: rustExtractFunctionName,
   }),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Rust,
-    typeDeclarationNodes: ['struct_item', 'enum_item'],
-    ancestorScopeNodeTypes: ['mod_item', 'struct_item', 'enum_item'],
-  }),
+  classExtractor: createClassExtractor(rustClassConfig),
   builtInNames: BUILT_INS,
 });

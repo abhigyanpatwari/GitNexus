@@ -10,6 +10,10 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import {
+  cClassConfig,
+  cppClassConfig,
+} from '../class-extractors/configs/c-cpp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
@@ -145,16 +149,9 @@ const C_BUILT_INS: ReadonlySet<string> = new Set([
   'put',
 ]);
 
-const cClassExtractor = createClassExtractor({
-  language: SupportedLanguages.C,
-  typeDeclarationNodes: ['struct_specifier', 'enum_specifier'],
-});
+const cClassExtractor = createClassExtractor(cClassConfig);
 
-const cppClassExtractor = createClassExtractor({
-  language: SupportedLanguages.CPlusPlus,
-  typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'enum_specifier'],
-  ancestorScopeNodeTypes: ['namespace_definition', 'class_specifier', 'struct_specifier'],
-});
+const cppClassExtractor = createClassExtractor(cppClassConfig);
 
 /**
  * C/C++ function name extraction — unwraps pointer_declarator / reference_declarator /

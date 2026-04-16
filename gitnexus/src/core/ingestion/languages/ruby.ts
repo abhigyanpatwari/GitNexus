@@ -10,6 +10,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
@@ -128,10 +129,6 @@ export const rubyProvider = defineLanguage({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,
   }),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Ruby,
-    typeDeclarationNodes: ['class'],
-    ancestorScopeNodeTypes: ['module', 'class'],
-  }),
+  classExtractor: createClassExtractor(rubyClassConfig),
   builtInNames: BUILT_INS,
 });

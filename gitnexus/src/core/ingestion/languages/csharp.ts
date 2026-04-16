@@ -8,6 +8,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
@@ -126,24 +127,6 @@ export const csharpProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.CSharp,
-    typeDeclarationNodes: [
-      'class_declaration',
-      'interface_declaration',
-      'struct_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-    fileScopeNodeTypes: ['file_scoped_namespace_declaration'],
-    ancestorScopeNodeTypes: [
-      'namespace_declaration',
-      'class_declaration',
-      'interface_declaration',
-      'struct_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-  }),
+  classExtractor: createClassExtractor(csharpClassConfig),
   builtInNames: BUILT_INS,
 });

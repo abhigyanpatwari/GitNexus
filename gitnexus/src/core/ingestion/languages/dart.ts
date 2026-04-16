@@ -15,6 +15,7 @@ import type { NodeLabel } from 'gitnexus-shared';
 import { FUNCTION_NODE_TYPES } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
@@ -93,11 +94,7 @@ export const dartProvider = defineLanguage({
   importSemantics: 'wildcard-leaf',
   fieldExtractor: createFieldExtractor(dartFieldConfig),
   methodExtractor: createMethodExtractor(dartMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Dart,
-    typeDeclarationNodes: ['class_definition', 'extension_declaration', 'enum_declaration'],
-    ancestorScopeNodeTypes: ['class_definition', 'extension_declaration', 'enum_declaration'],
-  }),
+  classExtractor: createClassExtractor(dartClassConfig),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: BUILT_INS,
 });

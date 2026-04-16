@@ -9,6 +9,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
@@ -107,16 +108,7 @@ export const kotlinProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(kotlinConfig),
   methodExtractor: createMethodExtractor(kotlinMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Kotlin,
-    typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],
-    fileScopeNodeTypes: ['package_header'],
-    ancestorScopeNodeTypes: ['class_declaration', 'object_declaration', 'companion_object'],
-    extractType(node) {
-      if (node.type !== 'class_declaration') return undefined;
-      return node.children.some((child) => child?.text === 'interface') ? 'Interface' : 'Class';
-    },
-  }),
+  classExtractor: createClassExtractor(kotlinClassConfig),
   builtInNames: BUILT_INS,
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
