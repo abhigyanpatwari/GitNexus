@@ -56,7 +56,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
-    "commander": "^12.0.0",
+    "commander": "^14.0.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "glob": "^11.0.0",
