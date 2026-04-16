@@ -48,7 +48,6 @@ import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
-import { extractParsedCallSite } from './call-sites/extract-language-call-site.js';
 import { lookupMethodByOwnerWithMRO } from './model/resolve.js';
 
 /** Per-file resolved type bindings for exported symbols.
@@ -910,74 +909,79 @@ export const processCalls = async (
       if (!captureMap['call']) return;
 
       const callNode = captureMap['call'];
-      const languageSeed = extractParsedCallSite(language, callNode);
-      if (languageSeed) {
-        if (provider.isBuiltInName(languageSeed.calledName)) return;
+      const callExtractor = provider.callExtractor;
 
-        const sourceId =
-          findEnclosingFunction(callNode, file.path, ctx, provider) ||
-          generateId('File', file.path);
-        const receiverName =
-          languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
-        let receiverTypeName =
-          receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+      // ── Language-specific call site (e.g. Java :: method references) ──
+      if (callExtractor) {
+        const langCallSite = callExtractor.extract(callNode, undefined);
+        if (langCallSite) {
+          if (provider.isBuiltInName(langCallSite.calledName)) return;
 
-        if (
-          receiverName !== undefined &&
-          receiverTypeName === undefined &&
-          languageSeed.callForm === 'member' &&
-          (language === 'java' || language === 'csharp' || language === 'kotlin')
-        ) {
-          const c0 = receiverName.charCodeAt(0);
-          if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
-        }
+          const sourceId =
+            findEnclosingFunction(callNode, file.path, ctx, provider) ||
+            generateId('File', file.path);
+          const receiverName =
+            langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
+          let receiverTypeName =
+            receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
 
-        const resolved = resolveCallTarget(
-          {
-            calledName: languageSeed.calledName,
-            callForm: languageSeed.callForm,
-            ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
-            ...(receiverName !== undefined ? { receiverName } : {}),
-          },
-          file.path,
-          ctx,
-          undefined,
-          widenCache,
-          undefined,
-          heritageMap,
-        );
+          if (
+            langCallSite.typeAsReceiverHeuristic &&
+            receiverName !== undefined &&
+            receiverTypeName === undefined &&
+            langCallSite.callForm === 'member'
+          ) {
+            const c0 = receiverName.charCodeAt(0);
+            if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
+          }
 
-        if (!resolved) return;
-        graph.addRelationship({
-          id: generateId('CALLS', `${sourceId}:${languageSeed.calledName}->${resolved.nodeId}`),
-          sourceId,
-          targetId: resolved.nodeId,
-          type: 'CALLS',
-          confidence: resolved.confidence,
-          reason: resolved.reason,
-        });
-
-        if (heritageMap && languageSeed.callForm === 'member' && receiverTypeName) {
-          const implTargets = findInterfaceDispatchTargets(
-            languageSeed.calledName,
-            receiverTypeName,
+          const resolved = resolveCallTarget(
+            {
+              calledName: langCallSite.calledName,
+              callForm: langCallSite.callForm,
+              ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+              ...(receiverName !== undefined ? { receiverName } : {}),
+            },
             file.path,
             ctx,
+            undefined,
+            widenCache,
+            undefined,
             heritageMap,
-            resolved.nodeId,
           );
-          for (const impl of implTargets) {
-            graph.addRelationship({
-              id: generateId('CALLS', `${sourceId}:${languageSeed.calledName}->${impl.nodeId}`),
-              sourceId,
-              targetId: impl.nodeId,
-              type: 'CALLS',
-              confidence: impl.confidence,
-              reason: impl.reason,
-            });
+
+          if (!resolved) return;
+          graph.addRelationship({
+            id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`),
+            sourceId,
+            targetId: resolved.nodeId,
+            type: 'CALLS',
+            confidence: resolved.confidence,
+            reason: resolved.reason,
+          });
+
+          if (heritageMap && langCallSite.callForm === 'member' && receiverTypeName) {
+            const implTargets = findInterfaceDispatchTargets(
+              langCallSite.calledName,
+              receiverTypeName,
+              file.path,
+              ctx,
+              heritageMap,
+              resolved.nodeId,
+            );
+            for (const impl of implTargets) {
+              graph.addRelationship({
+                id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${impl.nodeId}`),
+                sourceId,
+                targetId: impl.nodeId,
+                type: 'CALLS',
+                confidence: impl.confidence,
+                reason: impl.reason,
+              });
+            }
           }
+          return;
         }
-        return;
       }
 
       const nameNode = captureMap['call.name'];

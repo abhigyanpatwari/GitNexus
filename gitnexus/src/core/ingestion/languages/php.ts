@@ -23,6 +23,8 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { phpMethodConfig } from '../method-extractors/configs/php.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { phpVariableConfig } from '../variable-extractors/configs/php.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { phpCallConfig } from '../call-extractors/configs/php.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -240,6 +242,7 @@ export const phpProvider = defineLanguage({
   exportChecker: phpExportChecker,
   importResolver: resolvePhpImport,
   namedBindingExtractor: extractPhpNamedBindings,
+  callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),
   variableExtractor: createVariableExtractor(phpVariableConfig),

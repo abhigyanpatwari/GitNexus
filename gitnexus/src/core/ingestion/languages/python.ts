@@ -25,6 +25,8 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { pythonMethodConfig } from '../method-extractors/configs/python.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { pythonCallConfig } from '../call-extractors/configs/python.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -66,6 +68,7 @@ export const pythonProvider = defineLanguage({
   namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',
+  callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),

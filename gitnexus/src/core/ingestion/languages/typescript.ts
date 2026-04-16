@@ -34,6 +34,11 @@ import {
   typescriptVariableConfig,
   javascriptVariableConfig,
 } from '../variable-extractors/configs/typescript-javascript.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import {
+  typescriptCallConfig,
+  javascriptCallConfig,
+} from '../call-extractors/configs/typescript-javascript.js';
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression get their name
@@ -165,6 +170,7 @@ export const typescriptProvider = defineLanguage({
   exportChecker: tsExportChecker,
   importResolver: resolveTypescriptImport,
   namedBindingExtractor: extractTsNamedBindings,
+  callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
     ...typescriptMethodConfig,
@@ -183,6 +189,7 @@ export const javascriptProvider = defineLanguage({
   exportChecker: tsExportChecker,
   importResolver: resolveJavascriptImport,
   namedBindingExtractor: extractTsNamedBindings,
+  callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,

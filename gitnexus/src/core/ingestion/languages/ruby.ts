@@ -24,6 +24,8 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { rubyVariableConfig } from '../variable-extractors/configs/ruby.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { rubyCallConfig } from '../call-extractors/configs/ruby.js';
 
 /** Ruby method/singleton_method: extract name from 'name' field, label as Method. */
 const rubyExtractFunctionName = (
@@ -111,6 +113,7 @@ export const rubyProvider = defineLanguage({
   importResolver: resolveRubyImport,
   callRouter: routeRubyCall,
   importSemantics: 'wildcard-leaf',
+  callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner(node) {
     // Ruby singleton_class (class << self) should resolve to the enclosing
     // class or module for owner/container resolution (HAS_METHOD edges, class IDs).
