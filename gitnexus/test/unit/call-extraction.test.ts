@@ -317,7 +317,7 @@ describe('generic call extraction', () => {
       expect(result!.typeAsReceiverHeuristic).toBe(true);
     });
 
-    it('does not set typeAsReceiverHeuristic flag on lowercase receivers', () => {
+    it('sets typeAsReceiverHeuristic flag even for lowercase receivers', () => {
       parser.setLanguage(CSharp);
       const captures = extractCallCaptures(
         parser,

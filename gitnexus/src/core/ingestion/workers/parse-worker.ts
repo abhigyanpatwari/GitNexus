@@ -1655,7 +1655,7 @@ const processFileGroup = (
           // ── Path 1: Language-specific call site (bypasses routing) ────
           // Try language-specific extraction (e.g. Java `::` method references)
           // without callNameNode.  If successful, skip routing and the generic
-          // path entirely — mirrors the old extractParsedCallSite() behavior.
+          // path entirely.
           const langCallSite = callExtractor.extract(callNode, undefined);
           if (langCallSite) {
             if (!provider.isBuiltInName(langCallSite.calledName)) {
