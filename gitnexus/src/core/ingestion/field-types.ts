@@ -1,7 +1,7 @@
 // gitnexus/src/core/ingestion/field-types.ts
 
 import type { TypeEnvironment } from './type-env.js';
-import type { SymbolTableReader } from './model/symbol-table.js';
+import type { SymbolTableReader } from './model/index.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 /**

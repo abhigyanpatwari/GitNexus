@@ -1,7 +1,12 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition, SymbolTableReader } from './model/symbol-table.js';
-import { CLASS_TYPES, CALL_TARGET_TYPES } from './model/symbol-table.js';
+import type {
+  SymbolDefinition,
+  SymbolTableReader,
+  HeritageMap,
+  ExtractedHeritage,
+} from './model/index.js';
+import { CLASS_TYPES, CALL_TARGET_TYPES, lookupMethodByOwnerWithMRO } from './model/index.js';
 import Parser from 'tree-sitter';
 import type { ResolutionContext } from './model/resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './model/resolution-context.js';
@@ -32,7 +37,6 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
-import type { HeritageMap } from './model/heritage-map.js';
 import type { BindingAccumulator } from './binding-accumulator.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
@@ -42,13 +46,11 @@ import type {
   ExtractedFetchCall,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
-import type { ExtractedHeritage } from './model/heritage-map.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
-import { lookupMethodByOwnerWithMRO } from './model/resolve.js';
 
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */

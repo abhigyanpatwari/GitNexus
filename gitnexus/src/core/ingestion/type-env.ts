@@ -21,7 +21,7 @@ import {
   stripNullable,
   extractReturnTypeName,
 } from './type-extractors/shared.js';
-import type { SemanticModel } from './model/semantic-model.js';
+import type { SemanticModel } from './model/index.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
 /**

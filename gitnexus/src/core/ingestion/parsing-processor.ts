@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter } from './model/symbol-table.js';
+import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
 // SymbolTableReader is used for the FieldExtractorContext stub; the
 // parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
@@ -46,7 +46,6 @@ import type {
   FileScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
-import type { ExtractedHeritage } from './model/heritage-map.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
