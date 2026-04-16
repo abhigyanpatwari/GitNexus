@@ -17,6 +17,11 @@ import type { ImportResolverFn, ImportResolutionConfig } from './types.js';
  *
  * Chains strategies in declaration order — first non-null result wins.
  * Returns null only if every strategy returns null.
+ *
+ * Error behaviour: if a strategy throws, the error propagates immediately
+ * and remaining strategies are not tried.  Strategies are expected to be
+ * pure data transforms that never throw; any unexpected exception indicates
+ * a bug in the strategy implementation.
  */
 export function createImportResolver(config: ImportResolutionConfig): ImportResolverFn {
   const { strategies } = config;
