@@ -21,6 +21,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { kotlinMethodConfig } from '../method-extractors/configs/jvm.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { kotlinVariableConfig } from '../variable-extractors/configs/jvm.js';
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
@@ -107,6 +109,7 @@ export const kotlinProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(kotlinConfig),
   methodExtractor: createMethodExtractor(kotlinMethodConfig),
+  variableExtractor: createVariableExtractor(kotlinVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Kotlin,
     typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],

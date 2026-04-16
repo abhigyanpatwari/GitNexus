@@ -26,6 +26,11 @@ import {
   typescriptMethodConfig,
   javascriptMethodConfig,
 } from '../method-extractors/configs/typescript-javascript.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import {
+  typescriptVariableConfig,
+  javascriptVariableConfig,
+} from '../variable-extractors/configs/typescript-javascript.js';
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression get their name
@@ -178,6 +183,7 @@ export const typescriptProvider = defineLanguage({
     ...typescriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: createClassExtractor(tsJsClassConfig),
   builtInNames: BUILT_INS,
 });
@@ -195,6 +201,7 @@ export const javascriptProvider = defineLanguage({
     ...javascriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(javascriptVariableConfig),
   classExtractor: createClassExtractor({
     ...tsJsClassConfig,
     language: SupportedLanguages.JavaScript,

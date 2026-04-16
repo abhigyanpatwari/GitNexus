@@ -24,6 +24,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { swiftMethodConfig } from '../method-extractors/configs/swift.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
 
 /**
  * Group Swift files by SPM target for implicit module visibility.
@@ -245,6 +247,7 @@ export const swiftProvider = defineLanguage({
     ...swiftMethodConfig,
     extractFunctionName: swiftExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(swiftVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Swift,
     typeDeclarationNodes: ['class_declaration', 'protocol_declaration'],

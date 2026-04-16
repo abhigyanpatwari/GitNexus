@@ -24,6 +24,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rustConfig as rustFieldConfig } from '../field-extractors/configs/rust.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rustMethodConfig } from '../method-extractors/configs/rust.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { rustVariableConfig } from '../variable-extractors/configs/rust.js';
 
 /** Rust impl_item: find the function_item child and extract its name as a Method. */
 const rustExtractFunctionName = (
@@ -125,6 +127,7 @@ export const rustProvider = defineLanguage({
     ...rustMethodConfig,
     extractFunctionName: rustExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(rustVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Rust,
     typeDeclarationNodes: ['struct_item', 'enum_item'],

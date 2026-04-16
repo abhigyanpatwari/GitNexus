@@ -20,6 +20,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { goConfig as goFieldConfig } from '../field-extractors/configs/go.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { goMethodConfig } from '../method-extractors/configs/go.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { goVariableConfig } from '../variable-extractors/configs/go.js';
 
 export const goProvider = defineLanguage({
   id: SupportedLanguages.Go,
@@ -31,6 +33,7 @@ export const goProvider = defineLanguage({
   importSemantics: 'wildcard-leaf',
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
+  variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Go,
     typeDeclarationNodes: ['type_declaration'],

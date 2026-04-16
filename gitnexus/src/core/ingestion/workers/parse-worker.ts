@@ -77,6 +77,7 @@ import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
+import type { VariableExtractorContext } from '../variable-types.js';
 import {
   buildMethodProps,
   arityForIdFromInfo,
@@ -2119,6 +2120,28 @@ const processFileGroup = (
               methodProps.isReadonly = info.isReadonly;
             }
           }
+        }
+      }
+
+      // Variable/Const/Static metadata extraction via VariableExtractor
+      if (
+        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+        definitionNode &&
+        provider.variableExtractor
+      ) {
+        const varCtx: VariableExtractorContext = {
+          filePath: file.path,
+          language,
+        };
+        const varInfo = provider.variableExtractor.extract(definitionNode, varCtx);
+        if (varInfo) {
+          if (varInfo.type) declaredType = varInfo.type;
+          methodProps.visibility = varInfo.visibility;
+          methodProps.isStatic = varInfo.isStatic;
+          methodProps.isReadonly = varInfo.isConst;
+          methodProps.isConst = varInfo.isConst;
+          methodProps.isMutable = varInfo.isMutable;
+          methodProps.scope = varInfo.scope;
         }
       }
 

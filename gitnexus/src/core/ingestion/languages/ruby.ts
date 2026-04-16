@@ -21,6 +21,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { rubyVariableConfig } from '../variable-extractors/configs/ruby.js';
 
 /** Ruby method/singleton_method: extract name from 'name' field, label as Method. */
 const rubyExtractFunctionName = (
@@ -128,6 +130,7 @@ export const rubyProvider = defineLanguage({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(rubyVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Ruby,
     typeDeclarationNodes: ['class'],

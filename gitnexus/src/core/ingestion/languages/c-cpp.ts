@@ -37,6 +37,11 @@ import {
 } from '../field-extractors/configs/c-cpp.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { cMethodConfig, cppMethodConfig } from '../method-extractors/configs/c-cpp.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import {
+  cVariableConfig,
+  cppVariableConfig,
+} from '../variable-extractors/configs/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -327,6 +332,7 @@ export const cProvider = defineLanguage({
     ...cMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(cVariableConfig),
   classExtractor: cClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
@@ -346,6 +352,7 @@ export const cppProvider = defineLanguage({
     ...cppMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(cppVariableConfig),
   classExtractor: cppClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,

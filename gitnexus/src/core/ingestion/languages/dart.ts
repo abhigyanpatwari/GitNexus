@@ -24,6 +24,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { dartMethodConfig } from '../method-extractors/configs/dart.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { dartVariableConfig } from '../variable-extractors/configs/dart.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -93,6 +95,7 @@ export const dartProvider = defineLanguage({
   importSemantics: 'wildcard-leaf',
   fieldExtractor: createFieldExtractor(dartFieldConfig),
   methodExtractor: createMethodExtractor(dartMethodConfig),
+  variableExtractor: createVariableExtractor(dartVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Dart,
     typeDeclarationNodes: ['class_definition', 'extension_declaration', 'enum_declaration'],

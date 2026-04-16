@@ -22,6 +22,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { pythonMethodConfig } from '../method-extractors/configs/python.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -65,6 +67,7 @@ export const pythonProvider = defineLanguage({
   mroStrategy: 'c3',
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   methodExtractor: createMethodExtractor(pythonMethodConfig),
+  variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Python,
     typeDeclarationNodes: ['class_definition'],

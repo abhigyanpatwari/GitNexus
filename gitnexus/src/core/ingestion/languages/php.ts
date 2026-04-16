@@ -20,6 +20,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { phpMethodConfig } from '../method-extractors/configs/php.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -239,6 +241,7 @@ export const phpProvider = defineLanguage({
   namedBindingExtractor: extractPhpNamedBindings,
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),
+  variableExtractor: createVariableExtractor(phpVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.PHP,
     typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'enum_declaration'],

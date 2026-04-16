@@ -19,6 +19,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javaConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
@@ -32,6 +34,7 @@ export const javaProvider = defineLanguage({
   mroStrategy: 'implements-split',
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
+  variableExtractor: createVariableExtractor(javaVariableConfig),
   classExtractor: createClassExtractor({
     language: SupportedLanguages.Java,
     typeDeclarationNodes: [

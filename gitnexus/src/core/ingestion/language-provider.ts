@@ -16,6 +16,7 @@ import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
+import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -163,6 +164,10 @@ interface LanguageProviderConfig {
    *  declarations. Produces MethodInfo[] with name, parameters, visibility, isAbstract,
    *  isFinal, annotations metadata. Default: undefined (no method extraction). */
   readonly methodExtractor?: MethodExtractor;
+  /** Variable extractor for extracting metadata from module/file-scoped variable,
+   *  constant, and static declarations. Produces VariableInfo with type, visibility,
+   *  isConst, isStatic, isMutable metadata. Default: undefined (no variable extraction). */
+  readonly variableExtractor?: VariableExtractor;
   /** Class/type extractor for deriving canonical qualified names for class-like symbols.
    *  Uses the same provider-driven strategy pattern as method/field extraction so
    *  namespace/package/module rules stay language-specific. */
