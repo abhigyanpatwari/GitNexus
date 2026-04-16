@@ -61,11 +61,7 @@ describe('dartPackageStrategy', () => {
   describe('package: imports', () => {
     it('resolves local package import to lib/', () => {
       const ctx = makeCtx(['lib/models/user.dart', 'lib/main.dart']);
-      const result = dartPackageStrategy(
-        "'package:my_app/models/user.dart'",
-        'lib/main.dart',
-        ctx,
-      );
+      const result = dartPackageStrategy("'package:my_app/models/user.dart'", 'lib/main.dart', ctx);
       expect(result).toEqual({ kind: 'files', files: ['lib/models/user.dart'] });
     });
 

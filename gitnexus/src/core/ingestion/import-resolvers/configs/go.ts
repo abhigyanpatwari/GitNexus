@@ -9,11 +9,7 @@ import { createStandardStrategy } from '../standard.js';
 import { resolveGoPackageDir, resolveGoPackage } from '../go.js';
 
 /** Go-specific package resolution strategy — resolves go.mod-based package imports. */
-export const goPackageStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const goPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const goModule = ctx.configs.goModule;
   if (goModule && rawImportPath.startsWith(goModule.modulePath)) {
     const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);

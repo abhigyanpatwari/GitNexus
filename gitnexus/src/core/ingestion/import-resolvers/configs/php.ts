@@ -8,11 +8,7 @@ import type { ImportResolutionConfig, ImportResolverStrategy } from '../types.js
 import { resolvePhpImportInternal } from '../php.js';
 
 /** PHP PSR-4 resolution strategy via composer.json autoload mappings. */
-export const phpPsr4Strategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const phpPsr4Strategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const resolved = resolvePhpImportInternal(
     rawImportPath,
     ctx.configs.composerConfig,

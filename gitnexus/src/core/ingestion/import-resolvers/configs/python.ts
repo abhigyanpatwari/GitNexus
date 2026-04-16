@@ -13,11 +13,7 @@ import { resolvePythonImportInternal } from '../python.js';
  * Returns null to continue chain for non-relative imports.
  * Absorbs unresolved relative imports (returns empty result to stop the chain).
  */
-export const pythonImportStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  filePath,
-  ctx,
-) => {
+export const pythonImportStrategy: ImportResolverStrategy = (rawImportPath, filePath, ctx) => {
   const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
   if (resolved) {
     ctx.resolveCache.set(`${filePath}::${rawImportPath}`, resolved);

@@ -9,11 +9,7 @@ import { createStandardStrategy } from '../standard.js';
 import { resolveRustImportInternal } from '../rust.js';
 
 /** Rust module resolution strategy — handles grouped imports and crate/super/self paths. */
-export const rustModuleStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  filePath,
-  ctx,
-) => {
+export const rustModuleStrategy: ImportResolverStrategy = (rawImportPath, filePath, ctx) => {
   // Top-level grouped: use {crate::a, crate::b}
   if (rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
     const inner = rawImportPath.slice(1, -1);

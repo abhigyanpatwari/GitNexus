@@ -18,6 +18,10 @@ export const javascriptImportConfig: ImportResolutionConfig = {
   strategies: [createStandardStrategy(SupportedLanguages.JavaScript)],
 };
 
+// Vue SFCs are preprocessed into TypeScript upstream of import resolution,
+// so the resolver intentionally runs as TypeScript. `language: Vue` here is
+// documentation-only metadata (see `ImportResolutionConfig.language` JSDoc
+// and ARCHITECTURE.md §Vue); it is not consumed by `createImportResolver`.
 export const vueImportConfig: ImportResolutionConfig = {
   language: SupportedLanguages.Vue,
   strategies: [createStandardStrategy(SupportedLanguages.TypeScript)],

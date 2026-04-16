@@ -9,11 +9,7 @@ import { createStandardStrategy } from '../standard.js';
 import { resolveCSharpImportInternal, resolveCSharpNamespaceDir } from '../csharp.js';
 
 /** C# namespace-based resolution strategy via .csproj configs. */
-export const csharpNamespaceStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const csharpNamespaceStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const csharpConfigs = ctx.configs.csharpConfigs;
   if (csharpConfigs.length > 0) {
     const resolvedFiles = resolveCSharpImportInternal(

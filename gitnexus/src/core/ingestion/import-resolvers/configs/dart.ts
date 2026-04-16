@@ -12,11 +12,7 @@ import { resolveStandard } from '../standard.js';
  * Absorbs dart: SDK imports and external packages (returns empty result to stop chain).
  * Returns null for relative imports to let the next strategy handle them.
  */
-export const dartPackageStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const dartPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   // Strip surrounding quotes from configurable_uri capture
   const stripped = rawImportPath.replace(/^['"]|['"]$/g, '');
 
@@ -50,11 +46,7 @@ export const dartPackageStrategy: ImportResolverStrategy = (
  * Dart relative import strategy — prepends "./" for bare relative paths,
  * then delegates to standard resolution.
  */
-export const dartRelativeStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  filePath,
-  ctx,
-) => {
+export const dartRelativeStrategy: ImportResolverStrategy = (rawImportPath, filePath, ctx) => {
   const stripped = rawImportPath.replace(/^['"]|['"]$/g, '');
   const relPath = stripped.startsWith('.') ? stripped : './' + stripped;
   return resolveStandard(relPath, filePath, ctx, SupportedLanguages.Dart);

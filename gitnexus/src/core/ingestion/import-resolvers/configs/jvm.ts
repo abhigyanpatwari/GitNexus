@@ -9,11 +9,7 @@ import { createStandardStrategy } from '../standard.js';
 import { resolveJvmWildcard, resolveJvmMemberImport, KOTLIN_EXTENSIONS } from '../jvm.js';
 
 /** Java JVM resolution strategy — wildcard and member import resolution. */
-export const javaJvmStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const javaJvmStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   if (rawImportPath.endsWith('.*')) {
     const matchedFiles = resolveJvmWildcard(
       rawImportPath,
@@ -39,11 +35,7 @@ export const javaJvmStrategy: ImportResolverStrategy = (
 /**
  * Kotlin JVM resolution strategy — wildcard/member with Java-interop + top-level function imports.
  */
-export const kotlinJvmStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const kotlinJvmStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   if (rawImportPath.endsWith('.*')) {
     const matchedFiles = resolveJvmWildcard(
       rawImportPath,

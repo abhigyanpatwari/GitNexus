@@ -7,11 +7,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { ImportResolutionConfig, ImportResolverStrategy } from '../types.js';
 
 /** Swift Package.swift target map resolution strategy. */
-export const swiftPackageStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
+export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
   if (swiftPackageConfig) {
     const targetDir = swiftPackageConfig.targets.get(rawImportPath);
