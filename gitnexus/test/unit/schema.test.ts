@@ -53,6 +53,7 @@ describe('LadybugDB Schema', () => {
         'TypeAlias',
         'Const',
         'Static',
+        'Variable',
         'Property',
         'Record',
         'Delegate',
@@ -67,8 +68,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('has expected total count', () => {
-      // 9 core + 18 multi-language + Route + Tool = 30
-      expect(NODE_TABLES).toHaveLength(30);
+      // 9 core + 19 multi-language + Route + Tool = 31
+      expect(NODE_TABLES).toHaveLength(31);
     });
   });
 
