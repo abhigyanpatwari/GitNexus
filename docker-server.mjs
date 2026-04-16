@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, sep } from 'node:path';
 
 const host = '0.0.0.0';
 const port = Number(process.env.PORT || '4173');
@@ -30,7 +30,7 @@ function resolvePath(urlPath) {
   if (decoded.includes('\0')) return null;
   const cleanPath = normalize(decoded.replace(/^\/+/, ''));
   const candidate = join(root, cleanPath);
-  if (!candidate.startsWith(root)) return null;
+  if (candidate !== root && !candidate.startsWith(root + sep)) return null;
   return candidate;
 }
 

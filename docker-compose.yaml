@@ -1,6 +1,6 @@
 services:
   gitnexus:
-    image: ${IMAGE_NAME:-ghcr.io/abhigyanpatwari/gitnexus:latest}
+    image: ${IMAGE_NAME:-ghcr.io/brainifii/gitnexus:latest}
     container_name: ${CONTAINER_NAME:-gitnexus}
     ports:
       - '${HOST_PORT:-4173}:4173'
