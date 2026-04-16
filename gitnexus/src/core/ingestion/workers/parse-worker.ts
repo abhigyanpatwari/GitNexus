@@ -1463,8 +1463,9 @@ const processFileGroup = (
     // Per-file map: decorator end-line → decorator info, for associating with definitions
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
 
-    // Track definition nodes already processed by higher-priority captures (e.g. @definition.function)
-    // to avoid duplicate nodes when @definition.const/@definition.variable patterns overlap.
+    // Track start indices of definition nodes already processed by higher-priority captures
+    // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
+    // patterns overlap with the same source range.
     const processedDefinitionNodes = new Set<number>();
 
     for (const match of matches) {
