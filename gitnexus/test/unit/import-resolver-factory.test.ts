@@ -21,10 +21,17 @@ import { buildSuffixIndex } from '../../src/core/ingestion/import-resolvers/util
 
 // ── Per-language strategy imports (from config files) ──────────────────
 import { goPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/go.js';
-import { kotlinJvmStrategy } from '../../src/core/ingestion/import-resolvers/configs/jvm.js';
+import {
+  javaJvmStrategy,
+  kotlinJvmStrategy,
+} from '../../src/core/ingestion/import-resolvers/configs/jvm.js';
 import { pythonImportStrategy } from '../../src/core/ingestion/import-resolvers/configs/python.js';
 import { csharpNamespaceStrategy } from '../../src/core/ingestion/import-resolvers/configs/csharp.js';
 import { dartPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/dart.js';
+import { rustModuleStrategy } from '../../src/core/ingestion/import-resolvers/configs/rust.js';
+import { phpPsr4Strategy } from '../../src/core/ingestion/import-resolvers/configs/php.js';
+import { swiftPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/swift.js';
+import { rubyRequireStrategy } from '../../src/core/ingestion/import-resolvers/configs/ruby.js';
 
 // ── Per-language config imports ────────────────────────────────────────
 import {
@@ -53,7 +60,7 @@ import { rubyImportConfig } from '../../src/core/ingestion/import-resolvers/conf
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeCtx(files: string[]): ResolveCtx {
+function makeCtx(files: string[], overrides: Partial<ResolveCtx['configs']> = {}): ResolveCtx {
   const allFileList = files;
   const normalizedFileList = files.map((p) => p.replace(/\\/g, '/'));
   const allFilePaths = new Set(allFileList);
@@ -70,6 +77,7 @@ function makeCtx(files: string[]): ResolveCtx {
       composerConfig: null,
       swiftPackageConfig: null,
       csharpConfigs: [],
+      ...overrides,
     },
   };
 }
@@ -142,34 +150,34 @@ describe('createImportResolver', () => {
 //
 // The previous `typeof strategy === 'function'` assertions were tautological:
 // TypeScript's `ImportResolverStrategy` type enforces the function shape at
-// compile time, so those tests could never fail. Python and Dart already have
-// deep behavioral tests below; Go / Kotlin / C# are covered here. The
-// remaining strategies (Java, Rust, PHP, Swift, Ruby) are exercised via the
-// per-language `createImportResolver(config)` smoke tests and the factory
-// behavior suite, which together verify exports, wiring, and composition.
+// compile time, so those tests could never fail. Each strategy now has at
+// least one behavioral assertion below; the Go and C# full-chain tests also
+// double as strategy-order guards because their `kind: 'package'` output is
+// unreachable through `createStandardStrategy`.
 // ---------------------------------------------------------------------------
 
 describe('goPackageStrategy', () => {
   it('resolves go.mod package imports to a package result with dirSuffix', () => {
     const files = ['cmd/server/main.go', 'cmd/server/handler.go'];
-    const ctx = makeCtx(files);
-    ctx.configs.goModule = { modulePath: 'example.com/app' };
+    const ctx = makeCtx(files, { goModule: { modulePath: 'example.com/app' } });
 
     const result = goPackageStrategy('example.com/app/cmd/server', 'main.go', ctx);
     // `kind: 'package'` + `dirSuffix` is unique to goPackageStrategy — the
-    // standard strategy always returns `kind: 'files'`. Asserting this shape
-    // makes config-level strategy ordering observable via the full-chain test
-    // in `goImportConfig` below.
-    expect(result?.kind).toBe('package');
-    expect(result?.files).toEqual(expect.arrayContaining(files));
-    if (result?.kind === 'package') {
-      expect(result.dirSuffix).toContain('cmd/server');
-    }
+    // standard strategy always returns `kind: 'files'`. Asserting the exact
+    // shape makes format regressions observable (e.g. prefix/suffix slash
+    // normalization) and makes strategy ordering observable via the
+    // full-chain test in `goImportConfig` below.
+    expect(result).toEqual({
+      kind: 'package',
+      files: expect.arrayContaining(files),
+      dirSuffix: '/cmd/server/',
+    });
   });
 
   it('returns null for imports outside the go module (allows chain to continue)', () => {
-    const ctx = makeCtx(['vendor/other/pkg/foo.go']);
-    ctx.configs.goModule = { modulePath: 'example.com/app' };
+    const ctx = makeCtx(['vendor/other/pkg/foo.go'], {
+      goModule: { modulePath: 'example.com/app' },
+    });
     const result = goPackageStrategy('github.com/other/pkg', 'main.go', ctx);
     expect(result).toBeNull();
   });
@@ -181,17 +189,69 @@ describe('goPackageStrategy', () => {
     expect(result).toBeNull();
   });
 
+  it('returns null when module prefix matches but package directory has no .go files', () => {
+    // Documented fall-through in configs/go.ts:27 — when resolveGoPackageDir
+    // returns non-null but resolveGoPackage returns an empty files list
+    // (external module coincidentally sharing the prefix, or a subpackage with
+    // no .go sources), the strategy returns null so the chain can continue.
+    const ctx = makeCtx(['README.md', 'cmd/server/config.yaml'], {
+      goModule: { modulePath: 'example.com/app' },
+    });
+    const result = goPackageStrategy('example.com/app/cmd/server', 'main.go', ctx);
+    expect(result).toBeNull();
+  });
+
   it('goImportConfig full chain produces the package-kind result (strategy-order guard)', () => {
     const files = ['cmd/server/main.go', 'cmd/server/handler.go'];
-    const ctx = makeCtx(files);
-    ctx.configs.goModule = { modulePath: 'example.com/app' };
+    const ctx = makeCtx(files, { goModule: { modulePath: 'example.com/app' } });
 
     const resolver = createImportResolver(goImportConfig);
     const result = resolver('example.com/app/cmd/server', 'main.go', ctx);
     // If goPackageStrategy were moved after createStandardStrategy, the
     // standard strategy's suffix resolution would return a single file with
     // `kind: 'files'` (or null), not `kind: 'package'` with a dirSuffix.
-    expect(result?.kind).toBe('package');
+    // Asserting the full shape (not just kind) guards against a future
+    // regression that emits `kind: 'package'` with mismatched files.
+    expect(result).toEqual({
+      kind: 'package',
+      files: expect.arrayContaining(files),
+      dirSuffix: '/cmd/server/',
+    });
+  });
+});
+
+describe('javaJvmStrategy', () => {
+  it('resolves wildcard imports to .java files in the package directory', () => {
+    const files = [
+      'src/main/java/com/example/foo/Bar.java',
+      'src/main/java/com/example/foo/Baz.java',
+      'src/main/java/com/example/other/Unrelated.java',
+    ];
+    const ctx = makeCtx(files);
+    const result = javaJvmStrategy('com.example.foo.*', 'App.java', ctx);
+    expect(result?.kind).toBe('files');
+    expect(result?.files).toEqual(
+      expect.arrayContaining([
+        'src/main/java/com/example/foo/Bar.java',
+        'src/main/java/com/example/foo/Baz.java',
+      ]),
+    );
+    expect(result?.files).not.toContain('src/main/java/com/example/other/Unrelated.java');
+  });
+
+  it('resolves member imports to the owning class file', () => {
+    const files = ['src/main/java/com/example/Constants.java'];
+    const ctx = makeCtx(files);
+    // JVM member import: last segment is an ALL_CAPS constant / lowercase
+    // member; resolver walks back to the class path `com/example/Constants`.
+    const result = javaJvmStrategy('com.example.Constants.VALUE', 'App.java', ctx);
+    expect(result).toEqual({ kind: 'files', files });
+  });
+
+  it('returns null when no matching .java files exist', () => {
+    const ctx = makeCtx(['src/main/java/other/Foo.java']);
+    const result = javaJvmStrategy('com.example.missing.*', 'App.java', ctx);
+    expect(result).toBeNull();
   });
 });
 
@@ -215,6 +275,13 @@ describe('kotlinJvmStrategy', () => {
     expect(result?.files).not.toContain('src/main/kotlin/com/example/other/Unrelated.kt');
   });
 
+  it('resolves member imports to the owning class file', () => {
+    const files = ['src/main/kotlin/com/example/Constants.kt'];
+    const ctx = makeCtx(files);
+    const result = kotlinJvmStrategy('com.example.Constants.VALUE', 'App.kt', ctx);
+    expect(result).toEqual({ kind: 'files', files });
+  });
+
   it('returns null for wildcard with no matching files (allows chain to continue)', () => {
     const ctx = makeCtx(['src/main/kotlin/com/example/other/Foo.kt']);
     const result = kotlinJvmStrategy('com.example.missing.*', 'App.kt', ctx);
@@ -222,31 +289,60 @@ describe('kotlinJvmStrategy', () => {
   });
 
   it('kotlinImportConfig full chain resolves wildcard via the JVM strategy', () => {
+    // Note: this is a behavioral smoke test, NOT a strategy-order guard.
+    // `createStandardStrategy(Kotlin)` explicitly returns null for any import
+    // ending in `.*` (see standard.ts:137), so reordering `kotlinImportConfig`
+    // strategies would still produce the same result — the standard strategy
+    // would return null and the chain would fall through to kotlinJvmStrategy
+    // regardless of position. A genuine ordering guard for Kotlin would need
+    // a non-wildcard fixture where both strategies resolve to different files.
     const files = ['src/main/kotlin/com/example/foo/Bar.kt'];
     const ctx = makeCtx(files);
     const resolver = createImportResolver(kotlinImportConfig);
     const result = resolver('com.example.foo.*', 'App.kt', ctx);
-    // Standard strategy returns null for `.*` imports (see standard.ts:137),
-    // so only kotlinJvmStrategy can produce this result.
     expect(result).toEqual({ kind: 'files', files });
+  });
+});
+
+describe('rustModuleStrategy', () => {
+  it('resolves scoped grouped imports to per-item files', () => {
+    const files = ['src/models/User.rs', 'src/models/Repo.rs'];
+    const ctx = makeCtx(files);
+    // `use crate::models::{User, Repo}` — the strategy resolves each item
+    // individually against the allFilePaths set via resolveRustImportInternal.
+    const result = rustModuleStrategy('crate::models::{User, Repo}', 'src/lib.rs', ctx);
+    // Exact file discovery depends on resolveRustImportInternal's search
+    // heuristics; we assert the shape + that at least one item resolved.
+    expect(result?.kind).toBe('files');
+    expect(result?.files.length).toBeGreaterThan(0);
+  });
+
+  it('returns null for non-grouped imports (delegates to standard fallback)', () => {
+    const ctx = makeCtx(['src/models.rs']);
+    // Plain `use crate::models` — rustModuleStrategy only handles grouped
+    // forms; standard strategy handles the crate:: -> path translation.
+    const result = rustModuleStrategy('crate::models', 'src/lib.rs', ctx);
+    expect(result).toBeNull();
   });
 });
 
 describe('csharpNamespaceStrategy', () => {
   it('resolves namespace imports via .csproj root-namespace mapping', () => {
     const files = ['src/Services/Auth/AuthService.cs', 'src/Services/Auth/TokenService.cs'];
-    const ctx = makeCtx(files);
-    ctx.configs.csharpConfigs = [{ rootNamespace: 'MyCo', projectDir: 'src' }];
+    const ctx = makeCtx(files, {
+      csharpConfigs: [{ rootNamespace: 'MyCo', projectDir: 'src' }],
+    });
 
     const result = csharpNamespaceStrategy('MyCo.Services.Auth', 'App.cs', ctx);
     // Multi-file namespace resolution produces `kind: 'package'` with
     // dirSuffix — unique to csharpNamespaceStrategy; the standard strategy
-    // always emits `kind: 'files'`.
-    expect(result?.kind).toBe('package');
-    expect(result?.files).toEqual(expect.arrayContaining(files));
-    if (result?.kind === 'package') {
-      expect(result.dirSuffix).toContain('Services/Auth');
-    }
+    // always emits `kind: 'files'`. Asserting the full shape (including the
+    // exact dirSuffix format) guards against format regressions.
+    expect(result).toEqual({
+      kind: 'package',
+      files: expect.arrayContaining(files),
+      dirSuffix: '/src/Services/Auth/',
+    });
   });
 
   it('returns null when no csharpConfigs are configured', () => {
@@ -258,15 +354,92 @@ describe('csharpNamespaceStrategy', () => {
 
   it('csharpImportConfig full chain produces package-kind (strategy-order guard)', () => {
     const files = ['src/Services/Auth/AuthService.cs', 'src/Services/Auth/TokenService.cs'];
-    const ctx = makeCtx(files);
-    ctx.configs.csharpConfigs = [{ rootNamespace: 'MyCo', projectDir: 'src' }];
+    const ctx = makeCtx(files, {
+      csharpConfigs: [{ rootNamespace: 'MyCo', projectDir: 'src' }],
+    });
 
     const resolver = createImportResolver(csharpImportConfig);
     const result = resolver('MyCo.Services.Auth', 'App.cs', ctx);
     // If csharpNamespaceStrategy were reordered after createStandardStrategy,
     // the result would be `kind: 'files'` (suffix match) or null, never
-    // `kind: 'package'` with a dirSuffix.
-    expect(result?.kind).toBe('package');
+    // `kind: 'package'` with a dirSuffix. Asserting the full shape (not just
+    // kind) guards against a regression that emits `kind: 'package'` with
+    // mismatched files.
+    expect(result).toEqual({
+      kind: 'package',
+      files: expect.arrayContaining(files),
+      dirSuffix: '/src/Services/Auth/',
+    });
+  });
+});
+
+describe('phpPsr4Strategy', () => {
+  it('resolves PSR-4 namespace imports via composer.json autoload map', () => {
+    const files = ['app/Services/UserService.php'];
+    const ctx = makeCtx(files, {
+      composerConfig: {
+        psr4: new Map([['App\\', 'app/']]),
+      },
+    });
+    const result = phpPsr4Strategy('App\\Services\\UserService', 'index.php', ctx);
+    expect(result).toEqual({ kind: 'files', files });
+  });
+
+  it('returns null when no file matches the namespace via PSR-4 or suffix fallback', () => {
+    const ctx = makeCtx(['app/Services/OtherService.php'], {
+      composerConfig: { psr4: new Map([['App\\', 'app/']]) },
+    });
+    const result = phpPsr4Strategy('App\\Services\\UserService', 'index.php', ctx);
+    expect(result).toBeNull();
+  });
+});
+
+describe('swiftPackageStrategy', () => {
+  it('resolves SwiftPM target imports to files in the target directory', () => {
+    const files = [
+      'Package/Sources/SiuperModel/Foo.swift',
+      'Package/Sources/SiuperModel/Bar.swift',
+      'Package/Sources/Other/Unrelated.swift',
+    ];
+    const ctx = makeCtx(files, {
+      swiftPackageConfig: {
+        targets: new Map([['SiuperModel', 'Package/Sources/SiuperModel']]),
+      },
+    });
+    const result = swiftPackageStrategy('SiuperModel', 'App.swift', ctx);
+    expect(result?.kind).toBe('files');
+    expect(result?.files).toEqual(
+      expect.arrayContaining([
+        'Package/Sources/SiuperModel/Foo.swift',
+        'Package/Sources/SiuperModel/Bar.swift',
+      ]),
+    );
+    expect(result?.files).not.toContain('Package/Sources/Other/Unrelated.swift');
+  });
+
+  it('returns null for unknown targets (external frameworks like Foundation)', () => {
+    const ctx = makeCtx(['Package/Sources/SiuperModel/Foo.swift'], {
+      swiftPackageConfig: {
+        targets: new Map([['SiuperModel', 'Package/Sources/SiuperModel']]),
+      },
+    });
+    const result = swiftPackageStrategy('Foundation', 'App.swift', ctx);
+    expect(result).toBeNull();
+  });
+});
+
+describe('rubyRequireStrategy', () => {
+  it('resolves require_relative paths via suffix matching', () => {
+    const files = ['lib/models/user.rb'];
+    const ctx = makeCtx(files);
+    const result = rubyRequireStrategy('./models/user', 'lib/app.rb', ctx);
+    expect(result).toEqual({ kind: 'files', files });
+  });
+
+  it('returns null when no file matches the require path', () => {
+    const ctx = makeCtx(['lib/models/user.rb']);
+    const result = rubyRequireStrategy('./missing/file', 'lib/app.rb', ctx);
+    expect(result).toBeNull();
   });
 });
 
