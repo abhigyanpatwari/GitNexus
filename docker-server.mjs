@@ -58,7 +58,9 @@ const server = createServer(async (req, res) => {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     });
-    createReadStream(filePath).pipe(res);
+    const stream = createReadStream(filePath);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
   } catch (error) {
     res.writeHead(500);
     res.end(error instanceof Error ? error.message : 'Internal server error');
