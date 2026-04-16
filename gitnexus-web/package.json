@@ -67,7 +67,7 @@
     "@vercel/node": "^5.5.16",
     "@vitejs/plugin-react": "^5.1.0",
     "@vitest/coverage-v8": "^3.2.4",
-    "jsdom": "^29.0.0",
+    "jsdom": "^29.0.2",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.4.5",
     "vite": "^5.2.0",
