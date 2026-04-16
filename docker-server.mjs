@@ -21,8 +21,14 @@ const contentTypes = {
 };
 
 function resolvePath(urlPath) {
-  if (urlPath.includes('\0')) return null;
-  const cleanPath = normalize(decodeURIComponent(urlPath).replace(/^\/+/, ''));
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    return null;
+  }
+  if (decoded.includes('\0')) return null;
+  const cleanPath = normalize(decoded.replace(/^\/+/, ''));
   const candidate = join(root, cleanPath);
   if (!candidate.startsWith(root)) return null;
   return candidate;
