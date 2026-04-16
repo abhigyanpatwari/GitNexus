@@ -58,6 +58,26 @@ export function isTestFilePath(filePath: string): boolean {
   );
 }
 
+/**
+ * Detect GitNexus-generated agent-context files that should be excluded from
+ * change-impact analysis. These files are documentation/prompts, not runtime
+ * code, and are commonly rewritten by `gitnexus analyze`.
+ */
+export function getDetectChangesIgnoreReason(filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\.?\//, '');
+  const baseName = path.posix.basename(normalized).toLowerCase();
+
+  if ((baseName === 'agents.md' || baseName === 'claude.md') && !normalized.includes('/')) {
+    return 'gitnexus_agent_context';
+  }
+
+  if (normalized.startsWith('.claude/skills/')) {
+    return 'gitnexus_agent_context';
+  }
+
+  return null;
+}
+
 /** Valid LadybugDB node labels for safe Cypher query construction */
 export const VALID_NODE_LABELS = new Set([
   'File',
@@ -1560,18 +1580,34 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const parsedFileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const ignoredFileDiffs: Array<{ filePath: string; reason: string }> = [];
+    const fileDiffs = parsedFileDiffs.filter((fileDiff) => {
+      const reason = getDetectChangesIgnoreReason(fileDiff.filePath);
+      if (reason) {
+        ignoredFileDiffs.push({ filePath: fileDiff.filePath, reason });
+        return false;
+      }
+      return true;
+    });
 
     if (fileDiffs.length === 0) {
+      const message =
+        ignoredFileDiffs.length > 0
+          ? `No code changes detected. Ignored ${ignoredFileDiffs.length} GitNexus-generated agent-context file(s).`
+          : 'No changes detected.';
       return {
         summary: {
           changed_count: 0,
           affected_count: 0,
+          changed_files: 0,
+          ignored_file_count: ignoredFileDiffs.length,
           risk_level: 'none',
-          message: 'No changes detected.',
+          message,
         },
         changed_symbols: [],
         affected_processes: [],
+        ignored_files: ignoredFileDiffs,
       };
     }
 
@@ -1668,10 +1704,12 @@ export class LocalBackend {
         changed_count: changedSymbols.length,
         affected_count: processCount,
         changed_files: fileDiffs.length,
+        ignored_file_count: ignoredFileDiffs.length,
         risk_level: risk,
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
+      ignored_files: ignoredFileDiffs,
     };
   }
 

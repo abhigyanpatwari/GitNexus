@@ -283,6 +283,10 @@ Follow these steps:
 /**
  * Start the MCP server on stdio transport (for CLI use).
  */
+export function normalizeShutdownExitCode(exitCode: number | NodeJS.Signals | undefined): number {
+  return typeof exitCode === 'number' ? exitCode : 0;
+}
+
 export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = createMCPServer(backend);
 
@@ -301,7 +305,7 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
 
   // Graceful shutdown helper
   let shuttingDown = false;
-  const shutdown = async (exitCode = 0) => {
+  const shutdown = async (exitCode: number | NodeJS.Signals = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     try {
@@ -310,12 +314,12 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     try {
       await server.close();
     } catch {}
-    process.exit(exitCode);
+    process.exit(normalizeShutdownExitCode(exitCode));
   };
 
   // Handle graceful shutdown
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown(0));
+  process.on('SIGTERM', () => shutdown(0));
 
   // Log crashes to stderr so they aren't silently lost.
   // uncaughtException is fatal — shut down.

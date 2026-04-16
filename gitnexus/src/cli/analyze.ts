@@ -12,6 +12,7 @@ import path from 'path';
 import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { realpathSync } from 'fs';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 import { getStoragePaths, getGlobalRegistryPath } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
@@ -23,6 +24,17 @@ const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
 const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
+
+export function getAnalyzeReexecArgv(argv: string[] = process.argv): string[] {
+  const [, entry, ...rest] = argv;
+  if (!entry) return [];
+
+  try {
+    return [realpathSync(entry), ...rest];
+  } catch {
+    return [entry, ...rest];
+  }
+}
 
 /** Re-exec the process with an 8GB heap and larger stack if we're currently below that. */
 function ensureHeap(): boolean {
@@ -38,7 +50,7 @@ function ensureHeap(): boolean {
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   try {
-    execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
+    execFileSync(process.execPath, [...cliFlags, ...getAnalyzeReexecArgv()], {
       stdio: 'inherit',
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
