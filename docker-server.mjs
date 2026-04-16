@@ -21,6 +21,7 @@ const contentTypes = {
 };
 
 function resolvePath(urlPath) {
+  if (urlPath.includes('\0')) return null;
   const cleanPath = normalize(decodeURIComponent(urlPath).replace(/^\/+/, ''));
   const candidate = join(root, cleanPath);
   if (!candidate.startsWith(root)) return null;
