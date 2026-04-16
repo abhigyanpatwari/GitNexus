@@ -24,6 +24,8 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rustConfig as rustFieldConfig } from '../field-extractors/configs/rust.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rustMethodConfig } from '../method-extractors/configs/rust.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { rustCallConfig } from '../call-extractors/configs/rust.js';
 
 /** Rust impl_item: find the function_item child and extract its name as a Method. */
 const rustExtractFunctionName = (
@@ -120,6 +122,7 @@ export const rustProvider = defineLanguage({
   importResolver: resolveRustImport,
   namedBindingExtractor: extractRustNamedBindings,
   mroStrategy: 'qualified-syntax',
+  callExtractor: createCallExtractor(rustCallConfig),
   fieldExtractor: createFieldExtractor(rustFieldConfig),
   methodExtractor: createMethodExtractor({
     ...rustMethodConfig,

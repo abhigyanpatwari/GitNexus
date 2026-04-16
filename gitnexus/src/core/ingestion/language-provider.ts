@@ -12,6 +12,7 @@
 import type { SupportedLanguages, MroStrategy } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
+import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
@@ -155,6 +156,11 @@ interface LanguageProviderConfig {
   readonly mroStrategy?: MroStrategy;
 
   // ── Language-specific extraction hooks ────────────────────────────
+  /** Call extractor for extracting call site information (calledName, callForm,
+   *  receiverName, argCount, mixed chains) from @call / @call.name captures.
+   *  Produced by createCallExtractor() with a per-language CallExtractionConfig.
+   *  Default: undefined (falls back to inline extraction). */
+  readonly callExtractor?: CallExtractor;
   /** Field extractor for extracting field/property definitions from class/struct
    *  declarations. Produces FieldInfo[] with name, type, visibility, static,
    *  readonly metadata. Default: undefined (no field extraction). */

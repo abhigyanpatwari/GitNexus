@@ -17,6 +17,8 @@ import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -105,6 +107,7 @@ export const kotlinProvider = defineLanguage({
   namedBindingExtractor: extractKotlinNamedBindings,
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',
+  callExtractor: createCallExtractor(kotlinCallConfig),
   fieldExtractor: createFieldExtractor(kotlinConfig),
   methodExtractor: createMethodExtractor(kotlinMethodConfig),
   classExtractor: createClassExtractor({

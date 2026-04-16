@@ -14,6 +14,8 @@ import { csharpExportChecker } from '../export-detection.js';
 import { resolveCSharpImport } from '../import-resolvers/csharp.js';
 import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { csharpCallConfig } from '../call-extractors/configs/csharp.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { csharpConfig as csharpFieldConfig } from '../field-extractors/configs/csharp.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -124,6 +126,7 @@ export const csharpProvider = defineLanguage({
   namedBindingExtractor: extractCSharpNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
+  callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   classExtractor: createClassExtractor({

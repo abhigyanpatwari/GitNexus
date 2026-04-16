@@ -37,6 +37,8 @@ import {
 } from '../field-extractors/configs/c-cpp.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { cMethodConfig, cppMethodConfig } from '../method-extractors/configs/c-cpp.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -322,6 +324,7 @@ export const cProvider = defineLanguage({
   exportChecker: cCppExportChecker,
   importResolver: resolveCImport,
   importSemantics: 'wildcard-transitive',
+  callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
     ...cMethodConfig,
@@ -341,6 +344,7 @@ export const cppProvider = defineLanguage({
   importResolver: resolveCppImport,
   importSemantics: 'wildcard-transitive',
   mroStrategy: 'leftmost-base',
+  callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),
   methodExtractor: createMethodExtractor({
     ...cppMethodConfig,

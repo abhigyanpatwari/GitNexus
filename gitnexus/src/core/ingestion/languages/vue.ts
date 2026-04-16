@@ -21,6 +21,8 @@ import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -80,6 +82,7 @@ export const vueProvider = defineLanguage({
   exportChecker: tsExportChecker,
   importResolver: resolveVueImport,
   namedBindingExtractor: extractTsNamedBindings,
+  callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   classExtractor: vueClassExtractor,
   builtInNames: VUE_BUILT_INS,
