@@ -1,11 +1,10 @@
 /**
- * Go package import resolution.
- * Handles Go module path-based package imports.
+ * Go package import resolution — internal helpers.
+ *
+ * Strategy lives in configs/go.ts.
+ * This file contains the shared helpers used by the strategy.
  */
 
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
-import { resolveStandard } from './standard.js';
 import type { GoModuleConfig } from '../language-config.js';
 
 /**
@@ -55,39 +54,4 @@ export function resolveGoPackage(
   }
 
   return matches;
-}
-
-/** Go-specific package resolution strategy — resolves go.mod-based package imports. */
-export const goPackageStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
-  const goModule = ctx.configs.goModule;
-  if (goModule && rawImportPath.startsWith(goModule.modulePath)) {
-    const pkgSuffix = resolveGoPackageDir(rawImportPath, goModule);
-    if (pkgSuffix) {
-      const pkgFiles = resolveGoPackage(
-        rawImportPath,
-        goModule,
-        ctx.normalizedFileList,
-        ctx.allFileList,
-      );
-      if (pkgFiles.length > 0) {
-        return { kind: 'package', files: pkgFiles, dirSuffix: pkgSuffix };
-      }
-    }
-    // Fall through if no files found (package might be external)
-  }
-  return null;
-};
-
-/** Go: package-level imports via go.mod module path. */
-export function resolveGoImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  return goPackageStrategy(rawImportPath, filePath, ctx)
-    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Go);
 }

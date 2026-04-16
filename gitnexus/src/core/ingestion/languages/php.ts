@@ -169,7 +169,8 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
   function findRelationCall(root: SyntaxNode): SyntaxNode | null {
     const stack: SyntaxNode[] = [root];
     while (stack.length > 0) {
-      const node = stack.pop()!;
+      const node = stack.pop();
+      if (!node) continue;
       if (node.type === 'member_call_expression') {
         const children = node.children ?? [];
         const objectNode = children.find(

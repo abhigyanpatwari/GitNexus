@@ -1,13 +1,12 @@
 /**
- * C# namespace import resolution.
- * Handles using-directive resolution via .csproj root namespace stripping.
+ * C# namespace import resolution — internal helpers.
+ *
+ * Strategy lives in configs/csharp.ts.
+ * This file contains shared helpers for namespace-based resolution.
  */
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
-import { resolveStandard } from './standard.js';
 import type { CSharpProjectConfig } from '../language-config.js';
 
 /**
@@ -125,40 +124,4 @@ export function resolveCSharpNamespaceDir(
   }
 
   return null;
-}
-
-/** C# namespace-based resolution strategy via .csproj configs. */
-export const csharpNamespaceStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  _filePath,
-  ctx,
-) => {
-  const csharpConfigs = ctx.configs.csharpConfigs;
-  if (csharpConfigs.length > 0) {
-    const resolvedFiles = resolveCSharpImportInternal(
-      rawImportPath,
-      csharpConfigs,
-      ctx.normalizedFileList,
-      ctx.allFileList,
-      ctx.index,
-    );
-    if (resolvedFiles.length > 1) {
-      const dirSuffix = resolveCSharpNamespaceDir(rawImportPath, csharpConfigs);
-      if (dirSuffix) {
-        return { kind: 'package', files: resolvedFiles, dirSuffix };
-      }
-    }
-    if (resolvedFiles.length > 0) return { kind: 'files', files: resolvedFiles };
-  }
-  return null;
-};
-
-/** C#: namespace-based resolution via .csproj configs, with suffix-match fallback. */
-export function resolveCSharpImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  return csharpNamespaceStrategy(rawImportPath, filePath, ctx)
-    ?? resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.CSharp);
 }

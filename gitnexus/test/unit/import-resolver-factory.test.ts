@@ -19,22 +19,22 @@ import type {
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildSuffixIndex } from '../../src/core/ingestion/import-resolvers/utils.js';
 
-// ── Per-language strategy imports ──────────────────────────────────────
-import { goPackageStrategy } from '../../src/core/ingestion/import-resolvers/go.js';
+// ── Per-language strategy imports (from config files) ──────────────────
+import { goPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/go.js';
 import {
   javaJvmStrategy,
   kotlinJvmStrategy,
-} from '../../src/core/ingestion/import-resolvers/jvm.js';
-import { rustModuleStrategy } from '../../src/core/ingestion/import-resolvers/rust.js';
-import { pythonImportStrategy } from '../../src/core/ingestion/import-resolvers/python.js';
-import { csharpNamespaceStrategy } from '../../src/core/ingestion/import-resolvers/csharp.js';
-import { phpPsr4Strategy } from '../../src/core/ingestion/import-resolvers/php.js';
-import { swiftPackageStrategy } from '../../src/core/ingestion/import-resolvers/swift.js';
+} from '../../src/core/ingestion/import-resolvers/configs/jvm.js';
+import { rustModuleStrategy } from '../../src/core/ingestion/import-resolvers/configs/rust.js';
+import { pythonImportStrategy } from '../../src/core/ingestion/import-resolvers/configs/python.js';
+import { csharpNamespaceStrategy } from '../../src/core/ingestion/import-resolvers/configs/csharp.js';
+import { phpPsr4Strategy } from '../../src/core/ingestion/import-resolvers/configs/php.js';
+import { swiftPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/swift.js';
 import {
   dartPackageStrategy,
   dartRelativeStrategy,
-} from '../../src/core/ingestion/import-resolvers/dart.js';
-import { rubyRequireStrategy } from '../../src/core/ingestion/import-resolvers/ruby.js';
+} from '../../src/core/ingestion/import-resolvers/configs/dart.js';
+import { rubyRequireStrategy } from '../../src/core/ingestion/import-resolvers/configs/ruby.js';
 
 // ── Per-language config imports ────────────────────────────────────────
 import {

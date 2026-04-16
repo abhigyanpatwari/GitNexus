@@ -1,12 +1,12 @@
 /**
  * Python import resolution — PEP 328 relative imports and proximity-based bare imports.
  * Import system spec: PEP 302 (original), PEP 451 (current).
+ *
+ * Strategy lives in configs/python.ts.
+ * This file contains the shared internal helper used by the strategy and tests.
  */
 
 import { tryResolveWithExtensions } from './utils.js';
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
-import { resolveStandard } from './standard.js';
 
 /**
  * Resolve a Python import to a file path (low-level helper).
@@ -73,44 +73,4 @@ export function resolvePythonImportInternal(
   }
 
   return null;
-}
-
-/**
- * Python import resolution strategy — PEP 328 relative + proximity-based bare imports.
- * Returns null to continue chain for non-relative imports.
- * Absorbs unresolved relative imports (returns empty result to stop the chain).
- */
-export const pythonImportStrategy: ImportResolverStrategy = (
-  rawImportPath,
-  filePath,
-  ctx,
-) => {
-  const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
-  if (resolved) {
-    ctx.resolveCache.set(`${filePath}::${rawImportPath}`, resolved);
-    return { kind: 'files', files: [resolved] };
-  }
-  // PEP 328: unresolved relative imports should not fall through to suffix matching
-  if (rawImportPath.startsWith('.')) return { kind: 'files', files: [] };
-  return null;
-};
-
-/**
- * Python: relative imports (PEP 328) + proximity-based bare imports.
- * Falls through to standard suffix resolution when proximity finds no match.
- */
-export function resolvePythonImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  const resolved = resolvePythonImportInternal(filePath, rawImportPath, ctx.allFilePaths);
-  if (resolved) {
-    // Store in resolveCache so other files importing the same module skip the
-    // ancestor walk. The cache key matches resolveStandard's convention.
-    ctx.resolveCache.set(`${filePath}::${rawImportPath}`, resolved);
-    return { kind: 'files', files: [resolved] };
-  }
-  if (rawImportPath.startsWith('.')) return null; // relative but unresolved -- don't suffix-match
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Python);
 }
