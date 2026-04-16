@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
@@ -46,7 +46,8 @@ const server = createServer(async (req, res) => {
       filePath = join(root, 'index.html');
     }
 
-    if (!existsSync(filePath)) {
+    const finalStat = await stat(filePath).catch(() => null);
+    if (!finalStat?.isFile()) {
       res.writeHead(404);
       res.end('Not found');
       return;
