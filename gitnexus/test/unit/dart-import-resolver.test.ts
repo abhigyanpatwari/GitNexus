@@ -148,6 +148,6 @@ describe('Dart import resolver (full config)', () => {
   it('resolves relative import via second strategy', () => {
     const ctx = makeCtx(['lib/models/user.dart', 'lib/main.dart']);
     const result = resolve("'./models/user.dart'", 'lib/main.dart', ctx);
-    expect(result === null || result?.kind === 'files').toBe(true);
+    expect(result).toEqual({ kind: 'files', files: ['lib/models/user.dart'] });
   });
 });
