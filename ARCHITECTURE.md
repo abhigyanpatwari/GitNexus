@@ -59,7 +59,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | Embeddings | `src/core/embeddings/` + `src/core/run-analyze.ts` |
 | Wiki generation | `src/core/wiki/` |
 | Language support | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts` |
-| Import resolution | `src/core/ingestion/import-processor.ts` + `model/resolution-context.ts` |
+| Import resolution | `src/core/ingestion/import-processor.ts` + `import-resolvers/configs/` + `model/resolution-context.ts` |
 | Call resolution/MRO | `src/core/ingestion/call-processor.ts` + `model/resolve.ts` |
 | Type extraction | `src/core/ingestion/type-extractors/` |
 | Worker pool | `src/core/ingestion/workers/` |
@@ -177,6 +177,8 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@heritage.extends`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.
 
 ### Import resolution
+
+Per-language import resolution uses the **configs + factory** pattern (like call/method/class extractors). Each language declares an `ImportResolutionConfig` in `import-resolvers/configs/`, listing an ordered chain of `ImportResolverStrategy` functions. `createImportResolver()` (in `resolver-factory.ts`) composes them: first non-null result wins. Low-level helpers shared across strategies live alongside the configs in `import-resolvers/` (e.g. `go.ts`, `rust.ts`, `python.ts`).
 
 Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSemantics` controls which tier activates:
 

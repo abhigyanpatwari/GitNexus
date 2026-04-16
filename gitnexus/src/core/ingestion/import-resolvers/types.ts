@@ -70,6 +70,12 @@ export type ImportResolverStrategy = ImportResolverFn;
  * The factory (`createImportResolver`) chains them: first non-null result wins.
  */
 export interface ImportResolutionConfig {
+  /**
+   * Documentation-only metadata identifying which language this config serves.
+   * **Not used by `createImportResolver`** — the factory only iterates `strategies`.
+   * Useful for logging, debugging, and compile-time exhaustiveness checks when
+   * mapping `SupportedLanguages → ImportResolutionConfig` in language providers.
+   */
   readonly language: SupportedLanguages;
   readonly strategies: readonly ImportResolverStrategy[];
 }
