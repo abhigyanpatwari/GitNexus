@@ -35,6 +35,12 @@ export function createCallExtractor(config: CallExtractionConfig): CallExtractor
       // Non-standard call shapes (e.g. Java `::` method references) are
       // handled entirely by the config hook.  When it returns a result,
       // the generic path is skipped — no argCount, no mixed chain.
+      //
+      // Note: `extractLanguageCallSite` is called on every `extract()`
+      // invocation — both `extract(callNode, undefined)` (parse-worker
+      // Path 1) and `extract(callNode, callNameNode)` (Path 2).
+      // Language hooks must therefore be idempotent and cheap (e.g. a
+      // single node-type check).
       if (config.extractLanguageCallSite) {
         const seed = config.extractLanguageCallSite(callNode);
         if (seed) {

@@ -159,7 +159,8 @@ interface LanguageProviderConfig {
   /** Call extractor for extracting call site information (calledName, callForm,
    *  receiverName, argCount, mixed chains) from @call / @call.name captures.
    *  Produced by createCallExtractor() with a per-language CallExtractionConfig.
-   *  Default: undefined (falls back to inline extraction). */
+   *  Default: undefined — if unset, no calls are extracted for this language.
+   *  All tree-sitter providers MUST supply this. */
   readonly callExtractor?: CallExtractor;
   /** Field extractor for extracting field/property definitions from class/struct
    *  declarations. Produces FieldInfo[] with name, type, visibility, static,

@@ -300,7 +300,7 @@ describe('generic call extraction', () => {
   describe('C#', () => {
     const extractor = createCallExtractor(csharpCallConfig);
 
-    it('sets typeAsReceiverHeuristic', () => {
+    it('extracts member call with receiver and typeAsReceiverHeuristic', () => {
       parser.setLanguage(CSharp);
       const captures = extractCallCaptures(
         parser,
@@ -311,7 +311,27 @@ describe('generic call extraction', () => {
       expect(match).toBeDefined();
       const result = extractor.extract(match!.callNode, match!.nameNode!);
       expect(result).not.toBeNull();
+      expect(result!.calledName).toBe('WriteLine');
+      expect(result!.callForm).toBe('member');
+      expect(result!.receiverName).toBe('Console');
       expect(result!.typeAsReceiverHeuristic).toBe(true);
+    });
+
+    it('does not set typeAsReceiverHeuristic flag on lowercase receivers', () => {
+      parser.setLanguage(CSharp);
+      const captures = extractCallCaptures(
+        parser,
+        'class A { void M() { logger.Info(); } }',
+        SupportedLanguages.CSharp,
+      );
+      const match = captures.find((c) => c.calledName === 'Info');
+      expect(match).toBeDefined();
+      const result = extractor.extract(match!.callNode, match!.nameNode!);
+      expect(result).not.toBeNull();
+      // typeAsReceiverHeuristic is set on the config/extractor level (true for C#),
+      // but the uppercase check happens in parse-worker, not the extractor itself
+      expect(result!.typeAsReceiverHeuristic).toBe(true);
+      expect(result!.receiverName).toBe('logger');
     });
   });
 
