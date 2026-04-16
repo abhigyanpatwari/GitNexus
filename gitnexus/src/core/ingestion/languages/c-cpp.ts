@@ -10,10 +10,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
-import {
-  cClassConfig,
-  cppClassConfig,
-} from '../class-extractors/configs/c-cpp.js';
+import { cClassConfig, cppClassConfig } from '../class-extractors/configs/c-cpp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
