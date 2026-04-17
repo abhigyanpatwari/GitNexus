@@ -21,6 +21,23 @@ export const pythonImportStrategy: ImportResolverStrategy = (rawImportPath, file
   }
   // PEP 328: unresolved relative imports should not fall through to suffix matching
   if (rawImportPath.startsWith('.')) return { kind: 'files', files: [] };
+
+  // External dotted imports like `django.apps` should not fall through to generic
+  // suffix matching when the repo has unrelated local files such as `accounts/apps.py`.
+  // Keep suffix fallback only when the leading segment appears somewhere in-repo,
+  // which preserves existing internal absolute-import behavior like `accounts.models`.
+  const pathLike = rawImportPath.replace(/\./g, '/');
+  if (pathLike.includes('/')) {
+    const [leadingSegment] = pathLike.split('/').filter(Boolean);
+    const hasRepoCandidate =
+      !!leadingSegment &&
+      (ctx.index.get(`${leadingSegment}.py`) !== undefined ||
+        ctx.index.get(`${leadingSegment}/__init__.py`) !== undefined ||
+        ctx.index.getFilesInDir(leadingSegment, '.py').length > 0);
+
+    if (!hasRepoCandidate) return { kind: 'files', files: [] };
+  }
+
   return null;
 };
 

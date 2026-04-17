@@ -515,6 +515,35 @@ describe('pythonImportStrategy', () => {
     const result = pythonImportStrategy('os', 'src/app.py', ctx);
     expect(result).toBeNull();
   });
+
+  it('absorbs unresolved external dotted imports instead of suffix-matching local basename files', () => {
+    const ctx = makeCtx(['accounts/apps.py', 'billing/apps.py']);
+    const result = pythonImportStrategy('django.apps', 'accounts/apps.py', ctx);
+    expect(result).toEqual({ kind: 'files', files: [] });
+  });
+
+  it('absorbs unresolved nested external dotted imports like django.urls and django.core.*', () => {
+    const ctx = makeCtx(['config/asgi.py', 'config/urls.py', 'config/wsgi.py']);
+
+    expect(pythonImportStrategy('django.urls', 'config/urls.py', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+    expect(pythonImportStrategy('django.core.asgi', 'config/asgi.py', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+    expect(pythonImportStrategy('django.core.wsgi', 'config/wsgi.py', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+  });
+
+  it('keeps dotted internal imports unresolved here when the leading package exists in-repo', () => {
+    const ctx = makeCtx(['accounts/models.py', 'billing/models.py']);
+    const result = pythonImportStrategy('accounts.models', 'billing/models.py', ctx);
+    expect(result).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

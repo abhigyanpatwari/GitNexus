@@ -1847,6 +1847,61 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// External dotted imports: framework modules like django.apps must not resolve
+// to unrelated local basename matches such as accounts/apps.py or config/urls.py.
+// ---------------------------------------------------------------------------
+
+describe('Python external dotted imports do not self-resolve to local files', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-django-app-imports'), () => {});
+  }, 60000);
+
+  it('keeps the real local cross-app import: billing/models.py -> accounts/models.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const localImport = imports.find(
+      (e) => e.sourceFilePath === 'billing/models.py' && e.targetFilePath === 'accounts/models.py',
+    );
+    expect(localImport).toBeDefined();
+  });
+
+  it('does not resolve django.apps in app configs to local apps.py files', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const appConfigImports = imports.filter((e) => e.sourceFilePath.endsWith('/apps.py'));
+    expect(appConfigImports.length).toBe(0);
+  });
+
+  it('does not resolve django.urls in config/urls.py to config/urls.py', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const urlsImport = imports.find(
+      (e) => e.sourceFilePath === 'config/urls.py' && e.targetFilePath === 'config/urls.py',
+    );
+    expect(urlsImport).toBeUndefined();
+  });
+
+  it('does not resolve django.core.asgi or django.core.wsgi to local config modules', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const asgiImport = imports.find(
+      (e) => e.sourceFilePath === 'config/asgi.py' && e.targetFilePath === 'config/asgi.py',
+    );
+    const wsgiImport = imports.find(
+      (e) => e.sourceFilePath === 'config/wsgi.py' && e.targetFilePath === 'config/wsgi.py',
+    );
+
+    expect(asgiImport).toBeUndefined();
+    expect(wsgiImport).toBeUndefined();
+  });
+
+  it('does not resolve other django.* imports to local same-basename files', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const wrongTargets = new Set(['config/asgi.py', 'config/wsgi.py', 'config/urls.py']);
+    const misresolvedFrameworkImports = imports.filter((e) => wrongTargets.has(e.targetFilePath));
+    expect(misresolvedFrameworkImports.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase 16: Method enrichment (isAbstract, parameterTypes, static methods)
 // models.py: Animal(ABC) with @abstractmethod speak, @staticmethod classify, breathe
 // Dog(Animal) overrides speak
