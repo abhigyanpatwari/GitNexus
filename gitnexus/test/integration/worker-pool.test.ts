@@ -189,7 +189,9 @@ describe('worker pool integration', () => {
   it('treats warning messages as non-terminal and still resolves the worker result', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-warning-'));
     const workerPath = path.join(tempDir, 'warning-worker.js');
-    fs.writeFileSync(workerPath, `
+    fs.writeFileSync(
+      workerPath,
+      `
       const { parentPort } = require('node:worker_threads');
       parentPort.on('message', (msg) => {
         if (msg && msg.type === 'sub-batch') {
@@ -201,14 +203,17 @@ describe('worker pool integration', () => {
           parentPort.postMessage({ type: 'result', data: { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 1 } });
         }
       });
-    `);
+    `,
+    );
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const workerUrl = pathToFileURL(workerPath) as URL;
     pool = createWorkerPool(workerUrl, 1);
 
     try {
-      const results = await pool.dispatch<any, any>([{ path: 'warning.ts', content: 'const x = 1;' }]);
+      const results = await pool.dispatch<any, any>([
+        { path: 'warning.ts', content: 'const x = 1;' },
+      ]);
       expect(results).toHaveLength(1);
       expect(results[0].fileCount).toBe(1);
       expect(warnSpy).toHaveBeenCalledWith('warning before result');
