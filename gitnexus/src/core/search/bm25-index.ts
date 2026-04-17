@@ -122,7 +122,7 @@ export const searchFTSFromLbug = async (
   // matches (e.g. test files) over files with a single highly-relevant symbol.
   const merged = new Map<string, { filePath: string; score: number; nodeIds: string[] }>();
   for (const [filePath, entries] of fileNodeScores) {
-    const top3 = entries.sort((a, b) => b.score - a.score).slice(0, 3);
+    const top3 = [...entries].sort((a, b) => b.score - a.score).slice(0, 3);
     merged.set(filePath, {
       filePath,
       score: top3.reduce((acc, e) => acc + e.score, 0),
