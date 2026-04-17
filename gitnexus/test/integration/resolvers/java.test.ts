@@ -424,7 +424,7 @@ describe('Java variadic call resolution', () => {
 
     // No CALLS edge should have a dangling (unresolvable) sourceId.
     // This catches the bug where definition creates Method:...record#N but
-    // findEnclosingFunctionId generates Method:...record (no suffix),
+    // extractEnclosingFunctionId generates Method:...record (no suffix),
     // producing CALLS edges whose sourceId doesn't match any graph node.
     expect(danglingSourceIds).toEqual([]);
 

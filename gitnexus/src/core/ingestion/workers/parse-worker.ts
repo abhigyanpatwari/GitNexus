@@ -510,19 +510,30 @@ function getMethodInfo(
 // Enclosing function detection (for call extraction) — cached
 // ============================================================================
 
-/** Walk up AST to find enclosing function, return its generateId or null for top-level.
- *  Applies provider.labelOverride so the label matches the definition phase (single source of truth).
+/**
+ * EXTRACTION-PHASE enclosing-function lookup.
  *
- *  INTENTIONAL DIVERGENCE FROM `findEnclosingFunction` (call-processor.ts):
- *  This is the *extraction*-phase variant — it runs inside the parse worker
- *  before the SymbolTable exists, so it builds the enclosing-function ID
- *  directly from the AST + provider hooks. It is memoised per node and reuses
- *  the cached MethodExtractor map. The resolver-phase variant prefers a
- *  SymbolTable hit and only falls back to ID construction. See the
- *  `findEnclosingFunction` docstring in `call-processor.ts` for the full
- *  rationale on why these two helpers are kept separate.
+ * Walk up AST to find the enclosing function and return its `generateId`, or
+ * null for top-level. Applies `provider.labelOverride` so the label matches the
+ * definition phase (single source of truth).
+ *
+ * Extraction-phase responsibilities (this helper):
+ *   - Runs INSIDE the parse worker, before the SymbolTable exists.
+ *   - Builds the qualified ID directly from the AST + provider hooks
+ *     (`extractFunctionName`, `labelOverride`, `resolveEnclosingOwner`,
+ *     `methodExtractor`). No resolver, no symbol-lookup fast-path.
+ *   - Memoised per AST node and reuses the cached MethodExtractor map so a
+ *     class body is only walked once per arity/type-tag computation.
+ *
+ * Phase split — why this isn't merged with `resolveEnclosingFunctionId`:
+ *   The resolution-phase variant in `call-processor.ts` runs after the
+ *   SymbolTable is populated and uses a `ResolutionContext` to prefer a
+ *   same-file lookup with class disambiguation. Pulling the resolver into the
+ *   worker would violate the phase boundary; pushing raw ID-construction back
+ *   into the resolver would lose the fast-path. Keep both, keep their
+ *   fallback ID shape aligned (qualified name + `#arity` + optional `~typeTag`).
  */
-const findEnclosingFunctionId = (
+const extractEnclosingFunctionId = (
   node: SyntaxNode,
   filePath: string,
   provider: LanguageProvider,
@@ -1498,7 +1509,7 @@ const processFileGroup = (
         const propertyName = captureMap['assignment.property'].text;
         if (receiverText && propertyName) {
           const srcId =
-            findEnclosingFunctionId(captureMap['assignment'], file.path, provider) ||
+            extractEnclosingFunctionId(captureMap['assignment'], file.path, provider) ||
             generateId('File', file.path);
           let receiverTypeName: string | undefined;
           if (typeEnv) {
@@ -1661,7 +1672,7 @@ const processFileGroup = (
           if (langCallSite) {
             if (!provider.isBuiltInName(langCallSite.calledName)) {
               const sourceId =
-                findEnclosingFunctionId(callNode, file.path, provider) ||
+                extractEnclosingFunctionId(callNode, file.path, provider) ||
                 generateId('File', file.path);
               const receiverName =
                 langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
@@ -1834,7 +1845,7 @@ const processFileGroup = (
               const callSite = callExtractor.extract(callNode, callNameNode);
               if (callSite) {
                 const sourceId =
-                  findEnclosingFunctionId(callNode, file.path, provider) ||
+                  extractEnclosingFunctionId(callNode, file.path, provider) ||
                   generateId('File', file.path);
                 let receiverTypeName = callSite.receiverName
                   ? typeEnv.lookup(callSite.receiverName, callNode)

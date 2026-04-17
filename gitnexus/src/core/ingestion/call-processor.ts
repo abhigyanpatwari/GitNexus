@@ -319,7 +319,7 @@ const TYPE_PRESERVING_METHODS = new Set([
   'orElseThrow', // Java Optional
 ]);
 
-/** Cache for method extraction results in findEnclosingFunction fallback path.
+/** Cache for method extraction results in resolveEnclosingFunctionId fallback path.
  *  Keyed by classNode.id to avoid re-extracting the same class body per call site.
  *  Cleared between files at line ~611 in the processCalls file loop. */
 const enclosingFnExtractCache = new Map<
@@ -328,27 +328,32 @@ const enclosingFnExtractCache = new Map<
 >();
 
 /**
- * Walk up the AST from a node to find the enclosing function/method.
- * Returns null if the call is at module/file level (top-level code).
+ * RESOLUTION-PHASE enclosing-function lookup.
  *
- * INTENTIONAL DIVERGENCE FROM `findEnclosingFunctionId` (parse-worker.ts):
- *   These two helpers are deliberately not unified because they serve
- *   different phases of the pipeline:
- *   - `findEnclosingFunction` (here, call-processor) is the *resolution*-phase
- *     variant. It runs after the SymbolTable is populated, takes a
- *     `ResolutionContext`, and prefers a same-file SymbolTable hit (with class
- *     disambiguation) before falling back to ID construction. The fallback
- *     mirrors definition-phase ID generation including arity and type-tag.
- *   - `findEnclosingFunctionId` (parse-worker) is the *extraction*-phase
- *     variant. It runs inside the worker before the SymbolTable exists, so it
- *     can only build the qualified ID directly from the AST + provider hooks.
- *     It is also memoised per node and reuses the cached MethodExtractor map.
- *   Merging them would either drag the resolver context into the worker
- *   (violating phase boundaries) or push raw ID-construction back into the
- *   resolver (losing the SymbolTable fast-path and class disambiguation).
- *   Keep both, keep them aligned in their fallback ID shape.
+ * Walk up the AST from a node to find the enclosing function/method and return
+ * its node ID, or null if the call is at module/file level. This is the
+ * resolution-phase counterpart to `extractEnclosingFunctionId` in
+ * `parse-worker.ts` — the two are deliberately separate; see "Phase split"
+ * below.
+ *
+ * Resolution-phase responsibilities (this helper):
+ *   - Runs AFTER the SymbolTable is populated (Phase 4 onward).
+ *   - Takes a `ResolutionContext` and prefers a same-file SymbolTable hit, with
+ *     class disambiguation when multiple candidates exist.
+ *   - Falls back to ID construction only when the SymbolTable cannot answer.
+ *     The fallback mirrors definition-phase ID generation including arity and
+ *     type-tag so the constructed ID matches the node already in the graph.
+ *
+ * Phase split — why this isn't merged with `extractEnclosingFunctionId`:
+ *   The extraction-phase variant runs INSIDE the parse worker, before the
+ *   SymbolTable exists, so it cannot use a `ResolutionContext` and can only
+ *   build the qualified ID directly from the AST + provider hooks (and is
+ *   memoised per node). Merging them would either drag the resolver context
+ *   into the worker (violating phase boundaries) or push raw ID-construction
+ *   back into the resolver (losing the SymbolTable fast-path and class
+ *   disambiguation). Keep both, keep their fallback ID shape aligned.
  */
-const findEnclosingFunction = (
+const resolveEnclosingFunctionId = (
   node: SyntaxNode,
   filePath: string,
   ctx: ResolutionContext,
@@ -922,7 +927,7 @@ export const processCalls = async (
         }
         // Fall back to verified constructor bindings (mirrors CALLS resolution tier 2)
         if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
-          const enclosing = findEnclosingFunction(
+          const enclosing = resolveEnclosingFunctionId(
             captureMap['assignment'],
             file.path,
             ctx,
@@ -938,7 +943,7 @@ export const processCalls = async (
           }
         }
         if (receiverTypeName) {
-          const enclosing = findEnclosingFunction(
+          const enclosing = resolveEnclosingFunctionId(
             captureMap['assignment'],
             file.path,
             ctx,
@@ -967,7 +972,7 @@ export const processCalls = async (
           if (provider.isBuiltInName(langCallSite.calledName)) return;
 
           const sourceId =
-            findEnclosingFunction(callNode, file.path, ctx, provider) ||
+            resolveEnclosingFunctionId(callNode, file.path, ctx, provider) ||
             generateId('File', file.path);
           const receiverName =
             langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
@@ -1174,7 +1179,7 @@ export const processCalls = async (
       }
       // Fall back to verified constructor bindings for return type inference
       if (!receiverTypeName && receiverName && receiverIndex.size > 0) {
-        const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx, provider);
+        const enclosingFunc = resolveEnclosingFunctionId(callNode, file.path, ctx, provider);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
         receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverName);
         if (receiverTypeName) receiverSource = 'constructor-map';
@@ -1203,7 +1208,7 @@ export const processCalls = async (
         }
       }
       // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
-      const enclosingFuncId = findEnclosingFunction(callNode, file.path, ctx, provider);
+      const enclosingFuncId = resolveEnclosingFunctionId(callNode, file.path, ctx, provider);
       const sourceId = enclosingFuncId || generateId('File', file.path);
 
       // Fall back to mixed chain resolution when the receiver is a complex expression
@@ -2048,7 +2053,7 @@ type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
  * so two same-arity overloads with the same local variable name but
  * different types will mark that variable as ambiguous. A future
  * enhancement should key by full scope (funcName@startIndex) and carry
- * scope keys through findEnclosingFunction's return type.
+ * scope keys through resolveEnclosingFunctionId's return type.
  */
 const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => {
   const index: ReceiverTypeIndex = new Map();
