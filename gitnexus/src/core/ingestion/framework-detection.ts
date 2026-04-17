@@ -39,7 +39,9 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
   if (!p.startsWith('/')) {
     p = '/' + p; // Add leading slash so patterns like '/app/' match 'app/...'
   }
-  const originalPathWithLeadingSlash = originalPath.startsWith('/') ? originalPath : `/${originalPath}`;
+  const originalPathWithLeadingSlash = originalPath.startsWith('/')
+    ? originalPath
+    : `/${originalPath}`;
 
   // ========== JAVASCRIPT / TYPESCRIPT FRAMEWORKS ==========
 
