@@ -66,7 +66,7 @@
     "ignore": "^7.0.5",
     "js-yaml": "^4.1.1",
     "lru-cache": "^11.0.0",
-    "mnemonist": "^0.39.0",
+    "mnemonist": "^0.40.3",
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.1",
