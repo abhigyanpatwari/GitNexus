@@ -42,7 +42,7 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
     <button
       onClick={onClick}
       data-testid="landing-repo-card"
-      className="group w-full cursor-pointer rounded-xl border border-border-default bg-elevated p-4 text-left transition-all duration-200 hover:border-accent/40 hover:bg-hover hover:shadow-glow-soft"
+      className="group w-full cursor-pointer rounded-xl border border-transparent bg-elevated p-4 text-left transition-all duration-200 hover:border-accent/30 hover:bg-hover hover:shadow-glow-soft"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -61,7 +61,7 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
         <ArrowRight className="h-4 w-4 shrink-0 text-text-muted opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-accent group-hover:opacity-100" />
       </div>
 
-      {stats && (stats.files || stats.nodes) && (
+      {stats && (stats.files != null || stats.nodes != null) && (
         <div className="mt-3 flex flex-wrap gap-2 pl-6">
           {stats.files != null && (
             <span className="inline-flex items-center gap-1 rounded-md bg-void px-2 py-0.5 text-[11px] text-text-muted">
@@ -102,7 +102,7 @@ function GroupCard({
     <button
       onClick={onClick}
       data-testid="landing-group-card"
-      className="group w-full cursor-pointer rounded-xl border border-border-default bg-elevated p-4 text-left transition-all duration-200 hover:border-amber-500/40 hover:bg-hover hover:shadow-glow-soft"
+      className="group w-full cursor-pointer rounded-xl border border-transparent bg-elevated p-4 text-left transition-all duration-200 hover:border-amber-500/30 hover:bg-hover hover:shadow-glow-soft"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -138,6 +138,9 @@ interface RepoLandingProps {
   onSelectRepo: (repoName: string) => void;
   onSelectGroup?: (groupName: string) => void;
   onAnalyzeComplete: (repoName: string) => void;
+  /** When set, only that tab is shown and the tab bar is hidden — used as a
+   *  mode-switch picker where the user must choose a repo or a group. */
+  only?: 'repos' | 'groups';
 }
 
 export const RepoLanding = ({
@@ -145,8 +148,9 @@ export const RepoLanding = ({
   onSelectRepo,
   onSelectGroup,
   onAnalyzeComplete,
+  only,
 }: RepoLandingProps) => {
-  const [activeTab, setActiveTab] = useState<LandingTab>('repos');
+  const [activeTab, setActiveTab] = useState<LandingTab>(only ?? 'repos');
   const [groups, setGroups] = useState<string[]>([]);
   const [groupStatuses, setGroupStatuses] = useState<Record<string, GroupStatus | null>>({});
 
@@ -168,7 +172,7 @@ export const RepoLanding = ({
   }, [activeTab, groups, groupStatuses]);
 
   return (
-    <div className="relative max-h-[80vh] animate-fade-in overflow-y-auto rounded-3xl border border-border-default bg-surface p-7">
+    <div className="relative max-h-[80vh] animate-fade-in overflow-y-auto rounded-3xl bg-surface p-7 shadow-2xl shadow-black/60 ring-1 ring-border-subtle">
       {/* Ambient glows */}
       <div className="pointer-events-none absolute -top-28 -right-28 h-72 w-72 rounded-full bg-accent/6 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-24 -left-24 h-56 w-56 rounded-full bg-node-function/6 blur-3xl" />
@@ -195,7 +199,7 @@ export const RepoLanding = ({
       </div>
 
       {/* Tab bar */}
-      {groups.length > 0 && (
+      {!only && groups.length > 0 && (
         <div className="relative mb-5 flex items-center justify-center gap-1 rounded-lg bg-void p-1">
           <button
             onClick={() => setActiveTab('repos')}

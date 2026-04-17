@@ -287,12 +287,17 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 };
 
 /**
- * Write the global registry to disk
+ * Write the global registry atomically (tmp + rename) so concurrent readers
+ * never see a half-written file. Parallel analyze calls otherwise race on
+ * macOS APFS and `readRegistry` returns `[]` on torn JSON.
  */
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  const registryPath = getGlobalRegistryPath();
+  const tmpPath = `${registryPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(entries, null, 2), 'utf-8');
+  await fs.rename(tmpPath, registryPath);
 };
 
 /**

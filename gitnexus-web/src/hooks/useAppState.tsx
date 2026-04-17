@@ -152,11 +152,13 @@ interface AppState {
   setGroupMode: (mode: boolean) => void;
   activeGroup: string | null;
   setActiveGroup: (name: string | null) => void;
-  availableGroups: string[];
-  setAvailableGroups: (groups: string[]) => void;
   connectToGroup: (groupName: string) => Promise<void>;
   highlightedRepos: Set<string>;
   setHighlightedRepos: (repos: Set<string>) => void;
+  // Center-page picker shown when the mode-toggle button needs user input
+  // ('group' = choose a group to switch to, 'single' = choose a repo, null = closed)
+  modePickerOpen: 'group' | 'single' | null;
+  setModePickerOpen: (v: 'group' | 'single' | null) => void;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -333,8 +335,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Group mode (multi-repo combined graph)
   const [groupMode, setGroupMode] = useState(false);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const [availableGroups, setAvailableGroups] = useState<string[]>([]);
   const [highlightedRepos, setHighlightedRepos] = useState<Set<string>>(new Set());
+  const [modePickerOpen, setModePickerOpen] = useState<'group' | 'single' | null>(null);
 
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
@@ -1055,6 +1057,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setViewMode('loading');
       setIsAgentReady(false);
 
+      // Exit group mode if we were in it — without this the header badge and
+      // highlight state stay stale after switching to a single repo.
+      setGroupMode(false);
+      setActiveGroup(null);
+
       // Clear stale graph state from previous repo (highlights, selections, blast radius)
       // Without this, sigma reducers dim ALL nodes/edges because old node IDs don't match
       setHighlightedNodeIds(new Set());
@@ -1114,6 +1121,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           'server-project';
         setProjectName(pName);
         repoRef.current = pName;
+        sessionStorage.setItem('gn.lastSingleRepo', pName);
 
         connectedRepo = result.repoInfo;
         pNameStr = pName;
@@ -1143,6 +1151,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // Persist the selected project in the URL so a refresh re-opens it
         const urlObj = new URL(window.location.href);
         urlObj.searchParams.set('project', pNameStr);
+        urlObj.searchParams.delete('group');
         window.history.replaceState(null, '', urlObj.toString());
       }
 
@@ -1174,6 +1183,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setViewMode,
       setProjectName,
       setGraph,
+      setGroupMode,
+      setActiveGroup,
       initializeAgent,
       startEmbeddingsWithFallback,
       setHighlightedNodeIds,
@@ -1228,7 +1239,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setGraph(newGraph);
         setGroupMode(true);
         setActiveGroup(groupName);
-        setProjectName(`Group: ${groupName}`);
+        setProjectName(groupName);
+        sessionStorage.setItem('gn.lastGroup', groupName);
+
+        // Persist the group in the URL so refresh/share restores the view.
+        const urlObj = new URL(window.location.href);
+        urlObj.searchParams.set('group', groupName);
+        urlObj.searchParams.delete('project');
+        window.history.replaceState(null, '', urlObj.toString());
 
         // Populate highlightedRepos with all repos (all visible by default)
         const repoNames = new Set<string>();
@@ -1361,11 +1379,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setGroupMode,
     activeGroup,
     setActiveGroup,
-    availableGroups,
-    setAvailableGroups,
     connectToGroup,
     highlightedRepos,
     setHighlightedRepos,
+    modePickerOpen,
+    setModePickerOpen,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

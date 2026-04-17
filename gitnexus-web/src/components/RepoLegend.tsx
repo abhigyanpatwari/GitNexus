@@ -7,18 +7,13 @@ export const RepoLegend = () => {
   const repos = useMemo(() => {
     if (!groupMode || !graph) return [];
 
-    const repoMap = new Map<string, { color: string; count: number }>();
+    const repoMap = new Map<string, number>();
     for (const node of graph.nodes) {
       const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
       if (!repo) continue;
-      const existing = repoMap.get(repo);
-      if (existing) {
-        existing.count++;
-      } else {
-        repoMap.set(repo, { color: '#9ca3af', count: 1 });
-      }
+      repoMap.set(repo, (repoMap.get(repo) ?? 0) + 1);
     }
-    return [...repoMap.entries()].map(([name, info]) => ({ name, ...info }));
+    return [...repoMap.entries()].map(([name, count]) => ({ name, count }));
   }, [graph, groupMode]);
 
   const toggleRepo = useCallback(

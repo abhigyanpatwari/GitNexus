@@ -41,7 +41,6 @@ function makePort(overrides: Partial<GroupToolPort> = {}): GroupToolPort {
         storagePath: '/tmp/repo/.gitnexus',
       }),
     ),
-    impact: vi.fn(async () => ({ symbols: [] })),
     query: vi.fn(async () => ({ processes: [] })),
     impactByUid: vi.fn(async () => null),
     context: vi.fn(async () => ({

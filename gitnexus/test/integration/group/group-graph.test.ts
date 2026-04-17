@@ -161,9 +161,7 @@ describe('Group graph traversal integration', () => {
         }
         throw new Error(`Repo not found: ${nameOrPath}`);
       },
-      impact: async () => ({}),
       query: async (_repo, params) => {
-        // Return mock processes matching the query
         const queryText = (params as { query: string }).query;
         return {
           processes: [
@@ -171,7 +169,6 @@ describe('Group graph traversal integration', () => {
           ],
         };
       },
-      impactByUid: async () => null,
     };
   }
 

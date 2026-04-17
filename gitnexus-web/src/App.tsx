@@ -10,6 +10,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
+import { RepoLanding } from './components/RepoLanding';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import {
@@ -47,6 +48,8 @@ const AppContent = () => {
     switchRepo,
     setCurrentRepo,
     connectToGroup,
+    modePickerOpen,
+    setModePickerOpen,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
@@ -65,6 +68,7 @@ const AppContent = () => {
         'server-project';
       setProjectName(projectName);
       setCurrentRepo(projectName);
+      sessionStorage.setItem('gn.lastSingleRepo', projectName);
 
       // Build KnowledgeGraph from server data for visualization
       const graph = createKnowledgeGraph();
@@ -104,15 +108,16 @@ const AppContent = () => {
     ],
   );
 
-  // Auto-connect when ?server or ?project query param is present (bookmarkable shortcut)
+  // Auto-connect when ?server, ?project, or ?group query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
   useEffect(() => {
     if (autoConnectRan.current) return;
     const params = new URLSearchParams(window.location.search);
     const serverUrlParam = params.get('server');
     const projectParam = params.get('project');
+    const groupParam = params.get('group');
 
-    if (!serverUrlParam && !projectParam) return;
+    if (!serverUrlParam && !projectParam && !groupParam) return;
     autoConnectRan.current = true;
 
     setProgress({
@@ -125,6 +130,29 @@ const AppContent = () => {
 
     const serverUrl = serverUrlParam || window.location.origin;
     const baseUrl = normalizeServerUrl(serverUrl);
+
+    // Group path: skip single-repo connectToServer and load the group directly.
+    // connectToGroup already handles loading UI and the exploring transition.
+    if (groupParam) {
+      setServerBaseUrl(baseUrl);
+      fetchRepos()
+        .then((repos) => setAvailableRepos(repos))
+        .catch((e) => console.warn('Failed to fetch repo list:', e));
+      connectToGroup(groupParam).catch((err) => {
+        console.error('Auto-connect to group failed:', err);
+        setProgress({
+          phase: 'error',
+          percent: 0,
+          message: 'Failed to load group',
+          detail: err instanceof Error ? err.message : 'Unknown error',
+        });
+        setTimeout(() => {
+          setViewMode('onboarding');
+          setProgress(null);
+        }, ERROR_RESET_DELAY_MS);
+      });
+      return;
+    }
 
     const tryConnect = async () => {
       return await connectToServer(
@@ -183,7 +211,7 @@ const AppContent = () => {
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
       });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos, connectToGroup]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -235,6 +263,11 @@ const AppContent = () => {
             const normalized = normalizeServerUrl(serverUrl);
             setServerBaseUrl(normalized);
           }
+          // Populate availableRepos so the single-repo dropdown works if the
+          // user later toggles out of group mode in this tab.
+          fetchRepos()
+            .then((repos) => setAvailableRepos(repos))
+            .catch(() => {});
           connectToGroup(groupName);
         }}
       />
@@ -319,6 +352,37 @@ const AppContent = () => {
         onClose={() => setSettingsPanelOpen(false)}
         onSettingsSaved={handleSettingsSaved}
       />
+
+      {/* Mode-switch picker (center-page). Shown when the user toggles modes
+          and there's no remembered choice — they must pick before the graph loads. */}
+      {modePickerOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 backdrop-blur-sm"
+          onClick={(e) => {
+            // Click outside the card cancels the mode switch.
+            if (e.target === e.currentTarget) setModePickerOpen(null);
+          }}
+        >
+          <div className="w-full max-w-md">
+            <RepoLanding
+              repos={availableRepos}
+              only={modePickerOpen === 'single' ? 'repos' : 'groups'}
+              onSelectRepo={(repoName) => {
+                setModePickerOpen(null);
+                switchRepo(repoName);
+              }}
+              onSelectGroup={(groupName) => {
+                setModePickerOpen(null);
+                connectToGroup(groupName);
+              }}
+              onAnalyzeComplete={(repoName) => {
+                setModePickerOpen(null);
+                switchRepo(repoName);
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

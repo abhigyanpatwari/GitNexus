@@ -2,7 +2,7 @@
  * Tests for multi-repo group features added to the web UI.
  * Covers: backend client group functions, constants updates, graph adapter repo-awareness.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   ALL_EDGE_TYPES,
   DEFAULT_VISIBLE_EDGES,
@@ -244,10 +244,7 @@ describe('repo highlight toggle logic', () => {
 // ── Backend client type tests ──────────────────────────────────────────────
 
 describe('backend-client group types', () => {
-  it('GroupGraphResult has expected shape', async () => {
-    // Type-level test: ensure the interface is importable and has the right fields
-    const { type } = await import('../../src/services/backend-client');
-    // This is a compile-time check — if GroupGraphResult type is wrong, TS will fail
+  it('GroupGraphResult has expected shape', () => {
     const mockResult: import('../../src/services/backend-client').GroupGraphResult = {
       repos: [{ name: 'test', groupPath: 'test', nodeCount: 10, edgeCount: 5 }],
       nodes: [],

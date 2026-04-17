@@ -78,7 +78,6 @@ interface UseSigmaReturn {
   stopLayout: () => void;
   selectedNode: string | null;
   setSelectedNode: (nodeId: string | null) => void;
-  refreshHighlights: () => void;
 }
 
 // Noverlap for final cleanup - minimal since it starts with good positions
@@ -664,10 +663,6 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     }
   }, []);
 
-  const refreshHighlights = useCallback(() => {
-    sigmaRef.current?.refresh();
-  }, []);
-
   return {
     containerRef,
     sigmaRef,
@@ -681,6 +676,5 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     stopLayout,
     selectedNode,
     setSelectedNode,
-    refreshHighlights,
   };
 };

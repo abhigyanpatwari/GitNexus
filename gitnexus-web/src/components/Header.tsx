@@ -65,13 +65,9 @@ export const Header = ({
     setSettingsPanelOpen,
     setHelpDialogBoxOpen,
     groupMode,
-    activeGroup,
-    availableGroups,
-    setAvailableGroups,
     connectToGroup,
-    setGroupMode,
-    setActiveGroup,
     serverBaseUrl,
+    setModePickerOpen,
   } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
@@ -81,7 +77,15 @@ export const Header = ({
   const reanalyzeSseRef = useRef<AbortController | null>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [isGroupDropdownOpen, setIsGroupDropdownOpen] = useState(false);
+  const [groupList, setGroupList] = useState<string[]>([]);
+
+  // Keep the badge-dropdown's group list in sync while in group mode.
+  useEffect(() => {
+    if (!groupMode) return;
+    fetchGroups()
+      .then(setGroupList)
+      .catch(() => setGroupList([]));
+  }, [groupMode]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -198,7 +202,41 @@ export const Header = ({
               />
             </button>
 
-            {isRepoDropdownOpen && (
+            {isRepoDropdownOpen && groupMode && (
+              <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
+                <div className="px-3 pt-2.5 pb-1.5 text-[10px] font-medium tracking-wider text-text-muted uppercase">
+                  Groups
+                </div>
+                {groupList.length === 0 ? (
+                  <div className="px-4 py-3 text-xs text-text-muted">No groups available</div>
+                ) : (
+                  groupList.map((g) => (
+                    <button
+                      key={g}
+                      onClick={() => {
+                        setIsRepoDropdownOpen(false);
+                        if (g !== projectName) connectToGroup(g);
+                      }}
+                      className={`flex w-full items-center gap-3 px-4 py-2 text-left transition-colors ${
+                        g === projectName
+                          ? 'border-l-2 border-amber-500 bg-amber-500/10'
+                          : 'hover:bg-hover'
+                      }`}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                      <span className="flex-1 truncate font-mono text-sm text-text-primary">
+                        {g}
+                      </span>
+                      {g === projectName && (
+                        <span className="shrink-0 font-mono text-[10px] text-amber-400">active</span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
+            {isRepoDropdownOpen && !groupMode && (
               <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
                 {showAnalyzer ? (
                   <div className="p-4">
@@ -382,55 +420,42 @@ export const Header = ({
 
         {/* Group View toggle */}
         {serverBaseUrl && (
-          <div className="relative">
-            <button
-              onClick={async () => {
-                if (groupMode) {
-                  setGroupMode(false);
-                  setActiveGroup(null);
+          <button
+            onClick={async () => {
+              if (groupMode) {
+                // Exiting group mode. Auto-load only if a previously-selected repo
+                // is still available in this tab — otherwise prompt via modal.
+                const last = sessionStorage.getItem('gn.lastSingleRepo');
+                const pickable = !!last && availableRepos.some((r) => r.name === last);
+                if (pickable) {
+                  onSwitchRepo?.(last!);
                 } else {
-                  try {
-                    const groups = await fetchGroups();
-                    setAvailableGroups(groups);
-                    if (groups.length === 1) {
-                      connectToGroup(groups[0]);
-                    } else if (groups.length > 1) {
-                      setIsGroupDropdownOpen(true);
-                    }
-                  } catch {
-                    // No groups available
-                  }
+                  setModePickerOpen('single');
                 }
-              }}
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
-                groupMode
-                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
-                  : 'border-border-subtle bg-surface text-text-muted hover:border-border-default hover:text-text-secondary'
-              }`}
-              title={groupMode ? `Group: ${activeGroup}` : 'Multi-repo group view'}
-            >
-              <FolderOpen className="h-3 w-3" />
-              <span>{groupMode ? activeGroup : 'Group'}</span>
-            </button>
-            {isGroupDropdownOpen && !groupMode && availableGroups.length > 0 && (
-              <div className="absolute top-full left-0 z-50 mt-1.5 w-56 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
-                <div className="px-3 py-2 text-xs font-medium text-text-muted">Select a group</div>
-                {availableGroups.map((g) => (
-                  <button
-                    key={g}
-                    onClick={() => {
-                      setIsGroupDropdownOpen(false);
-                      connectToGroup(g);
-                    }}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-hover"
-                  >
-                    <FolderOpen className="h-3.5 w-3.5 text-amber-400" />
-                    {g}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+              } else {
+                try {
+                  const groups = await fetchGroups();
+                  const last = sessionStorage.getItem('gn.lastGroup');
+                  if (last && groups.includes(last)) {
+                    connectToGroup(last);
+                  } else if (groups.length > 0) {
+                    setModePickerOpen('group');
+                  }
+                } catch {
+                  // No groups available
+                }
+              }
+            }}
+            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
+              groupMode
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                : 'border-border-subtle bg-surface text-text-muted hover:border-border-default hover:text-text-secondary'
+            }`}
+            title={groupMode ? 'Switch to single-repo view' : 'Switch to group view'}
+          >
+            <FolderOpen className="h-3 w-3" />
+            <span>{groupMode ? 'Single' : 'Group'}</span>
+          </button>
         )}
       </div>
 

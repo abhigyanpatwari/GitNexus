@@ -40,17 +40,6 @@ export interface GroupRepoHandle {
 
 export interface GroupToolPort {
   resolveRepo(repoParam?: string): Promise<GroupRepoHandle>;
-  impact(
-    repo: GroupRepoHandle,
-    params: {
-      target: string;
-      direction: 'upstream' | 'downstream';
-      maxDepth?: number;
-      relationTypes?: string[];
-      includeTests?: boolean;
-      minConfidence?: number;
-    },
-  ): Promise<unknown>;
   query(
     repo: GroupRepoHandle,
     params: {

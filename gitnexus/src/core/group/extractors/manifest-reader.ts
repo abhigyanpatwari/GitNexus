@@ -3,11 +3,10 @@ import * as path from 'node:path';
 
 export interface ManifestInfo {
   packageName: string;
-  dependencies: string[];
 }
 
 /**
- * Read an npm/yarn package.json and extract the package name and dependency names.
+ * Read an npm/yarn package.json and extract the package name.
  * Returns null if no package.json exists or if it has no name field.
  */
 export function readNpmManifest(repoPath: string): ManifestInfo | null {
@@ -29,20 +28,5 @@ export function readNpmManifest(repoPath: string): ManifestInfo | null {
   const packageName = typeof parsed.name === 'string' ? parsed.name.trim() : '';
   if (!packageName) return null;
 
-  const deps = new Set<string>();
-
-  const depFields = ['dependencies', 'devDependencies', 'peerDependencies'] as const;
-  for (const field of depFields) {
-    const section = parsed[field];
-    if (section && typeof section === 'object' && !Array.isArray(section)) {
-      for (const key of Object.keys(section as Record<string, unknown>)) {
-        deps.add(key);
-      }
-    }
-  }
-
-  return {
-    packageName,
-    dependencies: [...deps],
-  };
+  return { packageName };
 }

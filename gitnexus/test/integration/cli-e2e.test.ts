@@ -37,6 +37,17 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 let MINI_REPO: string;
 let tmpParent: string;
 
+// Isolate GITNEXUS_HOME per test file so parallel workers don't race on ~/.gitnexus.
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cli-e2e-home-'));
+
+// Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it and
+// skips the re-exec (which would drop the tsx loader and break .ts resolution).
+const CLI_ENV = {
+  ...process.env,
+  GITNEXUS_HOME: TMP_HOME,
+  NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+};
+
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
 // Cannot use require.resolve('tsx/dist/loader.mjs') because the subpath is
@@ -75,6 +86,7 @@ afterAll(() => {
   if (tmpParent) {
     fs.rmSync(tmpParent, { recursive: true, force: true });
   }
+  fs.rmSync(TMP_HOME, { recursive: true, force: true });
 });
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
@@ -83,13 +95,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
-      // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
-      // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    env: CLI_ENV,
   });
 }
 
@@ -103,10 +109,7 @@ function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    env: CLI_ENV,
   });
 }
 
@@ -808,10 +811,7 @@ describe('CLI end-to-end', () => {
         encoding: 'utf8',
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-        },
+        env: CLI_ENV,
       });
     }
 
@@ -931,10 +931,7 @@ describe('CLI end-to-end', () => {
             encoding: 'utf8',
             timeout: 15000,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: CLI_ENV,
           },
         );
         if (result.status === null) return;
@@ -1048,10 +1045,7 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: CLI_ENV,
           },
         );
 
@@ -1101,10 +1095,7 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: CLI_ENV,
           },
         );
 

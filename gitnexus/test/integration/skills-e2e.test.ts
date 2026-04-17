@@ -28,6 +28,9 @@ const _require = createRequire(import.meta.url);
 const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
 const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
+// Isolate GITNEXUS_HOME per test file so parallel workers don't race on ~/.gitnexus.
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-skills-e2e-home-'));
+
 // ============================================================================
 // FILE-LOCAL HELPERS
 // ============================================================================
@@ -44,6 +47,7 @@ function runSkillsCli(cwd: string, timeoutMs = 45000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      GITNEXUS_HOME: TMP_HOME,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     },
   });
@@ -168,6 +172,10 @@ function assertContextFiles(result: ReturnType<typeof runSkillsCli>, tmpDir: str
     expect(agentsContent).toContain('.claude/skills/generated/');
   }
 }
+
+afterAll(() => {
+  fs.rmSync(TMP_HOME, { recursive: true, force: true });
+});
 
 // ============================================================================
 // DESCRIBE 1: TypeScript

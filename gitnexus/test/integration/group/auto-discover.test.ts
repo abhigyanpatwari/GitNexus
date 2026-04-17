@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { GroupService, type GroupToolPort, type GroupRepoHandle } from '../../../src/core/group/service.js';
-import { listGroups, readContractRegistry } from '../../../src/core/group/storage.js';
+import { listGroups } from '../../../src/core/group/storage.js';
 
 describe('Group auto-discover integration', () => {
   let tmpDir: string;
@@ -103,9 +103,7 @@ console.log(formatDate(new Date()));`,
         }
         throw new Error(`Repo not found: ${nameOrPath}`);
       },
-      impact: async () => ({}),
       query: async () => ({ processes: [] }),
-      impactByUid: async () => null,
     };
   }
 
