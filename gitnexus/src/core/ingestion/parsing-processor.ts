@@ -14,8 +14,8 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findEnclosingOwnerNode,
   getLabelFromCaptures,
-  CLASS_CONTAINER_TYPES,
   type SyntaxNode,
   type EnclosingClassInfo,
 } from './utils/ast-helpers.js';
@@ -238,34 +238,6 @@ const seqMethodMapCache = new Map<
   { map: Map<string, MethodInfo>; groups: Map<string, MethodInfo[]> }
 >();
 
-/** Provider-aware enclosing container lookup.
- *  Walks up from `node` until a CLASS_CONTAINER_TYPES node is found.
- *  When `resolveEnclosingOwner` is provided, delegates language-specific
- *  container remapping (e.g., Ruby singleton_class → enclosing class).
- *  Without the hook, returns the first matching container directly (raw lookup). */
-function seqFindEnclosingOwnerNode(
-  node: SyntaxNode,
-  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
-): SyntaxNode | null {
-  let current = node.parent;
-  while (current) {
-    if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      if (resolveEnclosingOwner) {
-        const resolved = resolveEnclosingOwner(current);
-        if (resolved === null) {
-          // Provider says skip this container — keep walking up.
-          current = current.parent;
-          continue;
-        }
-        return resolved;
-      }
-      return current;
-    }
-    current = current.parent;
-  }
-  return null;
-}
-
 /** Minimal no-op SymbolTable stub for sequential extractor contexts. The real
  *  SymbolTable is not fully populated yet at this stage, so use the stub for safety.
  *  Implements the full {@link SymbolTableReader} surface so future extractor additions
@@ -466,7 +438,7 @@ const processParsingSequential = async (
           // Try class-based extraction (method inside a class/struct/trait body).
           // Raw lookup (no resolveEnclosingOwner) so the method extractor sees
           // the actual container node (e.g. singleton_class) for static detection.
-          const methodOwnerNode = seqFindEnclosingOwnerNode(definitionNode);
+          const methodOwnerNode = findEnclosingOwnerNode(definitionNode);
           if (methodOwnerNode) {
             // Cache extract() results per class node to avoid re-traversing the
             // same class body for every method it contains (O(N) -> O(1) per hit).
@@ -596,7 +568,7 @@ const processParsingSequential = async (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode = seqFindEnclosingOwnerNode(
+          const classNode = findEnclosingOwnerNode(
             definitionNode,
             provider.resolveEnclosingOwner,
           );

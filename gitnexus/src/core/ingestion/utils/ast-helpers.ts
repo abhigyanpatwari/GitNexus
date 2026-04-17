@@ -102,7 +102,7 @@ export const FUNCTION_NODE_TYPES = new Set([
  *
  * INVARIANT: When a language config adds a new node type to `typeDeclarationNodes`,
  * that type must also be added here AND to `CONTAINER_TYPE_TO_LABEL` below,
- * otherwise `findEnclosingClassNode` won't recognize it and methods may get
+ * otherwise `findEnclosingOwnerNode` won't recognize it and methods may get
  * orphaned HAS_METHOD edges or incorrect labels.
  */
 export const CLASS_CONTAINER_TYPES = new Set([
@@ -389,6 +389,41 @@ export const findEnclosingClassInfo = (
 /** Convenience wrapper: returns just the class ID string (backward compat). */
 export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   return findEnclosingClassInfo(node, filePath)?.classId ?? null;
+};
+
+/** Walk up from `node` and return the nearest enclosing CLASS_CONTAINER_TYPES
+ *  AST node (not an ID), or null if none is found.
+ *
+ *  When `resolveEnclosingOwner` is provided, the provider hook controls
+ *  language-specific container remapping (e.g. Ruby `singleton_class` → enclosing
+ *  class). Returning `null` from the hook means "skip this container and keep
+ *  walking up". Returning a different node short-circuits the walk and returns
+ *  that node directly.
+ *
+ *  When the hook is omitted, the raw container is returned. This is the form
+ *  used by callers that need the literal AST node (e.g. for static-method
+ *  detection where Ruby's `singleton_class` must be observable). */
+export const findEnclosingOwnerNode = (
+  node: SyntaxNode,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+): SyntaxNode | null => {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      if (resolveEnclosingOwner) {
+        const resolved = resolveEnclosingOwner(current);
+        if (resolved === null) {
+          // Provider says skip this container — keep walking up.
+          current = current.parent;
+          continue;
+        }
+        return resolved;
+      }
+      return current;
+    }
+    current = current.parent;
+  }
+  return null;
 };
 
 /**

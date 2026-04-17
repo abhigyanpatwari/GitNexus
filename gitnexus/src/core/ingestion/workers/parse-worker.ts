@@ -44,13 +44,13 @@ import {
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findEnclosingOwnerNode,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   findDescendant,
   extractStringContent,
   genericFuncName,
   inferFunctionLabel,
-  CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
@@ -359,24 +359,6 @@ const clearCaches = (): void => {
 const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
 
 /**
- * Walk up from a definition node to find the nearest enclosing class/struct/interface
- * AST node. Returns the SyntaxNode itself (not an ID) for passing to FieldExtractor.
- */
-function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
-  let current = node.parent;
-  while (current) {
-    if (CLASS_CONTAINER_TYPES.has(current.type)) {
-      // Return singleton_class directly so the method extractor sees it as
-      // the owner node and correctly marks methods as static. Name resolution
-      // for qualified names is handled separately by findEnclosingClassInfo.
-      return current;
-    }
-    current = current.parent;
-  }
-  return null;
-}
-
-/**
  * For C++ out-of-class method definitions (e.g. `void Foo::bar() {}`), extract the
  * class name from the qualified_identifier scope and find the class declaration in the
  * file's AST. Returns the class SyntaxNode or null if not found.
@@ -529,7 +511,17 @@ function getMethodInfo(
 // ============================================================================
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level.
- *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
+ *  Applies provider.labelOverride so the label matches the definition phase (single source of truth).
+ *
+ *  INTENTIONAL DIVERGENCE FROM `findEnclosingFunction` (call-processor.ts):
+ *  This is the *extraction*-phase variant — it runs inside the parse worker
+ *  before the SymbolTable exists, so it builds the enclosing-function ID
+ *  directly from the AST + provider hooks. It is memoised per node and reuses
+ *  the cached MethodExtractor map. The resolver-phase variant prefers a
+ *  SymbolTable hit and only falls back to ID construction. See the
+ *  `findEnclosingFunction` docstring in `call-processor.ts` for the full
+ *  rationale on why these two helpers are kept separate.
+ */
 const findEnclosingFunctionId = (
   node: SyntaxNode,
   filePath: string,
@@ -567,7 +559,7 @@ const findEnclosingFunctionId = (
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
           const encLang = getLanguageFromFilename(filePath);
           const classNode =
-            findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
+            findEnclosingOwnerNode(current) ?? findClassNodeByQualifiedName(current);
           if (classNode && encLang) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath,
@@ -622,7 +614,7 @@ const findEnclosingFunctionId = (
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
           const encLang2 = getLanguageFromFilename(filePath);
           const classNode2 =
-            findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
+            findEnclosingOwnerNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
           if (classNode2 && encLang2) {
             const methodMap2 = getMethodInfo(classNode2, provider, {
               filePath,
@@ -1747,7 +1739,7 @@ const processFileGroup = (
                 // Enrich routed properties with FieldExtractor metadata
                 let routedFieldMap: Map<string, FieldInfo> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
-                  const classNode = findEnclosingClassNode(captureMap['call']);
+                  const classNode = findEnclosingOwnerNode(captureMap['call']);
                   if (classNode) {
                     routedFieldMap = getFieldInfo(classNode, provider, {
                       typeEnv,
@@ -1992,7 +1984,7 @@ const processFileGroup = (
         let enrichedByMethodExtractor = false;
         if (provider.methodExtractor && definitionNode) {
           const classNode =
-            findEnclosingClassNode(definitionNode) ?? findClassNodeByQualifiedName(definitionNode);
+            findEnclosingOwnerNode(definitionNode) ?? findClassNodeByQualifiedName(definitionNode);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,
@@ -2113,7 +2105,7 @@ const processFileGroup = (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode = findEnclosingClassNode(definitionNode);
+          const classNode = findEnclosingOwnerNode(definitionNode);
           if (classNode) {
             const fieldMap = getFieldInfo(classNode, provider, {
               typeEnv,

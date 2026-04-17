@@ -330,6 +330,23 @@ const enclosingFnExtractCache = new Map<
 /**
  * Walk up the AST from a node to find the enclosing function/method.
  * Returns null if the call is at module/file level (top-level code).
+ *
+ * INTENTIONAL DIVERGENCE FROM `findEnclosingFunctionId` (parse-worker.ts):
+ *   These two helpers are deliberately not unified because they serve
+ *   different phases of the pipeline:
+ *   - `findEnclosingFunction` (here, call-processor) is the *resolution*-phase
+ *     variant. It runs after the SymbolTable is populated, takes a
+ *     `ResolutionContext`, and prefers a same-file SymbolTable hit (with class
+ *     disambiguation) before falling back to ID construction. The fallback
+ *     mirrors definition-phase ID generation including arity and type-tag.
+ *   - `findEnclosingFunctionId` (parse-worker) is the *extraction*-phase
+ *     variant. It runs inside the worker before the SymbolTable exists, so it
+ *     can only build the qualified ID directly from the AST + provider hooks.
+ *     It is also memoised per node and reuses the cached MethodExtractor map.
+ *   Merging them would either drag the resolver context into the worker
+ *   (violating phase boundaries) or push raw ID-construction back into the
+ *   resolver (losing the SymbolTable fast-path and class disambiguation).
+ *   Keep both, keep them aligned in their fallback ID shape.
  */
 const findEnclosingFunction = (
   node: SyntaxNode,
