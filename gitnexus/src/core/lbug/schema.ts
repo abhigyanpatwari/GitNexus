@@ -166,6 +166,7 @@ export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
 export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
+export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
 export const PROPERTY_SCHEMA = CODE_ELEMENT_BASE('Property');
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
 export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
@@ -234,6 +235,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM File TO \`TypeAlias\`,
   FROM File TO \`Const\`,
   FROM File TO \`Static\`,
+  FROM File TO \`Variable\`,
   FROM File TO \`Property\`,
   FROM File TO \`Record\`,
   FROM File TO \`Delegate\`,
@@ -365,6 +367,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`TypeAlias\` TO Class,
   FROM \`Const\` TO Community,
   FROM \`Static\` TO Community,
+  FROM \`Variable\` TO Community,
   FROM \`Property\` TO Community,
   FROM \`Record\` TO Method,
   FROM \`Record\` TO \`Constructor\`,
@@ -408,6 +411,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Trait\` TO Process,
   FROM \`Const\` TO Process,
   FROM \`Static\` TO Process,
+  FROM \`Variable\` TO Process,
   FROM \`Property\` TO Process,
   FROM \`Record\` TO Process,
   FROM \`Delegate\` TO Process,
@@ -436,11 +440,25 @@ if (Number.isNaN(_rawDims) || _rawDims <= 0) {
 }
 export const EMBEDDING_DIMS = _rawDims;
 
+/** HNSW vector index name for the CodeEmbedding table. */
+export const EMBEDDING_INDEX_NAME = 'code_embedding_idx';
+
+/**
+ * Sentinel value for "no content hash available" — used in legacy DBs and null rows.
+ * Nodes with this hash are always treated as stale and re-embedded.
+ */
+export const STALE_HASH_SENTINEL = '';
+
 export const EMBEDDING_SCHEMA = `
 CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
+  id STRING,
   nodeId STRING,
+  chunkIndex INT32,
+  startLine INT64,
+  endLine INT64,
   embedding FLOAT[${EMBEDDING_DIMS}],
-  PRIMARY KEY (nodeId)
+  contentHash STRING,
+  PRIMARY KEY (id)
 )`;
 
 /**
@@ -448,7 +466,7 @@ CREATE NODE TABLE ${EMBEDDING_TABLE_NAME} (
  * Uses HNSW (Hierarchical Navigable Small World) algorithm with cosine similarity
  */
 export const CREATE_VECTOR_INDEX_QUERY = `
-CALL CREATE_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', 'code_embedding_idx', 'embedding', metric := 'cosine')
+CALL CREATE_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}', 'embedding', metric := 'cosine')
 `;
 
 // ============================================================================
@@ -478,6 +496,7 @@ export const NODE_SCHEMA_QUERIES = [
   TYPE_ALIAS_SCHEMA,
   CONST_SCHEMA,
   STATIC_SCHEMA,
+  VARIABLE_SCHEMA,
   PROPERTY_SCHEMA,
   RECORD_SCHEMA,
   DELEGATE_SCHEMA,

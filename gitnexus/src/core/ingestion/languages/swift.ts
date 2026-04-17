@@ -5,7 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Swift traits:
- *   - importSemantics: 'wildcard' (Swift imports entire modules)
+ *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
  *   - heritageDefaultEdge: 'IMPLEMENTS' (protocols are more common than class inheritance)
  *   - implicitImportWirer: all files in the same SPM target see each other
  */
@@ -13,10 +13,12 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
-import { resolveSwiftImport } from '../import-resolvers/swift.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
@@ -24,6 +26,11 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { swiftMethodConfig } from '../method-extractors/configs/swift.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { swiftCallConfig } from '../call-extractors/configs/swift.js';
+import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 
 /**
  * Group Swift files by SPM target for implicit module visibility.
@@ -237,26 +244,18 @@ export const swiftProvider = defineLanguage({
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
-  importResolver: resolveSwiftImport,
-  importSemantics: 'wildcard',
+  importResolver: createImportResolver(swiftImportConfig),
+  importSemantics: 'wildcard-leaf',
   heritageDefaultEdge: 'IMPLEMENTS',
+  callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({
     ...swiftMethodConfig,
     extractFunctionName: swiftExtractFunctionName,
   }),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Swift,
-    typeDeclarationNodes: ['class_declaration', 'protocol_declaration'],
-    ancestorScopeNodeTypes: ['class_declaration', 'protocol_declaration'],
-    extractType(node) {
-      if (node.type === 'protocol_declaration') return 'Interface';
-      if (node.type !== 'class_declaration') return undefined;
-      if (node.children.some((child) => child?.text === 'struct')) return 'Struct';
-      if (node.children.some((child) => child?.text === 'enum')) return 'Enum';
-      return 'Class';
-    },
-  }),
+  variableExtractor: createVariableExtractor(swiftVariableConfig),
+  classExtractor: createClassExtractor(swiftClassConfig),
+  heritageExtractor: createHeritageExtractor(SupportedLanguages.Swift),
   implicitImportWirer: wireSwiftImplicitImports,
   builtInNames: BUILT_INS,
 });

@@ -1,0 +1,75 @@
+version: 2
+updates:
+  # Keep third-party Actions SHA pins current. See CONTRIBUTING.md — when
+  # reviewing these bumps, verify the SHA corresponds to the claimed tag by
+  # running `gh api repos/<owner>/<action>/git/refs/tags/<tag>` before merge.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
+  # Gitnexus npm deps — tree-sitter grammars checked daily so we catch
+  # new releases that unblock the tree-sitter 0.25 upgrade ASAP. Grammars
+  # are grouped so lockstep bumps produce a single PR. The tree-sitter
+  # RUNTIME is pinned — upgrade deliberately via the drift check workflow.
+  # See .github/scripts/check-tree-sitter-upgrade-readiness.py for
+  # the upgrade readiness tracker.
+  - package-ecosystem: npm
+    directory: /gitnexus
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+    groups:
+      tree-sitter-grammars:
+        patterns:
+          - tree-sitter-*
+        exclude-patterns:
+          - tree-sitter
+          - tree-sitter-cli
+    ignore:
+      # Pin the tree-sitter runtime at 0.21.x until the drift check
+      # reports all grammars are peer-dep compatible with 0.25.
+      - dependency-name: tree-sitter
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      # tree-sitter-cli follows the runtime's version cadence. Bump when
+      # regenerating vendor/tree-sitter-proto/src/parser.c, not on a schedule.
+      - dependency-name: tree-sitter-cli
+
+  # gitnexus-web (thin frontend client).
+  - package-ecosystem: npm
+    directory: /gitnexus-web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+      - frontend
+
+  # Shared types package.
+  - package-ecosystem: npm
+    directory: /gitnexus-shared
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies

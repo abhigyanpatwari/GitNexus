@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.5.3",
+  "version": "1.6.1",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -46,6 +46,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
@@ -58,7 +59,6 @@
     "commander": "^12.0.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "gitnexus-shared": "file:../gitnexus-shared",
     "glob": "^11.0.0",
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
@@ -71,7 +71,7 @@
     "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-c": "0.23.2",
-    "tree-sitter-c-sharp": "^0.23.1",
+    "tree-sitter-c-sharp": "0.23.1",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
@@ -84,8 +84,11 @@
     "uuid": "^13.0.0"
   },
   "optionalDependencies": {
-    "tree-sitter-dart": "github:UserNobody14/tree-sitter-dart#80e23c07b64494f7e21090bb3450223ef0b192f4",
+    "node-addon-api": "^8.0.0",
+    "node-gyp-build": "^4.8.0",
+    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
     "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
     "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {

@@ -1,0 +1,113 @@
+name: PR Conventional Labeler
+
+# Two workflows in one file with different triggers, matched to the minimum
+# privilege each needs:
+#
+#   validate-title (on: pull_request)
+#     Fork-safe. Runs with the PR-head's read-only GITHUB_TOKEN. Uses
+#     `amannn/action-semantic-pull-request` to fail the check when the PR
+#     title doesn't follow the conventional-commit format. Because the
+#     action only reads the event payload, no fork-controlled code runs.
+#
+#   autolabel (on: pull_request_target)
+#     Needs `pull-requests: write` to apply labels, so must be
+#     pull_request_target. Uses `release-drafter/release-drafter` with
+#     `dry-run: true` to only run the autolabeler against the
+#     `.github/release-drafter.yml` config from the BASE ref (release-
+#     drafter reads the config from the repository's default branch, NOT
+#     the PR head — verify with `gh api repos/release-drafter/release-drafter/contents/...`
+#     or a fork-test PR before merging if the repo is high-value).
+#     `sync-labels: true` in the config removes managed autolabels that no
+#     longer match (e.g. when `!` or `BREAKING CHANGE:` is dropped).
+#
+# Title format: <type>[(scope)][!]: <subject>
+#   Allowed types: feat, fix, perf, refactor, docs, test, ci, build, chore, revert, deps
+#   Trailing `!` on the type marks a breaking change.
+# See CONTRIBUTING.md → "Pull request titles".
+
+on:
+  pull_request:
+    # Title-only changes fire `edited`. `opened` and `reopened` cover creation.
+    # `synchronize` (push to the PR branch) is intentionally excluded — titles
+    # don't change on push, so it only wastes CI minutes and broadens the
+    # privileged-token exposure window on the autolabel job.
+    types: [opened, edited, reopened]
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Include `github.event_name` so `pull_request` (validate-title) and
+# `pull_request_target` (autolabel) runs for the same PR do NOT share a slot
+# and therefore cannot cancel each other — a cancelled required-check would
+# permanently block merge until the next title edit.
+# Within each trigger the latest title edit still supersedes the prior run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate-title:
+    # Fork-safe job — only runs on `pull_request` (not `pull_request_target`).
+    # Token is read-only; writes a commit status that branch protection can
+    # require before merge.
+    name: Validate PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      # Pinned to v6.1.1. Verify SHA via:
+      #   gh api repos/amannn/action-semantic-pull-request/git/refs/tags/v6.1.1
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            ci
+            build
+            chore
+            revert
+            deps
+          requireScope: false
+          # Subject must be non-empty. We DO allow capitalized proper nouns
+          # (MCP, GitHub, API, etc.) — the old `^(?![A-Z]).+$` pattern
+          # rejected legitimate titles like `fix: MCP tool schema`.
+          subjectPattern: ^\S.{2,}$
+          subjectPatternError: |
+            The subject "{subject}" in PR title "{title}" is invalid.
+            Subjects must be at least 3 characters and must not start with whitespace.
+          wip: false
+
+  autolabel:
+    # Privileged job — runs only on `pull_request_target` so it can write labels.
+    # Never checks out fork code, never executes fork-controlled input; only
+    # reads the PR metadata (title, body, labels) and calls the GitHub API.
+    name: Apply conventional label
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # `contents: read` is required — release-drafter's context.config() reads
+      # `.github/release-drafter.yml` from the repo's default branch via the
+      # repo-contents API. Without it the job silently 403s and no labels are
+      # applied. Job-level permissions nullify all unlisted scopes, so an
+      # explicit grant is necessary here.
+      contents: read
+      pull-requests: write
+    steps:
+      # Pinned to v7.2.0. Verify SHA via:
+      #   gh api repos/release-drafter/release-drafter/git/refs/tags/v7.2.0
+      # v7 removed `disable-releaser`; use `dry-run: true` to only autolabel.
+      - uses: release-drafter/release-drafter@5de93583980a40bd78603b6dfdcda5b4df377b32 # v7.2.0
+        with:
+          config-name: release-drafter.yml
+          dry-run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

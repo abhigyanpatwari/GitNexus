@@ -54,7 +54,7 @@ export type DeclaredTypeUnwrapper = (
 ) => string | undefined;
 
 /** Narrow lookup interface for resolving a callee name → return type name.
- *  Backed by SymbolTable.lookupFuzzyCallable; passed via ForLoopExtractorContext.
+ *  Backed by SymbolTable.lookupCallableByName; passed via ForLoopExtractorContext.
  *  Conservative: returns undefined when the callee is ambiguous (0 or 2+ matches). */
 export interface ReturnTypeLookup {
   /** Processed type name after stripping wrappers (e.g., 'User' from 'Promise<User>').

@@ -1997,3 +1997,54 @@ describe('C# User implements IValidator — interface default method (SM-11)', (
     expect(validateCall!.source).toBe('Run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Interface-to-interface heritage (single + multi base interface)
+// ---------------------------------------------------------------------------
+
+describe('C# interface-to-interface heritage', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-heritage'), () => {});
+  }, 60000);
+
+  it('detects 1 class and 4 interfaces', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['MyService']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual([
+      'IAuditableService',
+      'IBarService',
+      'IBaseInterface',
+      'IFooService',
+    ]);
+  });
+
+  it('emits no EXTENDS edges (fixture has no class inheritance)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+
+  it('emits IMPLEMENTS edge: IFooService → IBaseInterface (single base interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IFooService → IBaseInterface');
+  });
+
+  it('emits IMPLEMENTS edges: IAuditableService → IFooService, IBarService (multi base interfaces)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IAuditableService → IFooService');
+    expect(targets).toContain('IAuditableService → IBarService');
+  });
+
+  it('emits IMPLEMENTS edge: MyService → IAuditableService (class implements derived interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('MyService → IAuditableService');
+  });
+
+  it('emits exactly 4 IMPLEMENTS edges total', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(4);
+  });
+});

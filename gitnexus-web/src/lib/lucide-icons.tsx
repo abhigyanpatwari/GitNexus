@@ -9,6 +9,7 @@
 export {
   AlertCircle,
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
   AtSign,
   Brain,

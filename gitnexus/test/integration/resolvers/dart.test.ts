@@ -512,3 +512,70 @@ describe.skipIf(!dartAvailable)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// await call patterns: await fetchUser(), await processData()
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart await call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-await-calls'), () => {});
+  }, 60000);
+
+  it('detects fetchUser and processData as functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('fetchUser');
+    expect(fns).toContain('processData');
+  });
+
+  it('resolves run → fetchUser via await direct call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'run' && c.target === 'fetchUser');
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves run → processData via await direct call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'run' && c.target === 'processData');
+    expect(edge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Widget-tree call patterns: named argument and list literal
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!dartAvailable)('Dart widget-tree call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-widget-tree-calls'), () => {});
+  }, 60000);
+
+  it('detects buildHeader, buildBody, buildFooter as functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('buildHeader');
+    expect(fns).toContain('buildBody');
+    expect(fns).toContain('buildFooter');
+  });
+
+  it('resolves buildPage → buildHeader via named argument call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'buildPage' && c.target === 'buildHeader');
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves buildPage → buildBody via list literal call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'buildPage' && c.target === 'buildBody');
+    expect(edge).toBeDefined();
+  });
+
+  it('resolves buildPage → buildFooter via list literal call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'buildPage' && c.target === 'buildFooter');
+    expect(edge).toBeDefined();
+  });
+});

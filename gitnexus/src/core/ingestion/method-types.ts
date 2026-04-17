@@ -82,6 +82,10 @@ export interface MethodExtractionConfig {
   isAsync?: (node: SyntaxNode) => boolean;
   isPartial?: (node: SyntaxNode) => boolean;
   isConst?: (node: SyntaxNode) => boolean;
+  /** Owner node types where member functions are effectively static (e.g.
+   *  Ruby singleton_class, Kotlin companion_object / object_declaration).
+   *  When the ownerNode matches one of these types, isStatic is forced true. */
+  staticOwnerTypes?: ReadonlySet<string>;
   /** Resolve the owner name from a standalone method node (e.g. Go receiver type). */
   extractOwnerName?: (node: SyntaxNode) => string | undefined;
   /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */

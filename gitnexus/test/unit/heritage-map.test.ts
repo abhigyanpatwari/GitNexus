@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
-import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
+import { getHeritageStrategyForLanguage } from '../../src/core/ingestion/heritage-processor.js';
 
 describe('buildHeritageMap', () => {
   let ctx: ResolutionContext;
@@ -17,8 +18,8 @@ describe('buildHeritageMap', () => {
 
   describe('getParents', () => {
     it('returns direct parents for a single extends relationship', () => {
-      ctx.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
-      ctx.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
+      ctx.model.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
+      ctx.model.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/child.ts', className: 'Child', parentName: 'Parent', kind: 'extends' },
@@ -29,8 +30,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('returns direct parents for implements relationship', () => {
-      ctx.symbols.add('src/service.ts', 'Service', 'class:Service', 'Class');
-      ctx.symbols.add('src/iface.ts', 'IService', 'iface:IService', 'Interface');
+      ctx.model.symbols.add('src/service.ts', 'Service', 'class:Service', 'Class');
+      ctx.model.symbols.add('src/iface.ts', 'IService', 'iface:IService', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -46,8 +47,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('returns direct parents for trait-impl relationship', () => {
-      ctx.symbols.add('src/point.rs', 'Point', 'struct:Point', 'Struct');
-      ctx.symbols.add('src/display.rs', 'Display', 'trait:Display', 'Interface');
+      ctx.model.symbols.add('src/point.rs', 'Point', 'struct:Point', 'Struct');
+      ctx.model.symbols.add('src/display.rs', 'Display', 'trait:Display', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -63,9 +64,14 @@ describe('buildHeritageMap', () => {
     });
 
     it('returns multiple parents when class extends and implements', () => {
-      ctx.symbols.add('src/admin.ts', 'Admin', 'class:Admin', 'Class');
-      ctx.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
-      ctx.symbols.add('src/serializable.ts', 'Serializable', 'iface:Serializable', 'Interface');
+      ctx.model.symbols.add('src/admin.ts', 'Admin', 'class:Admin', 'Class');
+      ctx.model.symbols.add('src/user.ts', 'User', 'class:User', 'Class');
+      ctx.model.symbols.add(
+        'src/serializable.ts',
+        'Serializable',
+        'iface:Serializable',
+        'Interface',
+      );
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/admin.ts', className: 'Admin', parentName: 'User', kind: 'extends' },
@@ -90,7 +96,7 @@ describe('buildHeritageMap', () => {
     });
 
     it('skips heritage records where child class is not in symbol table', () => {
-      ctx.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
+      ctx.model.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -107,7 +113,7 @@ describe('buildHeritageMap', () => {
     });
 
     it('skips heritage records where parent class is not in symbol table', () => {
-      ctx.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
+      ctx.model.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -123,7 +129,7 @@ describe('buildHeritageMap', () => {
     });
 
     it('skips self-references', () => {
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/a.ts', className: 'A', parentName: 'A', kind: 'extends' },
@@ -134,8 +140,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('deduplicates cross-chunk duplicates', () => {
-      ctx.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
-      ctx.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
+      ctx.model.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
+      ctx.model.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/child.ts', className: 'Child', parentName: 'Parent', kind: 'extends' },
@@ -151,9 +157,9 @@ describe('buildHeritageMap', () => {
 
   describe('getAncestors', () => {
     it('returns full ancestor chain for multi-level inheritance', () => {
-      ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
-      ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/c.ts', className: 'C', parentName: 'B', kind: 'extends' },
@@ -173,10 +179,10 @@ describe('buildHeritageMap', () => {
       //   B   C
       //    \ /
       //     D
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
-      ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
-      ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
-      ctx.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/d.ts', className: 'D', parentName: 'B', kind: 'extends' },
@@ -194,8 +200,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('protects against cycles', () => {
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
-      ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'src/a.ts', className: 'A', parentName: 'B', kind: 'extends' },
@@ -212,9 +218,9 @@ describe('buildHeritageMap', () => {
     });
 
     it('protects against multi-node cycles (A→B→C→A)', () => {
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
-      ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
-      ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
 
       // A → B → C → A (3-node cycle)
       const heritage: ExtractedHeritage[] = [
@@ -232,7 +238,7 @@ describe('buildHeritageMap', () => {
     });
 
     it('returns empty array for node with no parents', () => {
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
 
       const map = buildHeritageMap([], ctx);
       expect(map.getAncestors('class:A')).toEqual([]);
@@ -249,9 +255,9 @@ describe('buildHeritageMap', () => {
       for (let i = 0; i < 40; i++) {
         const childName = `Level${i}`;
         const parentName = `Level${i + 1}`;
-        ctx.symbols.add(`src/${childName}.ts`, childName, `class:${childName}`, 'Class');
+        ctx.model.symbols.add(`src/${childName}.ts`, childName, `class:${childName}`, 'Class');
         if (i === 39) {
-          ctx.symbols.add(`src/${parentName}.ts`, parentName, `class:${parentName}`, 'Class');
+          ctx.model.symbols.add(`src/${parentName}.ts`, parentName, `class:${parentName}`, 'Class');
         }
         heritage.push({
           filePath: `src/${childName}.ts`,
@@ -289,9 +295,9 @@ describe('buildHeritageMap', () => {
 
   describe('getImplementorFiles', () => {
     it('records direct implements edges per interface name', () => {
-      ctx.symbols.add('a.java', 'C', 'class:C', 'Class');
-      ctx.symbols.add('b.java', 'D', 'class:D', 'Class');
-      ctx.symbols.add('iface.java', 'Runnable', 'iface:Runnable', 'Interface');
+      ctx.model.symbols.add('a.java', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('b.java', 'D', 'class:D', 'Class');
+      ctx.model.symbols.add('iface.java', 'Runnable', 'iface:Runnable', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'a.java', className: 'C', parentName: 'Runnable', kind: 'implements' },
@@ -302,9 +308,9 @@ describe('buildHeritageMap', () => {
     });
 
     it('only records implementors for interface parents, not class parents', () => {
-      ctx.symbols.add('a.java', 'C', 'class:C', 'Class');
-      ctx.symbols.add('base.java', 'Base', 'class:Base', 'Class');
-      ctx.symbols.add('iface.java', 'I', 'iface:I', 'Interface');
+      ctx.model.symbols.add('a.java', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('base.java', 'Base', 'class:Base', 'Class');
+      ctx.model.symbols.add('iface.java', 'I', 'iface:I', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         { filePath: 'a.java', className: 'C', parentName: 'Base', kind: 'extends' },
@@ -326,7 +332,7 @@ describe('buildHeritageMap', () => {
       // Only the child class is registered; the parent interface has no symbol.
       // resolveExtendsType must fall through to the provider heuristic and
       // classify `IDisposable` as IMPLEMENTS.
-      ctx.symbols.add('src/Service.cs', 'Service', 'class:Service', 'Class');
+      ctx.model.symbols.add('src/Service.cs', 'Service', 'class:Service', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -336,14 +342,14 @@ describe('buildHeritageMap', () => {
           kind: 'extends',
         },
       ];
-      const map = buildHeritageMap(heritage, ctx);
+      const map = buildHeritageMap(heritage, ctx, getHeritageStrategyForLanguage);
       expect(map.getImplementorFiles('IDisposable')).toEqual(new Set(['src/Service.cs']));
     });
 
     it('records Swift extends→IMPLEMENTS via heritageDefaultEdge when parent is unresolved', () => {
       // Swift provider has heritageDefaultEdge: 'IMPLEMENTS'.
       // Unresolved parents should default to IMPLEMENTS (protocol conformance).
-      ctx.symbols.add('src/MyView.swift', 'MyView', 'class:MyView', 'Class');
+      ctx.model.symbols.add('src/MyView.swift', 'MyView', 'class:MyView', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -353,7 +359,7 @@ describe('buildHeritageMap', () => {
           kind: 'extends',
         },
       ];
-      const map = buildHeritageMap(heritage, ctx);
+      const map = buildHeritageMap(heritage, ctx, getHeritageStrategyForLanguage);
       expect(map.getImplementorFiles('SomeProtocol')).toEqual(new Set(['src/MyView.swift']));
     });
 
@@ -361,8 +367,8 @@ describe('buildHeritageMap', () => {
       // Java/C# path: when ctx.resolve finds a matching symbol whose type is
       // Interface, resolveExtendsType returns IMPLEMENTS via the symbol lookup
       // (not the interfaceNamePattern fallback).
-      ctx.symbols.add('src/Impl.java', 'Impl', 'class:Impl', 'Class');
-      ctx.symbols.add('src/MyContract.java', 'MyContract', 'iface:MyContract', 'Interface');
+      ctx.model.symbols.add('src/Impl.java', 'Impl', 'class:Impl', 'Class');
+      ctx.model.symbols.add('src/MyContract.java', 'MyContract', 'iface:MyContract', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -377,8 +383,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('records Kotlin implements edges', () => {
-      ctx.symbols.add('src/Impl.kt', 'Impl', 'class:Impl', 'Class');
-      ctx.symbols.add('src/Iface.kt', 'Iface', 'iface:Iface', 'Interface');
+      ctx.model.symbols.add('src/Impl.kt', 'Impl', 'class:Impl', 'Class');
+      ctx.model.symbols.add('src/Iface.kt', 'Iface', 'iface:Iface', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -393,8 +399,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('records TypeScript implements edges', () => {
-      ctx.symbols.add('src/Service.ts', 'UserService', 'class:UserService', 'Class');
-      ctx.symbols.add('src/IService.ts', 'IUserService', 'iface:IUserService', 'Interface');
+      ctx.model.symbols.add('src/Service.ts', 'UserService', 'class:UserService', 'Class');
+      ctx.model.symbols.add('src/IService.ts', 'IUserService', 'iface:IUserService', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -409,8 +415,8 @@ describe('buildHeritageMap', () => {
     });
 
     it('records PHP implements edges', () => {
-      ctx.symbols.add('src/Impl.php', 'Impl', 'class:Impl', 'Class');
-      ctx.symbols.add('src/Iface.php', 'Iface', 'iface:Iface', 'Interface');
+      ctx.model.symbols.add('src/Impl.php', 'Impl', 'class:Impl', 'Class');
+      ctx.model.symbols.add('src/Iface.php', 'Iface', 'iface:Iface', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -427,8 +433,8 @@ describe('buildHeritageMap', () => {
     it('does not record Rust trait-impl entries in the implementor index', () => {
       // Documented limitation: trait-impl is intentionally not added to the
       // implementor index — interface dispatch does not traverse trait objects.
-      ctx.symbols.add('src/point.rs', 'Point', 'struct:Point', 'Struct');
-      ctx.symbols.add('src/display.rs', 'Display', 'trait:Display', 'Interface');
+      ctx.model.symbols.add('src/point.rs', 'Point', 'struct:Point', 'Struct');
+      ctx.model.symbols.add('src/display.rs', 'Display', 'trait:Display', 'Interface');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -445,9 +451,9 @@ describe('buildHeritageMap', () => {
     });
 
     it('heritage merged across chunks matches single-pass (chunk-order invariant)', () => {
-      ctx.symbols.add('a.java', 'A', 'class:A', 'Class');
-      ctx.symbols.add('b.java', 'B', 'class:B', 'Class');
-      ctx.symbols.add('iface.java', 'Iface', 'iface:Iface', 'Interface');
+      ctx.model.symbols.add('a.java', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('b.java', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('iface.java', 'Iface', 'iface:Iface', 'Interface');
 
       const chunk1: ExtractedHeritage[] = [
         { filePath: 'a.java', className: 'A', parentName: 'Iface', kind: 'implements' },
@@ -464,10 +470,10 @@ describe('buildHeritageMap', () => {
 
   describe('chunk-order invariant', () => {
     it('produces same result regardless of heritage record order', () => {
-      ctx.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
-      ctx.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
-      ctx.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
-      ctx.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('src/d.ts', 'D', 'class:D', 'Class');
+      ctx.model.symbols.add('src/c.ts', 'C', 'class:C', 'Class');
+      ctx.model.symbols.add('src/b.ts', 'B', 'class:B', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'A', 'class:A', 'Class');
 
       const heritage1: ExtractedHeritage[] = [
         { filePath: 'src/d.ts', className: 'D', parentName: 'C', kind: 'extends' },

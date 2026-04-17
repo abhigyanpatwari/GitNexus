@@ -1,11 +1,9 @@
 /**
- * Rust module import resolution.
- * Handles crate::, super::, self:: prefix paths and :: separators.
+ * Rust module import resolution — internal helpers.
+ *
+ * Strategy lives in configs/rust.ts.
+ * This file contains shared helpers used by the strategy and standard.ts.
  */
-
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
-import { resolveStandard } from './standard.js';
 
 /**
  * Resolve Rust use-path to a file (low-level helper).
@@ -83,50 +81,4 @@ export function tryRustModulePath(modulePath: string, allFiles: Set<string>): st
   }
 
   return null;
-}
-
-/** Rust: expand grouped imports: use {crate::a, crate::b} and use crate::models::{User, Repo}. */
-export function resolveRustImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  // Top-level grouped: use {crate::a, crate::b}
-  if (rawImportPath.startsWith('{') && rawImportPath.endsWith('}')) {
-    const inner = rawImportPath.slice(1, -1);
-    const parts = inner
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    const resolved: string[] = [];
-    for (const part of parts) {
-      const r = resolveRustImportInternal(filePath, part, ctx.allFilePaths);
-      if (r) resolved.push(r);
-    }
-    return resolved.length > 0 ? { kind: 'files', files: resolved } : null;
-  }
-
-  // Scoped grouped: use crate::models::{User, Repo}
-  const braceIdx = rawImportPath.indexOf('::{');
-  if (braceIdx !== -1 && rawImportPath.endsWith('}')) {
-    const pathPrefix = rawImportPath.substring(0, braceIdx);
-    const braceContent = rawImportPath.substring(braceIdx + 3, rawImportPath.length - 1);
-    const items = braceContent
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const resolved: string[] = [];
-    for (const item of items) {
-      // Handle `use crate::models::{User, Repo as R}` — strip alias for resolution
-      const itemName = item.includes(' as ') ? item.split(' as ')[0].trim() : item;
-      const r = resolveRustImportInternal(filePath, `${pathPrefix}::${itemName}`, ctx.allFilePaths);
-      if (r) resolved.push(r);
-    }
-    if (resolved.length > 0) return { kind: 'files', files: resolved };
-    // Fallback: resolve the prefix path itself (e.g. crate::models -> models.rs)
-    const prefixResult = resolveRustImportInternal(filePath, pathPrefix, ctx.allFilePaths);
-    if (prefixResult) return { kind: 'files', files: [prefixResult] };
-  }
-
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Rust);
 }

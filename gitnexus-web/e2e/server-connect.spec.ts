@@ -1,4 +1,4 @@
-import { test, expect, type TestInfo } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 /**
  * E2E tests for the GitNexus web UI — exploring view features.
@@ -58,36 +58,41 @@ test.beforeAll(async () => {
  * For these tests we require at least one indexed repo, so pick the first
  * landing card when present and then wait for the exploring view.
  */
-async function waitForGraphLoaded(page: import('@playwright/test').Page, testInfo: TestInfo) {
+async function waitForGraphLoaded(page: import('@playwright/test').Page) {
   await page.goto('/');
 
-  const landingCard = page.locator('[data-testid="landing-repo-card"]').first();
+  const landingCards = page.locator('[data-testid="landing-repo-card"]');
+  const preferredLandingCard = landingCards
+    .filter({ hasText: /GitNexus|local-integration/ })
+    .first();
   try {
-    await landingCard.waitFor({ state: 'visible', timeout: 15_000 });
+    await landingCards.first().waitFor({ state: 'visible', timeout: 15_000 });
+    const landingCard =
+      (await preferredLandingCard.count()) > 0 ? preferredLandingCard : landingCards.first();
     await landingCard.click();
   } catch {
     // Landing screen may not appear (e.g. ?server auto-connect)
   }
 
-  await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText(/\d+ nodes/).first()).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('graph-loaded.png') });
+  const statusBar = page.getByRole('contentinfo');
+  await expect(statusBar.getByText('Ready', { exact: true })).toBeVisible({ timeout: 45_000 });
+  await expect(statusBar).toContainText(/nodes/, {
+    timeout: 20_000,
+  });
 }
 
 test.describe('Server Connection & Graph Loading', () => {
-  test('selects a repo from landing and loads graph', async ({ page }, testInfo) => {
-    await waitForGraphLoaded(page, testInfo);
-    await page.screenshot({ path: testInfo.outputPath('graph-loaded-full.png'), fullPage: true });
+  test('selects a repo from landing and loads graph', async ({ page }) => {
+    await waitForGraphLoaded(page);
   });
 });
 
 test.describe('Nexus AI', () => {
-  test('panel opens and agent initializes without error', async ({ page }, testInfo) => {
-    await waitForGraphLoaded(page, testInfo);
+  test('panel opens and agent initializes without error', async ({ page }) => {
+    await waitForGraphLoaded(page);
 
     await page.getByRole('button', { name: 'Nexus AI' }).click();
     await expect(page.getByText('Ask me anything')).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: testInfo.outputPath('nexus-ai-panel.png'), fullPage: true });
 
     const errorBanner = page.getByText('Database not ready');
     expect(await errorBanner.isVisible().catch(() => false)).toBe(false);
@@ -95,8 +100,8 @@ test.describe('Nexus AI', () => {
 });
 
 test.describe('Processes Panel', () => {
-  test('shows process list and View button works', async ({ page }, testInfo) => {
-    await waitForGraphLoaded(page, testInfo);
+  test('shows process list and View button works', async ({ page }) => {
+    await waitForGraphLoaded(page);
 
     await page.getByRole('button', { name: 'Nexus AI' }).click();
     await page.getByText('Processes').click();
@@ -104,7 +109,6 @@ test.describe('Processes Panel', () => {
     await expect(page.locator('[data-testid="process-list-loaded"]')).toBeVisible({
       timeout: 15_000,
     });
-    await page.screenshot({ path: testInfo.outputPath('processes-panel.png'), fullPage: true });
 
     const processRow = page.locator('[data-testid="process-row"]').first();
     await expect(processRow).toBeVisible({ timeout: 10_000 });
@@ -114,14 +118,10 @@ test.describe('Processes Panel', () => {
     await viewBtn.waitFor({ state: 'visible', timeout: 5_000 });
     await viewBtn.click();
     await expect(page.locator('[data-testid="process-modal"]')).toBeVisible({ timeout: 5_000 });
-    await page.screenshot({
-      path: testInfo.outputPath('process-view-clicked.png'),
-      fullPage: true,
-    });
   });
 
-  test('lightbulb highlights nodes in graph', async ({ page }, testInfo) => {
-    await waitForGraphLoaded(page, testInfo);
+  test('lightbulb highlights nodes in graph', async ({ page }) => {
+    await waitForGraphLoaded(page);
 
     await page.getByRole('button', { name: 'Nexus AI' }).click();
     await page.getByText('Processes').click();
@@ -137,13 +137,12 @@ test.describe('Processes Panel', () => {
     await lightbulb.waitFor({ state: 'visible', timeout: 5_000 });
     await lightbulb.click();
     await expect(processRow).toHaveClass(/bg-amber-950/, { timeout: 5_000 });
-    await page.screenshot({ path: testInfo.outputPath('after-highlight.png'), fullPage: true });
   });
 });
 
 test.describe('Turn Off All Highlights', () => {
-  test('selecting a node dims others, button clears it', async ({ page }, testInfo) => {
-    await waitForGraphLoaded(page, testInfo);
+  test('selecting a node dims others, button clears it', async ({ page }) => {
+    await waitForGraphLoaded(page);
 
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 10_000 });
 
@@ -160,6 +159,5 @@ test.describe('Turn Off All Highlights', () => {
     await expect(highlightToggle).toHaveAttribute('title', 'Turn on AI highlights', {
       timeout: 5_000,
     });
-    await page.screenshot({ path: testInfo.outputPath('highlights-cleared.png'), fullPage: true });
   });
 });

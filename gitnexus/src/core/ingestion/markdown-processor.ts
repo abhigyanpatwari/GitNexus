@@ -23,7 +23,7 @@ interface MdFile {
 export const processMarkdown = (
   graph: KnowledgeGraph,
   files: MdFile[],
-  allPathSet: Set<string>,
+  allPathSet: ReadonlySet<string>,
 ): { sections: number; links: number } => {
   let totalSections = 0;
   let totalLinks = 0;

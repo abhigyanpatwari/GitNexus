@@ -20,8 +20,11 @@ import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
+/** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
+const STACK_KB = 4096;
+const STACK_FLAG = `--stack-size=${STACK_KB}`;
 
-/** Re-exec the process with an 8GB heap if we're currently below that. */
+/** Re-exec the process with an 8GB heap and larger stack if we're currently below that. */
 function ensureHeap(): boolean {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -29,8 +32,13 @@ function ensureHeap(): boolean {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
+  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+,
+  // so pass it only as a direct CLI argument, not via the environment.
+  const cliFlags = [HEAP_FLAG];
+  if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
+
   try {
-    execFileSync(process.execPath, [HEAP_FLAG, ...process.argv.slice(1)], {
+    execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
       stdio: 'inherit',
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
@@ -47,6 +55,8 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
 }
@@ -137,9 +147,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
+  let barCurrentValue = 0;
   const barLog = (...args: any[]) => {
     process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
+    bar.update(barCurrentValue);
   };
   console.log = barLog;
   console.warn = barLog;
@@ -150,6 +162,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let phaseStart = Date.now();
 
   const updateBar = (value: number, phaseLabel: string) => {
+    barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
       lastPhaseLabel = phaseLabel;
       phaseStart = Date.now();
@@ -177,6 +190,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
+        noStats: options?.noStats,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -240,7 +254,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd },
+            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
           );
         }
       } catch {
@@ -282,7 +296,51 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.warn = origWarn;
     console.error = origError;
     bar.stop();
-    console.error(`\n  Analysis failed: ${err.message}\n`);
+
+    const msg = err.message || String(err);
+    console.error(`\n  Analysis failed: ${msg}\n`);
+
+    // Provide helpful guidance for known failure modes
+    if (
+      msg.includes('Maximum call stack size exceeded') ||
+      msg.includes('call stack') ||
+      msg.includes('Map maximum size') ||
+      msg.includes('Invalid array length') ||
+      msg.includes('Invalid string length') ||
+      msg.includes('allocation failed') ||
+      msg.includes('heap out of memory') ||
+      msg.includes('JavaScript heap')
+    ) {
+      console.error('  This error typically occurs on very large repositories.');
+      console.error('  Suggestions:');
+      console.error('    1. Add large vendored/generated directories to .gitnexusignore');
+      console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
+      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
+      console.error('');
+    } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
+      // Note: the original arborist "Cannot destructure property 'package' of
+      // 'node.target'" crash happens inside npm *before* gitnexus code runs,
+      // so it can't be caught here.  This branch handles dependency-resolution
+      // errors that surface at runtime (e.g. dynamic require failures).
+      console.error('  This looks like an npm dependency resolution issue.');
+      console.error('  Suggestions:');
+      console.error('    1. Clear the npm cache:    npm cache clean --force');
+      console.error('    2. Update npm:             npm install -g npm@latest');
+      console.error('    3. Reinstall gitnexus:     npm install -g gitnexus@latest');
+      console.error('    4. Or try npx directly:    npx gitnexus@latest analyze');
+      console.error('');
+    } else if (
+      msg.includes('MODULE_NOT_FOUND') ||
+      msg.includes('Cannot find module') ||
+      msg.includes('ERR_MODULE_NOT_FOUND')
+    ) {
+      console.error('  A required module could not be loaded. The installation may be corrupt.');
+      console.error('  Suggestions:');
+      console.error('    1. Reinstall:   npm install -g gitnexus@latest');
+      console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
+      console.error('');
+    }
+
     process.exitCode = 1;
     return;
   }

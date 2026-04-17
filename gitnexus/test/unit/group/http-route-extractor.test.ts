@@ -157,6 +157,89 @@ export default router;
         providers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
       ).toBeDefined();
     });
+
+    it('extracts Go Gin and Echo route registrations', async () => {
+      const dir = path.join(tmpDir, 'go-frameworks');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func createOrder(c *gin.Context) {}
+func listOrders(c echo.Context) error { return nil }
+
+func main() {
+  r := gin.Default()
+  r.POST("/api/orders/:id", createOrder)
+
+  e := echo.New()
+  e.GET("/api/orders", listOrders)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const ginRoute = providers.find((c) => c.contractId === 'http::POST::/api/orders/{param}');
+      expect(ginRoute).toBeDefined();
+      expect(ginRoute?.symbolName).toBe('createOrder');
+
+      const echoRoute = providers.find((c) => c.contractId === 'http::GET::/api/orders');
+      expect(echoRoute).toBeDefined();
+      expect(echoRoute?.symbolName).toBe('listOrders');
+    });
+
+    it('extracts stdlib HandleFunc providers', async () => {
+      const dir = path.join(tmpDir, 'go-stdlib-provider');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(healthRoute).toBeDefined();
+      expect(healthRoute?.symbolName).toBe('healthHandler');
+    });
+
+    it('extracts NestJS controller decorators', async () => {
+      const dir = path.join(tmpDir, 'nestjs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'orders.controller.ts'),
+        `
+import { Controller, Patch } from '@nestjs/common';
+
+@Controller('orders')
+export class OrdersController {
+  @Patch(':id')
+  updateOrder() {
+    return {};
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const patchRoute = providers.find((c) => c.contractId === 'http::PATCH::/orders/{param}');
+      expect(patchRoute).toBeDefined();
+      expect(patchRoute?.symbolName).toBe('updateOrder');
+    });
   });
 
   describe('consumer extraction — fetch patterns', () => {
@@ -204,6 +287,209 @@ export const deleteUser = (id: string) => axios.delete(\`/api/users/\${id}\`);
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts jQuery $.get and $.post shorthand', async () => {
+      const dir = path.join(tmpDir, 'jquery-shorthand');
+      fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'public/js/users.js'),
+        `
+function loadUsers() {
+  $.get('/api/users', function (data) { console.log(data); });
+}
+
+function createUser(payload) {
+  $.post('/api/users', payload);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const getRoute = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.meta.framework).toBe('jquery');
+
+      const postRoute = consumers.find((c) => c.contractId === 'http::POST::/api/users');
+      expect(postRoute).toBeDefined();
+      expect(postRoute?.meta.framework).toBe('jquery');
+    });
+
+    it('extracts jQuery $.ajax with method: and type: keys and default GET', async () => {
+      const dir = path.join(tmpDir, 'jquery-ajax');
+      fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'public/js/orders.js'),
+        `
+$.ajax({ url: '/api/orders', method: 'PUT', data: {} });
+$.ajax({ url: '/api/items',  type:   'DELETE' });
+$.ajax({ url: '/api/default' });
+
+function reloadOrder(id) {
+  return $.ajax({ url: \`/api/orders/\${id}\`, method: 'GET' });
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::PUT::/api/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/api/items')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/default')).toBeDefined();
+      // Template-literal URL inside $.ajax is normalized to {param} the same
+      // way the fetch/axios paths do — confirms readStringProp accepts
+      // template_string values for jQuery ajax, not just for axios object form.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts axios({ method, url }) object form regardless of key order', async () => {
+      const dir = path.join(tmpDir, 'axios-object');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/orders.ts'),
+        `
+import axios from 'axios';
+
+export function createOrder(data: unknown) {
+  return axios({ method: 'POST', url: '/api/orders', data });
+}
+
+export function updateUser(id: string, data: unknown) {
+  return axios({ url: \`/api/users/\${id}\`, method: 'PUT', data });
+}
+
+export function listDefaults() {
+  return axios({ url: '/api/defaults' });
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::PUT::/api/users/{param}')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
+    });
+
+    it('does not emit consumers for unrelated object-literal calls (negative control)', async () => {
+      const dir = path.join(tmpDir, 'jquery-axios-negative');
+      fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'public/js/misc.js'),
+        `
+// jQuery but not an ajax/get/post call
+$.fn.extend({ url: '/nope', method: 'POST' });
+$.each([1, 2, 3], function (i, v) { return v; });
+
+// Not axios and not $ — unrelated helper that happens to take { url, method }
+function myHelper(opts) { return opts; }
+myHelper({ url: '/nope', method: 'POST' });
+
+// Bare object literal, not a call argument at all
+const cfg = { url: '/nope', method: 'POST' };
+console.log(cfg);
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // None of the above should have produced any HTTP consumer contracts.
+      const nopeConsumers = consumers.filter(
+        (c) => typeof c.meta.path === 'string' && c.meta.path.includes('/nope'),
+      );
+      expect(nopeConsumers).toHaveLength(0);
+    });
+
+    it('extracts Python requests calls', async () => {
+      const dir = path.join(tmpDir, 'python-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import requests
+
+def create_order():
+    return requests.post("https://svc.local/api/orders/42", json={"id": 42})
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {
+      const dir = path.join(tmpDir, 'java-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ApiClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import okhttp3.Request;
+
+class ApiClient {
+  void run(RestTemplate restTemplate, WebClient webClient) {
+    restTemplate.getForObject("/api/users/{id}", String.class, 42);
+    webClient.method(HttpMethod.PATCH, "/api/users/42");
+    new Request.Builder().url("/api/orders/42").build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users/{param}')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Go stdlib and resty calls', async () => {
+      const dir = path.join(tmpDir, 'go-consumer');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'client.go'),
+        `
+package main
+
+import (
+  "net/http"
+
+  "github.com/go-resty/resty/v2"
+)
+
+func main() {
+  http.Get("/api/health")
+  client := resty.New()
+  client.R().Delete("/api/orders/42")
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/health')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/orders/{param}'),
       ).toBeDefined();
     });
   });

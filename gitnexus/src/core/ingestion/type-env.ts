@@ -8,6 +8,7 @@ import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { TYPED_PARAMETER_TYPES } from './type-extractors/shared.js';
 import { getProvider } from './languages/index.js';
+import type { BindingAccumulator, BindingEntry } from './binding-accumulator.js';
 import type {
   ClassNameLookup,
   ReturnTypeLookup,
@@ -20,7 +21,7 @@ import {
   stripNullable,
   extractReturnTypeName,
 } from './type-extractors/shared.js';
-import type { SymbolTable } from './symbol-table.js';
+import type { SemanticModel } from './model/index.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
 /**
@@ -42,7 +43,21 @@ type TypeEnv = Map<string, Map<string, string>>;
 const FILE_SCOPE = '';
 
 /** Shared empty map for files with no file-scope bindings. */
-const EMPTY_FILE_SCOPE: ReadonlyMap<string, string> = new Map();
+/**
+ * Create a fresh empty Map for the "no file-scope bindings" fallback.
+ *
+ * **Why not a shared sentinel**: we previously used a module-level
+ * `const EMPTY_FILE_SCOPE = new Map()` typed as `ReadonlyMap` and shared
+ * across every TypeEnv instance. That was a latent singleton-poisoning
+ * footgun: any caller that did `(fileScope() as Map).set(...)` — or any
+ * future refactor that widened the return type — would silently corrupt
+ * every subsequent "empty" return for the process lifetime. A Proxy
+ * wrapper was considered but broke Map's internal-slot methods (`.size`,
+ * iteration protocol). Allocating a fresh empty Map per call is a few
+ * bytes per file — immediately GC'd, no measurable cost even at 10k files
+ * — and eliminates the shared-mutation hazard entirely.
+ */
+const emptyFileScope = (): ReadonlyMap<string, string> => new Map();
 
 /** Fallback for languages where class names aren't in a 'name' field (e.g. Kotlin uses type_identifier). */
 const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
@@ -73,6 +88,10 @@ export interface TypeEnvironment {
    *  Populated when a variable has BOTH a declared base type AND a more specific
    *  constructor type (e.g., `Animal a = new Dog()` → key maps to 'Dog'). */
   readonly constructorTypeMap: ReadonlyMap<string, string>;
+  /** Copy all scoped bindings into a BindingAccumulator.
+   *  Must be called at most once per TypeEnv instance — throws on second call.
+   *  The source `env` is not cleared (TypeEnv is per-file and discarded immediately after). */
+  flush(filePath: string, accumulator: BindingAccumulator): void;
 }
 
 /**
@@ -397,11 +416,8 @@ const findEnclosingScopeKey = (
  * Only `.has()` is exposed — the SymbolTable doesn't support iteration.
  * Results are memoized to avoid redundant class-index scans across declarations.
  */
-const createClassNameLookup = (
-  localNames: Set<string>,
-  symbolTable?: SymbolTable,
-): ClassNameLookup => {
-  if (!symbolTable) return localNames;
+const createClassNameLookup = (localNames: Set<string>, model?: SemanticModel): ClassNameLookup => {
+  if (!model) return localNames;
 
   const memo = new Map<string, boolean>();
   return {
@@ -409,7 +425,7 @@ const createClassNameLookup = (
       if (localNames.has(name)) return true;
       const cached = memo.get(name);
       if (cached !== undefined) return cached;
-      const result = symbolTable
+      const result = model.types
         .lookupClassByName(name)
         .some((def) => def.type === 'Class' || def.type === 'Enum' || def.type === 'Struct');
       memo.set(name, result);
@@ -462,20 +478,20 @@ const CLASS_LIKE_TYPES = new Set(['Class', 'Struct', 'Interface']);
 type ClassDefRef = { nodeId: string; type: string; filePath: string };
 
 const lookupClassDefsByName = (
-  symbolTable: SymbolTable,
+  model: SemanticModel,
   name: string,
   allowedTypes: ReadonlySet<string> = CLASS_LIKE_TYPES,
-): ClassDefRef[] => symbolTable.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
+): ClassDefRef[] => model.types.lookupClassByName(name).filter((d) => allowedTypes.has(d.type));
 
 /** Memoize class definition lookups during fixpoint iteration.
  *  SymbolTable is immutable during type resolution, so results never change.
  *  Eliminates redundant array allocations + filter scans across iterations. */
-const createClassDefCache = (symbolTable?: SymbolTable) => {
+const createClassDefCache = (model?: SemanticModel) => {
   const cache = new Map<string, ClassDefRef[]>();
   return (typeName: string) => {
     let result = cache.get(typeName);
     if (result === undefined) {
-      result = symbolTable ? lookupClassDefsByName(symbolTable, typeName) : [];
+      result = model ? lookupClassDefsByName(model, typeName) : [];
       cache.set(typeName, result);
     }
     return result;
@@ -596,22 +612,22 @@ const resolveFieldType = (
   receiver: string,
   field: string,
   scopeEnv: ReadonlyMap<string, string>,
-  symbolTable?: SymbolTable,
+  model?: SemanticModel,
   getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
-  if (!symbolTable) return undefined;
+  if (!model) return undefined;
   const receiverType = scopeEnv.get(receiver);
   if (!receiverType) return undefined;
-  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(model, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length !== 1) return undefined;
   // Direct lookup first
-  const fieldDef = symbolTable.lookupFieldByOwner(classDefs[0].nodeId, field);
+  const fieldDef = model.fields.lookupFieldByOwner(classDefs[0].nodeId, field);
   if (fieldDef?.declaredType) return extractReturnTypeName(fieldDef.declaredType);
   // MRO parent chain walking on miss
   const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-    const f = symbolTable.lookupFieldByOwner(nodeId, field);
+    const f = model.fields.lookupFieldByOwner(nodeId, field);
     return f?.declaredType ? extractReturnTypeName(f.declaredType) : undefined;
   });
   return inherited;
@@ -625,30 +641,30 @@ const resolveMethodReturnType = (
   receiver: string,
   method: string,
   scopeEnv: ReadonlyMap<string, string>,
-  symbolTable?: SymbolTable,
+  model?: SemanticModel,
   getClassDefs?: (typeName: string) => ClassDefRef[],
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): string | undefined => {
-  if (!symbolTable) return undefined;
+  if (!model) return undefined;
   let receiverType = scopeEnv.get(receiver);
   // When substituteThisReceiver replaced $this/self with the enclosing class name,
   // the receiver IS the type — look it up directly as a class name.
   if (!receiverType) {
-    const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
+    const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(model, name));
     if (lookup(receiver).length > 0) receiverType = receiver;
   }
   if (!receiverType) return undefined;
-  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(symbolTable, name));
+  const lookup = getClassDefs ?? ((name: string) => lookupClassDefsByName(model, name));
   const classDefs = lookup(receiverType);
   if (classDefs.length === 0) return undefined;
   // Direct lookup first
   const directMethodLookups = classDefs.map((d) => ({
     classDef: d,
-    methodDef: symbolTable.lookupMethodByOwner(d.nodeId, method),
+    methodDef: model.methods.lookupMethodByOwner(d.nodeId, method),
   }));
   const hasAmbiguousDirectLookup = directMethodLookups.some(({ classDef, methodDef }) => {
     if (methodDef) return false;
-    return symbolTable
+    return model.symbols
       .lookupExactAll(classDef.filePath, method)
       .some((d) => d.ownerId === classDef.nodeId);
   });
@@ -662,7 +678,7 @@ const resolveMethodReturnType = (
   // MRO parent chain walking on miss
   if (methods.length === 0) {
     const inherited = walkParentChain(receiverType, parentMap, lookup, (nodeId) => {
-      const parentMethod = symbolTable.lookupMethodByOwner(nodeId, method);
+      const parentMethod = model.methods.lookupMethodByOwner(nodeId, method);
       if (!parentMethod?.returnType) return undefined;
       return extractReturnTypeName(parentMethod.returnType);
     });
@@ -688,11 +704,11 @@ const resolveFixpointBindings = (
   pendingItems: Array<{ scope: string } & PendingAssignment>,
   env: TypeEnv,
   returnTypeLookup: ReturnTypeLookup,
-  symbolTable?: SymbolTable,
+  model?: SemanticModel,
   parentMap?: ReadonlyMap<string, readonly string[]>,
 ): void => {
   if (pendingItems.length === 0) return;
-  const getClassDefs = createClassDefCache(symbolTable);
+  const getClassDefs = createClassDefCache(model);
   const resolved = new Set<number>();
   for (let iter = 0; iter < MAX_FIXPOINT_ITERATIONS; iter++) {
     let changed = false;
@@ -721,7 +737,7 @@ const resolveFixpointBindings = (
             item.receiver,
             item.field,
             scopeEnv,
-            symbolTable,
+            model,
             getClassDefs,
             parentMap,
           );
@@ -731,7 +747,7 @@ const resolveFixpointBindings = (
             item.receiver,
             item.method,
             scopeEnv,
-            symbolTable,
+            model,
             getClassDefs,
             parentMap,
           );
@@ -766,7 +782,7 @@ const resolveFixpointBindings = (
  * Uses an options object to allow future extensions without positional parameter sprawl.
  */
 export interface BuildTypeEnvOptions {
-  symbolTable?: SymbolTable;
+  model?: SemanticModel;
   parentMap?: ReadonlyMap<string, readonly string[]>;
   /** Pre-resolved bindings from upstream files (Phase 14).
    *  Seeded into FILE_SCOPE after walk() for names with no local binding.
@@ -818,17 +834,18 @@ export const buildTypeEnv = (
   enclosingClassNameCache.clear();
   enclosingParentClassNameCache.clear();
 
-  const symbolTable = options?.symbolTable;
+  const model = options?.model;
   const parentMap = options?.parentMap;
   const extractFuncNameHook = options?.extractFunctionName;
   const env: TypeEnv = new Map();
+  let flushed = false;
   const patternOverrides: PatternOverrides = new Map();
   // Phase P: maps `scope\0varName` → constructor type when a declaration has BOTH
   // a base type annotation AND a more specific constructor initializer.
   // e.g., `Animal a = new Dog()` → constructorTypeMap.set('func@42\0a', 'Dog')
   const constructorTypeMap = new Map<string, string>();
   const localClassNames = new Set<string>();
-  const classNames = createClassNameLookup(localClassNames, symbolTable);
+  const classNames = createClassNameLookup(localClassNames, model);
   const provider = getProvider(language);
   const config = provider.typeConfig;
   const bindings: ConstructorBinding[] = [];
@@ -836,29 +853,47 @@ export const buildTypeEnv = (
   // Build ReturnTypeLookup: SymbolTable is authoritative when it has an unambiguous match.
   // Cross-file importedReturnTypes are consulted ONLY when SymbolTable has 0 matches.
   // Ambiguous (2+) → undefined, no cross-file fallback (conservative, local-first principle).
+  // Post-A4 Unit 4: callableByName no longer holds Method/Constructor, so
+  // for-loop binding inference must also consult methodsByName to find
+  // return types on class methods (e.g. `user.getItems()` iteration).
+  // Take `model` as an explicit argument so the non-null precondition
+  // is visible at the type level. Callers must enter these via an
+  // `if (model)` guard on their side and pass the narrowed reference.
+  const getCallableUnionCount = (m: SemanticModel, callee: string): number => {
+    return (
+      m.symbols.lookupCallableByName(callee).length + m.methods.lookupMethodByName(callee).length
+    );
+  };
+  const getFirstCallable = (m: SemanticModel, callee: string) => {
+    const free = m.symbols.lookupCallableByName(callee);
+    if (free.length > 0) return free[0];
+    const methods = m.methods.lookupMethodByName(callee);
+    return methods.length > 0 ? methods[0] : undefined;
+  };
+
   const returnTypeLookup: ReturnTypeLookup = {
     lookupReturnType(callee: string): string | undefined {
       // SymbolTable is authoritative when it has an unambiguous match
-      if (symbolTable) {
+      if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = symbolTable.lookupFuzzyCallable(callee);
-        if (callables.length === 1) {
-          const rawReturn = callables[0].returnType;
+        const count = getCallableUnionCount(model, callee);
+        if (count === 1) {
+          const rawReturn = getFirstCallable(model, callee)?.returnType;
           if (rawReturn) return extractReturnTypeName(rawReturn);
         }
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
-        if (callables.length > 1) return undefined;
+        if (count > 1) return undefined;
       }
       // No match (0 results or no symbolTable) → fall back to cross-file
       return options?.importedReturnTypes?.get(callee);
     },
     lookupRawReturnType(callee: string): string | undefined {
-      if (symbolTable) {
+      if (model) {
         if (provider.isBuiltInName(callee)) return undefined;
-        const callables = symbolTable.lookupFuzzyCallable(callee);
-        if (callables.length === 1) return callables[0].returnType;
+        const count = getCallableUnionCount(model, callee);
+        if (count === 1) return getFirstCallable(model, callee)?.returnType;
         // Ambiguous (2+) → return undefined (conservative, no cross-file fallback)
-        if (callables.length > 1) return undefined;
+        if (count > 1) return undefined;
       }
       // Cross-file fallback uses importedRawReturnTypes (raw declared types, e.g., 'User[]')
       // NOT importedReturnTypes (which contains processed/simple types via extractReturnTypeName)
@@ -1068,7 +1103,11 @@ export const buildTypeEnv = (
     }
   };
 
-  const walk = (node: SyntaxNode, currentScope: string): void => {
+  const stack: Array<{ node: SyntaxNode; scope: string }> = [
+    { node: tree.rootNode, scope: FILE_SCOPE },
+  ];
+
+  const processNode = (node: SyntaxNode, currentScope: string): void => {
     // Fast skip: subtrees that can never contain type-relevant nodes (leaf-like literals).
     if (SKIP_SUBTREE_TYPES.has(node.type)) return;
 
@@ -1185,14 +1224,19 @@ export const buildTypeEnv = (
       }
     }
 
-    // Recurse into children
-    for (let i = 0; i < node.childCount; i++) {
+    // Push children onto stack (reverse order so first child is processed first)
+    for (let i = node.childCount - 1; i >= 0; i--) {
       const child = node.child(i);
-      if (child) walk(child, scope);
+      if (child) stack.push({ node: child, scope });
     }
   };
 
-  walk(tree.rootNode, FILE_SCOPE);
+  // Iterative traversal using explicit stack instead of recursion
+  // to avoid "Maximum call stack size exceeded" on large files (2000+ lines)
+  while (stack.length > 0) {
+    const { node, scope } = stack.pop()!;
+    processNode(node, scope);
+  }
 
   // Phase 14: Seed cross-file bindings from upstream files AFTER walk
   // (local declarations from walk() take precedence — first-writer-wins)
@@ -1200,7 +1244,7 @@ export const buildTypeEnv = (
     seedImportedBindings(env, options.importedBindings);
   }
 
-  resolveFixpointBindings(pendingItems, env, returnTypeLookup, symbolTable, parentMap);
+  resolveFixpointBindings(pendingItems, env, returnTypeLookup, model, parentMap);
 
   // Post-fixpoint for-loop replay (Phase 10 / ex-9B loop-fixpoint bridge):
   // For-loop nodes whose iterables were unresolved at walk-time may now be
@@ -1227,7 +1271,7 @@ export const buildTypeEnv = (
       return scopeEnv && !scopeEnv.has(item.lhs);
     });
     if (unresolvedBefore.length > 0) {
-      resolveFixpointBindings(unresolvedBefore, env, returnTypeLookup, symbolTable);
+      resolveFixpointBindings(unresolvedBefore, env, returnTypeLookup, model);
     }
   }
 
@@ -1242,9 +1286,47 @@ export const buildTypeEnv = (
         extractFuncNameHook,
       ),
     constructorBindings: bindings,
-    fileScope: () => env.get(FILE_SCOPE) ?? EMPTY_FILE_SCOPE,
+    fileScope: () => env.get(FILE_SCOPE) ?? emptyFileScope(),
     allScopes: () => env as ReadonlyMap<string, ReadonlyMap<string, string>>,
     constructorTypeMap,
+    flush(filePath: string, accumulator: BindingAccumulator): void {
+      if (flushed) {
+        throw new Error(
+          `[TypeEnvironment] flush called twice for ${filePath} — flush is single-use`,
+        );
+      }
+      // Narrow flush() to iterate only the FILE_SCOPE entry, mirroring the
+      // worker-path narrowing in parse-worker.ts (commit 803631fe). Before
+      // this change, both execution paths had the same asymmetry bug: the
+      // worker path was fixed but the sequential path (this code) still
+      // wrote function-scope entries into long-lived accumulator storage
+      // that no consumer reads until Phase 9 lands.
+      //
+      // Phase 9 reversion: when a downstream consumer of function-scope
+      // bindings exists, restore the nested iteration:
+      //
+      //   for (const [scope, scopeMap] of env) {
+      //     for (const [varName, typeName] of scopeMap) {
+      //       entries.push({ scope, varName, typeName });
+      //     }
+      //   }
+      //
+      // See BindingAccumulator class JSDoc and FileScopeBindings JSDoc in
+      // parse-worker.ts for the full reversion checklist.
+      const fileScope = env.get(FILE_SCOPE) ?? emptyFileScope();
+      const entries: BindingEntry[] = [];
+      for (const [varName, typeName] of fileScope) {
+        entries.push({ scope: '', varName, typeName });
+      }
+      if (entries.length > 0) {
+        accumulator.appendFile(filePath, entries);
+      }
+      // Mark the env as flushed AFTER the successful append. If appendFile
+      // throws (e.g., accumulator is already finalized due to a lifecycle
+      // ordering bug), the caller can catch and retry — the single-use
+      // guard now tracks "data was written", not "flush was attempted".
+      flushed = true;
+    },
   };
 };
 

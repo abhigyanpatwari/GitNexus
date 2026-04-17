@@ -54,6 +54,20 @@ const languageMap: Record<string, any> = {
 export const isLanguageAvailable = (language: SupportedLanguages): boolean =>
   language in languageMap;
 
+export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>
+  language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
+    ? `${language}:tsx`
+    : language;
+
+export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): any => {
+  const key = resolveLanguageKey(language, filePath);
+  const lang = languageMap[key];
+  if (!lang) {
+    throw new Error(`Unsupported language: ${language}`);
+  }
+  return lang;
+};
+
 export const loadParser = async (): Promise<Parser> => {
   if (parser) return parser;
   parser = new Parser();
@@ -65,14 +79,14 @@ export const loadLanguage = async (
   filePath?: string,
 ): Promise<void> => {
   if (!parser) await loadParser();
-  const key =
-    language === SupportedLanguages.TypeScript && filePath?.endsWith('.tsx')
-      ? `${language}:tsx`
-      : language;
+  parser!.setLanguage(getLanguageGrammar(language, filePath));
+};
 
-  const lang = languageMap[key];
-  if (!lang) {
-    throw new Error(`Unsupported language: ${language}`);
-  }
-  parser!.setLanguage(lang);
+export const createParserForLanguage = async (
+  language: SupportedLanguages,
+  filePath?: string,
+): Promise<Parser> => {
+  const freshParser = new Parser();
+  freshParser.setLanguage(getLanguageGrammar(language, filePath));
+  return freshParser;
 };

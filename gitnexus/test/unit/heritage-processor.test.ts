@@ -4,8 +4,8 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
-import type { ExtractedHeritage } from '../../src/core/ingestion/workers/parse-worker.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
 
 describe('processHeritageFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
@@ -18,8 +18,8 @@ describe('processHeritageFromExtracted', () => {
 
   describe('extends', () => {
     it('creates EXTENDS relationship between classes', async () => {
-      ctx.symbols.add('src/admin.ts', 'AdminUser', 'Class:src/admin.ts:AdminUser', 'Class');
-      ctx.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
+      ctx.model.symbols.add('src/admin.ts', 'AdminUser', 'Class:src/admin.ts:AdminUser', 'Class');
+      ctx.model.symbols.add('src/user.ts', 'User', 'Class:src/user.ts:User', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -58,7 +58,7 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('skips self-inheritance', async () => {
-      ctx.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
+      ctx.model.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -76,8 +76,13 @@ describe('processHeritageFromExtracted', () => {
 
   describe('implements', () => {
     it('creates IMPLEMENTS relationship', async () => {
-      ctx.symbols.add('src/service.ts', 'UserService', 'Class:src/service.ts:UserService', 'Class');
-      ctx.symbols.add(
+      ctx.model.symbols.add(
+        'src/service.ts',
+        'UserService',
+        'Class:src/service.ts:UserService',
+        'Class',
+      );
+      ctx.model.symbols.add(
         'src/interfaces.ts',
         'IService',
         'Interface:src/interfaces.ts:IService',
@@ -103,8 +108,8 @@ describe('processHeritageFromExtracted', () => {
 
   describe('trait-impl (Rust)', () => {
     it('creates IMPLEMENTS relationship for trait impl', async () => {
-      ctx.symbols.add('src/point.rs', 'Point', 'Struct:src/point.rs:Point', 'Struct');
-      ctx.symbols.add('src/display.rs', 'Display', 'Trait:src/display.rs:Display', 'Trait');
+      ctx.model.symbols.add('src/point.rs', 'Point', 'Struct:src/point.rs:Point', 'Struct');
+      ctx.model.symbols.add('src/display.rs', 'Display', 'Trait:src/display.rs:Display', 'Trait');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -125,8 +130,13 @@ describe('processHeritageFromExtracted', () => {
 
   describe('C# interface resolution from extends captures', () => {
     it('emits IMPLEMENTS when parent is an Interface in symbol table', async () => {
-      ctx.symbols.add('src/Service.cs', 'UserService', 'Class:src/Service.cs:UserService', 'Class');
-      ctx.symbols.add(
+      ctx.model.symbols.add(
+        'src/Service.cs',
+        'UserService',
+        'Class:src/Service.cs:UserService',
+        'Class',
+      );
+      ctx.model.symbols.add(
         'src/IService.cs',
         'IService',
         'Interface:src/IService.cs:IService',
@@ -153,8 +163,8 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('emits EXTENDS when parent is a Class in symbol table', async () => {
-      ctx.symbols.add('src/Admin.cs', 'AdminUser', 'Class:src/Admin.cs:AdminUser', 'Class');
-      ctx.symbols.add('src/User.cs', 'User', 'Class:src/User.cs:User', 'Class');
+      ctx.model.symbols.add('src/Admin.cs', 'AdminUser', 'Class:src/Admin.cs:AdminUser', 'Class');
+      ctx.model.symbols.add('src/User.cs', 'User', 'Class:src/User.cs:User', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {
@@ -246,15 +256,20 @@ describe('processHeritageFromExtracted', () => {
     });
 
     it('handles mixed class + interface base_list from C#', async () => {
-      ctx.symbols.add('src/Repo.cs', 'UserRepo', 'Class:src/Repo.cs:UserRepo', 'Class');
-      ctx.symbols.add('src/Base.cs', 'BaseRepository', 'Class:src/Base.cs:BaseRepository', 'Class');
-      ctx.symbols.add(
+      ctx.model.symbols.add('src/Repo.cs', 'UserRepo', 'Class:src/Repo.cs:UserRepo', 'Class');
+      ctx.model.symbols.add(
+        'src/Base.cs',
+        'BaseRepository',
+        'Class:src/Base.cs:BaseRepository',
+        'Class',
+      );
+      ctx.model.symbols.add(
         'src/IRepo.cs',
         'IRepository',
         'Interface:src/IRepo.cs:IRepository',
         'Interface',
       );
-      ctx.symbols.add(
+      ctx.model.symbols.add(
         'src/IDisp.cs',
         'IDisposable',
         'Interface:src/IDisp.cs:IDisposable',
@@ -314,7 +329,7 @@ describe('processHeritageFromExtracted', () => {
 
     it('still uses symbol table authoritatively for Swift (Tier 1 takes precedence)', async () => {
       // When the parent is in the symbol table as a Class, EXTENDS wins even in Swift
-      ctx.symbols.add('src/Animal.swift', 'Animal', 'Class:src/Animal.swift:Animal', 'Class');
+      ctx.model.symbols.add('src/Animal.swift', 'Animal', 'Class:src/Animal.swift:Animal', 'Class');
 
       const heritage: ExtractedHeritage[] = [
         {

@@ -231,7 +231,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           repo: projectName,
         };
 
-    readFile(selectedFilePath, options)
+    readFile(selectedFilePath, { ...options, repo: projectName || undefined })
       .then((result) => {
         if (!cancelled) {
           setFileResult(result);

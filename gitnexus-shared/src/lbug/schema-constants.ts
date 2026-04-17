@@ -30,6 +30,7 @@ export const NODE_TABLES = [
   'TypeAlias',
   'Const',
   'Static',
+  'Variable',
   'Property',
   'Record',
   'Delegate',

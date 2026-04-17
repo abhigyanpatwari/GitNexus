@@ -273,6 +273,7 @@ export const kotlinMethodConfig: MethodExtractionConfig = {
   typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],
   methodNodeTypes: ['function_declaration'],
   bodyNodeTypes: ['class_body'],
+  staticOwnerTypes: new Set(['companion_object', 'object_declaration']),
   extractName(node) {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);

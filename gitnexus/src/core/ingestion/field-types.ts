@@ -1,7 +1,7 @@
 // gitnexus/src/core/ingestion/field-types.ts
 
 import type { TypeEnvironment } from './type-env.js';
-import type { SymbolTable } from './symbol-table.js';
+import type { SymbolTableReader } from './model/index.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 /**
@@ -57,7 +57,7 @@ export interface FieldExtractorContext {
   /** Type environment for resolution */
   typeEnv: TypeEnvironment;
   /** Symbol table for FQN lookups */
-  symbolTable: SymbolTable;
+  symbolTable: SymbolTableReader;
   /** Current file path */
   filePath: string;
   /** Language ID */

@@ -12,7 +12,11 @@ import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
 import { buildSuffixIndex } from './import-resolvers/utils.js';
-import type { ResolutionContext, ModuleAliasMap } from './resolution-context.js';
+import type {
+  ResolutionContext,
+  ModuleAliasMap,
+  NamedImportMap,
+} from './model/resolution-context.js';
 import type {
   ImportResult,
   ResolveCtx,
@@ -20,8 +24,7 @@ import type {
 } from './import-resolvers/types.js';
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
-
-const isDev = process.env.NODE_ENV === 'development';
+import { isDev } from './utils/env.js';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -60,30 +63,6 @@ function wireImplicitImports(
 // Stores Go package directory suffixes imported by a file (e.g., "/internal/auth/").
 // Avoids expanding every Go package import into N individual ImportMap edges.
 export type PackageMap = Map<string, Set<string>>;
-
-// Type: Map<ImportingFilePath, Map<LocalName, {sourcePath, exportedName}>>
-// Tracks which specific names a file imports from which sources (TS/Python only).
-// Used to tighten Tier 2a resolution: `import { User } from './models'`
-// means only `User` (not `Repo`) is visible from models.ts via this import.
-// Stores both the resolved source path and the original exported name so that
-// aliased imports (`import { User as U }`) can resolve U → User in the source file.
-export interface NamedImportBinding {
-  sourcePath: string;
-  exportedName: string;
-}
-export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
-
-/**
- * Check if a file path is directly inside a package directory identified by its suffix.
- * Used by the symbol resolver for Go and C# directory-level import matching.
- */
-export function isFileInPackageDir(filePath: string, dirSuffix: string): boolean {
-  // Prepend '/' so paths like "internal/auth/service.go" match suffix "/internal/auth/"
-  const normalized = '/' + filePath.replace(/\\/g, '/');
-  if (!normalized.includes(dirSuffix)) return false;
-  const afterDir = normalized.substring(normalized.indexOf(dirSuffix) + dirSuffix.length);
-  return !afterDir.includes('/');
-}
 
 // ImportResolutionContext is defined in ./import-resolvers/types.ts — re-exported here for consumers.
 

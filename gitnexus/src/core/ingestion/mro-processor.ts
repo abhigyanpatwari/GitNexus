@@ -1,7 +1,7 @@
 /**
  * MRO (Method Resolution Order) Processor
  *
- * Walks the inheritance DAG (EXTENDS/IMPLEMENTS edges), collects methods from
+ * Walks the inheritance graph (EXTENDS/IMPLEMENTS edges), collects methods from
  * each ancestor via HAS_METHOD edges, detects method-name collisions across
  * parents, and applies language-specific resolution rules to emit METHOD_OVERRIDES edges.
  *
@@ -23,6 +23,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
+import { c3Linearize, gatherAncestors } from './model/resolve.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -93,115 +94,9 @@ function buildAdjacency(graph: KnowledgeGraph) {
   return { parentMap, methodMap, parentEdgeType };
 }
 
-/**
- * Gather all ancestor IDs in BFS / topological order.
- * Returns the linearized list of ancestor IDs (excluding the class itself).
- */
-function gatherAncestors(classId: string, parentMap: Map<string, string[]>): string[] {
-  const visited = new Set<string>();
-  const order: string[] = [];
-  const queue: string[] = [...(parentMap.get(classId) ?? [])];
-
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    order.push(id);
-    const grandparents = parentMap.get(id);
-    if (grandparents) {
-      for (const gp of grandparents) {
-        if (!visited.has(gp)) queue.push(gp);
-      }
-    }
-  }
-
-  return order;
-}
-
-// ---------------------------------------------------------------------------
-// C3 linearization (Python MRO)
-// ---------------------------------------------------------------------------
-
-/**
- * Compute C3 linearization for a class given a parentMap.
- * Returns an array of ancestor IDs in C3 order (excluding the class itself),
- * or null if linearization fails (inconsistent or cyclic hierarchy).
- */
-export function c3Linearize(
-  classId: string,
-  parentMap: Map<string, string[]>,
-  cache: Map<string, string[] | null>,
-  inProgress?: Set<string>,
-): string[] | null {
-  if (cache.has(classId)) return cache.get(classId)!;
-
-  // Cycle detection: if we're already computing this class, the hierarchy is cyclic
-  const visiting = inProgress ?? new Set<string>();
-  if (visiting.has(classId)) {
-    cache.set(classId, null);
-    return null;
-  }
-  visiting.add(classId);
-
-  const directParents = parentMap.get(classId);
-  if (!directParents || directParents.length === 0) {
-    visiting.delete(classId);
-    cache.set(classId, []);
-    return [];
-  }
-
-  // Compute linearization for each parent first
-  const parentLinearizations: string[][] = [];
-  for (const pid of directParents) {
-    const pLin = c3Linearize(pid, parentMap, cache, visiting);
-    if (pLin === null) {
-      visiting.delete(classId);
-      cache.set(classId, null);
-      return null;
-    }
-    parentLinearizations.push([pid, ...pLin]);
-  }
-
-  // Add the direct parents list as the final sequence
-  const sequences = [...parentLinearizations, [...directParents]];
-  const result: string[] = [];
-
-  while (sequences.some((s) => s.length > 0)) {
-    // Find a good head: one that doesn't appear in the tail of any other sequence
-    let head: string | null = null;
-    for (const seq of sequences) {
-      if (seq.length === 0) continue;
-      const candidate = seq[0];
-      const inTail = sequences.some(
-        (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
-      );
-      if (!inTail) {
-        head = candidate;
-        break;
-      }
-    }
-
-    if (head === null) {
-      // Inconsistent hierarchy
-      visiting.delete(classId);
-      cache.set(classId, null);
-      return null;
-    }
-
-    result.push(head);
-
-    // Remove the chosen head from all sequences
-    for (const seq of sequences) {
-      if (seq.length > 0 && seq[0] === head) {
-        seq.shift();
-      }
-    }
-  }
-
-  visiting.delete(classId);
-  cache.set(classId, result);
-  return result;
-}
+// `gatherAncestors` and `c3Linearize` live in `./model/resolve.ts` and
+// are imported at the top of this file for internal use by `computeMRO`
+// and the method-override edge emitter.
 
 // ---------------------------------------------------------------------------
 // Language-specific resolution

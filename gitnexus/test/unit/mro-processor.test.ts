@@ -539,6 +539,30 @@ describe('computeMRO', () => {
       const result = computeMRO(graph);
       expect(result).toBeDefined();
     });
+
+    it('handles very deep single-inheritance chain without stack overflow', () => {
+      // Chain of 2000 classes: C0 ← C1 ← C2 ← ... ← C1999
+      // The iterative c3Linearize handles this without blowing the stack.
+      // (The recursive version overflows at ~1K–5K levels depending on platform.)
+      const graph = createKnowledgeGraph();
+      const DEPTH = 2000;
+      for (let i = 0; i < DEPTH; i++) {
+        addClass(graph, `C${i}`, 'python');
+      }
+      for (let i = 1; i < DEPTH; i++) {
+        addExtends(graph, `C${i}`, `C${i - 1}`);
+      }
+      // Add a method on the root so MRO produces an entry
+      addMethod(graph, 'C0', 'baseMethod');
+
+      const result = computeMRO(graph);
+      expect(result).toBeDefined();
+      // The deepest class should have all ancestors in its MRO
+      const deepest = result.entries.find((e) => e.className === `C${DEPTH - 1}`);
+      if (deepest) {
+        expect(deepest.mro.length).toBe(DEPTH - 1);
+      }
+    }, 15_000);
   });
 
   // ---- METHOD_IMPLEMENTS edges -----------------------------------------------

@@ -1,10 +1,14 @@
 /**
  * Shared Ruby call routing logic.
  *
- * Ruby expresses imports, heritage (mixins), and property definitions as
- * method calls rather than syntax-level constructs. This module provides a
- * routing function used by the CLI call-processor, CLI parse-worker, and
- * the web call-processor so that the classification logic lives in one place.
+ * Ruby expresses imports and property definitions as method calls rather
+ * than syntax-level constructs. This module provides a routing function
+ * used by the CLI call-processor, CLI parse-worker, and the web
+ * call-processor so that the classification logic lives in one place.
+ *
+ * Heritage (mixins: include/extend/prepend) was previously routed here
+ * but is now handled by heritageExtractor.extractFromCall before the
+ * call router runs.  The router still returns 'skip' for these calls.
  *
  * NOTE: This file is intentionally duplicated in gitnexus-web/ because the
  * two packages have separate build targets (Node native vs WASM/browser).
@@ -30,16 +34,9 @@ export type CallRouter = (calledName: string, callNode: SyntaxNode) => CallRouti
 
 export type RubyCallRouting =
   | { kind: 'import'; importPath: string; isRelative: boolean }
-  | { kind: 'heritage'; items: RubyHeritageItem[] }
   | { kind: 'properties'; items: RubyPropertyItem[] }
   | { kind: 'call' }
   | { kind: 'skip' };
-
-export interface RubyHeritageItem {
-  enclosingClass: string;
-  mixinName: string;
-  heritageKind: 'include' | 'extend' | 'prepend';
-}
 
 export type RubyAccessorType = 'attr_accessor' | 'attr_reader' | 'attr_writer';
 
@@ -55,9 +52,6 @@ export interface RubyPropertyItem {
 // ── Pre-allocated singletons for common return values ────────────────────────
 const CALL_RESULT: RubyCallRouting = { kind: 'call' };
 const SKIP_RESULT: RubyCallRouting = { kind: 'skip' };
-
-/** Max depth for parent-walking loops to prevent pathological AST traversals */
-const MAX_PARENT_DEPTH = 50;
 
 // ── Routing function ────────────────────────────────────────────────────────
 
@@ -88,35 +82,12 @@ export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCal
     return { kind: 'import', importPath, isRelative };
   }
 
-  // ── include / extend / prepend → heritage (mixin) ──────────────────────
+  // ── include / extend / prepend — heritage (now handled by heritageExtractor) ─
+  // Call-based heritage is intercepted by heritageExtractor.extractFromCall
+  // before the call router runs.  Return SKIP_RESULT so these calls don't
+  // fall through to normal call processing.
   if (calledName === 'include' || calledName === 'extend' || calledName === 'prepend') {
-    let enclosingClass: string | null = null;
-    let current = callNode.parent;
-    let depth = 0;
-    while (current && ++depth <= MAX_PARENT_DEPTH) {
-      if (current.type === 'class' || current.type === 'module') {
-        const nameNode = current.childForFieldName?.('name');
-        if (nameNode) {
-          enclosingClass = nameNode.text;
-          break;
-        }
-      }
-      current = current.parent;
-    }
-    if (!enclosingClass) return SKIP_RESULT;
-
-    const items: RubyHeritageItem[] = [];
-    const argList = callNode.childForFieldName?.('arguments');
-    for (const arg of argList?.children ?? []) {
-      if (arg.type === 'constant' || arg.type === 'scope_resolution') {
-        items.push({
-          enclosingClass,
-          mixinName: arg.text,
-          heritageKind: calledName as 'include' | 'extend' | 'prepend',
-        });
-      }
-    }
-    return items.length > 0 ? { kind: 'heritage', items } : SKIP_RESULT;
+    return SKIP_RESULT;
   }
 
   // ── attr_accessor / attr_reader / attr_writer → property definitions ───

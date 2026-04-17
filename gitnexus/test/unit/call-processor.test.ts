@@ -2,24 +2,27 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   processCalls,
   processCallsFromExtracted,
+  processAssignmentsFromExtracted,
   seedCrossFileReceiverTypes,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
 } from '../../src/core/ingestion/call-processor.js';
-import { buildHeritageMap } from '../../src/core/ingestion/heritage-map.js';
+import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { extractReturnTypeName } from '../../src/core/ingestion/type-extractors/shared.js';
 import {
   createResolutionContext,
   type ResolutionContext,
-} from '../../src/core/ingestion/resolution-context.js';
+} from '../../src/core/ingestion/model/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import type {
+  ExtractedAssignment,
   ExtractedCall,
   ExtractedFetchCall,
-  ExtractedHeritage,
   FileConstructorBindings,
 } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
 
 describe('processCallsFromExtracted', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
@@ -31,7 +34,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('creates CALLS relationship for same-file resolution', async () => {
-    ctx.symbols.add('src/index.ts', 'helper', 'Function:src/index.ts:helper', 'Function');
+    ctx.model.symbols.add('src/index.ts', 'helper', 'Function:src/index.ts:helper', 'Function');
 
     const calls: ExtractedCall[] = [
       {
@@ -52,7 +55,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('creates CALLS relationship for import-resolved resolution', async () => {
-    ctx.symbols.add('src/utils.ts', 'format', 'Function:src/utils.ts:format', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'format', 'Function:src/utils.ts:format', 'Function');
     ctx.importMap.set('src/index.ts', new Set(['src/utils.ts']));
 
     const calls: ExtractedCall[] = [
@@ -72,7 +75,12 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('resolves unique global symbol with moderate confidence', async () => {
-    ctx.symbols.add('src/other.ts', 'uniqueFunc', 'Function:src/other.ts:uniqueFunc', 'Function');
+    ctx.model.symbols.add(
+      'src/other.ts',
+      'uniqueFunc',
+      'Function:src/other.ts:uniqueFunc',
+      'Function',
+    );
 
     const calls: ExtractedCall[] = [
       {
@@ -91,8 +99,8 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses ambiguous global symbols — no CALLS edge created', async () => {
-    ctx.symbols.add('src/a.ts', 'render', 'Function:src/a.ts:render', 'Function');
-    ctx.symbols.add('src/b.ts', 'render', 'Function:src/b.ts:render', 'Function');
+    ctx.model.symbols.add('src/a.ts', 'render', 'Function:src/a.ts:render', 'Function');
+    ctx.model.symbols.add('src/b.ts', 'render', 'Function:src/b.ts:render', 'Function');
 
     const calls: ExtractedCall[] = [
       {
@@ -122,7 +130,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses non-callable symbols even when the name resolves', async () => {
-    ctx.symbols.add('src/index.ts', 'Widget', 'Class:src/index.ts:Widget', 'Class');
+    ctx.model.symbols.add('src/index.ts', 'Widget', 'Class:src/index.ts:Widget', 'Class');
 
     const calls: ExtractedCall[] = [
       {
@@ -137,7 +145,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses CALLS edges to Interface symbols', async () => {
-    ctx.symbols.add(
+    ctx.model.symbols.add(
       'src/types.ts',
       'Serializable',
       'Interface:src/types.ts:Serializable',
@@ -158,7 +166,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses CALLS edges to Enum symbols', async () => {
-    ctx.symbols.add('src/status.ts', 'Status', 'Enum:src/status.ts:Status', 'Enum');
+    ctx.model.symbols.add('src/status.ts', 'Status', 'Enum:src/status.ts:Status', 'Enum');
     ctx.importMap.set('src/index.ts', new Set(['src/status.ts']));
 
     const calls: ExtractedCall[] = [
@@ -174,8 +182,8 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('prefers same-file over import-resolved', async () => {
-    ctx.symbols.add('src/index.ts', 'render', 'Function:src/index.ts:render', 'Function');
-    ctx.symbols.add('src/utils.ts', 'render', 'Function:src/utils.ts:render', 'Function');
+    ctx.model.symbols.add('src/index.ts', 'render', 'Function:src/index.ts:render', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'render', 'Function:src/utils.ts:render', 'Function');
     ctx.importMap.set('src/index.ts', new Set(['src/utils.ts']));
 
     const calls: ExtractedCall[] = [
@@ -195,8 +203,8 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('handles multiple calls from the same file', async () => {
-    ctx.symbols.add('src/index.ts', 'foo', 'Function:src/index.ts:foo', 'Function');
-    ctx.symbols.add('src/index.ts', 'bar', 'Function:src/index.ts:bar', 'Function');
+    ctx.model.symbols.add('src/index.ts', 'foo', 'Function:src/index.ts:foo', 'Function');
+    ctx.model.symbols.add('src/index.ts', 'bar', 'Function:src/index.ts:bar', 'Function');
 
     const calls: ExtractedCall[] = [
       { filePath: 'src/index.ts', calledName: 'foo', sourceId: 'Function:src/index.ts:main' },
@@ -208,10 +216,10 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('uses arity to disambiguate import-scoped callable candidates', async () => {
-    ctx.symbols.add('src/logger.ts', 'log', 'Function:src/logger.ts:log', 'Function', {
+    ctx.model.symbols.add('src/logger.ts', 'log', 'Function:src/logger.ts:log', 'Function', {
       parameterCount: 0,
     });
-    ctx.symbols.add('src/formatter.ts', 'log', 'Function:src/formatter.ts:log', 'Function', {
+    ctx.model.symbols.add('src/formatter.ts', 'log', 'Function:src/formatter.ts:log', 'Function', {
       parameterCount: 1,
     });
     ctx.importMap.set('src/index.ts', new Set(['src/logger.ts', 'src/formatter.ts']));
@@ -234,10 +242,10 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses ambiguous call targets when arity does not produce a unique match', async () => {
-    ctx.symbols.add('src/logger.ts', 'log', 'Function:src/logger.ts:log', 'Function', {
+    ctx.model.symbols.add('src/logger.ts', 'log', 'Function:src/logger.ts:log', 'Function', {
       parameterCount: 1,
     });
-    ctx.symbols.add('src/formatter.ts', 'log', 'Function:src/formatter.ts:log', 'Function', {
+    ctx.model.symbols.add('src/formatter.ts', 'log', 'Function:src/formatter.ts:log', 'Function', {
       parameterCount: 1,
     });
     ctx.importMap.set('src/index.ts', new Set(['src/logger.ts', 'src/formatter.ts']));
@@ -256,7 +264,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('calls progress callback', async () => {
-    ctx.symbols.add('src/index.ts', 'foo', 'Function:src/index.ts:foo', 'Function');
+    ctx.model.symbols.add('src/index.ts', 'foo', 'Function:src/index.ts:foo', 'Function');
 
     const calls: ExtractedCall[] = [
       { filePath: 'src/index.ts', calledName: 'foo', sourceId: 'Function:src/index.ts:main' },
@@ -276,7 +284,7 @@ describe('processCallsFromExtracted', () => {
   // ---- Constructor-aware resolution (Phase 2) ----
 
   it('resolves constructor call to Class when no Constructor node exists', async () => {
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
 
     const calls: ExtractedCall[] = [
@@ -297,10 +305,16 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('resolves constructor call to Constructor node over Class node', async () => {
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
-    ctx.symbols.add('src/models.ts', 'User', 'Constructor:src/models.ts:User', 'Constructor', {
-      parameterCount: 1,
-    });
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add(
+      'src/models.ts',
+      'User',
+      'Constructor:src/models.ts:User',
+      'Constructor',
+      {
+        parameterCount: 1,
+      },
+    );
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
 
     const calls: ExtractedCall[] = [
@@ -321,7 +335,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('refuses Class target without callForm=constructor (existing behavior)', async () => {
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
 
     const calls: ExtractedCall[] = [
@@ -339,7 +353,7 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('constructor call falls back to callable types when no Constructor/Class found', async () => {
-    ctx.symbols.add('src/utils.ts', 'Widget', 'Function:src/utils.ts:Widget', 'Function');
+    ctx.model.symbols.add('src/utils.ts', 'Widget', 'Function:src/utils.ts:Widget', 'Function');
     ctx.importMap.set('src/index.ts', new Set(['src/utils.ts']));
 
     const calls: ExtractedCall[] = [
@@ -359,12 +373,24 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('constructor arity filtering narrows overloaded constructors', async () => {
-    ctx.symbols.add('src/models.ts', 'User', 'Constructor:src/models.ts:User(0)', 'Constructor', {
-      parameterCount: 0,
-    });
-    ctx.symbols.add('src/models.ts', 'User', 'Constructor:src/models.ts:User(2)', 'Constructor', {
-      parameterCount: 2,
-    });
+    ctx.model.symbols.add(
+      'src/models.ts',
+      'User',
+      'Constructor:src/models.ts:User(0)',
+      'Constructor',
+      {
+        parameterCount: 0,
+      },
+    );
+    ctx.model.symbols.add(
+      'src/models.ts',
+      'User',
+      'Constructor:src/models.ts:User(2)',
+      'Constructor',
+      {
+        parameterCount: 2,
+      },
+    );
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
 
     const calls: ExtractedCall[] = [
@@ -385,10 +411,10 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('cannot discriminate same-arity overloads by parameter type (known limitation)', async () => {
-    ctx.symbols.add('src/UserDao.ts', 'save', 'Function:src/UserDao.ts:save', 'Function', {
+    ctx.model.symbols.add('src/UserDao.ts', 'save', 'Function:src/UserDao.ts:save', 'Function', {
       parameterCount: 1,
     });
-    ctx.symbols.add('src/RepoDao.ts', 'save', 'Function:src/RepoDao.ts:save', 'Function', {
+    ctx.model.symbols.add('src/RepoDao.ts', 'save', 'Function:src/RepoDao.ts:save', 'Function', {
       parameterCount: 1,
     });
     ctx.importMap.set('src/index.ts', new Set(['src/UserDao.ts', 'src/RepoDao.ts']));
@@ -411,11 +437,11 @@ describe('processCallsFromExtracted', () => {
 
   it('return type inference: binds variable to return type of callee', async () => {
     // getUser() returns User, and User has a save() method
-    ctx.symbols.add('src/utils.ts', 'getUser', 'Function:src/utils.ts:getUser', 'Function', {
+    ctx.model.symbols.add('src/utils.ts', 'getUser', 'Function:src/utils.ts:getUser', 'Function', {
       returnType: 'User',
     });
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
-    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
       ownerId: 'Class:src/models.ts:User',
     });
     ctx.importMap.set('src/index.ts', new Set(['src/utils.ts', 'src/models.ts']));
@@ -447,11 +473,11 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('return type inference: unwraps Promise<User> to User', async () => {
-    ctx.symbols.add('src/api.ts', 'fetchUser', 'Function:src/api.ts:fetchUser', 'Function', {
+    ctx.model.symbols.add('src/api.ts', 'fetchUser', 'Function:src/api.ts:fetchUser', 'Function', {
       returnType: 'Promise<User>',
     });
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
-    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
       ownerId: 'Class:src/models.ts:User',
     });
     ctx.importMap.set('src/index.ts', new Set(['src/api.ts', 'src/models.ts']));
@@ -481,9 +507,15 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('return type inference: skips when return type is primitive', async () => {
-    ctx.symbols.add('src/utils.ts', 'getCount', 'Function:src/utils.ts:getCount', 'Function', {
-      returnType: 'number',
-    });
+    ctx.model.symbols.add(
+      'src/utils.ts',
+      'getCount',
+      'Function:src/utils.ts:getCount',
+      'Function',
+      {
+        returnType: 'number',
+      },
+    );
     ctx.importMap.set('src/index.ts', new Set(['src/utils.ts']));
 
     const constructorBindings: FileConstructorBindings[] = [
@@ -511,10 +543,10 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('return type inference: skips ambiguous callees (multiple definitions)', async () => {
-    ctx.symbols.add('src/a.ts', 'getData', 'Function:src/a.ts:getData', 'Function', {
+    ctx.model.symbols.add('src/a.ts', 'getData', 'Function:src/a.ts:getData', 'Function', {
       returnType: 'User',
     });
-    ctx.symbols.add('src/b.ts', 'getData', 'Function:src/b.ts:getData', 'Function', {
+    ctx.model.symbols.add('src/b.ts', 'getData', 'Function:src/b.ts:getData', 'Function', {
       returnType: 'Repo',
     });
 
@@ -544,8 +576,8 @@ describe('processCallsFromExtracted', () => {
 
   it('return type inference: prefers constructor binding over return type', async () => {
     // If the callee IS a class, constructor binding wins (existing behavior)
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
-    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
       ownerId: 'Class:src/models.ts:User',
     });
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
@@ -574,18 +606,576 @@ describe('processCallsFromExtracted', () => {
     expect(rels[0].targetId).toBe('Method:src/models.ts:save');
   });
 
+  // ---- Phase 9: BindingAccumulator fallback for cross-file return types ----
+
+  it('Phase 9: BindingAccumulator fallback — binds variable to return type when SymbolTable has no returnType', async () => {
+    // getUser is in the SymbolTable but WITHOUT a returnType (e.g., inferred return type
+    // that the structure processor did not capture). The BindingAccumulator for
+    // src/api.ts has getUser → User as a file-scope binding.
+    ctx.model.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function', {
+      // No returnType provided — simulates a structure-processor gap
+    });
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    // namedImportMap: consumer.ts imports { getUser } from src/api.ts
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    // BindingAccumulator carries the TypeEnv-resolved binding from src/api.ts
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — SymbolTable return type takes precedence', async () => {
+    // When the SymbolTable DOES have a returnType, the accumulator should not override it.
+    ctx.model.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function', {
+      returnType: 'User',
+    });
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    // Accumulator has a conflicting (wrong) type — should be ignored
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'WrongType' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Should resolve via SymbolTable (User#save), not the wrong accumulator type
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — skips when callee not in namedImportMap', async () => {
+    // Callee is not tracked in namedImportMap (e.g. a local function), so accumulator
+    // lookup is skipped. No CALLS edge expected since there is no binding source.
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    // No namedImportMap entry for getUser
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    // Use a method name that is owned by User (requires receiver type resolution)
+    // but also exists on multiple types so fuzzy lookup is ambiguous without a
+    // receiver type. Add a second owner so that unconstrained fuzzy lookup won't
+    // match unambiguously.
+    ctx.model.symbols.add('src/other.ts', 'OtherClass', 'Class:src/other.ts:OtherClass', 'Class');
+    ctx.model.symbols.add('src/other.ts', 'save', 'Method:src/other.ts:save', 'Method', {
+      ownerId: 'Class:src/other.ts:OtherClass',
+    });
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Without accumulator fallback (no namedImportMap entry), x is untyped.
+    // Two methods named 'save' from unrelated types — fuzzy lookup is ambiguous → no edge.
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
+  it('Phase 9: BindingAccumulator fallback — unwraps Promise<User> type from accumulator', async () => {
+    // Accumulator stores raw type with Promise wrapper — extractReturnTypeName should unwrap it.
+    ctx.model.symbols.add('src/api.ts', 'fetchUser', 'Function:src/api.ts:fetchUser', 'Function');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['fetchUser', { sourcePath: 'src/api.ts', exportedName: 'fetchUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    // Accumulator stores raw Promise<User> as type — should be unwrapped
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'fetchUser', typeName: 'Promise<User>' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'fetchUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — skips primitive types from accumulator', async () => {
+    // Accumulator stores a primitive type — should not create a CALLS edge.
+    ctx.model.symbols.add('src/api.ts', 'getCount', 'Function:src/api.ts:getCount', 'Function');
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getCount', { sourcePath: 'src/api.ts', exportedName: 'getCount' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getCount', typeName: 'number' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'count', calleeName: 'getCount' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'toString',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'count',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Primitive type — no CALLS edge
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
+  it('Phase 9: BindingAccumulator fallback — handles aliased import (localName ≠ exportedName)', async () => {
+    // import { getUser as fetchUser } from './api' — namedImportMap maps localName to exportedName
+    ctx.model.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    // Local alias: fetchUser → api.ts:getUser
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['fetchUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        // calleeName is the LOCAL alias used at the call site
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'fetchUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  // ---- Phase 9: Tier gating — accumulator fallback respects resolution tiers ----
+
+  it('Phase 9 tier gating: same-file callable shadows imported callee — fallback skipped', async () => {
+    // consumer.ts defines a local getUser() AND imports getUser from api.ts.
+    // The local definition has no returnType annotation. The accumulator has
+    // getUser → User from api.ts. The fallback must NOT fire because the
+    // same-file definition is authoritative (tier: 'same-file').
+    ctx.model.symbols.add(
+      'src/consumer.ts',
+      'getUser',
+      'Function:src/consumer.ts:getUser',
+      'Function',
+    );
+    ctx.model.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function');
+    // Place User and save in non-imported files so import-scoped member-call resolution
+    // can't resolve save without a receiver type.
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.model.symbols.add('src/other.ts', 'OtherClass', 'Class:src/other.ts:OtherClass', 'Class');
+    ctx.model.symbols.add('src/other.ts', 'save', 'Method:src/other.ts:save', 'Method', {
+      ownerId: 'Class:src/other.ts:OtherClass',
+    });
+    // Only import api.ts — NOT models.ts, so save can't be found via import scope.
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Fallback must NOT fire — local getUser shadows imported getUser (tier: same-file).
+    // Without a receiver type, member-call 'save' is ambiguous globally → no edge.
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
+  it('Phase 9 tier gating: multiple callable candidates — fallback skipped', async () => {
+    // Two functions named getUser in different imported files — resolution is ambiguous
+    // (multiple candidates at 'import-scoped' tier). The accumulator carries a WRONG type
+    // (BadType). If the fallback fires, x gets typed as BadType and x.save() looks for
+    // BadType.save — which doesn't exist → 0 edges. If the fallback is correctly blocked,
+    // x has no receiver type at all, and save is ambiguous (two owners) → 0 edges.
+    // Either way, no CALLS edge. But we verify the accumulator's wrong type did NOT leak
+    // by checking that no ACCESSES edge to BadType is created.
+    ctx.model.symbols.add('src/api-v1.ts', 'getUser', 'Function:src/api-v1.ts:getUser', 'Function');
+    ctx.model.symbols.add('src/api-v2.ts', 'getUser', 'Function:src/api-v2.ts:getUser', 'Function');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.model.symbols.add('src/other.ts', 'OtherClass', 'Class:src/other.ts:OtherClass', 'Class');
+    ctx.model.symbols.add('src/other.ts', 'save', 'Method:src/other.ts:save', 'Method', {
+      ownerId: 'Class:src/other.ts:OtherClass',
+    });
+    // BadType has no methods — if the accumulator wrongly types x as BadType,
+    // the receiver type is set but save won't resolve at all.
+    ctx.model.symbols.add('src/bad.ts', 'BadType', 'Class:src/bad.ts:BadType', 'Class');
+    ctx.importMap.set(
+      'src/consumer.ts',
+      new Set(['src/api-v1.ts', 'src/api-v2.ts', 'src/models.ts']),
+    );
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api-v1.ts', exportedName: 'getUser' }]]),
+    );
+
+    // Accumulator carries WRONG type — proves gating blocks the fallback
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api-v1.ts', [{ scope: '', varName: 'getUser', typeName: 'BadType' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // If gating works: x has no receiver type, save may or may not resolve via
+    // import scope (separate mechanism). Key assertion: BadType never appears
+    // as an ACCESSES target — proving the accumulator's wrong type did not leak.
+    const accesses = graph.relationships.filter(
+      (r) => r.type === 'ACCESSES' && r.targetId === 'Class:src/bad.ts:BadType',
+    );
+    expect(accesses).toHaveLength(0);
+  });
+
+  it('Phase 9 tier gating: no callable candidates but named import — fallback fires', async () => {
+    // getUser is not in the SymbolTable at all (e.g. definition not parsed).
+    // namedImportMap has the import, accumulator has the type. Fallback should fire.
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // No SymbolTable entry at all → tiered is null, fallback fires via accumulator.
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9 tier gating: single same-file callable without returnType — fallback skipped', async () => {
+    // consumer.ts has a local getUser() without returnType annotation.
+    // No import of getUser exists. The accumulator has getUser → User from api.ts.
+    // Tier is 'same-file' so fallback must NOT fire.
+    ctx.model.symbols.add(
+      'src/consumer.ts',
+      'getUser',
+      'Function:src/consumer.ts:getUser',
+      'Function',
+    );
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    // Add a second 'save' so fuzzy lookup is ambiguous without receiver type
+    ctx.model.symbols.add('src/other.ts', 'OtherClass', 'Class:src/other.ts:OtherClass', 'Class');
+    ctx.model.symbols.add('src/other.ts', 'save', 'Method:src/other.ts:save', 'Method', {
+      ownerId: 'Class:src/other.ts:OtherClass',
+    });
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Same-file callable — local is authoritative even without annotation.
+    // Fuzzy 'save' lookup is ambiguous → no edge.
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
   // ---- Scope-aware constructor bindings (Phase 3) ----
 
   it('receiverKey collision: same method name in different classes does not collide', async () => {
     // User.save@100 and Repo.save@200 are two methods named "save" in different classes.
     // Each has a local variable "db" pointing to a different type.
     // Without @startIndex in the key, the second binding would overwrite the first.
-    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
-    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
-    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', {
-      ownerId: 'Class:src/db/Database.ts:Database',
-    });
-    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', {
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'Database',
+      'Class:src/db/Database.ts:Database',
+      'Class',
+    );
+    ctx.model.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'query',
+      'Method:src/db/Database.ts:query',
+      'Method',
+      {
+        ownerId: 'Class:src/db/Database.ts:Database',
+      },
+    );
+    ctx.model.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', {
       ownerId: 'Class:src/db/Cache.ts:Cache',
     });
     ctx.importMap.set('src/models/User.ts', new Set(['src/db/Database.ts']));
@@ -638,10 +1228,21 @@ describe('processCallsFromExtracted', () => {
 
   it('receiverKey collision: same scope funcName + same varName + same type resolves (non-ambiguous)', async () => {
     // Two save@* scopes both bind "db" to the same type — not ambiguous, should resolve.
-    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
-    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', {
-      ownerId: 'Class:src/db/Database.ts:Database',
-    });
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'Database',
+      'Class:src/db/Database.ts:Database',
+      'Class',
+    );
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'query',
+      'Method:src/db/Database.ts:query',
+      'Method',
+      {
+        ownerId: 'Class:src/db/Database.ts:Database',
+      },
+    );
     ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts']));
 
     const constructorBindings: FileConstructorBindings[] = [
@@ -673,12 +1274,23 @@ describe('processCallsFromExtracted', () => {
 
   it('receiverKey collision: same scope funcName + same varName + different types → ambiguous, no CALLS edge', async () => {
     // Two save@* scopes in the same file bind "db" to different types — truly ambiguous.
-    ctx.symbols.add('src/db/Database.ts', 'Database', 'Class:src/db/Database.ts:Database', 'Class');
-    ctx.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
-    ctx.symbols.add('src/db/Database.ts', 'query', 'Method:src/db/Database.ts:query', 'Method', {
-      ownerId: 'Class:src/db/Database.ts:Database',
-    });
-    ctx.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', {
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'Database',
+      'Class:src/db/Database.ts:Database',
+      'Class',
+    );
+    ctx.model.symbols.add('src/db/Cache.ts', 'Cache', 'Class:src/db/Cache.ts:Cache', 'Class');
+    ctx.model.symbols.add(
+      'src/db/Database.ts',
+      'query',
+      'Method:src/db/Database.ts:query',
+      'Method',
+      {
+        ownerId: 'Class:src/db/Database.ts:Database',
+      },
+    );
+    ctx.model.symbols.add('src/db/Cache.ts', 'query', 'Method:src/db/Cache.ts:query', 'Method', {
       ownerId: 'Class:src/db/Cache.ts:Cache',
     });
     ctx.importMap.set('src/service.ts', new Set(['src/db/Database.ts', 'src/db/Cache.ts']));
@@ -711,9 +1323,9 @@ describe('processCallsFromExtracted', () => {
   });
 
   it('scope-aware bindings: same varName in different functions resolves to correct type', async () => {
-    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
-    ctx.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');
-    ctx.symbols.add('src/models.ts', 'save', 'Function:src/models.ts:save', 'Function');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');
+    ctx.model.symbols.add('src/models.ts', 'save', 'Function:src/models.ts:save', 'Function');
     ctx.importMap.set('src/index.ts', new Set(['src/models.ts']));
 
     const constructorBindings: FileConstructorBindings[] = [
@@ -772,12 +1384,16 @@ describe('processCalls — Phase P class lookup fallback', () => {
     const dogId = 'Class:models/Dog.java:Dog';
     const fetchBallId = 'Method:models/Dog.java:fetchBall';
 
-    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
-    ctx.symbols.add(dogFile, 'Dog', dogId, 'Class');
-    ctx.symbols.add(dogFile, 'fetchBall', fetchBallId, 'Method', { ownerId: dogId });
+    ctx.model.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.model.symbols.add(dogFile, 'Dog', dogId, 'Class');
+    ctx.model.symbols.add(dogFile, 'fetchBall', fetchBallId, 'Method', { ownerId: dogId });
     ctx.importMap.set(appFile, new Set([contractFile, dogFile]));
 
-    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+    // SM-20 wire-up: resolveMemberCall's constructor-override branch queries
+    // the model directly (ctx.model.types.lookupClassByName), not the
+    // legacy SymbolTable wrapper. Spy on the model method to preserve the
+    // test's intent: verify which class names are looked up during override.
+    const classLookupSpy = vi.spyOn(ctx.model.types, 'lookupClassByName');
 
     await processCalls(
       graph,
@@ -818,16 +1434,26 @@ class App {
     const otherDogFile = 'models/OtherDog.java';
     const petId = 'Interface:models/Pet.java:Pet';
 
-    ctx.symbols.add(contractFile, 'Pet', petId, 'Interface');
-    ctx.symbols.add(dogFile, 'fetchBall', 'Method:models/Dog.java:fetchBall', 'Method', {
+    ctx.model.symbols.add(contractFile, 'Pet', petId, 'Interface');
+    ctx.model.symbols.add(dogFile, 'fetchBall', 'Method:models/Dog.java:fetchBall', 'Method', {
       ownerId: 'Class:models/Dog.java:Dog',
     });
-    ctx.symbols.add(otherDogFile, 'fetchBall', 'Method:models/OtherDog.java:fetchBall', 'Method', {
-      ownerId: 'Class:models/OtherDog.java:OtherDog',
-    });
+    ctx.model.symbols.add(
+      otherDogFile,
+      'fetchBall',
+      'Method:models/OtherDog.java:fetchBall',
+      'Method',
+      {
+        ownerId: 'Class:models/OtherDog.java:OtherDog',
+      },
+    );
     ctx.importMap.set(appFile, new Set([contractFile, dogFile, otherDogFile]));
 
-    const classLookupSpy = vi.spyOn(ctx.symbols, 'lookupClassByName');
+    // SM-20 wire-up: resolveMemberCall's constructor-override branch queries
+    // the model directly (ctx.model.types.lookupClassByName), not the
+    // legacy SymbolTable wrapper. Spy on the model method to preserve the
+    // test's intent: verify which class names are looked up during override.
+    const classLookupSpy = vi.spyOn(ctx.model.types, 'lookupClassByName');
 
     await processCalls(
       graph,
@@ -1521,10 +2147,12 @@ describe('processCallsFromExtracted — interface dispatch', () => {
     const implAExecuteId = 'Method:impl/A.java:execute';
     const implBExecuteId = 'Method:impl/B.java:execute';
 
-    ctx.symbols.add(ifaceFile, 'Action', actionIfaceId, 'Interface');
-    ctx.symbols.add(ifaceFile, 'execute', ifaceExecuteId, 'Method', { ownerId: actionIfaceId });
-    ctx.symbols.add(implA, 'execute', implAExecuteId, 'Method');
-    ctx.symbols.add(implB, 'execute', implBExecuteId, 'Method');
+    ctx.model.symbols.add(ifaceFile, 'Action', actionIfaceId, 'Interface');
+    ctx.model.symbols.add(ifaceFile, 'execute', ifaceExecuteId, 'Method', {
+      ownerId: actionIfaceId,
+    });
+    ctx.model.symbols.add(implA, 'execute', implAExecuteId, 'Method');
+    ctx.model.symbols.add(implB, 'execute', implBExecuteId, 'Method');
     ctx.importMap.set(runnerFile, new Set([ifaceFile]));
 
     graph.addNode({
@@ -1560,8 +2188,8 @@ describe('processCallsFromExtracted — interface dispatch', () => {
       { filePath: 'impl/B.java', className: 'B', parentName: 'Action', kind: 'implements' },
     ];
     // Need class symbols for heritage map to resolve implementors
-    ctx.symbols.add('impl/A.java', 'A', 'Class:impl/A.java:A', 'Class');
-    ctx.symbols.add('impl/B.java', 'B', 'Class:impl/B.java:B', 'Class');
+    ctx.model.symbols.add('impl/A.java', 'A', 'Class:impl/A.java:A', 'Class');
+    ctx.model.symbols.add('impl/B.java', 'B', 'Class:impl/B.java:B', 'Class');
     const heritageMap = buildHeritageMap(heritage, ctx);
 
     const calls: ExtractedCall[] = [
@@ -1613,9 +2241,9 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     const childId = 'class:models/Child.java:Child';
     const parentMethodId = 'method:models/Parent.java:parentMethod';
 
-    ctx.symbols.add(parentFile, 'Parent', parentId, 'Class');
-    ctx.symbols.add(childFile, 'Child', childId, 'Class');
-    ctx.symbols.add(parentFile, 'parentMethod', parentMethodId, 'Method', {
+    ctx.model.symbols.add(parentFile, 'Parent', parentId, 'Class');
+    ctx.model.symbols.add(childFile, 'Child', childId, 'Class');
+    ctx.model.symbols.add(parentFile, 'parentMethod', parentMethodId, 'Method', {
       ownerId: parentId,
       returnType: 'String',
     });
@@ -1671,26 +2299,28 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
   });
 
   it('D0 miss: heritageMap provided but method not in MRO chain falls through to D1-D4', async () => {
-    // Setup: Class Obj has a method `doWork` that is findable via tiered
-    // resolution (import-scoped lookup), but intentionally NOT registered in
-    // methodByOwner (no `ownerId` property). heritageMap is provided but has
-    // no ancestry entry for class:Obj. Expected flow:
-    //   D0: lookupMethodByOwner(classId, 'doWork') → undefined
-    //       heritageMap.getAncestors(classId) → []
-    //       lookupMethodByOwnerWithMRO returns undefined → D0 miss
-    //   D1-D4: receiver type resolves to Obj; D2 widens via lookupFuzzy;
-    //          D3 file-filter picks the only candidate in Obj's file.
+    // Setup: Class Obj exists in the same file as a `doWork` Method. The
+    // Method is registered under a DIFFERENT ownerId (`class:OtherOwner`)
+    // so lookupMethodByOwner('class:Obj', 'doWork') misses on the direct
+    // lookup. heritageMap is empty for class:Obj, so MRO walk yields no
+    // parents. Expected flow:
+    //   D0: lookupMethodByOwner + MRO walk both miss → D0 fallthrough
+    //   D1-D4: receiver type resolves to Obj; D3 file-filter picks the
+    //          `doWork` candidate via its co-located file path.
     // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
     const classFile = 'src/models/Obj.java';
     const appFile = 'src/services/App.java';
     const classId = 'class:models/Obj.java:Obj';
     const doWorkId = 'method:models/Obj.java:doWork';
 
-    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
-    // Intentionally omit ownerId so methodByOwner has no entry — forces D0 miss.
-    ctx.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
+    ctx.model.symbols.add(classFile, 'Obj', classId, 'Class');
+    // Post-A4: Method+ownerId routes through methodsByName. Using a
+    // different ownerId than the receiver type forces the direct
+    // lookupMethodByOwner miss that the test exercises.
+    ctx.model.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
       returnType: 'void',
       parameterCount: 0,
+      ownerId: 'class:models/Obj.java:OtherOwner',
     });
     ctx.importMap.set(appFile, new Set([classFile]));
 
@@ -1781,15 +2411,15 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     const methodIntId = 'method:models/Obj.java:method(int)';
     const methodStringId = 'method:models/Obj.java:method(String)';
 
-    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    ctx.model.symbols.add(classFile, 'Obj', classId, 'Class');
     // int overload added FIRST so lookupMethodByOwner would return it.
-    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+    ctx.model.symbols.add(classFile, 'method', methodIntId, 'Method', {
       ownerId: classId,
       returnType: 'String',
       parameterCount: 1,
       parameterTypes: ['int'],
     });
-    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+    ctx.model.symbols.add(classFile, 'method', methodStringId, 'Method', {
       ownerId: classId,
       returnType: 'String',
       parameterCount: 1,
@@ -1844,16 +2474,16 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     const methodIntId = 'method:models/Obj.java:method(int)';
     const methodStringId = 'method:models/Obj.java:method(String)';
 
-    ctx.symbols.add(classFile, 'Obj', classId, 'Class');
+    ctx.model.symbols.add(classFile, 'Obj', classId, 'Class');
     // int overload added FIRST — without the guard this would be returned by
     // lookupMethodByOwner's same-return-type fast path.
-    ctx.symbols.add(classFile, 'method', methodIntId, 'Method', {
+    ctx.model.symbols.add(classFile, 'method', methodIntId, 'Method', {
       ownerId: classId,
       returnType: 'String',
       parameterCount: 1,
       parameterTypes: ['int'],
     });
-    ctx.symbols.add(classFile, 'method', methodStringId, 'Method', {
+    ctx.model.symbols.add(classFile, 'method', methodStringId, 'Method', {
       ownerId: classId,
       returnType: 'String',
       parameterCount: 1,
@@ -1899,13 +2529,13 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     const authSaveId = 'method:auth_mod.py:save';
     const userSaveId = 'method:user_mod.py:save';
 
-    ctx.symbols.add(authModFile, 'User', authUserId, 'Class');
-    ctx.symbols.add(userModFile, 'User', userUserId, 'Class');
-    ctx.symbols.add(authModFile, 'save', authSaveId, 'Method', {
+    ctx.model.symbols.add(authModFile, 'User', authUserId, 'Class');
+    ctx.model.symbols.add(userModFile, 'User', userUserId, 'Class');
+    ctx.model.symbols.add(authModFile, 'save', authSaveId, 'Method', {
       ownerId: authUserId,
       returnType: 'bool',
     });
-    ctx.symbols.add(userModFile, 'save', userSaveId, 'Method', {
+    ctx.model.symbols.add(userModFile, 'save', userSaveId, 'Method', {
       ownerId: userUserId,
       returnType: 'bool',
     });
@@ -1952,5 +2582,430 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
     );
     expect(authSave).toBeDefined();
     expect(userSave).toBeUndefined();
+  });
+
+  it('module-alias guard (real homonym): both files imported, alias narrows typed member call to aliased file', async () => {
+    // When both homonym files are imported by the caller, import-scoped
+    // tiering no longer narrows the tiered pool — the dispatcher sees two
+    // `save` candidates. Module-alias narrowing is the only remaining
+    // disambiguation signal. The typed-member branch must consult the alias
+    // map (as a guarded fallback after owner/file-scoped resolvers fail) or
+    // null-route silently.
+    const authModFile = 'src/auth_mod.py';
+    const userModFile = 'src/user_mod.py';
+    const appFile = 'src/app.py';
+    const authUserId = 'class:src/auth_mod.py:User';
+    const userUserId = 'class:src/user_mod.py:User';
+    const authSaveId = 'method:src/auth_mod.py:save';
+    const userSaveId = 'method:src/user_mod.py:save';
+
+    ctx.model.symbols.add(authModFile, 'User', authUserId, 'Class');
+    ctx.model.symbols.add(userModFile, 'User', userUserId, 'Class');
+    ctx.model.symbols.add(authModFile, 'save', authSaveId, 'Method', {
+      ownerId: authUserId,
+      returnType: 'bool',
+    });
+    ctx.model.symbols.add(userModFile, 'save', userSaveId, 'Method', {
+      ownerId: userUserId,
+      returnType: 'bool',
+    });
+    // BOTH files imported by app.py — creates real ambiguity in tiered pool.
+    ctx.importMap.set(appFile, new Set([authModFile, userModFile]));
+    // Alias: `auth` points to auth_mod.py.
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authModFile]]));
+
+    // Call `auth.User.save(user)` — receiverName is `auth` (matches alias),
+    // receiverTypeName is `User` (the class). This is the class-as-receiver
+    // static-style pattern parse-worker emits when it sees `auth.User.save(x)`.
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Module alias narrows to auth_mod.py. Without it the dispatcher would
+    // null-route because both User classes own a `save` method and there's
+    // no heritage or overload signal to pick between them.
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(authSaveId);
+  });
+
+  it('owner-scoped wins over alias narrowing: unique owner-scoped answer beats coincidental alias on unrelated file', async () => {
+    // Receiver type `User` has exactly one definition, in models.py. Module
+    // alias `auth → auth.py` exists (because the caller also imports auth.py
+    // for its own reasons), and auth.py contains an unrelated `Widget` class
+    // with a homonym `save` method. The caller has `receiverName='auth'`
+    // (e.g., a local variable coincidentally named `auth`),
+    // `receiverTypeName='User'`. Owner-scoped resolution must win — alias
+    // narrowing must not short-circuit a unique correct answer with an
+    // unrelated homonym from the aliased file.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const authWidgetId = 'class:src/auth.py:Widget';
+    const modelsSaveId = 'method:src/models.py:User:save';
+    const authSaveId = 'method:src/auth.py:Widget:save';
+
+    ctx.model.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.model.symbols.add(authFile, 'Widget', authWidgetId, 'Class');
+    ctx.model.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    ctx.model.symbols.add(authFile, 'save', authSaveId, 'Method', {
+      ownerId: authWidgetId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Owner-scoped runs first and uniquely resolves User.save to models.py.
+    // Alias narrowing never fires because the scoped resolver already won.
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
+  it('alias narrowing rejects unrelated target type: null-route when alias file does not hold receiver type', async () => {
+    // Receiver type `User` lives only in models.py, but has no `save` method
+    // defined. Alias `auth → auth.py`, and auth.py contains an unrelated
+    // `Widget.save`. Owner-scoped and file-scoped resolvers return null (no
+    // save on User). Without the type-file verification guard, alias
+    // narrowing would pick auth.py's `Widget.save` — a cross-type false
+    // positive. With the guard, auth.py is not in the receiver type's
+    // defining-files set (which is {models.py}), so alias narrowing bails
+    // and SM-10 R3 null-routes.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const authWidgetId = 'class:src/auth.py:Widget';
+    const authSaveId = 'method:src/auth.py:Widget:save';
+
+    ctx.model.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.model.symbols.add(authFile, 'Widget', authWidgetId, 'Class');
+    // NO save on User — deliberately absent to force null-route.
+    ctx.model.symbols.add(authFile, 'save', authSaveId, 'Method', {
+      ownerId: authWidgetId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 1,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    // Null-route: no CALLS edge. The type-file guard prevented the alias
+    // from leaking auth.py's Widget.save onto a User-typed receiver.
+    expect(rels).toHaveLength(0);
+  });
+
+  it('alias fallthrough: receiverName not in alias map falls through to owner-scoped resolver', async () => {
+    // Receiver variable `user` does NOT match any alias entry (alias only
+    // covers `auth`). Owner-scoped resolution must run to completion and
+    // pick models.py's User.save — the alias helper's early-bail must not
+    // interfere with unrelated typed member calls. This exercises the 99%
+    // hot path where alias narrowing is irrelevant.
+    const modelsFile = 'src/models.py';
+    const authFile = 'src/auth.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const modelsSaveId = 'method:src/models.py:User:save';
+
+    ctx.model.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.model.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    ctx.importMap.set(appFile, new Set([modelsFile, authFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', authFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverName: 'user', // NOT 'auth' — no alias match
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
+  it('alias fallthrough: alias target file has no matching method falls through to owner-scoped', async () => {
+    // Alias `auth → empty.py` where empty.py exists in the import map but
+    // has no `save` method at all. Owner-scoped finds models.py's User.save
+    // uniquely. Even if the type-file guard let alias narrowing fire (it
+    // won't, because empty.py isn't in the receiver type's files), the
+    // helper would return null and resolution must still succeed.
+    const modelsFile = 'src/models.py';
+    const emptyFile = 'src/empty.py';
+    const appFile = 'src/app.py';
+    const modelsUserId = 'class:src/models.py:User';
+    const modelsSaveId = 'method:src/models.py:User:save';
+
+    ctx.model.symbols.add(modelsFile, 'User', modelsUserId, 'Class');
+    ctx.model.symbols.add(modelsFile, 'save', modelsSaveId, 'Method', {
+      ownerId: modelsUserId,
+      returnType: 'None',
+    });
+    // empty.py: no symbols at all.
+    ctx.importMap.set(appFile, new Set([modelsFile, emptyFile]));
+    ctx.moduleAliasMap.set(appFile, new Map([['auth', emptyFile]]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'save',
+        sourceId: 'Function:src/app.py:run',
+        argCount: 0,
+        callForm: 'member',
+        receiverName: 'auth',
+        receiverTypeName: 'User',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(modelsSaveId);
+  });
+
+  it('constructor overload disambiguation: same-arity ownerless constructors picked via preComputedArgTypes', async () => {
+    // When two homonym constructors across different files have the same
+    // arity but different parameter types, `resolveStaticCall` correctly
+    // bails (step 3 ambiguity → step 4 bail because the tiered pool contains
+    // Constructor nodes). Step 4.5 then runs overload/arg-type disambiguation
+    // on the constructor-filtered pool, picking the string overload when the
+    // caller supplies matching `argTypes` / `preComputedArgTypes`.
+    const userFile = 'src/models/User.ts';
+    const repoFile = 'src/models/Repo.ts';
+    const appFile = 'src/app.ts';
+    const userClassId = 'Class:src/models/User.ts:User';
+    const repoClassId = 'Class:src/models/Repo.ts:User';
+    const userCtorId = 'Constructor:src/models/User.ts:User(string)';
+    const repoCtorId = 'Constructor:src/models/Repo.ts:User(number)';
+
+    ctx.model.symbols.add(userFile, 'User', userClassId, 'Class');
+    ctx.model.symbols.add(repoFile, 'User', repoClassId, 'Class');
+    ctx.model.symbols.add(userFile, 'User', userCtorId, 'Constructor', {
+      ownerId: userClassId,
+      parameterCount: 1,
+      parameterTypes: ['string'],
+    });
+    ctx.model.symbols.add(repoFile, 'User', repoCtorId, 'Constructor', {
+      ownerId: repoClassId,
+      parameterCount: 1,
+      parameterTypes: ['number'],
+    });
+    ctx.importMap.set(appFile, new Set([userFile, repoFile]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'User',
+        sourceId: 'Function:src/app.ts:main',
+        argCount: 1,
+        callForm: 'constructor',
+        argTypes: ['string'],
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe(userCtorId);
+  });
+
+  it('constructor overload disambiguation: null-routes when disambiguation cannot pick unique survivor', async () => {
+    // Control test for Finding 2 fix: when `preComputedArgTypes` does not
+    // match any candidate uniquely, the dispatcher must null-route rather
+    // than pick arbitrarily. Preserves SM-10 R3.
+    const userFile = 'src/models/User.ts';
+    const repoFile = 'src/models/Repo.ts';
+    const appFile = 'src/app.ts';
+    const userClassId = 'Class:src/models/User.ts:User';
+    const repoClassId = 'Class:src/models/Repo.ts:User';
+    const userCtorId = 'Constructor:src/models/User.ts:User(string)';
+    const repoCtorId = 'Constructor:src/models/Repo.ts:User(string)';
+
+    ctx.model.symbols.add(userFile, 'User', userClassId, 'Class');
+    ctx.model.symbols.add(repoFile, 'User', repoClassId, 'Class');
+    // Both constructors take `string` — genuinely ambiguous.
+    ctx.model.symbols.add(userFile, 'User', userCtorId, 'Constructor', {
+      ownerId: userClassId,
+      parameterCount: 1,
+      parameterTypes: ['string'],
+    });
+    ctx.model.symbols.add(repoFile, 'User', repoCtorId, 'Constructor', {
+      ownerId: repoClassId,
+      parameterCount: 1,
+      parameterTypes: ['string'],
+    });
+    ctx.importMap.set(appFile, new Set([userFile, repoFile]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: appFile,
+        calledName: 'User',
+        sourceId: 'Function:src/app.ts:main',
+        argCount: 1,
+        callForm: 'constructor',
+        argTypes: ['string'],
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+});
+
+// ---- processAssignmentsFromExtracted: Phase 9 accumulator fallback ----
+
+describe('processAssignmentsFromExtracted', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('Phase 9: accumulator fallback resolves receiver type for ACCESSES write edge', () => {
+    // getUser is in the SymbolTable WITHOUT a returnType. The accumulator
+    // carries getUser → User from the source file. The constructor binding
+    // binds x = getUser(). The assignment x.address = value should produce
+    // an ACCESSES write edge to User.address via the accumulator fallback.
+    ctx.model.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function');
+    ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.model.symbols.add(
+      'src/models.ts',
+      'address',
+      'Property:src/models.ts:address',
+      'Property',
+      {
+        ownerId: 'Class:src/models.ts:User',
+      },
+    );
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const assignments: ExtractedAssignment[] = [
+      {
+        filePath: 'src/consumer.ts',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverText: 'x',
+        propertyName: 'address',
+      },
+    ];
+
+    processAssignmentsFromExtracted(graph, assignments, ctx, constructorBindings, acc);
+
+    const accesses = graph.relationships.filter(
+      (r) => r.type === 'ACCESSES' && r.reason === 'write',
+    );
+    expect(accesses).toHaveLength(1);
+    expect(accesses[0].targetId).toBe('Property:src/models.ts:address');
+  });
+});
+
+// ---- D2 widen: module-alias + lookupCallableByName resolves method in aliased file ----
+
+describe('D2 widen path: lookupCallableByName via module alias', () => {
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let ctx: ResolutionContext;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+    ctx = createResolutionContext();
+  });
+
+  it('resolves method via module alias widen using lookupCallableByName', async () => {
+    // Python pattern: `import auth; auth.login()` — auth is a module alias
+    // pointing to auth.py. login() is defined only in auth.py (not imported
+    // by consumer.py). The D2 widen path should find login via the global
+    // callable index filtered to the aliased module file.
+    ctx.model.symbols.add('src/auth.py', 'login', 'Function:src/auth.py:login', 'Function');
+    // Consumer has a same-file function that shadows 'login' at Tier 1
+    ctx.model.symbols.add('src/consumer.py', 'login', 'Function:src/consumer.py:login', 'Function');
+    // Module alias: consumer.py → auth → src/auth.py
+    ctx.moduleAliasMap.set('src/consumer.py', new Map([['auth', 'src/auth.py']]));
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.py',
+        calledName: 'login',
+        sourceId: 'Function:src/consumer.py:main',
+        receiverName: 'auth',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    // Should resolve to auth.py's login, NOT consumer.py's same-file shadow
+    expect(rels[0].targetId).toBe('Function:src/auth.py:login');
   });
 });

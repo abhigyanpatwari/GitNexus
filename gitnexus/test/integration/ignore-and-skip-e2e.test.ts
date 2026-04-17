@@ -8,7 +8,7 @@ import {
 } from '../../src/core/ingestion/filesystem-walker.js';
 import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';

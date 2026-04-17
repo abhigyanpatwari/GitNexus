@@ -2,6 +2,81 @@
 
 All notable changes to GitNexus will be documented in this file.
 
+## [1.6.1] - 2026-04-13
+
+### Added
+- **Service group extractor expansion** — manifest extractor and broader extractor coverage (2/4 of #606 split) (#796)
+- **Dart call patterns** for `await`, cascade, lambda, and widget-tree contexts (#801)
+
+### Fixed
+- **Stack overflow and memory exhaustion** on large repository analysis (#814)
+- **`tree-sitter-dart` install crash** — switched from git URL to npm tarball (#811)
+- **Generic TypeScript awaited function calls** missing from the call graph (#804)
+- **Runtime dependency on `file:../gitnexus-shared`** removed from the published package (#803)
+- **Ruby `singleton_class` context** preserved during sequential parsing (#774)
+
+### Changed
+- **DAG-based ingestion pipeline architecture** — pipeline phases now declare typed dependencies and run via a topologically sorted DAG; container-node logic extracted to `LanguageProvider`. Includes hardened lifecycle (try/finally cleanup, error wrapping, cycle reporting), tightened `ParseOutput.exportedTypeMap` immutability, and corrected phase dependencies (#809)
+
+## [1.6.0] - 2026-04-12
+
+### Added
+- **SemanticModel architecture refactor (SM-8 through SM-19)** — extracted registries into `model/` module with ISP-compliant interfaces: TypeRegistry, MethodRegistry, FieldRegistry, RegistrationTable, ResolutionContext (#786)
+  - HeritageMap built from accumulated `ExtractedHeritage[]` for MRO-aware resolution (#739)
+  - `lookupMethodByOwnerWithMRO` using HeritageMap for cross-class method dispatch (#740)
+  - MRO fast path before D2 fuzzy widening in call resolution (#741)
+  - BindingAccumulator for cross-file return type propagation (#743, #763)
+  - Restructured `resolveUncached` replacing `lookupFuzzy` data source for all tiers (#764)
+  - Deleted `lookupFuzzy`, `lookupFuzzyCallable`, `globalIndex`, `callableIndex` — replaced with structured lookups (#769)
+  - Deleted `resolveCallTarget` god-method — replaced with thin dispatcher delegating to `resolveMemberCall` (#744), `resolveStaticCall` (#754), `resolveFreeCall` (#756) (#770)
+- **Service group infrastructure** — service boundary detection, contract extractors, sync pipeline, CLI/MCP tools, monorepo fixture; bridge.lbug storage and contract matching expansion (#795)
+- **C# interface-to-interface heritage** capture (#789)
+- **Vue SFC support** with destructured call result tracking (#604)
+- **Java method reference** resolution — `obj::method` as call sites (#622)
+- **C/C++ MethodExtractor** config with pure virtual detection (#617)
+- **MethodExtractor configs** for Python, PHP, Swift, Dart, Rust, Ruby (#624)
+- **METHOD_IMPLEMENTS edges** with overload disambiguation and MethodExtractor unification (#642)
+- **Same-arity overload disambiguation** via type-hash suffix (#658)
+- **`GITNEXUS_HOME` env var** to customize global directory (#746)
+- **Verbose analyze output** prints skipped large file paths (#745)
+- **Class name lookup index** for O(1) qualified lookups (#707, #716)
+- **`lookupMethodByOwner` index** for O(1) cross-class chain resolution (#665)
+- **Fuzzy lookup counters** for performance visibility (#708)
+
+### Fixed
+- **Stack overflow on large PHP files** — iterative AST traversal (#783)
+- **Large repository graph loading** failure (#732)
+- **Windows multi-repo switching** — false 404 errors and stale repo context (#633)
+- **`detect_changes` diff mapping** — map diff hunks to symbol line ranges (#779)
+- **HTTP client vs Express route detection** and Spring interface attribution (#780)
+- **VECTOR extension** not loaded during DB init for semantic search (#782)
+- **tree-sitter-swift** postinstall patch for macOS ARM64 (#788)
+- **tree-sitter-c** peer dependency conflict pinned (#723)
+- **Constructor indexing** in methodByOwner (#694, #753)
+- **Named binding processor** — `lookupExact` replaced with `lookupExactAll` (#755)
+- **`.gitnexusignore` negation patterns** now respected (#654)
+- **MCP setup** prefers global gitnexus binary over npx (#653)
+- **CORS rejection** returns clean error instead of 500 (#646)
+- **Array.push stack overflow** — replaced spread with loop (#650)
+- **MCP stdout silencing** prevents embedder/pool-adapter conflicts (#645)
+- **Web heartbeat** — graceful reconnection replaces aggressive disconnect (#643)
+- **Web repo scoping** — backend calls scoped to active repo (#644)
+- **OpenCode config path** and FTS extension load order (#781)
+- **OnboardingGuide** dev-mode serve command corrected (#725)
+- **Security issues** and critical bugs from code review (#709)
+
+### Changed
+- Replaced class-type fuzzy lookups with structured indices in type-env (#733, #734, #736)
+- Extracted `CLASS_LIKE_TYPES` constant (#693)
+
+## [1.5.3] - 2026-04-01
+
+### Added
+- **TypeScript/JavaScript MethodExtractor** config (#588)
+
+### Fixed
+- **Wiki Azure OpenAI** compat and HTML viewer script injection (#618)
+
 ## [1.5.2] - 2026-04-01
 
 ### Fixed

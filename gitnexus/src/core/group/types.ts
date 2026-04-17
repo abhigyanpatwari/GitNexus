@@ -1,5 +1,5 @@
 export type ContractType = 'http' | 'grpc' | 'topic' | 'lib' | 'custom';
-export type MatchType = 'exact' | 'manifest' | 'bm25' | 'embedding';
+export type MatchType = 'exact' | 'manifest' | 'wildcard' | 'bm25' | 'embedding';
 export type ContractRole = 'provider' | 'consumer';
 
 export interface GroupConfig {
@@ -130,4 +130,18 @@ export interface OutOfScopeLink {
   to: string;
   contractId: string;
   confidence: number;
+}
+
+/** Opaque handle to an open bridge LadybugDB. */
+export interface BridgeHandle {
+  /** Internal — do not access directly. */
+  readonly _db: unknown;
+  readonly _conn: unknown;
+  readonly groupDir: string;
+}
+
+export interface BridgeMeta {
+  version: number;
+  generatedAt: string;
+  missingRepos: string[];
 }

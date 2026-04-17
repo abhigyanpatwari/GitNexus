@@ -8,8 +8,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 20
           cache: npm
@@ -21,8 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 20
           cache: npm
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup-gitnexus
       - run: npx tsc --noEmit
         working-directory: gitnexus
@@ -43,7 +43,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup-gitnexus-web
       - run: npx tsc -b --noEmit
         working-directory: gitnexus-web
+
+  # Enforces the convention documented in CONTRIBUTING.md → "GitHub Actions —
+  # Concurrency Convention":
+  #   1. Every entry-point (non-reusable) workflow declares a top-level
+  #      `concurrency:` block.
+  #   2. Reusable workflows (`on: workflow_call` only) do NOT declare one —
+  #      they inherit concurrency from the caller.
+  #   3. The concurrency group key starts with `${{ github.workflow }}` or
+  #      the literal `CI-` prefix (the documented ci.yml exception for
+  #      reusable-workflow-safe grouping).
+  # Reusability is detected by parsing each workflow's `on:` block, not an
+  # allowlist, so new reusable workflows never produce false positives.
+  workflow-convention:
+    name: Workflow concurrency convention
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Validate workflow concurrency convention
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check-workflow-concurrency.py .github/workflows
