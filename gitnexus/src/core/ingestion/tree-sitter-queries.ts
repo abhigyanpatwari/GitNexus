@@ -61,6 +61,22 @@ export const TYPESCRIPT_QUERIES = `
       name: (identifier) @name
       value: (function_expression)))) @definition.function
 
+; Variable/constant declarations (non-function values).
+; Overlap with @definition.function patterns is handled by parse-worker dedup.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name)) @definition.const
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name))) @definition.const
+
+; var declarations (mutable, function-scoped)
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name)) @definition.variable
+
 (import_statement
   source: (string) @import.source) @import
 
@@ -203,6 +219,22 @@ export const JAVASCRIPT_QUERIES = `
       name: (identifier) @name
       value: (function_expression)))) @definition.function
 
+; Variable/constant declarations (non-function values).
+; Overlap with @definition.function patterns is handled by parse-worker dedup.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name)) @definition.const
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name))) @definition.const
+
+; var declarations (mutable, function-scoped)
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name)) @definition.variable
+
 (import_statement
   source: (string) @import.source) @import
 
@@ -306,6 +338,12 @@ export const PYTHON_QUERIES = `
     left: (identifier) @name
     type: (type)) @definition.property)
 
+; Plain variable assignments without type annotation: x = 5, MAX_SIZE = 100
+; Overlap with @definition.property (typed) is handled by parse-worker dedup.
+(expression_statement
+  (assignment
+    left: (identifier) @name)) @definition.variable
+
 ; Heritage queries - Python class inheritance
 (class_definition
   name: (identifier) @heritage.class
@@ -371,6 +409,11 @@ export const JAVA_QUERIES = `
 ; Constructor calls: new Foo()
 (object_creation_expression type: (type_identifier) @call.name) @call
 
+; Local variable declarations inside method bodies
+(local_variable_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name)) @definition.variable
+
 ; Heritage - extends class
 (class_declaration name: (identifier) @heritage.class
   (superclass (type_identifier) @heritage.extends)) @heritage
@@ -416,6 +459,11 @@ export const C_QUERIES = `
 ; Calls
 (call_expression function: (identifier) @call.name) @call
 (call_expression function: (field_expression field: (field_identifier) @call.name)) @call
+
+; Variable declarations: int x = 5; or int x;
+(declaration
+  declarator: (init_declarator
+    declarator: (identifier) @name)) @definition.variable
 `;
 
 // Go queries - works with tree-sitter-go
@@ -449,6 +497,13 @@ export const GO_QUERIES = `
 ; Calls
 (call_expression function: (identifier) @call.name) @call
 (call_expression function: (selector_expression field: (field_identifier) @call.name)) @call
+
+; Const/var declarations
+(const_declaration (const_spec name: (identifier) @name)) @definition.const
+(var_declaration (var_spec name: (identifier) @name)) @definition.variable
+
+; Short variable declaration: x := 5
+(short_var_declaration left: (expression_list (identifier) @name)) @definition.variable
 
 ; Struct literal construction: User{Name: "Alice"}
 (composite_literal type: (type_identifier) @call.name) @call
@@ -572,6 +627,11 @@ export const CPP_QUERIES = `
 ; Constructor calls: new User()
 (new_expression type: (type_identifier) @call.name) @call
 
+; Variable declarations: int x = 5; or auto x = 5;
+(declaration
+  declarator: (init_declarator
+    declarator: (identifier) @name)) @definition.variable
+
 ; Heritage
 (class_specifier name: (type_identifier) @heritage.class
   (base_class_clause (type_identifier) @heritage.extends)) @heritage
@@ -633,6 +693,12 @@ export const CSHARP_QUERIES = `
 
 ; Target-typed new (C# 9): User u = new("x", 5)
 (variable_declaration type: (identifier) @call.name (variable_declarator (implicit_object_creation_expression) @call))
+
+; Local variable declarations
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      (identifier) @name))) @definition.variable
 
 ; Heritage
 (class_declaration name: (identifier) @heritage.class
@@ -781,6 +847,11 @@ export const PHP_QUERIES = `
 ; Constructor call: new User()
 (object_creation_expression (name) @call.name) @call
 
+; Const declarations at class scope
+(const_declaration
+  (const_element
+    (name) @name)) @definition.const
+
 ; ── Heritage: extends ────────────────────────────────────────────────────────
 (class_declaration
   name: (name) @heritage.class
@@ -848,6 +919,10 @@ export const RUBY_QUERIES = `
 ; ── All calls (require, include, attr_*, and regular calls routed in JS) ─────
 (call
   method: (identifier) @call.name) @call
+
+; ── Constant assignment: MAX_SIZE = 100, ITEMS = [...] ───────────────────────
+(assignment
+  left: (constant) @name) @definition.const
 
 ; ── Bare calls without parens (identifiers at statement level are method calls) ─
 ; NOTE: This may over-capture variable reads as calls (e.g. 'result' at
@@ -1122,6 +1197,12 @@ export const DART_QUERIES = `
 (method_signature
   (setter_signature
     name: (identifier) @name)) @definition.property
+
+; ── Top-level variable declarations (const maxSize = 100, final x = 5, var y = 0) ──
+(declaration
+  (initialized_identifier_list
+    (initialized_identifier
+      (identifier) @name))) @definition.variable
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export

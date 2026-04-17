@@ -24,6 +24,7 @@ export const DEFINITION_CAPTURE_KEYS = [
   'definition.type',
   'definition.const',
   'definition.static',
+  'definition.variable',
   'definition.typedef',
   'definition.macro',
   'definition.union',
@@ -190,6 +191,7 @@ export function getLabelFromCaptures(
   if (captureMap['definition.type']) return 'TypeAlias';
   if (captureMap['definition.const']) return 'Const';
   if (captureMap['definition.static']) return 'Static';
+  if (captureMap['definition.variable']) return 'Variable';
   if (captureMap['definition.typedef']) return 'Typedef';
   if (captureMap['definition.macro']) return 'Macro';
   if (captureMap['definition.union']) return 'Union';

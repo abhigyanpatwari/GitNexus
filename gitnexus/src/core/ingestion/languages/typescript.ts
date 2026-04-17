@@ -11,11 +11,18 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
-import type { ClassExtractionConfig } from '../class-types.js';
+import {
+  typescriptClassConfig,
+  javascriptClassConfig,
+} from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { resolveTypescriptImport, resolveJavascriptImport } from '../import-resolvers/standard.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import {
+  typescriptImportConfig,
+  javascriptImportConfig,
+} from '../import-resolvers/configs/typescript-javascript.js';
 import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
@@ -26,6 +33,16 @@ import {
   typescriptMethodConfig,
   javascriptMethodConfig,
 } from '../method-extractors/configs/typescript-javascript.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import {
+  typescriptVariableConfig,
+  javascriptVariableConfig,
+} from '../variable-extractors/configs/typescript-javascript.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import {
+  typescriptCallConfig,
+  javascriptCallConfig,
+} from '../call-extractors/configs/typescript-javascript.js';
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression get their name
@@ -149,36 +166,22 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
   'valueOf',
 ]);
 
-const tsJsClassConfig: ClassExtractionConfig = {
-  language: SupportedLanguages.TypeScript,
-  typeDeclarationNodes: [
-    'class_declaration',
-    'abstract_class_declaration',
-    'interface_declaration',
-    'enum_declaration',
-  ],
-  ancestorScopeNodeTypes: [
-    'class_declaration',
-    'abstract_class_declaration',
-    'interface_declaration',
-    'enum_declaration',
-  ],
-};
-
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: resolveTypescriptImport,
+  importResolver: createImportResolver(typescriptImportConfig),
   namedBindingExtractor: extractTsNamedBindings,
+  callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
     ...typescriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
   }),
-  classExtractor: createClassExtractor(tsJsClassConfig),
+  variableExtractor: createVariableExtractor(typescriptVariableConfig),
+  classExtractor: createClassExtractor(typescriptClassConfig),
   builtInNames: BUILT_INS,
 });
 
@@ -188,16 +191,15 @@ export const javascriptProvider = defineLanguage({
   treeSitterQueries: JAVASCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: resolveJavascriptImport,
+  importResolver: createImportResolver(javascriptImportConfig),
   namedBindingExtractor: extractTsNamedBindings,
+  callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
     ...javascriptMethodConfig,
     extractFunctionName: tsExtractFunctionName,
   }),
-  classExtractor: createClassExtractor({
-    ...tsJsClassConfig,
-    language: SupportedLanguages.JavaScript,
-  }),
+  variableExtractor: createVariableExtractor(javascriptVariableConfig),
+  classExtractor: createClassExtractor(javascriptClassConfig),
   builtInNames: BUILT_INS,
 });

@@ -28,6 +28,8 @@ import {
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import { collectBestChunks } from '../../core/embeddings/types.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -829,7 +831,7 @@ export class LocalBackend {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
       const tableCheck = await executeQuery(
         repo.id,
-        `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`,
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
 
@@ -838,26 +840,33 @@ export class LocalBackend {
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
 
-      const vectorQuery = `
-        CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
-          CAST(${queryVecStr} AS FLOAT[${dims}]), ${limit})
-        YIELD node AS emb, distance
-        WITH emb, distance
-        WHERE distance < 0.6
-        RETURN emb.nodeId AS nodeId, distance
-        ORDER BY distance
-      `;
+      const bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+        const vectorQuery = `
+          CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
+            CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
+          YIELD node AS emb, distance
+          WITH emb, distance
+          WHERE distance < 0.6
+          RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
+                 emb.startLine AS startLine, emb.endLine AS endLine, distance
+          ORDER BY distance
+        `;
 
-      const embResults = await executeQuery(repo.id, vectorQuery);
+        const embResults = await executeQuery(repo.id, vectorQuery);
+        return embResults.map((row) => ({
+          nodeId: row.nodeId ?? row[0],
+          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+          startLine: row.startLine ?? row[2] ?? 0,
+          endLine: row.endLine ?? row[3] ?? 0,
+          distance: row.distance ?? row[4],
+        }));
+      });
 
-      if (embResults.length === 0) return [];
+      if (bestChunks.size === 0) return [];
 
       const results: any[] = [];
 
-      for (const embRow of embResults) {
-        const nodeId = embRow.nodeId ?? embRow[0];
-        const distance = embRow.distance ?? embRow[1];
-
+      for (const [nodeId, chunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
@@ -868,7 +877,7 @@ export class LocalBackend {
           const nodeQuery =
             label === 'File'
               ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
-              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`;
 
           const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
@@ -878,9 +887,9 @@ export class LocalBackend {
               name: nodeRow.name ?? nodeRow[0] ?? '',
               type: label,
               filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
-              distance,
-              startLine: label !== 'File' ? (nodeRow.startLine ?? nodeRow[2]) : undefined,
-              endLine: label !== 'File' ? (nodeRow.endLine ?? nodeRow[3]) : undefined,
+              distance: chunk.distance,
+              startLine: chunk.startLine,
+              endLine: chunk.endLine,
             });
           }
         } catch {}

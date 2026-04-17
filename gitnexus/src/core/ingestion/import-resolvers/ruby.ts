@@ -1,11 +1,12 @@
 /**
- * Ruby require/require_relative import resolution.
- * Handles path resolution for Ruby's require and require_relative calls.
+ * Ruby require/require_relative import resolution — internal helpers.
+ *
+ * Strategy lives in configs/ruby.ts.
+ * This file only contains the low-level helper used by the strategy.
  */
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import type { ImportResult, ResolveCtx } from './types.js';
 
 /**
  * Resolve a Ruby require/require_relative path to a matching .rb file (low-level helper).
@@ -21,19 +22,4 @@ export function resolveRubyImportInternal(
 ): string | null {
   const pathParts = importPath.replace(/^\.\//, '').split('/').filter(Boolean);
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
-}
-
-/** Ruby: require / require_relative. */
-export function resolveRubyImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  const resolved = resolveRubyImportInternal(
-    rawImportPath,
-    ctx.normalizedFileList,
-    ctx.allFileList,
-    ctx.index,
-  );
-  return resolved ? { kind: 'files', files: [resolved] } : null;
 }

@@ -12,10 +12,12 @@
 import type { SupportedLanguages, MroStrategy } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
+import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
+import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { NamedBindingExtractorFn } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -155,6 +157,12 @@ interface LanguageProviderConfig {
   readonly mroStrategy?: MroStrategy;
 
   // ── Language-specific extraction hooks ────────────────────────────
+  /** Call extractor for extracting call site information (calledName, callForm,
+   *  receiverName, argCount, mixed chains) from @call / @call.name captures.
+   *  Produced by createCallExtractor() with a per-language CallExtractionConfig.
+   *  Default: undefined — if unset, no calls are extracted for this language.
+   *  All tree-sitter providers MUST supply this. */
+  readonly callExtractor?: CallExtractor;
   /** Field extractor for extracting field/property definitions from class/struct
    *  declarations. Produces FieldInfo[] with name, type, visibility, static,
    *  readonly metadata. Default: undefined (no field extraction). */
@@ -163,6 +171,10 @@ interface LanguageProviderConfig {
    *  declarations. Produces MethodInfo[] with name, parameters, visibility, isAbstract,
    *  isFinal, annotations metadata. Default: undefined (no method extraction). */
   readonly methodExtractor?: MethodExtractor;
+  /** Variable extractor for extracting metadata from module/file-scoped variable,
+   *  constant, and static declarations. Produces VariableInfo with type, visibility,
+   *  isConst, isStatic, isMutable metadata. Default: undefined (no variable extraction). */
+  readonly variableExtractor?: VariableExtractor;
   /** Class/type extractor for deriving canonical qualified names for class-like symbols.
    *  Uses the same provider-driven strategy pattern as method/field extraction so
    *  namespace/package/module rules stay language-specific. */

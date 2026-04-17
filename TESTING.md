@@ -20,9 +20,9 @@ From repository root, unless noted:
 cd gitnexus
 npm install
 npm run build
-npm test                    # unit: vitest run test/unit
+npm test                    # full suite: vitest run
+npm run test:unit           # unit only: vitest run test/unit
 npm run test:integration    # integration suite
-npm run test:all
 npm run test:coverage
 npx tsc --noEmit            # typecheck (matches CI)
 ```
@@ -42,8 +42,11 @@ npm run test:e2e            # Playwright (requires gitnexus serve + npm run dev)
 
 A husky pre-commit hook (`.husky/pre-commit`) runs automatically on every `git commit`:
 
-- **`gitnexus-web/` files staged** → `tsc -b --noEmit` + `vitest run`
-- **`gitnexus/` files staged** → `tsc --noEmit` + `vitest run --project default`
+1. **Formatting** — `lint-staged` runs prettier on staged files
+2. **`gitnexus-web/` files staged** → `tsc -b --noEmit`
+3. **`gitnexus/` files staged** → `tsc --noEmit`
+
+Tests do **not** run in the pre-commit hook — they run in CI (`ci-tests.yml`) only.
 
 Skip with `git commit --no-verify` (use sparingly).
 
@@ -77,7 +80,7 @@ Re-run the full relevant suite when:
 
 GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 
-- **`ci-quality.yml`** — `tsc --noEmit` for `gitnexus/` + `tsc -b --noEmit` for `gitnexus-web/`
+- **`ci-quality.yml`** — prettier format check, eslint lint, `tsc --noEmit` for `gitnexus/`, `tsc -b --noEmit` for `gitnexus-web/`
 - **`ci-tests.yml`** — `vitest run` with coverage (ubuntu) + cross-platform (macOS, Windows)
 - **`ci-e2e.yml`** — Playwright E2E tests, gated on `gitnexus-web/**` changes
 

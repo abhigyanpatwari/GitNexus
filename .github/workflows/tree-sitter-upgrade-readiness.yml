@@ -1,0 +1,185 @@
+name: Tree-sitter Upgrade Readiness
+
+# Monitors readiness for upgrading tree-sitter to 0.25.x. Tracks:
+#   1. Peer-dep compatibility — can each grammar install cleanly with
+#      tree-sitter@0.25.0 without --legacy-peer-deps?
+#   2. Vendored proto drift — has coder3101/tree-sitter-proto moved
+#      ahead of our vendored snapshot?
+# See .github/scripts/check-tree-sitter-upgrade-readiness.py for the logic.
+#
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+
+on:
+  schedule:
+    # Daily at 09:00 UTC. Matches Dependabot's daily cadence so drift
+    # and dep PRs surface together.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/check-tree-sitter-upgrade-readiness.py'
+      - '.github/workflows/tree-sitter-upgrade-readiness.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    name: Check upgrade readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Needed to open/update the tracking issue on scheduled runs.
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'false'
+
+      - name: Run upgrade readiness check
+        id: readiness
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          python3 .github/scripts/check-tree-sitter-upgrade-readiness.py > drift-report.md
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<DRIFT_EOF'
+            cat drift-report.md
+            echo 'DRIFT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "=== Report ==="
+          cat drift-report.md
+
+      # On PR runs, the script validates that it runs correctly. Blockers
+      # are informational — the scheduled run opens a tracking issue.
+      - name: Annotate PR with readiness status
+        if: github.event_name == 'pull_request' && steps.readiness.outputs.exit_code != '0'
+        run: |
+          echo "::warning::Tree-sitter 0.25 upgrade has blockers. See job output for the full readiness report."
+
+      - name: Upsert tracking issue on scheduled runs
+        if: >
+          github.event_name == 'schedule' &&
+          steps.readiness.outputs.exit_code != '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REPORT: ${{ steps.readiness.outputs.report }}
+        with:
+          script: |
+            const title = 'Tree-sitter 0.25 upgrade readiness';
+            const report = process.env.REPORT;
+            const body = report + '\n\n' +
+              '<sub>Generated daily by `.github/workflows/tree-sitter-upgrade-readiness.yml`. ' +
+              'Closes automatically when all blockers are resolved.</sub>';
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'tree-sitter-drift',
+              per_page: 10,
+            });
+            const existing = open.find(i => i.title === title);
+            if (existing) {
+              // Extract ready/total count for the changelog comment.
+              const readyMatch = report.match(/\*\*(\d+)\/(\d+)\*\* grammars ready/);
+              const blockerMatch = report.match(/\*\*(\d+) blocker/);
+              const ready = readyMatch ? readyMatch[1] : '?';
+              const total = readyMatch ? readyMatch[2] : '?';
+              const blockers = blockerMatch ? blockerMatch[1] : '?';
+
+              // Find grammars whose status changed by diffing the old and
+              // new table rows.  Each row looks like:
+              //   | `tree-sitter-foo` | ... | Ready |
+              //   | `tree-sitter-foo` | ... | Blocking |
+              const parseRows = (md) => {
+                const map = {};
+                for (const m of md.matchAll(/\| `(tree-sitter-[^`]+)` \|.*?\| (\S+(?:\s\S+)*?) \|$/gm)) {
+                  map[m[1]] = m[2].trim();
+                }
+                return map;
+              };
+              const oldRows = parseRows(existing.body || '');
+              const newRows = parseRows(report);
+              const changes = [];
+              for (const [name, newStatus] of Object.entries(newRows)) {
+                const oldStatus = oldRows[name];
+                if (oldStatus && oldStatus !== newStatus) {
+                  changes.push(`\`${name}\`: ${oldStatus} → ${newStatus}`);
+                }
+              }
+
+              const today = new Date().toISOString().slice(0, 10);
+              let comment = `**${today}:** ${ready}/${total} ready. ${blockers} blocker(s) remaining.`;
+              if (changes.length > 0) {
+                comment += '\n\nChanges:\n' + changes.map(c => `- ${c}`).join('\n');
+              } else {
+                comment += ' No changes from previous run.';
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: comment,
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.info(`Updated existing issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['tree-sitter-drift', 'dependencies'],
+              });
+              core.info(`Opened issue #${created.number}`);
+            }
+
+      - name: Close tracking issue on clean scheduled runs
+        if: >
+          github.event_name == 'schedule' &&
+          steps.readiness.outputs.exit_code == '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'Tree-sitter 0.25 upgrade readiness';
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'tree-sitter-drift',
+              per_page: 10,
+            });
+            const existing = open.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: 'All grammars are now compatible with tree-sitter@0.25. Upgrade is ready! Closing automatically.',
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+              });
+              core.info(`Closed issue #${existing.number}`);
+            }

@@ -10,10 +10,12 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { cClassConfig, cppClassConfig } from '../class-extractors/configs/c-cpp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
-import { resolveCImport, resolveCppImport } from '../import-resolvers/standard.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { cImportConfig, cppImportConfig } from '../import-resolvers/configs/c-cpp.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 /**
@@ -37,6 +39,10 @@ import {
 } from '../field-extractors/configs/c-cpp.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { cMethodConfig, cppMethodConfig } from '../method-extractors/configs/c-cpp.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { cVariableConfig, cppVariableConfig } from '../variable-extractors/configs/c-cpp.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -145,16 +151,9 @@ const C_BUILT_INS: ReadonlySet<string> = new Set([
   'put',
 ]);
 
-const cClassExtractor = createClassExtractor({
-  language: SupportedLanguages.C,
-  typeDeclarationNodes: ['struct_specifier', 'enum_specifier'],
-});
+const cClassExtractor = createClassExtractor(cClassConfig);
 
-const cppClassExtractor = createClassExtractor({
-  language: SupportedLanguages.CPlusPlus,
-  typeDeclarationNodes: ['class_specifier', 'struct_specifier', 'enum_specifier'],
-  ancestorScopeNodeTypes: ['namespace_definition', 'class_specifier', 'struct_specifier'],
-});
+const cppClassExtractor = createClassExtractor(cppClassConfig);
 
 /**
  * C/C++ function name extraction — unwraps pointer_declarator / reference_declarator /
@@ -320,13 +319,15 @@ export const cProvider = defineLanguage({
   treeSitterQueries: C_QUERIES,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: resolveCImport,
+  importResolver: createImportResolver(cImportConfig),
   importSemantics: 'wildcard-transitive',
+  callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
     ...cMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(cVariableConfig),
   classExtractor: cClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
@@ -338,14 +339,16 @@ export const cppProvider = defineLanguage({
   treeSitterQueries: CPP_QUERIES,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: resolveCppImport,
+  importResolver: createImportResolver(cppImportConfig),
   importSemantics: 'wildcard-transitive',
   mroStrategy: 'leftmost-base',
+  callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),
   methodExtractor: createMethodExtractor({
     ...cppMethodConfig,
     extractFunctionName: cCppExtractFunctionName,
   }),
+  variableExtractor: createVariableExtractor(cppVariableConfig),
   classExtractor: cppClassExtractor,
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,

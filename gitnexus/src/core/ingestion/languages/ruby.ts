@@ -10,17 +10,23 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
-import { resolveRubyImport } from '../import-resolvers/ruby.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { rubyImportConfig } from '../import-resolvers/configs/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { rubyVariableConfig } from '../variable-extractors/configs/ruby.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { rubyCallConfig } from '../call-extractors/configs/ruby.js';
 
 /** Ruby method/singleton_method: extract name from 'name' field, label as Method. */
 const rubyExtractFunctionName = (
@@ -105,9 +111,10 @@ export const rubyProvider = defineLanguage({
   treeSitterQueries: RUBY_QUERIES,
   typeConfig: rubyConfig,
   exportChecker: rubyExportChecker,
-  importResolver: resolveRubyImport,
+  importResolver: createImportResolver(rubyImportConfig),
   callRouter: routeRubyCall,
   importSemantics: 'wildcard-leaf',
+  callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner(node) {
     // Ruby singleton_class (class << self) should resolve to the enclosing
     // class or module for owner/container resolution (HAS_METHOD edges, class IDs).
@@ -128,10 +135,7 @@ export const rubyProvider = defineLanguage({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,
   }),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Ruby,
-    typeDeclarationNodes: ['class'],
-    ancestorScopeNodeTypes: ['module', 'class'],
-  }),
+  variableExtractor: createVariableExtractor(rubyVariableConfig),
+  classExtractor: createClassExtractor(rubyClassConfig),
   builtInNames: BUILT_INS,
 });

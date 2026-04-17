@@ -10,6 +10,7 @@ import {
   CSHARP_QUERIES,
   RUST_QUERIES,
   PHP_QUERIES,
+  RUBY_QUERIES,
   SWIFT_QUERIES,
   DART_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
@@ -354,6 +355,79 @@ describe('tree-sitter queries', () => {
 
     it('captures lambda body calls (() => expr)', () => {
       expect(DART_QUERIES).toContain('function_expression_body');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Variable/constant declaration capture tests
+  // ---------------------------------------------------------------------------
+
+  describe('Variable/constant declaration captures', () => {
+    it('TypeScript captures const/let as @definition.const', () => {
+      expect(TYPESCRIPT_QUERIES).toContain('@definition.const');
+      expect(TYPESCRIPT_QUERIES).toContain('lexical_declaration');
+    });
+
+    it('TypeScript captures var as @definition.variable', () => {
+      expect(TYPESCRIPT_QUERIES).toContain('@definition.variable');
+      expect(TYPESCRIPT_QUERIES).toContain('variable_declaration');
+    });
+
+    it('JavaScript captures const/let as @definition.const', () => {
+      expect(JAVASCRIPT_QUERIES).toContain('@definition.const');
+    });
+
+    it('JavaScript captures var as @definition.variable', () => {
+      expect(JAVASCRIPT_QUERIES).toContain('@definition.variable');
+    });
+
+    it('Python captures plain assignments as @definition.variable', () => {
+      expect(PYTHON_QUERIES).toContain('@definition.variable');
+    });
+
+    it('Go captures const_declaration and var_declaration', () => {
+      expect(GO_QUERIES).toContain('@definition.const');
+      expect(GO_QUERIES).toContain('@definition.variable');
+      expect(GO_QUERIES).toContain('short_var_declaration');
+    });
+
+    it('Java captures local_variable_declaration', () => {
+      expect(JAVA_QUERIES).toContain('local_variable_declaration');
+      expect(JAVA_QUERIES).toContain('@definition.variable');
+    });
+
+    it('C captures init_declarator as @definition.variable', () => {
+      expect(C_QUERIES).toContain('init_declarator');
+      expect(C_QUERIES).toContain('@definition.variable');
+    });
+
+    it('C++ captures init_declarator as @definition.variable', () => {
+      expect(CPP_QUERIES).toContain('init_declarator');
+      expect(CPP_QUERIES).toContain('@definition.variable');
+    });
+
+    it('C# captures local_declaration_statement', () => {
+      expect(CSHARP_QUERIES).toContain('local_declaration_statement');
+      expect(CSHARP_QUERIES).toContain('@definition.variable');
+    });
+
+    it('Rust retains const_item and static_item captures', () => {
+      expect(RUST_QUERIES).toContain('@definition.const');
+      expect(RUST_QUERIES).toContain('@definition.static');
+    });
+
+    it('PHP captures const_declaration', () => {
+      expect(PHP_QUERIES).toContain('const_declaration');
+      expect(PHP_QUERIES).toContain('@definition.const');
+    });
+
+    it('Ruby captures constant assignments', () => {
+      expect(RUBY_QUERIES).toContain('@definition.const');
+    });
+
+    it('Dart captures declaration as @definition.variable', () => {
+      expect(DART_QUERIES).toContain('(declaration');
+      expect(DART_QUERIES).toContain('@definition.variable');
     });
   });
 });

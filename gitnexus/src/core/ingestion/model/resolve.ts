@@ -22,14 +22,18 @@ import type { MroStrategy } from 'gitnexus-shared';
 /**
  * Gather all ancestor IDs in BFS / topological order.
  * Returns the linearized list of ancestor IDs (excluding the class itself).
+ *
+ * Uses a head-pointer BFS (`queue[head++]`) instead of `Array.shift()` to
+ * avoid O(n) per-dequeue re-indexing — matching `buildParentMapFromHeritage`.
  */
 function gatherAncestors(classId: string, parentMap: Map<string, string[]>): string[] {
   const visited = new Set<string>();
   const order: string[] = [];
   const queue: string[] = [...(parentMap.get(classId) ?? [])];
+  let head = 0;
 
-  while (queue.length > 0) {
-    const id = queue.shift()!;
+  while (head < queue.length) {
+    const id = queue[head++]!;
     if (visited.has(id)) continue;
     visited.add(id);
     order.push(id);

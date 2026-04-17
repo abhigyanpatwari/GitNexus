@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { contentHashForNode } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
-import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
+import { DEFAULT_EMBEDDING_CONFIG, EMBEDDABLE_LABELS } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -29,9 +29,11 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(node)).toBe(contentHashForNode(node));
   });
 
-  it('matches sha1(generateEmbeddingText(node))', () => {
+  it('matches sha1(generateEmbeddingText(node, node.content))', () => {
     const node = makeNode();
-    const expected = createHash('sha1').update(generateEmbeddingText(node)).digest('hex');
+    const expected = createHash('sha1')
+      .update(generateEmbeddingText(node, node.content))
+      .digest('hex');
     expect(contentHashForNode(node)).toBe(expected);
   });
 
@@ -161,8 +163,15 @@ describe('runEmbeddingPipeline incremental filter', () => {
     return vi.fn().mockImplementation(async (cypher: string) => {
       queryCalls.push(cypher);
       // Respond to node queries based on label
-      for (const label of ['Function', 'Class', 'Method', 'Interface', 'File']) {
-        if (cypher.includes(`MATCH (n:${label})`)) {
+      for (const label of [
+        'Function',
+        'Class',
+        'Method',
+        'Interface',
+        'File',
+        ...(EMBEDDABLE_LABELS as readonly string[]),
+      ]) {
+        if (cypher.includes(`MATCH (n:${label})`) || cypher.includes(`MATCH (n:\`${label}\``)) {
           return nodes
             .filter((n) => n.label === label)
             .map((n) => ({
@@ -210,12 +219,14 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeWithReusedStatement,
       onProgress,
       {},
+      undefined, // skipNodeIds
+      undefined, // context
       existingEmbeddings,
     );
 
-    // No MERGE calls — node was skipped because hash matched
-    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
-    expect(mergeCalls).toHaveLength(0);
+    // No CREATE calls — node was skipped because hash matched
+    const createCalls = stmtCalls.filter((c) => c.cypher.includes('CREATE'));
+    expect(createCalls).toHaveLength(0);
 
     // Pipeline should reach 'ready' state
     const readyProgress = progressUpdates.find((p) => p.phase === 'ready');
@@ -244,17 +255,94 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeWithReusedStatement,
       onProgress,
       {},
+      undefined, // skipNodeIds
+      undefined, // context
       existingEmbeddings,
     );
 
-    // Should have a MERGE call to insert the embedding
-    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
-    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+    // Should have a CREATE call to insert the embedding
+    const createCalls = stmtCalls.filter((c) => c.cypher.includes('CREATE'));
+    expect(createCalls.length).toBeGreaterThanOrEqual(1);
 
     // The inserted row should contain the node id and a contentHash
-    const insertParams = mergeCalls[0].params;
+    const insertParams = createCalls[0].params;
     expect(insertParams.some((p: any) => p.nodeId === node.id)).toBe(true);
     expect(insertParams[0].contentHash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('maps positional query rows with description/isExported columns correctly', async () => {
+    const embedBatchSpy = vi
+      .fn()
+      .mockImplementation((texts: string[]) =>
+        Promise.resolve(texts.map(() => new Float32Array(384))),
+      );
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: embedBatchSpy,
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const executeQuery = vi.fn().mockImplementation(async (cypher: string) => {
+      queryCalls.push(cypher);
+      if (cypher.includes('MATCH (n:`Class`)')) {
+        return [
+          [
+            'Class:src/parser.ts:Parser',
+            'Parser',
+            'Class',
+            'src/parser.ts',
+            'class Parser { value = 1; }',
+            10,
+            12,
+            true,
+            'Parses typed payloads.',
+          ],
+        ];
+      }
+      if (cypher.includes('MATCH (n:`Enum`)')) {
+        return [
+          [
+            'Enum:src/status.ts:Status',
+            'Status',
+            'Enum',
+            'src/status.ts',
+            'enum Status { Active, Pending }',
+            20,
+            22,
+            'Represents user status.',
+          ],
+        ];
+      }
+      return [];
+    });
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      undefined,
+      undefined,
+      new Map(),
+    );
+
+    const embeddedTexts = embedBatchSpy.mock.calls.flatMap((call) => call[0] as string[]);
+    const classText = embeddedTexts.find((text) => text.includes('Class: Parser'));
+    const enumText = embeddedTexts.find((text) => text.includes('Enum: Status'));
+
+    expect(classText).toContain('Export: true');
+    expect(classText).toContain('Parses typed payloads.');
+    expect(enumText).not.toContain('Export:');
+    expect(enumText).toContain('Represents user status.');
   });
 
   it('deletes and re-embeds stale nodes (hash mismatch)', async () => {
@@ -275,6 +363,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeWithReusedStatement,
       onProgress,
       {},
+      undefined, // skipNodeIds
+      undefined, // context
       existingEmbeddings,
     );
 
@@ -283,9 +373,9 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
     expect(deleteCalls[0].params.some((p: any) => p.nodeId === node.id)).toBe(true);
 
-    // Should also have a MERGE call to re-insert with new hash
-    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
-    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+    // Should also have a CREATE call to re-insert with new hash
+    const createCalls = stmtCalls.filter((c) => c.cypher.includes('CREATE'));
+    expect(createCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it('treats STALE_HASH_SENTINEL as stale — triggers re-embed', async () => {
@@ -306,6 +396,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeWithReusedStatement,
       onProgress,
       {},
+      undefined, // skipNodeIds
+      undefined, // context
       existingEmbeddings,
     );
 
@@ -313,9 +405,9 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
     expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
 
-    // Should also have a MERGE (re-embed)
-    const mergeCalls = stmtCalls.filter((c) => c.cypher.includes('MERGE'));
-    expect(mergeCalls.length).toBeGreaterThanOrEqual(1);
+    // Should also have a CREATE (re-embed)
+    const createCalls = stmtCalls.filter((c) => c.cypher.includes('CREATE'));
+    expect(createCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it('calls createVectorIndex even when zero nodes need embedding after filter', async () => {
@@ -337,6 +429,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeWithReusedStatement,
       onProgress,
       {},
+      undefined, // skipNodeIds
+      undefined, // context
       existingEmbeddings,
     );
 
@@ -364,6 +458,8 @@ describe('runEmbeddingPipeline incremental filter', () => {
         executeWithReusedStatement,
         onProgress,
         {},
+        undefined, // skipNodeIds
+        undefined, // context
         existingEmbeddings,
       ),
     ).rejects.toThrow('vector-index corruption');

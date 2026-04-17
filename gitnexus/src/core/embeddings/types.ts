@@ -5,10 +5,40 @@
  */
 
 /**
- * Node labels that should be embedded for semantic search
- * These are code elements that benefit from semantic matching
+ * Node labels that need chunking (have code body, potentially long)
  */
-export const EMBEDDABLE_LABELS = ['Function', 'Class', 'Method', 'Interface', 'File'] as const;
+export const CHUNKABLE_LABELS = [
+  'Function',
+  'Method',
+  'Constructor',
+  'Class',
+  'Interface',
+  'Struct',
+  'Enum',
+  'Trait',
+  'Impl',
+  'Macro',
+  'Namespace',
+] as const;
+
+/**
+ * Node labels that are short (no chunking needed, embed directly)
+ */
+export const SHORT_LABELS = [
+  'TypeAlias',
+  'Typedef',
+  'Const',
+  'Property',
+  'Record',
+  'Union',
+  'Static',
+  'Variable',
+] as const;
+
+/**
+ * All embeddable labels (union of CHUNKABLE + SHORT)
+ */
+export const EMBEDDABLE_LABELS = [...CHUNKABLE_LABELS, ...SHORT_LABELS] as const;
 
 export type EmbeddableLabel = (typeof EMBEDDABLE_LABELS)[number];
 
@@ -17,6 +47,39 @@ export type EmbeddableLabel = (typeof EMBEDDABLE_LABELS)[number];
  */
 export const isEmbeddableLabel = (label: string): label is EmbeddableLabel =>
   EMBEDDABLE_LABELS.includes(label as EmbeddableLabel);
+
+/**
+ * Check if a label needs chunking
+ */
+export const isChunkableLabel = (label: string): boolean =>
+  (CHUNKABLE_LABELS as readonly string[]).includes(label);
+
+/**
+ * Check if a label is a short type (no chunking)
+ */
+export const isShortLabel = (label: string): boolean =>
+  (SHORT_LABELS as readonly string[]).includes(label);
+
+/**
+ * Node labels that have structural names (methods/fields) extractable via AST
+ */
+export const STRUCTURAL_LABELS: ReadonlySet<string> = new Set([
+  'Class',
+  'Struct',
+  'Interface',
+  'Enum',
+]);
+
+/**
+ * Node labels that have isExported column in their schema
+ */
+export const LABELS_WITH_EXPORTED = new Set([
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+]) as ReadonlySet<string>;
 
 /**
  * Embedding pipeline phases
@@ -57,6 +120,12 @@ export interface EmbeddingConfig {
   device: 'auto' | 'dml' | 'cuda' | 'cpu' | 'wasm';
   /** Maximum characters of code snippet to include */
   maxSnippetLength: number;
+  /** Maximum code chunk size in characters (for chunking long code) */
+  chunkSize: number;
+  /** Overlap between chunks in characters */
+  overlap: number;
+  /** Maximum description length in characters */
+  maxDescriptionLength: number;
 }
 
 /**
@@ -70,6 +139,9 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   dimensions: 384,
   device: 'auto',
   maxSnippetLength: 500,
+  chunkSize: 1200,
+  overlap: 120,
+  maxDescriptionLength: 150,
 };
 
 /**
@@ -96,6 +168,34 @@ export interface EmbeddableNode {
   content: string;
   startLine?: number;
   endLine?: number;
+  isExported?: boolean;
+  description?: string;
+  parameterCount?: number;
+  returnType?: string;
+  repoName?: string;
+  serverName?: string;
+  methodNames?: string[];
+  fieldNames?: string[];
+}
+
+/**
+ * Cached embedding entry restored from LadybugDB before a graph rebuild
+ */
+export interface CachedEmbedding {
+  nodeId: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  embedding: number[];
+  contentHash?: string;
+}
+
+/**
+ * Context info for embedding pipeline (repo/server metadata enrichment)
+ */
+export interface EmbeddingContext {
+  repoName?: string;
+  serverName?: string;
 }
 
 /**
@@ -108,3 +208,75 @@ export interface ModelProgress {
   loaded?: number;
   total?: number;
 }
+
+export interface ChunkSearchRow {
+  nodeId: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  distance: number;
+}
+
+export interface BestChunkMatch {
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  distance: number;
+}
+
+/**
+ * Deduplicate vector search chunk results by nodeId,
+ * keeping the chunk with smallest distance for each node.
+ */
+export const dedupBestChunks = (
+  rows: ChunkSearchRow[],
+  limit?: number,
+): Map<string, BestChunkMatch> => {
+  const best = new Map<string, BestChunkMatch>();
+  for (const row of rows) {
+    const existing = best.get(row.nodeId);
+    if (!existing || row.distance < existing.distance) {
+      best.set(row.nodeId, {
+        chunkIndex: row.chunkIndex,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        distance: row.distance,
+      });
+    }
+    if (limit !== undefined && best.size >= limit) break;
+  }
+  return best;
+};
+
+const DEFAULT_FETCH_MULTIPLIER = 4;
+const DEFAULT_FETCH_BUFFER = 8;
+const DEFAULT_MAX_FETCH = 200;
+
+/**
+ * Fetch vector-search chunks until we have enough unique nodeIds
+ * or can tell the result set is exhausted.
+ */
+export const collectBestChunks = async (
+  limit: number,
+  fetchRows: (fetchLimit: number) => Promise<ChunkSearchRow[]>,
+  maxFetch: number = DEFAULT_MAX_FETCH,
+): Promise<Map<string, BestChunkMatch>> => {
+  if (limit <= 0) return new Map();
+
+  let fetchLimit = Math.max(limit * DEFAULT_FETCH_MULTIPLIER, limit + DEFAULT_FETCH_BUFFER);
+  let previousFetchLimit = 0;
+
+  while (fetchLimit > previousFetchLimit) {
+    const rows = await fetchRows(fetchLimit);
+    const bestChunks = dedupBestChunks(rows, limit);
+
+    if (bestChunks.size >= limit || rows.length < fetchLimit) {
+      return bestChunks;
+    }
+
+    previousFetchLimit = fetchLimit;
+    fetchLimit = fetchLimit >= maxFetch ? fetchLimit * 2 : Math.min(maxFetch, fetchLimit * 2);
+  }
+
+  return new Map();
+};

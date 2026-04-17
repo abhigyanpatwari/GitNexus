@@ -15,6 +15,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
+import type { CachedEmbedding } from '../embeddings/types.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -881,33 +882,47 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
  * Load cached embeddings from LadybugDB before a rebuild.
  * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
  * avoiding expensive re-embedding of unchanged nodes.
+ *
+ * Detects old schema (no chunkIndex column) and returns empty cache to trigger rebuild.
  */
 export const loadCachedEmbeddings = async (): Promise<{
   embeddingNodeIds: Set<string>;
-  embeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }>;
+  embeddings: CachedEmbedding[];
 }> => {
   if (!conn) {
     return { embeddingNodeIds: new Set(), embeddings: [] };
   }
 
   const embeddingNodeIds = new Set<string>();
-  const embeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }> = [];
+  const embeddings: CachedEmbedding[] = [];
   try {
-    // Try to read contentHash alongside the embedding
+    // Schema migration detection: query with new columns to verify schema version.
+    // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
+    // If the query fails (column missing), we return empty cache to force a full rebuild.
+    try {
+      const check = await conn.query(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
+      );
+      const checkResult = Array.isArray(check) ? check[0] : check;
+      await checkResult.getAll();
+    } catch {
+      return { embeddingNodeIds: new Set(), embeddings: [] };
+    }
+
+    // Try to read contentHash alongside chunk columns
     let rows: any;
     let hasContentHash = true;
     try {
       rows = await conn.query(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding, e.contentHash AS contentHash`,
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
       );
     } catch (err: any) {
-      // Only fall back for missing-column errors (legacy DBs without contentHash).
-      // Rethrow transient / connection errors so callers see them.
+      // Fallback for legacy DBs without contentHash column
       const msg = err?.message ?? '';
       if (isMissingColumnOrTableError(msg)) {
         hasContentHash = false;
         rows = await conn.query(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding`,
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
         );
       } else {
         throw err;
@@ -918,14 +933,17 @@ export const loadCachedEmbeddings = async (): Promise<{
       const nodeId = String(row.nodeId ?? row[0] ?? '');
       if (!nodeId) continue;
       embeddingNodeIds.add(nodeId);
-      const embedding = row.embedding ?? row[1];
+      const embedding = row.embedding ?? row[4];
       if (embedding) {
         embeddings.push({
           nodeId,
+          chunkIndex: Number(row.chunkIndex ?? row[1] ?? 0),
+          startLine: Number(row.startLine ?? row[2] ?? 0),
+          endLine: Number(row.endLine ?? row[3] ?? 0),
           embedding: Array.isArray(embedding)
             ? embedding.map(Number)
             : Array.from(embedding as any).map(Number),
-          contentHash: hasContentHash ? (row.contentHash ?? row[2] ?? undefined) : undefined,
+          contentHash: hasContentHash ? (row.contentHash ?? row[5] ?? undefined) : undefined,
         });
       }
     }
@@ -949,33 +967,43 @@ export const fetchExistingEmbeddingHashes = async (
 ): Promise<Map<string, string> | undefined> => {
   try {
     const rows = await execQuery(
-      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.contentHash AS contentHash`,
+      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.contentHash AS contentHash`,
     );
     if (!rows || rows.length === 0) return undefined;
     const map = new Map<string, string>();
     for (const r of rows) {
       const nodeId = r.nodeId ?? r[0];
-      const hash = r.contentHash ?? r[1] ?? STALE_HASH_SENTINEL;
+      const chunkIndex = r.chunkIndex ?? r[1];
+      const startLine = r.startLine ?? r[2];
+      const endLine = r.endLine ?? r[3];
+      const hash = r.contentHash ?? r[4] ?? STALE_HASH_SENTINEL;
       if (nodeId) {
-        // Empty/null contentHash means legacy row — treat as stale so it gets re-embedded
-        map.set(nodeId, hash || STALE_HASH_SENTINEL);
+        const hasChunkMetadata =
+          chunkIndex !== undefined &&
+          chunkIndex !== null &&
+          startLine !== undefined &&
+          startLine !== null &&
+          endLine !== undefined &&
+          endLine !== null;
+        // Empty/null contentHash or missing chunk metadata means legacy row — treat as stale.
+        map.set(nodeId, hasChunkMetadata && hash ? hash : STALE_HASH_SENTINEL);
       }
     }
     return map;
   } catch (err: any) {
     const msg = err?.message ?? '';
     if (isMissingColumnOrTableError(msg)) {
-      // Column or table missing — try fallback without contentHash
+      // Legacy rows missing chunk-aware columns — treat every row as stale.
       try {
         const rows = await execQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`);
         if (!rows || rows.length === 0) return undefined;
         const map = new Map<string, string>();
         for (const r of rows) {
           const nodeId = r.nodeId ?? r[0];
-          if (nodeId) map.set(nodeId, STALE_HASH_SENTINEL); // no contentHash — treat as stale
+          if (nodeId) map.set(nodeId, STALE_HASH_SENTINEL);
         }
         console.log(
-          `[embed] ${map.size} nodes in legacy DB (no contentHash) — all treated as stale`,
+          `[embed] ${map.size} nodes in legacy DB (missing chunk-aware columns) — all treated as stale`,
         );
         return map;
       } catch (fallbackErr: any) {

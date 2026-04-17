@@ -1,16 +1,13 @@
 /**
- * Swift module import resolution.
- * Handles module imports via Package.swift target map.
+ * Swift import resolution config.
+ * Package.swift target map strategy — no standard fallback (unresolved = external framework).
  */
 
-import type { ImportResult, ResolveCtx } from './types.js';
+import { SupportedLanguages } from 'gitnexus-shared';
+import type { ImportResolutionConfig, ImportResolverStrategy } from '../types.js';
 
-/** Swift: module imports via Package.swift target map. */
-export function resolveSwiftImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
+/** Swift Package.swift target map resolution strategy. */
+export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
   if (swiftPackageConfig) {
     const targetDir = swiftPackageConfig.targets.get(rawImportPath);
@@ -29,4 +26,9 @@ export function resolveSwiftImport(
     }
   }
   return null; // External framework (Foundation, UIKit, etc.)
-}
+};
+
+export const swiftImportConfig: ImportResolutionConfig = {
+  language: SupportedLanguages.Swift,
+  strategies: [swiftPackageStrategy],
+};

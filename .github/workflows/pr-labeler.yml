@@ -12,7 +12,7 @@ name: PR Conventional Labeler
 #   autolabel (on: pull_request_target)
 #     Needs `pull-requests: write` to apply labels, so must be
 #     pull_request_target. Uses `release-drafter/release-drafter` with
-#     `disable-releaser: true` to only run the autolabeler against the
+#     `dry-run: true` to only run the autolabeler against the
 #     `.github/release-drafter.yml` config from the BASE ref (release-
 #     drafter reads the config from the repository's default branch, NOT
 #     the PR head — verify with `gh api repos/release-drafter/release-drafter/contents/...`
@@ -57,9 +57,9 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      # Pinned to v5.5.3. Verify SHA via:
-      #   gh api repos/amannn/action-semantic-pull-request/git/refs/tags/v5.5.3
-      - uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017 # v5.5.3
+      # Pinned to v6.1.1. Verify SHA via:
+      #   gh api repos/amannn/action-semantic-pull-request/git/refs/tags/v6.1.1
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -102,12 +102,12 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # Pinned to v6.0.0. Verify SHA via:
-      #   gh api repos/release-drafter/release-drafter/git/refs/tags/v6.0.0
-      # Note: dependabot will likely propose a bump to v6.x on first run.
-      - uses: release-drafter/release-drafter@3f0f87098bd6b5c5b9a36d49c41d998ea58f9348 # v6.0.0
+      # Pinned to v7.2.0. Verify SHA via:
+      #   gh api repos/release-drafter/release-drafter/git/refs/tags/v7.2.0
+      # v7 removed `disable-releaser`; use `dry-run: true` to only autolabel.
+      - uses: release-drafter/release-drafter@5de93583980a40bd78603b6dfdcda5b4df377b32 # v7.2.0
         with:
           config-name: release-drafter.yml
-          disable-releaser: true
+          dry-run: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

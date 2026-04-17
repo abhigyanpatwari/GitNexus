@@ -8,10 +8,12 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
-import { resolvePhpImport } from '../import-resolvers/php.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { phpImportConfig } from '../import-resolvers/configs/php.js';
 import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
@@ -20,6 +22,10 @@ import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { phpMethodConfig } from '../method-extractors/configs/php.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { phpVariableConfig } from '../variable-extractors/configs/php.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { phpCallConfig } from '../call-extractors/configs/php.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -235,15 +241,13 @@ export const phpProvider = defineLanguage({
   treeSitterQueries: PHP_QUERIES,
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
-  importResolver: resolvePhpImport,
+  importResolver: createImportResolver(phpImportConfig),
   namedBindingExtractor: extractPhpNamedBindings,
+  callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.PHP,
-    typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'enum_declaration'],
-    ancestorScopeNodeTypes: ['namespace_definition'],
-  }),
+  variableExtractor: createVariableExtractor(phpVariableConfig),
+  classExtractor: createClassExtractor(phpClassConfig),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,

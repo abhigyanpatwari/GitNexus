@@ -18,14 +18,15 @@
  *
  * Nothing path-dependent, time-dependent, or id-opaque leaks into the snapshot.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import crypto from 'crypto';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 
-const MINI_REPO = path.resolve(__dirname, '..', 'fixtures', 'mini-repo');
+const FIXTURE_SRC = path.resolve(__dirname, '..', 'fixtures', 'mini-repo');
 const GOLDEN_DIR = path.resolve(__dirname, '..', 'fixtures', 'pipeline-golden', 'mini-repo');
 const GOLDEN_FILE = path.join(GOLDEN_DIR, 'expected-graph.json');
 
@@ -128,11 +129,22 @@ function diffCounts(
 describe('pipeline graph golden', () => {
   let result: PipelineResult;
   let snapshot: GraphSnapshot;
+  let tmpDir: string;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(MINI_REPO, () => {});
+    // Copy the fixture to a temp directory so parallel tests (cli-e2e)
+    // that create AGENTS.md / CLAUDE.md / .claude/ in the shared fixture
+    // don't pollute the golden snapshot.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-golden-'));
+    fs.cpSync(FIXTURE_SRC, tmpDir, { recursive: true });
+
+    result = await runPipelineFromRepo(tmpDir, () => {});
     snapshot = buildSnapshot(result);
   }, 60000);
+
+  afterAll(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   it('matches committed golden snapshot on mini-repo', () => {
     if (UPDATE || !fs.existsSync(GOLDEN_FILE)) {

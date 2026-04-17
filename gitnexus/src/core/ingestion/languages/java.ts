@@ -9,16 +9,22 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { javaExportChecker } from '../export-detection.js';
-import { resolveJavaImport } from '../import-resolvers/jvm.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
 import { extractJavaNamedBindings } from '../named-bindings/java.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { javaCallConfig } from '../call-extractors/configs/jvm.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javaConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
@@ -26,26 +32,13 @@ export const javaProvider = defineLanguage({
   treeSitterQueries: JAVA_QUERIES,
   typeConfig: javaTypeConfig,
   exportChecker: javaExportChecker,
-  importResolver: resolveJavaImport,
+  importResolver: createImportResolver(javaImportConfig),
   namedBindingExtractor: extractJavaNamedBindings,
   interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
+  callExtractor: createCallExtractor(javaCallConfig),
   fieldExtractor: createFieldExtractor(javaConfig),
   methodExtractor: createMethodExtractor(javaMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Java,
-    typeDeclarationNodes: [
-      'class_declaration',
-      'interface_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-    fileScopeNodeTypes: ['package_declaration'],
-    ancestorScopeNodeTypes: [
-      'class_declaration',
-      'interface_declaration',
-      'enum_declaration',
-      'record_declaration',
-    ],
-  }),
+  variableExtractor: createVariableExtractor(javaVariableConfig),
+  classExtractor: createClassExtractor(javaClassConfig),
 });

@@ -15,15 +15,21 @@ import type { NodeLabel } from 'gitnexus-shared';
 import { FUNCTION_NODE_TYPES } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
-import { resolveDartImport } from '../import-resolvers/dart.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { dartImportConfig } from '../import-resolvers/configs/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { dartMethodConfig } from '../method-extractors/configs/dart.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { dartVariableConfig } from '../variable-extractors/configs/dart.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { dartCallConfig } from '../call-extractors/configs/dart.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -89,15 +95,13 @@ export const dartProvider = defineLanguage({
   treeSitterQueries: DART_QUERIES,
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
-  importResolver: resolveDartImport,
+  importResolver: createImportResolver(dartImportConfig),
   importSemantics: 'wildcard-leaf',
+  callExtractor: createCallExtractor(dartCallConfig),
   fieldExtractor: createFieldExtractor(dartFieldConfig),
   methodExtractor: createMethodExtractor(dartMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Dart,
-    typeDeclarationNodes: ['class_definition', 'extension_declaration', 'enum_declaration'],
-    ancestorScopeNodeTypes: ['class_definition', 'extension_declaration', 'enum_declaration'],
-  }),
+  variableExtractor: createVariableExtractor(dartVariableConfig),
+  classExtractor: createClassExtractor(dartClassConfig),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: BUILT_INS,
 });

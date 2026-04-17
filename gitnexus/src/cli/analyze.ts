@@ -147,9 +147,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
+  let barCurrentValue = 0;
   const barLog = (...args: any[]) => {
     process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
+    bar.update(barCurrentValue);
   };
   console.log = barLog;
   console.warn = barLog;
@@ -160,6 +162,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let phaseStart = Date.now();
 
   const updateBar = (value: number, phaseLabel: string) => {
+    barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
       lastPhaseLabel = phaseLabel;
       phaseStart = Date.now();

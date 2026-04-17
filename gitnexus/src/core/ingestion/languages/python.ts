@@ -12,16 +12,22 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
+import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
-import { resolvePythonImport } from '../import-resolvers/python.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { pythonImportConfig } from '../import-resolvers/configs/python.js';
 import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { pythonMethodConfig } from '../method-extractors/configs/python.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { pythonCallConfig } from '../call-extractors/configs/python.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -59,16 +65,14 @@ export const pythonProvider = defineLanguage({
   treeSitterQueries: PYTHON_QUERIES,
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
-  importResolver: resolvePythonImport,
+  importResolver: createImportResolver(pythonImportConfig),
   namedBindingExtractor: extractPythonNamedBindings,
   importSemantics: 'namespace',
   mroStrategy: 'c3',
+  callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   methodExtractor: createMethodExtractor(pythonMethodConfig),
-  classExtractor: createClassExtractor({
-    language: SupportedLanguages.Python,
-    typeDeclarationNodes: ['class_definition'],
-    ancestorScopeNodeTypes: ['class_definition'],
-  }),
+  variableExtractor: createVariableExtractor(pythonVariableConfig),
+  classExtractor: createClassExtractor(pythonClassConfig),
   builtInNames: BUILT_INS,
 });

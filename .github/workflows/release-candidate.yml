@@ -346,7 +346,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
           tag_name: ${{ steps.reltag.outputs.vtag }}
           name: Release Candidate ${{ steps.reltag.outputs.vtag }}

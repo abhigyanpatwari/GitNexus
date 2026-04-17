@@ -52,9 +52,11 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  // Clean up .git/ and .gitnexus/ directories created during the test
-  for (const dir of ['.git', '.gitnexus']) {
-    const fullPath = path.join(MINI_REPO, dir);
+  // Clean up all files/dirs created by analyze (git init, .gitnexus output,
+  // AI context files, skill files, .gitignore) so parallel tests like
+  // pipeline-graph-golden see a pristine fixture.
+  for (const entry of ['.git', '.gitnexus', '.claude', 'AGENTS.md', 'CLAUDE.md', '.gitignore']) {
+    const fullPath = path.join(MINI_REPO, entry);
     if (fs.existsSync(fullPath)) {
       fs.rmSync(fullPath, { recursive: true, force: true });
     }
