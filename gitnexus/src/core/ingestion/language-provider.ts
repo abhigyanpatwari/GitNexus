@@ -321,12 +321,15 @@ interface LanguageProviderConfig {
    * Providers that have not yet migrated continue to run through the
    * legacy DAG path (feature-flagged per `REGISTRY_PRIMARY_<LANG>`).
    *
+   * **Sync return.** Tree-sitter query execution and COBOL's regex
+   * tagger are both synchronous; no current or foreseeable provider
+   * needs async work inside this hook. The sync signature lets
+   * `parse-worker.ts` (#920) invoke it inline in its already-sync
+   * per-file loop without cascading `async` through the batch pipeline.
+   *
    * Default: undefined (language continues to use legacy DAG).
    */
-  readonly emitScopeCaptures?: (
-    sourceText: string,
-    filePath: string,
-  ) => Promise<readonly CaptureMatch[]>;
+  readonly emitScopeCaptures?: (sourceText: string, filePath: string) => readonly CaptureMatch[];
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.

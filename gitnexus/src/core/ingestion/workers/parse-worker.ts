@@ -77,6 +77,8 @@ import {
   buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
+import type { ParsedFile } from 'gitnexus-shared';
+import { extractParsedFile } from '../scope-extractor-bridge.js';
 
 // ============================================================================
 // Types for serializable results
@@ -269,6 +271,14 @@ export interface ParseWorkerResult {
   constructorBindings: FileConstructorBindings[];
   /** All-scope type bindings from TypeEnv for BindingAccumulator (includes function-local). */
   fileScopeBindings: FileScopeBindings[];
+  /**
+   * Per-file `ParsedFile` artifacts from the new scope-based resolution
+   * pipeline (RFC #909 Ring 2). Empty unless the file's provider implements
+   * `emitScopeCaptures` — default for every language today, so this is
+   * additive and leaves the legacy DAG untouched. Consumed by #921's
+   * finalize-orchestrator.
+   */
+  parsedFiles: ParsedFile[];
   skippedLanguages: Record<string, number>;
   fileCount: number;
 }
@@ -711,6 +721,7 @@ const processBatch = (
     ormQueries: [],
     constructorBindings: [],
     fileScopeBindings: [],
+    parsedFiles: [],
     skippedLanguages: {},
     fileCount: 0,
   };
@@ -1396,11 +1407,24 @@ const processFileGroup = (
       continue;
     }
 
+    const provider = getProvider(language);
+
+    // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
+    // resolution pipeline. No-op (returns undefined) for every language
+    // today — only fires once a provider implements `emitScopeCaptures`.
+    // Runs BEFORE legacy extraction and its result is independent: a
+    // failure here is caught inside `extractParsedFile` and does NOT
+    // affect the legacy DAG path that follows.
+    const parsedFile = extractParsedFile(provider, parseContent, file.path, (message) => {
+      if (parentPort) parentPort.postMessage({ type: 'warning', message });
+      else console.warn(message);
+    });
+    if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage edges (EXTENDS/IMPLEMENTS) are created by heritage-processor which runs
     // in PARALLEL with call-processor, so the graph edges don't exist when buildTypeEnv
     // runs. This pre-pass makes parent class information available for type resolution.
-    const provider = getProvider(language);
     const fileParentMap = new Map<string, string[]>();
     if (provider.heritageExtractor) {
       for (const match of matches) {
@@ -2282,6 +2306,7 @@ let accumulated: ParseWorkerResult = {
   ormQueries: [],
   constructorBindings: [],
   fileScopeBindings: [],
+  parsedFiles: [],
   skippedLanguages: {},
   fileCount: 0,
 };
@@ -2309,6 +2334,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
   appendAll(target.fileScopeBindings, src.fileScopeBindings);
+  appendAll(target.parsedFiles, src.parsedFiles);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
@@ -2360,6 +2386,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         ormQueries: [],
         constructorBindings: [],
         fileScopeBindings: [],
+        parsedFiles: [],
         skippedLanguages: {},
         fileCount: 0,
       };
