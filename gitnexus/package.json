@@ -59,7 +59,7 @@
     "commander": "^14.0.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "glob": "^11.0.0",
+    "glob": "^13.0.6",
     "graphology": "^0.25.4",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
