@@ -33,8 +33,9 @@ import {
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
+import { EMBEDDING_DIMS, EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import type { EmbeddingConfigSummary } from './embeddings/http-client.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -73,6 +74,7 @@ export interface AnalyzeResult {
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
 const EMBEDDING_NODE_LIMIT = 50_000;
+const EMBEDDING_BACKEND_SWITCH_ENV = 'GITNEXUS_ALLOW_EMBEDDING_BACKEND_SWITCH';
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -88,6 +90,71 @@ export const PHASE_LABELS: Record<string, string> = {
   fts: 'Creating search indexes',
   embeddings: 'Generating embeddings',
   done: 'Done',
+};
+
+const getCurrentEmbeddingConfig = async (): Promise<EmbeddingConfigSummary> => {
+  const { getHttpConfigSummary } = await import('./embeddings/http-client.js');
+  const httpConfig = getHttpConfigSummary();
+  if (httpConfig) return httpConfig;
+
+  return {
+    provider: 'onnx',
+    model: 'Snowflake/snowflake-arctic-embed-xs',
+    dimensions: EMBEDDING_DIMS,
+  };
+};
+
+const embeddingConfigsCompatible = (
+  a?: EmbeddingConfigSummary,
+  b?: EmbeddingConfigSummary,
+): boolean => {
+  if (!a || !b) return true;
+  const sameProvider = a.provider === b.provider;
+  const sameBaseUrl = a.provider === 'openai' || a.baseUrl === b.baseUrl;
+  return sameProvider && sameBaseUrl && a.model === b.model && a.dimensions === b.dimensions;
+};
+
+const formatEmbeddingConfig = (config?: EmbeddingConfigSummary): string => {
+  if (!config) return 'unknown';
+  const base = config.baseUrl ? ` @ ${config.baseUrl}` : '';
+  return `${config.provider}:${config.model}:${config.dimensions}d${base}`;
+};
+
+const isExplicitBackendSwitchAllowed = (): boolean => {
+  const raw = process.env[EMBEDDING_BACKEND_SWITCH_ENV]?.toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+};
+
+const resolveEmbeddingConfig = async (
+  options: AnalyzeOptions,
+  existingMeta: Awaited<ReturnType<typeof loadMeta>>,
+  log: (msg: string) => void,
+): Promise<EmbeddingConfigSummary | undefined> => {
+  if (!options.embeddings) return undefined;
+
+  const currentConfig = await getCurrentEmbeddingConfig();
+  const existingConfig = existingMeta?.embedding;
+  if (!existingConfig || embeddingConfigsCompatible(existingConfig, currentConfig)) {
+    return currentConfig;
+  }
+
+  const from = formatEmbeddingConfig(existingConfig);
+  const to = formatEmbeddingConfig(currentConfig);
+  if (!isExplicitBackendSwitchAllowed()) {
+    throw new Error(
+      `Existing embeddings were created with ${from}, but current configuration resolves to ${to}. ` +
+        `Refusing to overwrite embeddings with a different backend/model. Set OPENAI_API_KEY ` +
+        `or matching GITNEXUS_EMBEDDING_URL/GITNEXUS_EMBEDDING_MODEL/GITNEXUS_EMBEDDING_DIMS ` +
+        `to keep the existing backend. To intentionally rebuild with ${to}, rerun with ` +
+        `${EMBEDDING_BACKEND_SWITCH_ENV}=1 and --force.`,
+    );
+  }
+
+  log(
+    `Embedding backend switch explicitly allowed by ${EMBEDDING_BACKEND_SWITCH_ENV}; ` +
+      `discarding cache (${from} -> ${to})`,
+  );
+  return currentConfig;
 };
 
 // ---------------------------------------------------------------------------
@@ -139,23 +206,35 @@ export async function runFullAnalysis(
     }
   }
 
+  const currentEmbeddingConfig = await resolveEmbeddingConfig(options, existingMeta, log);
+
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: CachedEmbedding[] = [];
 
   if (options.embeddings && existingMeta && !options.force) {
-    try {
-      progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
-      const cached = await loadCachedEmbeddings();
-      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
-      cachedEmbeddings = cached.embeddings;
-      await closeLbug();
-    } catch {
+    if (
+      existingMeta.embedding &&
+      currentEmbeddingConfig &&
+      !embeddingConfigsCompatible(existingMeta.embedding, currentEmbeddingConfig)
+    ) {
+      log(
+        `Embedding backend changed (${formatEmbeddingConfig(existingMeta.embedding)} -> ${formatEmbeddingConfig(currentEmbeddingConfig)}), discarding cache`,
+      );
+    } else {
       try {
+        progress('embeddings', 0, 'Caching embeddings...');
+        await initLbug(lbugPath);
+        const cached = await loadCachedEmbeddings();
+        cachedEmbeddingNodeIds = cached.embeddingNodeIds;
+        cachedEmbeddings = cached.embeddings;
         await closeLbug();
       } catch {
-        /* swallow */
+        try {
+          await closeLbug();
+        } catch {
+          /* swallow */
+        }
       }
     }
   }
@@ -237,6 +316,7 @@ export async function runFullAnalysis(
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
     let embeddingSkipped = true;
+    let embeddingConfig: EmbeddingConfigSummary | undefined;
 
     if (options.embeddings) {
       if (stats.nodes <= EMBEDDING_NODE_LIMIT) {
@@ -247,6 +327,7 @@ export async function runFullAnalysis(
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();
+      embeddingConfig = currentEmbeddingConfig ?? (await getCurrentEmbeddingConfig());
       progress(
         'embeddings',
         90,
@@ -311,6 +392,7 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
+      ...(embeddingConfig && embeddingCount > 0 ? { embedding: embeddingConfig } : {}),
     };
     await saveMeta(storagePath, meta);
     await registerRepo(repoPath, meta);

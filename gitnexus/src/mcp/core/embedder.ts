@@ -5,7 +5,7 @@
  * For MCP, we only need to compute query embeddings, not batch embed.
  */
 
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import type { FeatureExtractionPipeline } from '@huggingface/transformers';
 import {
   isHttpMode,
   getHttpDimensions,
@@ -20,6 +20,12 @@ const MODEL_ID = 'Snowflake/snowflake-arctic-embed-xs';
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
+let transformersModulePromise: Promise<typeof import('@huggingface/transformers')> | null = null;
+
+const loadTransformers = async (): Promise<typeof import('@huggingface/transformers')> => {
+  transformersModulePromise ??= import('@huggingface/transformers');
+  return transformersModulePromise;
+};
 
 /**
  * Initialize the embedding model (lazy, on first search)
@@ -41,6 +47,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
 
   initPromise = (async () => {
     try {
+      const { pipeline, env } = await loadTransformers();
       env.allowLocalModels = false;
       // Default cache to user-writable location. transformers.js defaults to
       // ./node_modules/.cache inside its own install dir, which is unwritable

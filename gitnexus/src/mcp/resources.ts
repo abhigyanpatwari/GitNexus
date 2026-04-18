@@ -233,7 +233,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - cypher: Raw graph queries');
   lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('');
-  lines.push('re_index: Run `npx gitnexus analyze` in terminal if data is stale');
+  lines.push('re_index: Run `gitnexus analyze` in terminal if data is stale');
   lines.push('');
   lines.push('resources_available:');
   lines.push('  - gitnexus://repos: All indexed repositories');
@@ -470,7 +470,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return '# GitNexus\n\nNo repositories indexed. Run: `npx gitnexus analyze` in a repository.';
+    return '# GitNexus\n\nNo repositories indexed. Run: `gitnexus analyze` in a repository.';
   }
 
   const sections: string[] = [];

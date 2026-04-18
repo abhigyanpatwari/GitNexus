@@ -18,14 +18,35 @@ interface HttpConfig {
   dimensions?: number;
 }
 
+export interface EmbeddingConfigSummary {
+  provider: 'openai' | 'http' | 'onnx';
+  baseUrl?: string;
+  model: string;
+  dimensions: number;
+}
+
 /**
  * Build config from the current process.env snapshot.
- * Returns null when GITNEXUS_EMBEDDING_URL + GITNEXUS_EMBEDDING_MODEL are unset.
+ * Returns null when no HTTP embedding endpoint is configured. OPENAI_API_KEY
+ * activates a default OpenAI-compatible endpoint for Claude/Codex sessions.
  * Not cached — env vars are read fresh so late configuration takes effect.
  */
 const readConfig = (): HttpConfig | null => {
-  const baseUrl = process.env.GITNEXUS_EMBEDDING_URL;
-  const model = process.env.GITNEXUS_EMBEDDING_MODEL;
+  const openAiKey = process.env.OPENAI_API_KEY;
+  const hasExplicitEndpoint = Boolean(
+    process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL,
+  );
+  const useOpenAiDefault = !hasExplicitEndpoint && Boolean(openAiKey);
+  const baseUrl = hasExplicitEndpoint
+    ? process.env.GITNEXUS_EMBEDDING_URL
+    : useOpenAiDefault
+      ? 'https://api.openai.com/v1'
+      : undefined;
+  const model = hasExplicitEndpoint
+    ? process.env.GITNEXUS_EMBEDDING_MODEL
+    : useOpenAiDefault
+      ? 'text-embedding-3-small'
+      : undefined;
   if (!baseUrl || !model) return null;
 
   const rawDims = process.env.GITNEXUS_EMBEDDING_DIMS;
@@ -37,11 +58,14 @@ const readConfig = (): HttpConfig | null => {
     }
     dimensions = parsed;
   }
+  if (dimensions === undefined && useOpenAiDefault) {
+    dimensions = DEFAULT_DIMS;
+  }
 
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     model,
-    apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY ?? 'unused',
+    apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY ?? openAiKey ?? 'unused',
     dimensions,
   };
 };
@@ -56,6 +80,21 @@ export const isHttpMode = (): boolean => readConfig() !== null;
  * if HTTP mode is not active or no explicit dimensions are set.
  */
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
+
+/**
+ * Return non-secret embedding backend metadata for index/query compatibility.
+ */
+export const getHttpConfigSummary = (): EmbeddingConfigSummary | null => {
+  const config = readConfig();
+  if (!config) return null;
+
+  return {
+    provider: config.baseUrl.includes('api.openai.com') ? 'openai' : 'http',
+    baseUrl: safeUrl(config.baseUrl),
+    model: config.model,
+    dimensions: config.dimensions ?? DEFAULT_DIMS,
+  };
+};
 
 /**
  * Return a safe representation of a URL for error messages.
@@ -91,9 +130,14 @@ const httpEmbedBatch = async (
   apiKey: string,
   batchIndex = 0,
   attempt = 0,
+  dimensions?: number,
 ): Promise<EmbeddingItem[]> => {
   let resp: Response;
   try {
+    const body: { input: string[]; model: string; dimensions?: number } = { input: batch, model };
+    if (dimensions !== undefined) {
+      body.dimensions = dimensions;
+    }
     resp = await fetch(url, {
       method: 'POST',
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
@@ -101,7 +145,7 @@ const httpEmbedBatch = async (
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ input: batch, model }),
+      body: JSON.stringify(body),
     });
   } catch (err) {
     // Timeouts should not be retried — the server is unresponsive.
@@ -116,7 +160,7 @@ const httpEmbedBatch = async (
     if (attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
-      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
+      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1, dimensions);
     }
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
@@ -127,7 +171,7 @@ const httpEmbedBatch = async (
     if ((status === 429 || status >= 500) && attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
-      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
+      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1, dimensions);
     }
     throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
   }
@@ -155,7 +199,15 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
   for (let i = 0; i < texts.length; i += HTTP_BATCH_SIZE) {
     const batch = texts.slice(i, i + HTTP_BATCH_SIZE);
     const batchIndex = Math.floor(i / HTTP_BATCH_SIZE);
-    const items = await httpEmbedBatch(url, batch, config.model, config.apiKey, batchIndex);
+    const items = await httpEmbedBatch(
+      url,
+      batch,
+      config.model,
+      config.apiKey,
+      batchIndex,
+      0,
+      config.dimensions,
+    );
 
     if (items.length !== batch.length) {
       throw new Error(
@@ -198,7 +250,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
   if (!config) throw new Error('HTTP embedding not configured');
 
   const url = `${config.baseUrl}/embeddings`;
-  const items = await httpEmbedBatch(url, [text], config.model, config.apiKey);
+  const items = await httpEmbedBatch(url, [text], config.model, config.apiKey, 0, 0, config.dimensions);
   if (!items.length) {
     throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }

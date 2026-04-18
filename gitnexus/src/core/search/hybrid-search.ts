@@ -10,6 +10,7 @@
 
 import { searchFTSFromLbug, type BM25SearchResult } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
+import { buildQueryPlan, combineRankedResults } from './query-expansion.js';
 
 /**
  * RRF constant - standard value used in the literature
@@ -21,7 +22,7 @@ export interface HybridSearchResult {
   filePath: string;
   score: number; // RRF score
   rank: number; // Final rank
-  sources: ('bm25' | 'semantic')[]; // Which methods found this
+  sources: string[]; // Which methods found this
 
   // Metadata from semantic search (if available)
   nodeId?: string;
@@ -158,9 +159,41 @@ export const hybridSearch = async (
     query: string,
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
+  options: { goal?: string; taskContext?: string } = {},
 ): Promise<HybridSearchResult[]> => {
-  // Use LadybugDB FTS for always-fresh BM25 results
-  const bm25Results = await searchFTSFromLbug(query, limit);
-  const semanticResults = await semanticSearch(executeQuery, query, limit);
-  return mergeWithRRF(bm25Results, semanticResults, limit);
+  const queryPlan = buildQueryPlan({
+    query,
+    goal: options.goal,
+    taskContext: options.taskContext,
+  });
+  const resultSets: Array<{ source: string; weight: number; results: any[] }> = [];
+
+  for (const variant of queryPlan.bm25Queries) {
+    const bm25Results = await searchFTSFromLbug(variant.query, limit);
+    resultSets.push({
+      source: variant.kind === 'primary' ? 'bm25' : `bm25:${variant.kind}`,
+      weight: variant.weight,
+      results: bm25Results,
+    });
+  }
+
+  for (const variant of queryPlan.semanticQueries) {
+    const semanticResults = await semanticSearch(executeQuery, variant.query, limit).catch(
+      () => [],
+    );
+    resultSets.push({
+      source: variant.kind === 'primary' ? 'semantic' : `semantic:${variant.kind}`,
+      weight: variant.weight,
+      results: semanticResults,
+    });
+  }
+
+  return combineRankedResults(resultSets, limit, queryPlan, {
+    keyFn: (result) => result.nodeId ?? result.filePath,
+  }).map((item, index) => ({
+    ...item.data,
+    score: item.score,
+    rank: index + 1,
+    sources: item.sources,
+  }));
 };
