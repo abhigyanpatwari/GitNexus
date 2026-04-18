@@ -77,6 +77,10 @@ export type { QualifiedNameIndex } from './scope-resolution/qualified-name-index
 export { resolveTypeRef } from './scope-resolution/resolve-type-ref.js';
 export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.js';
 
+// ScopeExtractor output contracts (RFC §3.2 Phase 1; Ring 2 PKG #919)
+export type { ParsedFile } from './scope-resolution/parsed-file.js';
+export type { ReferenceSite, ReferenceKind, CallForm } from './scope-resolution/reference-site.js';
+
 // Method-dispatch materialized view over HeritageMap (RFC §3.1; Ring 2 SHARED #914)
 export { buildMethodDispatchIndex } from './scope-resolution/method-dispatch-index.js';
 export type {

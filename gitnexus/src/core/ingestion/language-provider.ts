@@ -12,7 +12,6 @@
 import type {
   SupportedLanguages,
   MroStrategy,
-  Capture,
   CaptureMatch,
   BindingRef,
   TypeRef,
@@ -303,22 +302,31 @@ interface LanguageProviderConfig {
   // ── Parse phase (per-capture interpretation) ───────────────────────
 
   /**
-   * Emit scope captures from raw source. Tree-sitter-based providers run a
-   * `scopes.scm` query; standalone providers (COBOL) emit captures from a
-   * regex tagger. The return shape is parser-agnostic: the central
-   * `ScopeExtractor` consumes `Capture[]` without knowing which parser
-   * produced them.
+   * Emit scope captures from raw source, **pre-grouped per tree-sitter
+   * query match**. Tree-sitter-based providers run a `scopes.scm` query
+   * and emit one `CaptureMatch` per query match; standalone providers
+   * (COBOL) emit matches from a regex tagger. The return shape is
+   * parser-agnostic: the central `ScopeExtractor` consumes
+   * `CaptureMatch[]` without knowing which parser produced them.
+   *
+   * **Pre-grouping is the provider's job.** The extractor expects each
+   * `CaptureMatch` to correspond to one logical match — e.g., an import
+   * statement match carries `@import.statement` + `@import.source` +
+   * `@import.name` keyed under their capture names. Providers MUST
+   * preserve the tree-sitter match boundaries so the extractor's topic
+   * routing (scope / declaration / import / type-binding / reference)
+   * lands on coherent records.
    *
    * Required for any provider participating in scope-based resolution.
-   * Providers that have not yet migrated continue to run through the legacy
-   * DAG path (feature-flagged per `REGISTRY_PRIMARY_<LANG>`).
+   * Providers that have not yet migrated continue to run through the
+   * legacy DAG path (feature-flagged per `REGISTRY_PRIMARY_<LANG>`).
    *
    * Default: undefined (language continues to use legacy DAG).
    */
   readonly emitScopeCaptures?: (
     sourceText: string,
     filePath: string,
-  ) => Promise<readonly Capture[]>;
+  ) => Promise<readonly CaptureMatch[]>;
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
