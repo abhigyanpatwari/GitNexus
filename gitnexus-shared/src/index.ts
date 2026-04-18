@@ -47,7 +47,6 @@ export type {
   ParsedImport,
   ParsedTypeBinding,
   WorkspaceIndex,
-  ScopeTree,
   Callsite,
 } from './scope-resolution/types.js';
 
@@ -81,6 +80,14 @@ export type {
   MethodDispatchIndex,
   MethodDispatchInput,
 } from './scope-resolution/method-dispatch-index.js';
+
+// Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)
+export { makeScopeId, clearScopeIdInternPool } from './scope-resolution/scope-id.js';
+export type { ScopeIdInput } from './scope-resolution/scope-id.js';
+export { buildScopeTree, ScopeTreeInvariantError } from './scope-resolution/scope-tree.js';
+export type { ScopeTree } from './scope-resolution/scope-tree.js';
+export { buildPositionIndex } from './scope-resolution/position-index.js';
+export type { PositionIndex } from './scope-resolution/position-index.js';
 
 // Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
 export { diffResolutions } from './scope-resolution/shadow/diff.js';

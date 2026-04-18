@@ -190,12 +190,9 @@ export interface ParsedTypeBinding {
  */
 export type WorkspaceIndex = unknown;
 
-/**
- * Scope tree handle consumed by parse-phase hooks (`bindingScopeFor`,
- * `importOwningScope`) to navigate the in-progress scope tree. Opaque
- * placeholder in Ring 1; concretely typed in Ring 2 SHARED (#912).
- */
-export type ScopeTree = unknown;
+// `ScopeTree` is exported from `./scope-tree.js` as of Ring 2 SHARED (#912).
+// The former opaque placeholder lived here during Ring 1; removed now that
+// the concrete type exists. Consumers import from `gitnexus-shared` directly.
 
 /** Call-site description passed to `arityCompatibility`. */
 export interface Callsite {
