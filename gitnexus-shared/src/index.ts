@@ -71,6 +71,10 @@ export type { ModuleScopeIndex, ModuleScopeEntry } from './scope-resolution/modu
 export { buildQualifiedNameIndex } from './scope-resolution/qualified-name-index.js';
 export type { QualifiedNameIndex } from './scope-resolution/qualified-name-index.js';
 
+// Strict type-reference resolver (RFC §4.6; Ring 2 SHARED #916)
+export { resolveTypeRef } from './scope-resolution/resolve-type-ref.js';
+export type { ResolveTypeRefContext, ScopeLookup } from './scope-resolution/resolve-type-ref.js';
+
 // Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
 export { diffResolutions } from './scope-resolution/shadow/diff.js';
 export type {
