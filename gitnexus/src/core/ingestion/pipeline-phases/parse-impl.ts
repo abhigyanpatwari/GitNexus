@@ -266,6 +266,7 @@ export async function runChunkedParseAndResolve(
         graph,
         chunkFiles,
         symbolTable,
+        ctx.model.enclosingFunctions,
         astCache,
         (current, _total, filePath) => {
           const globalCurrent = filesParsedSoFar + current;

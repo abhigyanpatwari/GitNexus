@@ -48,6 +48,7 @@ import {
   findDescendant,
   extractStringContent,
   genericFuncName,
+  getDefinitionEndRow,
   inferFunctionLabel,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
@@ -132,6 +133,11 @@ interface ParsedSymbol {
   isAbstract?: boolean;
   isFinal?: boolean;
   annotations?: string[];
+  /** 1-based line range of the definition node, populated for
+   *  Function/Method/Constructor symbols so the merge layer can register
+   *  them in the SemanticModel's enclosing-function position index. */
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface ExtractedImport {
@@ -1948,6 +1954,15 @@ const processFileGroup = (
           : {}),
         ...(methodProps.annotations !== undefined
           ? { annotations: methodProps.annotations as string[] }
+          : {}),
+        // Position range — only for callable definitions, used by the
+        // SemanticModel.enclosingFunctions index in the resolver.
+        ...(definitionNode &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
+          ? {
+              startLine: definitionNode.startPosition.row + lineOffset,
+              endLine: getDefinitionEndRow(definitionNode) + lineOffset,
+            }
           : {}),
       });
 

@@ -48,10 +48,8 @@ import {
   findEnclosingClassId,
   genericFuncName,
 } from './utils/ast-helpers.js';
-import {
-  extractEnclosingFunctionId,
-  clearEnclosingFunctionCaches,
-} from './utils/enclosing-function.js';
+// (Resolution no longer touches the AST — enclosing-function IDs are
+// looked up via ctx.model.enclosingFunctions, populated during extraction.)
 import {
   countCallArguments,
   inferCallForm,
@@ -643,7 +641,6 @@ export const processCalls = async (
   for (let i = 0; i < prepared.length; i++) {
     const { file, language, provider, tree, matches, parentMap, typeEnv } = prepared[i];
 
-    clearEnclosingFunctionCaches();
     onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 
@@ -683,7 +680,7 @@ export const processCalls = async (
         }
         // Fall back to verified constructor bindings (mirrors CALLS resolution tier 2)
         if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
-          const enclosing = extractEnclosingFunctionId(captureMap['assignment'], file.path, provider);
+          const enclosing = ctx.model.enclosingFunctions.lookup(file.path, captureMap['assignment'].startPosition.row + 1);
           const funcName = enclosing ? extractFuncNameFromSourceId(enclosing) : '';
           receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverText);
         }
@@ -694,7 +691,7 @@ export const processCalls = async (
           }
         }
         if (receiverTypeName) {
-          const enclosing = extractEnclosingFunctionId(captureMap['assignment'], file.path, provider);
+          const enclosing = ctx.model.enclosingFunctions.lookup(file.path, captureMap['assignment'].startPosition.row + 1);
           const srcId = enclosing || generateId('File', file.path);
           // Defer resolution: Ruby attr_accessor properties are registered during
           // this same loop, so cross-file lookups fail if the declaring file hasn't
@@ -718,7 +715,7 @@ export const processCalls = async (
           if (provider.isBuiltInName(langCallSite.calledName)) return;
 
           const sourceId =
-            extractEnclosingFunctionId(callNode, file.path, provider) ||
+            ctx.model.enclosingFunctions.lookup(file.path, callNode.startPosition.row + 1) ||
             generateId('File', file.path);
           const receiverName =
             langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
@@ -925,7 +922,7 @@ export const processCalls = async (
       }
       // Fall back to verified constructor bindings for return type inference
       if (!receiverTypeName && receiverName && receiverIndex.size > 0) {
-        const enclosingFunc = extractEnclosingFunctionId(callNode, file.path, provider);
+        const enclosingFunc = ctx.model.enclosingFunctions.lookup(file.path, callNode.startPosition.row + 1);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
         receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverName);
         if (receiverTypeName) receiverSource = 'constructor-map';
@@ -954,7 +951,7 @@ export const processCalls = async (
         }
       }
       // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
-      const enclosingFuncId = extractEnclosingFunctionId(callNode, file.path, provider);
+      const enclosingFuncId = ctx.model.enclosingFunctions.lookup(file.path, callNode.startPosition.row + 1);
       const sourceId = enclosingFuncId || generateId('File', file.path);
 
       // Fall back to mixed chain resolution when the receiver is a complex expression
@@ -1799,7 +1796,7 @@ type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
  * so two same-arity overloads with the same local variable name but
  * different types will mark that variable as ambiguous. A future
  * enhancement should key by full scope (funcName@startIndex) and carry
- * scope keys through extractEnclosingFunctionId's return type.
+ * scope keys through ctx.model.enclosingFunctions.lookup's return type.
  */
 const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => {
   const index: ReceiverTypeIndex = new Map();

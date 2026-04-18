@@ -4,7 +4,12 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
+import type {
+  SymbolTableReader,
+  SymbolTableWriter,
+  ExtractedHeritage,
+  MutableEnclosingFunctionIndex,
+} from './model/index.js';
 // SymbolTableReader is used for the FieldExtractorContext stub; the
 // parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
@@ -15,6 +20,7 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findEnclosingOwnerNode,
+  getDefinitionEndRow,
   getLabelFromCaptures,
   type SyntaxNode,
   type EnclosingClassInfo,
@@ -72,6 +78,7 @@ const processParsingWithWorkers = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
+  enclosingFunctions: MutableEnclosingFunctionIndex,
   astCache: ASTCache,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
@@ -143,6 +150,12 @@ const processParsingWithWorkers = async (
         ownerId: sym.ownerId,
         qualifiedName: sym.qualifiedName,
       });
+      // Mirror the symbol's lexical range into the position-indexed
+      // enclosing-function lookup so the resolver can map a call's
+      // (file, line) → enclosing function nodeId without re-walking the AST.
+      if (sym.startLine !== undefined && sym.endLine !== undefined) {
+        enclosingFunctions.register(sym.filePath, sym.startLine, sym.endLine, sym.nodeId);
+      }
     }
 
     for (const item of result.imports) allImports.push(item);
@@ -272,6 +285,7 @@ const processParsingSequential = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
+  enclosingFunctions: MutableEnclosingFunctionIndex,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
 ) => {
@@ -606,6 +620,21 @@ const processParsingSequential = async (
         ownerId: enclosingClassId ?? undefined,
         qualifiedName: qualifiedTypeName,
       });
+      // Position-indexed enclosing-function registration. Mirrors the worker
+      // path's symbol push (see workers/parse-worker.ts) so the resolver can
+      // map a call's (file, line) → enclosing function nodeId via a pure
+      // semantic-model lookup.
+      if (
+        definitionNode &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
+      ) {
+        enclosingFunctions.register(
+          file.path,
+          definitionNode.startPosition.row + 1,
+          getDefinitionEndRow(definitionNode) + 1,
+          nodeId,
+        );
+      }
 
       const fileId = generateId('File', file.path);
 
@@ -653,6 +682,7 @@ export const processParsing = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
+  enclosingFunctions: MutableEnclosingFunctionIndex,
   astCache: ASTCache,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
@@ -663,6 +693,7 @@ export const processParsing = async (
         graph,
         files,
         symbolTable,
+        enclosingFunctions,
         astCache,
         workerPool,
         onFileProgress,
@@ -676,6 +707,13 @@ export const processParsing = async (
   }
 
   // Fallback: sequential parsing (no pre-extracted data)
-  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
+  await processParsingSequential(
+    graph,
+    files,
+    symbolTable,
+    enclosingFunctions,
+    astCache,
+    onFileProgress,
+  );
   return null;
 };

@@ -50,9 +50,14 @@ import type { NodeLabel } from 'gitnexus-shared';
 import type { TypeRegistry, MutableTypeRegistry } from './type-registry.js';
 import type { MethodRegistry, MutableMethodRegistry } from './method-registry.js';
 import type { FieldRegistry, MutableFieldRegistry } from './field-registry.js';
+import type {
+  EnclosingFunctionIndex,
+  MutableEnclosingFunctionIndex,
+} from './enclosing-function-index.js';
 import { createTypeRegistry } from './type-registry.js';
 import { createMethodRegistry } from './method-registry.js';
 import { createFieldRegistry } from './field-registry.js';
+import { createEnclosingFunctionIndex } from './enclosing-function-index.js';
 import type {
   SymbolTableReader,
   SymbolTableWriter,
@@ -87,6 +92,10 @@ export interface SemanticModel {
   readonly methods: MethodRegistry;
   readonly fields: FieldRegistry;
   readonly symbols: SymbolTableReader;
+  /** Position-indexed lookup: which function lexically encloses (file, line)?
+   *  Resolution-phase code uses this instead of walking the AST so the
+   *  source-side ID of a CALLS edge is an O(log N) semantic-model query. */
+  readonly enclosingFunctions: EnclosingFunctionIndex;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +111,7 @@ export interface MutableSemanticModel extends SemanticModel {
   readonly methods: MutableMethodRegistry;
   readonly fields: MutableFieldRegistry;
   readonly symbols: SymbolTableWriter;
+  readonly enclosingFunctions: MutableEnclosingFunctionIndex;
   /** Clear all registries AND the nested SymbolTable. */
   clear(): void;
 }
@@ -123,10 +133,11 @@ export const createSemanticModel = (): MutableSemanticModel => {
   // below reaches it here; no external caller receives this variable.
   const rawSymbols = createSymbolTable();
 
-  // 2. Create the three owner-scoped registries.
+  // 2. Create the three owner-scoped registries + the position index.
   const types = createTypeRegistry();
   const methods = createMethodRegistry();
   const fields = createFieldRegistry();
+  const enclosingFunctions = createEnclosingFunctionIndex();
 
   // 3. Build the dispatch table, closed over THIS instance's registries.
   const dispatchTable = createRegistrationTable({ types, methods, fields });
@@ -165,6 +176,7 @@ export const createSemanticModel = (): MutableSemanticModel => {
     types.clear();
     methods.clear();
     fields.clear();
+    enclosingFunctions.clear();
     rawSymbols.clear();
   };
 
@@ -188,6 +200,7 @@ export const createSemanticModel = (): MutableSemanticModel => {
     methods,
     fields,
     symbols,
+    enclosingFunctions,
     clear: cascadeClear,
   };
 };

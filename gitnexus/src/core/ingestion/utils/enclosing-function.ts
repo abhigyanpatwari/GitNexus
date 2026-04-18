@@ -4,13 +4,13 @@
  * `LanguageProvider` hooks. No `ResolutionContext`, no SymbolTable, no graph
  * lookup — this is pure extraction.
  *
- * Used by:
- *   - `parse-worker.ts` during call-site / assignment-site extraction (worker
- *     path), to populate `ExtractedCall.sourceId` / `ExtractedAssignment.sourceId`.
- *   - `call-processor.ts` during the sequential call resolution loop, to
- *     compute the same `sourceId` for in-process call extraction. The resolver
- *     does not maintain its own AST-based enclosing-function logic — it
- *     delegates here so the extraction step stays the single source of truth.
+ * Sole consumer: `workers/parse-worker.ts` during call-site / assignment-site
+ * extraction, to populate `ExtractedCall.sourceId` /
+ * `ExtractedAssignment.sourceId` BEFORE the SymbolTable exists. The
+ * resolution phase (`call-processor.ts`) never imports this — it queries
+ * `model.enclosingFunctions.lookup(filePath, line)` (the position-indexed
+ * registry populated by extraction) for an O(log N) semantic-model answer
+ * with no AST traversal.
  *
  * The constructed ID matches the one produced by the definition phase
  * (qualified name + `#arity` + optional `~typeTag`/`!const`) by reusing the

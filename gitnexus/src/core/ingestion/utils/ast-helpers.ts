@@ -98,6 +98,31 @@ export const FUNCTION_NODE_TYPES = new Set([
 ]);
 
 /**
+ * Compute the inclusive end position of a function/method/constructor
+ * definition, accounting for languages where the declared "definition"
+ * node and its body are SIBLINGS rather than parent/child.
+ *
+ * Specifically: in Dart's tree-sitter grammar, `function_signature` and
+ * `function_body` are siblings under `program` / `class_body`. The capture
+ * for `@definition.function` / `@definition.method` covers only the
+ * signature, so its `endPosition.row` stops at the signature line. For the
+ * SemanticModel's enclosing-function position index to match the source
+ * span (so calls *inside the body* lookup correctly), the body's end has
+ * to be folded in here.
+ *
+ * Most languages parent-wrap signature + body, so `definitionNode`'s own
+ * end is already correct and the sibling check is a no-op.
+ */
+export const getDefinitionEndRow = (definitionNode: SyntaxNode): number => {
+  let end = definitionNode.endPosition.row;
+  const next = definitionNode.nextSibling;
+  if (next && (next.type === 'function_body' || next.type === 'block')) {
+    if (next.endPosition.row > end) end = next.endPosition.row;
+  }
+  return end;
+};
+
+/**
  * AST node types that represent a class-like container (for HAS_METHOD edge extraction).
  *
  * INVARIANT: When a language config adds a new node type to `typeDeclarationNodes`,

@@ -51,6 +51,15 @@ export {
   createMethodRegistry,
 } from './method-registry.js';
 
+// Position-indexed enclosing-function lookup. Populated during the
+// extraction phase; the resolver consults it to derive a CALLS edge's
+// source-side ID without touching the AST.
+export {
+  type EnclosingFunctionIndex,
+  type MutableEnclosingFunctionIndex,
+  createEnclosingFunctionIndex,
+} from './enclosing-function-index.js';
+
 // Field registry (owner-scoped fields/properties)
 export {
   type FieldRegistry,
