@@ -433,7 +433,35 @@ cosign download attestation ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
   --predicate-type https://slsa.dev/provenance/v1
 ```
 
+#### Kubernetes: enforce signatures at admission
+
+For Kubernetes deployments, ship the bundled
+[`ClusterImagePolicy`](deploy/kubernetes/cluster-image-policy.yaml) so the
+[Sigstore policy-controller][policy-controller] rejects any GitNexus pod whose
+image is not signed by this repo's `docker.yml` running from a `vX.Y.Z` tag —
+the same identity the `cosign verify` snippet above pins.
+
+```bash
+# 1. Install the controller (one-time, cluster-wide)
+helm repo add sigstore https://sigstore.github.io/helm-charts && helm repo update
+helm install policy-controller -n cosign-system --create-namespace \
+  sigstore/policy-controller
+
+# 2. Opt your namespace in
+kubectl label namespace <your-ns> policy.sigstore.dev/include=true
+
+# 3. Apply the policy
+kubectl apply -f deploy/kubernetes/cluster-image-policy.yaml
+```
+
+After this, attempting to deploy an unsigned image — or one signed by anything
+other than `abhigyanpatwari/GitNexus`'s `docker.yml` at a `v*` tag — fails the
+admission webhook before a pod is ever created. This turns the verifiable
+signature into an enforced policy, which is the supply-chain control most
+clusters actually need.
+
 [cosign-keyless]: https://docs.sigstore.dev/cosign/signing/overview/
+[policy-controller]: https://docs.sigstore.dev/policy-controller/overview/
 
 ### Files
 
