@@ -81,6 +81,17 @@ export type {
   MethodDispatchInput,
 } from './scope-resolution/method-dispatch-index.js';
 
+// SCC-aware cross-file finalize (RFC §3.2 Phase 2; Ring 2 SHARED #915)
+export { finalize } from './scope-resolution/finalize-algorithm.js';
+export type {
+  FinalizeInput,
+  FinalizeFile,
+  FinalizeHooks,
+  FinalizeOutput,
+  FinalizedScc,
+  FinalizeStats,
+} from './scope-resolution/finalize-algorithm.js';
+
 // Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)
 export { makeScopeId, clearScopeIdInternPool } from './scope-resolution/scope-id.js';
 export type { ScopeIdInput } from './scope-resolution/scope-id.js';

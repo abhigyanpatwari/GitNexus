@@ -153,6 +153,21 @@ export type ParsedImport =
       readonly alias?: string;
     }
   /**
+   * Wildcard import — brings every exported name from the target module into
+   * the importing scope. The finalize algorithm expands this into one
+   * `BindingRef` per exported name via the provider's `expandsWildcardTo`
+   * hook, producing the finalize-only `ImportEdge` kind `'wildcard-expanded'`.
+   *
+   * Examples:
+   *   - Python `from foo import *`   → `{ kind: 'wildcard', targetRaw: 'foo' }`
+   *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
+   *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
+   */
+  | {
+      readonly kind: 'wildcard';
+      readonly targetRaw: string;
+    }
+  /**
    * Runtime-computed target — the import path is not a static literal at
    * parse time. Providers SHOULD emit the unresolvable expression's source
    * text as `targetRaw` to aid diagnostics; `null` only when no string form
