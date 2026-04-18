@@ -63,6 +63,14 @@ export {
 } from './scope-resolution/language-classification.js';
 export type { LanguageClassification } from './scope-resolution/language-classification.js';
 
+// Core indexes over per-file artifacts (RFC §3.1; Ring 2 SHARED #913)
+export { buildDefIndex } from './scope-resolution/def-index.js';
+export type { DefIndex } from './scope-resolution/def-index.js';
+export { buildModuleScopeIndex } from './scope-resolution/module-scope-index.js';
+export type { ModuleScopeIndex, ModuleScopeEntry } from './scope-resolution/module-scope-index.js';
+export { buildQualifiedNameIndex } from './scope-resolution/qualified-name-index.js';
+export type { QualifiedNameIndex } from './scope-resolution/qualified-name-index.js';
+
 // Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
 export { diffResolutions } from './scope-resolution/shadow/diff.js';
 export type {
