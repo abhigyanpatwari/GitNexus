@@ -1765,7 +1765,14 @@ export class LocalBackend {
 
     let diffOutput: string;
     try {
-      diffOutput = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
+      // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
+      // repos with large unstaged/untracked diffs (e.g. unignored build folders).
+      // See issue: spawnSync git ENOBUFS in detect_changes(scope="unstaged").
+      diffOutput = execFileSync('git', diffArgs, {
+        cwd: repo.repoPath,
+        encoding: 'utf-8',
+        maxBuffer: 256 * 1024 * 1024,
+      });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
     }
@@ -2039,6 +2046,8 @@ export class LocalBackend {
         cwd: repo.repoPath,
         encoding: 'utf-8',
         timeout: 5000,
+        // Avoid ENOBUFS on large repos: rg -l can list many files.
+        maxBuffer: 256 * 1024 * 1024,
       });
       const files = output
         .trim()
