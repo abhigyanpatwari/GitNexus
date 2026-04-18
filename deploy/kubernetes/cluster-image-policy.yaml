@@ -41,7 +41,7 @@ spec:
   # `gitnexus:<tag>`, `gitnexus@sha256:...`, `gitnexus-web:<tag>`, and
   # `gitnexus-web@sha256:...` reference.
   images:
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus*"
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus*'
   authorities:
     - name: gitnexus-cosign-keyless
       keyless:
