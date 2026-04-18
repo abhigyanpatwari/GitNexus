@@ -118,10 +118,10 @@ jobs:
 
       # Cosign keyless signing. Each pushed tag is signed by the workflow's
       # OIDC identity, so consumers can verify the image with the strict,
-      # fully-anchored identity regex (same one in README.md and
-      # deploy/kubernetes/cluster-image-policy.yaml — keep them in sync):
+      # fully-anchored identity regex (kept in sync with README.md and
+      # deploy/kubernetes/cluster-image-policy.yaml — update all three together):
       #   cosign verify ghcr.io/<owner>/<slug>:<tag> \
-      #     --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+      #     --certificate-identity-regexp '^https://github\.com/${{ github.repository }}/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
       # Do NOT relax to `@.*` — that accepts signatures from any ref, including
       # unprotected branches and PRs, and defeats the supply-chain guarantee.
