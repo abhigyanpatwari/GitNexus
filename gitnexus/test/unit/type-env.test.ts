@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
-import { type SymbolDefinition } from '../../src/core/ingestion/model/symbol-table.js';
+import { type SymbolDefinition } from 'gitnexus-shared';
 import {
   createSemanticModel,
   type SemanticModel,

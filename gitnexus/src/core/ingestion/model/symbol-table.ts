@@ -34,7 +34,7 @@
  * logic up the dependency chain instead.
  */
 
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 
 /**
  * Class-like NodeLabels — used for qualifiedName fallback inside
@@ -113,28 +113,10 @@ export const CALL_TARGET_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Constructor',
 ]);
 
-export interface SymbolDefinition {
-  nodeId: string;
-  filePath: string;
-  type: NodeLabel;
-  /** Canonical dot-separated qualified type name for class-like symbols
-   *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
-   *  package/namespace/module scope exists or no explicit qualified metadata is provided. */
-  qualifiedName?: string;
-  parameterCount?: number;
-  /** Number of required (non-optional, non-default) parameters.
-   *  Enables range-based arity filtering: argCount >= requiredParameterCount && argCount <= parameterCount. */
-  requiredParameterCount?: number;
-  /** Per-parameter type names for overload disambiguation (e.g. ['int', 'String']).
-   *  Populated when parameter types are resolvable from AST (any typed language). */
-  parameterTypes?: string[];
-  /** Raw return type text extracted from AST (e.g. 'User', 'Promise<User>') */
-  returnType?: string;
-  /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
-  declaredType?: string;
-  /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
-  ownerId?: string;
-}
+// `SymbolDefinition` moved to `gitnexus-shared` as part of RFC #909 Ring 1
+// (see #910). It is imported at the top of this file from `gitnexus-shared`
+// and re-used unchanged throughout. Consumers should import
+// `SymbolDefinition` directly from `gitnexus-shared`, not via this file.
 
 /**
  * Optional metadata accepted by {@link SymbolTable.add}. Kept as a separate

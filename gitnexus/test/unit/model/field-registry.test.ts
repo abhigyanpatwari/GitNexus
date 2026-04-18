@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createFieldRegistry } from '../../../src/core/ingestion/model/field-registry.js';
-import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import { makeDef as makeBaseDef } from './helpers.js';
 
 const makeDef = (overrides: Partial<SymbolDefinition> = {}): SymbolDefinition =>

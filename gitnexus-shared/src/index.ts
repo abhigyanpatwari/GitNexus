@@ -23,3 +23,36 @@ export type { MroStrategy } from './mro-strategy.js';
 
 // Pipeline progress
 export type { PipelinePhase, PipelineProgress } from './pipeline.js';
+
+// ─── Scope-based resolution — RFC #909 (Ring 1 #910) ────────────────────────
+// Data model (RFC §2)
+export type { SymbolDefinition } from './scope-resolution/symbol-definition.js';
+export type {
+  ScopeId,
+  DefId,
+  ScopeKind,
+  Range,
+  Capture,
+  BindingRef,
+  ImportEdge,
+  TypeRef,
+  Scope,
+  ResolutionEvidence,
+  Resolution,
+  Reference,
+  ReferenceIndex,
+  LookupParams,
+  RegistryContributor,
+} from './scope-resolution/types.js';
+
+// Evidence + tie-break constants (RFC Appendix A, Appendix B)
+export { EvidenceWeights, typeBindingWeightAtDepth } from './scope-resolution/evidence-weights.js';
+export { ORIGIN_PRIORITY } from './scope-resolution/origin-priority.js';
+export type { OriginForTieBreak } from './scope-resolution/origin-priority.js';
+
+// Language classification (RFC §6.1 Ring 3/4 governance)
+export {
+  LanguageClassifications,
+  isProductionLanguage,
+} from './scope-resolution/language-classification.js';
+export type { LanguageClassification } from './scope-resolution/language-classification.js';

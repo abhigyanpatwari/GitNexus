@@ -7,7 +7,7 @@
  * (array values) and arity-based filtering.
  */
 
-import type { SymbolDefinition } from './symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 
 // ---------------------------------------------------------------------------
 // Public read-only interface
