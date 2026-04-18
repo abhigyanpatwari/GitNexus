@@ -834,14 +834,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const backend = new LocalBackend();
-      try {
-        await backend.init();
-        const result = await backend.getGroupService().groupStatus({ name: groupName });
-        res.json(result);
-      } finally {
-        await backend.dispose().catch(() => {});
-      }
+      const result = await backend.getGroupService().groupStatus({ name: groupName });
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to get group status' });
     }
