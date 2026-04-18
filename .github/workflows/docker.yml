@@ -4,7 +4,9 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  # No workflow_dispatch: publishing is exclusively tag-driven so that every
+  # signed image corresponds 1:1 to a published `gitnexus@X.Y.Z` on npm. A
+  # manual run from a branch ref would fail the version check below anyway.
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel.
@@ -119,9 +121,12 @@ jobs:
       # Cosign keyless signing. Each pushed tag is signed by the workflow's
       # OIDC identity, so consumers can verify the image with the strict,
       # fully-anchored identity regex (kept in sync with README.md and
-      # deploy/kubernetes/cluster-image-policy.yaml — update all three together):
+      # deploy/kubernetes/cluster-image-policy.yaml — update all three together).
+      # NOTE: `${...}` expression syntax is NOT evaluated inside YAML comments, so
+      # the example below uses literal `<owner>/<repo>` placeholders that consumers
+      # substitute themselves; the canonical, fully-rendered command lives in README.md.
       #   cosign verify ghcr.io/<owner>/<slug>:<tag> \
-      #     --certificate-identity-regexp '^https://github\.com/${{ github.repository }}/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+      #     --certificate-identity-regexp '^https://github\.com/<owner>/<repo>/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
       # Do NOT relax to `@.*` — that accepts signatures from any ref, including
       # unprotected branches and PRs, and defeats the supply-chain guarantee.
@@ -134,9 +139,12 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           # Sign every tag at the same digest so consumers can verify by tag or by digest.
-          for tag in $TAGS; do
-            cosign sign --yes "${tag}@${DIGEST}"
-          done
+          # Use `while read` instead of `for $TAGS` to be robust against tags that
+          # could ever contain whitespace (the metadata-action output is newline-
+          # separated, not space-separated).
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
 
       # Attach the SBOM produced by buildx as a verifiable attestation on the digest.
       - name: Generate build provenance attestation
