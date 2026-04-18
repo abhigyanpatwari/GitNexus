@@ -359,9 +359,12 @@ function recordTypeBindingHit(
   receiverOwner: DefId,
 ): void {
   const state = ensureCandidate(perCandidate, def);
-  const firstHit = state.signals.typeBindingMroDepth === undefined;
-  // Only replace if this hit is shallower (smaller MRO depth).
-  if (firstHit || mroDepth < state.signals.typeBindingMroDepth!) {
+  const existingMroDepth = state.signals.typeBindingMroDepth;
+  const firstHit = existingMroDepth === undefined;
+  // Only replace if this hit is shallower (smaller MRO depth). The local
+  // const lets TS narrow to `number` in the `else` branch so no `!`
+  // assertion is needed.
+  if (firstHit || mroDepth < existingMroDepth) {
     state.signals.typeBindingMroDepth = mroDepth;
     state.tieBreakKey.mroDepth = mroDepth;
   }
@@ -371,9 +374,12 @@ function recordTypeBindingHit(
   // Pure type-binding candidates (no lexical hit) would otherwise keep the
   // `ensureCandidate` default `tieBreakKey.origin === 'local'`, making the
   // Appendix B cascade lump them with local-origin candidates. Demote them
-  // to `'import'` — the strongest non-local origin — only on the FIRST
-  // type-binding hit, so a later lexical Step 1 walk can still upgrade
-  // them back to `'local'` via `recordLexicalHit`.
+  // to `'import'` — the strongest non-local origin — only when no earlier
+  // phase set an origin for this candidate. Lexical hits from Step 1 set
+  // `signals.origin` before Step 2 runs, so the guard skips them; Step 3
+  // (`seedFromOwnerScopedContributor`) runs AFTER Step 2 and unconditionally
+  // overrides `tieBreakKey.origin` back to `'local'` for direct-owner
+  // members, so any same-def overlap still ends up ranked correctly.
   if (firstHit && state.signals.origin === undefined) {
     state.tieBreakKey.origin = 'import';
   }

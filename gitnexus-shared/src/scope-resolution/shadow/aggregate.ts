@@ -5,6 +5,11 @@
  * Pure functions; no I/O. The harness persists per-run JSON; the dashboard
  * reads `.gitnexus/shadow-parity/latest.json` and renders.
  *
+ * Related types — `ShadowAgreement`, `ShadowCallsite`, `ShadowDiff` — are
+ * defined alongside `diffResolutions` in `./diff.ts` and re-exported
+ * through the top-level `gitnexus-shared` barrel. Consumers import all
+ * three from `gitnexus-shared`, not from this module.
+ *
  * Part of RFC #909 Ring 2 SHARED — #918.
  */
 

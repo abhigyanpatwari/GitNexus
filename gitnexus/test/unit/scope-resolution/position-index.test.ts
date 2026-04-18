@@ -135,6 +135,24 @@ describe('buildPositionIndex', () => {
       expect(idx.atPosition('a.ts', 30, 0)).toBe('scope:b');
       expect(idx.atPosition('a.ts', 22, 0)).toBe('scope:mod'); // gap between siblings
     });
+
+    it('returns the right (later-start) sibling when two siblings share a boundary point', () => {
+      // Legal touching-boundary scenario per ScopeTree's non-overlap rule:
+      // [5:0..10:0] and [10:0..15:0] meet at (10, 0) but do not overlap
+      // (rangesOverlap treats end == start as "touches, not overlaps").
+      // A query AT the shared point is contained by BOTH siblings; the
+      // innermost-wins comparator breaks the tie by start position ASC:
+      // the right sibling (starts at 10:0) is scanned first during the
+      // backward pass and wins. See `atPosition` JSDoc.
+      const idx = buildPositionIndex([
+        mkScope('scope:mod', 'a.ts', 'Module', r(1, 0, 100, 0)),
+        mkScope('scope:left', 'a.ts', 'Block', r(5, 0, 10, 0), 'scope:mod'),
+        mkScope('scope:right', 'a.ts', 'Block', r(10, 0, 15, 0), 'scope:mod'),
+      ]);
+      expect(idx.atPosition('a.ts', 10, 0)).toBe('scope:right'); // shared boundary
+      expect(idx.atPosition('a.ts', 7, 0)).toBe('scope:left'); // inside left only
+      expect(idx.atPosition('a.ts', 12, 0)).toBe('scope:right'); // inside right only
+    });
   });
 
   describe('multi-file isolation', () => {

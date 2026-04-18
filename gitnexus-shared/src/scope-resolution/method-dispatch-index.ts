@@ -121,14 +121,14 @@ export function buildMethodDispatchIndex(input: MethodDispatchInput): MethodDisp
     implsByInterfaceDefId.set(ifaceId, Object.freeze(owners.slice()));
   }
 
-  return freezeIndex(mroByOwnerDefId, implsByInterfaceDefId);
+  return wrapIndex(mroByOwnerDefId, implsByInterfaceDefId);
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
 const EMPTY: readonly DefId[] = Object.freeze([]);
 
-function freezeIndex(
+function wrapIndex(
   mroByOwnerDefId: Map<DefId, readonly DefId[]>,
   implsByInterfaceDefId: Map<DefId, readonly DefId[]>,
 ): MethodDispatchIndex {

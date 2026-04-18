@@ -72,8 +72,8 @@ export { buildQualifiedNameIndex } from './scope-resolution/qualified-name-index
 export type { QualifiedNameIndex } from './scope-resolution/qualified-name-index.js';
 
 // Strict type-reference resolver (RFC §4.6; Ring 2 SHARED #916)
-// `ScopeLookup` now lives in `./scope-resolution/types.js` (canonical);
-// it is re-exported there — no separate export from this module.
+// `ScopeLookup` is defined in `./scope-resolution/types.js` and exported
+// from the type-export block above — not from this module.
 export { resolveTypeRef } from './scope-resolution/resolve-type-ref.js';
 export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.js';
 

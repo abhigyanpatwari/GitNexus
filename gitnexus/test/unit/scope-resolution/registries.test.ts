@@ -557,6 +557,59 @@ describe('Step 2: type-binding + MRO walk', () => {
     expect(typeBinding?.weight).toBe(EvidenceWeights.typeBindingByMroDepth[0]);
   });
 
+  it('demotes Step-2-only candidates to tieBreakKey.origin=import (pins rank vs same-origin siblings)', () => {
+    // Two method defs named `impl`, both owned by the same interface and
+    // both reached ONLY via the Step 2 type-binding MRO walk (no lexical
+    // binding). Each candidate's `recordTypeBindingHit` path demotes its
+    // `tieBreakKey.origin` from the `ensureCandidate` default `'local'`
+    // to `'import'`. With both at equal confidence (owner-match + type-
+    // binding at depth 0), the tie-break cascade must fall through
+    // scope-depth / MRO-depth / origin (all equal) to DefId.localeCompare.
+    //
+    // If the demotion regressed (e.g., tieBreakKey.origin left as `'local'`),
+    // both candidates would still share the same origin and this test would
+    // pass by coincidence — so the test ALSO asserts `signals.origin` is
+    // absent from the evidence list (no false where-found weight emitted),
+    // which is the strongest observable invariant the demotion guarantees.
+    const iface = mkDef({
+      nodeId: 'def:Iface',
+      type: 'Interface',
+      qualifiedName: 'Iface',
+    });
+    const implA = mkDef({
+      nodeId: 'def:aaa.impl',
+      type: 'Method',
+      qualifiedName: 'Iface.impl',
+      ownerId: 'def:Iface',
+    });
+    const implB = mkDef({
+      nodeId: 'def:bbb.impl',
+      type: 'Method',
+      qualifiedName: 'Iface.impl',
+      ownerId: 'def:Iface',
+    });
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { x: typeRef('Iface', 'scope:call') },
+    });
+    const ctx = makeCtx([scope], [iface, implA, implB]);
+    const results = buildMethodRegistry(ctx).lookup('impl', 'scope:call', {
+      explicitReceiver: { name: 'x' },
+    });
+    expect(results).toHaveLength(2);
+    // DefId.localeCompare: 'def:aaa.impl' < 'def:bbb.impl'.
+    expect(results[0]!.def).toBe(implA);
+    expect(results[1]!.def).toBe(implB);
+    // Demotion invariant: Step-2-only candidates have no `signals.origin`,
+    // so composeEvidence never emits a where-found signal for them.
+    for (const res of results) {
+      expect(evidenceOfKind(res, 'local')).toBeUndefined();
+      expect(evidenceOfKind(res, 'import')).toBeUndefined();
+      expect(evidenceOfKind(res, 'type-binding')).toBeDefined();
+    }
+  });
+
   it('walks up the MRO when the method is declared on an ancestor', () => {
     const baseClass = mkDef({ nodeId: 'def:Base', type: 'Class', qualifiedName: 'Base' });
     const derivedClass = mkDef({ nodeId: 'def:Derived', type: 'Class', qualifiedName: 'Derived' });

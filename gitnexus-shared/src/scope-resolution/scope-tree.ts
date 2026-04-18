@@ -18,8 +18,9 @@
  *     pointers would be a category error — a `File` scope is not the
  *     parent of another file's scopes; imports do that job.)
  *
- * Satisfies the `ScopeLookup` contract from #916 (`resolve-type-ref`), so
- * `resolveTypeRef` can take a `ScopeTree` directly without adapters.
+ * Satisfies the `ScopeLookup` contract (defined in `./types.js`), so
+ * `resolveTypeRef` (#916) and the scope-aware registries (#917) can take a
+ * `ScopeTree` directly without adapters.
  *
  * Immutable surface: `byId` is a `ReadonlyMap`; children arrays are
  * `Object.freeze`d; miss lookups return a shared frozen empty array.
