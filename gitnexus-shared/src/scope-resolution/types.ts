@@ -59,6 +59,150 @@ export interface Capture {
   readonly text: string;
 }
 
+/**
+ * A grouping of `Capture`s that came from a single query match (e.g., one
+ * `@import.statement` match carries `@import.source`, `@import.name`,
+ * `@import.alias?` as child captures). Keyed by capture name for O(1)
+ * child access.
+ */
+export type CaptureMatch = Readonly<Record<string, Capture>>;
+
+// ─── Hook input/output types (RFC §5.2) ─────────────────────────────────────
+
+/**
+ * Provider-interpreted raw import, consumed by finalize (Phase 2) to produce
+ * linked `ImportEdge[]`. The provider's `interpretImport` hook turns a
+ * `CaptureMatch` for an `@import.statement` into one of these; the central
+ * finalize algorithm resolves `targetRaw` to a concrete file via
+ * `resolveImportTarget` and materializes the final `ImportEdge`.
+ *
+ * Discriminated union — each variant carries only the fields that make sense
+ * for its kind. Invalid shapes (e.g., a `namespace` import with an alias-like
+ * `importedName` mismatch) are compile errors, not latent bugs. `'wildcard-
+ * expanded'` is deliberately NOT a variant: that kind is finalize output only,
+ * produced when `expandsWildcardTo` materializes a wildcard against target
+ * exports — a provider must never emit it at parse time.
+ */
+export type ParsedImport =
+  /**
+   * Per-name import without rename.
+   *
+   * Examples:
+   *   - Python `from foo import X`   → `{ kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'foo' }`
+   *   - TS `import { X } from './foo'` → `{ kind: 'named', localName: 'X', importedName: 'X', targetRaw: './foo' }`
+   *   - Java `import foo.bar.X`       → `{ kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'foo.bar' }`
+   */
+  | {
+      readonly kind: 'named';
+      readonly localName: string;
+      readonly importedName: string;
+      readonly targetRaw: string;
+    }
+  /**
+   * Per-name import with rename.
+   *
+   * Examples:
+   *   - Python `from foo import X as Y`   → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: 'foo' }`
+   *   - TS `import { X as Y } from './foo'` → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './foo' }`
+   */
+  | {
+      readonly kind: 'alias';
+      readonly localName: string;
+      readonly importedName: string;
+      readonly alias: string;
+      readonly targetRaw: string;
+    }
+  /**
+   * Qualified module handle, with or without rename. `importedName` is the
+   * module being aliased; `localName` is the scope-visible handle (often the
+   * same unless renamed).
+   *
+   * Examples:
+   *   - Python `import numpy`            → `{ kind: 'namespace', localName: 'numpy', importedName: 'numpy', targetRaw: 'numpy' }`
+   *   - Python `import numpy as np`      → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
+   *   - TS `import * as np from 'numpy'` → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
+   *   - Go `import foo "pkg/bar"`        → `{ kind: 'namespace', localName: 'foo',   importedName: 'bar',   targetRaw: 'pkg/bar' }`
+   */
+  | {
+      readonly kind: 'namespace';
+      /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
+      readonly localName: string;
+      /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
+      readonly importedName: string;
+      readonly targetRaw: string;
+    }
+  /**
+   * Syntactically-detectable parse-time re-export. Finalize may still produce
+   * `ImportEdge { kind: 'reexport', transitiveVia }` when flattening chains;
+   * this variant preserves the *parse-time* signal so finalize doesn't have
+   * to re-derive it from scratch.
+   *
+   * Examples:
+   *   - TS `export { X } from './y'`       → `{ kind: 'reexport', localName: 'X', importedName: 'X', targetRaw: './y' }`
+   *   - TS `export { X as Y } from './y'`  → `{ kind: 'reexport', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './y' }`
+   *   - Rust `pub use foo::bar`            → `{ kind: 'reexport', localName: 'bar', importedName: 'bar', targetRaw: 'foo' }`
+   */
+  | {
+      readonly kind: 'reexport';
+      /** Name as re-exported in the current module. */
+      readonly localName: string;
+      /** Name in the source module. */
+      readonly importedName: string;
+      readonly targetRaw: string;
+      /** Set when the re-export renames the symbol (e.g. `export { X as Y } from './y'`). */
+      readonly alias?: string;
+    }
+  /**
+   * Runtime-computed target — the import path is not a static literal at
+   * parse time. Providers SHOULD emit the unresolvable expression's source
+   * text as `targetRaw` to aid diagnostics; `null` only when no string form
+   * exists.
+   *
+   * Examples:
+   *   - JS `await import(expr)`                          → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: 'expr' }`
+   *   - Python `importlib.import_module(f'pkg.{name}')`  → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: "f'pkg.{name}'" }`
+   */
+  | {
+      readonly kind: 'dynamic-unresolved';
+      readonly localName: string;
+      /** Source text of the unresolved expression when available; `null` otherwise. */
+      readonly targetRaw: string | null;
+    };
+
+/**
+ * Provider-interpreted type binding. The provider's `interpretTypeBinding`
+ * hook turns a `CaptureMatch` (e.g., `@type-binding.parameter`) into one of
+ * these; the central extractor attaches the resulting `TypeRef` to the
+ * appropriate scope's `typeBindings` map.
+ */
+export interface ParsedTypeBinding {
+  /** The name being bound (parameter name, `self`, assignment LHS, …). */
+  readonly boundName: string;
+  /** The raw type name as written in source (`'User'`, `'models.User'`, …). */
+  readonly rawTypeName: string;
+  readonly source: TypeRef['source'];
+}
+
+/**
+ * Cross-file workspace index consumed by finalize-phase hooks
+ * (`resolveImportTarget`, `expandsWildcardTo`). Opaque placeholder in Ring 1;
+ * concretely typed in Ring 2 SHARED (#915).
+ */
+export type WorkspaceIndex = unknown;
+
+/**
+ * Scope tree handle consumed by parse-phase hooks (`bindingScopeFor`,
+ * `importOwningScope`) to navigate the in-progress scope tree. Opaque
+ * placeholder in Ring 1; concretely typed in Ring 2 SHARED (#912).
+ */
+export type ScopeTree = unknown;
+
+/** Call-site description passed to `arityCompatibility`. */
+export interface Callsite {
+  /** Number of arguments at the call site. */
+  readonly arity: number;
+}
+
 // ─── §2.4 ImportEdge ────────────────────────────────────────────────────────
 
 /**

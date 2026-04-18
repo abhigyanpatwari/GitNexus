@@ -33,6 +33,7 @@ export type {
   ScopeKind,
   Range,
   Capture,
+  CaptureMatch,
   BindingRef,
   ImportEdge,
   TypeRef,
@@ -43,6 +44,11 @@ export type {
   ReferenceIndex,
   LookupParams,
   RegistryContributor,
+  ParsedImport,
+  ParsedTypeBinding,
+  WorkspaceIndex,
+  ScopeTree,
+  Callsite,
 } from './scope-resolution/types.js';
 
 // Evidence + tie-break constants (RFC Appendix A, Appendix B)

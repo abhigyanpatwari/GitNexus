@@ -9,7 +9,23 @@
  * so adding a language to the enum without creating a provider is a compiler error.
  */
 
-import type { SupportedLanguages, MroStrategy } from 'gitnexus-shared';
+import type {
+  SupportedLanguages,
+  MroStrategy,
+  Capture,
+  CaptureMatch,
+  BindingRef,
+  TypeRef,
+  Scope,
+  ScopeId,
+  ScopeKind,
+  ScopeTree,
+  ParsedImport,
+  ParsedTypeBinding,
+  SymbolDefinition,
+  Callsite,
+  WorkspaceIndex,
+} from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { CallRouter } from './call-routing.js';
 import type {
@@ -272,6 +288,233 @@ interface LanguageProviderConfig {
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)
+  //
+  //  All hooks below are OPTIONAL with safe defaults so existing providers
+  //  continue to compile unchanged. Ring 2 (#919–#925) wires these into the
+  //  central `ScopeExtractor` + finalize pipeline; Ring 3 per-language
+  //  tickets implement the ones each language needs.
+  //
+  //  See: https://www.notion.so/346dc50b6ed281cfaacbe480bf231d50 §5.2
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── Parse phase (per-capture interpretation) ───────────────────────
+
+  /**
+   * Emit scope captures from raw source. Tree-sitter-based providers run a
+   * `scopes.scm` query; standalone providers (COBOL) emit captures from a
+   * regex tagger. The return shape is parser-agnostic: the central
+   * `ScopeExtractor` consumes `Capture[]` without knowing which parser
+   * produced them.
+   *
+   * Required for any provider participating in scope-based resolution.
+   * Providers that have not yet migrated continue to run through the legacy
+   * DAG path (feature-flagged per `REGISTRY_PRIMARY_<LANG>`).
+   *
+   * Default: undefined (language continues to use legacy DAG).
+   */
+  readonly emitScopeCaptures?: (
+    sourceText: string,
+    filePath: string,
+  ) => Promise<readonly Capture[]>;
+
+  /**
+   * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
+   * The central finalize algorithm resolves `ParsedImport.targetRaw` to a
+   * concrete file via `resolveImportTarget` and materializes the final
+   * `ImportEdge` with `targetModuleScope` / `targetDefId` filled in.
+   *
+   * Required when `emitScopeCaptures` is implemented.
+   */
+  readonly interpretImport?: (captures: CaptureMatch) => ParsedImport | null;
+
+  /**
+   * What is the implicit receiver on a Function scope? For instance methods
+   * this is `self`/`this`; for standalone functions it is `null`. Consulted
+   * by `Registry.lookup` Step 2 via the `resolveTypeRef` helper.
+   *
+   * Required for any language with method dispatch (OO semantics).
+   *
+   * Default: undefined (treated as `null` — no implicit receiver).
+   */
+  readonly receiverBinding?: (functionScope: Scope) => TypeRef | null;
+
+  /**
+   * Interpret a raw type-binding capture (parameter annotation, `self`,
+   * assignment with constructor RHS, …) into a `ParsedTypeBinding`. The
+   * central extractor attaches the resulting `TypeRef` to the appropriate
+   * scope's `typeBindings` map.
+   *
+   * Default: undefined (falls back to `{ boundName: captures.name, rawTypeName: captures.type, source: 'annotation' }`).
+   */
+  readonly interpretTypeBinding?: (captures: CaptureMatch) => ParsedTypeBinding | null;
+
+  /**
+   * Override the `ScopeKind` assigned to a scope capture. Use when the
+   * capture name alone can't resolve the kind (e.g., tree-sitter captures
+   * a `block` that is semantically an `Expression` in this language).
+   *
+   * Default: undefined (the central extractor uses the capture name's
+   * suffix — `@scope.function` → `'Function'`, etc.).
+   */
+  readonly resolveScopeKind?: (captures: CaptureMatch) => ScopeKind | null;
+
+  /**
+   * Should this scope capture materialize as a real `Scope` node? Return
+   * `false` to skip scope creation while still emitting declarations that
+   * would have gone inside (they attach to the enclosing real scope).
+   *
+   * Example: Python `if`/`for`/`while` bodies capture as `@scope.block` but
+   * Python has no block scope — hook returns `false` and child declarations
+   * lift to the enclosing function/module.
+   *
+   * Default: undefined (treated as `true` — always create).
+   */
+  readonly shouldCreateScope?: (captures: CaptureMatch) => boolean;
+
+  /**
+   * Override where a declaration's name becomes visible. By default the name
+   * is bound in the innermost enclosing scope; return a different `ScopeId`
+   * to hoist it (JS `var` → enclosing function scope; Ruby `def` inside
+   * `begin` → enclosing class scope).
+   *
+   * Return `null` to delegate to the central default (innermost enclosing
+   * scope). This matches the `X | null` convention used by the other optional
+   * hooks and supports partial overrides — e.g., a JS provider can return a
+   * hoisted scope for `var` declarations and `null` for `let`/`const`, without
+   * re-implementing the default lookup.
+   *
+   * **Purity:** must be a pure function of its inputs — same parameters must
+   * yield the same `ScopeId` (or `null`) across invocations. No closure over
+   * mutable state. Required so scope-tree construction stays deterministic
+   * across re-parses.
+   *
+   * Default: undefined (the central extractor uses `innermostScope.id`).
+   */
+  readonly bindingScopeFor?: (
+    declCapture: CaptureMatch,
+    innermostScope: Scope,
+    scopeTree: ScopeTree,
+  ) => ScopeId | null;
+
+  // ── Finalize phase (cross-file + materialization) ──────────────────
+
+  /**
+   * Resolve a `ParsedImport.targetRaw` expression to a concrete file path in
+   * the workspace. Language-specific resolution: Python relative imports,
+   * JS package.json + node_modules, Go module paths, Java classpath,
+   * COBOL COPY paths. Ports today's per-language import resolver.
+   *
+   * Required when `emitScopeCaptures` is implemented. Ring 2 PKG #922
+   * provides the adapter that bridges today's resolver shape to this hook.
+   */
+  readonly resolveImportTarget?: (
+    parsedImport: ParsedImport,
+    workspaceIndex: WorkspaceIndex,
+  ) => string | null;
+
+  /**
+   * Enumerate the exported names of a file — used by the finalize algorithm
+   * to expand `import * from M` into individual `BindingRef`s with
+   * `origin: 'wildcard'`.
+   *
+   * Default: undefined (central finalize walks the target file's
+   * `ExportMap.keys()`).
+   */
+  readonly expandsWildcardTo?: (
+    targetFile: string,
+    workspaceIndex: WorkspaceIndex,
+  ) => readonly string[];
+
+  /**
+   * Decide the scope to which a `ParsedImport` attaches. Most languages
+   * attach imports to the nearest enclosing `Module`/`Namespace` scope
+   * (the default); some languages allow local imports (Python function-local
+   * `from x import Y`, Rust fn-local `use`, TS dynamic `import()`) — return
+   * a `Function`/`Block` scope id instead.
+   *
+   * Return `null` to delegate to the central default (nearest enclosing
+   * `Module`/`Namespace`). This matches the `X | null` convention used by
+   * the other optional hooks and supports partial overrides — a provider
+   * that handles only specific import forms non-standardly can `return null`
+   * for the common cases and let the central walk handle them.
+   *
+   * **Purity:** must be a pure function of its inputs — same parameters must
+   * yield the same `ScopeId` (or `null`) across invocations. No closure over
+   * mutable state. Required so scope-tree construction stays deterministic
+   * across re-parses.
+   *
+   * Default: undefined (central finalize walks to the nearest enclosing
+   * `Module` or `Namespace` scope).
+   */
+  readonly importOwningScope?: (
+    parsedImport: ParsedImport,
+    innermostScope: Scope,
+    scopeTree: ScopeTree,
+  ) => ScopeId | null;
+
+  /**
+   * Merge local declarations and imported bindings for a single (scope, name)
+   * during finalize materialization of a scope's binding table. Language-
+   * specific precedence: Python local hides import; TypeScript namespace
+   * merging keeps both; Ruby constant resolution has its own rules.
+   *
+   * Default: undefined (central finalize uses local-first-then-imports,
+   * deduping by `DefId`).
+   */
+  readonly mergeBindings?: (scope: Scope, bindings: readonly BindingRef[]) => readonly BindingRef[];
+
+  // ── Reference-extraction phase ─────────────────────────────────────
+
+  /**
+   * Classify a `@reference.call` capture as free / member / constructor /
+   * index. Preferred path is declarative via capture sub-tags
+   * (`@reference.call.free`, etc.); this hook handles the languages where
+   * call form can't be decided statically (Ruby bare `foo(x)` is free-or-
+   * member until resolved).
+   *
+   * Default: undefined (central extractor reads capture sub-tag if present;
+   * else treats as `'free'`).
+   */
+  readonly classifyCallForm?: (
+    captures: CaptureMatch,
+    enclosingScope: Scope,
+  ) => 'free' | 'member' | 'constructor' | 'index';
+
+  // ── Resolution phase (RFC §4v2) ────────────────────────────────────
+
+  /**
+   * Does a binding at this scope shadow bindings of the same name in outer
+   * scopes? Default: any binding shadows (standard lexical scoping). Return
+   * `false` for transparent-scope edge cases (Python `from x import *`
+   * contexts, JS `var` hoisting quirks, COBOL PARAGRAPH transparency).
+   *
+   * Consulted by `Registry.lookup` Step 1 and by `resolveTypeRef` for
+   * shadowing decisions during the lexical chain walk.
+   *
+   * Default: undefined (treated as `true` — any binding shadows).
+   */
+  readonly shouldShadow?: (scope: Scope, bindings: readonly BindingRef[]) => boolean;
+
+  /**
+   * Is this callable definition compatible with the given call-site arity?
+   * Language-specific rules: Python `*args`/`**kwargs`/defaults, JS default
+   * params + rest, Kotlin vararg + defaults, Ruby optional/splat/block, Go
+   * straight counts, Rust no-variadic-no-defaults.
+   *
+   * `'incompatible'` is a soft penalty (−0.15 per EvidenceWeights) and is
+   * filtered only when at least one `'compatible'` candidate exists;
+   * otherwise the incompatible candidate is kept with the penalty so the
+   * call-site still links to a best-guess target.
+   *
+   * Default: undefined (treated as `'unknown'` — no signal either way).
+   */
+  readonly arityCompatibility?: (
+    def: SymbolDefinition,
+    callsite: Callsite,
+  ) => 'compatible' | 'unknown' | 'incompatible';
 }
 
 /** Runtime type — same as LanguageProviderConfig but with defaults guaranteed present. */
