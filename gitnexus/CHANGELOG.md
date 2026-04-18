@@ -2,6 +2,46 @@
 
 All notable changes to GitNexus will be documented in this file.
 
+## [1.6.2] - 2026-04-18
+
+### Added
+
+- **Docker support** — containerized ingestion and MCP serving for reproducible runs on CI and container platforms (#848)
+- **Language-agnostic heritage extractor** — config+factory pattern for class-heritage extraction (EXTENDS / IMPLEMENTS), completing the extractor refactor alongside method/field/call/variable (#890)
+- **Language-agnostic call extractor** — config+factory pattern that collapses ~225 lines of inline parse-worker logic into declarative per-language configs (#877)
+- **Language-agnostic variable extractor** — structured metadata for `Const` / `Static` / `Variable` nodes via config+factory pattern (#878)
+- **AST-aware embedding chunking** — offset-based splitting preserves symbol boundaries, improving semantic search precision on large files (#889)
+- **HTTP consumer detection for jQuery and axios object-form** — `$.ajax` / `$.get` / `$.post` and `axios({ url, method })` now recognized as HTTP call sites (#887)
+
+### Fixed
+
+- **Python external dotted imports** — avoid spurious same-file matches when an import path like `foo.bar.baz` refers to a third-party module (#899)
+- **Worker warnings no longer terminate ingestion** — non-fatal parser warnings keep the pipeline running instead of aborting the run (#900, #261)
+- **Global-install upgrade `ENOTEMPTY`** — devendored `tree-sitter-proto` install lifecycle + preinstall cleanup so `npm i -g gitnexus@latest` succeeds on top of an older install (#843, #846)
+- **`env.cacheDir`** now defaults to a user-writable location, unblocking ingestion on systems where the install directory is read-only (#845)
+- **Content-hash staleness detection for embeddings** — zero-node rebuilds no longer skip vector-index creation, fixing semantic search after selective re-analysis (#831)
+- **`tree-sitter-c-sharp` version pin** — locked to 0.23.1 to avoid a breaking change in a transitive prerelease (#834)
+- **`release-drafter` v7 CI** — replaced the removed `disable-releaser` flag with `dry-run` so release-note drafts still work
+- **`npm arborist` crash from `tree-sitter-dart`** — switched the dependency URL format so `npm install` no longer crashes on clean installs
+- **Service-group `ManifestExtractor`** — `config.links` now wires the manifest extractor properly, restoring cross-link discovery that had silently dropped to zero
+
+### Changed
+
+- **SemanticModel wired as a first-class resolution input (SM-20)** — `call-processor`, `resolution-context`, `type-env`, and `heritage-map` now consult `table.model.*` directly; 37 internal call sites migrated off the SymbolTable wrapper (#885)
+- **Per-strategy `ImportSemantics` hooks** — `named` / `wildcard-transitive` / `wildcard-leaf` / `namespace` strategies split into composable hooks, replacing the monolithic conditional (Strategies 1–4 of #886)
+- **Class extraction configs moved to `configs/` subdirectory** — per-language class configs now co-locate with the other extractor configs, completing the extractor layer's directory convention (#879)
+- **CLI AI-context trimmed** — duplicated CLAUDE.md block removed from the shipped context, reducing token usage in LLM-consuming workflows (#904)
+- **LLM context files optimized** — AI-consumed documentation tuned for accuracy and token efficiency (#857)
+- **Workflow concurrency standardized** — all CI workflows adopt the consistent concurrency key pattern documented in CONTRIBUTING.md; release-note labeling automated (#837)
+- **E2E status-ready timeout raised** — 45s accommodates parallel-worker startup variance on CI (#908)
+
+### Chore / Dependencies
+
+- **tree-sitter 0.25 upgrade readiness** — daily Dependabot monitor for the upcoming major-version bump (#847)
+- Dependency bumps: `glob` 11.1.0 → 13.0.6 (#867), `commander` 12.1.0 → 14.0.3 (#868), `@huggingface/transformers` (#869), `@modelcontextprotocol/sdk` (#866), `lru-cache` 11.2.7 → 11.3.5 (#870), `mnemonist` 0.39.8 → 0.40.3 (#871), `@ladybugdb/core` (#873)
+- gitnexus-web dependency bumps: `mermaid` 11.12.2 → 11.14.0 (#860), `tailwindcss` (#861), `jsdom` 29.0.0 → 29.0.2 (#863), `wait-on` 8.0.5 → 9.0.5 (#859), `@vitest/coverage-v8` (#864)
+- GitHub Actions bumps: `actions/checkout` 4.3.1 → 6.0.2 (#842), `actions/upload-artifact` 4.6.2 → 7.0.1 (#838), `actions/setup-node` 4.4.0 → 6.3.0 (#841), `actions/cache` 5.0.4 → 5.0.5 (#840), `actions/github-script` 7.0.1 → 9.0.0 (#850), `dorny/paths-filter` 3.0.2 → 4.0.1 (#839), `amannn/action-semantic-pull-request` 6.1.1 (#853), `release-drafter/release-drafter` 6.0.0 → 7.2.0 (#852), `marocchino/sticky-pull-request-comment` 3.0.4 (#851), `softprops/action-gh-release` 2.5.0 → 3.0.0 (#849)
+
 ## [1.6.1] - 2026-04-13
 
 ### Added
