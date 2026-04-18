@@ -203,7 +203,13 @@
         const overall = report.overall || {};
 
         meta.textContent =
-          'Run ' + payload.runId + ' — generated ' + payload.generatedAt + ' (schema v' + payload.schemaVersion + ')';
+          'Run ' +
+          payload.runId +
+          ' — generated ' +
+          payload.generatedAt +
+          ' (schema v' +
+          payload.schemaVersion +
+          ')';
 
         // Overall summary cards.
         cards.innerHTML = '';
@@ -227,21 +233,41 @@
             : '';
           const parityClass = parityClassFor(row.parity);
           tr.innerHTML =
-            '<td>' + escape(row.language) + tag + '</td>' +
-            '<td>' + row.totalCalls + '</td>' +
-            '<td>' + row.bothAgree + '</td>' +
-            '<td>' + row.onlyLegacy + '</td>' +
-            '<td>' + row.onlyNew + '</td>' +
-            '<td>' + row.bothDisagree + '</td>' +
-            '<td>' + row.bothEmpty + '</td>' +
-            '<td class="parity ' + parityClass + '">' + formatPct(row.parity) + '</td>';
+            '<td>' +
+            escape(row.language) +
+            tag +
+            '</td>' +
+            '<td>' +
+            row.totalCalls +
+            '</td>' +
+            '<td>' +
+            row.bothAgree +
+            '</td>' +
+            '<td>' +
+            row.onlyLegacy +
+            '</td>' +
+            '<td>' +
+            row.onlyNew +
+            '</td>' +
+            '<td>' +
+            row.bothDisagree +
+            '</td>' +
+            '<td>' +
+            row.bothEmpty +
+            '</td>' +
+            '<td class="parity ' +
+            parityClass +
+            '">' +
+            formatPct(row.parity) +
+            '</td>';
           tbody.appendChild(tr);
         }
 
         function makeCard(k, v) {
           const div = document.createElement('div');
           div.className = 'card';
-          div.innerHTML = '<div class="k">' + escape(k) + '</div><div class="v">' + escape(String(v)) + '</div>';
+          div.innerHTML =
+            '<div class="k">' + escape(k) + '</div><div class="v">' + escape(String(v)) + '</div>';
           return div;
         }
         function formatPct(x) {
