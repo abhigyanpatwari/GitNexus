@@ -159,7 +159,7 @@ export async function scanRepoForImports(
 
     let content: string;
     try {
-      content = fs.readFileSync(abs, 'utf-8');
+      content = await fs.promises.readFile(abs, 'utf-8');
     } catch {
       continue;
     }

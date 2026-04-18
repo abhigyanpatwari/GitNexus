@@ -638,6 +638,10 @@ export class GroupService {
           remoteRepo: remoteRepoGroupPath,
           remoteContext,
         });
+
+        // Recurse into the remote repo so depth > 1 actually traverses further.
+        // `visited` (closed over above) prevents cycles.
+        await findConnections(remoteRegistryName, currentDepth + 1);
       }
     };
 

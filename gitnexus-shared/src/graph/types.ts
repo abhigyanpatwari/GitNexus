@@ -115,7 +115,8 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
-  | 'QUERIES';
+  | 'QUERIES'
+  | 'CROSS_REPO_IMPORT';
 
 export interface GraphNode {
   id: string;

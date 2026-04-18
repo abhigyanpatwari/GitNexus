@@ -576,18 +576,23 @@ WHEN TO USE: After group_sync, to explore how a symbol in one repo connects to s
   },
   {
     name: 'group_discover',
-    description: `Auto-discover indexed repos in a directory and create a group with code-level dependency detection.
+    description: `Auto-discover indexed repos in a directory (or from an explicit list) and create a group with code-level dependency detection.
 
-WHEN TO USE: When a user wants to see a combined knowledge graph from a parent directory containing multiple indexed repos. Scans for .gitnexus/ in subdirectories, reads package manifests, builds package mappings, creates a group, and optionally runs sync.`,
+WHEN TO USE: When a user wants to see a combined knowledge graph from multiple indexed repos. Reads package manifests, builds package mappings, creates a group, and optionally runs sync. Provide either \`directory\` (parent-dir scan) or \`repoPaths\` (explicit list).`,
     inputSchema: {
       type: 'object',
       properties: {
-        directory: { type: 'string', description: 'Parent directory containing repos' },
+        directory: { type: 'string', description: 'Parent directory containing repos (alternative to repoPaths)' },
+        repoPaths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Explicit list of repo paths (alternative to directory scan)',
+        },
         name: { type: 'string', description: 'Group name (default: workspace)' },
         force: { type: 'boolean', description: 'Overwrite existing group' },
         skipSync: { type: 'boolean', description: 'Skip running sync after creation' },
       },
-      required: ['directory'],
+      required: [],
     },
   },
 ];
