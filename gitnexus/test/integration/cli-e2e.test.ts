@@ -20,7 +20,22 @@ import { createRequire } from 'module';
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
 const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-const MINI_REPO = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
+const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
+
+// `MINI_REPO` is a *per-run temp copy* of the fixture, not the shared
+// source. Writing into the shared source races with other suites that
+// ingest it read-only (pipeline-graph-golden, pipeline.test) — those
+// suites copy the source to their own tmp dir but the copy happens at
+// `beforeAll`, so if this suite's analyze has already created AGENTS.md
+// / CLAUDE.md / .claude/ in the source when the other suite's cpSync
+// runs, the pollution is captured before the isolation kicks in.
+//
+// The deterministic fix: this suite never touches the shared source.
+// `beforeAll` copies the fixture to a fresh mkdtemp'd directory whose
+// basename is `mini-repo` (so `--repo mini-repo` lookup by basename
+// still works), `afterAll` rms the parent tmpdir.
+let MINI_REPO: string;
+let tmpParent: string;
 
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
@@ -31,40 +46,39 @@ const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
 const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 beforeAll(() => {
+  // Copy the fixture into an isolated tmpdir named `mini-repo` so that the
+  // `--repo mini-repo` CLI arg (which matches by basename) still works.
+  tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-e2e-'));
+  MINI_REPO = path.join(tmpParent, 'mini-repo');
+  fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
+
   // Initialize mini-repo as a git repo so the CLI analyze command
   // can run the full pipeline (it requires a .git directory).
-  const gitDir = path.join(MINI_REPO, '.git');
-  if (!fs.existsSync(gitDir)) {
-    spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
-    spawnSync('git', ['add', '-A'], { cwd: MINI_REPO, stdio: 'pipe' });
-    spawnSync('git', ['commit', '-m', 'initial commit'], {
-      cwd: MINI_REPO,
-      stdio: 'pipe',
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: 'test',
-        GIT_AUTHOR_EMAIL: 'test@test',
-        GIT_COMMITTER_NAME: 'test',
-        GIT_COMMITTER_EMAIL: 'test@test',
-      },
-    });
-  }
+  spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
+  spawnSync('git', ['add', '-A'], { cwd: MINI_REPO, stdio: 'pipe' });
+  spawnSync('git', ['commit', '-m', 'initial commit'], {
+    cwd: MINI_REPO,
+    stdio: 'pipe',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@test',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@test',
+    },
+  });
 });
 
 afterAll(() => {
-  // Clean up all files/dirs created by analyze (git init, .gitnexus output,
-  // AI context files, skill files, .gitignore) so parallel tests like
-  // pipeline-graph-golden see a pristine fixture.
-  for (const entry of ['.git', '.gitnexus', '.claude', 'AGENTS.md', 'CLAUDE.md', '.gitignore']) {
-    const fullPath = path.join(MINI_REPO, entry);
-    if (fs.existsSync(fullPath)) {
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    }
+  // Entire tmp copy goes away — no selective cleanup needed. The shared
+  // `test/fixtures/mini-repo/` source was never touched.
+  if (tmpParent) {
+    fs.rmSync(tmpParent, { recursive: true, force: true });
   }
 });
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, command], {
+  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, command], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -84,7 +98,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
  * can pass flags (e.g. --help) or omit a command entirely.
  */
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -190,9 +204,11 @@ describe('CLI end-to-end', () => {
     }
 
     it('status on non-indexed repo reports not indexed', () => {
-      // MINI_REPO is inside the project tree so findRepo() walks up and
-      // finds the parent project's .gitnexus. Use an isolated temp git
-      // repo to guarantee no .gitnexus exists anywhere in the path.
+      // Even though MINI_REPO is now in an isolated tmpdir, previous tests
+      // in this suite may have created MINI_REPO/.gitnexus via analyze,
+      // and findRepo() walks up so any `.gitnexus` along the path still
+      // counts. This test needs a GUARANTEED pristine repo to assert the
+      // "not indexed" output, so it mints its own throwaway tmp git repo.
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-noindex-'));
       try {
         spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
@@ -410,7 +426,7 @@ describe('CLI end-to-end', () => {
           process.execPath,
           [
             '--import',
-            'tsx',
+            tsxImportUrl,
             cliEntry,
             'cypher',
             'MATCH (n) RETURN n LIMIT 500',
@@ -469,7 +485,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', 'tsx', cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
+          ['--import', tsxImportUrl, cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
