@@ -4,17 +4,14 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_dispatch:
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
-# Tag refs are unique per release — distinct tags run in parallel.
-# Pushes to main serialize; cancel superseded runs.
+# Tag refs are unique per release, so distinct tags run in parallel.
+# Re-pushes of the same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  cancel-in-progress: false
 
 jobs:
   build-push:
@@ -49,6 +46,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # ── Lock the docker image version to the npm package version ──────────
+      # Mirrors the check in publish.yml: refuse to build unless the git tag
+      # exactly matches `gitnexus/package.json`'s version. This guarantees
+      # `ghcr.io/<owner>/gitnexus:X.Y.Z` always corresponds to the same
+      # `gitnexus@X.Y.Z` published to npm — no drift, no surprises.
+      - name: Verify tag matches gitnexus/package.json version
+        id: version
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+            exit 1
+          fi
+          PKG_VERSION=$(node -p "require('./gitnexus/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (v$TAG_VERSION) does not match gitnexus/package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version verified: $PKG_VERSION"
+
       # Required for multi-platform (linux/arm64) emulation.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -66,20 +85,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Computes image tags and labels from Git metadata:
-      #   v*  tag  → ghcr.io/<owner>/<slug>:<semver>  (e.g. 1.2.3, 1.2, 1)
-      #   main push → ghcr.io/<owner>/<slug>:latest
+      # Computes image tags and labels from the verified semver tag:
+      #   v1.2.3        → :1.2.3, :1.2, :1, :latest (auto, only for non-prerelease)
+      #   v1.2.3-rc.1   → :1.2.3-rc.1 only (prereleases never become :latest)
+      # `:latest` is only emitted for tag pushes thanks to `flavor: latest=auto`,
+      # ensuring it always points at a real npm-published version.
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+          flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-,format=short
 
       - name: Build and push
         id: build

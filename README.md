@@ -345,8 +345,8 @@ The official Docker setup ships **two signed images** orchestrated by `docker-co
 | `ghcr.io/abhigyanpatwari/gitnexus-web:latest`      | Static web UI (port `4173`)                                            |
 
 > **Heads-up — image rename.** Earlier releases published the web UI under
-> `ghcr.io/abhigyanpatwari/gitnexus`. With the introduction of the bundled
-> backend (this PR), that slug now hosts the CLI/server image and the UI moved
+> `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
+> bundled backend, that slug now hosts the CLI/server image and the UI moved
 > to `ghcr.io/abhigyanpatwari/gitnexus-web`. The previous tags remain
 > available for pulling, but new versions are only published under the new
 > slugs. Update your `docker run` / compose files accordingly (or just adopt
@@ -396,16 +396,41 @@ cp .env.example .env
 docker compose --env-file .env up -d
 ```
 
-### Verifying signed images
+### Versioning & supply-chain protection
 
-Both images are signed with [Cosign keyless signing][cosign-keyless] on every
-push from `main` and from `vX.Y.Z` tags, and shipped with build provenance and
-SBOM attestations. To verify:
+The Docker images are version-locked to the npm package:
+
+- Both images are **only published from `vX.Y.Z` git tags**, and the workflow
+  refuses to build unless the tag exactly matches `gitnexus/package.json`'s
+  version. So `ghcr.io/abhigyanpatwari/gitnexus:1.6.2` is byte-for-byte the
+  same release as `npm install gitnexus@1.6.2` — no drift, no floating
+  builds from `main`.
+- `:latest` is auto-promoted only from non-prerelease tags by the Docker
+  metadata action, so it always points at a real, npm-published version.
+
+Both images are signed with [Cosign keyless signing][cosign-keyless] using the
+workflow's GitHub OIDC identity, and shipped with build provenance and SBOM
+attestations. **This is your protection against supply-chain attacks**: even if
+an attacker republishes a same-named image elsewhere (or somehow pushes to a
+typo-squatted registry), they cannot forge a Cosign signature tied to
+`abhigyanpatwari/GitNexus`'s `docker.yml`. Always verify before pulling into
+sensitive environments:
 
 ```bash
-cosign verify ghcr.io/abhigyanpatwari/gitnexus:latest \
-  --certificate-identity-regexp 'https://github.com/abhigyanpatwari/GitNexus/.github/workflows/docker.yml@.*' \
+cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
+  --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The regex pins the certificate identity to this repo's `docker.yml` workflow
+**run from a `v*` tag** — rejecting unsigned images, images signed by other
+workflows, and images signed from unprotected refs.
+
+You can also inspect the build provenance and SBOM:
+
+```bash
+cosign download attestation ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
+  --predicate-type https://slsa.dev/provenance/v1
 ```
 
 [cosign-keyless]: https://docs.sigstore.dev/cosign/signing/overview/
