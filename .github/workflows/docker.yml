@@ -115,17 +115,21 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image.slug }}
           provenance: mode=max
           sbom: true
-          build-args: |
-            BUILDPLATFORM=${{ runner.os == 'Linux' && 'linux/amd64' || 'linux/amd64' }}
 
       # Cosign keyless signing. Each pushed tag is signed by the workflow's
-      # OIDC identity, so consumers can verify the image with:
+      # OIDC identity, so consumers can verify the image with the strict,
+      # fully-anchored identity regex (same one in README.md and
+      # deploy/kubernetes/cluster-image-policy.yaml — keep them in sync):
       #   cosign verify ghcr.io/<owner>/<slug>:<tag> \
-      #     --certificate-identity-regexp 'https://github.com/${{ github.repository }}/.github/workflows/docker.yml@.*' \
+      #     --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      # Do NOT relax to `@.*` — that accepts signatures from any ref, including
+      # unprotected branches and PRs, and defeats the supply-chain guarantee.
       - name: Sign image with Cosign (keyless)
         env:
-          COSIGN_EXPERIMENTAL: 'true'
+          # Cosign v2 (installed by sigstore/cosign-installer above) makes
+          # keyless the default. COSIGN_EXPERIMENTAL is a v1-only opt-in flag
+          # that is now deprecated/no-op, so it is intentionally omitted.
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
