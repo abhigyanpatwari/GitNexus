@@ -1,9 +1,38 @@
 services:
-  gitnexus:
-    image: ${IMAGE_NAME:-ghcr.io/brainifii/gitnexus:latest}
-    container_name: ${CONTAINER_NAME:-gitnexus}
+  gitnexus-server:
+    image: ${SERVER_IMAGE:-ghcr.io/abhigyanpatwari/gitnexus:latest}
+    container_name: ${SERVER_CONTAINER_NAME:-gitnexus-server}
+    # Map the server to the same host port the web UI expects by default
+    # (http://localhost:4747). The browser runs on the host, so the UI's
+    # built-in default works without any reconfiguration.
     ports:
-      - '${HOST_PORT:-4173}:4173'
+      - '${SERVER_HOST_PORT:-4747}:4747'
+    volumes:
+      # Persist the global registry, indexes, and cloned repos across runs.
+      - gitnexus-data:/data/gitnexus
+      # Optional: mount a host workspace so `gitnexus index <path>` can see
+      # repos you already have on disk. The default points at an empty
+      # `./workspace/` sibling that compose will create on first start —
+      # it intentionally does NOT bind-mount the repo root, which would
+      # expose `.git`, `.env`, and CI secrets to the container.
+      # Override with `WORKSPACE_DIR=/abs/path/to/your/repos`.
+      - ${WORKSPACE_DIR:-./workspace}:/workspace:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:4747/api/heartbeat']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  gitnexus-web:
+    image: ${WEB_IMAGE:-ghcr.io/abhigyanpatwari/gitnexus-web:latest}
+    container_name: ${WEB_CONTAINER_NAME:-gitnexus-web}
+    ports:
+      - '${WEB_HOST_PORT:-4173}:4173'
+    depends_on:
+      gitnexus-server:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:4173/']
@@ -11,3 +40,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  gitnexus-data:

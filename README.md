@@ -337,39 +337,85 @@ npm run dev
 
 ## Docker
 
-```bash
-docker run --rm \
-  --name gitnexus \
-  -p 4173:4173 \
-  ghcr.io/abhigyanpatwari/gitnexus:latest
-```
+The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`:
 
-Or with Docker Compose:
+| Image                                              | Purpose                                                                |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ghcr.io/abhigyanpatwari/gitnexus:latest`          | CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) |
+| `ghcr.io/abhigyanpatwari/gitnexus-web:latest`      | Static web UI (port `4173`)                                            |
+
+> **Heads-up — image rename.** Earlier releases published the web UI under
+> `ghcr.io/abhigyanpatwari/gitnexus`. With the introduction of the bundled
+> backend (this PR), that slug now hosts the CLI/server image and the UI moved
+> to `ghcr.io/abhigyanpatwari/gitnexus-web`. The previous tags remain
+> available for pulling, but new versions are only published under the new
+> slugs. Update your `docker run` / compose files accordingly (or just adopt
+> the bundled compose).
+
+### One-command setup
 
 ```bash
 docker compose up -d
 ```
 
-Optional env file:
+This starts the server on `http://localhost:4747` and the web UI on
+`http://localhost:4173`. The UI auto-detects the server because the browser
+runs on the host and reaches the container via the mapped port.
+
+A named volume (`gitnexus-data`) persists the global registry, indexes, and
+cloned repos at `/data/gitnexus` inside the server container. To make repos on
+your host machine indexable, set `WORKSPACE_DIR` before bringing the stack up:
+
+```bash
+WORKSPACE_DIR=$HOME/code docker compose up -d
+# Inside the server container the directory is mounted read-only at /workspace.
+docker compose exec gitnexus-server gitnexus index /workspace/my-repo
+```
+
+### Direct `docker run`
+
+```bash
+# Server
+docker run --rm -d \
+  --name gitnexus-server \
+  -p 4747:4747 \
+  -v gitnexus-data:/data/gitnexus \
+  ghcr.io/abhigyanpatwari/gitnexus:latest
+
+# Web UI
+docker run --rm -d \
+  --name gitnexus-web \
+  -p 4173:4173 \
+  ghcr.io/abhigyanpatwari/gitnexus-web:latest
+```
+
+Optional env file (override image tags, container names, ports, workspace dir):
 
 ```bash
 cp .env.example .env
-set -a
-source .env
-set +a
+docker compose --env-file .env up -d
 ```
 
-Docker files:
+### Verifying signed images
 
-- [Dockerfile](Dockerfile) is the source for the published `gitnexus` image. It builds `gitnexus-shared` and `gitnexus-web`, then serves the production frontend.
-- [docker-compose.yaml](docker-compose.yaml) starts the published image with Docker Compose.
-- [.env.example](.env.example) sets the image name, container name, and exposed port for the example commands.
+Both images are signed with [Cosign keyless signing][cosign-keyless] on every
+push from `main` and from `vX.Y.Z` tags, and shipped with build provenance and
+SBOM attestations. To verify:
 
-Notes:
+```bash
+cosign verify ghcr.io/abhigyanpatwari/gitnexus:latest \
+  --certificate-identity-regexp 'https://github.com/abhigyanpatwari/GitNexus/.github/workflows/docker.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
-- The published image serves the production frontend only. It does not start `gitnexus serve`.
-- In backend mode, the app still defaults to `http://localhost:4747` unless you change the server URL in the UI.
-- If you do not want an env file, the defaults are `ghcr.io/abhigyanpatwari/gitnexus:latest`, container name `gitnexus`, and port `4173`.
+[cosign-keyless]: https://docs.sigstore.dev/cosign/signing/overview/
+
+### Files
+
+- [Dockerfile.web](Dockerfile.web) — builds `gitnexus-shared` and `gitnexus-web`, then serves the production frontend.
+- [Dockerfile.cli](Dockerfile.cli) — builds the CLI/server (with its native deps) and runs `gitnexus serve --host 0.0.0.0`.
+- [docker-compose.yaml](docker-compose.yaml) — starts both signed images side by side.
+- [.env.example](.env.example) — overrides for image names, container names, ports, and the workspace mount.
 
 The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, LadybugDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
 
