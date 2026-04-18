@@ -92,6 +92,38 @@ export type {
   FinalizeStats,
 } from './scope-resolution/finalize-algorithm.js';
 
+// Scope-aware registries + 7-step lookup (RFC §4; Ring 2 SHARED #917)
+export { buildClassRegistry } from './scope-resolution/registries/class-registry.js';
+export type { ClassRegistry } from './scope-resolution/registries/class-registry.js';
+export { buildMethodRegistry } from './scope-resolution/registries/method-registry.js';
+export type {
+  MethodRegistry,
+  MethodLookupOptions,
+} from './scope-resolution/registries/method-registry.js';
+export { buildFieldRegistry } from './scope-resolution/registries/field-registry.js';
+export type {
+  FieldRegistry,
+  FieldLookupOptions,
+} from './scope-resolution/registries/field-registry.js';
+export { lookupCore } from './scope-resolution/registries/lookup-core.js';
+export type { CoreLookupParams } from './scope-resolution/registries/lookup-core.js';
+export { lookupQualified } from './scope-resolution/registries/lookup-qualified.js';
+export type { LookupQualifiedParams } from './scope-resolution/registries/lookup-qualified.js';
+export { composeEvidence, confidenceFromEvidence } from './scope-resolution/registries/evidence.js';
+export type { RawSignals } from './scope-resolution/registries/evidence.js';
+export {
+  compareByConfidenceWithTiebreaks,
+  CONFIDENCE_EPSILON,
+} from './scope-resolution/registries/tie-breaks.js';
+export type { TieBreakKey } from './scope-resolution/registries/tie-breaks.js';
+export { CLASS_KINDS, METHOD_KINDS, FIELD_KINDS } from './scope-resolution/registries/context.js';
+export type {
+  RegistryContext,
+  RegistryProviders,
+  OwnerScopedContributor,
+  ArityVerdict,
+} from './scope-resolution/registries/context.js';
+
 // Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)
 export { makeScopeId, clearScopeIdInternPool } from './scope-resolution/scope-id.js';
 export type { ScopeIdInput } from './scope-resolution/scope-id.js';
