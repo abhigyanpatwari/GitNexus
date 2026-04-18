@@ -78,6 +78,31 @@ import type {
 import { buildPositionIndex, buildScopeTree, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 
+// ─── Narrow hook surface the extractor actually uses ───────────────────────
+
+/**
+ * The subset of `LanguageProvider` hooks that `extract()` reads. Declared
+ * as its own type so:
+ *
+ *   - Tests can implement just these six hooks without faking the whole
+ *     `LanguageProvider` interface (which is ~40 fields including the
+ *     legacy-DAG surface).
+ *   - The extractor's dependency contract stays explicit — adding a new
+ *     hook read requires updating this type.
+ *
+ * Real callers pass a full `LanguageProvider` — structural typing makes it
+ * a `ScopeExtractorHooks` for free.
+ */
+export type ScopeExtractorHooks = Pick<
+  LanguageProvider,
+  | 'shouldCreateScope'
+  | 'resolveScopeKind'
+  | 'bindingScopeFor'
+  | 'interpretImport'
+  | 'interpretTypeBinding'
+  | 'classifyCallForm'
+>;
+
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 /**
@@ -92,7 +117,7 @@ import type { LanguageProvider } from './language-provider.js';
 export function extract(
   matches: readonly CaptureMatch[],
   filePath: string,
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
 ): ParsedFile {
   // Partition matches by topic up front — one linear pass over the input.
   const partitioned = partitionByTopic(matches);
@@ -102,6 +127,14 @@ export function extract(
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
+  //
+  // **Snapshot semantics.** Both `scopeTree` and `positionIndex` are built
+  // from the post-Pass-1 `scopes` — parent/range/kind are accurate, but
+  // `bindings`, `ownedDefs`, and `typeBindings` are all empty here. Later
+  // passes write into the *drafts*, not into these snapshots; any hook
+  // that reads `scope.bindings` etc. via the `scopeTree` argument sees a
+  // structural view only. This is by design — hooks use scopeTree for
+  // "what's the parent chain?" queries, not for content queries.
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
 
@@ -134,13 +167,21 @@ export function extract(
     partitioned.typeBinding,
     scopeDrafts,
     positionIndex,
+    filePath,
     provider,
     scopeTree,
   );
 
   // ── Pass 5: collect reference sites ─────────────────────────────────
   const referenceSites: ReferenceSite[] = [];
-  pass5CollectReferences(partitioned.reference, positionIndex, referenceSites, provider, scopeTree);
+  pass5CollectReferences(
+    partitioned.reference,
+    positionIndex,
+    filePath,
+    referenceSites,
+    provider,
+    scopeTree,
+  );
 
   // Freeze Scope drafts into final shape and return.
   const frozenScopes = scopeDrafts.map(draftToScope);
@@ -274,7 +315,7 @@ function draftToScope(draft: ScopeDraft): Scope {
 function pass1BuildScopes(
   matches: readonly CaptureMatch[],
   filePath: string,
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
 ): ScopeDraft[] {
   interface Candidate {
     readonly match: CaptureMatch;
@@ -328,7 +369,7 @@ function pass1BuildScopes(
 function resolveKindForScopeMatch(
   match: CaptureMatch,
   anchor: { readonly name: string },
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
 ): ScopeKind | null {
   // Provider override takes precedence.
   const override = provider.resolveScopeKind?.(match);
@@ -382,7 +423,7 @@ function pass2AttachDeclarations(
   positionIndex: ReturnType<typeof buildPositionIndex>,
   localDefs: SymbolDefinition[],
   filePath: string,
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
   scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   const draftById = new Map<ScopeId, ScopeDraft>();
@@ -405,25 +446,25 @@ function pass2AttachDeclarations(
     const innermost = draftById.get(innermostId);
     if (innermost === undefined) continue;
 
-    // Ownership: `ownedDefs` always attaches to the innermost scope — that's
-    // the structural owner. `ownerId` is set to the owner's nodeId here when
-    // the innermost is a Class/Namespace so method/field defs carry their
-    // owner's graph id; this is a pragmatic defaulting to avoid surprises
-    // downstream (#917 `MethodDispatch` keys off `def.ownerId`).
+    // Ownership: attach the def to the innermost scope's `ownedDefs` — that
+    // is the structural owner. `def.ownerId` is NOT populated here — the
+    // extractor has no clean path to the parent's own DefId mid-extraction
+    // (the parent declaration may not yet have been processed, or may live
+    // in a different scope entirely). Providers that need `ownerId` should
+    // set it directly from the declaration hook (e.g., derive from the
+    // `@declaration.owner` capture or the parent scope id); otherwise
+    // `finalize` populates method/field `ownerId` via `MethodDispatchIndex`
+    // (#914) in a follow-up pass that sees every def already in place.
     innermost.ownedDefs.push(def);
-    if (def.ownerId === undefined && isOwnerKind(innermost.kind)) {
-      // Mutate via a typed clone — SymbolDefinition fields are declared
-      // non-readonly today so this is structurally safe, but we avoid
-      // touching the caller's input by building a new record.
-      const withOwner: SymbolDefinition = { ...def, ownerId: ownerDefIdFor(innermost, drafts) };
-      innermost.ownedDefs[innermost.ownedDefs.length - 1] = withOwner;
-      localDefs.push(withOwner);
-    } else {
-      localDefs.push(def);
-    }
+    localDefs.push(def);
 
     // Binding visibility: default to innermost; allow hoisting via
-    // `provider.bindingScopeFor`.
+    // `provider.bindingScopeFor`. `draftToScope(innermost)` here is a
+    // **structural** snapshot — parent/range/kind only. Hooks MUST NOT
+    // rely on `scope.bindings`, `ownedDefs`, or `typeBindings` being
+    // populated during Pass 2: those fields are written across passes,
+    // so reading them mid-extraction yields a partial view. The
+    // `scopeTree` argument is similarly snapshot-before-mutation.
     const bindingScopeId =
       provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? innermost.id;
     const bindingHost = draftById.get(bindingScopeId) ?? innermost;
@@ -431,26 +472,10 @@ function pass2AttachDeclarations(
     const nameKey = deriveDeclarationName(match, def);
     if (nameKey === undefined) continue;
 
-    const emittedDef = localDefs[localDefs.length - 1]!;
     const existing = bindingHost.bindings.get(nameKey) ?? [];
-    existing.push({ def: emittedDef, origin: 'local' });
+    existing.push({ def, origin: 'local' });
     bindingHost.bindings.set(nameKey, existing);
   }
-}
-
-function isOwnerKind(kind: ScopeKind): boolean {
-  return kind === 'Class' || kind === 'Namespace';
-}
-
-function ownerDefIdFor(innermost: ScopeDraft, drafts: readonly ScopeDraft[]): string | undefined {
-  // Heuristic: the Class/Namespace scope's own declaration record, if any,
-  // is the first `ownedDef` pushed onto its parent. We don't have a direct
-  // back-reference in the draft, so return undefined and let the graph
-  // layer's naming convention fill in. Providers that care strongly can
-  // set `def.ownerId` at the interpreter hook.
-  void innermost;
-  void drafts;
-  return undefined;
 }
 
 function buildDefFromDeclarationMatch(
@@ -558,7 +583,7 @@ function makeDefId(
 function pass3CollectImports(
   matches: readonly CaptureMatch[],
   parsedImports: ParsedImport[],
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
 ): void {
   if (provider.interpretImport === undefined) return;
   for (const match of matches) {
@@ -576,7 +601,8 @@ function pass4CollectTypeBindings(
   matches: readonly CaptureMatch[],
   drafts: readonly ScopeDraft[],
   positionIndex: ReturnType<typeof buildPositionIndex>,
-  provider: LanguageProvider,
+  filePath: string,
+  provider: ScopeExtractorHooks,
   scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   const draftById = new Map<ScopeId, ScopeDraft>();
@@ -590,7 +616,7 @@ function pass4CollectTypeBindings(
     if (parsed === null || parsed === undefined) continue;
 
     const innermostId = positionIndex.atPosition(
-      drafts[0]!.filePath,
+      filePath,
       anchor.range.startLine,
       anchor.range.startCol,
     );
@@ -617,8 +643,9 @@ function pass4CollectTypeBindings(
 function pass5CollectReferences(
   matches: readonly CaptureMatch[],
   positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
   referenceSites: ReferenceSite[],
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
   scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   for (const match of matches) {
@@ -630,9 +657,7 @@ function pass5CollectReferences(
 
     const nameCap = match['@reference.name'] ?? anchor;
     const inScopeId = positionIndex.atPosition(
-      // Any scope carries the same filePath; use the anchor's range to find
-      // the innermost scope via the position index.
-      anyFilePathFromScopeTree(scopeTree) ?? '',
+      filePath,
       anchor.range.startLine,
       anchor.range.startCol,
     );
@@ -686,7 +711,7 @@ function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
 function classifyCallFormForMatch(
   match: CaptureMatch,
   anchorName: string,
-  provider: LanguageProvider,
+  provider: ScopeExtractorHooks,
   scopeTree: ReturnType<typeof buildScopeTree>,
   inScopeId: ScopeId,
 ): 'free' | 'member' | 'constructor' | 'index' {
@@ -724,13 +749,6 @@ function extractArity(match: CaptureMatch): number | undefined {
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
-}
-
-function anyFilePathFromScopeTree(
-  scopeTree: ReturnType<typeof buildScopeTree>,
-): string | undefined {
-  for (const scope of scopeTree.byId.values()) return scope.filePath;
-  return undefined;
 }
 
 // ─── Internal: range + capture utilities ───────────────────────────────────

@@ -17,8 +17,7 @@ import type {
   Scope,
   ScopeKind,
 } from 'gitnexus-shared';
-import { extract } from '../../../src/core/ingestion/scope-extractor.js';
-import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
+import { extract, type ScopeExtractorHooks } from '../../../src/core/ingestion/scope-extractor.js';
 
 // ─── Synthetic-capture helpers ──────────────────────────────────────────────
 
@@ -92,21 +91,14 @@ const refMatch = (
 });
 
 // ─── MockProvider ───────────────────────────────────────────────────────────
+//
+// The extractor declares its dependency on a narrow `ScopeExtractorHooks`
+// surface — not the full `LanguageProvider`. Tests implement exactly that
+// surface, so adding a new hook to `extract()` that's not in
+// `ScopeExtractorHooks` is a compile error, not a silent test pass.
 
-type MockHooks = {
-  interpretImport?: (match: CaptureMatch) => ParsedImport | null;
-  interpretTypeBinding?: (match: CaptureMatch) => ParsedTypeBinding | null;
-  resolveScopeKind?: (match: CaptureMatch) => ScopeKind | null;
-  shouldCreateScope?: (match: CaptureMatch) => boolean;
-  bindingScopeFor?: LanguageProvider['bindingScopeFor'];
-  classifyCallForm?: LanguageProvider['classifyCallForm'];
-};
-
-function mockProvider(hooks: MockHooks = {}): LanguageProvider {
-  // The tests only exercise the scope-resolution hooks. Casting away the
-  // unimplemented legacy-DAG fields keeps the fixture tight without
-  // depending on LanguageProvider's full (large) interface.
-  return hooks as unknown as LanguageProvider;
+function mockProvider(hooks: Partial<ScopeExtractorHooks> = {}): ScopeExtractorHooks {
+  return hooks;
 }
 
 // ─── §Pass 1: scope tree construction ──────────────────────────────────────
@@ -434,6 +426,37 @@ describe('Pass 5: reference sites', () => {
     ];
     const result = extract(matches, 'a.ts', mockProvider());
     expect(result.referenceSites.map((s) => s.kind)).toEqual(kindsToEmit.map(([, kind]) => kind));
+  });
+
+  it('picks the call anchor over a wider-ranged @reference.receiver (regression for KNOWN_SUB_TAGS exclusion)', () => {
+    // Regression for the bug fixed before commit: a member call like
+    // `user.save()` where the receiver capture (`user`) spans MORE source
+    // than the call anchor (`save`). The broadest-range anchor heuristic
+    // would have picked the receiver — `anchorCaptureFor` must exclude
+    // known sub-tags (`@reference.receiver`, `@reference.name`, etc.) to
+    // route the match as a `call` reference.
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        {
+          // Receiver spans columns 0-10 (wider).
+          '@reference.receiver': cap('@reference.receiver', 3, 0, 3, 10, 'longUserName'),
+          // Call name spans columns 11-15 (narrower).
+          '@reference.name': cap('@reference.name', 3, 11, 3, 15, 'save'),
+          // The anchor — call.member — spans 0-17 (full expression). In the
+          // buggy behavior the receiver would have tied-or-won. Even here,
+          // the fix guarantees we pick the call anchor, never the sub-tag.
+          '@reference.call.member': cap('@reference.call.member', 3, 0, 3, 17),
+        },
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+    expect(result.referenceSites).toHaveLength(1);
+    expect(result.referenceSites[0]!.name).toBe('save'); // NOT 'longUserName'
+    expect(result.referenceSites[0]!.kind).toBe('call');
+    expect(result.referenceSites[0]!.callForm).toBe('member');
+    expect(result.referenceSites[0]!.explicitReceiver).toEqual({ name: 'longUserName' });
   });
 
   it('parses arity from @reference.arity when present', () => {
