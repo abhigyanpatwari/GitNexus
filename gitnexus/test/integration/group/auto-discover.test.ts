@@ -193,4 +193,73 @@ console.log(formatDate(new Date()));`,
     // Should only find 2 (shared-utils and web-app), not 3
     expect(result.repoCount).toBe(2);
   });
+
+  describe('explicit repoPaths mode', () => {
+    it('discovers and groups repos from an explicit repoPaths list', async () => {
+      const service = new GroupService(makeMockPort());
+      const repoA = path.join(tmpDir, 'repos', 'shared-utils');
+      const repoB = path.join(tmpDir, 'repos', 'web-app');
+
+      const result = (await service.groupDiscover({
+        repoPaths: [repoA, repoB],
+        name: 'test-explicit',
+        skipSync: true,
+      })) as {
+        group: string;
+        repoCount: number;
+        repos: Array<{ name: string; packageName: string | null }>;
+        packageMappings: Record<string, string>;
+      };
+
+      expect(result.group).toBe('test-explicit');
+      expect(result.repoCount).toBe(2);
+      const names = result.repos.map((r) => r.name).sort();
+      expect(names).toEqual(['shared-utils', 'web-app']);
+      expect(result.packageMappings['@test/shared-utils']).toBeDefined();
+      expect(result.packageMappings['@test/web-app']).toBeDefined();
+
+      const groups = await listGroups(gitnexusHome);
+      expect(groups).toContain('test-explicit');
+    });
+
+    it('returns an error when one of the explicit repoPaths is not indexed', async () => {
+      const unindexed = path.join(tmpDir, 'repos', 'unindexed');
+      fs.mkdirSync(unindexed, { recursive: true });
+      fs.writeFileSync(
+        path.join(unindexed, 'package.json'),
+        JSON.stringify({ name: 'unindexed' }),
+      );
+
+      const service = new GroupService(makeMockPort());
+      const result = (await service.groupDiscover({
+        repoPaths: [path.join(tmpDir, 'repos', 'shared-utils'), unindexed],
+        name: 'test-unindexed',
+        skipSync: true,
+      })) as { error: string };
+
+      expect(result.error).toContain('not indexed');
+      expect(result.error).toContain(unindexed);
+    });
+
+    it('falls back to directory basename when resolveRepo cannot find a handle', async () => {
+      const port: GroupToolPort = {
+        resolveRepo: async () => {
+          throw new Error('not registered');
+        },
+        query: async () => ({ processes: [] }),
+      };
+      const service = new GroupService(port);
+      const result = (await service.groupDiscover({
+        repoPaths: [path.join(tmpDir, 'repos', 'shared-utils')],
+        name: 'test-fallback',
+        skipSync: true,
+      })) as {
+        repoCount: number;
+        repos: Array<{ name: string }>;
+      };
+
+      expect(result.repoCount).toBe(1);
+      expect(result.repos[0].name).toBe('shared-utils');
+    });
+  });
 });
