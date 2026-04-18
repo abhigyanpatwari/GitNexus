@@ -26,7 +26,10 @@ async function enterExploringView(page: import('@playwright/test').Page) {
     // Landing screen may not appear (e.g. ?server auto-connect)
   }
 
-  await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+  // Match the 45s budget used by waitForGraphLoaded() in
+  // server-connect.spec.ts; under parallel CI workers, downloading the full
+  // graph can occasionally exceed 30s.
+  await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 45_000 });
 }
 
 // ── Flow 1: Onboarding (no server running) ─────────────────────────────────
@@ -243,6 +246,10 @@ test.describe('Flow 3: Analyze form', () => {
 
 test.describe('Flow 4: Repo dropdown in exploring view', () => {
   const SKIP_MSG = 'Requires running gitnexus server with indexed repos';
+
+  // enterExploringView() can take up to ~45s under parallel CI workers; combined
+  // with the dropdown interactions this can exceed the default 60s test budget.
+  test.slow();
 
   test.beforeAll(async () => {
     if (process.env.E2E) return;

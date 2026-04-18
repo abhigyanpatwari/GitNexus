@@ -84,11 +84,20 @@ test.describe('Hold-queue timeout error', () => {
 
 // ── 2. ?project= URL persistence ─────────────────────────────────────────────
 
+// Auto-connect downloads the full graph from the backend; under parallel
+// workers in CI the same backend serves multiple downloads concurrently, so
+// reaching the "Ready" state can take noticeably longer than a single-worker
+// run. Match the 45s budget used by waitForGraphLoaded() in
+// server-connect.spec.ts which has been stable on the same backend.
+const READY_TIMEOUT_MS = 45_000;
+
 test.describe('?project= URL persistence', () => {
   test('?project= is set in URL after connecting via ?server=', async ({ page }) => {
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
 
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     const url = new URL(page.url());
     const project = url.searchParams.get('project');
@@ -98,12 +107,20 @@ test.describe('?project= URL persistence', () => {
   });
 
   test('?project= is still present after F5 reload', async ({ page }) => {
+    // Two sequential auto-connects (initial + reload), each up to READY_TIMEOUT_MS,
+    // can exceed the default 60s test timeout under parallel workers.
+    test.slow();
+
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // After connect, URL has ?server=&project= — F5 re-uses both params
     await page.reload();
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     const url = new URL(page.url());
     expect(url.searchParams.get('project')).toBeTruthy();
@@ -122,7 +139,9 @@ test.describe('?project= auto-connect', () => {
       `/?server=${encodeURIComponent(BACKEND_URL)}&project=${encodeURIComponent(firstRepoName)}`,
     );
 
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // ?project= in URL should match what we passed in
     const url = new URL(page.url());
@@ -155,7 +174,9 @@ test.describe('Windows path normalization', () => {
 
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
 
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // URL ?project= must be the short basename, NOT the full Windows path
     const url = new URL(page.url());

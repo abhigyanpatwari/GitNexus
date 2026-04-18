@@ -61,13 +61,22 @@ test.beforeAll(async () => {
   }
 });
 
+// Auto-connect downloads the full graph from the backend; under parallel
+// workers in CI the same backend serves multiple downloads concurrently, so
+// reaching the "Ready" state can take noticeably longer than a single-worker
+// run. Match the 45s budget used by waitForGraphLoaded() in
+// server-connect.spec.ts which has been stable on the same backend.
+const READY_TIMEOUT_MS = 45_000;
+
 test.describe('Multi-Repo Scoping', () => {
   test('auto-connect via ?server= sets ?project= in URL', async ({ page }) => {
     // Navigate with ?server= param (the bookmarkable shortcut)
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
 
     // Wait for graph to load
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // URL should now contain ?project= with the repo name
     const url = new URL(page.url());
@@ -77,8 +86,14 @@ test.describe('Multi-Repo Scoping', () => {
   });
 
   test('?server= is preserved in URL for F5 recovery', async ({ page }) => {
+    // Two sequential auto-connects (initial + reload), each up to READY_TIMEOUT_MS,
+    // can exceed the default 60s test timeout under parallel workers.
+    test.slow();
+
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // URL should still have ?server=
     const url = new URL(page.url());
@@ -86,12 +101,16 @@ test.describe('Multi-Repo Scoping', () => {
 
     // F5 should reconnect (not show onboarding)
     await page.reload();
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
   });
 
   test('node count in status bar matches backend data', async ({ page }) => {
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
-    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({
+      timeout: READY_TIMEOUT_MS,
+    });
 
     // Fetch expected node count from backend
     const res = await fetch(`${BACKEND_URL}/api/repo?repo=${encodeURIComponent(firstRepoName)}`);
