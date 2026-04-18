@@ -222,6 +222,29 @@ describe('finalize', () => {
       expect(out.stats.linkedEdges).toBe(2); // a→b.Y and b→a.X resolve
       expect(out.stats.unresolvedEdges).toBe(1); // a→b.Ghost doesn't
     });
+
+    it('transitions an intra-SCC edge to linkStatus=unresolved when the cap is reached', () => {
+      // A↔B cycle; A imports a name that B never exports. The file-level
+      // target resolves (b exists), but the name-level lookup never
+      // succeeds, so the fixpoint exhausts its cap and we fall through to
+      // `linkStatus: 'unresolved'` (distinct from `targetFile: null`).
+      const a = file(
+        'a',
+        [def('def:a.X', 'Class', 'a.X')],
+        [named('Ghost', 'Ghost', 'b'), named('Y', 'Y', 'b')],
+      );
+      const b = file('b', [def('def:b.Y', 'Class', 'b.Y')], [named('X', 'X', 'a')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      const aEdges = out.imports.get(a.moduleScope) ?? [];
+      const ghost = aEdges.find((e) => e.localName === 'Ghost');
+      expect(ghost).toBeDefined();
+      // Cap-hit distinction: file target is known, but name never resolved.
+      expect(ghost!.targetFile).toBe('b');
+      expect(ghost!.linkStatus).toBe('unresolved');
+      expect(ghost!.targetDefId).toBeUndefined();
+    });
   });
 
   describe('wildcard expansion', () => {
@@ -274,6 +297,44 @@ describe('finalize', () => {
       const reexportEdge = firstImport(out, b.moduleScope)!;
       expect(reexportEdge.kind).toBe('reexport');
       expect(reexportEdge.transitiveVia).toEqual(['c']);
+    });
+
+    it('multi-hop re-export chains only resolve when intermediate files include the name in localDefs', () => {
+      // Contract (see FinalizeFile.localDefs doc): `finalize` looks up
+      // `importedName` in `B.localDefs`. If B re-exports X from C but does
+      // NOT include X in its own localDefs, A's import of X from B cannot
+      // resolve — the fixpoint doesn't mutate localDefs across iterations.
+      //
+      // This test documents the current behavior: parsers that want
+      // multi-hop chains to settle end-to-end must surface re-exported
+      // names in the intermediate file's localDefs (with the original
+      // source DefId).
+      const c = file('c', [def('def:c.X', 'Class', 'c.X')]);
+      // Variant 1: B does NOT include X in its own localDefs → A's import
+      // fails.
+      const bThin = file('b', [], [reexport('X', 'X', 'c')]);
+      const aThin = file('a', [], [named('X', 'X', 'b')]);
+      const thinFiles = [aThin, bThin, c];
+      const thinOut = finalize(
+        { files: thinFiles, workspaceIndex: undefined },
+        defaultHooks(thinFiles),
+      );
+      expect(firstImport(thinOut, aThin.moduleScope)!.linkStatus).toBe('unresolved');
+
+      // Variant 2: B includes X in its localDefs (re-exports surfaced) → A resolves.
+      const bThick = file(
+        'b',
+        [def('def:c.X', 'Class', 'b.X')], // B surfaces X with its own qname
+        [reexport('X', 'X', 'c')],
+      );
+      const aThick = file('a', [], [named('X', 'X', 'b')]);
+      const thickFiles = [aThick, bThick, c];
+      const thickOut = finalize(
+        { files: thickFiles, workspaceIndex: undefined },
+        defaultHooks(thickFiles),
+      );
+      expect(firstImport(thickOut, aThick.moduleScope)!.linkStatus).toBeUndefined();
+      expect(firstImport(thickOut, aThick.moduleScope)!.targetDefId).toBe('def:c.X');
     });
   });
 

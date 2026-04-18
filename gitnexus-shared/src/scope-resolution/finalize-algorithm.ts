@@ -42,7 +42,24 @@ export interface FinalizeFile {
   /** The module scope id for this file; owns the finalized imports + bindings. */
   readonly moduleScope: ScopeId;
   readonly parsedImports: readonly ParsedImport[];
-  /** Local defs visible at module scope (typically those with `isExported`). */
+  /**
+   * Defs exported from this file — the "what other files can import by name"
+   * surface. Typically those with `isExported: true` (the module's own
+   * declarations) plus, for multi-hop re-export chains, the re-exported
+   * names the parser chose to surface here.
+   *
+   * **Multi-hop re-export contract.** `finalize` resolves an edge
+   * `A → B (importedName: 'X')` by looking up `X` in `B.localDefs`. If B
+   * only has `export { X } from './C'` and the parser *does not* include
+   * `X` in `B.localDefs`, A's edge hits the fixpoint cap and is marked
+   * `linkStatus: 'unresolved'`. The fixpoint does NOT mutate `localDefs`
+   * across iterations — it is static input.
+   *
+   * Parsers that want multi-hop re-export chains to settle end-to-end must
+   * include re-exported names in the intermediate file's `localDefs` (with
+   * the original `DefId` of the source symbol). This keeps the algorithm
+   * O(1) per lookup and avoids graph-crawl during finalize.
+   */
   readonly localDefs: readonly SymbolDefinition[];
 }
 
@@ -99,10 +116,30 @@ export interface FinalizedScc {
   readonly isCycle: boolean;
 }
 
+/**
+ * Counters reported by `finalize`.
+ *
+ * **Counting granularity** — all edge counters are **per-`ParsedImport`**,
+ * not per-materialized-`ImportEdge`. A single `wildcard` ParsedImport that
+ * expands to N exports counts as one linked edge in these stats; the
+ * materialized output (`FinalizeOutput.imports`) will have N edges for
+ * that input. `dynamic-unresolved` ParsedImports count as linked (they
+ * pass through with no `linkStatus`), so `linkedEdges` ≠ "has a
+ * BindingRef" — use the `bindings` map for that.
+ *
+ * In other words: `totalEdges === input.parsedImports.length` summed
+ * across files, and `linkedEdges + unresolvedEdges === totalEdges`.
+ */
 export interface FinalizeStats {
   readonly totalFiles: number;
+  /** Total `ParsedImport` records seen across all files. */
   readonly totalEdges: number;
+  /**
+   * `ParsedImport`s whose finalized edge does NOT carry
+   * `linkStatus: 'unresolved'`. Includes `dynamic-unresolved` pass-throughs.
+   */
   readonly linkedEdges: number;
+  /** `ParsedImport`s whose finalized edge carries `linkStatus: 'unresolved'`. */
   readonly unresolvedEdges: number;
   readonly sccCount: number;
   readonly largestSccSize: number;
@@ -128,7 +165,6 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // (file, parsedImport)). Edges with no resolvable target become
   // `linkStatus: 'unresolved'` or, for dynamic-unresolved, pass through
   // with `targetFile: null`.
-  const resolvedTargets = new Map<ParsedImportKey, string | null>();
   const edgeIndex = new Map<string, ImportEdgeDraft[]>(); // filePath → drafts
   let totalEdges = 0;
 
@@ -137,7 +173,6 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     for (const parsed of file.parsedImports) {
       const draft = makeEdgeDraft(parsed, file, hooks, input.workspaceIndex);
       drafts.push(draft);
-      resolvedTargets.set(keyFor(file.filePath, parsed), draft.targetFile);
       totalEdges++;
     }
     edgeIndex.set(file.filePath, drafts);
@@ -185,7 +220,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         const drafts = edgeIndex.get(filePath)!;
         for (const draft of drafts) {
           if (draft.finalized !== null) continue;
-          const finalized = tryFinalize(draft, byFilePath, edgeIndex, hooks, input.workspaceIndex);
+          const finalized = tryFinalize(draft, byFilePath);
           if (finalized !== null) {
             draft.finalized = finalized;
             progressed = true;
@@ -262,13 +297,6 @@ interface ImportEdgeDraft {
   readonly targetFile: string | null;
   readonly base: ImportEdge;
   finalized: ImportEdge | null;
-}
-
-type ParsedImportKey = string;
-function keyFor(filePath: string, p: ParsedImport): ParsedImportKey {
-  const localName = 'localName' in p ? p.localName : '*';
-  const target = p.targetRaw ?? '';
-  return `${filePath}::${p.kind}::${localName}::${target}`;
 }
 
 function makeEdgeDraft(
@@ -358,9 +386,6 @@ function extractExportedName(parsed: ParsedImport): string {
 function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
-  _edgeIndex: Map<string, ImportEdgeDraft[]>,
-  _hooks: FinalizeHooks,
-  _workspace: WorkspaceIndex,
 ): ImportEdge | null {
   const targetFile = draft.targetFile;
   if (targetFile === null) return draft.base; // already terminal
