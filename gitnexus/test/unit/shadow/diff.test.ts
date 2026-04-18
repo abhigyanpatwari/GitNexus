@@ -160,7 +160,11 @@ describe('diffResolutions — metadata + ordering', () => {
     ];
     const next = [
       makeResolution('def:User.save', ['local']),
-      makeResolution('def:yet-another', ['wildcard']),
+      // The 2nd entry is here to verify index-0 isolation — the only kind
+      // requirement is that it be a valid `ResolutionEvidence.kind` so the
+      // fixture is type-correct. `'global-name'` is a real kind that
+      // `diffResolutions` never treats specially.
+      makeResolution('def:yet-another', ['global-name']),
     ];
     const result = diffResolutions(callsite, legacy, next);
     expect(result.agreement).toBe('both-agree');

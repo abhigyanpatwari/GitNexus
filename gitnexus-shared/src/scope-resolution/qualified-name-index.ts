@@ -69,14 +69,14 @@ export function buildQualifiedNameIndex(defs: readonly SymbolDefinition[]): Qual
     frozen.set(k, Object.freeze(v.slice()));
   }
 
-  return freezeIndex(frozen);
+  return wrapIndex(frozen);
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
 const EMPTY: readonly DefId[] = Object.freeze([]);
 
-function freezeIndex(byQualifiedName: Map<string, readonly DefId[]>): QualifiedNameIndex {
+function wrapIndex(byQualifiedName: Map<string, readonly DefId[]>): QualifiedNameIndex {
   return {
     byQualifiedName,
     get size() {

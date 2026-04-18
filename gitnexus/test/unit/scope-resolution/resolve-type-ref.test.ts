@@ -139,16 +139,16 @@ describe('resolveTypeRef', () => {
       expect(resolveTypeRef(typeRef('Account', 'scope:module'), ctx)).toBe(userClass);
     });
 
-    it('resolves a namespace-origin binding (e.g., `import * as np`)', () => {
+    it('returns null for a namespace-origin binding whose def is not a type kind', () => {
       const numpyMod = mkDef({ nodeId: 'def:numpy-mod', type: 'Namespace' });
       // A namespace binding must resolve to a type-kind def to satisfy strict
-      // mode. Here the binding is the namespace module itself — treat it as a
-      // shadowing non-type and expect null.
+      // mode. Here the binding is the namespace module itself — `Namespace`
+      // is intentionally NOT in `TYPE_KINDS` (see resolve-type-ref.ts), so
+      // the binding is treated as a shadowing non-type and we fail fast.
       const moduleScope = mkScope('scope:module', null, {
         np: [mkBinding(numpyMod, 'namespace')],
       });
       const ctx = mkCtx([moduleScope], [numpyMod]);
-      // Namespace is NOT a type kind → strict returns null.
       expect(resolveTypeRef(typeRef('np', 'scope:module'), ctx)).toBeNull();
     });
 

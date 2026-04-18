@@ -318,8 +318,9 @@ function lookupReceiverType(
       // callers pre-resolve if they want the richer semantics.
       const candidateIds = ctx.qualifiedNames.get(typeRef.rawName);
       if (candidateIds.length === 1) return candidateIds[0];
-      // If ambiguous or missing, try a name-match among class-like defs —
-      // but only when the rawName has no dots (simple name).
+      // Ambiguous (≥ 2) or missing (0) — caller must pre-resolve via
+      // `resolveTypeRef` (#916) if they want the richer semantics. We
+      // intentionally do NOT re-implement a simple-name fallback here.
       return undefined;
     }
     currentId = scope.parent;
@@ -358,16 +359,23 @@ function recordTypeBindingHit(
   receiverOwner: DefId,
 ): void {
   const state = ensureCandidate(perCandidate, def);
+  const firstHit = state.signals.typeBindingMroDepth === undefined;
   // Only replace if this hit is shallower (smaller MRO depth).
-  if (
-    state.signals.typeBindingMroDepth === undefined ||
-    mroDepth < state.signals.typeBindingMroDepth
-  ) {
+  if (firstHit || mroDepth < state.signals.typeBindingMroDepth!) {
     state.signals.typeBindingMroDepth = mroDepth;
     state.tieBreakKey.mroDepth = mroDepth;
   }
   if (def.ownerId === receiverOwner) {
     state.signals.ownerMatch = true;
+  }
+  // Pure type-binding candidates (no lexical hit) would otherwise keep the
+  // `ensureCandidate` default `tieBreakKey.origin === 'local'`, making the
+  // Appendix B cascade lump them with local-origin candidates. Demote them
+  // to `'import'` — the strongest non-local origin — only on the FIRST
+  // type-binding hit, so a later lexical Step 1 walk can still upgrade
+  // them back to `'local'` via `recordLexicalHit`.
+  if (firstHit && state.signals.origin === undefined) {
+    state.tieBreakKey.origin = 'import';
   }
 }
 

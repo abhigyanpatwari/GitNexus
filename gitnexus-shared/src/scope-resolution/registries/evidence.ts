@@ -168,6 +168,11 @@ function getOriginWeight(origin: NonNullable<RawSignals['origin']>): number {
     case 'global-qualified':
       return EvidenceWeights.globalQualified;
     case 'global-name':
+      // Reserved for Ring 3 byName global index. `lookupCore` today only
+      // emits `'global-qualified'` (via `lookupQualified`, dotted-name
+      // fallback); no code path constructs `origin: 'global-name'` yet.
+      // Kept here so the Appendix A weight stays live and `composeEvidence`
+      // remains exhaustive over the origin union.
       return EvidenceWeights.globalName;
   }
 }

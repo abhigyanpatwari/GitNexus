@@ -181,5 +181,3 @@ function buildOverallRow(
   const parity = resolved > 0 ? bothAgree / resolved : 0;
   return { totalCalls, bothAgree, onlyLegacy, onlyNew, bothDisagree, bothEmpty, parity };
 }
-
-export type { ShadowAgreement, ShadowDiff };

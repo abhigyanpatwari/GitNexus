@@ -37,6 +37,16 @@ export interface PositionIndex {
    * Innermost scope containing `(line, col)` in `filePath`, or `undefined`
    * when nothing contains it (position before file start, after file end,
    * or filePath not indexed).
+   *
+   * **Touching-boundary semantics.** Ranges are inclusive on both ends.
+   * When two sibling scopes share a boundary point — e.g.
+   * `[5:0, 10:0]` and `[10:0, 15:0]`, which is legal under `ScopeTree`'s
+   * non-overlap invariant — a query at the shared point `(10, 0)` is
+   * contained by **both**. The innermost-wins tie-break rule applies as
+   * usual: since neither is nested inside the other, the one that
+   * **starts latest** wins, i.e. the **right** sibling. Queries at
+   * non-boundary positions between them naturally fall to the unique
+   * containing scope.
    */
   atPosition(filePath: string, line: number, col: number): ScopeId | undefined;
 }

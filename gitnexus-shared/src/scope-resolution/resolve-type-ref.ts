@@ -38,21 +38,11 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
-import type { BindingRef, Scope, ScopeId, TypeRef } from './types.js';
+import type { BindingRef, ScopeId, ScopeLookup, TypeRef } from './types.js';
 import type { DefIndex } from './def-index.js';
 import type { QualifiedNameIndex } from './qualified-name-index.js';
 
 // ─── Public contracts ───────────────────────────────────────────────────────
-
-/**
- * Minimal scope-lookup contract required by `resolveTypeRef`. Implemented by
- * the `ScopeTree` from #912; declared here so #916 can ship as a standalone
- * piece without a hard dependency on the full scope-tree implementation. Any
- * structure that hands back a `Scope` by `ScopeId` satisfies this contract.
- */
-export interface ScopeLookup {
-  getScope(id: ScopeId): Scope | undefined;
-}
 
 /**
  * All inputs `resolveTypeRef` needs from the semantic model. Bundled into a
@@ -83,6 +73,12 @@ const STRICT_ORIGINS: ReadonlySet<BindingRef['origin']> = new Set<BindingRef['or
  * container, not a value type. `Function` / `Method` / `Variable` are
  * excluded by design: a `rawName` bound to them at a strict origin is a
  * *shadowing* binding, which the algorithm short-circuits to `null`.
+ *
+ * `'Type'` (the generic `NodeLabel` value) is also excluded — verified
+ * against `gitnexus/src/core/ingestion/` at the time of writing, no
+ * production extractor emits `type: 'Type'` for annotation-relevant
+ * symbols. Should a future extractor start emitting it, add `'Type'`
+ * here and add a test asserting the new path.
  */
 const TYPE_KINDS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Class',

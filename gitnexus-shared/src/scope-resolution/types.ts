@@ -209,6 +209,18 @@ export type WorkspaceIndex = unknown;
 // The former opaque placeholder lived here during Ring 1; removed now that
 // the concrete type exists. Consumers import from `gitnexus-shared` directly.
 
+/**
+ * Minimal scope-lookup contract: map a `ScopeId` back to its `Scope` record.
+ *
+ * Lives in the data-model layer so both `ScopeTree` (§3.1) and
+ * `resolveTypeRef` / `Registry.lookup` (§4) can depend on it without
+ * inverting each other. `ScopeTree` is the canonical implementation;
+ * tests and future alternative containers may supply their own.
+ */
+export interface ScopeLookup {
+  getScope(id: ScopeId): Scope | undefined;
+}
+
 /** Call-site description passed to `arityCompatibility`. */
 export interface Callsite {
   /** Number of arguments at the call site. */

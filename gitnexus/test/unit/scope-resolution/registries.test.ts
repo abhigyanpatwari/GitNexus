@@ -337,7 +337,11 @@ describe('Step 6: global-qualified fallback', () => {
 // ─── §4.2 Step 7 — tie-breaks ──────────────────────────────────────────────
 
 describe('Step 7: tie-break cascade', () => {
-  it('confidence DESC is the primary key', () => {
+  it('inner scope shadows outer, yielding single result (hard-shadow baseline)', () => {
+    // Baseline: the hard-shadow rule in Step 1 means a near binding fully
+    // replaces the far one. No "confidence DESC" ordering to observe here
+    // because there is only one candidate — the far class never enters
+    // the result set. See the next test for true multi-candidate ranking.
     const nearClass = mkDef({ nodeId: 'def:near', type: 'Class' });
     const farClass = mkDef({ nodeId: 'def:far', type: 'Class' });
     const mod = mkScope({
@@ -355,9 +359,29 @@ describe('Step 7: tie-break cascade', () => {
     const ctx = makeCtx([mod, fn], [nearClass, farClass]);
     const results = buildClassRegistry(ctx).lookup('User', 'scope:f');
 
-    // Inner binding shadows; only the near class should appear.
     expect(results).toHaveLength(1);
     expect(results[0]!.def).toBe(nearClass);
+  });
+
+  it('orders multiple same-scope candidates by confidence DESC', () => {
+    // Two candidates co-exist at the same scope, one with origin=local
+    // (weight 0.55) and one with origin=wildcard (weight 0.30). Both pass
+    // the Class kind filter; confidence DESC should sort local first.
+    const localClass = mkDef({ nodeId: 'def:local', type: 'Class' });
+    const wildcardClass = mkDef({ nodeId: 'def:wildcard', type: 'Class' });
+    const mod = mkScope({
+      id: 'scope:m',
+      parent: null,
+      bindings: {
+        User: [mkBinding(wildcardClass, 'wildcard'), mkBinding(localClass, 'local')],
+      },
+    });
+    const ctx = makeCtx([mod], [localClass, wildcardClass]);
+    const results = buildClassRegistry(ctx).lookup('User', 'scope:m');
+    expect(results).toHaveLength(2);
+    expect(results[0]!.def).toBe(localClass); // local (0.55) > wildcard (0.30)
+    expect(results[1]!.def).toBe(wildcardClass);
+    expect(results[0]!.confidence).toBeGreaterThan(results[1]!.confidence);
   });
 
   it('breaks ties by DefId.localeCompare when all secondary keys are equal', () => {

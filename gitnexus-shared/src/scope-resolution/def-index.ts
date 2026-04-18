@@ -41,12 +41,12 @@ export function buildDefIndex(defs: readonly SymbolDefinition[]): DefIndex {
     if (byId.has(def.nodeId)) continue; // first-write-wins
     byId.set(def.nodeId, def);
   }
-  return freezeIndex(byId);
+  return wrapIndex(byId);
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-function freezeIndex(byId: Map<DefId, SymbolDefinition>): DefIndex {
+function wrapIndex(byId: Map<DefId, SymbolDefinition>): DefIndex {
   return {
     byId,
     get size() {

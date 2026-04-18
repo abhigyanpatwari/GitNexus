@@ -59,8 +59,9 @@ describe('buildMethodDispatchIndex', () => {
     });
 
     it('records a C3 linearization verbatim (Python diamond)', () => {
-      // D(B, C) where B(A), C(A). Classical C3: D, B, C, A.
-      // Our index stores mro excluding self: [B, C, A].
+      // D(B, C) where B(A), C(A). Classical C3 keeps A last because the
+      // merge step defers A until both B and C have been emitted.
+      // Our index stores MRO excluding self: [B, C, A].
       const idx = buildMethodDispatchIndex(
         input(['def:D'], { 'def:D': ['def:B', 'def:C', 'def:A'] }),
       );
@@ -68,11 +69,15 @@ describe('buildMethodDispatchIndex', () => {
     });
 
     it('records a BFS linearization verbatim (Java-style first-wins)', () => {
-      // D extends B, C; B extends A; C extends A. BFS: B, C, A.
+      // Same class hierarchy as the C3 case, but the BFS walker visits
+      // A before C via the B→A edge. Expected MRO differs from C3: [B, A, C].
+      // This test proves the materializer preserves whatever ordering the
+      // per-language `computeMro` callback produces — NOT that C3 and BFS
+      // produce identical output.
       const idx = buildMethodDispatchIndex(
-        input(['def:D'], { 'def:D': ['def:B', 'def:C', 'def:A'] }),
+        input(['def:D'], { 'def:D': ['def:B', 'def:A', 'def:C'] }),
       );
-      expect(idx.mroFor('def:D')).toEqual(['def:B', 'def:C', 'def:A']);
+      expect(idx.mroFor('def:D')).toEqual(['def:B', 'def:A', 'def:C']);
     });
 
     it('records a Ruby-style kind-aware ancestry verbatim', () => {
@@ -133,9 +138,19 @@ describe('buildMethodDispatchIndex', () => {
 
     it('deduplicates when the same owner is listed in `owners` twice (first-write-wins)', () => {
       // First-write-wins parity with sibling indexes; subsequent owner entries
-      // should not re-invoke callbacks for existing MRO, and should not create
-      // duplicate implementor entries.
+      // should not re-invoke `computeMro` for existing MRO, and should not
+      // create duplicate implementor entries.
+      //
+      // NOTE on `implementsOf` call count: the builder calls `implementsOf`
+      // ONCE PER OCCURRENCE of an owner in `input.owners`, not once per
+      // unique owner. Duplicate owners therefore re-invoke `implementsOf`;
+      // the dedup lives at the bucket layer (via `implsSeen`), not the
+      // callback layer. Callers with expensive `implementsOf` callbacks
+      // should dedupe `input.owners` upfront. This counter assertion pins
+      // that contract so a future refactor can't silently collapse the
+      // second call without updating the docstring.
       let mroCalls = 0;
+      let implementsOfCalls = 0;
       const impls: Record<DefId, readonly DefId[]> = { 'def:A': ['def:I'] };
       const idx = buildMethodDispatchIndex({
         owners: ['def:A', 'def:A'],
@@ -143,9 +158,13 @@ describe('buildMethodDispatchIndex', () => {
           mroCalls++;
           return ['def:B'];
         },
-        implementsOf: (o) => impls[o] ?? [],
+        implementsOf: (o) => {
+          implementsOfCalls++;
+          return impls[o] ?? [];
+        },
       });
-      expect(mroCalls).toBe(1);
+      expect(mroCalls).toBe(1); // MRO dedup is at the callback layer (first-write-wins)
+      expect(implementsOfCalls).toBe(2); // implementsOf fires per occurrence; dedup at bucket
       expect(idx.mroFor('def:A')).toEqual(['def:B']);
       expect(idx.implementorsOf('def:I')).toEqual(['def:A']);
     });

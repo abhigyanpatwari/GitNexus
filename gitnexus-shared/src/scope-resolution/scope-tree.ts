@@ -25,8 +25,7 @@
  * `Object.freeze`d; miss lookups return a shared frozen empty array.
  */
 
-import type { Scope, ScopeId, Range } from './types.js';
-import type { ScopeLookup } from './resolve-type-ref.js';
+import type { Scope, ScopeId, ScopeLookup, Range } from './types.js';
 
 // ─── Public contract ────────────────────────────────────────────────────────
 

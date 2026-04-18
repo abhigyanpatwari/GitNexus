@@ -47,6 +47,9 @@ describe('buildQualifiedNameIndex', () => {
     });
     const idx = buildQualifiedNameIndex([a, b]);
     expect(idx.get('app.User')).toEqual(['def:app.User:Core', 'def:app.User:Api']);
+    // Hit-path bucket is frozen just like the miss path — consumers cannot
+    // mutate the returned array.
+    expect(() => (idx.get('app.User') as unknown as string[]).push('x')).toThrow();
   });
 
   it('preserves input order in the bucket', () => {

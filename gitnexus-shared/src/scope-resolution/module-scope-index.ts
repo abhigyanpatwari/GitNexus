@@ -36,6 +36,14 @@ export interface ModuleScopeEntry {
  * entry preserves the first-stable id the rest of the pipeline may already
  * have registered against.
  *
+ * **Caller contract: filePath keys must be pre-normalized.** This index
+ * keys on the raw `filePath` string and does NOT canonicalize separators,
+ * case, or trailing slashes. Callers upstream of this function must agree
+ * on a canonical form (typically repo-root-relative, POSIX separators,
+ * no trailing slash) before constructing entries — otherwise `C:\foo\bar.ts`,
+ * `C:/foo/bar.ts`, and `foo/bar.ts` will all hash to distinct buckets and
+ * `get()` will miss.
+ *
  * Pure function — safe to call repeatedly; no side effects.
  */
 export function buildModuleScopeIndex(entries: readonly ModuleScopeEntry[]): ModuleScopeIndex {
@@ -44,12 +52,12 @@ export function buildModuleScopeIndex(entries: readonly ModuleScopeEntry[]): Mod
     if (byFilePath.has(filePath)) continue; // first-write-wins
     byFilePath.set(filePath, moduleScopeId);
   }
-  return freezeIndex(byFilePath);
+  return wrapIndex(byFilePath);
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-function freezeIndex(byFilePath: Map<string, ScopeId>): ModuleScopeIndex {
+function wrapIndex(byFilePath: Map<string, ScopeId>): ModuleScopeIndex {
   return {
     byFilePath,
     get size() {
