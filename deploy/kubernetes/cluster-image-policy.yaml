@@ -36,14 +36,12 @@ kind: ClusterImagePolicy
 metadata:
   name: gitnexus-signed-images
 spec:
-  # Apply to both published GitNexus images on GHCR. Globs match any tag/digest.
+  # Apply to both published GitNexus images on GHCR. Image references always
+  # carry a tag or digest at admission time, so these two globs cover every
+  # `gitnexus:<tag>`, `gitnexus@sha256:...`, `gitnexus-web:<tag>`, and
+  # `gitnexus-web@sha256:...` reference.
   images:
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus"
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus:**"
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus@sha256:**"
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus-web"
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus-web:**"
-    - glob: "ghcr.io/abhigyanpatwari/gitnexus-web@sha256:**"
+    - glob: "ghcr.io/abhigyanpatwari/gitnexus*"
   authorities:
     - name: gitnexus-cosign-keyless
       keyless:
