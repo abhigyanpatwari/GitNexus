@@ -203,6 +203,34 @@ function sendHookResponse(hookEventName, message) {
   );
 }
 
+const GENERATED_INDEX_PATHS = [
+  /^\.gitnexus(?:\/|$)/,
+  /^AGENTS\.md$/,
+  /^CLAUDE\.md$/,
+  /^\.claude\/skills\/gitnexus(?:\/|$)/,
+  /^\.claude\/skills\/generated(?:\/|$)/,
+];
+
+function isGeneratedIndexPath(filePath) {
+  return GENERATED_INDEX_PATHS.some((pattern) => pattern.test(filePath));
+}
+
+function onlyGeneratedIndexArtifactsChanged(cwd, lastCommit) {
+  if (!lastCommit) return false;
+  try {
+    const diffResult = spawnSync('git', ['diff', '--name-only', `${lastCommit}..HEAD`], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const files = (diffResult.stdout || '').trim().split(/\r?\n/).filter(Boolean);
+    return files.length > 0 && files.every(isGeneratedIndexPath);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * PostToolUse handler — detect index staleness after git mutations.
  *
@@ -256,6 +284,7 @@ function handlePostToolUse(input) {
 
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
+  if (onlyGeneratedIndexArtifactsChanged(cwd, lastCommit)) return;
 
   const analyzeCmd = `gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
   sendHookResponse(

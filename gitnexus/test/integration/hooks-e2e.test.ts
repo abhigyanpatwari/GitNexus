@@ -108,6 +108,34 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       expect(output).toBeNull();
     });
 
+    it('stays silent when only generated GitNexus artifacts changed after indexing', () => {
+      const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const indexedHead = headResult.stdout.trim();
+
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: indexedHead, stats: {} }),
+      );
+      fs.writeFileSync(path.join(tmpDir, 'AGENTS.md'), '# GitNexus\n');
+      spawnSync('git', ['add', '.gitnexus/meta.json', 'AGENTS.md'], { cwd: tmpDir, stdio: 'pipe' });
+      spawnSync('git', ['commit', '-m', 'index artifacts'], { cwd: tmpDir, stdio: 'pipe' });
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "index artifacts"' },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+
+      const output = parseHookOutput(result.stdout);
+      expect(output).toBeNull();
+    });
+
     it('includes --embeddings flag when previous index had embeddings', () => {
       fs.writeFileSync(
         path.join(gitNexusDir, 'meta.json'),

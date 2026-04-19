@@ -6,6 +6,7 @@
 
 import { findRepo, getStoragePaths, hasKuzuIndex } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import { checkStaleness } from '../core/git-staleness.js';
 
 export const statusCommand = async () => {
   const cwd = process.cwd();
@@ -31,11 +32,16 @@ export const statusCommand = async () => {
   }
 
   const currentCommit = getCurrentCommit(repo.repoPath);
-  const isUpToDate = currentCommit === repo.meta.lastCommit;
+  const staleness = checkStaleness(repo.repoPath, repo.meta.lastCommit || 'HEAD');
+  const isUpToDate = currentCommit === repo.meta.lastCommit || !staleness.isStale;
 
   console.log(`Repository: ${repo.repoPath}`);
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
   console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
   console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
+  if (isUpToDate && staleness.artifactOnly) {
+    console.log('Status: ✅ up-to-date (only GitNexus-generated index artifacts changed)');
+    return;
+  }
   console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run gitnexus analyze)'}`);
 };
