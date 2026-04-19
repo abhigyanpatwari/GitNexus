@@ -135,7 +135,7 @@ export interface EmbeddingConfig {
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
-  batchSize: 16,
+  batchSize: 32,
   dimensions: 384,
   device: 'auto',
   maxSnippetLength: 500,

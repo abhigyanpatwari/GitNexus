@@ -5,10 +5,10 @@
  * Imported by both the core embedder (batch) and MCP embedder (query).
  */
 
-const HTTP_TIMEOUT_MS = 30_000;
+const HTTP_TIMEOUT_MS = 120_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
-const HTTP_BATCH_SIZE = 64;
+const HTTP_BATCH_SIZE = 32;
 const DEFAULT_DIMS = 384;
 
 interface HttpConfig {
@@ -148,10 +148,14 @@ const httpEmbedBatch = async (
       body: JSON.stringify(body),
     });
   } catch (err) {
-    // Timeouts should not be retried — the server is unresponsive.
     // AbortSignal.timeout() throws DOMException with name 'TimeoutError'.
     const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
     if (isTimeout) {
+      if (attempt < HTTP_MAX_RETRIES) {
+        const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
+        await new Promise((r) => setTimeout(r, delay));
+        return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1, dimensions);
+      }
       throw new Error(
         `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
       );
@@ -176,7 +180,18 @@ const httpEmbedBatch = async (
     throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
   }
 
-  const data = (await resp.json()) as { data: EmbeddingItem[] };
+  let data: { data: EmbeddingItem[] };
+  try {
+    data = (await resp.json()) as { data: EmbeddingItem[] };
+  } catch (err) {
+    if (attempt < HTTP_MAX_RETRIES) {
+      const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
+      await new Promise((r) => setTimeout(r, delay));
+      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1, dimensions);
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Embedding response read failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
+  }
   return data.data;
 };
 

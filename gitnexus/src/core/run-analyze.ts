@@ -73,7 +73,7 @@ export interface AnalyzeResult {
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
-const EMBEDDING_NODE_LIMIT = 50_000;
+const EMBEDDING_NODE_LIMIT = 100_000;
 const EMBEDDING_BACKEND_SWITCH_ENV = 'GITNEXUS_ALLOW_EMBEDDING_BACKEND_SWITCH';
 
 export const PHASE_LABELS: Record<string, string> = {
@@ -195,8 +195,10 @@ export async function runFullAnalysis(
 
   // ── Early-return: already up to date ──────────────────────────────
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
+    const missingRequestedEmbeddings =
+      Boolean(options.embeddings) && ((existingMeta.stats?.embeddings ?? 0) === 0);
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
-    if (currentCommit !== '') {
+    if (currentCommit !== '' && !missingRequestedEmbeddings) {
       return {
         repoName: path.basename(repoPath),
         repoPath,
