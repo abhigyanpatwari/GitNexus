@@ -61,6 +61,7 @@ jobs:
 
     steps:
       - name: Validate tag input
+        if: github.event_name == 'workflow_call'
         shell: bash
         env:
           TAG_INPUT: ${{ inputs.tag }}
