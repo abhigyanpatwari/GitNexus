@@ -16,7 +16,11 @@ import type {
 } from './types.js';
 import type { GroupRepoHandle, GroupToolPort } from './service.js';
 import { loadGroupConfig } from './config-parser.js';
-import { fileMatchesServicePrefix, normalizeServicePrefix } from './group-path-utils.js';
+import {
+  fileMatchesServicePrefix,
+  normalizeServicePrefix,
+  repoInSubgroup,
+} from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
 import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
@@ -68,12 +72,6 @@ type BridgeNeighborRow = {
 export interface RunGroupImpactDeps {
   port: GroupToolPort;
   gitnexusDir: string;
-}
-
-function repoInSubgroup(repoPath: string, subgroup?: string): boolean {
-  if (!subgroup?.trim()) return true;
-  const s = subgroup.replace(/\/+$/, '');
-  return repoPath === s || repoPath.startsWith(`${s}/`);
 }
 
 function parseDirection(raw: unknown): 'upstream' | 'downstream' | null {
@@ -346,6 +344,11 @@ export async function runGroupImpact(
     minConfidence,
   };
 
+  // Single shared deadline for Phase 1 (local walk) + Phase 2 (bridge fan-out).
+  // Phase 1 still gets the full budget; Phase 2 only uses whatever wall-clock
+  // time is left, so total work cannot exceed `timeoutMs`.
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+
   const { value: local, timedOut: localTimedOut } = await safeLocalImpact(
     deps.port,
     resolved,
@@ -465,7 +468,6 @@ export async function runGroupImpact(
     }
     neighbors.sort((a, b) => b.confidence - a.confidence);
 
-    const deadline = Date.now() + Math.max(0, timeoutMs);
     const seen = new Set<string>();
 
     for (const n of neighbors) {

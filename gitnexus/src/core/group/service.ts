@@ -7,7 +7,11 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import { loadGroupConfig } from './config-parser.js';
-import { fileMatchesServicePrefix, normalizeServicePrefix } from './group-path-utils.js';
+import {
+  fileMatchesServicePrefix,
+  normalizeServicePrefix,
+  repoInSubgroup,
+} from './group-path-utils.js';
 import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
 import { syncGroup } from './sync.js';
 import type {
@@ -71,13 +75,6 @@ export interface GroupToolPort {
       include_content?: boolean;
     },
   ): Promise<unknown>;
-}
-
-function repoInSubgroup(repoPath: string, subgroup?: string, exact?: boolean): boolean {
-  if (!subgroup?.trim()) return true;
-  const s = subgroup.replace(/\/+$/, '');
-  if (exact) return repoPath === s;
-  return repoPath === s || repoPath.startsWith(`${s}/`);
 }
 
 function isStoredContract(raw: unknown): raw is StoredContract {
@@ -325,37 +322,42 @@ export class GroupService {
       };
     }
 
-    const results: GroupContextResult['results'] = [];
+    const memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
+      repoInSubgroup(repoPath, subgroup, subgroupExact),
+    );
 
-    for (const [repoPath, registryName] of Object.entries(config.repos)) {
-      if (!repoInSubgroup(repoPath, subgroup, subgroupExact)) continue;
-      try {
-        const repoObj = await this.port.resolveRepo(registryName);
-        const payload = await this.port.context(repoObj, {
-          name: target || undefined,
-          uid,
-          file_path,
-          include_content,
-        });
+    // Per-repo work is independent (each repo opens its own DB handle and the
+    // group-level result preserves repo iteration order via the indexed map).
+    // Errors are caught per repo so one slow/failed member does not block the rest.
+    const results: GroupContextResult['results'] = await Promise.all(
+      memberEntries.map(async ([repoPath, registryName]) => {
+        try {
+          const repoObj = await this.port.resolveRepo(registryName);
+          const payload = await this.port.context(repoObj, {
+            name: target || undefined,
+            uid,
+            file_path,
+            include_content,
+          });
 
-        if (servicePrefix) {
-          const st = (payload as { status?: string })?.status;
-          const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
-          if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
-            results.push({ repoPath, registryName, payload: {} });
-            continue;
+          if (servicePrefix) {
+            const st = (payload as { status?: string })?.status;
+            const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
+            if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
+              return { repoPath, registryName, payload: {} };
+            }
           }
-        }
 
-        results.push({ repoPath, registryName, payload });
-      } catch (e) {
-        results.push({
-          repoPath,
-          registryName,
-          payload: { error: e instanceof Error ? e.message : String(e) },
-        });
-      }
-    }
+          return { repoPath, registryName, payload };
+        } catch (e) {
+          return {
+            repoPath,
+            registryName,
+            payload: { error: e instanceof Error ? e.message : String(e) },
+          };
+        }
+      }),
+    );
 
     return {
       group: name,
@@ -384,33 +386,39 @@ export class GroupService {
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     const config = await loadGroupConfig(groupDir);
 
-    const perRepo: Array<{ repo: string; score: number; processes: unknown[] }> = [];
-    for (const [repoPath, registryName] of Object.entries(config.repos)) {
-      if (!repoInSubgroup(repoPath, subgroup, subgroupExact)) continue;
-      try {
-        const repoObj = await this.port.resolveRepo(registryName);
-        const queryResult = (await this.port.query(repoObj, {
-          query: queryText,
-          limit,
-          max_symbols: 10,
-          include_content: false,
-        })) as {
-          processes?: Array<Record<string, unknown>>;
-          process_symbols?: Array<Record<string, unknown>>;
-        };
-        const processes = servicePrefix
-          ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
-          : queryResult.processes || [];
-        const scored = processes.map((p, idx) => ({
-          ...p,
-          _rrf_score: 1 / (idx + 1 + 60),
-          _repo: repoPath,
-        }));
-        perRepo.push({ repo: repoPath, score: 0, processes: scored });
-      } catch {
-        perRepo.push({ repo: repoPath, score: 0, processes: [] });
-      }
-    }
+    const memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
+      repoInSubgroup(repoPath, subgroup, subgroupExact),
+    );
+
+    // Per-repo query is independent; run them concurrently and isolate
+    // failures so one slow/failed member does not block the rest.
+    const perRepo = await Promise.all(
+      memberEntries.map(async ([repoPath, registryName]) => {
+        try {
+          const repoObj = await this.port.resolveRepo(registryName);
+          const queryResult = (await this.port.query(repoObj, {
+            query: queryText,
+            limit,
+            max_symbols: 10,
+            include_content: false,
+          })) as {
+            processes?: Array<Record<string, unknown>>;
+            process_symbols?: Array<Record<string, unknown>>;
+          };
+          const processes = servicePrefix
+            ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
+            : queryResult.processes || [];
+          const scored = processes.map((p, idx) => ({
+            ...p,
+            _rrf_score: 1 / (idx + 1 + 60),
+            _repo: repoPath,
+          }));
+          return { repo: repoPath, score: 0, processes: scored as unknown[] };
+        } catch {
+          return { repo: repoPath, score: 0, processes: [] as unknown[] };
+        }
+      }),
+    );
 
     const allProcesses = perRepo.flatMap((r) => r.processes as Array<Record<string, unknown>>);
     allProcesses.sort((a, b) => (b._rrf_score as number) - (a._rrf_score as number));
@@ -441,13 +449,10 @@ export class GroupService {
       }
     > = {};
 
-    const fsp = await import('node:fs/promises');
-    const pathMod = await import('node:path');
-
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
       try {
         const repoObj = await this.port.resolveRepo(registryName);
-        const metaPath = pathMod.join(repoObj.storagePath, 'meta.json');
+        const metaPath = path.join(repoObj.storagePath, 'meta.json');
         const metaRaw = await fsp.readFile(metaPath, 'utf-8').catch(() => '{}');
         const meta = JSON.parse(metaRaw) as { lastCommit?: string; indexedAt?: string };
 
