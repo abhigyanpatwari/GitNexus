@@ -1,0 +1,24 @@
+appId: io.github.abhigyanpatwari.gitnexus.desktop
+productName: GitNexus Desktop
+directories:
+  output: release/artifacts
+files:
+  - dist/**/*
+  - package.json
+asar: false
+npmRebuild: false
+win:
+  signAndEditExecutable: false
+  target:
+    - nsis
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+linux:
+  category: Development
+  target:
+    - AppImage
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
