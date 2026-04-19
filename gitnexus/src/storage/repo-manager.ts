@@ -22,6 +22,12 @@ export interface RepoMeta {
     processes?: number;
     embeddings?: number;
   };
+  embedding?: {
+    provider: 'openai' | 'http' | 'onnx';
+    baseUrl?: string;
+    model: string;
+    dimensions: number;
+  };
 }
 
 export interface IndexedRepo {
@@ -42,6 +48,7 @@ export interface RegistryEntry {
   indexedAt: string;
   lastCommit: string;
   stats?: RepoMeta['stats'];
+  embedding?: RepoMeta['embedding'];
 }
 
 const GITNEXUS_DIR = '.gitnexus';
@@ -267,6 +274,7 @@ export const registerRepo = async (repoPath: string, meta: RepoMeta): Promise<vo
     indexedAt: meta.indexedAt,
     lastCommit: meta.lastCommit,
     stats: meta.stats,
+    embedding: meta.embedding,
   };
 
   if (existing >= 0) {

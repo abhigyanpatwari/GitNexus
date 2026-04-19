@@ -429,7 +429,7 @@ export const runEmbeddingPipeline = async (
       }
 
       // Embed chunk texts in sub-batches to control memory
-      const EMBED_SUB_BATCH = 8;
+      const EMBED_SUB_BATCH = 32;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);

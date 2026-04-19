@@ -31,6 +31,8 @@ import { GroupService, type GroupToolPort } from '../../core/group/service.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { buildQueryPlan, combineRankedResults } from '../../core/search/query-expansion.js';
+import type { EmbeddingConfigSummary } from '../../core/embeddings/http-client.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -198,6 +200,7 @@ interface RepoHandle {
   indexedAt: string;
   lastCommit: string;
   stats?: RegistryEntry['stats'];
+  embedding?: EmbeddingConfigSummary;
 }
 
 export class LocalBackend {
@@ -255,6 +258,12 @@ export class LocalBackend {
 
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
+      let meta: { embedding?: EmbeddingConfigSummary } = {};
+      try {
+        meta = JSON.parse(await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8'));
+      } catch {
+        meta = {};
+      }
 
       // Clean up any leftover KuzuDB files from before the LadybugDB migration.
       // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
@@ -274,6 +283,7 @@ export class LocalBackend {
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
         stats: entry.stats,
+        embedding: meta.embedding,
       };
 
       this.repos.set(id, handle);
@@ -565,50 +575,48 @@ export class LocalBackend {
     const timer = new PhaseTimer();
     const wallStart = performance.now();
 
-    // Step 1: Run hybrid search to get matching symbols. BM25 and vector
-    // search run concurrently via Promise.all — use `timer.time()` for
-    // each so both get independent wall-time records without fighting
-    // over a single `current` phase slot.
+    // Step 1: Run bounded hybrid search to get matching symbols.
+    // BM25 gets cheap deterministic variants; semantic search is capped to
+    // the primary query plus one identifier-expanded query to control noise.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
-    const [bm25SearchResult, semanticResults] = await Promise.all([
-      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit)),
-      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
-    ]);
+    const queryPlan = buildQueryPlan({
+      query: searchQuery,
+      goal: params.goal,
+      taskContext: params.task_context,
+    });
+    const resultSets: Array<{ source: string; weight: number; results: any[] }> = [];
+    let ftsUsed = true;
 
-    const bm25Results = bm25SearchResult.results;
-    const ftsUsed = bm25SearchResult.ftsUsed;
+    for (const variant of queryPlan.bm25Queries) {
+      const bm25SearchResult = await timer.time(
+        variant.kind === 'primary' ? 'bm25' : `bm25:${variant.kind}`,
+        this.bm25Search(repo, variant.query, searchLimit),
+      );
+      ftsUsed = ftsUsed && bm25SearchResult.ftsUsed;
+      resultSets.push({
+        source: variant.kind === 'primary' ? 'bm25' : `bm25:${variant.kind}`,
+        weight: variant.weight,
+        results: bm25SearchResult.results,
+      });
+    }
+
+    for (const variant of queryPlan.semanticQueries) {
+      const semanticResults = await timer.time(
+        variant.kind === 'primary' ? 'vector' : `vector:${variant.kind}`,
+        this.semanticSearch(repo, variant.query, searchLimit),
+      );
+      resultSets.push({
+        source: variant.kind === 'primary' ? 'semantic' : `semantic:${variant.kind}`,
+        weight: variant.weight,
+        results: semanticResults,
+      });
+    }
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
-    const scoreMap = new Map<string, { score: number; data: any }>();
-
-    for (let i = 0; i < bm25Results.length; i++) {
-      const result = bm25Results[i];
-      const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
-      const existing = scoreMap.get(key);
-      if (existing) {
-        existing.score += rrfScore;
-      } else {
-        scoreMap.set(key, { score: rrfScore, data: result });
-      }
-    }
-
-    for (let i = 0; i < semanticResults.length; i++) {
-      const result = semanticResults[i];
-      const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
-      const existing = scoreMap.get(key);
-      if (existing) {
-        existing.score += rrfScore;
-      } else {
-        scoreMap.set(key, { score: rrfScore, data: result });
-      }
-    }
-
-    const merged = Array.from(scoreMap.entries())
-      .sort((a, b) => b[1].score - a[1].score)
-      .slice(0, searchLimit);
+    const merged = combineRankedResults(resultSets, searchLimit, queryPlan, {
+      keyFn: (result) => result.nodeId || result.filePath,
+    });
     timer.stop(); // merge
 
     // Step 2: For each match with a nodeId, trace to process(es)
@@ -628,7 +636,7 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
-    for (const [_, item] of merged) {
+    for (const item of merged) {
       const sym = item.data;
       if (!sym.nodeId) {
         // File-level results go to definitions
@@ -885,6 +893,25 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
+
+      const storedEmbedding = repo.embedding;
+      if (storedEmbedding?.provider) {
+        const { isHttpMode, getHttpConfigSummary } =
+          await import('../../core/embeddings/http-client.js');
+        const currentHttp = getHttpConfigSummary();
+        if (storedEmbedding.provider === 'openai' || storedEmbedding.provider === 'http') {
+          if (!isHttpMode() || !currentHttp) return [];
+
+          const sameProvider = storedEmbedding.provider === currentHttp.provider;
+          const sameBaseUrl =
+            storedEmbedding.provider === 'openai' || storedEmbedding.baseUrl === currentHttp.baseUrl;
+          const sameModel = storedEmbedding.model === currentHttp.model;
+          const sameDimensions = storedEmbedding.dimensions === currentHttp.dimensions;
+          if (!sameProvider || !sameBaseUrl || !sameModel || !sameDimensions) return [];
+        } else if (storedEmbedding.provider === 'onnx' && isHttpMode()) {
+          return [];
+        }
+      }
 
       const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
       const queryVec = await embedQuery(query);
