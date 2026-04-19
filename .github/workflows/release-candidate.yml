@@ -377,7 +377,7 @@ jobs:
   docker:
     name: Build & Push RC Docker images
     needs: [guard, publish]
-    if: needs.guard.outputs.should_run == 'true'
+    if: needs.guard.outputs.should_run == 'true' && needs.publish.outputs.vtag != ''
     uses: ./.github/workflows/docker.yml
     permissions:
       contents: read
