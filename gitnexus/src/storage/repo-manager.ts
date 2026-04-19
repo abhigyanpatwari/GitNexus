@@ -309,12 +309,14 @@ export class RegistryNameCollisionError extends Error {
  *  i.e. a user explicitly aliased it via `analyze --name <alias>` on a
  *  prior run. Used to preserve the alias across re-analyses that omit
  *  `--name`. The remote-derived name is treated as an inference, not a
- *  custom alias, so re-analyses keep tracking remote renames. */
-const hasCustomAlias = (entry: RegistryEntry): boolean => {
+ *  custom alias, so re-analyses keep tracking remote renames.
+ *
+ *  `inferredName` is passed in (rather than re-derived) so callers can
+ *  avoid a second `git config` subprocess invocation. */
+const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): boolean => {
   const resolved = path.resolve(entry.path);
   if (entry.name === path.basename(resolved)) return false;
-  const inferred = getInferredRepoName(resolved);
-  if (inferred && entry.name === inferred) return false;
+  if (inferredName && entry.name === inferredName) return false;
   return true;
 };
 
@@ -359,19 +361,33 @@ export const registerRepo = async (
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
   // Precedence: explicit --name > preserved alias > remote-inferred > basename.
-  const name =
-    opts?.name ??
-    (existing && hasCustomAlias(existing) ? existing.name : null) ??
-    getInferredRepoName(resolved) ??
-    path.basename(resolved);
+  // Skip the `git config` subprocess entirely when --name was passed —
+  // the remote isn't consulted in that case.
+  let name: string;
+  let isPreservedAlias = false;
+  if (opts?.name !== undefined) {
+    name = opts.name;
+  } else {
+    // Compute the remote-derived name at most once. It feeds both the
+    // alias-preservation check (`hasCustomAlias` needs it to distinguish
+    // a sticky user alias from a previously-stored remote inference) and
+    // the fallback name when neither --name nor a preserved alias apply.
+    const inferred = getInferredRepoName(resolved);
+    if (existing && hasCustomAlias(existing, inferred)) {
+      name = existing.name;
+      isPreservedAlias = true;
+    } else {
+      name = inferred ?? path.basename(resolved);
+    }
+  }
 
   // Duplicate-name guard: only fire when the user EXPLICITLY asked for
   // this name (via opts.name or a preserved alias). Unqualified basename
-  // collisions are preserved for backward-compat — they still register,
-  // and the user sees the ambiguity at `-r` / `list` resolution time
-  // (which is already improved by the disambiguated error messages and
-  // list output this PR also ships).
-  const explicitName = opts?.name !== undefined || (existing && hasCustomAlias(existing));
+  // and remote-inferred collisions are preserved for backward-compat —
+  // they still register, and the user sees the ambiguity at `-r` / `list`
+  // resolution time (which is already improved by the disambiguated error
+  // messages and list output #829 ships).
+  const explicitName = opts?.name !== undefined || isPreservedAlias;
   if (explicitName && !opts?.allowDuplicateName) {
     const collidingEntry = entries.find(
       (e, i) =>
