@@ -145,6 +145,27 @@ Two publish workflows ship `gitnexus` to npm:
   # then redispatch the workflow with force: true
   ```
 
+  **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
+  are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
+  the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.
+  Re-running `release-candidate.yml` with `force: true` will abort at the
+  "Version already exists on npm" guard. To recover without cutting a new RC:
+
+  ```bash
+  # 1. Manually trigger only the docker workflow, passing the existing RC tag:
+  gh workflow run docker.yml --ref main -f tag=v<RC_VERSION>
+  # (requires a workflow_dispatch trigger on docker.yml — see note below)
+  ```
+
+  Because `docker.yml` intentionally has no `workflow_dispatch` (images are
+  tag-driven by design), the practical recovery options are:
+  - Wait for the next commit on `main`, which will cut a new RC that includes
+    the Docker build.
+  - Manually run `docker build` + `docker push` locally and sign with Cosign
+    against the same digest.
+  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force:
+    true` to re-run the full RC pipeline (cuts a new RC number).
+
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 
 ```bash
