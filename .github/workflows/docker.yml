@@ -7,12 +7,26 @@ on:
   # No workflow_dispatch: publishing is exclusively tag-driven so that every
   # signed image corresponds 1:1 to a published `gitnexus@X.Y.Z` on npm. A
   # manual run from a branch ref would fail the version check below anyway.
+  workflow_call:
+    inputs:
+      tag:
+        description: >-
+          The full v-prefixed tag to build (e.g. v1.2.3-rc.1).
+          The tag must already exist in the repo and its tree must contain
+          a gitnexus/package.json whose version matches the tag.
+        required: true
+        type: string
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel.
 # Re-pushes of the same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+# Hardcoded `docker-build-push-` prefix (not `${{ github.workflow }}`) when invoked as a reusable
+# workflow: in called-workflow context `github.workflow` is ambiguous and could resolve to the
+# caller's name, sharing a concurrency group with the caller → deadlock.
+# Direct tag-push invocations use `docker-build-push-<ref>`; workflow_call invocations get a
+# per-run-unique group (they are already serialized by the caller's own concurrency group).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ (github.event_name == 'push') && format('docker-build-push-{0}', github.ref) || format('docker-build-push-nested-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -46,7 +60,12 @@ jobs:
             slug: gitnexus
 
     steps:
+      # When triggered by workflow_call the caller passes the RC tag as an input;
+      # we check out that tag so the Dockerfile and package.json match the built image.
+      # For tag-push events github.ref is already the tag ref — no override needed.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       # ── Lock the docker image version to the npm package version ──────────
       # Mirrors the check in publish.yml: refuse to build unless the git tag
@@ -56,8 +75,16 @@ jobs:
       - name: Verify tag matches gitnexus/package.json version
         id: version
         shell: bash
+        env:
+          # For workflow_call the tag comes from the caller input; for push events
+          # it is derived from GITHUB_REF (set to empty so the else-branch fires).
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_VERSION="${INPUT_TAG#v}"
+          else
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
           if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "::error::Tag does not follow semver: v$TAG_VERSION"
             exit 1
@@ -92,6 +119,11 @@ jobs:
       #   v1.2.3-rc.1   → :1.2.3-rc.1 only (prereleases never become :latest)
       # `:latest` is only emitted for tag pushes thanks to `flavor: latest=auto`,
       # ensuring it always points at a real npm-published version.
+      #
+      # For workflow_call invocations github.ref is the caller's branch ref, so
+      # the type=semver patterns would not match. In that case we add an explicit
+      # type=raw tag using the version already verified above, so the same
+      # image-naming rules apply regardless of how the workflow was triggered.
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
@@ -102,6 +134,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.event_name == 'workflow_call' }}
 
       - name: Build and push
         id: build

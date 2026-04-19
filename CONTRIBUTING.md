@@ -127,6 +127,11 @@ Two publish workflows ship `gitnexus` to npm:
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry. First rc for a given base is `rc.1`.
+  - After the npm publish succeeds, the workflow calls `docker.yml` as a
+    reusable workflow to build and push the corresponding RC Docker images
+    (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`). The images are
+    signed with Cosign; the OIDC identity is `docker.yml@refs/heads/main`
+    (the caller's ref — see README.md § Docker for the verify command).
 
   Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
   `v<RC>` release tag **atomically, before** calling `npm publish`. The guard
