@@ -17,6 +17,9 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *   - Express `router.get(...)` / `app.post(...)` providers
  *   - `fetch(url)` / `fetch(url, { method: 'POST' })` consumers
  *   - `axios.get(url)` / `axios.delete(url)` consumers
+ *   - `axios({ method, url })` object-form consumers
+ *   - jQuery `$.get(url)` / `$.post(url, ...)` shorthand consumers
+ *   - jQuery `$.ajax({ url, method | type })` consumers
  *
  * Because the JavaScript and TypeScript tree-sitter grammars share
  * node type names for every construct we query, pattern sources are
@@ -103,6 +106,48 @@ const AXIOS_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// ─── Consumer: jQuery shorthand $.get(url) / $.post(url, ...) ────────
+// `$` is a valid JS identifier, so tree-sitter parses `$.get(...)` as a
+// call_expression whose function is a member_expression on identifier `$`.
+const JQUERY_SHORTHAND_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (identifier) @obj (#eq? @obj "$")
+        property: (property_identifier) @http_method (#match? @http_method "^(get|post)$"))
+      arguments: (arguments . [(string) (template_string)] @path))
+  `,
+};
+
+// ─── Consumer: jQuery $.ajax({ url, method|type }) ───────────────────
+// The query captures the options object only; key/value pairs are read
+// programmatically via `readStringProp` below, which tolerates any key
+// order and accepts either `method:` or `type:` (jQuery supports both).
+const JQUERY_AJAX_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (identifier) @obj (#eq? @obj "$")
+        property: (property_identifier) @fn (#eq? @fn "ajax"))
+      arguments: (arguments (object) @options))
+  `,
+};
+
+// ─── Consumer: axios({ method, url }) object form ────────────────────
+// Distinct from AXIOS_SPEC above because the call target is an identifier
+// (`axios`) rather than a member expression (`axios.get`). As with the
+// jQuery ajax form, option keys are resolved programmatically.
+const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (identifier) @fn (#eq? @fn "axios")
+      arguments: (arguments (object) @options))
+  `,
+};
+
 interface NodePatternBundle {
   controller: CompiledPatterns<Record<string, never>>;
   methodDecorator: CompiledPatterns<Record<string, never>>;
@@ -110,6 +155,9 @@ interface NodePatternBundle {
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
   fetchWithOptions: CompiledPatterns<Record<string, never>>;
   axios: CompiledPatterns<Record<string, never>>;
+  jqueryShorthand: CompiledPatterns<Record<string, never>>;
+  jqueryAjax: CompiledPatterns<Record<string, never>>;
+  axiosObject: CompiledPatterns<Record<string, never>>;
 }
 
 function compileBundle(language: unknown, name: string): NodePatternBundle {
@@ -126,6 +174,9 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
     fetchNoOptions: mk(FETCH_NO_OPTIONS_SPEC, 'fetch-no-options'),
     fetchWithOptions: mk(FETCH_WITH_OPTIONS_SPEC, 'fetch-with-options'),
     axios: mk(AXIOS_SPEC, 'axios'),
+    jqueryShorthand: mk(JQUERY_SHORTHAND_SPEC, 'jquery-shorthand'),
+    jqueryAjax: mk(JQUERY_AJAX_SPEC, 'jquery-ajax'),
+    axiosObject: mk(AXIOS_OBJECT_SPEC, 'axios-object'),
   };
 }
 
@@ -158,6 +209,28 @@ function joinPath(prefix: string, sub: string): string {
   const cleanSub = sub.replace(/^\/+/, '');
   if (!cleanPrefix) return `/${cleanSub}`;
   return `/${cleanPrefix}/${cleanSub}`;
+}
+
+/**
+ * Walk `pair` children of an `object` literal and return the unquoted
+ * string/template_string value for the first pair whose key matches one
+ * of `keyNames`. Returns null when no matching pair is present or the
+ * value is not a string literal. Used by the jQuery ajax / axios object
+ * consumers to resolve `url` / `method` / `type` keys in any order.
+ */
+function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): string | null {
+  for (let i = 0; i < objectNode.namedChildCount; i++) {
+    const pair = objectNode.namedChild(i);
+    if (!pair || pair.type !== 'pair') continue;
+    const keyNode = pair.childForFieldName('key');
+    const valueNode = pair.childForFieldName('value');
+    if (!keyNode || !valueNode) continue;
+    if (!keyNames.includes(keyNode.text)) continue;
+    if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
+    const lit = unquoteLiteral(valueNode.text);
+    if (lit !== null) return lit;
+  }
+  return null;
 }
 
 /**
@@ -345,6 +418,62 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       role: 'consumer',
       framework: 'axios',
       method: methodNode.text.toUpperCase(),
+      path,
+      name: null,
+      confidence: 0.7,
+    });
+  }
+
+  // Consumer: jQuery shorthand $.get(url) / $.post(url, ...)
+  for (const match of runCompiledPatterns(bundle.jqueryShorthand, tree)) {
+    const methodNode = match.captures.http_method;
+    const pathNode = match.captures.path;
+    if (!methodNode || !pathNode) continue;
+    const path = unquoteLiteral(pathNode.text);
+    if (path === null) continue;
+    out.push({
+      role: 'consumer',
+      framework: 'jquery',
+      method: methodNode.text.toUpperCase(),
+      path,
+      name: null,
+      confidence: 0.7,
+    });
+  }
+
+  // Consumer: jQuery $.ajax({ url, method|type }). jQuery accepts either
+  // `method:` or `type:`; both default to GET when absent.
+  for (const match of runCompiledPatterns(bundle.jqueryAjax, tree)) {
+    const optionsNode = match.captures.options;
+    if (!optionsNode) continue;
+    const path = readStringProp(optionsNode, ['url']);
+    if (path === null) continue;
+    const rawMethod = readStringProp(optionsNode, ['method', 'type']);
+    const method = (rawMethod ?? 'GET').toUpperCase();
+    out.push({
+      role: 'consumer',
+      framework: 'jquery',
+      method,
+      path,
+      name: null,
+      confidence: 0.7,
+    });
+  }
+
+  // Consumer: axios({ method, url }) object form. Structurally distinct
+  // from axios.<verb>(url) (identifier vs member_expression call), so no
+  // dedup against the member-form loop above is required.
+  for (const match of runCompiledPatterns(bundle.axiosObject, tree)) {
+    const optionsNode = match.captures.options;
+    if (!optionsNode) continue;
+    const path = readStringProp(optionsNode, ['url']);
+    if (path === null) continue;
+    const rawMethod = readStringProp(optionsNode, ['method']);
+    const method = (rawMethod ?? 'GET').toUpperCase();
+    out.push({
+      role: 'consumer',
+      framework: 'axios',
+      method,
       path,
       name: null,
       confidence: 0.7,

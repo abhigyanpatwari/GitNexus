@@ -33,8 +33,12 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User', 'UserService']);
   });
 
-  it('detects 3 modules', () => {
-    expect(getNodesByLabel(result, 'Module')).toEqual(['Cacheable', 'Loggable', 'Serializable']);
+  it('detects 3 modules (labeled as Trait for class-like registry lookup)', () => {
+    // Ruby `module` declarations are relabeled to `Trait` during ingestion so
+    // they participate in `lookupClassByName` and `buildHeritageMap`. This is
+    // the single source of truth for Ruby module detection in the graph.
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Cacheable', 'Loggable', 'Serializable']);
+    expect(getNodesByLabel(result, 'Module')).toEqual([]);
   });
 
   it('detects methods on classes and modules', () => {
@@ -431,9 +435,10 @@ describe('Ruby parent resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-parent-resolution'), () => {});
   }, 60000);
 
-  it('detects BaseModel and User classes plus Serializable module', () => {
+  it('detects BaseModel and User classes plus Serializable module (Trait)', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
-    expect(getNodesByLabel(result, 'Module')).toEqual(['Serializable']);
+    // Ruby modules are labeled Trait — see the "detects 3 modules" test above.
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Serializable']);
   });
 
   it('emits EXTENDS edge: User < BaseModel', () => {

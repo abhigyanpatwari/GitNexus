@@ -6,7 +6,7 @@
  * test file that uses it.
  */
 
-import type { SymbolDefinition } from '../../../src/core/ingestion/model/symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 
 /**
  * Build a {@link SymbolDefinition} with sensible defaults. Every field

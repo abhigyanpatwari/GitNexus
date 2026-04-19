@@ -1,11 +1,12 @@
 /**
- * PHP PSR-4 import resolution.
- * Handles use-statement resolution via composer.json autoload mappings.
+ * PHP PSR-4 import resolution — internal helpers.
+ *
+ * Strategy lives in configs/php.ts.
+ * This file contains the shared helper for PSR-4 resolution via composer.json.
  */
 
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
-import type { ImportResult, ResolveCtx } from './types.js';
 import type { ComposerConfig } from '../language-config.js';
 
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
@@ -90,21 +91,4 @@ export function resolvePhpImportInternal(
   // Fallback: suffix matching (works without composer.json)
   const pathParts = normalized.split('/').filter(Boolean);
   return suffixResolve(pathParts, normalizedFileList, allFileList, index);
-}
-
-/** PHP: namespace-based resolution via composer.json PSR-4. */
-export function resolvePhpImport(
-  rawImportPath: string,
-  _filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  const resolved = resolvePhpImportInternal(
-    rawImportPath,
-    ctx.configs.composerConfig,
-    ctx.allFilePaths,
-    ctx.normalizedFileList,
-    ctx.allFileList,
-    ctx.index,
-  );
-  return resolved ? { kind: 'files', files: [resolved] } : null;
 }

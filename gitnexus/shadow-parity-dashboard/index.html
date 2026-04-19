@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GitNexus — Shadow Parity Dashboard</title>
+    <!--
+      Static dashboard for the RFC #909 shadow-mode parity report.
+
+      Reads `latest.json` from this directory and renders a per-language
+      parity table. Zero build step, zero runtime dependencies — a
+      single file that any browser or file:// context can open.
+
+      Usage:
+          # from repo root, after a shadow-mode run
+          cp .gitnexus/shadow-parity/latest.json gitnexus/shadow-parity-dashboard/
+          open gitnexus/shadow-parity-dashboard/index.html
+
+      CI artifact wiring (follow-up): the CI job publishes a snapshot
+      of this directory + latest.json as a downloadable bundle per run.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1f2937;
+        --fg-muted: #6b7280;
+        --bg: #ffffff;
+        --bg-muted: #f9fafb;
+        --border: #e5e7eb;
+        --good: #16a34a;
+        --warn: #d97706;
+        --bad: #dc2626;
+        --primary-tag-legacy: #7c3aed;
+        --primary-tag-registry: #0ea5e9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e5e7eb;
+          --fg-muted: #9ca3af;
+          --bg: #111827;
+          --bg-muted: #1f2937;
+          --border: #374151;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      main {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      .meta {
+        color: var(--fg-muted);
+        font-size: 12px;
+        margin-bottom: 20px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        background: var(--bg-muted);
+      }
+      .card .k {
+        color: var(--fg-muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .card .v {
+        font-size: 20px;
+        font-weight: 600;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      th,
+      td {
+        padding: 6px 10px;
+        text-align: right;
+        border-bottom: 1px solid var(--border);
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      thead th {
+        font-weight: 600;
+        color: var(--fg-muted);
+        font-size: 12px;
+        background: var(--bg-muted);
+      }
+      tbody tr:hover {
+        background: var(--bg-muted);
+      }
+      .parity {
+        font-weight: 600;
+      }
+      .parity.good {
+        color: var(--good);
+      }
+      .parity.warn {
+        color: var(--warn);
+      }
+      .parity.bad {
+        color: var(--bad);
+      }
+      .tag {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 10px;
+        font-size: 10px;
+        margin-left: 6px;
+        color: white;
+      }
+      .tag.legacy {
+        background: var(--primary-tag-legacy);
+      }
+      .tag.registry {
+        background: var(--primary-tag-registry);
+      }
+      .empty {
+        padding: 40px;
+        text-align: center;
+        color: var(--fg-muted);
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--bg-muted);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Shadow Parity — RFC #909</h1>
+      <div class="meta" id="meta">loading <code>latest.json</code>…</div>
+      <div class="cards" id="cards"></div>
+      <table id="per-language">
+        <thead>
+          <tr>
+            <th>Language</th>
+            <th>Total</th>
+            <th>Agree</th>
+            <th>Only legacy</th>
+            <th>Only new</th>
+            <th>Disagree</th>
+            <th>Both empty</th>
+            <th>Parity</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="empty" class="empty" style="display: none">
+        No records yet. Enable <code>GITNEXUS_SHADOW_MODE=1</code> and run ingestion to populate.
+      </div>
+    </main>
+    <script>
+      /* global fetch, document */
+      (async function () {
+        const tbody = document.querySelector('#per-language tbody');
+        const cards = document.getElementById('cards');
+        const meta = document.getElementById('meta');
+        const empty = document.getElementById('empty');
+        const table = document.getElementById('per-language');
+
+        let payload;
+        try {
+          const r = await fetch('./latest.json', { cache: 'no-store' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          payload = await r.json();
+        } catch (err) {
+          meta.textContent = 'Failed to load latest.json: ' + err.message;
+          table.style.display = 'none';
+          empty.style.display = 'block';
+          return;
+        }
+
+        const primary = payload.primaryByLanguage || {};
+        const report = payload.report || {};
+        const perLang = report.perLanguage || [];
+        const overall = report.overall || {};
+
+        meta.textContent =
+          'Run ' +
+          payload.runId +
+          ' — generated ' +
+          payload.generatedAt +
+          ' (schema v' +
+          payload.schemaVersion +
+          ')';
+
+        // Overall summary cards.
+        cards.innerHTML = '';
+        const overallParity = overall.parity !== undefined ? overall.parity : 0;
+        cards.appendChild(makeCard('Total calls', overall.totalCalls ?? 0));
+        cards.appendChild(makeCard('Both agree', overall.bothAgree ?? 0));
+        cards.appendChild(makeCard('Disagree', overall.bothDisagree ?? 0));
+        cards.appendChild(makeCard('Overall parity', formatPct(overallParity)));
+
+        if (!perLang.length) {
+          table.style.display = 'none';
+          empty.style.display = 'block';
+          return;
+        }
+
+        for (const row of perLang) {
+          const tr = document.createElement('tr');
+          const primaryTag = primary[row.language];
+          const tag = primaryTag
+            ? '<span class="tag ' + primaryTag + '">primary: ' + primaryTag + '</span>'
+            : '';
+          const parityClass = parityClassFor(row.parity);
+          tr.innerHTML =
+            '<td>' +
+            escape(row.language) +
+            tag +
+            '</td>' +
+            '<td>' +
+            row.totalCalls +
+            '</td>' +
+            '<td>' +
+            row.bothAgree +
+            '</td>' +
+            '<td>' +
+            row.onlyLegacy +
+            '</td>' +
+            '<td>' +
+            row.onlyNew +
+            '</td>' +
+            '<td>' +
+            row.bothDisagree +
+            '</td>' +
+            '<td>' +
+            row.bothEmpty +
+            '</td>' +
+            '<td class="parity ' +
+            parityClass +
+            '">' +
+            formatPct(row.parity) +
+            '</td>';
+          tbody.appendChild(tr);
+        }
+
+        function makeCard(k, v) {
+          const div = document.createElement('div');
+          div.className = 'card';
+          div.innerHTML =
+            '<div class="k">' + escape(k) + '</div><div class="v">' + escape(String(v)) + '</div>';
+          return div;
+        }
+        function formatPct(x) {
+          if (typeof x !== 'number' || !isFinite(x)) return '—';
+          return (x * 100).toFixed(1) + '%';
+        }
+        function parityClassFor(x) {
+          if (typeof x !== 'number') return '';
+          if (x >= 0.95) return 'good';
+          if (x >= 0.8) return 'warn';
+          return 'bad';
+        }
+        function escape(s) {
+          return String(s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

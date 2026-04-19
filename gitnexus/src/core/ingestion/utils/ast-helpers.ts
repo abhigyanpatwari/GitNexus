@@ -24,6 +24,7 @@ export const DEFINITION_CAPTURE_KEYS = [
   'definition.type',
   'definition.const',
   'definition.static',
+  'definition.variable',
   'definition.typedef',
   'definition.macro',
   'definition.union',
@@ -152,7 +153,14 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   mixin_declaration: 'Mixin',
   extension_declaration: 'Extension',
   class: 'Class',
-  module: 'Module',
+  // Ruby `module` declarations map to `Trait` so they participate in the
+  // class-like type registry used by `lookupClassByName` / `buildHeritageMap`.
+  // This lets `include` / `extend` / `prepend` mixin heritage resolve to
+  // the providing module. Safe for non-Ruby languages: the only supported
+  // grammar that uses the bare `module` AST node type as a container is
+  // Ruby (Rust uses `mod_item`). Any new language adding a `module` node
+  // type must explicitly reclassify here.
+  module: 'Trait',
   singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
@@ -184,12 +192,23 @@ export function getLabelFromCaptures(
   if (captureMap['definition.struct']) return 'Struct';
   if (captureMap['definition.enum']) return 'Enum';
   if (captureMap['definition.namespace']) return 'Namespace';
-  if (captureMap['definition.module']) return 'Module';
+  if (captureMap['definition.module']) {
+    // Let providers reclassify module captures (e.g. Ruby remaps `Module`→`Trait`
+    // so mixin heritage resolves through `lookupClassByName`). Returning null
+    // from labelOverride means "skip this symbol"; treat it as a no-op here so
+    // we keep the default label rather than dropping a real definition.
+    if (provider.labelOverride) {
+      const override = provider.labelOverride(captureMap['definition.module'], 'Module');
+      if (override && override !== 'Module') return override;
+    }
+    return 'Module';
+  }
   if (captureMap['definition.trait']) return 'Trait';
   if (captureMap['definition.impl']) return 'Impl';
   if (captureMap['definition.type']) return 'TypeAlias';
   if (captureMap['definition.const']) return 'Const';
   if (captureMap['definition.static']) return 'Static';
+  if (captureMap['definition.variable']) return 'Variable';
   if (captureMap['definition.typedef']) return 'Typedef';
   if (captureMap['definition.macro']) return 'Macro';
   if (captureMap['definition.union']) return 'Union';

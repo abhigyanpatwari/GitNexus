@@ -87,7 +87,10 @@ end
 
     expect(info).not.toBeNull();
     expect(info!.className).toBe('Helpers');
-    expect(info!.classId).toContain('Module');
+    // Ruby modules are labeled `Trait` so mixin heritage resolves through
+    // the class-like type registry; the enclosing class id switches labels
+    // in lockstep with the structure-phase label.
+    expect(info!.classId).toContain('Trait');
   });
 
   it('returns null for file-level singleton_class without enclosing class', () => {

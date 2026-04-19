@@ -26,7 +26,17 @@ export {
   type SymbolTableReader,
   type SymbolTableWriter,
   createSymbolTable,
+  type AddMetadata,
+  CLASS_TYPES,
+  CLASS_TYPES_TUPLE,
+  type ClassLikeLabel,
+  FREE_CALLABLE_TYPES,
+  FREE_CALLABLE_TUPLE,
+  type FreeCallableLabel,
+  CALL_TARGET_TYPES,
 } from './symbol-table.js';
+// `SymbolDefinition` moved to `gitnexus-shared` (RFC #909 Ring 1 #910).
+// Consumers should import it directly from `gitnexus-shared`, not via this barrel.
 
 // Type registry (classes, structs, interfaces, enums, records, impls)
 export {
@@ -63,11 +73,12 @@ export {
   isFileInPackageDir,
 } from './resolution-context.js';
 
-// Heritage types. `buildHeritageMap` + `resolveExtendsType` are exported
-// directly from `heritage-map.ts` and are not re-surfaced here to keep
-// the barrel narrow.
+// Heritage types and builder. `buildHeritageMap` + `resolveExtendsType` are
+// exported directly from `heritage-map.ts` and are not re-surfaced here to
+// keep the barrel narrow.
 export {
   type ExtractedHeritage,
+  type HeritageMap,
   type HeritageResolutionStrategy,
   type HeritageStrategyLookup,
 } from './heritage-map.js';

@@ -56,6 +56,13 @@ export interface ParseOutput {
   readonly allPathSet: ReadonlySet<string>;
   /** Pass-through: total file count for progress reporting. */
   totalFiles: number;
+  /**
+   * True if the parse phase spawned a live worker pool for this run.
+   * False means every chunk ran through the sequential fallback (skipWorkers,
+   * thresholds not met, or pool-creation failure). Primarily a test affordance:
+   * see `PipelineOptions.workerThresholdsForTest`.
+   */
+  readonly usedWorkerPool: boolean;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

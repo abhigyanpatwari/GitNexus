@@ -1,6 +1,6 @@
 FROM node:20-bookworm
 WORKDIR /app
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN npm ci --ignore-scripts \
     && node scripts/patch-tree-sitter-swift.cjs \

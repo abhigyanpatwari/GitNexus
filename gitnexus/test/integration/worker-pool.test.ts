@@ -6,11 +6,12 @@
  * This is critical for cross-platform CI where vitest runs from src/
  * but workers need compiled .js files.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createWorkerPool, WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 const DIST_WORKER = path.resolve(
   __dirname,
@@ -184,6 +185,43 @@ describe('worker pool integration', () => {
       expect(Array.isArray(result.nodes)).toBe(true);
     },
   );
+
+  it('treats warning messages as non-terminal and still resolves the worker result', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-warning-'));
+    const workerPath = path.join(tempDir, 'warning-worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          parentPort.postMessage({ type: 'warning', message: 'warning before result' });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 1 } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const workerUrl = pathToFileURL(workerPath) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+
+    try {
+      const results = await pool.dispatch<any, any>([
+        { path: 'warning.ts', content: 'const x = 1;' },
+      ]);
+      expect(results).toHaveLength(1);
+      expect(results[0].fileCount).toBe(1);
+      expect(warnSpy).toHaveBeenCalledWith('warning before result');
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 
   it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;

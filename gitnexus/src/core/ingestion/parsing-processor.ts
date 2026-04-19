@@ -4,7 +4,7 @@ import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import type { SymbolTableReader, SymbolTableWriter } from './model/symbol-table.js';
+import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
 // SymbolTableReader is used for the FieldExtractorContext stub; the
 // parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
@@ -31,6 +31,7 @@ import {
   buildCollisionGroups,
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
   ParseWorkerResult,
@@ -46,7 +47,6 @@ import type {
   FileScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
-import type { ExtractedHeritage } from './model/heritage-map.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
@@ -63,6 +63,14 @@ export interface WorkerExtractedData {
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   fileScopeBindings: FileScopeBindings[];
+  /**
+   * Per-file `ParsedFile` artifacts from the new scope-based resolution
+   * pipeline (RFC #909 Ring 2). Empty until a provider implements
+   * `emitScopeCaptures` — additive to the legacy DAG path. Aggregated
+   * from every worker chunk; consumed downstream by #921's
+   * finalize-orchestrator.
+   */
+  parsedFiles: ParsedFile[];
 }
 
 // ============================================================================
@@ -97,6 +105,7 @@ const processParsingWithWorkers = async (
       ormQueries: [],
       constructorBindings: [],
       fileScopeBindings: [],
+      parsedFiles: [],
     };
 
   const total = files.length;
@@ -121,6 +130,7 @@ const processParsingWithWorkers = async (
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
+  const allParsedFiles: ParsedFile[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -158,6 +168,11 @@ const processParsingWithWorkers = async (
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
+    // RFC #909 Ring 2: aggregate per-file scope artifacts. Tolerant of
+    // workers that don't emit the field yet (older worker builds or
+    // partial rollouts), since the additive contract means undefined =
+    // "this worker produced no ParsedFiles for this chunk".
+    if (result.parsedFiles) for (const item of result.parsedFiles) allParsedFiles.push(item);
   }
 
   // Merge and log skipped languages from workers
@@ -188,6 +203,7 @@ const processParsingWithWorkers = async (
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
     fileScopeBindings: fileScopeBindingsByFile,
+    parsedFiles: allParsedFiles,
   };
 };
 

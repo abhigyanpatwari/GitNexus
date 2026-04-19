@@ -17,12 +17,23 @@ export const listCommand = async () => {
 
   console.log(`\n  Indexed Repositories (${entries.length})\n`);
 
+  // Count occurrences of each name so colliding entries can be
+  // disambiguated in the header (#829). Unique-name entries render
+  // identically to pre-#829 output; only collisions gain a suffix.
+  const nameCounts = new Map<string, number>();
+  for (const e of entries) {
+    const key = e.name.toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+
   for (const entry of entries) {
     const indexedDate = new Date(entry.indexedAt).toLocaleString();
     const stats = entry.stats || {};
     const commitShort = entry.lastCommit?.slice(0, 7) || 'unknown';
+    const hasCollision = (nameCounts.get(entry.name.toLowerCase()) ?? 0) > 1;
+    const header = hasCollision ? `${entry.name}  (${entry.path})` : entry.name;
 
-    console.log(`  ${entry.name}`);
+    console.log(`  ${header}`);
     console.log(`    Path:    ${entry.path}`);
     console.log(`    Indexed: ${indexedDate}`);
     console.log(`    Commit:  ${commitShort}`);

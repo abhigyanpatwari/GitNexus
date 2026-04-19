@@ -53,16 +53,7 @@ import {
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
-import {
-  countCallArguments,
-  inferCallForm,
-  extractReceiverName,
-  extractReceiverNode,
-  extractMixedChain,
-  extractCallArgTypes,
-  type MixedChainStep,
-} from '../utils/call-analysis.js';
-import { extractParsedCallSite } from '../call-sites/extract-language-call-site.js';
+import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -77,6 +68,7 @@ import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
+import type { VariableExtractorContext } from '../variable-types.js';
 import {
   buildMethodProps,
   arityForIdFromInfo,
@@ -85,6 +77,8 @@ import {
   buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
+import type { ParsedFile } from 'gitnexus-shared';
+import { extractParsedFile } from '../scope-extractor-bridge.js';
 
 // ============================================================================
 // Types for serializable results
@@ -277,6 +271,14 @@ export interface ParseWorkerResult {
   constructorBindings: FileConstructorBindings[];
   /** All-scope type bindings from TypeEnv for BindingAccumulator (includes function-local). */
   fileScopeBindings: FileScopeBindings[];
+  /**
+   * Per-file `ParsedFile` artifacts from the new scope-based resolution
+   * pipeline (RFC #909 Ring 2). Empty unless the file's provider implements
+   * `emitScopeCaptures` — default for every language today, so this is
+   * additive and leaves the legacy DAG untouched. Consumed by #921's
+   * finalize-orchestrator.
+   */
+  parsedFiles: ParsedFile[];
   skippedLanguages: Record<string, number>;
   fileCount: number;
 }
@@ -719,6 +721,7 @@ const processBatch = (
     ormQueries: [],
     constructorBindings: [],
     fileScopeBindings: [],
+    parsedFiles: [],
     skippedLanguages: {},
     fileCount: 0,
   };
@@ -1404,37 +1407,53 @@ const processFileGroup = (
       continue;
     }
 
+    const provider = getProvider(language);
+
+    // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
+    // resolution pipeline. No-op (returns undefined) for every language
+    // today — only fires once a provider implements `emitScopeCaptures`.
+    // Runs BEFORE legacy extraction and its result is independent: a
+    // failure here is caught inside `extractParsedFile` and does NOT
+    // affect the legacy DAG path that follows.
+    const parsedFile = extractParsedFile(provider, parseContent, file.path, (message) => {
+      if (parentPort) parentPort.postMessage({ type: 'warning', message });
+      else console.warn(message);
+    });
+    if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage edges (EXTENDS/IMPLEMENTS) are created by heritage-processor which runs
     // in PARALLEL with call-processor, so the graph edges don't exist when buildTypeEnv
     // runs. This pre-pass makes parent class information available for type resolution.
     const fileParentMap = new Map<string, string[]>();
-    for (const match of matches) {
-      const captureMap: Record<string, SyntaxNode> = {};
-      for (const c of match.captures) {
-        captureMap[c.name] = c.node;
-      }
-      if (captureMap['heritage.class'] && captureMap['heritage.extends']) {
-        const className: string = captureMap['heritage.class'].text;
-        const parentName: string = captureMap['heritage.extends'].text;
-        // Skip Go named fields (only anonymous fields are struct embedding)
-        const extendsNode = captureMap['heritage.extends'];
-        const fieldDecl = extendsNode.parent;
-        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name'))
-          continue;
-        let parents = fileParentMap.get(className);
-        if (!parents) {
-          parents = [];
-          fileParentMap.set(className, parents);
+    if (provider.heritageExtractor) {
+      for (const match of matches) {
+        const captureMap: Record<string, SyntaxNode> = {};
+        for (const c of match.captures) {
+          captureMap[c.name] = c.node;
         }
-        if (!parents.includes(parentName)) parents.push(parentName);
+        if (captureMap['heritage.class']) {
+          const heritageItems = provider.heritageExtractor.extract(captureMap, {
+            filePath: file.path,
+            language,
+          });
+          for (const item of heritageItems) {
+            if (item.kind === 'extends') {
+              let parents = fileParentMap.get(item.className);
+              if (!parents) {
+                parents = [];
+                fileParentMap.set(item.className, parents);
+              }
+              if (!parents.includes(item.parentName)) parents.push(item.parentName);
+            }
+          }
+        }
       }
     }
 
     // Build per-file type environment + constructor bindings in a single AST walk.
     // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
-    const provider = getProvider(language);
     const typeEnv = buildTypeEnv(tree, language, {
       parentMap,
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
@@ -1470,6 +1489,11 @@ const processFileGroup = (
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
+
+    // Track start indices of definition nodes already processed by higher-priority captures
+    // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
+    // patterns overlap with the same source range.
+    const processedDefinitionNodes = new Set<number>();
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -1656,109 +1680,146 @@ const processFileGroup = (
 
       // Extract call sites
       if (captureMap['call']) {
-        const callNode0 = captureMap['call'];
-        const languageSeed = extractParsedCallSite(language, callNode0);
-        if (languageSeed) {
-          if (!provider.isBuiltInName(languageSeed.calledName)) {
-            const sourceId =
-              findEnclosingFunctionId(callNode0, file.path, provider) ||
-              generateId('File', file.path);
-            const receiverName =
-              languageSeed.callForm === 'member' ? languageSeed.receiverName : undefined;
-            let receiverTypeName = receiverName
-              ? typeEnv.lookup(receiverName, callNode0)
-              : undefined;
-            // Type-as-receiver (e.g. Java `User::getName`): no TypeEnv binding for the class name
-            if (
-              receiverName !== undefined &&
-              receiverTypeName === undefined &&
-              languageSeed.callForm === 'member' &&
-              (language === SupportedLanguages.Java ||
-                language === SupportedLanguages.CSharp ||
-                language === SupportedLanguages.Kotlin)
-            ) {
-              const c0 = receiverName.charCodeAt(0);
-              if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
-            }
-            result.calls.push({
-              filePath: file.path,
-              calledName: languageSeed.calledName,
-              sourceId,
-              callForm: languageSeed.callForm,
-              ...(receiverName !== undefined ? { receiverName } : {}),
-              ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
-            });
-          }
-          continue;
-        }
-
+        const callNode = captureMap['call'];
         const callNameNode = captureMap['call.name'];
-        if (callNameNode) {
-          const calledName = callNameNode.text;
+        const callExtractor = provider.callExtractor;
 
-          // Dispatch: route language-specific calls (heritage, properties, imports)
-          const routed = callRouter?.(calledName, captureMap['call']);
-          if (routed) {
-            if (routed.kind === 'skip') continue;
-
-            if (routed.kind === 'import') {
-              result.imports.push({
-                filePath: file.path,
-                rawImportPath: routed.importPath,
-                language,
-              });
-              continue;
-            }
-
-            if (routed.kind === 'heritage') {
-              for (const item of routed.items) {
-                result.heritage.push({
-                  filePath: file.path,
-                  className: item.enclosingClass,
-                  parentName: item.mixinName,
-                  kind: item.heritageKind,
-                });
+        if (callExtractor) {
+          // ── Path 1: Language-specific call site (bypasses routing) ────
+          // Try language-specific extraction (e.g. Java `::` method references)
+          // without callNameNode.  If successful, skip routing and the generic
+          // path entirely.
+          const langCallSite = callExtractor.extract(callNode, undefined);
+          if (langCallSite) {
+            if (!provider.isBuiltInName(langCallSite.calledName)) {
+              const sourceId =
+                findEnclosingFunctionId(callNode, file.path, provider) ||
+                generateId('File', file.path);
+              const receiverName =
+                langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
+              let receiverTypeName = receiverName
+                ? typeEnv.lookup(receiverName, callNode)
+                : undefined;
+              // Type-as-receiver heuristic (e.g. Java `User::getName`)
+              if (
+                langCallSite.typeAsReceiverHeuristic &&
+                receiverName !== undefined &&
+                receiverTypeName === undefined &&
+                langCallSite.callForm === 'member'
+              ) {
+                const c0 = receiverName.charCodeAt(0);
+                if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
               }
-              continue;
+              result.calls.push({
+                filePath: file.path,
+                calledName: langCallSite.calledName,
+                sourceId,
+                callForm: langCallSite.callForm,
+                ...(receiverName !== undefined ? { receiverName } : {}),
+                ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+              });
             }
+            continue;
+          }
 
-            if (routed.kind === 'properties') {
-              const propEnclosingInfo = cachedFindEnclosingClassInfo(
-                captureMap['call'],
-                file.path,
-                provider.resolveEnclosingOwner,
+          // ── Path 2: Generic extraction via @call.name ────────────────
+          if (callNameNode) {
+            const calledName = callNameNode.text;
+
+            // Check heritage extractor for call-based heritage (e.g., Ruby include/extend/prepend)
+            if (provider.heritageExtractor?.extractFromCall) {
+              const heritageItems = provider.heritageExtractor.extractFromCall(
+                calledName,
+                callNode,
+                { filePath: file.path, language },
               );
-              const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
-              // Enrich routed properties with FieldExtractor metadata
-              let routedFieldMap: Map<string, FieldInfo> | undefined;
-              if (provider.fieldExtractor && typeEnv) {
-                const classNode = findEnclosingClassNode(captureMap['call']);
-                if (classNode) {
-                  routedFieldMap = getFieldInfo(classNode, provider, {
-                    typeEnv,
-                    symbolTable: NOOP_SYMBOL_TABLE,
+              if (heritageItems !== null) {
+                for (const item of heritageItems) {
+                  result.heritage.push({
                     filePath: file.path,
-                    language,
+                    className: item.className,
+                    parentName: item.parentName,
+                    kind: item.kind,
                   });
                 }
+                continue;
               }
-              for (const item of routed.items) {
-                const routedFieldInfo = routedFieldMap?.get(item.propName);
-                const propQualifiedName = propEnclosingInfo
-                  ? `${propEnclosingInfo.className}.${item.propName}`
-                  : item.propName;
-                const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
-                result.nodes.push({
-                  id: nodeId,
-                  label: 'Property',
-                  properties: {
-                    name: item.propName,
+            }
+
+            // Dispatch: route language-specific calls (properties, imports)
+            // Heritage routing is handled by heritageExtractor.extractFromCall above.
+            const routed = callRouter?.(calledName, captureMap['call']);
+            if (routed) {
+              if (routed.kind === 'skip') continue;
+
+              if (routed.kind === 'import') {
+                result.imports.push({
+                  filePath: file.path,
+                  rawImportPath: routed.importPath,
+                  language,
+                });
+                continue;
+              }
+
+              if (routed.kind === 'properties') {
+                const propEnclosingInfo = cachedFindEnclosingClassInfo(
+                  captureMap['call'],
+                  file.path,
+                  provider.resolveEnclosingOwner,
+                );
+                const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
+                // Enrich routed properties with FieldExtractor metadata
+                let routedFieldMap: Map<string, FieldInfo> | undefined;
+                if (provider.fieldExtractor && typeEnv) {
+                  const classNode = findEnclosingClassNode(captureMap['call']);
+                  if (classNode) {
+                    routedFieldMap = getFieldInfo(classNode, provider, {
+                      typeEnv,
+                      symbolTable: NOOP_SYMBOL_TABLE,
+                      filePath: file.path,
+                      language,
+                    });
+                  }
+                }
+                for (const item of routed.items) {
+                  const routedFieldInfo = routedFieldMap?.get(item.propName);
+                  const propQualifiedName = propEnclosingInfo
+                    ? `${propEnclosingInfo.className}.${item.propName}`
+                    : item.propName;
+                  const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
+                  result.nodes.push({
+                    id: nodeId,
+                    label: 'Property',
+                    properties: {
+                      name: item.propName,
+                      filePath: file.path,
+                      startLine: item.startLine,
+                      endLine: item.endLine,
+                      language,
+                      isExported: true,
+                      description: item.accessorType,
+                      ...(item.declaredType
+                        ? { declaredType: item.declaredType }
+                        : routedFieldInfo?.type
+                          ? { declaredType: routedFieldInfo.type }
+                          : {}),
+                      ...(routedFieldInfo?.visibility !== undefined
+                        ? { visibility: routedFieldInfo.visibility }
+                        : {}),
+                      ...(routedFieldInfo?.isStatic !== undefined
+                        ? { isStatic: routedFieldInfo.isStatic }
+                        : {}),
+                      ...(routedFieldInfo?.isReadonly !== undefined
+                        ? { isReadonly: routedFieldInfo.isReadonly }
+                        : {}),
+                    },
+                  });
+                  result.symbols.push({
                     filePath: file.path,
-                    startLine: item.startLine,
-                    endLine: item.endLine,
-                    language,
-                    isExported: true,
-                    description: item.accessorType,
+                    name: item.propName,
+                    nodeId,
+                    type: 'Property',
+                    ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
                     ...(item.declaredType
                       ? { declaredType: item.declaredType }
                       : routedFieldInfo?.type
@@ -1773,151 +1834,109 @@ const processFileGroup = (
                     ...(routedFieldInfo?.isReadonly !== undefined
                       ? { isReadonly: routedFieldInfo.isReadonly }
                       : {}),
-                  },
-                });
-                result.symbols.push({
-                  filePath: file.path,
-                  name: item.propName,
-                  nodeId,
-                  type: 'Property',
-                  ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
-                  ...(item.declaredType
-                    ? { declaredType: item.declaredType }
-                    : routedFieldInfo?.type
-                      ? { declaredType: routedFieldInfo.type }
-                      : {}),
-                  ...(routedFieldInfo?.visibility !== undefined
-                    ? { visibility: routedFieldInfo.visibility }
-                    : {}),
-                  ...(routedFieldInfo?.isStatic !== undefined
-                    ? { isStatic: routedFieldInfo.isStatic }
-                    : {}),
-                  ...(routedFieldInfo?.isReadonly !== undefined
-                    ? { isReadonly: routedFieldInfo.isReadonly }
-                    : {}),
-                });
-                const fileId = generateId('File', file.path);
-                const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                result.relationships.push({
-                  id: relId,
-                  sourceId: fileId,
-                  targetId: nodeId,
-                  type: 'DEFINES',
-                  confidence: 1.0,
-                  reason: '',
-                });
-                if (propEnclosingClassId) {
+                  });
+                  const fileId = generateId('File', file.path);
+                  const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
                   result.relationships.push({
-                    id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
-                    sourceId: propEnclosingClassId,
+                    id: relId,
+                    sourceId: fileId,
                     targetId: nodeId,
-                    type: 'HAS_PROPERTY',
+                    type: 'DEFINES',
                     confidence: 1.0,
                     reason: '',
                   });
-                }
-              }
-              continue;
-            }
-
-            // kind === 'call' — fall through to normal call processing below
-          }
-
-          if (!provider.isBuiltInName(calledName)) {
-            const callNode = captureMap['call'];
-            const sourceId =
-              findEnclosingFunctionId(callNode, file.path, provider) ||
-              generateId('File', file.path);
-            const callForm = inferCallForm(callNode, callNameNode);
-            let receiverName =
-              callForm === 'member' ? extractReceiverName(callNameNode) : undefined;
-            let receiverTypeName = receiverName
-              ? typeEnv.lookup(receiverName, callNode)
-              : undefined;
-            let receiverMixedChain: MixedChainStep[] | undefined;
-
-            // When the receiver is a complex expression (call chain, field chain, or mixed),
-            // extractReceiverName returns undefined. Walk the receiver node to build a unified
-            // mixed chain for deferred resolution in processCallsFromExtracted.
-            if (callForm === 'member' && receiverName === undefined && !receiverTypeName) {
-              const receiverNode = extractReceiverNode(callNameNode);
-              if (receiverNode) {
-                const extracted = extractMixedChain(receiverNode);
-                if (extracted && extracted.chain.length > 0) {
-                  receiverMixedChain = extracted.chain;
-                  receiverName = extracted.baseReceiverName;
-                  // Try the type environment immediately for the base receiver
-                  // (covers explicitly-typed locals and annotated parameters).
-                  if (receiverName) {
-                    receiverTypeName = typeEnv.lookup(receiverName, callNode);
+                  if (propEnclosingClassId) {
+                    result.relationships.push({
+                      id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
+                      sourceId: propEnclosingClassId,
+                      targetId: nodeId,
+                      type: 'HAS_PROPERTY',
+                      confidence: 1.0,
+                      reason: '',
+                    });
                   }
                 }
+                continue;
               }
+
+              // kind === 'call' — fall through to normal call processing below
             }
 
-            const inferLiteralType = provider.typeConfig?.inferLiteralType;
-            const argCountForOverloadHints = countCallArguments(callNode);
-            // Skip when no arg list / zero args: nothing to infer for overload typing; saves AST walks + payload size.
-            const argTypes =
-              inferLiteralType &&
-              argCountForOverloadHints !== undefined &&
-              argCountForOverloadHints > 0
-                ? extractCallArgTypes(callNode, inferLiteralType, (varName, cn) =>
-                    typeEnv.lookup(varName, cn),
-                  )
-                : undefined;
+            if (!provider.isBuiltInName(calledName)) {
+              const callSite = callExtractor.extract(callNode, callNameNode);
+              if (callSite) {
+                const sourceId =
+                  findEnclosingFunctionId(callNode, file.path, provider) ||
+                  generateId('File', file.path);
+                let receiverTypeName = callSite.receiverName
+                  ? typeEnv.lookup(callSite.receiverName, callNode)
+                  : undefined;
 
-            result.calls.push({
-              filePath: file.path,
-              calledName,
-              sourceId,
-              argCount: countCallArguments(callNode),
-              ...(callForm !== undefined ? { callForm } : {}),
-              ...(receiverName !== undefined ? { receiverName } : {}),
-              ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
-              ...(receiverMixedChain !== undefined ? { receiverMixedChain } : {}),
-              ...(argTypes !== undefined ? { argTypes } : {}),
-            });
+                // Type-as-receiver heuristic
+                if (
+                  callSite.typeAsReceiverHeuristic &&
+                  callSite.receiverName !== undefined &&
+                  receiverTypeName === undefined &&
+                  callSite.callForm === 'member'
+                ) {
+                  const c0 = callSite.receiverName.charCodeAt(0);
+                  if (c0 >= 65 && c0 <= 90) receiverTypeName = callSite.receiverName;
+                }
+
+                const inferLiteralType = provider.typeConfig?.inferLiteralType;
+                // Skip when no arg list / zero args: nothing to infer for overload typing
+                const argTypes =
+                  inferLiteralType && callSite.argCount !== undefined && callSite.argCount > 0
+                    ? extractCallArgTypes(callNode, inferLiteralType, (varName, cn) =>
+                        typeEnv.lookup(varName, cn),
+                      )
+                    : undefined;
+
+                result.calls.push({
+                  filePath: file.path,
+                  calledName: callSite.calledName,
+                  sourceId,
+                  ...(callSite.argCount !== undefined ? { argCount: callSite.argCount } : {}),
+                  ...(callSite.callForm !== undefined ? { callForm: callSite.callForm } : {}),
+                  ...(callSite.receiverName !== undefined
+                    ? { receiverName: callSite.receiverName }
+                    : {}),
+                  ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+                  ...(callSite.receiverMixedChain !== undefined
+                    ? { receiverMixedChain: callSite.receiverMixedChain }
+                    : {}),
+                  ...(argTypes !== undefined ? { argTypes } : {}),
+                });
+              }
+            }
           }
         }
         continue;
       }
 
-      // Extract heritage (extends/implements)
+      // Extract heritage (extends/implements) via provider heritage extractor
       if (captureMap['heritage.class']) {
-        if (captureMap['heritage.extends']) {
-          // Go struct embedding: the query matches ALL field_declarations with
-          // type_identifier, but only anonymous fields (no name) are embedded.
-          // Named fields like `Breed string` also match — skip them.
-          const extendsNode = captureMap['heritage.extends'];
-          const fieldDecl = extendsNode.parent;
-          const isNamedField =
-            fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name');
-          if (!isNamedField) {
+        if (provider.heritageExtractor) {
+          const heritageItems = provider.heritageExtractor.extract(captureMap, {
+            filePath: file.path,
+            language,
+          });
+          for (const item of heritageItems) {
             result.heritage.push({
               filePath: file.path,
-              className: captureMap['heritage.class'].text,
-              parentName: captureMap['heritage.extends'].text,
-              kind: 'extends',
+              className: item.className,
+              parentName: item.parentName,
+              kind: item.kind,
             });
           }
+          // When the extractor consumes the match, skip symbol processing below.
+          if (heritageItems.length > 0) {
+            continue;
+          }
         }
-        if (captureMap['heritage.implements']) {
-          result.heritage.push({
-            filePath: file.path,
-            className: captureMap['heritage.class'].text,
-            parentName: captureMap['heritage.implements'].text,
-            kind: 'implements',
-          });
-        }
-        if (captureMap['heritage.trait']) {
-          result.heritage.push({
-            filePath: file.path,
-            className: captureMap['heritage.class'].text,
-            parentName: captureMap['heritage.trait'].text,
-            kind: 'trait-impl',
-          });
-        }
+        // Fallback: the extractor returned [] (or is absent), but the match still
+        // carries a heritage-specific capture. The match belongs to a heritage
+        // clause and must not fall through to generic symbol processing.
         if (
           captureMap['heritage.extends'] ||
           captureMap['heritage.implements'] ||
@@ -1940,6 +1959,21 @@ const processFileGroup = (
             })
           : null;
       const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
+
+      // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
+      // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
+      // Skip variable captures whose definition node was already processed.
+      if (
+        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+        definitionNode &&
+        processedDefinitionNodes.has(definitionNode.startIndex)
+      ) {
+        continue;
+      }
+      if (definitionNode) {
+        processedDefinitionNodes.add(definitionNode.startIndex);
+      }
+
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) continue;
       const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
@@ -2122,6 +2156,27 @@ const processFileGroup = (
         }
       }
 
+      // Variable/Const/Static metadata extraction via VariableExtractor
+      if (
+        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+        definitionNode &&
+        provider.variableExtractor
+      ) {
+        const varCtx: VariableExtractorContext = {
+          filePath: file.path,
+          language,
+        };
+        const varInfo = provider.variableExtractor.extract(definitionNode, varCtx);
+        if (varInfo) {
+          if (varInfo.type) declaredType = varInfo.type;
+          methodProps.visibility = varInfo.visibility;
+          methodProps.isStatic = varInfo.isStatic;
+          methodProps.isConst = varInfo.isConst;
+          methodProps.isMutable = varInfo.isMutable;
+          methodProps.scope = varInfo.scope;
+        }
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -2251,6 +2306,7 @@ let accumulated: ParseWorkerResult = {
   ormQueries: [],
   constructorBindings: [],
   fileScopeBindings: [],
+  parsedFiles: [],
   skippedLanguages: {},
   fileCount: 0,
 };
@@ -2278,6 +2334,7 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
   appendAll(target.fileScopeBindings, src.fileScopeBindings);
+  appendAll(target.parsedFiles, src.parsedFiles);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
@@ -2329,6 +2386,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         ormQueries: [],
         constructorBindings: [],
         fileScopeBindings: [],
+        parsedFiles: [],
         skippedLanguages: {},
         fileCount: 0,
       };

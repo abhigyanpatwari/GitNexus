@@ -43,6 +43,17 @@ export interface PipelineOptions {
   skipGraphPhases?: boolean;
   /** Force sequential parsing (no worker pool). Useful for testing the sequential path. */
   skipWorkers?: boolean;
+  /**
+   * @internal Test-only override for worker-pool gating thresholds.
+   * When unset, production defaults apply (15 files OR 512 KB total bytes).
+   * Setting either field lowers the corresponding threshold so small test
+   * fixtures can still exercise the worker-pool path. Do not use from
+   * production call sites.
+   */
+  workerThresholdsForTest?: {
+    minFiles?: number;
+    minBytes?: number;
+  };
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -99,7 +110,10 @@ export const runPipelineFromRepo = async (
   });
 
   // Extract final results for the PipelineResult contract
-  const { totalFiles } = getPhaseOutput<{ totalFiles: number }>(results, 'parse');
+  const { totalFiles, usedWorkerPool } = getPhaseOutput<{
+    totalFiles: number;
+    usedWorkerPool: boolean;
+  }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
@@ -123,5 +137,12 @@ export const runPipelineFromRepo = async (
     },
   });
 
-  return { graph, repoPath, totalFileCount: totalFiles, communityResult, processResult };
+  return {
+    graph,
+    repoPath,
+    totalFileCount: totalFiles,
+    communityResult,
+    processResult,
+    usedWorkerPool,
+  };
 };

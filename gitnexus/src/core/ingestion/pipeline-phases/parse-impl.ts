@@ -108,6 +108,7 @@ export async function runChunkedParseAndResolve(
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
   resolutionContext: ReturnType<typeof createResolutionContext>;
+  usedWorkerPool: boolean;
 }> {
   const ctx = createResolutionContext();
   const symbolTable = ctx.model.symbols;
@@ -173,9 +174,11 @@ export async function runChunkedParseAndResolve(
     stats: { filesProcessed: 0, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
   });
 
-  // Don't spawn workers for tiny repos — overhead exceeds benefit
-  const MIN_FILES_FOR_WORKERS = 15;
-  const MIN_BYTES_FOR_WORKERS = 512 * 1024;
+  // Don't spawn workers for tiny repos — overhead exceeds benefit.
+  // Test suites may lower the thresholds via `options.workerThresholdsForTest`
+  // to exercise the worker-pool path with small fixtures; see PipelineOptions.
+  const MIN_FILES_FOR_WORKERS = options?.workerThresholdsForTest?.minFiles ?? 15;
+  const MIN_BYTES_FOR_WORKERS = options?.workerThresholdsForTest?.minBytes ?? 512 * 1024;
   const totalBytes = parseableScanned.reduce((s, f) => s + f.size, 0);
 
   // Create worker pool once, reuse across chunks
@@ -588,5 +591,9 @@ export async function runChunkedParseAndResolve(
     allORMQueries,
     bindingAccumulator,
     resolutionContext: ctx,
+    // Whether a worker pool was actually live for this run. False means the
+    // sequential fallback handled every chunk (either due to `skipWorkers`,
+    // the file-count/byte thresholds, or a pool-creation failure).
+    usedWorkerPool: workerPool !== undefined,
   };
 }

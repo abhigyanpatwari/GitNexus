@@ -24,6 +24,7 @@ export interface WorkerPool {
 /** Message shapes sent back by worker threads. */
 type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
+  | { type: 'warning'; message: string }
   | { type: 'sub-batch-done' }
   | { type: 'error'; error: string }
   | { type: 'result'; data: unknown };
@@ -120,6 +121,8 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
               const total = workerProgress.reduce((a, b) => a + b, 0);
               onProgress(total);
             }
+          } else if (msg.type === 'warning') {
+            console.warn(msg.message);
           } else if (msg.type === 'sub-batch-done') {
             sendNextSubBatch();
           } else if (msg.type === 'error') {

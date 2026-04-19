@@ -1678,6 +1678,230 @@ describe('lookupMethodByOwnerWithMRO', () => {
     expect(result).toBeDefined();
     expect(result!.nodeId).toBe('method:User:getName');
   });
+
+  // ── ruby-mixin: kind-aware MRO walk (prepend > self > include) ────
+  //
+  // Ruby's `'ruby-mixin'` strategy is the only one that does NOT short-circuit
+  // on direct-owner lookup first — prepend providers must beat the class's
+  // own method of the same name. These tests exercise the walk order directly
+  // through lookupMethodByOwnerWithMRO rather than through the full pipeline.
+
+  it("ruby-mixin: prepend provider beats class's own method (shadow)", () => {
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/prep.rb', 'PrependedOverride', 'trait:PrependedOverride', 'Trait');
+    ctx.model.symbols.add('lib/account.rb', 'serialize', 'method:Account:serialize', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:Account',
+    });
+    ctx.model.symbols.add(
+      'lib/prep.rb',
+      'serialize',
+      'method:PrependedOverride:serialize',
+      'Method',
+      { returnType: 'String', ownerId: 'trait:PrependedOverride' },
+    );
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'PrependedOverride',
+        kind: 'prepend',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Account',
+      'serialize',
+      map,
+      ctx.model,
+      'ruby-mixin',
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:PrependedOverride:serialize');
+  });
+
+  it("ruby-mixin: class's own method wins over include provider (shadow)", () => {
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/mixin.rb', 'Greetable', 'trait:Greetable', 'Trait');
+    ctx.model.symbols.add('lib/account.rb', 'greet', 'method:Account:greet', 'Method', {
+      returnType: 'String',
+      ownerId: 'class:Account',
+    });
+    ctx.model.symbols.add('lib/mixin.rb', 'greet', 'method:Greetable:greet', 'Method', {
+      returnType: 'String',
+      ownerId: 'trait:Greetable',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'Greetable',
+        kind: 'include',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Account',
+      'greet',
+      map,
+      ctx.model,
+      'ruby-mixin',
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Account:greet');
+  });
+
+  it('ruby-mixin: include provider used when class lacks the method', () => {
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/mixin.rb', 'Greetable', 'trait:Greetable', 'Trait');
+    ctx.model.symbols.add('lib/mixin.rb', 'greet', 'method:Greetable:greet', 'Method', {
+      returnType: 'String',
+      ownerId: 'trait:Greetable',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'Greetable',
+        kind: 'include',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Account',
+      'greet',
+      map,
+      ctx.model,
+      'ruby-mixin',
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Greetable:greet');
+  });
+
+  it('ruby-mixin: extend providers excluded from instance-dispatch walk', () => {
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/logger.rb', 'LoggerMixin', 'trait:LoggerMixin', 'Trait');
+    ctx.model.symbols.add('lib/logger.rb', 'log', 'method:LoggerMixin:log', 'Method', {
+      returnType: 'void',
+      ownerId: 'trait:LoggerMixin',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'LoggerMixin',
+        kind: 'extend',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    // Instance dispatch: `extend` providers MUST NOT appear in the walk.
+    // Result is undefined — Account has no instance `log`.
+    const result = lookupMethodByOwnerWithMRO('class:Account', 'log', map, ctx.model, 'ruby-mixin');
+    expect(result).toBeUndefined();
+  });
+
+  it('ruby-mixin: singleton ancestryOverride routes to extend provider', () => {
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/logger.rb', 'LoggerMixin', 'trait:LoggerMixin', 'Trait');
+    ctx.model.symbols.add('lib/logger.rb', 'log', 'method:LoggerMixin:log', 'Method', {
+      returnType: 'void',
+      ownerId: 'trait:LoggerMixin',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'LoggerMixin',
+        kind: 'extend',
+      },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    // Singleton dispatch: caller pre-computes the singleton ancestry and
+    // passes it as ancestryOverride. The walker scans it linearly without
+    // the prepend/direct/include partition.
+    const singletonAncestry = map.getSingletonAncestry('class:Account').map((e) => e.parentId);
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Account',
+      'log',
+      map,
+      ctx.model,
+      'ruby-mixin',
+      undefined,
+      singletonAncestry,
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:LoggerMixin:log');
+  });
+
+  it('ruby-mixin: transitive mixin — module provides method via an included module', () => {
+    // class Account; include Outer; end
+    // module Outer; include Inner; end
+    // module Inner; def helper; end; end
+    ctx.model.symbols.add('lib/account.rb', 'Account', 'class:Account', 'Class');
+    ctx.model.symbols.add('lib/outer.rb', 'Outer', 'trait:Outer', 'Trait');
+    ctx.model.symbols.add('lib/inner.rb', 'Inner', 'trait:Inner', 'Trait');
+    ctx.model.symbols.add('lib/inner.rb', 'helper', 'method:Inner:helper', 'Method', {
+      returnType: 'void',
+      ownerId: 'trait:Inner',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      {
+        filePath: 'lib/account.rb',
+        className: 'Account',
+        parentName: 'Outer',
+        kind: 'include',
+      },
+      { filePath: 'lib/outer.rb', className: 'Outer', parentName: 'Inner', kind: 'include' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO(
+      'class:Account',
+      'helper',
+      map,
+      ctx.model,
+      'ruby-mixin',
+    );
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:Inner:helper');
+  });
+
+  it('ruby-mixin: stacked prepends — last-prepended wins', () => {
+    // class A; prepend P1; prepend P2; end
+    // Ruby MRO places P2 ahead of P1; last-prepended is closest to self.
+    ctx.model.symbols.add('lib/a.rb', 'A', 'class:A', 'Class');
+    ctx.model.symbols.add('lib/p1.rb', 'P1', 'trait:P1', 'Trait');
+    ctx.model.symbols.add('lib/p2.rb', 'P2', 'trait:P2', 'Trait');
+    ctx.model.symbols.add('lib/p1.rb', 'foo', 'method:P1:foo', 'Method', {
+      returnType: 'String',
+      ownerId: 'trait:P1',
+    });
+    ctx.model.symbols.add('lib/p2.rb', 'foo', 'method:P2:foo', 'Method', {
+      returnType: 'String',
+      ownerId: 'trait:P2',
+    });
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'lib/a.rb', className: 'A', parentName: 'P1', kind: 'prepend' },
+      { filePath: 'lib/a.rb', className: 'A', parentName: 'P2', kind: 'prepend' },
+    ];
+    const map = buildHeritageMap(heritage, ctx);
+
+    const result = lookupMethodByOwnerWithMRO('class:A', 'foo', map, ctx.model, 'ruby-mixin');
+    expect(result).toBeDefined();
+    expect(result!.nodeId).toBe('method:P2:foo');
+  });
 });
 
 // ---------------------------------------------------------------------------

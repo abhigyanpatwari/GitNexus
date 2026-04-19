@@ -248,6 +248,215 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('context', { name: 'main' });
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
+
+    // #470: every candidate carries a relevance score in [0, 1] and the list
+    // is sorted descending by score (with deterministic tiebreakers).
+    for (const c of result.candidates) {
+      expect(typeof c.score).toBe('number');
+      expect(c.score).toBeGreaterThanOrEqual(0);
+      expect(c.score).toBeLessThanOrEqual(1);
+    }
+    expect(result.candidates[0].score).toBeGreaterThanOrEqual(result.candidates[1].score);
+  });
+
+  it('context tool ranks file_path match higher than non-match (#470)', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:handleConnect:1',
+        name: 'handleConnect',
+        type: 'Function',
+        filePath: 'src/lib/socket.ts',
+        startLine: 10,
+        endLine: 20,
+      },
+      {
+        id: 'func:handleConnect:2',
+        name: 'handleConnect',
+        type: 'Function',
+        filePath: 'src/App.tsx',
+        startLine: 42,
+        endLine: 60,
+      },
+    ]);
+    const result = await backend.callTool('context', {
+      name: 'handleConnect',
+      file_path: 'App.tsx',
+    });
+    // In production, `WHERE n.filePath CONTAINS $filePath` would pre-filter
+    // at the DB layer and only `src/App.tsx` would come back — resolving
+    // via the single-candidate early return rather than via scoring. The
+    // `executeParameterized` mock here returns both rows regardless of the
+    // WHERE clause parameters, so this asserts that the resolver ends up
+    // picking the App.tsx candidate in either case (via mock-relaxed DB
+    // pre-filter or via scoring promotion). The dedicated scoring-promotion
+    // path is covered by the next `it()` block below.
+    expect(result.status).toBe('found');
+    expect(result.symbol.filePath).toBe('src/App.tsx');
+  });
+
+  it('context tool promotes top candidate via scoring when multiple rows survive DB pre-filter (#470)', async () => {
+    // This test explicitly exercises the scored-promotion path (#470
+    // review): both candidates satisfy the file_path hint (so DB
+    // pre-filter would return both in production), and promotion is
+    // determined purely by the combined file_path + kind score.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'fn:App:1',
+        name: 'render',
+        type: 'Function',
+        filePath: 'src/components/App.tsx',
+        startLine: 10,
+        endLine: 20,
+      },
+      {
+        id: 'method:App:1',
+        name: 'render',
+        type: 'Method',
+        filePath: 'src/pages/App.tsx',
+        startLine: 5,
+        endLine: 15,
+      },
+    ]);
+    const result = await backend.callTool('context', {
+      name: 'render',
+      file_path: 'App.tsx',
+      kind: 'Function',
+    });
+    // Expected scoring:
+    //   Function candidate: 0.50 base + 0.40 file_path + 0.20 kind = 1.10 → cap 1.00
+    //   Method candidate:   0.50 base + 0.40 file_path + 0.00 kind = 0.90
+    // Top score ≥ 0.95 and beats runner-up by 0.10 → confident promotion
+    // to `{ status: 'found' }` with the Function.
+    expect(result.status).toBe('found');
+    expect(result.symbol.filePath).toBe('src/components/App.tsx');
+    expect(result.symbol.kind).toBe('Function');
+  });
+
+  it('context tool returns ranked candidates when file_path only partially narrows (#470)', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:foo:1',
+        name: 'foo',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 5,
+      },
+      {
+        id: 'func:foo:2',
+        name: 'foo',
+        type: 'Function',
+        filePath: 'src/b.ts',
+        startLine: 1,
+        endLine: 5,
+      },
+    ]);
+    // No hints → both candidates score 0.56 (0.50 base + 0.06 Function
+    // priority). Tied scores fall back to deterministic tiebreakers.
+    const result = await backend.callTool('context', { name: 'foo' });
+    expect(result.status).toBe('ambiguous');
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates[0].score).toBeCloseTo(0.56, 2);
+    expect(result.candidates[1].score).toBeCloseTo(0.56, 2);
+  });
+
+  it('context tool boosts the candidate whose kind matches the hint (#470)', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'method:save:1',
+        name: 'save',
+        type: 'Method',
+        filePath: 'src/service.ts',
+        startLine: 10,
+        endLine: 20,
+      },
+      {
+        id: 'func:save:1',
+        name: 'save',
+        type: 'Function',
+        filePath: 'src/util.ts',
+        startLine: 5,
+        endLine: 15,
+      },
+    ]);
+    const result = await backend.callTool('context', { name: 'save', kind: 'Function' });
+    // When kind hint is given, kind-priority bonus is suppressed and +0.20
+    // kind-match bonus applies instead. Function becomes the top candidate.
+    expect(result.status).toBe('ambiguous');
+    expect(result.candidates[0].kind).toBe('Function');
+    expect(result.candidates[0].score).toBeGreaterThan(result.candidates[1].score);
+  });
+
+  it('impact tool returns ambiguous shape with ranked candidates when target has multiple matches (#470)', async () => {
+    // resolveSymbolCandidates issues a single name query; mock it to return
+    // two Function rows in different files with no hints.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:login:1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 5,
+        endLine: 15,
+      },
+      {
+        id: 'func:login:2',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/admin/login.ts',
+        startLine: 8,
+        endLine: 20,
+      },
+    ]);
+
+    const result = await backend.callTool('impact', { target: 'login', direction: 'upstream' });
+
+    expect(result.status).toBe('ambiguous');
+    expect(result.candidates).toHaveLength(2);
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    expect(result.target.name).toBe('login');
+    for (const c of result.candidates) {
+      expect(typeof c.score).toBe('number');
+      expect(c.uid).toBeDefined();
+      expect(c.kind).toBe('Function');
+    }
+  });
+
+  it('impact tool resolves via target_uid without running the name-based resolver (#470)', async () => {
+    // UID path: exactly one executeParameterized call for the lookup, then
+    // the BFS issues executeQuery calls (which we mock empty). Crucially,
+    // no `WHERE n.name =` query fires.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'uid:1234',
+        name: 'pickedByUid',
+        type: 'Function',
+        filePath: 'src/pick.ts',
+        startLine: 1,
+        endLine: 10,
+      },
+    ]);
+    (executeQuery as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', {
+      target: 'ignoredName',
+      target_uid: 'uid:1234',
+      direction: 'upstream',
+    });
+
+    // No ambiguous shape and no name-lookup error — the uid short-circuit won.
+    expect(result.status).not.toBe('ambiguous');
+    expect(result.target).toBeDefined();
+
+    // All executeParameterized calls this test dispatched must have been
+    // uid-keyed, never name-keyed. That proves the name resolver was skipped.
+    const calls = (executeParameterized as any).mock.calls as Array<
+      [string, string, Record<string, unknown>]
+    >;
+    for (const [, cypher] of calls) {
+      expect(cypher).not.toMatch(/WHERE n\.name = \$symName/);
+    }
   });
 
   it('dispatches impact tool', async () => {

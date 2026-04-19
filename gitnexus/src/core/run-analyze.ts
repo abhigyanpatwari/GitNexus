@@ -30,7 +30,8 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, hasGitDir } from '../storage/git.js';
+import { getCurrentCommit, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
@@ -45,6 +46,12 @@ export interface AnalyzeCallbacks {
 }
 
 export interface AnalyzeOptions {
+  /**
+   * Force a full re-index of the pipeline. Callers may OR this with
+   * other flags that imply re-analysis (e.g. `--skills`), so the value
+   * here is the PIPELINE-force signal, NOT the registry-collision
+   * bypass. See `allowDuplicateName` below.
+   */
   force?: boolean;
   embeddings?: boolean;
   skipGit?: boolean;
@@ -52,6 +59,21 @@ export interface AnalyzeOptions {
   skipAgentsMd?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
+  /**
+   * User-provided alias for the registry `name` (#829). When set,
+   * forwarded to `registerRepo` so the indexed repo is stored under
+   * this alias instead of the path-derived basename.
+   */
+  registryName?: string;
+  /**
+   * Bypass the `RegistryNameCollisionError` guard and allow two paths
+   * to register under the same `name` (#829). Controlled by the
+   * dedicated `--allow-duplicate-name` CLI flag, intentionally
+   * independent from `--force` — users who hit the collision guard
+   * should be able to accept the duplicate without paying the cost
+   * of a pipeline re-index.
+   */
+  allowDuplicateName?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -130,7 +152,7 @@ export async function runFullAnalysis(
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
       return {
-        repoName: path.basename(repoPath),
+        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
@@ -140,7 +162,7 @@ export async function runFullAnalysis(
 
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: Array<{ nodeId: string; embedding: number[]; contentHash?: string }> = [];
+  let cachedEmbeddings: CachedEmbedding[] = [];
 
   if (options.embeddings && existingMeta && !options.force) {
     try {
@@ -218,19 +240,14 @@ export async function runFullAnalysis(
         cachedEmbeddingNodeIds = new Set();
       } else {
         progress('embeddings', 88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
+        const { batchInsertEmbeddings: batchInsert } =
+          await import('./embeddings/embedding-pipeline.js');
         const EMBED_BATCH = 200;
         for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
           const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
-          const paramsList = batch.map((e) => ({
-            nodeId: e.nodeId,
-            embedding: e.embedding,
-            contentHash: e.contentHash ?? STALE_HASH_SENTINEL,
-          }));
+
           try {
-            await executeWithReusedStatement(
-              `MERGE (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) SET e.embedding = $embedding, e.contentHash = $contentHash`,
-              paramsList,
-            );
+            await batchInsert(executeWithReusedStatement, batch);
           } catch {
             /* some may fail if node was removed, that's fine */
           }
@@ -265,6 +282,10 @@ export async function runFullAnalysis(
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
+
+      const { readServerMapping } = await import('./embeddings/server-mapping.js');
+      const projectName = path.basename(repoPath);
+      const serverName = await readServerMapping(projectName);
       await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -279,6 +300,8 @@ export async function runFullAnalysis(
           progress('embeddings', scaled, label);
         },
         {},
+        cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+        { repoName: projectName, serverName },
         existingEmbeddings,
       );
     }
@@ -311,14 +334,24 @@ export async function runFullAnalysis(
       },
     };
     await saveMeta(storagePath, meta);
-    await registerRepo(repoPath, meta);
+    // Forward the --name alias and the registry-collision bypass bit.
+    // `allowDuplicateName` is its own concern — independent from the
+    // pipeline `force` above. The CLI maps it from
+    // `--allow-duplicate-name` only; `--force` and `--skills` both
+    // trigger pipeline re-run but never bypass the registry guard.
+    // The returned name is the one actually written to the registry
+    // (after applying the precedence chain in registerRepo) — reuse it
+    // so AGENTS.md / skill files reference the same name MCP clients
+    // will look up (#979).
+    const projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      allowDuplicateName: options.allowDuplicateName,
+    });
 
     // Only attempt to update .gitignore when a .git directory is present.
     if (hasGitDir(repoPath)) {
       await addToGitignore(repoPath);
     }
-
-    const projectName = path.basename(repoPath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
