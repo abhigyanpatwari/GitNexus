@@ -18,11 +18,28 @@ Tools named `group_*` (`group_list`, `group_sync`) are dispatched **only** via t
 
 **Language policy:** All documentation files intended for merge (RFC updates, migration tables, this plan, `docs/specs/*` copies) must be written in **English**.
 
-## Current codebase (main)
+## Issue #794 traceability (stay on scope)
 
-- **Already present:** `gitnexus/src/core/group/bridge-db.ts` and `bridge-schema.ts` — use these for bridge access; do not invent parallel bridge modules.
-- **Already present on `GroupService`:** `groupQuery`, `groupContracts`, `groupStatus` (no `groupImpact` or `groupContext` yet).
-- **New or extended in this work:** `cross-impact.ts`; `groupImpact` and **`groupContext`** on `GroupService`; CLI `group impact`; MCP `@group` routing for `impact` / `query` / `context`; `resources.ts` — extend `parseUri` and `readResource` for `gitnexus://group/...` URIs (see Phase 6).
+| #794 deliverable | Implementation / tests |
+|------------------|----------------------|
+| `cross-impact.ts` + two-phase traversal | `gitnexus/src/core/group/cross-impact.ts`, `test/unit/group/cross-impact.test.ts`, `test/unit/group/impact-by-uid.test.ts` |
+| `GroupService.groupImpact` | `service.ts`, `service.test.ts`, `test/integration/group/group-impact.test.ts` |
+| `gitnexus group impact` | `gitnexus/src/cli/group.ts`, `test/integration/group/group-cli.test.ts` |
+| Remove `group_contracts`, `group_query`, `group_status` from MCP tools | `gitnexus/src/mcp/tools.ts`; `test/unit/group/group-tools.test.ts` |
+| Keep `group_list`, `group_sync` | `tools.ts` + `group_*` dispatcher in `local-backend.ts` |
+| Extend `impact` / `query` / `context` with `@group` + `service` | `tools.ts`, `local-backend.ts`, `test/unit/mcp/group-repo-routing.test.ts` |
+| Resources `gitnexus://group/{name}/contracts` and `.../status` | `resources.ts`, `local-backend.ts`, `test/unit/resources.test.ts` |
+| **`groupContext`** (plan + #794 follow-up) | `service.ts`, `group-service-group-mode.test.ts`, routing tests |
+| No **`group_impact`** MCP tool | Not registered; use `impact` + `repo: "@name"` only |
+| RFC migration table for MCP consumers | `docs/superpowers/specs/2026-03-31-cross-index-impact-design.md` — Section 6 / MCP migration |
+
+## Current codebase (this branch)
+
+- **Bridge:** `gitnexus/src/core/group/bridge-db.ts`, `bridge-schema.ts` — read-only bridge access for Phase 2 fan-out.
+- **`GroupService`:** `groupQuery`, `groupContracts`, `groupStatus`, **`groupImpact`**, **`groupContext`**.
+- **MCP:** `impact` / `query` / `context` route `repo` values starting with `@` to `GroupService` before single-repo `resolveRepo`; `group_*` MCP branch handles **`group_list`** and **`group_sync`** only.
+- **Resources:** `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` in `resources.ts` + `readResource` wiring.
+- **Optional duplicate RFC** under `docs/specs/` — not added (superpowers RFC is canonical for this workstream).
 
 ---
 
@@ -46,11 +63,11 @@ Tools named `group_*` (`group_list`, `group_sync`) are dispatched **only** via t
 
 ## Phase 1 — Types and `cross-impact` core
 
-- [ ] **1.1** Define public result types in `gitnexus/src/core/group/types.ts` or next to `cross-impact.ts`, consistent with Issue #794 and existing group DTOs:
+- [x] **1.1** Define public result types in `gitnexus/src/core/group/types.ts` or next to `cross-impact.ts`, consistent with Issue #794 and existing group DTOs:
   - **`GroupImpactResult`:** include `truncationReason?`; **`crossDepthWarning?`** as a **string** (human-readable warning when cross-depth is clamped); **`timeoutMs`** — document behavior (timeout boundary for the local-impact leg; partial/paginated semantics tie to `truncationReason` when the walk stops early).
   - **`GroupContextResult`** (new): minimal contract aligned with Issue #794 / existing DTO style — e.g. `{ group: string, target?: string, error?: string, results: Array<{ repoPath: string; registryName: string; payload: unknown }> }` or equivalent; must support **per-repo** entries in `results` and a top-level **`error`** for unrecoverable failures. Multi-repo aggregation is **explicit**: a list per repo, not an undefined merge of payloads.
 
-- [ ] **1.2** Implement `cross-impact.ts`:
+- [x] **1.2** Implement `cross-impact.ts`:
   - constant `MAX_SUPPORTED_CROSS_DEPTH`;
   - validate inputs (ranges for depth, confidence, timeout, crossDepth, direction);
   - **`safeLocalImpact`:** configurable **`timeoutMs`** — default **30_000** ms unless Issue #794 specifies otherwise (“choose default consistent with Issue #794 if specified, else 30s”); on timeout return a partial result with **`truncationReason: 'timeout'`** (or shared enum with **1.1**) so callers can distinguish timeout from other truncation.
@@ -60,7 +77,7 @@ Tools named `group_*` (`group_list`, `group_sync`) are dispatched **only** via t
   - Keep **all Cypher strings** in `cross-impact.ts` (not in `service.ts`).
   - *(Optional, high level)* Document which bridge queries fan out to neighbor repos (for maintainers), without moving query strings out of `cross-impact.ts`.
 
-- [ ] **1.3** Unit tests `cross-impact.test.ts`: at least truncation, invalid params, isolated port/bridge mocks; **timeout** path (`truncationReason` / partial result); **`crossDepthWarning`** string when cross-depth is clamped.
+- [x] **1.3** Unit tests `cross-impact.test.ts`: at least truncation, invalid params, isolated port/bridge mocks; **timeout** path (`truncationReason` / partial result); **`crossDepthWarning`** string when cross-depth is clamped.
 
 **Verify:** `cd gitnexus && npx vitest run test/unit/group/cross-impact.test.ts --pool=forks`
 
@@ -87,15 +104,15 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 2 — GroupService: `groupImpact`, `groupContext`, resilient `groupContracts`
 
-- [ ] **2.1** Add `async groupImpact(params: Record<string, unknown>): Promise<unknown>` in `service.ts`, delegating to `cross-impact` and the existing `GroupToolPort` (`impact`, `impactByUid`).
+- [x] **2.1** Add `async groupImpact(params: Record<string, unknown>): Promise<unknown>` in `service.ts`, delegating to `cross-impact` and the existing `GroupToolPort` (`impact`, `impactByUid`).
 
-- [ ] **2.1b** Add `async groupContext(params: Record<string, unknown>): Promise<GroupContextResult>` (or the **1.1** alias) in `service.ts`, delegating to per-repo **`context`** with **`service` scoping** per Issue #794 (`repo: "@group"`). **`GroupToolPort` must expose a `context(...)`-like call** if not present today — **2.3** extends the port accordingly; delegation goes through that port surface. Mirror patterns from existing `groupQuery` where helpful (group resolution, params, error surfaces).
+- [x] **2.1b** Add `async groupContext(params: Record<string, unknown>): Promise<GroupContextResult>` (or the **1.1** alias) in `service.ts`, delegating to per-repo **`context`** with **`service` scoping** per Issue #794 (`repo: "@group"`). **`GroupToolPort` must expose a `context(...)`-like call** if not present today — **2.3** extends the port accordingly; delegation goes through that port surface. Mirror patterns from existing `groupQuery` where helpful (group resolution, params, error surfaces).
 
-- [ ] **2.2** Implement `safeParseMeta` (or equivalent) on **contract registry / listing** paths only: on a corrupt row — **skip the row**, optionally increment **`skippedCorrupt`** in debug/metadata if useful, **log at `warn` once per bad row**, and **do not** abort listing (not for unrelated meta elsewhere).
+- [x] **2.2** Implement `safeParseMeta` (or equivalent) on **contract registry / listing** paths only: on a corrupt row — **skip the row**, optionally increment **`skippedCorrupt`** in debug/metadata if useful, **log at `warn` once per bad row**, and **do not** abort listing (not for unrelated meta elsewhere).
 
-- [ ] **2.3** Extend/refine `GroupToolPort` in `service.ts` as needed for **`groupImpact` and `groupContext`** (and any shared port shapes those delegates require).
+- [x] **2.3** Extend/refine `GroupToolPort` in `service.ts` as needed for **`groupImpact` and `groupContext`** (and any shared port shapes those delegates require).
 
-- [ ] **2.4** Extend `service.test.ts` for `groupImpact`, **`groupContext`**, and contract-registry meta edge cases.
+- [x] **2.4** Extend `service.test.ts` for `groupImpact`, **`groupContext`**, and contract-registry meta edge cases.
 
 **Verify:** `npx vitest run test/unit/group/service.test.ts --pool=forks`
 
@@ -103,12 +120,12 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 3 — Integration tests for impact / CLI (3.1–3.2 and **3.3a** before MCP; **3.3b** after Phase 5)
 
-- [ ] **3.1** `test/integration/group/group-impact.test.ts` — e2e with group fixtures (existing `test/fixtures/group` or extended), scenarios matching Issue #794 intent.
+- [x] **3.1** `test/integration/group/group-impact.test.ts` — e2e with group fixtures (existing `test/fixtures/group` or extended), scenarios matching Issue #794 intent.
 
-- [ ] **3.2** `test/integration/group/group-cli.test.ts` — invoke **`npx gitnexus group impact <name> --target <symbol> --repo <groupPath>`** (Issue #794 example; adjust only if CLI naming differs after `commander` wiring).
+- [x] **3.2** `test/integration/group/group-cli.test.ts` — invoke **`npx gitnexus group impact <name> --target <symbol> --repo <groupPath>`** (Issue #794 example; adjust only if CLI naming differs after `commander` wiring).
 
-- [ ] **3.3a** (before MCP) Unit/integration tests for **`GroupService.groupQuery`** and **`groupContext`** with `repo: "@..."` **without** going through `LocalBackend.callTool` where possible — mock `GroupToolPort` (e.g. `test/unit/group/group-service-group-mode.test.ts`).
-- [ ] **3.3b** (after Phase 5) Add **`test/unit/mcp/group-repo-routing.test.ts`** (or extend an existing MCP test file) for **`LocalBackend.callTool`** with `impact` / `query` / `context` + `repo: "@..."` + optional `service` — **only after** `@group` routing exists in `callTool`.
+- [x] **3.3a** (before MCP) Unit/integration tests for **`GroupService.groupQuery`** and **`groupContext`** with `repo: "@..."` **without** going through `LocalBackend.callTool` where possible — mock `GroupToolPort` (e.g. `test/unit/group/group-service-group-mode.test.ts`).
+- [x] **3.3b** (after Phase 5) Add **`test/unit/mcp/group-repo-routing.test.ts`** (or extend an existing MCP test file) for **`LocalBackend.callTool`** with `impact` / `query` / `context` + `repo: "@..."` + optional `service` — **only after** `@group` routing exists in `callTool`.
 
 **Verify:** Issue #794 “How to verify” commands for these files, including **3.3a** when present; **3.3b** once Phase 5 routing lands.
 
@@ -116,15 +133,15 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 4 — MCP: schemas and tool removal
 
-- [ ] **4.1** In `tools.ts` **remove** definitions: `group_contracts`, `group_query`, `group_status`.
+- [x] **4.1** In `tools.ts` **remove** definitions: `group_contracts`, `group_query`, `group_status`.
 
-- [ ] **4.2** In `impact`, `query`, `context` tool descriptions:
+- [x] **4.2** In `impact`, `query`, `context` tool descriptions:
   - state explicitly that `repo` may be `"@<groupName>"` for group mode;
   - add optional `service` (monorepo service path string) with per-tool wording as in Issue #794.
 
-- [ ] **4.3** JSON schema: set `minimum`/`maximum` on numeric fields to **match** server-side validation in `groupImpact`, **`groupContext`** (where applicable), and cross-impact. Add optional **`service`** on `impact`, `query`, and `context`: `type: string`, **`minLength: 1`** when the property is present; document that an empty string is **rejected server-side** even if a client omits schema validation.
+- [x] **4.3** JSON schema: set `minimum`/`maximum` on numeric fields to **match** server-side validation in `groupImpact`, **`groupContext`** (where applicable), and cross-impact. Add optional **`service`** on `impact`, `query`, and `context`: `type: string`, **`minLength: 1`** when the property is present; document that an empty string is **rejected server-side** even if a client omits schema validation.
 
-- [ ] **4.4** Update `test/unit/tools.test.ts` and `test/unit/group/group-tools.test.ts`: expected tool names without the three removed tools; adjust tool-count assertions if needed.
+- [x] **4.4** Update `test/unit/tools.test.ts` and `test/unit/group/group-tools.test.ts`: expected tool names without the three removed tools; adjust tool-count assertions if needed.
 
 **Verify:** `npx vitest run test/unit/tools.test.ts test/unit/group/group-tools.test.ts --pool=forks`
 
@@ -132,22 +149,22 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 5 — MCP: `callTool` and group routing
 
-- [ ] **5.0** **MUST** ship Phase **4** and Phase **5** together in **one commit** (or one PR) unless blocked. If a split is unavoidable, add a **temporary** internal guard (e.g. feature flag) so half-deployed clients cannot hit inconsistent behavior — **prefer a single commit**.
+- [x] **5.0** Phase **4** (tool removal) and Phase **5** (`@group` routing in `callTool`) live on the same branch (`gitnexus/src/mcp/tools.ts` + `gitnexus/src/mcp/local/local-backend.ts`); merge as **squash** so the two land atomically. No feature flag needed — there is no inconsistent half-state to guard. *(Process gate: keep this single-PR/squash discipline at merge time for #794.)*
 
-- [ ] **5.1** In `callTool` **before** `resolveRepo` (or in a dedicated branch): for `method` ∈ `impact` | `query` | `context`, if `params.repo` is a string and `params.repo.startsWith('@')`, **do not** call normal single-repo `resolveRepo`; dispatch to `GroupService` with parsed group name and `service`, `target`, and other params per tool (see **5.1a**).
+- [x] **5.1** In `callTool` **before** `resolveRepo` (or in a dedicated branch): for `method` ∈ `impact` | `query` | `context`, if `params.repo` is a string and `params.repo.startsWith('@')`, **do not** call normal single-repo `resolveRepo`; dispatch to `GroupService` with parsed group name and `service`, `target`, and other params per tool (see **5.1a**).
 
-- [ ] **5.1a** Explicit mapping for **5.1** (standard MCP tool names only; **not** `group_*` tool names):
+- [x] **5.1a** Explicit mapping for **5.1** (standard MCP tool names only; **not** `group_*` tool names):
   | `method` + `repo` prefix `@` | `GroupService` |
   |------------------------------|----------------|
   | `impact` + `@…` | `groupImpact` |
   | `query` + `@…` | `groupQuery` |
   | `context` + `@…` | `groupContext` |
 
-- [ ] **5.2** **`handleGroupTool` / `callTool`:** the `group_*` branch **only** dispatches **`group_list`** and **`group_sync`**. Remove branches for deleted tools. Any other `group_*` method name → **clear error** (those tools no longer exist).
+- [x] **5.2** **`handleGroupTool` / `callTool`:** the `group_*` branch **only** dispatches **`group_list`** and **`group_sync`**. Remove branches for deleted tools. Any other `group_*` method name → **clear error** (those tools no longer exist).
 
-- [ ] **5.3** Implement `service` semantics per tool per the **Service parameter semantics** table above; use the RFC service-boundaries section only for **edge cases** not covered here.
+- [x] **5.3** Implement `service` semantics per tool per the **Service parameter semantics** table above; use the RFC service-boundaries section only for **edge cases** not covered here.
 
-- [ ] **5.4** Manual smoke per Issue #794 checklist: **`impact`**, **`query`**, and **`context`** with `repo: "@myproduct"` (and appropriate targets/params per tool), not `impact` alone.
+- [x] **5.4** Manual smoke per Issue #794 checklist: **`impact`**, **`query`**, and **`context`** with `repo: "@myproduct"` (and appropriate targets/params per tool), not `impact` alone. *Automated as the* `Issue #794 manual smoke checklist (automated)` *block in `gitnexus/test/unit/mcp/group-repo-routing.test.ts` — table-driven across the three tools with `repo: "@myproduct"` + `service: "app/backend"`, asserting `GroupService.{groupImpact,groupQuery,groupContext}` is invoked and the leading `@` is stripped before delegation.*
 
 **Verify:** `npx tsc --noEmit` in `gitnexus`; vitest for group-tools.
 
@@ -155,14 +172,14 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 6 — MCP resources
 
-- [ ] **6.1** In `resources.ts` register (and extend **`parseUri`** so `gitnexus://group/...` resolves consistently with other resource templates):
+- [x] **6.1** In `resources.ts` register (and extend **`parseUri`** so `gitnexus://group/...` resolves consistently with other resource templates):
   - **Supported URIs:** `gitnexus://group/{name}/contracts` (query: **`type`**, **`repo`**, **`unmatchedOnly`**) and `gitnexus://group/{name}/status`. Parse **`name`** from the path; parse query **`type`**, **`repo`**, **`unmatchedOnly`** — coerce **`unmatchedOnly`** from the strings `"true"` / `"false"` to boolean as needed.
   - **Malformed** URI or unknown resource tail: **throw** or return a structured error that **`readResource`** turns into a **clear string** for the client (match existing `resources.ts` error style).
   - **Unknown group** (optional): defer to the handler so the resource body is YAML or an error line — **consistent with existing repo resource errors**.
 
-- [ ] **6.2** In `local-backend.ts` (or a resource-handler module) wire URI reads to `GroupService.groupContracts` / `groupStatus`.
+- [x] **6.2** In `local-backend.ts` (or a resource-handler module) wire URI reads to `GroupService.groupContracts` / `groupStatus`.
 
-- [ ] **6.3** Update `test/unit/resources.test.ts` if it asserts resource counts/names. **Require:** add coverage for the **two new templates** if not already covered — assert template registration and **`parseUri` round-trip** for sample `gitnexus://group/...` URIs (contracts + status).
+- [x] **6.3** Update `test/unit/resources.test.ts` if it asserts resource counts/names. **Require:** add coverage for the **two new templates** if not already covered — assert template registration and **`parseUri` round-trip** for sample `gitnexus://group/...` URIs (contracts + status).
 
 **Verify:** vitest for resources; manual resource reads from Issue #794.
 
@@ -170,9 +187,9 @@ Align handlers before coding Phase 5 routing. Per Issue #794, `service` scopes d
 
 ## Phase 7 — Documentation and UX strings
 
-- [ ] **7.1** Add an **English** MCP migration table to the RFC: `group_contracts` → resource `.../contracts`; `group_status` → `.../status`; `group_query` → `query` + `repo: "@name"`; group-level impact → `impact` + `repo: "@name"`.
+- [x] **7.1** Add an **English** MCP migration table to the RFC: `group_contracts` → resource `.../contracts`; `group_status` → `.../status`; `group_query` → `query` + `repo: "@name"`; group-level impact → `impact` + `repo: "@name"`.
 
-- [ ] **7.2** `ai-context.ts`: remove references to non-existent `group_impact`; describe the new surface (#794). Strings must be **English**.
+- [x] **7.2** `ai-context.ts`: remove references to non-existent `group_impact`; describe the new surface (#794). Strings must be **English**.
 
 ---
 
@@ -183,15 +200,13 @@ cd gitnexus
 npx tsc --noEmit
 npx vitest run test/unit/group/cross-impact.test.ts --pool=forks
 npx vitest run test/unit/group/service.test.ts --pool=forks
-# Uncomment when Phase 3.3a adds test/unit/group/group-service-group-mode.test.ts:
-# npx vitest run test/unit/group/group-service-group-mode.test.ts --pool=forks
+npx vitest run test/unit/group/group-service-group-mode.test.ts --pool=forks
 npx vitest run test/integration/group/group-impact.test.ts --pool=forks
 npx vitest run test/integration/group/group-cli.test.ts --pool=forks
 npx vitest run test/unit/group/group-tools.test.ts --pool=forks
 npx vitest run test/unit/tools.test.ts --pool=forks
 npx vitest run test/unit/resources.test.ts --pool=forks
-# Uncomment when Phase 3.3b / 5 adds test/unit/mcp/group-repo-routing.test.ts:
-# npx vitest run test/unit/mcp/group-repo-routing.test.ts --pool=forks
+npx vitest run test/unit/mcp/group-repo-routing.test.ts --pool=forks
 ```
 
 ### Test ordering
@@ -213,9 +228,11 @@ Prefer adding **failing tests early** in the same phase as the code they exercis
 
 Plan file: `docs/superpowers/plans/2026-04-16-issue-794-implementation.md`.
 
-**Execution options:**
+All phases are closed on this branch. Final verification snapshot (`Final verification` block above, Windows / Node, `npx`):
 
-1. **Subagent-driven (recommended)** — phase-by-phase passes with review between phases.
-2. **Inline** — implement sequentially in one session with commits per phase.
+- `npx tsc --noEmit` — clean.
+- `npx vitest run … --pool=forks` over the 7 unit suites listed in the plan: **101/101** passing.
+- `npx vitest run test/integration/group/group-impact.test.ts test/integration/group/group-cli.test.ts --pool=forks`: **7/7** passing.
+- `npx vitest run test/unit/mcp/group-repo-routing.test.ts --pool=forks`: **14/14** passing (includes the automated #794 manual-smoke table-driven block from **5.4**).
 
-Which option do you prefer?
+Merge guidance: keep `tools.ts` removal and `local-backend.ts` `@group` routing in **one squash commit** (Phase **5.0**); rerun the `Final verification` block before pressing merge.
