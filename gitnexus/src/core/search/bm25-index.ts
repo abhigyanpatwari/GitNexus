@@ -3,14 +3,70 @@
  *
  * Uses LadybugDB's built-in full-text search indexes for keyword-based search.
  * Always reads from the database (no cached state to drift).
+ *
+ * FTS indexes are created lazily on first query (via `ensureFTSIndex`) — see
+ * `lbug-adapter.ts` for the rationale. This keeps `analyze` fast (the
+ * ~440 ms × 5 LadybugDB CREATE_FTS_INDEX cost dominates pipeline time on
+ * small repos / CI runners) at the cost of paying that overhead on the
+ * first `query`/`context` call in a session.
  */
 
-import { queryFTS } from '../lbug/lbug-adapter.js';
+import { queryFTS, ensureFTSIndex } from '../lbug/lbug-adapter.js';
 
 export interface BM25SearchResult {
   filePath: string;
   score: number;
   rank: number;
+}
+
+/**
+ * FTS schema served by `searchFTSFromLbug`. Centralised so that both the
+ * CLI/pipeline path and the MCP pool path use identical (table, index,
+ * properties) tuples and the lazy-create logic stays in one place.
+ */
+const FTS_INDEXES: ReadonlyArray<{
+  table: string;
+  indexName: string;
+  properties: readonly string[];
+}> = [
+  { table: 'File', indexName: 'file_fts', properties: ['name', 'content'] },
+  { table: 'Function', indexName: 'function_fts', properties: ['name', 'content'] },
+  { table: 'Class', indexName: 'class_fts', properties: ['name', 'content'] },
+  { table: 'Method', indexName: 'method_fts', properties: ['name', 'content'] },
+  { table: 'Interface', indexName: 'interface_fts', properties: ['name', 'content'] },
+];
+
+/**
+ * Per-process cache for the MCP pool path: tracks which `(repoId, table)`
+ * pairs have been ensured. The CLI/pipeline path gets its own cache inside
+ * `lbug-adapter.ts` keyed by table/index, scoped to the singleton connection.
+ */
+const ensuredPoolFTS = new Set<string>();
+
+async function ensureFTSIndexViaExecutor(
+  executor: (cypher: string) => Promise<any[]>,
+  repoId: string,
+  table: string,
+  indexName: string,
+  properties: readonly string[],
+): Promise<void> {
+  const key = `${repoId}:${table}:${indexName}`;
+  if (ensuredPoolFTS.has(key)) return;
+  const propList = properties.map((p) => `'${p}'`).join(', ');
+  try {
+    await executor(
+      `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'porter')`,
+    );
+  } catch (e: any) {
+    // 'already exists' is the happy path (index persists on disk between
+    // process invocations) — anything else we swallow because FTS is
+    // best-effort: queryFTS itself returns [] on missing-index errors.
+    const msg = String(e?.message ?? '');
+    if (!msg.includes('already exists')) {
+      // Best-effort — continue without index, queryFTS will fall back to [].
+    }
+  }
+  ensuredPoolFTS.add(key);
 }
 
 /**
@@ -75,6 +131,13 @@ export const searchFTSFromLbug = async (
     // The MCP pool supports multiple connections, but FTS is best run serially.
     const { executeQuery } = await import('../lbug/pool-adapter.js');
     const executor = (cypher: string) => executeQuery(repoId, cypher);
+
+    // Lazy-create FTS indexes on first query for this repo (analyze no longer
+    // creates them up-front, so we ensure them here). Cached per-process.
+    for (const { table, indexName, properties } of FTS_INDEXES) {
+      await ensureFTSIndexViaExecutor(executor, repoId, table, indexName, properties);
+    }
+
     fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
     functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
     classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
@@ -87,7 +150,12 @@ export const searchFTSFromLbug = async (
       limit,
     );
   } else {
-    // Use core lbug adapter (CLI / pipeline context) — also sequential for safety
+    // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
+    // Lazy-create FTS indexes on first query (analyze no longer does it).
+    for (const { table, indexName, properties } of FTS_INDEXES) {
+      await ensureFTSIndex(table, indexName, [...properties]).catch(() => {});
+    }
+
     fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
     functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(
       () => [],
