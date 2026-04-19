@@ -152,8 +152,7 @@ export async function runFullAnalysis(
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
       return {
-        repoName:
-          options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
