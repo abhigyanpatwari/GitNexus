@@ -1,0 +1,78 @@
+name: Desktop Packaging
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-packaging.yml
+      - gitnexus-desktop/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows NSIS
+            command: npm run build:win
+            artifact_name: gitnexus-desktop-windows
+            artifact_paths: |
+              gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
+              gitnexus-desktop/release/*/win-unpacked/**
+          - os: macos-latest
+            label: macOS DMG
+            command: npm run build:mac
+            artifact_name: gitnexus-desktop-macos
+            artifact_paths: |
+              gitnexus-desktop/release/*/*.dmg
+              gitnexus-desktop/release/*/mac*/**
+          - os: ubuntu-latest
+            label: Linux AppImage
+            command: npm run build:linux
+            artifact_name: gitnexus-desktop-linux
+            artifact_paths: |
+              gitnexus-desktop/release/*/*.AppImage
+              gitnexus-desktop/release/*/linux-unpacked/**
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gitnexus-desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: gitnexus-desktop
+
+      - name: Build unpacked desktop bundle
+        run: npm run build:dir
+        working-directory: gitnexus-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build desktop package
+        run: ${{ matrix.command }}
+        working-directory: gitnexus-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 14

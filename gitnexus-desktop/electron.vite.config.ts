@@ -1,8 +1,6 @@
-import { defineConfig } from 'electron-vite';
-import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
-export default defineConfig({
+export default {
   main: {
     build: {
       outDir: 'dist/main',
@@ -20,13 +18,24 @@ export default defineConfig({
         input: {
           preload: resolve(__dirname, 'src/main/preload.ts'),
         },
+        output: {
+          format: 'cjs',
+          entryFileNames: 'preload.js',
+        },
       },
     },
   },
   renderer: {
     root: '.',
     base: './',
-    plugins: [react()],
+    server: {
+      host: 'localhost',
+      port: 5174,
+      strictPort: true,
+      watch: {
+        ignored: ['**/release/**'],
+      },
+    },
     build: {
       outDir: 'dist/renderer',
       rollupOptions: {
@@ -36,4 +45,4 @@ export default defineConfig({
       },
     },
   },
-});
+};

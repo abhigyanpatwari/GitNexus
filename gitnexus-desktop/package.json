@@ -11,10 +11,10 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "predev": "node scripts/ensure-gitnexus-runtime.mjs",
-    "dev": "electron-vite dev --outDir=dist",
-    "start": "electron-vite preview --outDir=dist",
-    "bundle": "electron-vite build --outDir=dist",
+    "predev": "node scripts/ensure-gitnexus-runtime.mjs --cleanup-dev-port",
+    "dev": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite dev --outDir=dist",
+    "start": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite preview --outDir=dist",
+    "bundle": "npx --yes -p electron@41.2.1 -p electron-vite@5.0.0 electron-vite build --outDir=dist",
     "build": "node scripts/package.mjs --dir",
     "build:dir": "node scripts/package.mjs --dir",
     "build:win": "node scripts/package.mjs --win nsis",
@@ -23,17 +23,13 @@
     "build:all": "node scripts/package.mjs --win nsis --mac dmg --linux AppImage",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.renderer.json"
   },
-  "dependencies": {
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5"
-  },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^41.2.1",
-    "electron-builder": "^26.8.1",
+    "electron": "41.2.1",
+    "electron-builder": "26.8.1",
     "electron-vite": "^5.0.0",
     "typescript": "^6.0.3",
     "vite": "^7.0.0"

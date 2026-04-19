@@ -58,7 +58,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **gitnexus** (17439 symbols, 24477 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **gitnexus** (18208 symbols, 25369 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -154,26 +154,6 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (224 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
-| Work in the Type-extractors area (206 symbols) | `.claude/skills/generated/type-extractors/SKILL.md` |
-| Work in the Cli area (86 symbols) | `.claude/skills/generated/cli/SKILL.md` |
-| Work in the Wiki area (69 symbols) | `.claude/skills/generated/wiki/SKILL.md` |
-| Work in the Group area (67 symbols) | `.claude/skills/generated/group/SKILL.md` |
-| Work in the Components area (63 symbols) | `.claude/skills/generated/components/SKILL.md` |
-| Work in the Embeddings area (62 symbols) | `.claude/skills/generated/embeddings/SKILL.md` |
-| Work in the Server area (58 symbols) | `.claude/skills/generated/server/SKILL.md` |
-| Work in the Local area (55 symbols) | `.claude/skills/generated/local/SKILL.md` |
-| Work in the Workers area (54 symbols) | `.claude/skills/generated/workers/SKILL.md` |
-| Work in the Scope-resolution area (53 symbols) | `.claude/skills/generated/scope-resolution/SKILL.md` |
-| Work in the Extractors area (52 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
-| Work in the Lbug area (49 symbols) | `.claude/skills/generated/lbug/SKILL.md` |
-| Work in the Model area (40 symbols) | `.claude/skills/generated/model/SKILL.md` |
-| Work in the Configs area (39 symbols) | `.claude/skills/generated/configs/SKILL.md` |
-| Work in the Unit area (38 symbols) | `.claude/skills/generated/unit/SKILL.md` |
-| Work in the Services area (36 symbols) | `.claude/skills/generated/services/SKILL.md` |
-| Work in the Cobol area (34 symbols) | `.claude/skills/generated/cobol/SKILL.md` |
-| Work in the Import-resolvers area (32 symbols) | `.claude/skills/generated/import-resolvers/SKILL.md` |
-| Work in the Mcp area (28 symbols) | `.claude/skills/generated/mcp/SKILL.md` |
 
 <!-- gitnexus:end -->
 
