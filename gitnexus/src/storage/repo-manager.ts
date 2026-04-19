@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { getInferredRepoName } from './git.js';
 
 export interface RepoMeta {
   repoPath: string;
@@ -304,21 +305,31 @@ export class RegistryNameCollisionError extends Error {
 }
 
 /** Returns true when a previously-registered entry's `name` differs from
- *  `path.basename(entry.path)` — i.e. a user explicitly aliased it via
- *  `analyze --name <alias>` on a prior run. Used to preserve the alias
- *  across re-analyses that omit `--name`. */
+ *  both `path.basename(entry.path)` and the git-remote-derived name —
+ *  i.e. a user explicitly aliased it via `analyze --name <alias>` on a
+ *  prior run. Used to preserve the alias across re-analyses that omit
+ *  `--name`. The remote-derived name is treated as an inference, not a
+ *  custom alias, so re-analyses keep tracking remote renames. */
 const hasCustomAlias = (entry: RegistryEntry): boolean => {
-  return entry.name !== path.basename(path.resolve(entry.path));
+  const resolved = path.resolve(entry.path);
+  if (entry.name === path.basename(resolved)) return false;
+  const inferred = getInferredRepoName(resolved);
+  if (inferred && entry.name === inferred) return false;
+  return true;
 };
 
 /**
  * Register (add or update) a repo in the global registry.
  * Called after `gitnexus analyze` completes.
  *
- * Name resolution precedence (#829):
+ * Name resolution precedence (#829, #979):
  *   1. explicit `opts.name` (from `analyze --name <alias>`)
  *   2. preserved alias on an existing entry for this path
- *   3. `path.basename(repoPath)` (the original default)
+ *   3. `git config --get remote.origin.url` repo name (#979 — recovers
+ *      a meaningful name for monorepo subprojects, git worktrees, and
+ *      Gas-Town-style `<rig>/refinery/rig/` layouts where the basename
+ *      is generic)
+ *   4. `path.basename(repoPath)` (the original default)
  *
  * Duplicate-name guard: if another path already uses the resolved
  * `name`, throw {@link RegistryNameCollisionError} unless
@@ -326,12 +337,16 @@ const hasCustomAlias = (entry: RegistryEntry): boolean => {
  * `name`; un-aliased basename collisions continue to register silently
  * so existing users who don't know about `--name` see no behaviour
  * change.
+ *
+ * Returns the `name` that was actually written to the registry — the
+ * caller can re-use it to keep AGENTS.md / skill files aligned with the
+ * MCP-visible repo name (#979).
  */
 export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<void> => {
+): Promise<string> => {
   const resolved = path.resolve(repoPath);
   const { storagePath } = getStoragePaths(resolved);
 
@@ -343,9 +358,12 @@ export const registerRepo = async (
   });
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
-  // Precedence: explicit --name > preserved alias > basename.
+  // Precedence: explicit --name > preserved alias > remote-inferred > basename.
   const name =
-    opts?.name ?? (existing && hasCustomAlias(existing) ? existing.name : path.basename(resolved));
+    opts?.name ??
+    (existing && hasCustomAlias(existing) ? existing.name : null) ??
+    getInferredRepoName(resolved) ??
+    path.basename(resolved);
 
   // Duplicate-name guard: only fire when the user EXPLICITLY asked for
   // this name (via opts.name or a preserved alias). Unqualified basename
@@ -382,6 +400,7 @@ export const registerRepo = async (
   }
 
   await writeRegistry(entries);
+  return name;
 };
 
 /**

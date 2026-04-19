@@ -18,6 +18,8 @@ import {
   RegistryNameCollisionError,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
+import { execSync } from 'child_process';
 import { createTempDir } from '../helpers/test-db.js';
 
 // ─── getStoragePath ──────────────────────────────────────────────────
@@ -268,6 +270,186 @@ describe('registerRepo name override + collision guard (#829)', () => {
     } finally {
       await parentA.cleanup();
       await parentB.cleanup();
+    }
+  });
+});
+
+// ─── parseRepoNameFromUrl + getInferredRepoName (#979) ───────────────
+
+describe('parseRepoNameFromUrl', () => {
+  it('parses HTTPS URLs and strips .git', () => {
+    expect(parseRepoNameFromUrl('https://github.com/owner/lume_spark.git')).toBe('lume_spark');
+    expect(parseRepoNameFromUrl('https://github.com/owner/lume_spark')).toBe('lume_spark');
+  });
+
+  it('parses SSH URLs (git@host:owner/repo.git)', () => {
+    expect(parseRepoNameFromUrl('git@github.com:owner/lume_spark.git')).toBe('lume_spark');
+    expect(parseRepoNameFromUrl('git@gitlab.com:group/sub/lume_spark.git')).toBe('lume_spark');
+  });
+
+  it('parses ssh:// and git:// URLs', () => {
+    expect(parseRepoNameFromUrl('ssh://git@host.example/owner/lume_spark.git')).toBe('lume_spark');
+    expect(parseRepoNameFromUrl('git://host.example/owner/lume_spark.git')).toBe('lume_spark');
+  });
+
+  it('parses local file:// URLs', () => {
+    expect(parseRepoNameFromUrl('file:///srv/git/lume_spark.git')).toBe('lume_spark');
+  });
+
+  it('handles trailing slashes and mixed-case .git', () => {
+    expect(parseRepoNameFromUrl('https://github.com/owner/lume_spark.GIT/')).toBe('lume_spark');
+    expect(parseRepoNameFromUrl('https://github.com/owner/lume_spark/')).toBe('lume_spark');
+  });
+
+  it('returns null for empty / null / undefined / unparseable input', () => {
+    expect(parseRepoNameFromUrl('')).toBeNull();
+    expect(parseRepoNameFromUrl('   ')).toBeNull();
+    expect(parseRepoNameFromUrl(null)).toBeNull();
+    expect(parseRepoNameFromUrl(undefined)).toBeNull();
+  });
+});
+
+describe('getInferredRepoName + registerRepo (#979 — git remote inference)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const meta: RepoMeta = {
+    repoPath: '',
+    lastCommit: 'abc1234',
+    indexedAt: '2026-04-19T00:00:00.000Z',
+    stats: { files: 1, nodes: 1 },
+  };
+
+  /** Initialise a real git repo at `dir` with the given remote URL. */
+  const initGitRepo = (dir: string, remoteUrl: string | null) => {
+    execSync('git init -q', { cwd: dir });
+    execSync('git config user.email "test@example.com"', { cwd: dir });
+    execSync('git config user.name "Test"', { cwd: dir });
+    if (remoteUrl) {
+      execSync(`git remote add origin ${remoteUrl}`, { cwd: dir });
+    }
+  };
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-home-979-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+  });
+
+  it('getInferredRepoName returns null when there is no .git directory', async () => {
+    const tmp = await createTempDir('gitnexus-no-git-');
+    try {
+      expect(getInferredRepoName(tmp.dbPath)).toBeNull();
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('getInferredRepoName returns null when origin is unset', async () => {
+    const tmp = await createTempDir('gitnexus-no-origin-');
+    try {
+      initGitRepo(tmp.dbPath, null);
+      expect(getInferredRepoName(tmp.dbPath)).toBeNull();
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('getInferredRepoName returns the remote repo name when origin is set', async () => {
+    const tmp = await createTempDir('gitnexus-with-origin-');
+    try {
+      initGitRepo(tmp.dbPath, 'https://github.com/owner/lume_spark.git');
+      expect(getInferredRepoName(tmp.dbPath)).toBe('lume_spark');
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('registerRepo derives name from git remote when basename is generic (Gas-Town repro)', async () => {
+    // Reproduce <rig>/refinery/rig/.git layout: leaf basename is "rig",
+    // but origin URL says "lume_spark". The new precedence MUST pick up
+    // the remote-derived name instead of the basename.
+    const root = await createTempDir('gitnexus-gastown-');
+    try {
+      const rigPath = path.join(root.dbPath, 'lume_spark', 'refinery', 'rig');
+      await fs.mkdir(rigPath, { recursive: true });
+      initGitRepo(rigPath, 'git@github.com:gastown/lume_spark.git');
+
+      const name = await registerRepo(rigPath, meta);
+      expect(name).toBe('lume_spark');
+      expect(name).not.toBe('rig');
+
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].name).toBe('lume_spark');
+    } finally {
+      await root.cleanup();
+    }
+  });
+
+  it('two analyze calls of differently-remoted "rig" leaves no longer collide', async () => {
+    // Without the remote inference both would register as "rig"; with
+    // inference they pick up their distinct remotes — the original issue.
+    const root = await createTempDir('gitnexus-gastown-2-');
+    try {
+      const rigA = path.join(root.dbPath, 'lume_spark', 'refinery', 'rig');
+      const rigB = path.join(root.dbPath, 'gemba', 'refinery', 'rig');
+      await fs.mkdir(rigA, { recursive: true });
+      await fs.mkdir(rigB, { recursive: true });
+      initGitRepo(rigA, 'git@github.com:gastown/lume_spark.git');
+      initGitRepo(rigB, 'git@github.com:gastown/gemba.git');
+
+      const nameA = await registerRepo(rigA, meta);
+      const nameB = await registerRepo(rigB, meta);
+      expect(nameA).toBe('lume_spark');
+      expect(nameB).toBe('gemba');
+
+      const entries = await listRegisteredRepos();
+      expect(entries.map((e) => e.name).sort()).toEqual(['gemba', 'lume_spark']);
+    } finally {
+      await root.cleanup();
+    }
+  });
+
+  it('explicit --name still wins over remote inference', async () => {
+    const tmp = await createTempDir('gitnexus-name-wins-');
+    try {
+      initGitRepo(tmp.dbPath, 'https://github.com/owner/from-remote.git');
+      const name = await registerRepo(tmp.dbPath, meta, { name: 'user-alias' });
+      expect(name).toBe('user-alias');
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('preserved alias still wins over remote inference on re-analyze', async () => {
+    const tmp = await createTempDir('gitnexus-preserve-alias-');
+    try {
+      initGitRepo(tmp.dbPath, 'https://github.com/owner/from-remote.git');
+      // First analyze sets the alias…
+      await registerRepo(tmp.dbPath, meta, { name: 'sticky-alias' });
+      // …second analyze with no opts must keep it (not silently switch
+      // to the remote-derived name).
+      const name = await registerRepo(tmp.dbPath, meta);
+      expect(name).toBe('sticky-alias');
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('falls back to basename when no .git / no remote is available', async () => {
+    const tmp = await createTempDir('gitnexus-fallback-basename-');
+    try {
+      const name = await registerRepo(tmp.dbPath, meta);
+      expect(name).toBe(path.basename(tmp.dbPath));
+    } finally {
+      await tmp.cleanup();
     }
   });
 });
