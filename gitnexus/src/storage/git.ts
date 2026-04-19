@@ -53,6 +53,58 @@ export const hasGitDir = (dirPath: string): boolean => {
   }
 };
 
+/**
+ * Read `remote.origin.url` from a git repository, or `null` if not a
+ * git repo, has no `origin` remote, or git is unavailable.
+ *
+ * Used by the registry-name inference path (#979) to recover a
+ * meaningful repo name when `path.basename(repoPath)` is generic
+ * (e.g. monorepo subprojects, git worktrees, Gas-Town-style
+ * `<rig>/refinery/rig/` layouts).
+ */
+export const getRemoteOriginUrl = (repoPath: string): string | null => {
+  try {
+    const url = execSync('git config --get remote.origin.url', {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Parse a repository name out of a git remote URL. Handles the common
+ * SSH (`git@host:owner/repo.git`), HTTPS (`https://host/owner/repo.git`),
+ * `git://`, `ssh://`, and `file://` shapes. Returns `null` for empty /
+ * unparseable input.
+ *
+ * The heuristic: strip a trailing `.git` and trailing slashes, then
+ * take the segment after the last `/` or `:`.
+ */
+export const parseRepoNameFromUrl = (url: string | null | undefined): string | null => {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  // Strip `.git` suffix (case-insensitive) and any trailing slashes.
+  const withoutSuffix = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
+  // Last path segment, splitting on either `/` or `:` (covers SSH form).
+  const m = withoutSuffix.match(/[/:]([^/:]+)$/);
+  const candidate = m ? m[1] : withoutSuffix;
+  return candidate || null;
+};
+
+/**
+ * Convenience wrapper: derive a registry-friendly name from the repo's
+ * `origin` remote, or `null` when it cannot be inferred.
+ */
+export const getInferredRepoName = (repoPath: string): string | null => {
+  return parseRepoNameFromUrl(getRemoteOriginUrl(repoPath));
+};
+
 export interface DiffHunk {
   startLine: number;
   endLine: number;

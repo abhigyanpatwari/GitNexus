@@ -60,6 +60,17 @@ jobs:
             slug: gitnexus
 
     steps:
+      - name: Validate tag input
+        if: github.event_name == 'workflow_call'
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if [ -z "${TAG_INPUT}" ]; then
+            echo "::error::No tag provided to docker.yml — refusing to build/push."
+            exit 1
+          fi
+
       # When triggered by workflow_call the caller passes the RC tag as an input;
       # we check out that tag so the Dockerfile and package.json match the built image.
       # For tag-push events github.ref is already the tag ref — no override needed.

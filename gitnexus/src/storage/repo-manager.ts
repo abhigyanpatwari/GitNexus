@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { getInferredRepoName } from './git.js';
 
 export interface RepoMeta {
   repoPath: string;
@@ -304,21 +305,33 @@ export class RegistryNameCollisionError extends Error {
 }
 
 /** Returns true when a previously-registered entry's `name` differs from
- *  `path.basename(entry.path)` — i.e. a user explicitly aliased it via
- *  `analyze --name <alias>` on a prior run. Used to preserve the alias
- *  across re-analyses that omit `--name`. */
-const hasCustomAlias = (entry: RegistryEntry): boolean => {
-  return entry.name !== path.basename(path.resolve(entry.path));
+ *  both `path.basename(entry.path)` and the git-remote-derived name —
+ *  i.e. a user explicitly aliased it via `analyze --name <alias>` on a
+ *  prior run. Used to preserve the alias across re-analyses that omit
+ *  `--name`. The remote-derived name is treated as an inference, not a
+ *  custom alias, so re-analyses keep tracking remote renames.
+ *
+ *  `inferredName` is passed in (rather than re-derived) so callers can
+ *  avoid a second `git config` subprocess invocation. */
+const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): boolean => {
+  const resolved = path.resolve(entry.path);
+  if (entry.name === path.basename(resolved)) return false;
+  if (inferredName && entry.name === inferredName) return false;
+  return true;
 };
 
 /**
  * Register (add or update) a repo in the global registry.
  * Called after `gitnexus analyze` completes.
  *
- * Name resolution precedence (#829):
+ * Name resolution precedence (#829, #979):
  *   1. explicit `opts.name` (from `analyze --name <alias>`)
  *   2. preserved alias on an existing entry for this path
- *   3. `path.basename(repoPath)` (the original default)
+ *   3. `git config --get remote.origin.url` repo name (#979 — recovers
+ *      a meaningful name for monorepo subprojects, git worktrees, and
+ *      Gas-Town-style `<rig>/refinery/rig/` layouts where the basename
+ *      is generic)
+ *   4. `path.basename(repoPath)` (the original default)
  *
  * Duplicate-name guard: if another path already uses the resolved
  * `name`, throw {@link RegistryNameCollisionError} unless
@@ -326,12 +339,16 @@ const hasCustomAlias = (entry: RegistryEntry): boolean => {
  * `name`; un-aliased basename collisions continue to register silently
  * so existing users who don't know about `--name` see no behaviour
  * change.
+ *
+ * Returns the `name` that was actually written to the registry — the
+ * caller can re-use it to keep AGENTS.md / skill files aligned with the
+ * MCP-visible repo name (#979).
  */
 export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<void> => {
+): Promise<string> => {
   const resolved = path.resolve(repoPath);
   const { storagePath } = getStoragePaths(resolved);
 
@@ -343,17 +360,34 @@ export const registerRepo = async (
   });
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
-  // Precedence: explicit --name > preserved alias > basename.
-  const name =
-    opts?.name ?? (existing && hasCustomAlias(existing) ? existing.name : path.basename(resolved));
+  // Precedence: explicit --name > preserved alias > remote-inferred > basename.
+  // Skip the `git config` subprocess entirely when --name was passed —
+  // the remote isn't consulted in that case.
+  let name: string;
+  let isPreservedAlias = false;
+  if (opts?.name !== undefined) {
+    name = opts.name;
+  } else {
+    // Compute the remote-derived name at most once. It feeds both the
+    // alias-preservation check (`hasCustomAlias` needs it to distinguish
+    // a sticky user alias from a previously-stored remote inference) and
+    // the fallback name when neither --name nor a preserved alias apply.
+    const inferred = getInferredRepoName(resolved);
+    if (existing && hasCustomAlias(existing, inferred)) {
+      name = existing.name;
+      isPreservedAlias = true;
+    } else {
+      name = inferred ?? path.basename(resolved);
+    }
+  }
 
   // Duplicate-name guard: only fire when the user EXPLICITLY asked for
   // this name (via opts.name or a preserved alias). Unqualified basename
-  // collisions are preserved for backward-compat — they still register,
-  // and the user sees the ambiguity at `-r` / `list` resolution time
-  // (which is already improved by the disambiguated error messages and
-  // list output this PR also ships).
-  const explicitName = opts?.name !== undefined || (existing && hasCustomAlias(existing));
+  // and remote-inferred collisions are preserved for backward-compat —
+  // they still register, and the user sees the ambiguity at `-r` / `list`
+  // resolution time (which is already improved by the disambiguated error
+  // messages and list output #829 ships).
+  const explicitName = opts?.name !== undefined || isPreservedAlias;
   if (explicitName && !opts?.allowDuplicateName) {
     const collidingEntry = entries.find(
       (e, i) =>
@@ -382,6 +416,7 @@ export const registerRepo = async (
   }
 
   await writeRegistry(entries);
+  return name;
 };
 
 /**
