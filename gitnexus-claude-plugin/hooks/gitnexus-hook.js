@@ -12,8 +12,9 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -102,41 +103,59 @@ function extractPattern(toolName, toolInput) {
 }
 
 /**
- * Spawn a gitnexus CLI command synchronously.
- * Detects binary on PATH once, then runs exactly once.
+ * Spawn the pinned/local gitnexus CLI synchronously.
  *
  * SECURITY: Never use shell: true with user-controlled arguments.
- * On Windows, invoke gitnexus.cmd directly (no shell needed).
+ * Do not fall back to npx. Older published versions can overwrite embedding
+ * backend metadata and can query OpenAI-indexed repos with the wrong runtime.
  */
-function runGitNexusCli(args, cwd, timeout) {
-  const isWin = process.platform === 'win32';
+function resolveGitNexusCommand() {
+  const localBinary = path.join(os.homedir(), '.local', 'bin', 'gitnexus');
+  if (fs.existsSync(localBinary)) return { command: localBinary, args: [] };
 
-  // Detect whether 'gitnexus' is on PATH (cheap check, no execution)
-  let useDirectBinary = false;
+  const isWin = process.platform === 'win32';
   try {
     const which = spawnSync(isWin ? 'where' : 'which', ['gitnexus'], {
       encoding: 'utf-8',
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    useDirectBinary = which.status === 0;
+    const binary = (which.stdout || '').split(/\r?\n/)[0].trim();
+    if (which.status === 0 && binary) return { command: binary, args: [] };
   } catch {
     /* not on PATH */
   }
 
-  if (useDirectBinary) {
-    return spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, {
+  return null;
+}
+
+function resolveOpenAiApiKey() {
+  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+  if (process.platform !== 'darwin') return '';
+  try {
+    return execFileSync('security', ['find-generic-password', '-s', 'openai-api-key', '-w'], {
       encoding: 'utf-8',
-      timeout,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+  } catch {
+    return '';
   }
-  // npx fallback needs shell on Windows since npx is a .cmd script
-  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
+}
+
+function runGitNexusCli(args, cwd, timeout) {
+  const cliCommand = resolveGitNexusCommand();
+  if (!cliCommand) return { status: 127, error: new Error('gitnexus CLI not found') };
+
+  const openAiApiKey = resolveOpenAiApiKey();
+  return spawnSync(cliCommand.command, [...cliCommand.args, ...args], {
     encoding: 'utf-8',
-    timeout: timeout + 5000,
+    timeout,
     cwd,
+    env: {
+      ...process.env,
+      ...(openAiApiKey ? { OPENAI_API_KEY: openAiApiKey } : {}),
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
@@ -237,7 +256,7 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = `gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
