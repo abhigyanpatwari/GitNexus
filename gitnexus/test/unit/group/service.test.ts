@@ -398,7 +398,10 @@ repos:
           query: 'x',
           subgroup: 'app/frontend',
         })) as { per_repo: Array<{ repo: string }> };
-        expect(prefixOnly.per_repo.map((r) => r.repo).sort()).toEqual(['app/frontend', 'app/frontend/mobile']);
+        expect(prefixOnly.per_repo.map((r) => r.repo).sort()).toEqual([
+          'app/frontend',
+          'app/frontend/mobile',
+        ]);
 
         const exact = (await svc.groupQuery({
           name: 'nest-group',

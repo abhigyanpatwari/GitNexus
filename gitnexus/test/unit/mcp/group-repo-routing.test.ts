@@ -63,8 +63,12 @@ repos:
 `,
     );
     vi.stubEnv('GITNEXUS_HOME', tmpDir);
-    groupSpyQuery = vi.spyOn(GroupService.prototype, 'groupQuery').mockResolvedValue({ via: 'query' });
-    groupSpyImpact = vi.spyOn(GroupService.prototype, 'groupImpact').mockResolvedValue({ via: 'impact' });
+    groupSpyQuery = vi
+      .spyOn(GroupService.prototype, 'groupQuery')
+      .mockResolvedValue({ via: 'query' });
+    groupSpyImpact = vi
+      .spyOn(GroupService.prototype, 'groupImpact')
+      .mockResolvedValue({ via: 'impact' });
     groupSpyContext = vi.spyOn(GroupService.prototype, 'groupContext').mockResolvedValue({
       group: 'g1',
       results: [],
@@ -139,7 +143,9 @@ repos:
     const backend = new LocalBackend();
     const out = await backend.callTool('query', { repo: '@no-such-group', query: 'x' });
     expect(out).toHaveProperty('error');
-    expect(String((out as { error: string }).error)).toMatch(/not found|no such|unknown|exist|ENOENT/i);
+    expect(String((out as { error: string }).error)).toMatch(
+      /not found|no such|unknown|exist|ENOENT/i,
+    );
   });
 
   it('returns error for unknown member path', async () => {
@@ -165,7 +171,9 @@ repos:
 
   it('removed group_contracts mentions migration', async () => {
     const backend = new LocalBackend();
-    await expect(backend.callTool('group_contracts', { name: 'g1' })).rejects.toThrow(/Removed tools/);
+    await expect(backend.callTool('group_contracts', { name: 'g1' })).rejects.toThrow(
+      /Removed tools/,
+    );
   });
 
   it('removed group_status mentions migration', async () => {
@@ -204,14 +212,19 @@ repos:
         params: { repo: '@myproduct', target: 'UserService.login', service: 'app/backend' },
         spy: () => groupSpyContext,
       },
-    ])('$method with repo "@myproduct" routes to GroupService and forwards service', async ({ method, params, spy }) => {
-      const backend = new LocalBackend();
-      await backend.callTool(method, params);
-      expect(spy()).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'myproduct', service: 'app/backend' }),
-      );
-      const callArg = spy().mock.calls[0][0] as Record<string, unknown>;
-      expect(typeof callArg.repo === 'string' ? (callArg.repo as string).startsWith('@') : false).toBe(false);
-    });
+    ])(
+      '$method with repo "@myproduct" routes to GroupService and forwards service',
+      async ({ method, params, spy }) => {
+        const backend = new LocalBackend();
+        await backend.callTool(method, params);
+        expect(spy()).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'myproduct', service: 'app/backend' }),
+        );
+        const callArg = spy().mock.calls[0][0] as Record<string, unknown>;
+        expect(
+          typeof callArg.repo === 'string' ? (callArg.repo as string).startsWith('@') : false,
+        ).toBe(false);
+      },
+    );
   });
 });

@@ -2892,7 +2892,8 @@ export class LocalBackend {
       if (params.relationTypes !== undefined) impactArgs.relationTypes = params.relationTypes;
       if (params.includeTests !== undefined) impactArgs.includeTests = params.includeTests;
       if (params.minConfidence !== undefined) impactArgs.minConfidence = params.minConfidence;
-      if (params.service !== undefined && params.service !== null) impactArgs.service = params.service;
+      if (params.service !== undefined && params.service !== null)
+        impactArgs.service = params.service;
       if (typeof params.subgroup === 'string') impactArgs.subgroup = params.subgroup;
       if (params.timeoutMs !== undefined) impactArgs.timeoutMs = params.timeoutMs;
       if (params.timeout !== undefined) impactArgs.timeout = params.timeout;
@@ -2908,7 +2909,8 @@ export class LocalBackend {
       if (typeof params.limit === 'number') queryArgs.limit = params.limit;
       if (typeof params.max_symbols === 'number') queryArgs.max_symbols = params.max_symbols;
       if (params.include_content !== undefined) queryArgs.include_content = params.include_content;
-      if (params.service !== undefined && params.service !== null) queryArgs.service = params.service;
+      if (params.service !== undefined && params.service !== null)
+        queryArgs.service = params.service;
       if (memberRest !== undefined) {
         queryArgs.subgroup = memberRest;
         queryArgs.subgroupExact = true;
@@ -2928,8 +2930,10 @@ export class LocalBackend {
       };
       if (typeof params.uid === 'string') contextArgs.uid = params.uid;
       if (typeof params.file_path === 'string') contextArgs.file_path = params.file_path;
-      if (params.include_content !== undefined) contextArgs.include_content = params.include_content;
-      if (params.service !== undefined && params.service !== null) contextArgs.service = params.service;
+      if (params.include_content !== undefined)
+        contextArgs.include_content = params.include_content;
+      if (params.service !== undefined && params.service !== null)
+        contextArgs.service = params.service;
       if (memberRest !== undefined) {
         contextArgs.subgroup = memberRest;
         contextArgs.subgroupExact = true;

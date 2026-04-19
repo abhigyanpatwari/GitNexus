@@ -194,7 +194,10 @@ export function registerGroupCommands(program: Command): void {
     )
     .option('--direction <dir>', 'upstream or downstream', 'upstream')
     .option('--service <path>', 'Optional monorepo service directory prefix (path filter)')
-    .option('--subgroup <path>', 'Optional prefix limiting which group repos participate in cross fan-out')
+    .option(
+      '--subgroup <path>',
+      'Optional prefix limiting which group repos participate in cross fan-out',
+    )
     .option('--max-depth <n>', 'Max graph traversal depth')
     .option('--cross-depth <n>', 'Cross-repository hop depth')
     .option('--min-confidence <n>', 'Minimum relation confidence (0–1)')

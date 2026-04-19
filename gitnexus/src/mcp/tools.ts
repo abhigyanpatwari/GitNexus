@@ -357,7 +357,8 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: {
           type: 'number',
-          description: 'Minimum edge confidence 0–1 (default: 0 when omitted; server clamps to 0–1)',
+          description:
+            'Minimum edge confidence 0–1 (default: 0 when omitted; server clamps to 0–1)',
           default: 0,
           minimum: 0,
           maximum: 1,
@@ -380,7 +381,8 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         timeoutMs: {
           type: 'number',
-          description: 'Wall-clock budget in milliseconds for the Phase-1 local impact leg (default 30000)',
+          description:
+            'Wall-clock budget in milliseconds for the Phase-1 local impact leg (default 30000)',
           minimum: 1,
           maximum: 3600000,
         },

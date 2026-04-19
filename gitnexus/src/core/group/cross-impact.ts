@@ -18,12 +18,7 @@ import type { GroupRepoHandle, GroupToolPort } from './service.js';
 import { loadGroupConfig } from './config-parser.js';
 import { fileMatchesServicePrefix, normalizeServicePrefix } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
-import {
-  closeBridgeDb,
-  openBridgeDbReadOnly,
-  queryBridge,
-  readBridgeMeta,
-} from './bridge-db.js';
+import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 /** Cross-boundary hops beyond this value are clamped (multi-hop reserved for future work). */
@@ -98,29 +93,36 @@ function clampCrossDepth(raw: unknown): { depth: number; warning?: string } {
   return { depth: d };
 }
 
-export function validateGroupImpactParams(params: Record<string, unknown>): {
-  ok: true;
-  name: string;
-  repoPath: string;
-  target: string;
-  direction: 'upstream' | 'downstream';
-  maxDepth: number;
-  crossDepth: number;
-  crossDepthWarning?: string;
-  relationTypes?: string[];
-  includeTests: boolean;
-  minConfidence: number;
-  service?: string;
-  subgroup?: string;
-  timeoutMs: number;
-} | { ok: false; error: string } {
+export function validateGroupImpactParams(params: Record<string, unknown>):
+  | {
+      ok: true;
+      name: string;
+      repoPath: string;
+      target: string;
+      direction: 'upstream' | 'downstream';
+      maxDepth: number;
+      crossDepth: number;
+      crossDepthWarning?: string;
+      relationTypes?: string[];
+      includeTests: boolean;
+      minConfidence: number;
+      service?: string;
+      subgroup?: string;
+      timeoutMs: number;
+    }
+  | { ok: false; error: string } {
   const name = String(params.name ?? '').trim();
   const repoPath = String(params.repo ?? '').trim();
   const target = String(params.target ?? '').trim();
   if (!name) return { ok: false, error: 'name is required' };
-  if (!repoPath) return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
+  if (!repoPath)
+    return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
   if (!target) return { ok: false, error: 'target is required' };
-  if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+  if (
+    params.service !== undefined &&
+    params.service !== null &&
+    String(params.service).trim() === ''
+  ) {
     return { ok: false, error: 'service must not be an empty string' };
   }
   const direction = parseDirection(params.direction);
@@ -292,7 +294,8 @@ function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
   return {
     neighborRepo,
     neighborUid,
-    neighborFilePath: r.neighborFilePath !== undefined ? String(r.neighborFilePath) : String(r[2] ?? ''),
+    neighborFilePath:
+      r.neighborFilePath !== undefined ? String(r.neighborFilePath) : String(r[2] ?? ''),
     matchType: String(r.matchType ?? r[3] ?? 'exact'),
     confidence: Number(r.confidence ?? r[4] ?? 0),
     contractId: String(r.contractId ?? r[5] ?? ''),
@@ -500,17 +503,12 @@ export async function runGroupImpact(
         continue;
       }
 
-      const fan = await deps.port.impactByUid(
-        neighborHandle.id,
-        n.neighborUid,
-        direction,
-        {
-          maxDepth,
-          relationTypes: relationTypes ?? [],
-          minConfidence,
-          includeTests,
-        },
-      );
+      const fan = await deps.port.impactByUid(neighborHandle.id, n.neighborUid, direction, {
+        maxDepth,
+        relationTypes: relationTypes ?? [],
+        minConfidence,
+        includeTests,
+      });
       if (fan == null) {
         truncatedRepos.push(n.neighborRepo);
         continue;

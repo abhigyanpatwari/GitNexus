@@ -53,7 +53,12 @@ describe('cross-impact', () => {
   });
 
   it('test_validateGroupImpactParams_rejects_bad_direction', () => {
-    const r = validateGroupImpactParams({ name: 'g', repo: 'a', target: 't', direction: 'sideways' });
+    const r = validateGroupImpactParams({
+      name: 'g',
+      repo: 'a',
+      target: 't',
+      direction: 'sideways',
+    });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('direction');
   });

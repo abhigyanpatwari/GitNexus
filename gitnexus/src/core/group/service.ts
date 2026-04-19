@@ -8,12 +8,7 @@ import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import { loadGroupConfig } from './config-parser.js';
 import { fileMatchesServicePrefix, normalizeServicePrefix } from './group-path-utils.js';
-import {
-  getDefaultGitnexusDir,
-  getGroupDir,
-  listGroups,
-  readContractRegistry,
-} from './storage.js';
+import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
 import { syncGroup } from './sync.js';
 import type {
   ContractRegistry,
@@ -109,11 +104,17 @@ function isStoredContract(raw: unknown): raw is StoredContract {
 }
 
 function filterQueryByServicePrefix(
-  queryResult: { processes?: Array<Record<string, unknown>>; process_symbols?: Array<Record<string, unknown>> },
+  queryResult: {
+    processes?: Array<Record<string, unknown>>;
+    process_symbols?: Array<Record<string, unknown>>;
+  },
   servicePrefix: string,
 ): { processes: Array<Record<string, unknown>>; process_symbols: Array<Record<string, unknown>> } {
   const symbols = (queryResult.process_symbols || []).filter((s) =>
-    fileMatchesServicePrefix(typeof s.filePath === 'string' ? s.filePath : undefined, servicePrefix),
+    fileMatchesServicePrefix(
+      typeof s.filePath === 'string' ? s.filePath : undefined,
+      servicePrefix,
+    ),
   );
   const allowed = new Set(
     symbols.map((s) => String((s as { process_id?: string }).process_id ?? '')).filter(Boolean),
@@ -135,8 +136,7 @@ function isCrossLink(raw: unknown): raw is CrossLink {
 async function loadContractRegistryResilient(
   groupDir: string,
 ): Promise<
-  | { ok: true; registry: ContractRegistry; skippedCorrupt: number }
-  | { ok: false; error: string }
+  { ok: true; registry: ContractRegistry; skippedCorrupt: number } | { ok: false; error: string }
 > {
   const filePath = path.join(groupDir, 'contracts.json');
   let raw: string;
@@ -206,9 +206,7 @@ async function loadContractRegistryResilient(
       base.repoSnapshots && typeof base.repoSnapshots === 'object' && base.repoSnapshots !== null
         ? (base.repoSnapshots as Record<string, { indexedAt: string; lastCommit: string }>)
         : {},
-    missingRepos: Array.isArray(base.missingRepos)
-      ? (base.missingRepos as string[])
-      : [],
+    missingRepos: Array.isArray(base.missingRepos) ? (base.missingRepos as string[]) : [],
     contracts,
     crossLinks,
   };
@@ -295,7 +293,11 @@ export class GroupService {
     const uid = typeof params.uid === 'string' ? params.uid.trim() : undefined;
     const file_path = typeof params.file_path === 'string' ? params.file_path : undefined;
     const include_content = Boolean(params.include_content);
-    if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+    if (
+      params.service !== undefined &&
+      params.service !== null &&
+      String(params.service).trim() === ''
+    ) {
       return { group: name || '', error: 'service must not be an empty string', results: [] };
     }
     const servicePrefix = normalizeServicePrefix(params.service);
@@ -367,7 +369,11 @@ export class GroupService {
     const name = String(params.name ?? '').trim();
     const queryText = String(params.query ?? '').trim();
     if (!name || !queryText) return { error: 'name and query are required' };
-    if (params.service !== undefined && params.service !== null && String(params.service).trim() === '') {
+    if (
+      params.service !== undefined &&
+      params.service !== null &&
+      String(params.service).trim() === ''
+    ) {
       return { error: 'service must not be an empty string' };
     }
     const servicePrefix = normalizeServicePrefix(params.service);

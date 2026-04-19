@@ -153,7 +153,10 @@ export function parseResourceUri(uri: string): ParsedGitnexusResource {
   }
 
   if (u.hostname === 'group') {
-    const segments = u.pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+    const segments = u.pathname
+      .replace(/^\/+|\/+$/g, '')
+      .split('/')
+      .filter(Boolean);
     if (segments.length < 2) {
       throw new Error(
         `Invalid group resource URI (expected gitnexus://group/{name}/contracts or .../status): ${uri}`,
@@ -186,7 +189,10 @@ export function parseResourceUri(uri: string): ParsedGitnexusResource {
   }
 
   if (u.hostname === 'repo') {
-    const segments = u.pathname.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+    const segments = u.pathname
+      .replace(/^\/+|\/+$/g, '')
+      .split('/')
+      .filter(Boolean);
     if (segments.length < 2) {
       throw new Error(`Unknown resource URI: ${uri}`);
     }
@@ -342,7 +348,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  - gitnexus://repo/${context.projectName}/processes: All execution flows`);
   lines.push(`  - gitnexus://repo/${context.projectName}/cluster/{name}: Module details`);
   lines.push(`  - gitnexus://repo/${context.projectName}/process/{name}: Process trace`);
-  lines.push('  - gitnexus://group/{name}/contracts: Group contract registry (optional ?type=&repo=&unmatchedOnly=)');
+  lines.push(
+    '  - gitnexus://group/{name}/contracts: Group contract registry (optional ?type=&repo=&unmatchedOnly=)',
+  );
   lines.push('  - gitnexus://group/{name}/status: Group index / contract staleness');
 
   return lines.join('\n');
