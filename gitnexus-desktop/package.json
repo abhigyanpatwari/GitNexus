@@ -11,6 +11,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
+    "predev": "node scripts/ensure-gitnexus-runtime.mjs",
     "dev": "electron-vite dev --outDir=dist",
     "start": "electron-vite preview --outDir=dist",
     "bundle": "electron-vite build --outDir=dist",
