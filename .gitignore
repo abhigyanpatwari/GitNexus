@@ -101,3 +101,7 @@ gitnexus/vendor/**/node_modules/
 .swarm/
 
 local_docs/
+
+# Local agent scratch / review prompts (never commit)
+.tmp/
+.agents/

@@ -172,4 +172,46 @@ repos:
     const backend = new LocalBackend();
     await expect(backend.callTool('group_status', { name: 'g1' })).rejects.toThrow(/Removed tools/);
   });
+
+  describe('Issue #794 manual smoke checklist (automated)', () => {
+    beforeEach(() => {
+      const groupDir = path.join(tmpDir, 'groups', 'myproduct');
+      fs.mkdirSync(groupDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(groupDir, 'group.yaml'),
+        `version: 1
+name: myproduct
+repos:
+  app/backend: test-backend
+  app/frontend: test-frontend
+`,
+      );
+    });
+
+    it.each([
+      {
+        method: 'impact',
+        params: { repo: '@myproduct', target: 'UserService.login', service: 'app/backend' },
+        spy: () => groupSpyImpact,
+      },
+      {
+        method: 'query',
+        params: { repo: '@myproduct', query: 'login', service: 'app/backend' },
+        spy: () => groupSpyQuery,
+      },
+      {
+        method: 'context',
+        params: { repo: '@myproduct', target: 'UserService.login', service: 'app/backend' },
+        spy: () => groupSpyContext,
+      },
+    ])('$method with repo "@myproduct" routes to GroupService and forwards service', async ({ method, params, spy }) => {
+      const backend = new LocalBackend();
+      await backend.callTool(method, params);
+      expect(spy()).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'myproduct', service: 'app/backend' }),
+      );
+      const callArg = spy().mock.calls[0][0] as Record<string, unknown>;
+      expect(typeof callArg.repo === 'string' ? (callArg.repo as string).startsWith('@') : false).toBe(false);
+    });
+  });
 });

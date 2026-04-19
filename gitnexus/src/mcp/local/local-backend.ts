@@ -2659,6 +2659,47 @@ export class LocalBackend {
   }
 
   /**
+   * MCP resource body for `gitnexus://group/{name}/contracts` (Issue #794).
+   */
+  async readGroupContractsResource(
+    groupName: string,
+    filter: { type?: string; repo?: string; unmatchedOnly?: boolean },
+  ): Promise<string> {
+    try {
+      const params: Record<string, unknown> = { name: groupName };
+      if (filter.type !== undefined) params.type = filter.type;
+      if (filter.repo !== undefined) params.repo = filter.repo;
+      if (filter.unmatchedOnly === true) params.unmatchedOnly = true;
+      const raw = await this.getGroupService().groupContracts(params);
+      return LocalBackend.formatGroupResourcePayload(raw);
+    } catch (e) {
+      return `error: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  /**
+   * MCP resource body for `gitnexus://group/{name}/status` (Issue #794).
+   */
+  async readGroupStatusResource(groupName: string): Promise<string> {
+    try {
+      const raw = await this.getGroupService().groupStatus({ name: groupName });
+      return LocalBackend.formatGroupResourcePayload(raw);
+    } catch (e) {
+      return `error: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  private static formatGroupResourcePayload(raw: unknown): string {
+    if (raw && typeof raw === 'object' && 'error' in raw) {
+      const err = (raw as { error?: unknown }).error;
+      if (typeof err === 'string' && err.length > 0) {
+        return `error: ${err}`;
+      }
+    }
+    return JSON.stringify(raw, null, 2);
+  }
+
+  /**
    * Fetch Route nodes with their consumers in a single query.
    * Shared by routeMap and shapeCheck to avoid N+1 query patterns.
    */

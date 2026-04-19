@@ -12,6 +12,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   getResourceDefinitions,
   getResourceTemplates,
+  parseResourceUri,
   readResource,
 } from '../../src/mcp/resources.js';
 
@@ -36,6 +37,12 @@ function createMockBackend(overrides: Partial<Record<string, any>> = {}): any {
     queryProcessDetail: vi
       .fn()
       .mockResolvedValue(overrides.processDetail ?? { error: 'Not found' }),
+    readGroupContractsResource: vi
+      .fn()
+      .mockResolvedValue(overrides.groupContractsBody ?? 'contracts: []\n'),
+    readGroupStatusResource: vi
+      .fn()
+      .mockResolvedValue(overrides.groupStatusBody ?? 'group: mock\n'),
     ...overrides,
   };
 }
@@ -73,12 +80,12 @@ describe('getResourceDefinitions', () => {
 });
 
 describe('getResourceTemplates', () => {
-  it('returns 6 dynamic templates', () => {
+  it('returns 8 dynamic templates', () => {
     const templates = getResourceTemplates();
-    expect(templates).toHaveLength(6);
+    expect(templates).toHaveLength(8);
   });
 
-  it('includes context, clusters, processes, schema, cluster detail, process detail', () => {
+  it('includes context, clusters, processes, schema, cluster detail, process detail, group contracts/status', () => {
     const templates = getResourceTemplates();
     const uris = templates.map((t) => t.uriTemplate);
     expect(uris).toContain('gitnexus://repo/{name}/context');
@@ -87,6 +94,8 @@ describe('getResourceTemplates', () => {
     expect(uris).toContain('gitnexus://repo/{name}/schema');
     expect(uris).toContain('gitnexus://repo/{name}/cluster/{clusterName}');
     expect(uris).toContain('gitnexus://repo/{name}/process/{processName}');
+    expect(uris).toContain('gitnexus://group/{name}/contracts');
+    expect(uris).toContain('gitnexus://group/{name}/status');
   });
 
   it('each template has uriTemplate, name, description, mimeType', () => {
@@ -96,6 +105,61 @@ describe('getResourceTemplates', () => {
       expect(tmpl.description).toBeTruthy();
       expect(tmpl.mimeType).toBeTruthy();
     }
+  });
+});
+
+describe('parseResourceUri', () => {
+  it('parses group contracts without query', () => {
+    const p = parseResourceUri('gitnexus://group/acme/contracts');
+    expect(p).toEqual({
+      kind: 'group',
+      groupName: 'acme',
+      resourceType: 'contracts',
+      contractsFilter: {},
+    });
+  });
+
+  it('parses nested group name and contracts query params', () => {
+    const p = parseResourceUri(
+      'gitnexus://group/acme/billing/contracts?type=http&repo=app%2Fapi&unmatchedOnly=true',
+    );
+    expect(p.kind).toBe('group');
+    if (p.kind !== 'group' || p.resourceType !== 'contracts') throw new Error('unexpected');
+    expect(p.groupName).toBe('acme/billing');
+    expect(p.contractsFilter).toEqual({
+      type: 'http',
+      repo: 'app/api',
+      unmatchedOnly: true,
+    });
+  });
+
+  it('coerces unmatchedOnly false from string', () => {
+    const p = parseResourceUri('gitnexus://group/g1/contracts?unmatchedOnly=false');
+    expect(p.kind).toBe('group');
+    if (p.kind !== 'group' || p.resourceType !== 'contracts') throw new Error('unexpected');
+    expect(p.contractsFilter.unmatchedOnly).toBe(false);
+  });
+
+  it('parses group status', () => {
+    const p = parseResourceUri('gitnexus://group/my/product/status');
+    expect(p).toEqual({
+      kind: 'group',
+      groupName: 'my/product',
+      resourceType: 'status',
+    });
+  });
+
+  it('round-trips repo URI like legacy regex', () => {
+    const p = parseResourceUri('gitnexus://repo/my%20project/schema');
+    expect(p).toEqual({
+      kind: 'repo',
+      repoName: 'my project',
+      resourceType: 'schema',
+    });
+  });
+
+  it('rejects unknown group resource tail', () => {
+    expect(() => parseResourceUri('gitnexus://group/foo/bar')).toThrow('Unknown group resource');
   });
 });
 
@@ -147,6 +211,22 @@ describe('readResource', () => {
     const backend = createMockBackend({ repos: [] });
     const result = await readResource('gitnexus://setup', backend);
     expect(result).toContain('No repositories indexed');
+  });
+
+  it('routes group contracts resource through backend', async () => {
+    const backend = createMockBackend();
+    const uri = 'gitnexus://group/g1/contracts?type=http&unmatchedOnly=true';
+    await readResource(uri, backend);
+    expect(backend.readGroupContractsResource).toHaveBeenCalledWith('g1', {
+      type: 'http',
+      unmatchedOnly: true,
+    });
+  });
+
+  it('routes group status resource through backend', async () => {
+    const backend = createMockBackend();
+    await readResource('gitnexus://group/acme/status', backend);
+    expect(backend.readGroupStatusResource).toHaveBeenCalledWith('acme');
   });
 
   it('routes gitnexus://repo/{name}/context correctly', async () => {
