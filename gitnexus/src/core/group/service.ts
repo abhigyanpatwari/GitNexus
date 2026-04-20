@@ -327,6 +327,14 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (e) {
+      if (e instanceof GroupNotFoundError)
+        return {
+          group: name,
+          target: target || uid,
+          service: servicePrefix,
+          error: `Group "${name}" not found. Run group_list to see configured groups.`,
+          results: [],
+        };
       return {
         group: name,
         target: target || uid,
