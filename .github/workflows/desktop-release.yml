@@ -1,0 +1,82 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+# Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions -- Concurrency Convention".
+# Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the
+# same tag serialize. cancel-in-progress: false -- never cancel a publish mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      GH_TOKEN: ${{ github.token }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows NSIS
+            command: npm run build:win
+            asset_pattern: gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
+          - os: macos-latest
+            label: macOS DMG
+            command: npm run build:mac
+            asset_pattern: gitnexus-desktop/release/*/*.dmg
+          - os: ubuntu-latest
+            label: Linux AppImage
+            command: npm run build:linux
+            asset_pattern: gitnexus-desktop/release/*/*.AppImage
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gitnexus-desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: gitnexus-desktop
+
+      - name: Build desktop package
+        run: ${{ matrix.command }}
+        working-directory: gitnexus-desktop
+
+      - name: Ensure GitHub Release exists
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "GitNexus Desktop $GITHUB_REF_NAME" \
+            --notes "" || gh release view "$GITHUB_REF_NAME" >/dev/null
+
+      - name: Upload desktop asset to GitHub Release
+        shell: bash
+        run: |
+          pattern='${{ matrix.asset_pattern }}'
+          mapfile -t files < <(compgen -G "$pattern")
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No files matched pattern: $pattern"
+            exit 1
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
