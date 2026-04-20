@@ -124,10 +124,10 @@ describe('C# ambiguous symbol resolution', () => {
 
     // The key invariant: no edge points to Other/
     if (extends_[0].targetFilePath) {
-      expect(extends_[0].targetFilePath).not.toMatch(/Other\//);
+      expect(extends_[0].targetFilePath).not.toContain('Other/');
     }
     if (implements_[0].targetFilePath) {
-      expect(implements_[0].targetFilePath).not.toMatch(/Other\//);
+      expect(implements_[0].targetFilePath).not.toContain('Other/');
     }
   });
 });
@@ -2046,5 +2046,79 @@ describe('C# interface-to-interface heritage', () => {
   it('emits exactly 4 IMPLEMENTS edges total', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     expect(implements_.length).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# parse completeness regression (#903)
+// ---------------------------------------------------------------------------
+
+describe('C# parse completeness (#903 regression)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-hello'), () => {});
+  }, 60000);
+
+  it('parse phase completes without error (no crash)', () => {
+    expect(result).toBeDefined();
+    expect(result.graph).toBeDefined();
+  });
+
+  it('emits Class node for Greeter', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Greeter');
+  });
+
+  it('emits Interface node for IFoo', () => {
+    const interfaces = getNodesByLabel(result, 'Interface');
+    expect(interfaces).toContain('IFoo');
+  });
+
+  it('emits Method nodes for Greet, Main, and Bar', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Greet');
+    expect(methods).toContain('Main');
+    expect(methods).toContain('Bar');
+  });
+
+  it('Greet has parameterCount=1 and returnType=string', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const greet = methods.find((m) => m.name === 'Greet');
+    expect(greet).toBeDefined();
+    expect(greet!.properties.parameterCount).toBe(1);
+    expect(greet!.properties.returnType).toBe('string');
+    expect(greet!.properties.visibility).toBe('public');
+  });
+
+  it('Main has parameterCount=1 and isStatic=true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const main = methods.find((m) => m.name === 'Main');
+    expect(main).toBeDefined();
+    expect(main!.properties.parameterCount).toBe(1);
+    expect(main!.properties.isStatic).toBe(true);
+    expect(main!.properties.visibility).toBe('public');
+  });
+
+  it('Bar is abstract with parameterCount=0 and returnType=void', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const bar = methods.find((m) => m.name === 'Bar');
+    expect(bar).toBeDefined();
+    expect(bar!.properties.parameterCount).toBe(0);
+    expect(bar!.properties.isAbstract).toBe(true);
+    expect(bar!.properties.returnType).toBe('void');
+  });
+
+  it('emits HAS_METHOD edges linking Greeter to its methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const targets = edgeSet(hasMethod);
+    expect(targets).toContain('Greeter → Greet');
+    expect(targets).toContain('Greeter → Main');
+  });
+
+  it('emits HAS_METHOD edge linking IFoo to Bar', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const targets = edgeSet(hasMethod);
+    expect(targets).toContain('IFoo → Bar');
   });
 });
