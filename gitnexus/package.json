@@ -60,7 +60,7 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "glob": "^13.0.6",
-    "graphology": "^0.25.4",
+    "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
