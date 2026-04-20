@@ -81,7 +81,7 @@
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
-    "uuid": "^13.0.0"
+    "uuid": "^14.0.0"
   },
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
