@@ -430,7 +430,20 @@ const sendStaticResponse = (assetPath: string | null, response: ServerResponse):
 
 const handlePackagedWebRequest = (request: IncomingMessage, response: ServerResponse): void => {
   const requestUrl = request.url ?? '/';
-  const requestedPath = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
+  let requestedPath: string;
+
+  try {
+    requestedPath = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
+  } catch (error) {
+    if (error instanceof URIError) {
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('Bad request');
+      return;
+    }
+
+    throw error;
+  }
+
   sendStaticResponse(normalizeStaticPath(GITNEXUS_WEB_PACKAGED_DIR, requestedPath), response);
 };
 
@@ -611,7 +624,7 @@ const loadShellRenderer = async (window: BrowserWindow): Promise<void> => {
     return;
   }
 
-  const rendererEntry = path.join(__dirname, '../renderer/src/renderer/index.html');
+  const rendererEntry = path.join(__dirname, '../renderer/index.html');
   console.info(`[gitnexus-desktop] Loading shell renderer file: ${rendererEntry}`);
   await window.loadFile(rendererEntry);
 };
