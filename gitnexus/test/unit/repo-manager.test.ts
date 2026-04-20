@@ -15,7 +15,11 @@ import {
   loadCLIConfig,
   registerRepo,
   listRegisteredRepos,
+  resolveRegistryEntry,
   RegistryNameCollisionError,
+  RegistryNotFoundError,
+  RegistryAmbiguousTargetError,
+  type RegistryEntry,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
@@ -451,5 +455,153 @@ describe('getInferredRepoName + registerRepo (#979 — git remote inference)', (
     } finally {
       await tmp.cleanup();
     }
+  });
+});
+
+// ─── resolveRegistryEntry (#664 — gitnexus remove <target>) ──────────
+//
+// The resolver is a pure function over a `RegistryEntry[]` snapshot, so
+// these tests build synthetic entries inline and do NOT touch
+// ~/.gitnexus. No GITNEXUS_HOME sandboxing needed. This also means the
+// tests are platform-portable on Windows where realpath semantics on
+// tmpdirs can diverge between runs (see the #955 CI pivot).
+
+describe('resolveRegistryEntry (#664)', () => {
+  // A well-known synthetic registry with two same-name entries (which
+  // can only exist in reality after `--allow-duplicate-name` — #829) and
+  // one unique-name entry. Path prefixes differ across platforms so the
+  // tests stay meaningful regardless of `process.platform`.
+  const prefix = process.platform === 'win32' ? 'D:\\' : '/tmp/';
+  const pathA = `${prefix}projects${path.sep}gnx-a${path.sep}app`;
+  const pathB = `${prefix}projects${path.sep}gnx-b${path.sep}app`;
+  const pathW = `${prefix}work${path.sep}website`;
+
+  const entries: RegistryEntry[] = [
+    {
+      name: 'app',
+      path: pathA,
+      storagePath: `${pathA}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'aaaaaaa',
+    },
+    {
+      name: 'app',
+      path: pathB,
+      storagePath: `${pathB}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'bbbbbbb',
+    },
+    {
+      name: 'website',
+      path: pathW,
+      storagePath: `${pathW}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'ccccccc',
+    },
+  ];
+
+  it('resolves by absolute path to the exact entry (path tier beats name tier)', () => {
+    const hit = resolveRegistryEntry(entries, pathA);
+    expect(hit).toBe(entries[0]);
+    expect(hit.path).toBe(pathA);
+
+    const hit2 = resolveRegistryEntry(entries, pathB);
+    expect(hit2).toBe(entries[1]);
+    expect(hit2.path).toBe(pathB);
+  });
+
+  it('resolves by unique name to the only matching entry', () => {
+    const hit = resolveRegistryEntry(entries, 'website');
+    expect(hit).toBe(entries[2]);
+    expect(hit.name).toBe('website');
+  });
+
+  it('name match is case-insensitive', () => {
+    expect(resolveRegistryEntry(entries, 'WEBSITE')).toBe(entries[2]);
+    expect(resolveRegistryEntry(entries, 'Website')).toBe(entries[2]);
+  });
+
+  it('path match is case-insensitive on Windows only', () => {
+    if (process.platform !== 'win32') {
+      // On POSIX, a differently-cased path must NOT match. Verify by
+      // lower-casing a mixed-case copy of pathW and expecting a miss.
+      const upper = pathW.toUpperCase();
+      expect(() => resolveRegistryEntry(entries, upper)).toThrow(RegistryNotFoundError);
+      return;
+    }
+    const upper = pathA.toUpperCase();
+    const hit = resolveRegistryEntry(entries, upper);
+    expect(hit).toBe(entries[0]);
+  });
+
+  it('throws RegistryAmbiguousTargetError when name matches multiple entries', () => {
+    // Two 'app' entries exist only because of --allow-duplicate-name
+    // (#829). The resolver MUST refuse to guess.
+    expect(() => resolveRegistryEntry(entries, 'app')).toThrow(RegistryAmbiguousTargetError);
+    try {
+      resolveRegistryEntry(entries, 'app');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryAmbiguousTargetError);
+      const err = e as RegistryAmbiguousTargetError;
+      expect(err.kind).toBe('RegistryAmbiguousTargetError');
+      expect(err.target).toBe('app');
+      expect(err.matches).toHaveLength(2);
+      // Error message must include both paths so the CLI can surface
+      // them without string-matching on `.message`.
+      expect(err.message).toContain(pathA);
+      expect(err.message).toContain(pathB);
+    }
+  });
+
+  it('throws RegistryNotFoundError when no entry matches', () => {
+    expect(() => resolveRegistryEntry(entries, 'nonexistent')).toThrow(RegistryNotFoundError);
+    try {
+      resolveRegistryEntry(entries, 'nonexistent');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryNotFoundError);
+      const err = e as RegistryNotFoundError;
+      expect(err.kind).toBe('RegistryNotFoundError');
+      expect(err.target).toBe('nonexistent');
+      // availableNames is disambiguated: 'app' appears twice, so both
+      // `app (path)` variants are included; 'website' is unique so it
+      // stays plain — matches the resolveRepo disambiguation shape.
+      expect(err.availableNames).toContain('website');
+      expect(err.availableNames.some((n) => n.startsWith('app ('))).toBe(true);
+      // Error message surfaces the hint.
+      expect(err.message).toContain('website');
+    }
+  });
+
+  it('throws RegistryNotFoundError with "no repositories registered" hint when registry is empty', () => {
+    try {
+      resolveRegistryEntry([], 'anything');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryNotFoundError);
+      const err = e as RegistryNotFoundError;
+      expect(err.availableNames).toEqual([]);
+      expect(err.message).toContain('No repositories are currently registered');
+    }
+  });
+
+  it('path match wins over name match (never ambiguous)', () => {
+    // Construct a pathological fixture where a registry entry's NAME
+    // happens to equal another entry's PATH. The path tier must win
+    // without triggering ambiguity.
+    const weird: RegistryEntry[] = [
+      { ...entries[2] }, // 'website' at pathW
+      {
+        name: pathW, // degenerate: name equals another entry's path
+        path: `${prefix}elsewhere${path.sep}odd`,
+        storagePath: `${prefix}elsewhere${path.sep}odd${path.sep}.gitnexus`,
+        indexedAt: '2026-04-18T00:00:00.000Z',
+        lastCommit: 'ddddddd',
+      },
+    ];
+    const hit = resolveRegistryEntry(weird, pathW);
+    // Must match the entry whose PATH is pathW, not the one whose NAME
+    // is pathW — because Tier 1 runs before Tier 2 and finds the path
+    // match first.
+    expect(hit.path).toBe(pathW);
+    expect(hit.name).toBe('website');
   });
 });

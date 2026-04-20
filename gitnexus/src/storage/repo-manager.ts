@@ -431,6 +431,115 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
 };
 
 /**
+ * Thrown by {@link resolveRegistryEntry} when no registered repo matches
+ * the caller's target string (by alias, basename, remote-inferred name,
+ * or resolved path). CLI callers that want idempotent "remove" semantics
+ * should catch this and exit 0 with a warning; non-idempotent callers
+ * (e.g. MCP tools) can surface the error directly.
+ */
+export class RegistryNotFoundError extends Error {
+  readonly kind = 'RegistryNotFoundError' as const;
+  constructor(
+    public readonly target: string,
+    public readonly availableNames: string[],
+  ) {
+    const hint =
+      availableNames.length > 0
+        ? ` Available: ${availableNames.join(', ')}.`
+        : ' No repositories are currently registered.';
+    super(`No registered repo matches "${target}".${hint}`);
+    this.name = 'RegistryNotFoundError';
+  }
+}
+
+/**
+ * Thrown by {@link resolveRegistryEntry} when the target string matches
+ * the `name` of two or more entries — only possible when the user
+ * previously registered duplicates via `analyze --name X
+ * --allow-duplicate-name` (#829). The error carries enough information
+ * for the caller to render an actionable disambiguation hint without
+ * string-matching on `.message`.
+ *
+ * `kind` is a string literal discriminant (same pattern as
+ * {@link RegistryNameCollisionError}) so callers can narrow via
+ * `err.kind === 'RegistryAmbiguousTargetError'` without importing the
+ * class.
+ */
+export class RegistryAmbiguousTargetError extends Error {
+  readonly kind = 'RegistryAmbiguousTargetError' as const;
+  constructor(
+    public readonly target: string,
+    public readonly matches: RegistryEntry[],
+  ) {
+    const listing = matches.map((m) => `  - ${m.name}  (${m.path})`).join('\n');
+    super(
+      `Multiple registered repos match "${target}":\n${listing}\n` +
+        `Pass the absolute path instead to disambiguate.`,
+    );
+    this.name = 'RegistryAmbiguousTargetError';
+  }
+}
+
+/**
+ * Resolve a user-supplied target string (from `gitnexus remove <target>`
+ * or equivalent MCP tool argument) to a single registry entry.
+ *
+ * Match precedence (first hit wins, subsequent tiers are only tried if
+ * the prior tier produces zero matches):
+ *   1. Exact resolved-path match (Windows: case-insensitive).
+ *      Paths are unique by registry construction, so a path match can
+ *      never be ambiguous.
+ *   2. Exact `name` match (case-insensitive). If ≥ 2 entries share the
+ *      name — only possible via `--allow-duplicate-name` (#829) —
+ *      throws {@link RegistryAmbiguousTargetError}.
+ *
+ * No fuzzy / partial matching — unambiguous, scriptable behaviour is
+ * more important than convenience for destructive commands.
+ *
+ * Throws {@link RegistryNotFoundError} if no entry matches.
+ *
+ * `entries` is passed in (rather than re-read) so callers that already
+ * hold the registry snapshot (e.g. to print a "before" state) can avoid
+ * a second disk read, and so tests can inject fixtures without touching
+ * `GITNEXUS_HOME`.
+ */
+export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): RegistryEntry => {
+  // Tier 1: path match. Normalise both sides the same way
+  // `registerRepo` / `unregisterRepo` do.
+  const resolvedTarget = path.resolve(target);
+  const pathMatch = entries.find((e) => {
+    const a = path.resolve(e.path);
+    const b = resolvedTarget;
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  });
+  if (pathMatch) return pathMatch;
+
+  // Tier 2: name match. Case-insensitive on all platforms — registry
+  // name collisions are already filtered case-insensitively in
+  // `registerRepo`, so "APP" vs "app" are considered the same key.
+  const targetLower = target.toLowerCase();
+  const nameMatches = entries.filter((e) => e.name.toLowerCase() === targetLower);
+  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length > 1) {
+    throw new RegistryAmbiguousTargetError(target, nameMatches);
+  }
+
+  // Tier 3: miss. Build the available-names hint ONCE; resolveRepo-style
+  // disambiguated labels (`app (/path)`) are applied when the same name
+  // appears in multiple entries so the user sees the same hint shape as
+  // `-r <name>` errors.
+  const nameCounts = new Map<string, number>();
+  for (const e of entries) {
+    const key = e.name.toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  const availableNames = entries.map((e) =>
+    (nameCounts.get(e.name.toLowerCase()) ?? 0) > 1 ? `${e.name} (${e.path})` : e.name,
+  );
+  throw new RegistryNotFoundError(target, availableNames);
+};
+
+/**
  * List all registered repos from the global registry.
  * Optionally validates that each entry's .gitnexus/ still exists.
  */

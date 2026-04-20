@@ -345,6 +345,177 @@ describe('CLI end-to-end', () => {
     }, 360000); // 6-min outer budget (4 × ~60s analyze calls + fixture setup)
   });
 
+  // ─── gitnexus remove <target> (#664) ─────────────────────────────
+  //
+  // End-to-end regression guard for the remove command:
+  //   1. `remove <alias>` without --force is a dry-run (exit 0, preserves state)
+  //   2. `remove <alias> --force` deletes the .gitnexus/ directory
+  //      AND unregisters from the global registry
+  //   3. `remove <unknown>` is idempotent (exit 0 with a warning)
+  //   4. `remove <ambiguous>` (two entries share the alias via
+  //      --allow-duplicate-name) exits 1 with a disambiguation hint
+  //      and leaves the registry unchanged.
+  //
+  // Every assertion reads the real registry.json on disk, so any
+  // regression in remove.ts → resolveRegistryEntry → unregisterRepo
+  // will surface here.
+  describe('remove <target> (#664)', () => {
+    it('dry-run lists, --force deletes, missing target is a no-op warning', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-remove-'));
+      const repoA = makeMiniRepoCopy('remove-me', 'gn-rm-a-');
+      const parentA = path.dirname(repoA);
+
+      try {
+        // Index the repo under a custom alias so we can target it by
+        // name below. `--name` guarantees a stable alias regardless of
+        // how the host resolves the basename/remote-inferred name.
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'alias-a'],
+          repoA,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(
+          r1.status,
+          [`analyze exited with ${r1.status}`, `stdout: ${r1.stdout}`, `stderr: ${r1.stderr}`].join(
+            '\n',
+          ),
+        ).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const afterIndex = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterIndex).toHaveLength(1);
+        expect(afterIndex[0].name).toBe('alias-a');
+        // Storage dir must exist before remove so we can assert its
+        // disappearance below.
+        const storagePath = afterIndex[0].storagePath;
+        expect(fs.existsSync(storagePath)).toBe(true);
+
+        // Dry-run: must NOT delete. Use parentA as cwd so the test
+        // never runs with the to-be-removed storage dir as its cwd.
+        const r2 = runCliWithEnv(['remove', 'alias-a'], parentA, { GITNEXUS_HOME: gnHome }, 15000);
+        if (r2.status === null) return;
+        expect(r2.status).toBe(0);
+        const r2Output = `${r2.stdout}${r2.stderr}`;
+        expect(r2Output).toMatch(/Run with --force/i);
+        expect(fs.existsSync(storagePath)).toBe(true);
+        // Registry still has the entry.
+        expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(1);
+
+        // --force: must delete storage AND unregister.
+        const r3 = runCliWithEnv(
+          ['remove', 'alias-a', '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r3.status === null) return;
+        expect(
+          r3.status,
+          [
+            `remove --force exited with ${r3.status}`,
+            `stdout: ${r3.stdout}`,
+            `stderr: ${r3.stderr}`,
+          ].join('\n'),
+        ).toBe(0);
+        expect(`${r3.stdout}${r3.stderr}`).toMatch(/Removed/i);
+        expect(fs.existsSync(storagePath)).toBe(false);
+        expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(0);
+
+        // Idempotent: removing the same alias AGAIN must exit 0 with a
+        // warning (so `remove X && analyze Y` keeps working in scripts).
+        const r4 = runCliWithEnv(['remove', 'alias-a'], parentA, { GITNEXUS_HOME: gnHome }, 15000);
+        if (r4.status === null) return;
+        expect(r4.status).toBe(0);
+        expect(`${r4.stdout}${r4.stderr}`).toMatch(/Nothing to remove/i);
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentA, { recursive: true, force: true });
+      }
+    }, 180000); // 3-min outer budget (1 × ~60s analyze + 3 × fast remove calls)
+
+    it('ambiguous target (two entries share alias via --allow-duplicate-name) errors without mutating registry', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-rm-amb-'));
+      const repoA = makeMiniRepoCopy('dup', 'gn-dup-a-');
+      const repoB = makeMiniRepoCopy('dup', 'gn-dup-b-');
+      const parentA = path.dirname(repoA);
+      const parentB = path.dirname(repoB);
+
+      try {
+        // Two repos registered under the same alias — only possible via
+        // --allow-duplicate-name (#829).
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'shared'],
+          repoA,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(r1.status).toBe(0);
+
+        const r2 = runCliWithEnv(
+          ['analyze', '--name', 'shared', '--allow-duplicate-name'],
+          repoB,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r2.status === null) return;
+        expect(r2.status).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const before = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(before).toHaveLength(2);
+
+        // `remove shared` must refuse to guess — exit 1, disambiguation hint.
+        const r3 = runCliWithEnv(
+          ['remove', 'shared', '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r3.status === null) return;
+        expect(r3.status).toBe(1);
+        const r3Output = `${r3.stdout}${r3.stderr}`;
+        expect(r3Output).toMatch(/Multiple registered repos match/i);
+        // Both paths must be surfaced in the hint so the user knows
+        // which ones to disambiguate between.
+        expect(r3Output).toMatch(/dup/);
+
+        // Registry unchanged — the failed resolution must NOT have
+        // mutated state.
+        const after = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(after).toHaveLength(2);
+
+        // And path-based remove still works: pass the absolute path of
+        // repoA and it resolves unambiguously.
+        const r4 = runCliWithEnv(
+          ['remove', repoA, '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r4.status === null) return;
+        expect(
+          r4.status,
+          [
+            `remove-by-path exited with ${r4.status}`,
+            `stdout: ${r4.stdout}`,
+            `stderr: ${r4.stderr}`,
+          ].join('\n'),
+        ).toBe(0);
+        const finalEntries = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(finalEntries).toHaveLength(1);
+        // The survivor is repoB (its path stays in the registry).
+        expect(path.basename(finalEntries[0].path)).toBe('dup');
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentA, { recursive: true, force: true });
+        fs.rmSync(parentB, { recursive: true, force: true });
+      }
+    }, 240000); // 4-min outer budget (2 × ~60s analyze + 2 × fast remove)
+  });
+
   describe('unhappy path', () => {
     it('exits with error when no command is given', () => {
       const result = runCliRaw([], MINI_REPO);
