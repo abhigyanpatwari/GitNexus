@@ -155,6 +155,23 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   const scopesById = new Map<ScopeId, ParsedFile['scopes'][number]>();
   for (const scope of parsed.scopes) scopesById.set(scope.id, scope);
 
+  // Promote a def's qualifiedName from `methodName` to `ClassName.methodName`
+  // when the def sits inside a class. Without this, two classes in the
+  // same file that share a method name collide at the graph-bridge lookup
+  // (`node-lookup.ts` keys by (filePath, qualifiedName) and falls back to
+  // simple name only). Python's `scopes.scm` doesn't emit
+  // `@declaration.qualified_name` for nested methods, so the finalized
+  // defs arrive here with simple names — we stamp the qualifier while
+  // we're already walking class scopes for ownerId.
+  const qualify = (def: SymbolDefinition, classDef: SymbolDefinition): void => {
+    const q = def.qualifiedName;
+    if (q === undefined || q.length === 0) return;
+    if (q.includes('.')) return; // already qualified (dotted)
+    const classQ = classDef.qualifiedName;
+    if (classQ === undefined || classQ.length === 0) return;
+    (def as { qualifiedName: string }).qualifiedName = `${classQ}.${q}`;
+  };
+
   for (const scope of parsed.scopes) {
     // Methods: function scope whose parent is a Class scope. Owner is
     // the parent's Class def.
@@ -165,6 +182,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
         if (classDef !== undefined) {
           for (const def of scope.ownedDefs) {
             (def as { ownerId?: string }).ownerId = classDef.nodeId;
+            qualify(def, classDef);
           }
         }
       }
@@ -177,6 +195,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
         for (const def of scope.ownedDefs) {
           if (def === classDef) continue;
           (def as { ownerId?: string }).ownerId = classDef.nodeId;
+          qualify(def, classDef);
         }
       }
     }

@@ -1,7 +1,7 @@
 /**
  * Phase: scopeResolution
  *
- * Generic registry-primary resolution phase (RFC #909 Ring 4).
+ * Generic registry-primary resolution phase (RFC #909 Ring 3).
  *
  * For every language in `MIGRATED_LANGUAGES` (per-language flag set)
  * whose provider is registered in `SCOPE_RESOLVERS`:
@@ -72,7 +72,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
   // already-existing Symbol nodes (Function/Method/Class). The legacy
   // `parse` phase still creates those nodes; we only replace the
   // import + call resolution layer.
-  deps: ['parse', 'structure'],
+  //
+  // Also depends on `crossFile` — we don't read crossFile's output
+  // directly (we have our own cross-file resolution), but crossFile
+  // writes EXTENDS edges that `buildMro` consumes via
+  // `iterRelationshipsByType('EXTENDS')`. Declaring the dep pins the
+  // ordering explicitly: without it, Kahn's runner could schedule
+  // scopeResolution before crossFile (both unblock after parse), and
+  // the MRO walk would miss heritage edges crossFile later adds.
+  deps: ['parse', 'crossFile', 'structure'],
 
   async execute(
     ctx: PipelineContext,

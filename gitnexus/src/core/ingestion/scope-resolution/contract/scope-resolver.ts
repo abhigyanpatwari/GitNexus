@@ -16,7 +16,8 @@
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
- *      `gitnexus/src/core/ingestion/emit-providers-registry.ts`.
+ *      `gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts`
+ *      (the `SCOPE_RESOLVERS` map).
  *   4. Add `SupportedLanguages.YourLang` to `MIGRATED_LANGUAGES` in
  *      `registry-primary-flag.ts`.
  *   5. Verify the resolver integration test at

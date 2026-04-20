@@ -22,7 +22,16 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { generateId } from '../../../../lib/utils.js';
 import { isLinkableLabel, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 
-/** Look up a `SymbolDefinition` in the graph node lookup by file+name. */
+/**
+ * Look up a `SymbolDefinition` in the graph node lookup.
+ *
+ * Tries the fully-qualified name FIRST — that's the only correct key
+ * when two classes in the same file define a method with the same
+ * simple name (`class User: def save` + `class Document: def save`).
+ * Falls back to the simple name for definitions whose qualifier the
+ * lookup didn't capture (rare, but keeps cross-file simple-name
+ * resolution working).
+ */
 export function resolveDefGraphId(
   filePath: string,
   def: { qualifiedName?: string },
@@ -30,6 +39,8 @@ export function resolveDefGraphId(
 ): string | undefined {
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
+  const qualifiedHit = nodeLookup.get(`${filePath}::${qn}`);
+  if (qualifiedHit !== undefined) return qualifiedHit;
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
   return nodeLookup.get(`${filePath}::${simpleName}`);
 }

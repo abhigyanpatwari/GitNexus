@@ -109,7 +109,7 @@ export function runScopeResolution(
   const nodeLookup = buildGraphNodeLookup(graph);
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
 
-  const indexes = finalizeScopeModel(parsedFiles, {
+  const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
       resolveImportTarget: (targetRaw, fromFile) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths),
@@ -118,11 +118,16 @@ export function runScopeResolution(
     },
   });
 
-  // Stitch the MRO into the finalized indexes (same pattern as before
-  // generalization — finalizeScopeModel builds an empty
-  // MethodDispatchIndex by design).
-  (indexes as { methodDispatch: typeof indexes.methodDispatch }).methodDispatch =
-    buildPopulatedMethodDispatch(mroByClassDefId);
+  // Replace the empty MethodDispatchIndex that finalizeScopeModel
+  // builds by design with the populated one derived from the
+  // language's MRO. Spread produces a fresh `ScopeResolutionIndexes`
+  // instead of mutating the finalized result through an `as` cast —
+  // downstream passes get an object whose readonly guarantees match
+  // the type system.
+  const indexes = {
+    ...finalized,
+    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId),
+  };
 
   // Build the workspace resolution index ONCE — turns every
   // findOwnedMember / findExportedDef / classScopeByDefId lookup in

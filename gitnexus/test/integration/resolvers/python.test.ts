@@ -2231,3 +2231,49 @@ describe('Python Grandchild→Child→Parent — 3-level C3 MRO walk (SM-11)', (
     expect(gpCall!.source).toBe('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Same-file method-name collision across classes
+// PR #980 review feedback — without a qualified-name key in the node lookup,
+// User.save and Document.save share the bucket `models.py::save`, so every
+// d.save() CALLS edge silently resolves to the first save() seen.
+// ---------------------------------------------------------------------------
+
+describe('Python same-file method-name collision across classes', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-same-file-method-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('u.save() resolves to User.save, not Document.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromUseUser = saveCalls.find((c) => c.source === 'use_user');
+    expect(fromUseUser).toBeDefined();
+    // targetId encodes qualifier: Method:models.py:User.save#0
+    expect(fromUseUser!.rel.targetId).toContain('User.save');
+    expect(fromUseUser!.rel.targetId).not.toContain('Document.save');
+  });
+
+  it('d.save() resolves to Document.save, not User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromUseDoc = saveCalls.find((c) => c.source === 'use_document');
+    expect(fromUseDoc).toBeDefined();
+    expect(fromUseDoc!.rel.targetId).toContain('Document.save');
+    expect(fromUseDoc!.rel.targetId).not.toContain('User.save');
+  });
+
+  it('exactly two CALLS edges to save() — one per class, no duplication to wrong target', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    expect(saveCalls).toHaveLength(2);
+    const targets = saveCalls.map((c) => c.rel.targetId).sort();
+    expect(targets[0]).toContain('Document.save');
+    expect(targets[1]).toContain('User.save');
+  });
+});
