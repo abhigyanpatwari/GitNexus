@@ -58,12 +58,13 @@ describe('BM25 search', () => {
       // File table: empty; Function table: 5 hits for the same file; rest: empty
       vi.mocked(queryFTS)
         .mockResolvedValueOnce([]) // File
-        .mockResolvedValueOnce([   // Function — 5 hits, scores 10/9/8/7/6
+        .mockResolvedValueOnce([
+          // Function — 5 hits, scores 10/9/8/7/6
           { filePath: 'src/views.py', score: 10, nodeId: 'func:node1', name: 'get_queryset' },
-          { filePath: 'src/views.py', score: 9,  nodeId: 'func:node2', name: 'post' },
-          { filePath: 'src/views.py', score: 8,  nodeId: 'func:node3', name: 'delete' },
-          { filePath: 'src/views.py', score: 7,  nodeId: 'func:node4', name: 'patch' },
-          { filePath: 'src/views.py', score: 6,  nodeId: 'func:node5', name: 'put' },
+          { filePath: 'src/views.py', score: 9, nodeId: 'func:node2', name: 'post' },
+          { filePath: 'src/views.py', score: 8, nodeId: 'func:node3', name: 'delete' },
+          { filePath: 'src/views.py', score: 7, nodeId: 'func:node4', name: 'patch' },
+          { filePath: 'src/views.py', score: 6, nodeId: 'func:node5', name: 'put' },
         ])
         .mockResolvedValueOnce([]) // Class
         .mockResolvedValueOnce([]) // Method
@@ -82,7 +83,8 @@ describe('BM25 search', () => {
       const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(queryFTS)
         .mockResolvedValueOnce([]) // File
-        .mockResolvedValueOnce([   // Function — 2 hits
+        .mockResolvedValueOnce([
+          // Function — 2 hits
           { filePath: 'src/models.py', score: 5, nodeId: 'func:m1', name: 'save' },
           { filePath: 'src/models.py', score: 3, nodeId: 'func:m2', name: 'delete' },
         ])
@@ -101,7 +103,8 @@ describe('BM25 search', () => {
       const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(queryFTS)
         .mockResolvedValueOnce([]) // File
-        .mockResolvedValueOnce([   // Function — nodes with no id
+        .mockResolvedValueOnce([
+          // Function — nodes with no id
           { filePath: 'src/utils.py', score: 5, nodeId: '', name: 'helper' },
           { filePath: 'src/utils.py', score: 3, nodeId: '', name: 'util' },
         ])
@@ -118,13 +121,16 @@ describe('BM25 search', () => {
     it('merges hits across multiple index tables for the same file', async () => {
       const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(queryFTS)
-        .mockResolvedValueOnce([   // File table
+        .mockResolvedValueOnce([
+          // File table
           { filePath: 'src/auth.py', score: 4, nodeId: 'file:auth', name: 'auth.py' },
         ])
-        .mockResolvedValueOnce([   // Function table
+        .mockResolvedValueOnce([
+          // Function table
           { filePath: 'src/auth.py', score: 9, nodeId: 'func:login', name: 'login' },
         ])
-        .mockResolvedValueOnce([   // Class table
+        .mockResolvedValueOnce([
+          // Class table
           { filePath: 'src/auth.py', score: 7, nodeId: 'cls:User', name: 'User' },
         ])
         .mockResolvedValueOnce([]) // Method
@@ -142,8 +148,9 @@ describe('BM25 search', () => {
       const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(queryFTS)
         .mockResolvedValueOnce([]) // File
-        .mockResolvedValueOnce([   // Function — hits across two files
-          { filePath: 'src/low.py',  score: 2, nodeId: 'func:a', name: 'a' },
+        .mockResolvedValueOnce([
+          // Function — hits across two files
+          { filePath: 'src/low.py', score: 2, nodeId: 'func:a', name: 'a' },
           { filePath: 'src/high.py', score: 9, nodeId: 'func:b', name: 'b' },
         ])
         .mockResolvedValueOnce([]) // Class

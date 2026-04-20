@@ -126,7 +126,7 @@ export const searchFTSFromLbug = async (
     merged.set(filePath, {
       filePath,
       score: top3.reduce((acc, e) => acc + e.score, 0),
-      nodeIds: top3.map(e => e.nodeId).filter(id => id),
+      nodeIds: top3.map((e) => e.nodeId).filter((id) => id),
     });
   }
 
