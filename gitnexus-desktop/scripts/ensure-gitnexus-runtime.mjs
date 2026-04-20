@@ -1,5 +1,17 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,10 +21,55 @@ const workspaceRoot = path.resolve(__dirname, '..', '..');
 const sharedRoot = path.join(workspaceRoot, 'gitnexus-shared');
 const gitnexusRoot = path.join(workspaceRoot, 'gitnexus');
 const gitnexusWebRoot = path.join(workspaceRoot, 'gitnexus-web');
+const gitnexusLockfile = JSON.parse(
+  readFileSync(path.join(gitnexusRoot, 'package-lock.json'), 'utf8'),
+);
+const gitnexusPackageJson = JSON.parse(
+  readFileSync(path.join(gitnexusRoot, 'package.json'), 'utf8'),
+);
+const gitnexusModuleResolver = createRequire(path.join(gitnexusRoot, 'package.json'));
 const gitnexusServerEntry = path.join(gitnexusRoot, 'dist', 'server', 'api.js');
 const gitnexusCliEntry = path.join(gitnexusRoot, 'dist', 'cli', 'index.js');
+const gitnexusServerPort = 4747;
+const gitnexusWebDevPort = 5173;
 const desktopRendererPort = 5174;
 const shouldCleanupDevPort = process.argv.includes('--cleanup-dev-port');
+
+const getNodeModulePackagePath = (packageRoot, packageName) => {
+  return path.join(packageRoot, 'node_modules', ...packageName.split('/'));
+};
+
+const getNodeModulePackageJsonPath = (packageRoot, packageName) => {
+  return path.join(packageRoot, 'node_modules', ...packageName.split('/'), 'package.json');
+};
+
+const getLockedPackageInstallSpecifier = (packageName) => {
+  const lockedPackage = gitnexusLockfile.packages?.[`node_modules/${packageName}`];
+  const lockedVersion = lockedPackage?.version;
+
+  if (!lockedVersion || String(lockedVersion).startsWith('file:')) {
+    return null;
+  }
+
+  return lockedVersion;
+};
+
+const getDependencySubset = (dependencyMap, packageNames, overrides = {}) => {
+  return Object.fromEntries(
+    packageNames.map((packageName) => {
+      const versionSpecifier =
+        overrides[packageName] ??
+        getLockedPackageInstallSpecifier(packageName) ??
+        dependencyMap?.[packageName];
+
+      if (!versionSpecifier) {
+        throw new Error(`Missing package specifier for ${packageName}.`);
+      }
+
+      return [packageName, versionSpecifier];
+    }),
+  );
+};
 
 const getEntryMtimeMs = (targetPath) => {
   if (!existsSync(targetPath)) {
@@ -90,10 +147,57 @@ const gitnexusInstallInputs = [
   path.join(sharedRoot, 'package-lock.json'),
 ];
 
-const gitnexusInstallMarkerPaths = [
-  path.join(gitnexusRoot, 'node_modules', 'tsx'),
-  path.join(gitnexusRoot, 'node_modules', 'typescript'),
+const gitnexusDesktopRuntimeDependencyNames = [
+  '@ladybugdb/core',
+  '@modelcontextprotocol/sdk',
+  'cli-progress',
+  'commander',
+  'cors',
+  'express',
+  'glob',
+  'graphology',
+  'graphology-indices',
+  'graphology-utils',
+  'ignore',
+  'js-yaml',
+  'lru-cache',
+  'mnemonist',
+  'pandemonium',
+  'uuid',
 ];
+
+const gitnexusDesktopBuildDependencyNames = ['@types/node', 'gitnexus-shared', 'typescript'];
+
+const gitnexusDesktopRuntimeDependencies = getDependencySubset(
+  gitnexusPackageJson.dependencies ?? {},
+  gitnexusDesktopRuntimeDependencyNames,
+);
+
+const gitnexusDesktopBuildDependencies = getDependencySubset(
+  gitnexusPackageJson.devDependencies ?? {},
+  gitnexusDesktopBuildDependencyNames,
+  { 'gitnexus-shared': `file:${sharedRoot}` },
+);
+
+const gitnexusDesktopRuntimeInstallMarkerPaths = [
+  ...gitnexusDesktopRuntimeDependencyNames.map((packageName) =>
+    getNodeModulePackageJsonPath(gitnexusRoot, packageName),
+  ),
+  path.join(gitnexusRoot, 'node_modules', 'commander', 'index.js'),
+  path.join(gitnexusRoot, 'node_modules', '@ladybugdb', 'core', 'lbugjs.node'),
+];
+
+const gitnexusDesktopRuntimeResolutionChecks = [
+  'commander',
+  '@modelcontextprotocol/sdk/server/index.js',
+  '@modelcontextprotocol/sdk/server/streamableHttp.js',
+  'ignore',
+  'js-yaml',
+];
+
+const gitnexusDesktopBuildInstallMarkerPaths = gitnexusDesktopBuildDependencyNames.map(
+  (packageName) => getNodeModulePackageJsonPath(gitnexusRoot, packageName),
+);
 
 const gitnexusRuntimeInputs = [
   path.join(gitnexusRoot, 'src'),
@@ -116,12 +220,30 @@ const isInstallStale = (inputPaths, installMarkerPaths) => {
   return getNewestMtimeMs(inputPaths) > installMarkerMtimeMs;
 };
 
-const isGitNexusInstallStale = () => {
-  return isInstallStale(gitnexusInstallInputs, gitnexusInstallMarkerPaths);
-};
-
 const isGitNexusSharedInstallStale = () => {
   return isInstallStale(gitnexusSharedInstallInputs, gitnexusSharedInstallMarkerPaths);
+};
+
+const canResolveGitNexusSpecifier = (specifier) => {
+  try {
+    gitnexusModuleResolver.resolve(specifier);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isGitNexusRuntimeInstallStale = () => {
+  return (
+    isInstallStale(gitnexusInstallInputs, gitnexusDesktopRuntimeInstallMarkerPaths) ||
+    gitnexusDesktopRuntimeResolutionChecks.some(
+      (specifier) => !canResolveGitNexusSpecifier(specifier),
+    )
+  );
+};
+
+const isGitNexusBuildInstallStale = () => {
+  return isInstallStale(gitnexusInstallInputs, gitnexusDesktopBuildInstallMarkerPaths);
 };
 
 const isGitNexusBuildStale = () => {
@@ -147,6 +269,56 @@ const runNpm = (args, cwd) => {
 
   if (status !== 0) {
     process.exit(status);
+  }
+};
+
+const overlayDirectoryContents = (sourceDirectory, destinationDirectory) => {
+  mkdirSync(destinationDirectory, { recursive: true });
+
+  for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+    cpSync(path.join(sourceDirectory, entry.name), path.join(destinationDirectory, entry.name), {
+      force: true,
+      recursive: true,
+    });
+  }
+};
+
+const replaceDirectGitNexusPackages = (dependencyMap) => {
+  for (const packageName of Object.keys(dependencyMap)) {
+    rmSync(getNodeModulePackagePath(gitnexusRoot, packageName), {
+      force: true,
+      recursive: true,
+    });
+  }
+};
+
+const repairGitNexusPackages = (dependencyMap, label) => {
+  const repairDirectory = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-desktop-gitnexus-repair-'));
+
+  try {
+    writeFileSync(
+      path.join(repairDirectory, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'gitnexus-desktop-gitnexus-repair',
+          private: true,
+          dependencies: dependencyMap,
+        },
+        null,
+        2,
+      ),
+    );
+
+    console.info(`[gitnexus-desktop] ${label}.`);
+    runNpm(['install', '--no-package-lock'], repairDirectory);
+
+    replaceDirectGitNexusPackages(dependencyMap);
+    overlayDirectoryContents(
+      path.join(repairDirectory, 'node_modules'),
+      path.join(gitnexusRoot, 'node_modules'),
+    );
+  } finally {
+    rmSync(repairDirectory, { force: true, recursive: true });
   }
 };
 
@@ -250,8 +422,56 @@ const ensureDesktopRendererPortAvailable = () => {
   killProcessTree(owner.pid);
 };
 
+const ensureGitNexusWebDevPortAvailable = () => {
+  const owner = findPortOwner(gitnexusWebDevPort);
+
+  if (!owner) {
+    return;
+  }
+
+  const signature = `${owner.name ?? ''} ${owner.commandLine ?? ''}`.toLowerCase();
+  const isGitNexusWebViteProcess = signature.includes('vite') && signature.includes('gitnexus-web');
+
+  if (!isGitNexusWebViteProcess) {
+    console.error(
+      `Port ${gitnexusWebDevPort} is already in use by ${owner.name ?? 'another process'} (PID ${owner.pid}). Stop that process and try again.`,
+    );
+    process.exit(1);
+  }
+
+  console.info(
+    `Stopping stale GitNexus web dev server on port ${gitnexusWebDevPort} (PID ${owner.pid}).`,
+  );
+  killProcessTree(owner.pid);
+};
+
+const ensureGitNexusServerPortAvailable = () => {
+  const owner = findPortOwner(gitnexusServerPort);
+
+  if (!owner) {
+    return;
+  }
+
+  const signature = `${owner.name ?? ''} ${owner.commandLine ?? ''}`.toLowerCase();
+  const isGitNexusServerProcess =
+    (signature.includes('dist\\cli\\index.js') || signature.includes('dist/cli/index.js')) &&
+    signature.includes('serve');
+
+  if (!isGitNexusServerProcess) {
+    console.error(
+      `Port ${gitnexusServerPort} is already in use by ${owner.name ?? 'another process'} (PID ${owner.pid}). Stop that process and try again.`,
+    );
+    process.exit(1);
+  }
+
+  console.info(`Stopping stale GitNexus backend on port ${gitnexusServerPort} (PID ${owner.pid}).`);
+  killProcessTree(owner.pid);
+};
+
 if (shouldCleanupDevPort) {
+  ensureGitNexusServerPortAvailable();
   ensureDesktopRendererPortAvailable();
+  ensureGitNexusWebDevPortAvailable();
 }
 
 if (
@@ -262,9 +482,8 @@ if (
   runNpm(['ci'], sharedRoot);
 }
 
-if (!existsSync(path.join(gitnexusRoot, 'node_modules', 'tsx')) || isGitNexusInstallStale()) {
-  console.info('[gitnexus-desktop] Refreshing GitNexus dependencies.');
-  runNpm(['ci'], gitnexusRoot);
+if (isGitNexusRuntimeInstallStale()) {
+  repairGitNexusPackages(gitnexusDesktopRuntimeDependencies, 'Repairing GitNexus runtime packages');
 }
 
 if (!existsSync(path.join(gitnexusWebRoot, 'node_modules', 'vite'))) {
@@ -272,6 +491,16 @@ if (!existsSync(path.join(gitnexusWebRoot, 'node_modules', 'vite'))) {
 }
 
 if (getOldestOutputMtimeMs(gitnexusRuntimeOutputs) === 0 || isGitNexusBuildStale()) {
+  if (isGitNexusBuildInstallStale()) {
+    repairGitNexusPackages(
+      {
+        ...gitnexusDesktopRuntimeDependencies,
+        ...gitnexusDesktopBuildDependencies,
+      },
+      'Repairing GitNexus build tooling',
+    );
+  }
+
   console.info('[gitnexus-desktop] Rebuilding GitNexus runtime artifacts.');
   runNpm(['run', 'build'], gitnexusRoot);
 }

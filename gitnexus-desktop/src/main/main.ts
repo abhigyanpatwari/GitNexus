@@ -33,7 +33,8 @@ const GITNEXUS_WEB_DEV_ROOT_FALLBACK = path.resolve(__dirname, '../../../gitnexu
 const GITNEXUS_PACKAGED_RUNTIME_DIR = path.join(process.resourcesPath, 'gitnexus');
 const GITNEXUS_WEB_PACKAGED_DIR = path.join(process.resourcesPath, 'gitnexus-web');
 const GITNEXUS_WEB_EXPECTED_MARKERS = ['<title>GitNexus</title>', '<div id="root"></div>'];
-const GITNEXUS_WEB_READY_TIMEOUT_MS = 30_000;
+const GITNEXUS_SERVER_READY_TIMEOUT_MS = 30_000;
+const GITNEXUS_WEB_READY_TIMEOUT_MS = 60_000;
 const GITNEXUS_WEB_READY_POLL_MS = 500;
 const PACKAGED_WEB_SERVER_HOST = '127.0.0.1';
 
@@ -66,6 +67,10 @@ let packagedWebServer: Server | null = null;
 let packagedWebServerUrl: string | null = null;
 const openWindows = new Set<BrowserWindow>();
 const contentViews = new WeakMap<BrowserWindow, BrowserView>();
+
+const getDesktopShellTitlebarHeight = (): number => {
+  return process.platform === 'darwin' ? DESKTOP_SHELL_TITLEBAR_HEIGHT : 0;
+};
 
 type DesktopShellState = {
   appName: string;
@@ -222,12 +227,33 @@ const getGitNexusWebDevRoot = (): string => {
   return existsSync(GITNEXUS_WEB_DEV_ROOT) ? GITNEXUS_WEB_DEV_ROOT : GITNEXUS_WEB_DEV_ROOT_FALLBACK;
 };
 
+const getGitNexusWebViteCliEntry = (): string => {
+  return path.join(getGitNexusWebDevRoot(), 'node_modules', 'vite', 'bin', 'vite.js');
+};
+
 const getNodeCommand = (): string => {
+  if (app.isPackaged) {
+    return process.execPath;
+  }
+
   return (
     process.env.npm_node_execpath ||
     process.env.NODE ||
     (process.platform === 'win32' ? 'node.exe' : 'node')
   );
+};
+
+const getNodeProcessEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
+  const environment = {
+    ...process.env,
+    ...overrides,
+  };
+
+  if (app.isPackaged) {
+    environment.ELECTRON_RUN_AS_NODE = '1';
+  }
+
+  return environment;
 };
 
 const spawnGitNexusServer = (): ChildProcess => {
@@ -236,9 +262,7 @@ const spawnGitNexusServer = (): ChildProcess => {
     [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST],
     {
       cwd: getGitNexusRuntimeDir(),
-      env: {
-        ...process.env,
-      },
+      env: getNodeProcessEnvironment(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     },
@@ -262,7 +286,7 @@ const spawnGitNexusServer = (): ChildProcess => {
 };
 
 const waitForGitNexusServerReady = async (): Promise<void> => {
-  const deadline = Date.now() + GITNEXUS_WEB_READY_TIMEOUT_MS;
+  const deadline = Date.now() + GITNEXUS_SERVER_READY_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     if (await isAnyHttpUrlReady(GITNEXUS_SERVER_HEALTH_URLS)) {
@@ -290,35 +314,23 @@ const waitForGitNexusServerReady = async (): Promise<void> => {
 };
 
 const spawnWebDevServer = (): ChildProcess => {
-  const command = process.platform === 'win32' ? 'cmd.exe' : 'npm';
-  const args =
-    process.platform === 'win32'
-      ? [
-          '/d',
-          '/s',
-          '/c',
-          `npm run dev -- --host ${GITNEXUS_WEB_DEV_HOST} --port ${GITNEXUS_WEB_DEV_PORT} --strictPort`,
-        ]
-      : [
-          'run',
-          'dev',
-          '--',
-          '--host',
-          GITNEXUS_WEB_DEV_HOST,
-          '--port',
-          String(GITNEXUS_WEB_DEV_PORT),
-          '--strictPort',
-        ];
-
-  const childProcess = spawn(command, args, {
-    cwd: getGitNexusWebDevRoot(),
-    env: {
-      ...process.env,
-      BROWSER: 'none',
+  const childProcess = spawn(
+    getNodeCommand(),
+    [
+      getGitNexusWebViteCliEntry(),
+      '--host',
+      GITNEXUS_WEB_DEV_HOST,
+      '--port',
+      String(GITNEXUS_WEB_DEV_PORT),
+      '--strictPort',
+    ],
+    {
+      cwd: getGitNexusWebDevRoot(),
+      env: getNodeProcessEnvironment({ BROWSER: 'none' }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  );
 
   childProcess.stdout?.on('data', (chunk) => {
     appendProcessOutput(chunk);
@@ -489,7 +501,7 @@ const getDesktopShellState = (window: BrowserWindow): DesktopShellState => {
     isAlwaysOnTop: window.isAlwaysOnTop(),
     isMaximized: window.isMaximized() || window.isFullScreen(),
     platform: process.platform,
-    titleBarHeight: DESKTOP_SHELL_TITLEBAR_HEIGHT,
+    titleBarHeight: getDesktopShellTitlebarHeight(),
   };
 };
 
@@ -519,12 +531,13 @@ const updateContentViewBounds = (window: BrowserWindow): void => {
   }
 
   const [width, height] = window.getContentSize();
+  const titlebarHeight = getDesktopShellTitlebarHeight();
 
   contentView.setBounds({
     x: 0,
-    y: DESKTOP_SHELL_TITLEBAR_HEIGHT,
+    y: titlebarHeight,
     width: Math.max(width, 1),
-    height: Math.max(height - DESKTOP_SHELL_TITLEBAR_HEIGHT, 1),
+    height: Math.max(height - titlebarHeight, 1),
   });
 };
 
@@ -666,9 +679,9 @@ async function createWindow(): Promise<void> {
     title: DESKTOP_APP_NAME,
     icon: DESKTOP_APP_ICON_PATH,
     backgroundColor: DESKTOP_BACKGROUND_COLOR,
-    frame: false,
     show: false,
     autoHideMenuBar: true,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,

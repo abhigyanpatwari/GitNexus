@@ -134,6 +134,8 @@ html,
 body,
 #root {
   height: 100%;
+  background-color: var(--color-void);
+  color-scheme: dark;
 }
 
 body {
@@ -147,27 +149,32 @@ body {
 /* ═══════════════════════════════════════════════════════════════
    CUSTOM SCROLLBAR
 ═══════════════════════════════════════════════════════════════ */
-.scrollbar-thin {
-  scrollbar-width: thin;
-  scrollbar-color: #2a2a3a #0a0a10;
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-.scrollbar-thin::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+*::-webkit-scrollbar-track {
+  background: #07070d;
 }
 
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: var(--color-deep);
+*::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  background: #3a3d4f;
+  border: 2px solid #07070d;
+  border-radius: 999px;
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: var(--color-border-default);
-  border-radius: 4px;
+*::-webkit-scrollbar-thumb:hover {
+  background: #50546b;
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
+*::-webkit-scrollbar-thumb:active {
+  background: #656b88;
+}
+
+*::-webkit-scrollbar-corner {
+  background: #07070d;
 }
 
 /* ═══════════════════════════════════════════════════════════════

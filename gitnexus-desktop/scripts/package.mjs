@@ -12,6 +12,12 @@ const workspaceRoot = path.resolve(packageRoot, '..');
 const gitnexusRoot = path.join(workspaceRoot, 'gitnexus');
 const gitnexusWebRoot = path.join(workspaceRoot, 'gitnexus-web');
 const releaseRoot = path.join(packageRoot, 'release');
+const gitnexusPackageJson = JSON.parse(
+  fs.readFileSync(path.join(gitnexusRoot, 'package.json'), 'utf8'),
+);
+const gitnexusPackageLock = JSON.parse(
+  fs.readFileSync(path.join(gitnexusRoot, 'package-lock.json'), 'utf8'),
+);
 const desktopPackageJson = JSON.parse(
   fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'),
 );
@@ -52,20 +58,90 @@ const supportedTargetHosts = {
   '--win': 'win32',
 };
 const artifactFileExtensions = new Set(['.AppImage', '.dmg', '.exe', '.msi', '.zip']);
+const gitnexusRuntimeDependencyNames = Object.keys(gitnexusPackageJson.dependencies ?? {});
+const packagedResourceEntries = [
+  {
+    from: path.join(gitnexusWebRoot, 'dist'),
+    to: 'gitnexus-web',
+  },
+  {
+    from: path.join(gitnexusRoot, 'dist'),
+    to: path.join('gitnexus', 'dist'),
+  },
+  {
+    from: path.join(gitnexusRoot, 'hooks'),
+    to: path.join('gitnexus', 'hooks'),
+  },
+  {
+    from: path.join(gitnexusRoot, 'skills'),
+    to: path.join('gitnexus', 'skills'),
+  },
+  {
+    from: path.join(gitnexusRoot, 'vendor'),
+    to: path.join('gitnexus', 'vendor'),
+  },
+  {
+    from: path.join(gitnexusRoot, 'package.json'),
+    to: path.join('gitnexus', 'package.json'),
+  },
+];
+
+const toBuilderRelativePath = (targetPath) => {
+  return path.relative(packageRoot, targetPath) || '.';
+};
+
+const getNodeModulePath = (packageName) => {
+  return path.join(gitnexusRoot, 'node_modules', ...packageName.split('/'));
+};
+
+const getRuntimeDependencyClosure = () => {
+  const visited = new Set();
+  const queue = [...gitnexusRuntimeDependencyNames];
+
+  while (queue.length > 0) {
+    const packageName = queue.shift();
+
+    if (!packageName || visited.has(packageName)) {
+      continue;
+    }
+
+    visited.add(packageName);
+
+    const lockEntry = gitnexusPackageLock.packages?.[`node_modules/${packageName}`];
+    const dependencyNames = Object.keys({
+      ...(lockEntry?.dependencies ?? {}),
+      ...(lockEntry?.optionalDependencies ?? {}),
+    });
+
+    for (const dependencyName of dependencyNames) {
+      if (!visited.has(dependencyName)) {
+        queue.push(dependencyName);
+      }
+    }
+  }
+
+  return [...visited].filter((packageName) => fs.existsSync(getNodeModulePath(packageName))).sort();
+};
+
+const packagedRuntimeNodeModules = getRuntimeDependencyClosure();
 
 const builderArgs = process.argv.slice(2);
 const requestedTargets = builderArgs.filter((argument) => argument in supportedTargetHosts);
 
 const builderEnvironment = {
-  GITNEXUS_DESKTOP_GITNEXUS_DIST: path.join(gitnexusRoot, 'dist'),
-  GITNEXUS_DESKTOP_GITNEXUS_HOOKS: path.join(gitnexusRoot, 'hooks'),
-  GITNEXUS_DESKTOP_GITNEXUS_NODE_MODULES: path.join(gitnexusRoot, 'node_modules'),
-  GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON: path.join(gitnexusRoot, 'package.json'),
-  GITNEXUS_DESKTOP_GITNEXUS_SKILLS: path.join(gitnexusRoot, 'skills'),
-  GITNEXUS_DESKTOP_GITNEXUS_VENDOR: path.join(gitnexusRoot, 'vendor'),
+  GITNEXUS_DESKTOP_GITNEXUS_DIST: toBuilderRelativePath(path.join(gitnexusRoot, 'dist')),
+  GITNEXUS_DESKTOP_GITNEXUS_HOOKS: toBuilderRelativePath(path.join(gitnexusRoot, 'hooks')),
+  GITNEXUS_DESKTOP_GITNEXUS_NODE_MODULES: toBuilderRelativePath(
+    path.join(gitnexusRoot, 'node_modules'),
+  ),
+  GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON: toBuilderRelativePath(
+    path.join(gitnexusRoot, 'package.json'),
+  ),
+  GITNEXUS_DESKTOP_GITNEXUS_SKILLS: toBuilderRelativePath(path.join(gitnexusRoot, 'skills')),
+  GITNEXUS_DESKTOP_GITNEXUS_VENDOR: toBuilderRelativePath(path.join(gitnexusRoot, 'vendor')),
   GITNEXUS_DESKTOP_NODE_EXECUTABLE: process.execPath,
   GITNEXUS_DESKTOP_NODE_RESOURCE_PATH: `gitnexus-node/${bundledNodeExecutableName}`,
-  GITNEXUS_DESKTOP_WEB_DIST: path.join(gitnexusWebRoot, 'dist'),
+  GITNEXUS_DESKTOP_WEB_DIST: toBuilderRelativePath(path.join(gitnexusWebRoot, 'dist')),
 };
 
 const builderCommand = [
@@ -97,6 +173,33 @@ const tryRunCommand = (command, cwd, extraEnv = {}) => {
   }
 };
 
+const mirrorDirectory = (sourceDirectory, destinationDirectory) => {
+  if (process.platform === 'win32') {
+    fs.mkdirSync(destinationDirectory, { recursive: true });
+
+    try {
+      execSync(
+        `robocopy "${sourceDirectory}" "${destinationDirectory}" /MIR /NFL /NDL /NJH /NJS /NP`,
+        {
+          cwd: packageRoot,
+          stdio: 'inherit',
+        },
+      );
+    } catch (error) {
+      const exitCode = error.status ?? 16;
+
+      if (exitCode > 7) {
+        throw error;
+      }
+    }
+
+    return;
+  }
+
+  fs.rmSync(destinationDirectory, { force: true, recursive: true });
+  fs.cpSync(sourceDirectory, destinationDirectory, { force: true, recursive: true });
+};
+
 const canResolveBuilderRuntimeModule = (moduleName) => {
   try {
     builderUtilRequire.resolve(moduleName);
@@ -114,6 +217,63 @@ const overlayDirectoryContents = (sourceDirectory, destinationDirectory) => {
       force: true,
       recursive: true,
     });
+  }
+};
+
+const resolvePackagedResourceRoots = () => {
+  const candidateRoots = [
+    path.join(outputDir, 'win-unpacked', 'resources'),
+    path.join(outputDir, 'linux-unpacked', 'resources'),
+    path.join(
+      outputDir,
+      `${desktopPackageJson.productName ?? 'GitNexus Desktop'}.app`,
+      'Contents',
+      'Resources',
+    ),
+  ];
+
+  return candidateRoots.filter((candidateRoot) => fs.existsSync(candidateRoot));
+};
+
+const syncPackagedRuntimeResources = () => {
+  const resourceRoots = resolvePackagedResourceRoots();
+
+  if (resourceRoots.length === 0) {
+    return;
+  }
+
+  for (const resourceRoot of resourceRoots) {
+    const packagedNodeModulesRoot = path.join(resourceRoot, 'gitnexus', 'node_modules');
+
+    fs.rmSync(packagedNodeModulesRoot, { force: true, recursive: true });
+    fs.mkdirSync(packagedNodeModulesRoot, { recursive: true });
+
+    const sourceNodeModulesLock = path.join(gitnexusRoot, 'node_modules', '.package-lock.json');
+    const destinationNodeModulesLock = path.join(packagedNodeModulesRoot, '.package-lock.json');
+
+    if (fs.existsSync(sourceNodeModulesLock)) {
+      fs.cpSync(sourceNodeModulesLock, destinationNodeModulesLock, { force: true });
+    }
+
+    for (const packageName of packagedRuntimeNodeModules) {
+      const sourcePackagePath = getNodeModulePath(packageName);
+      const destinationPackagePath = path.join(packagedNodeModulesRoot, ...packageName.split('/'));
+
+      mirrorDirectory(sourcePackagePath, destinationPackagePath);
+    }
+
+    for (const entry of packagedResourceEntries) {
+      const destinationPath = path.join(resourceRoot, entry.to);
+
+      if (fs.statSync(entry.from).isDirectory()) {
+        mirrorDirectory(entry.from, destinationPath);
+        continue;
+      }
+
+      fs.rmSync(destinationPath, { force: true, recursive: true });
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+      fs.cpSync(entry.from, destinationPath, { force: true });
+    }
   }
 };
 
@@ -262,6 +422,7 @@ runCommand('npm run bundle', packageRoot);
 runCommand('npm run build', gitnexusWebRoot);
 
 runCommand(builderCommand, packageRoot, builderEnvironment);
+syncPackagedRuntimeResources();
 
 const artifacts = listArtifacts(outputDir);
 
