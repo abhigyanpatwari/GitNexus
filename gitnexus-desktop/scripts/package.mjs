@@ -11,18 +11,32 @@ const workspaceRoot = path.resolve(packageRoot, '..');
 const gitnexusRoot = path.join(workspaceRoot, 'gitnexus');
 const gitnexusWebRoot = path.join(workspaceRoot, 'gitnexus-web');
 const releaseRoot = path.join(packageRoot, 'release');
-const desktopPackageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-const desktopPackageLock = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package-lock.json'), 'utf8'));
-const electronVersion = desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
-const electronBuilderVersion = desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
+const desktopPackageJson = JSON.parse(
+  fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'),
+);
+const desktopPackageLock = JSON.parse(
+  fs.readFileSync(path.join(packageRoot, 'package-lock.json'), 'utf8'),
+);
+const electronVersion =
+  desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
+const electronBuilderVersion =
+  desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
 const appBuilderLibVersion =
-  desktopPackageLock.packages?.['node_modules/app-builder-lib']?.version ?? electronBuilderVersion.replace(/^[^\d]*/, '');
+  desktopPackageLock.packages?.['node_modules/app-builder-lib']?.version ??
+  electronBuilderVersion.replace(/^[^\d]*/, '');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outputDir = path.join(releaseRoot, stamp);
 const generatedBuilderConfigPath = path.join(outputDir, 'electron-builder.generated.json');
 const requiredNsisTemplateFiles = [
   path.join(packageRoot, 'node_modules', 'app-builder-lib', 'templates', 'nsis', 'messages.yml'),
-  path.join(packageRoot, 'node_modules', 'app-builder-lib', 'templates', 'nsis', 'assistedMessages.yml'),
+  path.join(
+    packageRoot,
+    'node_modules',
+    'app-builder-lib',
+    'templates',
+    'nsis',
+    'assistedMessages.yml',
+  ),
 ];
 const supportedTargetHosts = {
   '--linux': 'linux',
@@ -142,7 +156,9 @@ const overlayDirectoryContents = (sourceDirectory, destinationDirectory) => {
 };
 
 const repairAppBuilderLibPackage = () => {
-  const repairDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-desktop-app-builder-lib-'));
+  const repairDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'gitnexus-desktop-app-builder-lib-'),
+  );
 
   try {
     const tarballName = `app-builder-lib-${appBuilderLibVersion}.tgz`;
@@ -150,7 +166,10 @@ const repairAppBuilderLibPackage = () => {
     const extractedPackageRoot = path.join(repairDirectory, 'package');
     const installedPackageRoot = path.join(packageRoot, 'node_modules', 'app-builder-lib');
 
-    runCommand(`npm pack app-builder-lib@${appBuilderLibVersion} --pack-destination "${repairDirectory}"`, packageRoot);
+    runCommand(
+      `npm pack app-builder-lib@${appBuilderLibVersion} --pack-destination "${repairDirectory}"`,
+      packageRoot,
+    );
     runCommand(`tar -xzf "${tarballPath}" -C "${repairDirectory}"`, packageRoot);
     overlayDirectoryContents(extractedPackageRoot, installedPackageRoot);
   } finally {
@@ -159,7 +178,9 @@ const repairAppBuilderLibPackage = () => {
 };
 
 const assertSupportedHostForRequestedTargets = () => {
-  const unsupportedTargets = requestedTargets.filter((target) => supportedTargetHosts[target] !== process.platform);
+  const unsupportedTargets = requestedTargets.filter(
+    (target) => supportedTargetHosts[target] !== process.platform,
+  );
 
   if (unsupportedTargets.length === 0) {
     return;
@@ -185,13 +206,17 @@ const ensureDesktopToolchainHealthy = () => {
     return;
   }
 
-  const missingNsisTemplates = requiredNsisTemplateFiles.filter((filePath) => !fs.existsSync(filePath));
+  const missingNsisTemplates = requiredNsisTemplateFiles.filter(
+    (filePath) => !fs.existsSync(filePath),
+  );
 
   if (missingNsisTemplates.length === 0) {
     return;
   }
 
-  console.warn('[build] electron-builder NSIS templates are missing. Restoring app-builder-lib package contents first...');
+  console.warn(
+    '[build] electron-builder NSIS templates are missing. Restoring app-builder-lib package contents first...',
+  );
 
   try {
     repairAppBuilderLibPackage();
@@ -203,7 +228,9 @@ const ensureDesktopToolchainHealthy = () => {
     return;
   }
 
-  console.warn('[build] Package overlay repair was not enough. Reinstalling electron-builder next...');
+  console.warn(
+    '[build] Package overlay repair was not enough. Reinstalling electron-builder next...',
+  );
 
   const targetedRepairWorked = tryRunCommand(
     `npm install --no-save --package-lock=false electron-builder@${electronBuilderVersion}`,
@@ -218,7 +245,9 @@ const ensureDesktopToolchainHealthy = () => {
     runCommand('npm ci', packageRoot);
   }
 
-  const unresolvedTemplates = requiredNsisTemplateFiles.filter((filePath) => !fs.existsSync(filePath));
+  const unresolvedTemplates = requiredNsisTemplateFiles.filter(
+    (filePath) => !fs.existsSync(filePath),
+  );
 
   if (unresolvedTemplates.length > 0) {
     throw new Error(

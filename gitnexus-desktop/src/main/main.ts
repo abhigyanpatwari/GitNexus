@@ -209,7 +209,11 @@ const isAnyHttpUrlReady = async (urls: string[], expectedMarkers?: string[]): Pr
   return false;
 };
 
-const waitForUrlReady = async (url: string, timeoutMs: number, expectedMarkers?: string[]): Promise<void> => {
+const waitForUrlReady = async (
+  url: string,
+  timeoutMs: number,
+  expectedMarkers?: string[],
+): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -250,18 +254,26 @@ const getGitNexusWebDevRoot = (): string => {
 };
 
 const getNodeCommand = (): string => {
-  return process.env.npm_node_execpath || process.env.NODE || (process.platform === 'win32' ? 'node.exe' : 'node');
+  return (
+    process.env.npm_node_execpath ||
+    process.env.NODE ||
+    (process.platform === 'win32' ? 'node.exe' : 'node')
+  );
 };
 
 const spawnGitNexusServer = (): ChildProcess => {
-  const childProcess = spawn(getNodeCommand(), [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST], {
-    cwd: getGitNexusRuntimeDir(),
-    env: {
-      ...process.env,
+  const childProcess = spawn(
+    getNodeCommand(),
+    [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST],
+    {
+      cwd: getGitNexusRuntimeDir(),
+      env: {
+        ...process.env,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  );
 
   childProcess.stdout?.on('data', (chunk) => {
     appendGitNexusServerOutput(chunk);
@@ -312,8 +324,22 @@ const spawnWebDevServer = (): ChildProcess => {
   const command = process.platform === 'win32' ? 'cmd.exe' : 'npm';
   const args =
     process.platform === 'win32'
-      ? ['/d', '/s', '/c', `npm run dev -- --host ${GITNEXUS_WEB_DEV_HOST} --port ${GITNEXUS_WEB_DEV_PORT} --strictPort`]
-      : ['run', 'dev', '--', '--host', GITNEXUS_WEB_DEV_HOST, '--port', String(GITNEXUS_WEB_DEV_PORT), '--strictPort'];
+      ? [
+          '/d',
+          '/s',
+          '/c',
+          `npm run dev -- --host ${GITNEXUS_WEB_DEV_HOST} --port ${GITNEXUS_WEB_DEV_PORT} --strictPort`,
+        ]
+      : [
+          'run',
+          'dev',
+          '--',
+          '--host',
+          GITNEXUS_WEB_DEV_HOST,
+          '--port',
+          String(GITNEXUS_WEB_DEV_PORT),
+          '--strictPort',
+        ];
 
   const childProcess = spawn(command, args, {
     cwd: getGitNexusWebDevRoot(),
@@ -352,7 +378,11 @@ const ensureWebDevServerStarted = async (): Promise<void> => {
     webDevServerProcess = spawnWebDevServer();
   }
 
-  await waitForUrlReady(GITNEXUS_WEB_DEV_URL, GITNEXUS_WEB_READY_TIMEOUT_MS, GITNEXUS_WEB_EXPECTED_MARKERS);
+  await waitForUrlReady(
+    GITNEXUS_WEB_DEV_URL,
+    GITNEXUS_WEB_READY_TIMEOUT_MS,
+    GITNEXUS_WEB_EXPECTED_MARKERS,
+  );
 };
 
 const normalizeStaticPath = (rootDir: string, requestPath: string): string | null => {
@@ -454,7 +484,11 @@ const stopWebDevServer = (): void => {
 };
 
 const stopGitNexusServer = (): void => {
-  if (!gitNexusServerProcess || !gitNexusServerProcess.pid || gitNexusServerProcess.exitCode !== null) {
+  if (
+    !gitNexusServerProcess ||
+    !gitNexusServerProcess.pid ||
+    gitNexusServerProcess.exitCode !== null
+  ) {
     return;
   }
 
@@ -559,7 +593,9 @@ const createEmbeddedContentView = (contentUrl: string): BrowserView => {
 
   contentView.webContents.on('dom-ready', () => {
     void contentView.webContents.insertCSS(EMBEDDED_APP_SCROLLBAR_CSS).catch((error) => {
-      console.warn(`[gitnexus-desktop] Failed to inject embedded app CSS: ${getErrorMessage(error)}`);
+      console.warn(
+        `[gitnexus-desktop] Failed to inject embedded app CSS: ${getErrorMessage(error)}`,
+      );
     });
   });
 

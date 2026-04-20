@@ -129,7 +129,9 @@ const ensureDesktopRendererPortAvailable = () => {
     process.exit(1);
   }
 
-  console.info(`Stopping stale desktop renderer process on port ${desktopRendererPort} (PID ${owner.pid}).`);
+  console.info(
+    `Stopping stale desktop renderer process on port ${desktopRendererPort} (PID ${owner.pid}).`,
+  );
   killProcessTree(owner.pid);
 };
 

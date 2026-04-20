@@ -40,7 +40,8 @@ const fallbackDesktopApi: DesktopApi = {
   toggleMaximize: async () => defaultDesktopState,
 };
 
-const desktopApi = (window as Window & { gitnexusDesktop?: DesktopApi }).gitnexusDesktop ?? fallbackDesktopApi;
+const desktopApi =
+  (window as Window & { gitnexusDesktop?: DesktopApi }).gitnexusDesktop ?? fallbackDesktopApi;
 
 const styles = `
   :root {
