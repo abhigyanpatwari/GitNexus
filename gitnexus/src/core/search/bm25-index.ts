@@ -41,7 +41,7 @@ async function queryFTSViaExecutor(
       return {
         filePath: node.filePath || '',
         score: typeof score === 'number' ? score : parseFloat(score) || 0,
-        nodeId: node.id || '',
+        nodeId: node.nodeId || node.id || '',
       };
     });
   } catch {
