@@ -1,0 +1,64 @@
+# Sigstore policy-controller ClusterImagePolicy for GitNexus container images.
+#
+# This enforces — at admission time — that every Pod pulling a
+# `ghcr.io/abhigyanpatwari/gitnexus` or `gitnexus-web` image is using a build
+# that was Cosign-keyless-signed by this repository's `docker.yml` workflow
+# running from a `vX.Y.Z` git tag. Unsigned images, images signed by other
+# workflows, and images signed from unprotected refs (e.g. `main`, PR branches)
+# are rejected.
+#
+# Prerequisites
+# -------------
+# 1. Install the Sigstore policy-controller in your cluster (Helm):
+#
+#      helm repo add sigstore https://sigstore.github.io/helm-charts
+#      helm repo update
+#      helm install policy-controller -n cosign-system --create-namespace \
+#        sigstore/policy-controller
+#
+# 2. Opt namespaces in to verification:
+#
+#      kubectl label namespace <your-ns> policy.sigstore.dev/include=true
+#
+# 3. Apply this policy:
+#
+#      kubectl apply -f deploy/kubernetes/cluster-image-policy.yaml
+#
+# After this, `kubectl run --image=ghcr.io/abhigyanpatwari/gitnexus:<tag>` in
+# any opted-in namespace will only succeed if the image carries a valid
+# Sigstore signature with the pinned identity.
+#
+# References
+# - https://docs.sigstore.dev/policy-controller/overview/
+# - https://github.com/sigstore/policy-controller
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: gitnexus-signed-images
+spec:
+  # Apply to both published GitNexus images on GHCR. Image references always
+  # carry a tag or digest at admission time, so these two globs cover every
+  # `gitnexus:<tag>`, `gitnexus@sha256:...`, `gitnexus-web:<tag>`, and
+  # `gitnexus-web@sha256:...` reference.
+  images:
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus*'
+  authorities:
+    - name: gitnexus-cosign-keyless
+      keyless:
+        # Public-good Sigstore Fulcio root.
+        url: https://fulcio.sigstore.dev
+        identities:
+          # Pin both the OIDC issuer (GitHub Actions) AND the exact workflow
+          # path running from a `vX.Y.Z` (or `vX.Y.Z-prerelease`) tag. Same
+          # regex the README's `cosign verify` example uses; it rejects:
+          #   * unsigned images
+          #   * signatures from any other repo / workflow
+          #   * signatures from non-tag refs (main, PRs, release branches)
+          #   * signatures from arbitrary non-semver tags
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: ^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$
+      # Cross-check the signature against the public Rekor transparency log,
+      # so an attacker who briefly compromised Fulcio cannot retroactively
+      # mint a signature without leaving a public, append-only audit record.
+      ctlog:
+        url: https://rekor.sigstore.dev

@@ -148,6 +148,65 @@ describe('text-generator', () => {
       expect(text).toContain('class Parser {');
       expect(text).toContain('parseJSON(text: string) { return JSON.parse(text); }');
     });
+
+    it('generates Struct text with structural metadata', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Struct',
+        name: 'User',
+        fieldNames: ['name', 'age'],
+        content: `struct User {
+  name: String,
+  age: u32,
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Struct: User');
+      expect(text).toContain('Properties: name, age');
+      expect(text).toContain('Container: struct User {');
+      expect(text).toContain('struct User {');
+    });
+
+    it('keeps compact container context on later structural chunks', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        methodNames: ['parseJSON', 'validate'],
+        fieldNames: ['options', 'cache'],
+        content: `class Parser {
+  options: ParserOptions;
+  cache: Map<string, any>;
+  parseJSON(text: string) { return JSON.parse(text); }
+  validate() { return true; }
+}`,
+      };
+      const text = generateEmbeddingText(
+        node,
+        'validate() { return true; }',
+        {},
+        1,
+        'parseJSON(text: string) { return JSON.parse(text); }',
+      );
+      expect(text).toContain('Class: Parser');
+      expect(text).toContain('Container: class Parser {');
+      expect(text).toContain('[preceding context]: ...parseJSON(text: string)');
+      expect(text).not.toContain('Methods: parseJSON, validate');
+      expect(text).not.toContain('Properties: options, cache');
+    });
+
+    it('adds preceding context to non-structural chunk text', () => {
+      const text = generateEmbeddingText(
+        baseNode,
+        'return JSON.parse(text);',
+        {},
+        1,
+        'function parseJSON(text: string): Result<any> {',
+      );
+      expect(text).toContain('Function: parseJSON');
+      expect(text).toContain('[preceding context]: ...function parseJSON');
+      expect(text).toContain('return JSON.parse(text);');
+    });
   });
 
   describe('Constructor label', () => {

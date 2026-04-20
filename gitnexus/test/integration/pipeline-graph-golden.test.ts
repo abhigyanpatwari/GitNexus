@@ -132,9 +132,12 @@ describe('pipeline graph golden', () => {
   let tmpDir: string;
 
   beforeAll(async () => {
-    // Copy the fixture to a temp directory so parallel tests (cli-e2e)
-    // that create AGENTS.md / CLAUDE.md / .claude/ in the shared fixture
-    // don't pollute the golden snapshot.
+    // Copy the fixture to a temp directory as defense-in-depth against
+    // parallel tests writing into the shared fixture source. cli-e2e
+    // was the historical offender — it now copies to its own tmpdir
+    // (see test/integration/cli-e2e.test.ts `beforeAll`) — but this
+    // cpSync stays as a belt-and-suspenders guarantee that any future
+    // test adding files to the source won't pollute the golden snapshot.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-golden-'));
     fs.cpSync(FIXTURE_SRC, tmpDir, { recursive: true });
 

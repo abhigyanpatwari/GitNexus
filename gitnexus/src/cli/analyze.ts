@@ -13,7 +13,11 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { getStoragePaths, getGlobalRegistryPath } from '../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  getGlobalRegistryPath,
+  RegistryNameCollisionError,
+} from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import fs from 'fs/promises';
@@ -59,6 +63,21 @@ export interface AnalyzeOptions {
   noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
+  /**
+   * Override the default basename-derived registry `name` with a
+   * user-supplied alias (#829). Disambiguates repos whose paths share a
+   * basename. Persisted — subsequent re-analyses of the same path without
+   * `--name` preserve the alias.
+   */
+  name?: string;
+  /**
+   * Allow registration even when another path already uses the same
+   * `--name` alias (#829). Intentionally a distinct flag from `--force`
+   * because the user may want to coexist under the same name WITHOUT
+   * paying the cost of a pipeline re-index. Maps to registerRepo's
+   * `allowDuplicateName` option end-to-end.
+   */
+  allowDuplicateName?: boolean;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -186,11 +205,20 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     const result = await runFullAnalysis(
       repoPath,
       {
+        // Pipeline re-index — OR'd with --skills because skill generation
+        // needs a fresh pipelineResult. Has no bearing on the registry
+        // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
         noStats: options?.noStats,
+        registryName: options?.name,
+        // Registry-collision bypass — its own CLI flag, intentionally NOT
+        // overloading --force. A user who hits the collision guard should
+        // be able to accept the duplicate name without also paying the
+        // cost of a full pipeline re-index. See #829 review round 2.
+        allowDuplicateName: options?.allowDuplicateName,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -298,6 +326,22 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     bar.stop();
 
     const msg = err.message || String(err);
+
+    // Registry name-collision from --name (#829) — surface as an
+    // actionable error rather than a generic stack-trace.
+    if (err instanceof RegistryNameCollisionError) {
+      console.error(`\n  Registry name collision:\n`);
+      console.error(`    "${err.registryName}" is already used by "${err.existingPath}".\n`);
+      console.error(`  Options:`);
+      console.error(`    • Pick a different alias:  gitnexus analyze --name <alias>`);
+      console.error(
+        `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)`,
+      );
+      console.error('');
+      process.exitCode = 1;
+      return;
+    }
+
     console.error(`\n  Analysis failed: ${msg}\n`);
 
     // Provide helpful guidance for known failure modes

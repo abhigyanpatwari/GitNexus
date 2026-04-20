@@ -209,11 +209,12 @@ describe('chunkNode', () => {
     const result = await chunkNode('Class', content, 'test.ts', 1, 6, 90, 0);
 
     expect(result).toHaveLength(2);
+    expect(result[0].text).toContain('class Parser {');
     expect(result[0].text).toContain('options: ParserOptions;');
     expect(result[0].text).toContain('cache: Map<string, any>;');
     expect(result[1].text).toContain('parseJSON()');
     expect(result[1].text).toContain('validate()');
-    expect(result[0].startLine).toBe(2);
+    expect(result[0].startLine).toBe(1);
     expect(result[1].startLine).toBe(4);
   });
 
@@ -237,9 +238,42 @@ describe('chunkNode', () => {
     const result = await chunkNode('Interface', content, 'test.ts', 10, 14, 500, 0);
 
     expect(result).toHaveLength(1);
+    expect(result[0].text).toContain('interface Handler {');
     expect(result[0].text).toContain('handle(event: Event): void;');
     expect(result[0].text).toContain('validate(input: string): boolean;');
     expect(result[0].text).toContain('readonly name: string;');
+  });
+
+  it('uses declaration-aware chunking for Struct labels', async () => {
+    const content = [
+      'struct User {',
+      '  name: String,',
+      '  email: String,',
+      '  age: u32,',
+      '  address: String,',
+      '}',
+    ].join('\n');
+    const tree = makeDeclarationTree('struct_item', 'declaration_list', content, [
+      'name: String,',
+      'email: String,',
+      'age: u32,',
+      'address: String,',
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue(tree),
+    });
+
+    const result = await chunkNode('Struct', content, 'test.rs', 40, 45, 45, 0);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toContain('struct User {');
+    expect(result[0].text).toContain('name: String,');
+    expect(result[0].text).toContain('email: String');
+    const combinedText = result.map((chunk) => chunk.text).join('\n');
+    expect(combinedText).toContain('email: String');
+    expect(combinedText).toContain('age: u32');
+    expect(combinedText).toContain('address: String');
+    expect(result[0].startLine).toBe(40);
   });
 
   it('splits a function into multiple AST-aware chunks using snippet offsets', async () => {

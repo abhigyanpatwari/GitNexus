@@ -31,6 +31,7 @@ import {
   buildCollisionGroups,
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
   ParseWorkerResult,
@@ -62,6 +63,14 @@ export interface WorkerExtractedData {
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   fileScopeBindings: FileScopeBindings[];
+  /**
+   * Per-file `ParsedFile` artifacts from the new scope-based resolution
+   * pipeline (RFC #909 Ring 2). Empty until a provider implements
+   * `emitScopeCaptures` — additive to the legacy DAG path. Aggregated
+   * from every worker chunk; consumed downstream by #921's
+   * finalize-orchestrator.
+   */
+  parsedFiles: ParsedFile[];
 }
 
 // ============================================================================
@@ -96,6 +105,7 @@ const processParsingWithWorkers = async (
       ormQueries: [],
       constructorBindings: [],
       fileScopeBindings: [],
+      parsedFiles: [],
     };
 
   const total = files.length;
@@ -120,6 +130,7 @@ const processParsingWithWorkers = async (
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
+  const allParsedFiles: ParsedFile[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -157,6 +168,11 @@ const processParsingWithWorkers = async (
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
+    // RFC #909 Ring 2: aggregate per-file scope artifacts. Tolerant of
+    // workers that don't emit the field yet (older worker builds or
+    // partial rollouts), since the additive contract means undefined =
+    // "this worker produced no ParsedFiles for this chunk".
+    if (result.parsedFiles) for (const item of result.parsedFiles) allParsedFiles.push(item);
   }
 
   // Merge and log skipped languages from workers
@@ -187,6 +203,7 @@ const processParsingWithWorkers = async (
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
     fileScopeBindings: fileScopeBindingsByFile,
+    parsedFiles: allParsedFiles,
   };
 };
 

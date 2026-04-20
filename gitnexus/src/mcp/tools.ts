@@ -154,7 +154,7 @@ Shows categorized incoming/outgoing references (calls, imports, extends, impleme
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
 
-Handles disambiguation: if multiple symbols share the same name, returns candidates for you to pick from. Use uid param for zero-ambiguity lookup from prior results.
+Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).`,
     inputSchema: {
@@ -166,6 +166,11 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
         },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
+        kind: {
+          type: 'string',
+          description:
+            "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')",
+        },
         include_content: {
           type: 'boolean',
           description: 'Include full symbol source code (default: false)',
@@ -265,15 +270,31 @@ Depth groups:
 
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
+Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints.
+
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES
 Confidence: 1.0 = certain, <0.8 = fuzzy match`,
     inputSchema: {
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Name of function, class, or file to analyze' },
+        target_uid: {
+          type: 'string',
+          description:
+            'Direct symbol UID from prior tool results (zero-ambiguity lookup, skips target resolution)',
+        },
         direction: {
           type: 'string',
           description: 'upstream (what depends on this) or downstream (what this depends on)',
+        },
+        file_path: {
+          type: 'string',
+          description: 'File path hint to disambiguate common names',
+        },
+        kind: {
+          type: 'string',
+          description:
+            "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')",
         },
         maxDepth: {
           type: 'number',

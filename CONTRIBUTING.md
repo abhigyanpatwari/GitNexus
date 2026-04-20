@@ -77,7 +77,7 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   - Per-PR scope (for `issue_comment`, `pull_request_review*`, `pull_request` meta events): `${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}`
   - `workflow_run` scope (e.g. `ci-report.yml`): `${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}` — the fork fallback must be stable across reruns (never `workflow_run.id`, which is per-run-unique and defeats serialization).
   - Global single-slot (manual dispatch utilities): `${{ github.workflow }}`
-  - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key — in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form).
+  - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key — in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form). Approved literal prefixes: `CI-` (`ci.yml`) and `docker-build-push-` (`docker.yml`). The `check-workflow-concurrency.py` validation script must be updated whenever a new approved literal prefix is added.
   - **Merge queue (`merge_group`)**: when this event is added, use `${{ github.workflow }}-${{ github.event.merge_group.head_ref }}` with `cancel-in-progress: false` (every queue entry is a distinct ref; never cancel).
 - **`cancel-in-progress` policy:**
 
@@ -127,6 +127,11 @@ Two publish workflows ship `gitnexus` to npm:
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry. First rc for a given base is `rc.1`.
+  - After the npm publish succeeds, the workflow calls `docker.yml` as a
+    reusable workflow to build and push the corresponding RC Docker images
+    (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`). The images are
+    signed with Cosign; the OIDC identity is `docker.yml@refs/heads/main`
+    (the caller's ref — see README.md § Docker for the verify command).
 
   Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
   `v<RC>` release tag **atomically, before** calling `npm publish`. The guard
@@ -139,6 +144,27 @@ Two publish workflows ship `gitnexus` to npm:
   git push --delete origin rc/<HEAD_SHA> v<RC>
   # then redispatch the workflow with force: true
   ```
+
+  **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
+  are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
+  the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.
+  Re-running `release-candidate.yml` with `force: true` will abort at the
+  "Version already exists on npm" guard. To recover without cutting a new RC:
+
+  ```bash
+  # 1. Manually trigger only the docker workflow, passing the existing RC tag:
+  gh workflow run docker.yml --ref main -f tag=v<RC_VERSION>
+  # (requires a workflow_dispatch trigger on docker.yml — see note below)
+  ```
+
+  Because `docker.yml` intentionally has no `workflow_dispatch` (images are
+  tag-driven by design), the practical recovery options are:
+  - Wait for the next commit on `main`, which will cut a new RC that includes
+    the Docker build.
+  - Manually run `docker build` + `docker push` locally and sign with Cosign
+    against the same digest.
+  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force:
+    true` to re-run the full RC pipeline (cuts a new RC number).
 
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 

@@ -6,7 +6,7 @@
  * on resolution-context.ts (circular dependency risk).
  */
 
-import type { SymbolDefinition } from './symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import type { SemanticModel } from './semantic-model.js';
 import type { HeritageMap } from './heritage-map.js';
 import type { MroStrategy } from 'gitnexus-shared';

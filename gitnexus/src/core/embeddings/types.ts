@@ -4,35 +4,76 @@
  * Type definitions for the embedding generation and semantic search system.
  */
 
+export const LABEL_FUNCTION = 'Function' as const;
+export const LABEL_METHOD = 'Method' as const;
+export const LABEL_CONSTRUCTOR = 'Constructor' as const;
+export const LABEL_CLASS = 'Class' as const;
+export const LABEL_INTERFACE = 'Interface' as const;
+export const LABEL_STRUCT = 'Struct' as const;
+export const LABEL_ENUM = 'Enum' as const;
+export const LABEL_TRAIT = 'Trait' as const;
+export const LABEL_IMPL = 'Impl' as const;
+export const LABEL_MACRO = 'Macro' as const;
+export const LABEL_NAMESPACE = 'Namespace' as const;
+export const LABEL_TYPE_ALIAS = 'TypeAlias' as const;
+export const LABEL_TYPEDEF = 'Typedef' as const;
+export const LABEL_CONST = 'Const' as const;
+export const LABEL_PROPERTY = 'Property' as const;
+export const LABEL_RECORD = 'Record' as const;
+export const LABEL_UNION = 'Union' as const;
+export const LABEL_STATIC = 'Static' as const;
+export const LABEL_VARIABLE = 'Variable' as const;
+export const LABEL_CODE_ELEMENT = 'CodeElement' as const;
+
+export const CHUNK_MODE_AST_FUNCTION = 'ast-function' as const;
+export const CHUNK_MODE_AST_DECLARATION = 'ast-declaration' as const;
+// CHUNK_MODE_CHARACTER exists for type completeness but is a no-op in CHUNKING_RULES —
+// omit the entry entirely to get character fallback via chunker.ts dispatch.
+export const CHUNK_MODE_CHARACTER = 'character' as const;
+
+export const STRUCTURAL_TEXT_MODE_NONE = 'none' as const;
+export const STRUCTURAL_TEXT_MODE_DECLARATION = 'declaration' as const;
+
+export interface ChunkingRule {
+  mode:
+    | typeof CHUNK_MODE_AST_FUNCTION
+    | typeof CHUNK_MODE_AST_DECLARATION
+    | typeof CHUNK_MODE_CHARACTER;
+  includePrefix: boolean;
+  includeSuffix: boolean;
+  groupFields: boolean;
+  structuralTextMode: typeof STRUCTURAL_TEXT_MODE_NONE | typeof STRUCTURAL_TEXT_MODE_DECLARATION;
+}
+
 /**
  * Node labels that need chunking (have code body, potentially long)
  */
 export const CHUNKABLE_LABELS = [
-  'Function',
-  'Method',
-  'Constructor',
-  'Class',
-  'Interface',
-  'Struct',
-  'Enum',
-  'Trait',
-  'Impl',
-  'Macro',
-  'Namespace',
+  LABEL_FUNCTION,
+  LABEL_METHOD,
+  LABEL_CONSTRUCTOR,
+  LABEL_CLASS,
+  LABEL_INTERFACE,
+  LABEL_STRUCT,
+  LABEL_ENUM,
+  LABEL_TRAIT,
+  LABEL_IMPL,
+  LABEL_MACRO,
+  LABEL_NAMESPACE,
 ] as const;
 
 /**
  * Node labels that are short (no chunking needed, embed directly)
  */
 export const SHORT_LABELS = [
-  'TypeAlias',
-  'Typedef',
-  'Const',
-  'Property',
-  'Record',
-  'Union',
-  'Static',
-  'Variable',
+  LABEL_TYPE_ALIAS,
+  LABEL_TYPEDEF,
+  LABEL_CONST,
+  LABEL_PROPERTY,
+  LABEL_RECORD,
+  LABEL_UNION,
+  LABEL_STATIC,
+  LABEL_VARIABLE,
 ] as const;
 
 /**
@@ -61,25 +102,77 @@ export const isShortLabel = (label: string): boolean =>
   (SHORT_LABELS as readonly string[]).includes(label);
 
 /**
- * Node labels that have structural names (methods/fields) extractable via AST
+ * Node labels that have structural names (methods/fields) extractable via AST.
+ * Only labels that consume methodNames/fieldNames in their embedding text should
+ * be listed here — extra entries trigger wasted AST parses with no effect on output.
  */
 export const STRUCTURAL_LABELS: ReadonlySet<string> = new Set([
-  'Class',
-  'Struct',
-  'Interface',
-  'Enum',
+  LABEL_CLASS,
+  LABEL_STRUCT,
+  LABEL_INTERFACE,
 ]);
 
 /**
  * Node labels that have isExported column in their schema
  */
 export const LABELS_WITH_EXPORTED = new Set([
-  'Function',
-  'Class',
-  'Interface',
-  'Method',
-  'CodeElement',
+  LABEL_FUNCTION,
+  LABEL_CLASS,
+  LABEL_INTERFACE,
+  LABEL_METHOD,
+  LABEL_CODE_ELEMENT,
 ]) as ReadonlySet<string>;
+
+/**
+ * Labels that need special chunking and/or structural text semantics.
+ * Any chunkable label omitted here intentionally falls back to characterChunk
+ * plus generateCodeBodyText (for example Enum/Trait/Impl/Macro/Namespace).
+ */
+type ChunkableLabel = (typeof CHUNKABLE_LABELS)[number];
+export const CHUNKING_RULES: Readonly<Partial<Record<ChunkableLabel, ChunkingRule>>> = {
+  [LABEL_FUNCTION]: {
+    mode: CHUNK_MODE_AST_FUNCTION,
+    includePrefix: true,
+    includeSuffix: true,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
+  },
+  [LABEL_METHOD]: {
+    mode: CHUNK_MODE_AST_FUNCTION,
+    includePrefix: true,
+    includeSuffix: true,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
+  },
+  [LABEL_CONSTRUCTOR]: {
+    mode: CHUNK_MODE_AST_FUNCTION,
+    includePrefix: true,
+    includeSuffix: true,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
+  },
+  [LABEL_CLASS]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: true,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+  },
+  [LABEL_INTERFACE]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+  },
+  [LABEL_STRUCT]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: true,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+  },
+};
 
 /**
  * Embedding pipeline phases

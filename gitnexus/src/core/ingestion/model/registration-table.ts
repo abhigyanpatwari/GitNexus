@@ -49,8 +49,8 @@
  * `NodeLabel` is missing from all three sets.
  */
 
-import type { NodeLabel } from 'gitnexus-shared';
-import type { SymbolDefinition, ClassLikeLabel, FreeCallableLabel } from './symbol-table.js';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
+import type { ClassLikeLabel, FreeCallableLabel } from './symbol-table.js';
 import { FREE_CALLABLE_TYPES } from './symbol-table.js';
 import type { MutableTypeRegistry } from './type-registry.js';
 import type { MutableMethodRegistry } from './method-registry.js';

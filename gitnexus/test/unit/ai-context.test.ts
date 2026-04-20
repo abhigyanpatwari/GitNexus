@@ -45,6 +45,63 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
+    // The trimmed block must still contain everything that is genuinely
+    // unique per repo or load-bearing for the agent: the freshness warning,
+    // the Always Do / Never Do imperative lists, the Resources URI table
+    // (projectName-interpolated), and the skills routing table that tells
+    // the agent which skill file to read for each task.
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+
+    expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('## Always Do');
+    expect(content).toContain('## Never Do');
+    expect(content).toContain('## Resources');
+    expect(content).toContain('gitnexus://repo/TestProject/context');
+    expect(content).toContain('gitnexus-impact-analysis/SKILL.md');
+    expect(content).toContain('gitnexus-refactoring/SKILL.md');
+    expect(content).toContain('gitnexus-debugging/SKILL.md');
+    expect(content).toContain('gitnexus-cli/SKILL.md');
+  });
+
+  it('does not duplicate content that already lives in skill files (#856)', async () => {
+    // The six sections listed in issue #856 are redundant with the skill
+    // files shipped alongside the CLAUDE.md block (both are loaded into
+    // every Claude Code session). Their absence is the whole point of the
+    // trim — assert each header is gone so a future regression that pads
+    // the block back out fails here.
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+
+    expect(content).not.toContain('## Tools Quick Reference');
+    expect(content).not.toContain('## Impact Risk Levels');
+    expect(content).not.toContain('## Self-Check Before Finishing');
+    expect(content).not.toContain('## When Debugging');
+    expect(content).not.toContain('## When Refactoring');
+    expect(content).not.toContain('## Keeping the Index Fresh');
+  });
+
+  it('keeps the CLAUDE.md GitNexus block under the token-cost budget (#856)', async () => {
+    // The pre-trim block was ~5465 chars. After #856 it's ~2580 — about a
+    // 52% reduction. 2700 is a soft ceiling that still leaves headroom for
+    // legitimate future additions but will fail loudly if the trim is
+    // reverted or someone pads the block back out toward the original size.
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+    const block = content.slice(
+      content.indexOf('<!-- gitnexus:start -->'),
+      content.indexOf('<!-- gitnexus:end -->'),
+    );
+    expect(block.length).toBeLessThan(2700);
+  });
+
   it('handles empty stats', async () => {
     const stats = {};
     const result = await generateAIContextFiles(tmpDir, storagePath, 'EmptyProject', stats);

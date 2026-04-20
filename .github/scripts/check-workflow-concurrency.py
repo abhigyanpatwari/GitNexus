@@ -11,10 +11,14 @@ Rules:
      `concurrency:` block.
   2. Reusable workflows (on: workflow_call ONLY) do NOT declare one.
   3. The `concurrency.group` expression MUST reference either
-     `${{ github.workflow }}` or a literal `CI-` prefix (the documented
-     ci.yml reusable-workflow-safe exception). This is checked by substring
-     containment rather than prefix match because ci.yml's group is a
-     conditional expression that resolves to a `CI-…` literal at runtime.
+     `${{ github.workflow }}` or one of the approved hardcoded literal prefixes
+     for workflows that are simultaneously entry-points AND reusable (on: push/
+     workflow_call). Two such exceptions are currently approved:
+       - `CI-` for ci.yml (the original canonical form)
+       - `docker-build-push-` for docker.yml
+     This is checked by substring containment rather than prefix match because
+     the group value is a conditional expression that resolves to a `CI-…` or
+     `docker-build-push-…` literal at runtime.
 
 We deliberately do not use a YAML library — keeps the script dependency-free
 on any vanilla runner. `on:` block parsing is line-based and handles both the
@@ -28,7 +32,7 @@ import re
 import sys
 
 
-REQUIRED_TOKENS = ("${{ github.workflow }}", "CI-")
+REQUIRED_TOKENS = ("${{ github.workflow }}", "CI-", "docker-build-push-")
 
 
 def is_reusable(lines: list[str]) -> bool:
@@ -150,8 +154,10 @@ def check(workflows_dir: pathlib.Path) -> int:
         if not any(token in group for token in REQUIRED_TOKENS):
             print(
                 f"::error file={path}::concurrency.group `{group}` must "
-                f"reference one of {REQUIRED_TOKENS}. See CONTRIBUTING.md -> "
-                "GitHub Actions — Concurrency Convention."
+                f"reference one of {REQUIRED_TOKENS} (use ${{{{ github.workflow }}}} "
+                "for normal entry-point workflows; use an approved literal prefix "
+                "only for workflows that are both entry-points AND reusable — "
+                "see CONTRIBUTING.md -> GitHub Actions — Concurrency Convention)."
             )
             fail = 1
 

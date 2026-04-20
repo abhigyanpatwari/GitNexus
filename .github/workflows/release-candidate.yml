@@ -125,6 +125,8 @@ jobs:
     permissions:
       contents: write # push rc tag + marker
       id-token: write # npm provenance
+    outputs:
+      vtag: ${{ steps.reltag.outputs.vtag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -364,3 +366,23 @@ jobs:
 
             Release candidates are pre-stable builds intended for early testing.
             Stable releases remain on the `latest` dist-tag.
+
+  # ── Build & push RC Docker images ────────────────────────────────────
+  # Calls docker.yml as a reusable workflow so that the build, signing, and
+  # attestation logic stays in one place. The publish job exposes `vtag`
+  # (e.g. `v1.2.3-rc.1`) as an output so we can pass it as the tag input.
+  # RC images are signed with Cosign keyless signing; the OIDC identity
+  # will be `docker.yml@refs/heads/main` (the caller's ref) rather than a
+  # tag ref — see README.md § Docker for the correct verify command for RCs.
+  docker:
+    name: Build & Push RC Docker images
+    needs: [guard, publish]
+    if: needs.guard.outputs.should_run == 'true' && needs.publish.outputs.vtag != ''
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      tag: ${{ needs.publish.outputs.vtag }}

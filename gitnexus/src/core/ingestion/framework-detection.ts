@@ -34,10 +34,14 @@ export interface FrameworkHint {
  */
 export function detectFrameworkFromPath(filePath: string): FrameworkHint | null {
   // Normalize path separators and ensure leading slash for consistent matching
-  let p = filePath.toLowerCase().replace(/\\/g, '/');
+  const originalPath = filePath.replace(/\\/g, '/');
+  let p = originalPath.toLowerCase();
   if (!p.startsWith('/')) {
     p = '/' + p; // Add leading slash so patterns like '/app/' match 'app/...'
   }
+  const originalPathWithLeadingSlash = originalPath.startsWith('/')
+    ? originalPath
+    : `/${originalPath}`;
 
   // ========== JAVASCRIPT / TYPESCRIPT FRAMEWORKS ==========
 
@@ -128,7 +132,7 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
     (p.endsWith('.tsx') || p.endsWith('.jsx'))
   ) {
     // Only boost if PascalCase filename (likely a component, not util)
-    const fileName = p.split('/').pop() || '';
+    const fileName = originalPathWithLeadingSlash.split('/').pop() || '';
     if (/^[A-Z]/.test(fileName)) {
       return { framework: 'react', entryPointMultiplier: 1.5, reason: 'react-component' };
     }

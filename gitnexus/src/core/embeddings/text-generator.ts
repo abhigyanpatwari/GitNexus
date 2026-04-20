@@ -10,7 +10,12 @@
  */
 
 import type { EmbeddableNode, EmbeddingConfig } from './types.js';
-import { DEFAULT_EMBEDDING_CONFIG, isShortLabel } from './types.js';
+import {
+  CHUNKING_RULES,
+  DEFAULT_EMBEDDING_CONFIG,
+  STRUCTURAL_TEXT_MODE_DECLARATION,
+  isShortLabel,
+} from './types.js';
 
 /**
  * Truncate description to max length at sentence/word boundary
@@ -95,47 +100,62 @@ const generateCodeBodyText = (
   node: EmbeddableNode,
   codeBody: string,
   config: Partial<EmbeddingConfig>,
+  prevTail?: string,
 ): string => {
   const header = buildMetadataHeader(node, config);
-  const cleaned = cleanContent(codeBody);
-  return `${header}\n\n${cleaned}`;
+  const parts = [header];
+  if (prevTail) {
+    parts.push(`[preceding context]: ...${cleanContent(prevTail)}`);
+  }
+  parts.push('', cleanContent(codeBody));
+  return parts.join('\n');
 };
 
-/**
- * Generate embedding text for Class nodes
- * Signature + properties + method name list only (no method bodies)
- * Method/field names come from AST extractors via node.methodNames/node.fieldNames.
- */
-const generateClassText = (
-  node: EmbeddableNode,
-  codeBody: string,
-  config: Partial<EmbeddingConfig>,
-): string => {
-  return generateStructuralTypeText(node, codeBody, config);
+const getCompactContainerContext = (
+  cleanedContent: string,
+  declarationOnly: string,
+): string | undefined => {
+  const source = declarationOnly || cleanedContent;
+  const nlIdx = source.indexOf('\n');
+  const firstLine = (nlIdx === -1 ? source : source.substring(0, nlIdx)).trim();
+  return firstLine ? `Container: ${firstLine}` : undefined;
 };
 
 const generateStructuralTypeText = (
   node: EmbeddableNode,
   codeBody: string,
   config: Partial<EmbeddingConfig>,
+  chunkIndex?: number,
+  prevTail?: string,
 ): string => {
   const header = buildMetadataHeader(node, config);
   const parts: string[] = [header];
+  const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
+  const cleanedContent = cleanContent(node.content);
+  const declarationOnly = extractDeclarationOnly(cleanedContent);
+  const compactContainerContext = getCompactContainerContext(cleanedContent, declarationOnly);
 
-  if (node.methodNames?.length) {
+  if (compactContainerContext) {
+    parts.push(compactContainerContext);
+  }
+
+  if (prevTail) {
+    parts.push(`[preceding context]: ...${cleanContent(prevTail)}`);
+  }
+
+  if (isFirstChunk && node.methodNames?.length) {
     parts.push(`Methods: ${node.methodNames.join(', ')}`);
   }
-  if (node.fieldNames?.length) {
+  if (isFirstChunk && node.fieldNames?.length) {
     parts.push(`Properties: ${node.fieldNames.join(', ')}`);
   }
 
-  const declarationOnly = extractDeclarationOnly(cleanContent(node.content));
-  if (declarationOnly) {
+  if (isFirstChunk && declarationOnly) {
     parts.push('', declarationOnly);
   }
 
   const cleanedChunk = cleanContent(codeBody);
-  if (cleanedChunk && cleanedChunk !== cleanContent(node.content)) {
+  if (cleanedChunk && cleanedChunk !== cleanedContent) {
     parts.push('', cleanedChunk);
   }
 
@@ -229,6 +249,8 @@ export const generateEmbeddingText = (
   node: EmbeddableNode,
   codeBody: string,
   config: Partial<EmbeddingConfig> = {},
+  chunkIndex?: number,
+  prevTail?: string,
 ): string => {
   if (isShortLabel(node.label)) {
     const header = buildMetadataHeader(node, config);
@@ -236,15 +258,12 @@ export const generateEmbeddingText = (
     return `${header}\n\n${cleaned}`;
   }
 
-  if (node.label === 'Class') {
-    return generateClassText(node, codeBody, config);
+  const chunkingRule = CHUNKING_RULES[node.label];
+  if (chunkingRule?.structuralTextMode === STRUCTURAL_TEXT_MODE_DECLARATION) {
+    return generateStructuralTypeText(node, codeBody, config, chunkIndex, prevTail);
   }
 
-  if (node.label === 'Interface') {
-    return generateStructuralTypeText(node, codeBody, config);
-  }
-
-  return generateCodeBodyText(node, codeBody, config);
+  return generateCodeBodyText(node, codeBody, config, prevTail);
 };
 
 /**

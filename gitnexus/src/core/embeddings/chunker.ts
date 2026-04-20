@@ -13,6 +13,12 @@ import { characterChunk } from './character-chunk.js';
 import type { Chunk } from './character-chunk.js';
 import { ensureAndParse, findDeclarationNode, findFunctionNode } from './ast-utils.js';
 import { buildLineIndex, resolveChunkLines } from './line-index.js';
+import {
+  CHUNKING_RULES,
+  CHUNK_MODE_AST_DECLARATION,
+  CHUNK_MODE_AST_FUNCTION,
+  type ChunkingRule,
+} from './types.js';
 
 /**
  * Main chunkNode function: dispatches by label
@@ -40,31 +46,39 @@ export const chunkNode = async (
     ];
   }
 
-  // Only function-like labels get AST chunking
-  if (label === 'Function' || label === 'Method' || label === 'Constructor') {
-    try {
-      const astChunks = await astChunk(content, filePath, startLine, endLine, chunkSize, overlap);
-      if (astChunks.length > 0) return astChunks;
-    } catch {
-      // AST parsing failed — fall through to character fallback
-    }
+  const rule = CHUNKING_RULES[label];
+  if (!rule) {
+    return characterChunk(content, startLine, endLine, chunkSize, overlap);
   }
 
-  if (label === 'Class' || label === 'Interface') {
-    try {
-      const declarationChunks = await declarationChunk(
-        label,
+  try {
+    if (rule.mode === CHUNK_MODE_AST_FUNCTION) {
+      const astChunks = await astChunk(
         content,
         filePath,
         startLine,
         endLine,
         chunkSize,
         overlap,
+        rule,
+      );
+      if (astChunks.length > 0) return astChunks;
+    }
+
+    if (rule.mode === CHUNK_MODE_AST_DECLARATION) {
+      const declarationChunks = await declarationChunk(
+        content,
+        filePath,
+        startLine,
+        endLine,
+        chunkSize,
+        overlap,
+        rule,
       );
       if (declarationChunks.length > 0) return declarationChunks;
-    } catch {
-      // AST parsing failed — fall through to character fallback
     }
+  } catch {
+    // AST parsing failed — fall through to character fallback
   }
 
   // Character-based fallback for everything else
@@ -83,6 +97,7 @@ const astChunk = async (
   endLine: number,
   chunkSize: number,
   overlap: number,
+  rule: ChunkingRule,
 ): Promise<Chunk[]> => {
   const tree = await ensureAndParse(content, filePath);
   if (!tree) return [];
@@ -121,8 +136,8 @@ const astChunk = async (
     statements,
     targetNode.startIndex,
     targetNode.endIndex,
-    true,
-    true,
+    rule.includePrefix,
+    rule.includeSuffix,
   );
 };
 
@@ -145,13 +160,13 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
 ]);
 
 const declarationChunk = async (
-  label: 'Class' | 'Interface',
   content: string,
   filePath: string,
   startLine: number,
   endLine: number,
   chunkSize: number,
   overlap: number,
+  rule: ChunkingRule,
 ): Promise<Chunk[]> => {
   const tree = await ensureAndParse(content, filePath);
   if (!tree) return [];
@@ -162,7 +177,7 @@ const declarationChunk = async (
   const bodyNode = getDeclarationBodyNode(targetNode);
   if (!bodyNode) return [];
 
-  const members = collectDeclarationUnits(bodyNode, label);
+  const members = collectDeclarationUnits(bodyNode, rule.groupFields);
   if (members.length === 0) return [];
 
   return chunkByUnits(
@@ -174,8 +189,8 @@ const declarationChunk = async (
     members,
     targetNode.startIndex,
     targetNode.endIndex,
-    false,
-    false,
+    rule.includePrefix,
+    rule.includeSuffix,
   );
 };
 
@@ -237,14 +252,22 @@ const chunkByUnits = (
 
     if (candidateEndOffset - chunkStartOffset > chunkSize) {
       const oversizedUnit = units[chunkStartUnitIdx];
+      const oversizedStartOffset =
+        chunkStartUnitIdx === 0 && includeContainerPrefixOnFirstChunk
+          ? containerStartOffset
+          : oversizedUnit.startIndex;
+      const oversizedEndOffset =
+        chunkStartUnitIdx === units.length - 1 && includeContainerSuffixOnLastChunk
+          ? containerEndOffset
+          : oversizedUnit.endIndex;
       const oversizedLineRange = resolveChunkLines(
         lineOffsets,
-        oversizedUnit.startIndex,
-        oversizedUnit.endIndex,
+        oversizedStartOffset,
+        oversizedEndOffset,
         baseStartLine,
       );
       const oversizedChunks = characterChunk(
-        content.slice(oversizedUnit.startIndex, oversizedUnit.endIndex),
+        content.slice(oversizedStartOffset, oversizedEndOffset),
         oversizedLineRange.startLine,
         oversizedLineRange.endLine,
         chunkSize,
@@ -252,8 +275,8 @@ const chunkByUnits = (
       ).map((chunk, offsetIdx) => ({
         ...chunk,
         chunkIndex: chunks.length + offsetIdx,
-        startOffset: chunk.startOffset + oversizedUnit.startIndex,
-        endOffset: chunk.endOffset + oversizedUnit.startIndex,
+        startOffset: chunk.startOffset + oversizedStartOffset,
+        endOffset: chunk.endOffset + oversizedStartOffset,
       }));
       chunks.push(...oversizedChunks);
       chunkStartUnitIdx += 1;
@@ -325,7 +348,7 @@ const getDeclarationBodyNode = (node: any): any | null => {
 
 const collectDeclarationUnits = (
   bodyNode: any,
-  label: 'Class' | 'Interface',
+  groupFields: boolean,
 ): Array<{ startIndex: number; endIndex: number }> => {
   const members: Array<{ startIndex: number; endIndex: number; groupable: boolean }> = [];
 
@@ -335,7 +358,7 @@ const collectDeclarationUnits = (
     members.push({
       startIndex: child.startIndex,
       endIndex: child.endIndex,
-      groupable: label === 'Class' && FIELD_LIKE_MEMBER_TYPES.has(child.type),
+      groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
     });
   }
 

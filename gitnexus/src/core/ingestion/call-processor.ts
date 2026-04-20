@@ -1,11 +1,7 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type {
-  SymbolDefinition,
-  SymbolTableReader,
-  HeritageMap,
-  ExtractedHeritage,
-} from './model/index.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
+import type { SymbolTableReader, HeritageMap, ExtractedHeritage } from './model/index.js';
 import { CLASS_TYPES, CALL_TARGET_TYPES, lookupMethodByOwnerWithMRO } from './model/index.js';
 import type { DispatchDecision, ReceiverEnriched } from './call-types.js';
 

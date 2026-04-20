@@ -5,7 +5,7 @@
  * Stores Property symbols keyed by `ownerNodeId\0fieldName` for O(1) lookup.
  */
 
-import type { SymbolDefinition } from './symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 
 // ---------------------------------------------------------------------------
 // Public read-only interface
