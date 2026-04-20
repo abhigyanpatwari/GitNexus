@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,12 +22,19 @@ const electronVersion =
   desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
 const electronBuilderVersion =
   desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
+const bundledNodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node';
+const electronBuilderCliPath = path.join(packageRoot, 'node_modules', 'electron-builder', 'cli.js');
+const builderUtilRequire = createRequire(
+  path.join(packageRoot, 'node_modules', 'builder-util', 'out', 'util.js'),
+);
+const requiredBuilderRuntimeModules = ['app-builder-bin'];
 const appBuilderLibVersion =
   desktopPackageLock.packages?.['node_modules/app-builder-lib']?.version ??
   electronBuilderVersion.replace(/^[^\d]*/, '');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outputDir = path.join(releaseRoot, stamp);
-const generatedBuilderConfigPath = path.join(outputDir, 'electron-builder.generated.json');
+const latestReleasePointerPath = path.join(releaseRoot, '.latest-unpacked-release');
+const electronBuilderConfigPath = path.join(packageRoot, 'electron-builder.yml');
 const requiredNsisTemplateFiles = [
   path.join(packageRoot, 'node_modules', 'app-builder-lib', 'templates', 'nsis', 'messages.yml'),
   path.join(
@@ -48,78 +56,23 @@ const artifactFileExtensions = new Set(['.AppImage', '.dmg', '.exe', '.msi', '.z
 const builderArgs = process.argv.slice(2);
 const requestedTargets = builderArgs.filter((argument) => argument in supportedTargetHosts);
 
-const createBuilderConfig = () => ({
-  appId: 'io.github.abhigyanpatwari.gitnexus.desktop',
-  electronVersion,
-  productName: 'GitNexus Desktop',
-  directories: {
-    output: outputDir,
-    buildResources: path.join(packageRoot, 'build'),
-  },
-  files: ['dist/**/*', 'package.json'],
-  extraResources: [
-    {
-      from: path.join(gitnexusWebRoot, 'dist'),
-      to: 'gitnexus-web',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'dist'),
-      to: 'gitnexus/dist',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'node_modules'),
-      to: 'gitnexus/node_modules',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'hooks'),
-      to: 'gitnexus/hooks',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'skills'),
-      to: 'gitnexus/skills',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'vendor'),
-      to: 'gitnexus/vendor',
-      filter: ['**/*'],
-    },
-    {
-      from: path.join(gitnexusRoot, 'package.json'),
-      to: 'gitnexus/package.json',
-    },
-  ],
-  asar: false,
-  npmRebuild: false,
-  win: {
-    signAndEditExecutable: false,
-    icon: path.join(packageRoot, 'build', 'icon.png'),
-    target: ['nsis'],
-  },
-  mac: {
-    category: 'public.app-category.developer-tools',
-    icon: path.join(packageRoot, 'build', 'icon.png'),
-    target: ['dmg'],
-  },
-  linux: {
-    category: 'Development',
-    icon: path.join(packageRoot, 'build', 'icon.png'),
-    target: ['AppImage'],
-  },
-  nsis: {
-    oneClick: false,
-    allowToChangeInstallationDirectory: true,
-  },
-});
+const builderEnvironment = {
+  GITNEXUS_DESKTOP_GITNEXUS_DIST: path.join(gitnexusRoot, 'dist'),
+  GITNEXUS_DESKTOP_GITNEXUS_HOOKS: path.join(gitnexusRoot, 'hooks'),
+  GITNEXUS_DESKTOP_GITNEXUS_NODE_MODULES: path.join(gitnexusRoot, 'node_modules'),
+  GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON: path.join(gitnexusRoot, 'package.json'),
+  GITNEXUS_DESKTOP_GITNEXUS_SKILLS: path.join(gitnexusRoot, 'skills'),
+  GITNEXUS_DESKTOP_GITNEXUS_VENDOR: path.join(gitnexusRoot, 'vendor'),
+  GITNEXUS_DESKTOP_NODE_EXECUTABLE: process.execPath,
+  GITNEXUS_DESKTOP_NODE_RESOURCE_PATH: `gitnexus-node/${bundledNodeExecutableName}`,
+  GITNEXUS_DESKTOP_WEB_DIST: path.join(gitnexusWebRoot, 'dist'),
+};
 
 const builderCommand = [
-  `npx --yes -p electron@${electronVersion} -p electron-builder@${electronBuilderVersion} electron-builder`,
-  `--config "${generatedBuilderConfigPath}"`,
+  `node "${electronBuilderCliPath}"`,
+  `--config "${electronBuilderConfigPath}"`,
   `-c.electronVersion=${electronVersion}`,
+  `-c.directories.output="${outputDir}"`,
   '--publish never',
   ...builderArgs,
 ].join(' ');
@@ -138,6 +91,15 @@ const runCommand = (command, cwd, extraEnv = {}) => {
 const tryRunCommand = (command, cwd, extraEnv = {}) => {
   try {
     runCommand(command, cwd, extraEnv);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const canResolveBuilderRuntimeModule = (moduleName) => {
+  try {
+    builderUtilRequire.resolve(moduleName);
     return true;
   } catch {
     return false;
@@ -202,56 +164,62 @@ const assertSupportedHostForRequestedTargets = () => {
 };
 
 const ensureDesktopToolchainHealthy = () => {
-  if (!requestedTargets.includes('--win')) {
+  const missingBuilderRuntimeModules = requiredBuilderRuntimeModules.filter(
+    (moduleName) => !canResolveBuilderRuntimeModule(moduleName),
+  );
+  const missingNsisTemplates = requestedTargets.includes('--win')
+    ? requiredNsisTemplateFiles.filter((filePath) => !fs.existsSync(filePath))
+    : [];
+
+  if (missingBuilderRuntimeModules.length === 0 && missingNsisTemplates.length === 0) {
     return;
   }
 
-  const missingNsisTemplates = requiredNsisTemplateFiles.filter(
-    (filePath) => !fs.existsSync(filePath),
-  );
+  if (missingNsisTemplates.length > 0) {
+    console.warn(
+      '[build] electron-builder NSIS templates are missing. Restoring app-builder-lib package contents first...',
+    );
 
-  if (missingNsisTemplates.length === 0) {
+    try {
+      repairAppBuilderLibPackage();
+    } catch {
+      // Fall through to install-based repair paths below.
+    }
+  }
+
+  const remainingMissingBuilderRuntimeModules = requiredBuilderRuntimeModules.filter(
+    (moduleName) => !canResolveBuilderRuntimeModule(moduleName),
+  );
+  const remainingMissingNsisTemplates = requestedTargets.includes('--win')
+    ? requiredNsisTemplateFiles.filter((filePath) => !fs.existsSync(filePath))
+    : [];
+
+  if (
+    remainingMissingBuilderRuntimeModules.length === 0 &&
+    remainingMissingNsisTemplates.length === 0
+  ) {
     return;
   }
 
   console.warn(
-    '[build] electron-builder NSIS templates are missing. Restoring app-builder-lib package contents first...',
+    '[build] electron-builder installation is incomplete. Restoring desktop dependencies with npm ci...',
   );
+  runCommand('npm ci', packageRoot);
 
-  try {
-    repairAppBuilderLibPackage();
-  } catch {
-    // Fall through to install-based repair paths below.
-  }
-
-  if (requiredNsisTemplateFiles.every((filePath) => fs.existsSync(filePath))) {
-    return;
-  }
-
-  console.warn(
-    '[build] Package overlay repair was not enough. Reinstalling electron-builder next...',
+  const unresolvedBuilderRuntimeModules = requiredBuilderRuntimeModules.filter(
+    (moduleName) => !canResolveBuilderRuntimeModule(moduleName),
   );
-
-  const targetedRepairWorked = tryRunCommand(
-    `npm install --no-save --package-lock=false electron-builder@${electronBuilderVersion}`,
-    packageRoot,
-  );
-
-  const targetedRepairResolvedTemplates =
-    targetedRepairWorked && requiredNsisTemplateFiles.every((filePath) => fs.existsSync(filePath));
-
-  if (!targetedRepairResolvedTemplates) {
-    console.warn('[build] Targeted repair was not enough. Falling back to npm ci...');
-    runCommand('npm ci', packageRoot);
-  }
-
   const unresolvedTemplates = requiredNsisTemplateFiles.filter(
     (filePath) => !fs.existsSync(filePath),
   );
 
-  if (unresolvedTemplates.length > 0) {
+  if (unresolvedBuilderRuntimeModules.length > 0 || unresolvedTemplates.length > 0) {
     throw new Error(
-      `electron-builder is missing required NSIS templates after reinstall:\n${unresolvedTemplates.join('\n')}`,
+      [
+        'electron-builder is missing required runtime modules after reinstall:',
+        ...unresolvedBuilderRuntimeModules,
+        ...unresolvedTemplates,
+      ].join('\n'),
     );
   }
 };
@@ -282,7 +250,7 @@ const listArtifacts = (directoryPath) => {
 };
 
 fs.mkdirSync(outputDir, { recursive: true });
-fs.writeFileSync(generatedBuilderConfigPath, JSON.stringify(createBuilderConfig(), null, 2));
+fs.writeFileSync(latestReleasePointerPath, `${outputDir}\n`);
 
 assertSupportedHostForRequestedTargets();
 ensureDesktopToolchainHealthy();
@@ -293,7 +261,7 @@ runCommand('npm run bundle', packageRoot);
 
 runCommand('npm run build', gitnexusWebRoot);
 
-runCommand(builderCommand, packageRoot);
+runCommand(builderCommand, packageRoot, builderEnvironment);
 
 const artifacts = listArtifacts(outputDir);
 

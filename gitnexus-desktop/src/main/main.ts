@@ -57,37 +57,6 @@ const MIME_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-const EMBEDDED_APP_SCROLLBAR_CSS = `
-  :root {
-    scrollbar-color: rgba(148, 163, 184, 0.42) rgba(7, 10, 18, 0.08);
-  }
-
-  * {
-    scrollbar-width: thin;
-  }
-
-  ::-webkit-scrollbar {
-    width: 12px;
-    height: 12px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: rgba(7, 10, 18, 0.08);
-  }
-
-  ::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
-    border-radius: 999px;
-    background: rgba(148, 163, 184, 0.34);
-    background-clip: padding-box;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(148, 163, 184, 0.52);
-    background-clip: padding-box;
-  }
-`;
-
 let serverReadyPromise: Promise<void> | null = null;
 let gitNexusServerProcess: ChildProcess | null = null;
 let gitNexusServerOutput = '';
@@ -430,20 +399,7 @@ const sendStaticResponse = (assetPath: string | null, response: ServerResponse):
 
 const handlePackagedWebRequest = (request: IncomingMessage, response: ServerResponse): void => {
   const requestUrl = request.url ?? '/';
-  let requestedPath: string;
-
-  try {
-    requestedPath = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
-  } catch (error) {
-    if (error instanceof URIError) {
-      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-      response.end('Bad request');
-      return;
-    }
-
-    throw error;
-  }
-
+  const requestedPath = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
   sendStaticResponse(normalizeStaticPath(GITNEXUS_WEB_PACKAGED_DIR, requestedPath), response);
 };
 
@@ -533,7 +489,7 @@ const getDesktopShellState = (window: BrowserWindow): DesktopShellState => {
     isAlwaysOnTop: window.isAlwaysOnTop(),
     isMaximized: window.isMaximized() || window.isFullScreen(),
     platform: process.platform,
-    titleBarHeight: getDesktopShellTitlebarHeight(),
+    titleBarHeight: DESKTOP_SHELL_TITLEBAR_HEIGHT,
   };
 };
 
@@ -555,10 +511,6 @@ const getWindowFromSender = (sender: Electron.WebContents): BrowserWindow => {
   return window;
 };
 
-const getDesktopShellTitlebarHeight = (): number => {
-  return process.platform === 'darwin' ? DESKTOP_SHELL_TITLEBAR_HEIGHT : 0;
-};
-
 const updateContentViewBounds = (window: BrowserWindow): void => {
   const contentView = contentViews.get(window);
 
@@ -567,13 +519,12 @@ const updateContentViewBounds = (window: BrowserWindow): void => {
   }
 
   const [width, height] = window.getContentSize();
-  const titlebarHeight = getDesktopShellTitlebarHeight();
 
   contentView.setBounds({
     x: 0,
-    y: titlebarHeight,
+    y: DESKTOP_SHELL_TITLEBAR_HEIGHT,
     width: Math.max(width, 1),
-    height: Math.max(height - titlebarHeight, 1),
+    height: Math.max(height - DESKTOP_SHELL_TITLEBAR_HEIGHT, 1),
   });
 };
 
@@ -604,14 +555,6 @@ const createEmbeddedContentView = (contentUrl: string): BrowserView => {
     openExternalUrlIfSafe(navigationUrl);
   });
 
-  contentView.webContents.on('dom-ready', () => {
-    void contentView.webContents.insertCSS(EMBEDDED_APP_SCROLLBAR_CSS).catch((error) => {
-      console.warn(
-        `[gitnexus-desktop] Failed to inject embedded app CSS: ${getErrorMessage(error)}`,
-      );
-    });
-  });
-
   return contentView;
 };
 
@@ -624,7 +567,7 @@ const loadShellRenderer = async (window: BrowserWindow): Promise<void> => {
     return;
   }
 
-  const rendererEntry = path.join(__dirname, '../renderer/index.html');
+  const rendererEntry = path.join(__dirname, '../renderer/src/renderer/index.html');
   console.info(`[gitnexus-desktop] Loading shell renderer file: ${rendererEntry}`);
   await window.loadFile(rendererEntry);
 };
@@ -723,9 +666,9 @@ async function createWindow(): Promise<void> {
     title: DESKTOP_APP_NAME,
     icon: DESKTOP_APP_ICON_PATH,
     backgroundColor: DESKTOP_BACKGROUND_COLOR,
+    frame: false,
     show: false,
     autoHideMenuBar: true,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,

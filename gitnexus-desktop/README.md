@@ -17,12 +17,13 @@ npm run build:linux
 - `npm run build:win` creates a Windows NSIS installer `.exe`.
 - `npm run build:mac` creates a macOS `.dmg`.
 - `npm run build:linux` creates a Linux `.AppImage`.
+- `npm run smoke:unpacked` launches the latest unpacked desktop build, verifies startup, and exits.
 
 Build output is written under `gitnexus-desktop/release/<timestamp>/`.
 
 ## PR Artifacts
 
-The `Desktop Packaging` GitHub Actions workflow uploads preview desktop artifacts for pull requests that touch `gitnexus-desktop/**` or `.github/workflows/desktop-packaging.yml`.
+The `Desktop Packaging` GitHub Actions workflow builds an unpacked desktop app, smoke-tests startup, then uploads preview desktop artifacts for pull requests that touch `.github/workflows/desktop-packaging.yml`, `gitnexus-desktop/**`, `gitnexus/**`, `gitnexus-web/**`, or `gitnexus-shared/**`.
 
 - `gitnexus-desktop-windows` contains the Windows NSIS installer `.exe` and `win-unpacked/`.
 - `gitnexus-desktop-macos` contains the macOS `.dmg` and `mac*/` output.
