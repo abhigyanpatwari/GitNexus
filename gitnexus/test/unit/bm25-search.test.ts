@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
 
-vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
-  queryFTS: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
+  return {
+    ...actual,
+    queryFTS: vi.fn().mockResolvedValue([]),
+  };
+});
 
 describe('BM25 search', () => {
   describe('searchFTSFromLbug', () => {
