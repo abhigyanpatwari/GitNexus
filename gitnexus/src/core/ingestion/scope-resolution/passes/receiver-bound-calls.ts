@@ -240,8 +240,15 @@ export function emitReceiverBoundCalls(
         !typeRef.rawName.includes('(') &&
         !namespaceTargets.has(typeRef.rawName.split('.')[0]!)
       ) {
+        // For collection-accessor suffixes (`.Values`, `.Keys`) the
+        // raw typeRef already describes a plain dotted access that
+        // `resolveCompoundReceiverClass` can walk directly — don't
+        // append `()` which would misroute to its call-expression
+        // branch.
+        const tail = typeRef.rawName.split('.').pop() ?? '';
+        const isAccessor = tail === 'Values' || tail === 'Keys';
         const ownerDef = resolveCompoundReceiverClass(
-          typeRef.rawName + '()',
+          isAccessor ? typeRef.rawName : typeRef.rawName + '()',
           typeRef.declaredAtScope,
           scopes,
           index,

@@ -94,6 +94,12 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
   return { boundName: nameCap.text, rawTypeName: rawType, source };
 }
 
+/** Member accesses we want to preserve through qualifier stripping.
+ *  Dictionary/collection views (`data.Values`, `data.Keys`) survive
+ *  so the compound-receiver pass can unwrap the receiver's generic
+ *  type (Dictionary<K,V>) based on the suffix. */
+const COLLECTION_ACCESSOR_SUFFIXES = new Set(['Values', 'Keys']);
+
 /** `User?` → `User`. */
 function stripNullable(text: string): string {
   if (text.endsWith('?')) return text.slice(0, -1).trim();
@@ -117,9 +123,15 @@ function stripGeneric(text: string): string {
   return text;
 }
 
-/** `System.Collections.User` → `User`. */
+/** `System.Collections.User` → `User`. Preserves dotted paths whose
+ *  final segment is a known Dictionary/collection accessor (`.Values`,
+ *  `.Keys`, `.Count`, etc.) so downstream resolvers can unwrap the
+ *  receiver's generic type based on the suffix — `data.Values` →
+ *  element type of `data`'s Dictionary<K,V>. */
 function stripQualifier(text: string): string {
   const lastDot = text.lastIndexOf('.');
   if (lastDot === -1) return text;
-  return text.slice(lastDot + 1);
+  const tail = text.slice(lastDot + 1);
+  if (COLLECTION_ACCESSOR_SUFFIXES.has(tail)) return text;
+  return tail;
 }
