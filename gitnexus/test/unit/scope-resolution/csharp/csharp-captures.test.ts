@@ -117,6 +117,38 @@ describe('emitCsharpScopeCaptures — declarations', () => {
     expect(m!['@declaration.name'].text).toBe('_x');
   });
 
+  it('captures operator declarations as @declaration.method with the operator token as name', () => {
+    // Caller attribution walks ownedDefs looking for method owners.
+    // Without this, calls inside `operator +` bodies get attributed to
+    // the enclosing class instead of the operator.
+    const m = findMatch(
+      'class T { public static T operator +(T a, T b) { return a; } }',
+      (t) => t.includes('@declaration.method') && !t.includes('@scope.class'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('+');
+  });
+
+  it('captures conversion operator declarations with the target type as name', () => {
+    const m = findMatch('class T { public static explicit operator int(T x) { return 0; } }', (t) =>
+      t.includes('@declaration.method'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('int');
+  });
+
+  it('captures operator + conversion-operator as @scope.function', () => {
+    const src = `
+      class T {
+        public static T operator +(T a, T b) { return a; }
+        public static explicit operator int(T x) { return 0; }
+      }
+    `;
+    const all = tagsFor(src);
+    const fnScopes = all.filter((t) => t.includes('@scope.function')).length;
+    expect(fnScopes).toBe(2);
+  });
+
   it('captures local function declarations', () => {
     const m = findMatch('class A { void M() { void Local() { } } }', (t) =>
       t.includes('@declaration.function'),
@@ -199,12 +231,16 @@ describe('emitCsharpScopeCaptures — references', () => {
     expect(m!['@reference.name'].text).toBe('Save');
   });
 
-  it('captures null-conditional member calls `obj?.Save()`', () => {
+  it('captures null-conditional member calls `obj?.Save()` with a receiver', () => {
+    // Regression guard: without the receiver capture, receiver-bound
+    // resolution downgrades to free-call fallback and can mis-link to
+    // an imported `Save`.
     const m = findMatch('class A { void M(User obj) { obj?.Save(); } }', (t) =>
       t.includes('@reference.call.member'),
     );
     expect(m).toBeDefined();
     expect(m!['@reference.name'].text).toBe('Save');
+    expect(m!['@reference.receiver'].text).toBe('obj');
   });
 
   it('captures object-creation expressions as constructor calls', () => {

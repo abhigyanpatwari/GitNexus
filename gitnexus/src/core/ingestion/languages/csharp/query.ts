@@ -52,6 +52,7 @@ const CSHARP_SCOPE_QUERY = `
 (destructor_declaration) @scope.function
 (local_function_statement) @scope.function
 (operator_declaration) @scope.function
+(conversion_operator_declaration) @scope.function
 ;; Property accessors are blocks within a property; not scoped here.
 ;; Anonymous methods / lambdas are not scoped — out of scope per plan.
 
@@ -83,6 +84,21 @@ const CSHARP_SCOPE_QUERY = `
 
 (local_function_statement
   name: (identifier) @declaration.name) @declaration.function
+
+;; Operator declarations — \`public static T operator +(T a, T b)\`.
+;; tree-sitter-c-sharp exposes the operator token under the \`operator:\`
+;; field (an anonymous node like \`+\`, \`-\`, \`==\`). Capture the whole
+;; node under @declaration.name so the extractor reads the operator
+;; symbol as the declared name; downstream csharpMethodConfig can
+;; normalize it (e.g. to \`op_Addition\`) when it runs.
+(operator_declaration
+  operator: _ @declaration.name) @declaration.method
+
+;; Conversion operators — \`public static explicit operator int(T x)\`.
+;; No operator token; the target type (\`int\`) identifies the conversion
+;; and serves as the name anchor.
+(conversion_operator_declaration
+  type: _ @declaration.name) @declaration.method
 
 (property_declaration
   name: (identifier) @declaration.name) @declaration.property
@@ -197,11 +213,15 @@ const CSHARP_SCOPE_QUERY = `
     name: (identifier) @reference.name)) @reference.call.member
 
 ;; References — null-conditional member calls: \`obj?.Method()\`
-;; Positional descendants — conditional_access_expression wraps a
-;; receiver followed by a member_binding_expression containing an
-;; identifier. tree-sitter-c-sharp doesn't expose named fields here.
+;; conditional_access_expression wraps a receiver followed by a
+;; member_binding_expression. Capture the receiver explicitly so
+;; receiver-bound resolution doesn't silently downgrade the call to
+;; a free-call (which would misresolve to an imported \`Save\`).
+;; tree-sitter-c-sharp doesn't expose named fields here, so use
+;; positional wildcards.
 (invocation_expression
   function: (conditional_access_expression
+    (_) @reference.receiver
     (member_binding_expression
       (identifier) @reference.name))) @reference.call.member
 
