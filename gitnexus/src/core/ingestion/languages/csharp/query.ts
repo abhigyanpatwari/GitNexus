@@ -1,0 +1,244 @@
+/**
+ * Tree-sitter query for C# scope captures (RFC §5.1).
+ *
+ * Captures the structural skeleton the generic scope-resolution
+ * pipeline consumes: scopes (module/namespace/class/function),
+ * declarations (class-likes, method-likes, properties, variables,
+ * local functions), imports (using directives), type bindings
+ * (parameter annotations, variable annotations, constructor
+ * inference), and references (call sites, member writes).
+ *
+ * C# specifics that shape this query:
+ *
+ *   - Both block-scoped (`namespace X { }`) and file-scoped
+ *     (`namespace X;`) namespaces. tree-sitter-c-sharp emits them
+ *     under distinct node types (`namespace_declaration` vs
+ *     `file_scoped_namespace_declaration`); both map to
+ *     `@scope.namespace` since the scope semantics are identical.
+ *   - `partial class X` splits a Class def across files. Each file
+ *     emits its own `@declaration.class`; cross-file resolution is
+ *     handled at the graph-bridge layer via the qualified-name key.
+ *   - `using X = Y;` aliases and `using static X;` are interpreted in
+ *     `interpret.ts` via the `@import.*` captures. All three using
+ *     flavors share the same anchor (`@import.statement`).
+ *   - Explicit interface implementations (`void IFoo.Bar() { }`)
+ *     expose the qualified name via the existing `@declaration.name`
+ *     — the extractor's `csharpMethodConfig.extractQualifiedName`
+ *     picks up the explicit qualifier from the method declaration
+ *     node.
+ *
+ * Exposes lazy `Parser` and `Query` singletons so callers don't pay
+ * tree-sitter init cost per file.
+ */
+
+import Parser from 'tree-sitter';
+import CSharp from 'tree-sitter-c-sharp';
+
+const CSHARP_SCOPE_QUERY = `
+;; Scopes
+(compilation_unit) @scope.module
+
+(namespace_declaration) @scope.namespace
+(file_scoped_namespace_declaration) @scope.namespace
+
+(class_declaration) @scope.class
+(interface_declaration) @scope.class
+(struct_declaration) @scope.class
+(record_declaration) @scope.class
+(enum_declaration) @scope.class
+
+(method_declaration) @scope.function
+(constructor_declaration) @scope.function
+(destructor_declaration) @scope.function
+(local_function_statement) @scope.function
+(operator_declaration) @scope.function
+;; Property accessors are blocks within a property; not scoped here.
+;; Anonymous methods / lambdas are not scoped — out of scope per plan.
+
+;; Declarations — types
+(class_declaration
+  name: (identifier) @declaration.name) @declaration.class
+
+(interface_declaration
+  name: (identifier) @declaration.name) @declaration.interface
+
+(struct_declaration
+  name: (identifier) @declaration.name) @declaration.struct
+
+(record_declaration
+  name: (identifier) @declaration.name) @declaration.record
+
+(enum_declaration
+  name: (identifier) @declaration.name) @declaration.enum
+
+;; Declarations — methods / constructors / properties
+(method_declaration
+  name: (identifier) @declaration.name) @declaration.method
+
+(constructor_declaration
+  name: (identifier) @declaration.name) @declaration.constructor
+
+(destructor_declaration
+  name: (identifier) @declaration.name) @declaration.method
+
+(local_function_statement
+  name: (identifier) @declaration.name) @declaration.function
+
+(property_declaration
+  name: (identifier) @declaration.name) @declaration.property
+
+(indexer_declaration) @declaration.property
+
+;; Fields — \`int x;\` at class scope. variable_declarator inside
+;; field_declaration carries the name.
+(field_declaration
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @declaration.name))) @declaration.variable
+
+;; Local variables — \`int x = 1;\` inside a method body
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @declaration.name))) @declaration.variable
+
+;; Imports — single anchor per directive; interpretCsharpImport classifies
+(using_directive) @import.statement
+
+;; Type bindings — parameter annotations: \`void F(User u)\`
+(parameter
+  type: (identifier) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(parameter
+  type: (generic_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(parameter
+  type: (qualified_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(parameter
+  type: (nullable_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+;; Type bindings — local variable annotations: \`User u = new User();\`
+;; Typed local with identifier type + \`new X()\` initializer — shape
+;; matters so \`u\` binds to \`X\` (the constructor call's type), not the
+;; declared type alias (which is usually the same, but \`new DerivedUser()\`
+;; would be distinct).
+(local_declaration_statement
+  (variable_declaration
+    type: (identifier) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+(local_declaration_statement
+  (variable_declaration
+    type: (generic_name) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+(local_declaration_statement
+  (variable_declaration
+    type: (qualified_name) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+;; Type bindings — \`var u = new User();\` — constructor-inferred.
+;; Captures object_creation_expression's type as the binding type.
+;; variable_declarator wraps the \`= <expr>\` directly; tree-sitter-c-sharp
+;; does not surface an equals_value_clause wrapper here.
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (object_creation_expression
+        type: (identifier) @type-binding.type)))) @type-binding.constructor
+
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (object_creation_expression
+        type: (generic_name) @type-binding.type)))) @type-binding.constructor
+
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (object_creation_expression
+        type: (qualified_name) @type-binding.type)))) @type-binding.constructor
+
+;; Type bindings — \`var u = factory();\` alias (chain-follow picks up
+;; factory's return type via propagateImportedReturnTypes)
+(local_declaration_statement
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (invocation_expression
+        function: (identifier) @type-binding.type)))) @type-binding.alias
+
+;; Return-type captures on method_declaration / property_declaration /
+;; field_declaration are deferred — tree-sitter-c-sharp does not expose
+;; the return/field type under a simple named field that pattern-matches
+;; cleanly. When Unit 7's parity gate surfaces a gap requiring these
+;; bindings, revisit with a positional pattern or a post-hoc lookup via
+;; csharpMethodConfig.extractReturnType / csharpFieldConfig.extractType.
+
+;; References — free calls: \`Foo()\`
+(invocation_expression
+  function: (identifier) @reference.name) @reference.call.free
+
+;; References — member calls: \`obj.Method()\`
+(invocation_expression
+  function: (member_access_expression
+    expression: (_) @reference.receiver
+    name: (identifier) @reference.name)) @reference.call.member
+
+;; References — null-conditional member calls: \`obj?.Method()\`
+;; Positional descendants — conditional_access_expression wraps a
+;; receiver followed by a member_binding_expression containing an
+;; identifier. tree-sitter-c-sharp doesn't expose named fields here.
+(invocation_expression
+  function: (conditional_access_expression
+    (member_binding_expression
+      (identifier) @reference.name))) @reference.call.member
+
+;; References — constructor calls: \`new User(...)\`
+(object_creation_expression
+  type: (identifier) @reference.name) @reference.call.constructor
+
+(object_creation_expression
+  type: (generic_name
+    (identifier) @reference.name)) @reference.call.constructor
+
+(object_creation_expression
+  type: (qualified_name) @reference.call.constructor.qualified) @reference.call.constructor
+
+;; References — field/property writes: \`obj.Name = "x"\` emits a write
+;; ACCESSES edge from the enclosing method to the field/property on
+;; obj's class.
+(assignment_expression
+  left: (member_access_expression
+    expression: (_) @reference.receiver
+    name: (identifier) @reference.name)) @reference.write.member
+`;
+
+let _parser: Parser | null = null;
+let _query: Parser.Query | null = null;
+
+export function getCsharpParser(): Parser {
+  if (_parser === null) {
+    _parser = new Parser();
+    _parser.setLanguage(CSharp as Parameters<Parser['setLanguage']>[0]);
+  }
+  return _parser;
+}
+
+export function getCsharpScopeQuery(): Parser.Query {
+  if (_query === null) {
+    _query = new Parser.Query(CSharp as Parameters<Parser['setLanguage']>[0], CSHARP_SCOPE_QUERY);
+  }
+  return _query;
+}

@@ -1,0 +1,226 @@
+/**
+ * Unit 1 coverage for the C# scope query + captures orchestrator.
+ *
+ * Pins the capture-tag vocabulary + range shape for every construct
+ * the scope-resolution pipeline reads. Runs against tree-sitter-c-sharp
+ * so it catches grammar drift (node renames, field-name changes)
+ * before the integration parity gate does.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { emitCsharpScopeCaptures } from '../../../../src/core/ingestion/languages/csharp/captures.js';
+
+function tagsFor(src: string): string[][] {
+  const matches = emitCsharpScopeCaptures(src, 'test.cs');
+  return matches.map((m) => Object.keys(m).sort());
+}
+
+function findMatch(src: string, predicate: (tags: string[]) => boolean) {
+  const matches = emitCsharpScopeCaptures(src, 'test.cs');
+  return matches.find((m) => predicate(Object.keys(m)));
+}
+
+describe('emitCsharpScopeCaptures — scopes', () => {
+  it('captures the compilation unit as @scope.module', () => {
+    const all = tagsFor('class A { }');
+    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
+  });
+
+  it('captures block-scoped namespaces as @scope.namespace', () => {
+    const all = tagsFor('namespace Foo.Bar { class A { } }');
+    expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);
+  });
+
+  it('captures file-scoped namespaces as @scope.namespace', () => {
+    const all = tagsFor('namespace Foo.Bar;\nclass A { }');
+    expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);
+  });
+
+  it('captures classes, interfaces, structs, records, enums as @scope.class', () => {
+    // All four class-like kinds collapse to @scope.class at the scope
+    // layer because they share the same scope semantics (body is a
+    // member-holding scope). Declaration tags distinguish them.
+    const src = `
+      class A { }
+      interface B { }
+      struct C { }
+      record D(int x);
+      enum E { V1, V2 }
+    `;
+    const all = tagsFor(src);
+    const scopeClassCount = all.filter((t) => t.includes('@scope.class')).length;
+    expect(scopeClassCount).toBe(5);
+  });
+
+  it('captures methods, constructors, destructors, local functions as @scope.function', () => {
+    const src = `
+      class A {
+        public A() { }
+        ~A() { }
+        public void M() {
+          void Local() { }
+        }
+      }
+    `;
+    const all = tagsFor(src);
+    const scopeFnCount = all.filter((t) => t.includes('@scope.function')).length;
+    expect(scopeFnCount).toBe(4);
+  });
+});
+
+describe('emitCsharpScopeCaptures — declarations', () => {
+  it('captures class declarations with @declaration.class + @declaration.name', () => {
+    const m = findMatch('class User { }', (t) => t.includes('@declaration.class'));
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('User');
+  });
+
+  it('captures interface declarations distinctly from class declarations', () => {
+    const m = findMatch('interface IUser { }', (t) => t.includes('@declaration.interface'));
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('IUser');
+  });
+
+  it('captures struct, record, enum with their own declaration tags', () => {
+    expect(findMatch('struct Point { }', (t) => t.includes('@declaration.struct'))).toBeDefined();
+    expect(findMatch('record R(int x);', (t) => t.includes('@declaration.record'))).toBeDefined();
+    expect(findMatch('enum E { V }', (t) => t.includes('@declaration.enum'))).toBeDefined();
+  });
+
+  it('captures method declarations with their name', () => {
+    const m = findMatch('class A { public void Save() { } }', (t) =>
+      t.includes('@declaration.method'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('Save');
+  });
+
+  it('captures constructor declarations under @declaration.constructor', () => {
+    const m = findMatch('class A { public A() { } }', (t) =>
+      t.includes('@declaration.constructor'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('A');
+  });
+
+  it('captures property declarations', () => {
+    const m = findMatch('class A { public int Age { get; set; } }', (t) =>
+      t.includes('@declaration.property'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('Age');
+  });
+
+  it('captures field declarations as @declaration.variable', () => {
+    const m = findMatch('class A { private int _x; }', (t) => t.includes('@declaration.variable'));
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('_x');
+  });
+
+  it('captures local function declarations', () => {
+    const m = findMatch('class A { void M() { void Local() { } } }', (t) =>
+      t.includes('@declaration.function'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('Local');
+  });
+});
+
+describe('emitCsharpScopeCaptures — imports', () => {
+  it('captures each `using` directive as @import.statement', () => {
+    const src = `
+      using System;
+      using System.Collections.Generic;
+      using Dict = System.Collections.Generic.Dictionary<string, int>;
+      using static System.Math;
+    `;
+    const all = tagsFor(src);
+    const importCount = all.filter((t) => t.includes('@import.statement')).length;
+    expect(importCount).toBe(4);
+  });
+});
+
+describe('emitCsharpScopeCaptures — type bindings', () => {
+  it('captures parameter annotations (object types)', () => {
+    // `int id` does NOT fire (predefined_type is not identifier) —
+    // only object-type parameters do. That's intentional: receiver-
+    // bound dispatch doesn't need primitives.
+    const m = findMatch('class A { void M(User u) { } }', (t) =>
+      t.includes('@type-binding.parameter'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@type-binding.name'].text).toBe('u');
+    expect(m!['@type-binding.type'].text).toBe('User');
+  });
+
+  it('captures local variable annotations', () => {
+    const m = findMatch('class A { void M() { User u; } }', (t) =>
+      t.includes('@type-binding.annotation'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@type-binding.name'].text).toBe('u');
+    expect(m!['@type-binding.type'].text).toBe('User');
+  });
+
+  it('captures constructor-inferred `var u = new User();`', () => {
+    const m = findMatch('class A { void M() { var u = new User(); } }', (t) =>
+      t.includes('@type-binding.constructor'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@type-binding.name'].text).toBe('u');
+    expect(m!['@type-binding.type'].text).toBe('User');
+  });
+
+  it('captures alias `var u = Factory();`', () => {
+    const m = findMatch('class A { void M() { var u = Factory(); } }', (t) =>
+      t.includes('@type-binding.alias'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@type-binding.name'].text).toBe('u');
+    expect(m!['@type-binding.type'].text).toBe('Factory');
+  });
+});
+
+describe('emitCsharpScopeCaptures — references', () => {
+  it('captures free call invocations', () => {
+    const m = findMatch('class A { void M() { Foo(); } }', (t) =>
+      t.includes('@reference.call.free'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.name'].text).toBe('Foo');
+  });
+
+  it('captures member call invocations with receiver + name', () => {
+    const m = findMatch('class A { void M() { obj.Save(); } }', (t) =>
+      t.includes('@reference.call.member'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.receiver'].text).toBe('obj');
+    expect(m!['@reference.name'].text).toBe('Save');
+  });
+
+  it('captures null-conditional member calls `obj?.Save()`', () => {
+    const m = findMatch('class A { void M(User obj) { obj?.Save(); } }', (t) =>
+      t.includes('@reference.call.member'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.name'].text).toBe('Save');
+  });
+
+  it('captures object-creation expressions as constructor calls', () => {
+    const m = findMatch('class A { void M() { var u = new User(); } }', (t) =>
+      t.includes('@reference.call.constructor'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.name'].text).toBe('User');
+  });
+
+  it('captures member writes `obj.Name = "x"`', () => {
+    const m = findMatch('class A { void M(User obj) { obj.Name = "x"; } }', (t) =>
+      t.includes('@reference.write.member'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.receiver'].text).toBe('obj');
+    expect(m!['@reference.name'].text).toBe('Name');
+  });
+});
