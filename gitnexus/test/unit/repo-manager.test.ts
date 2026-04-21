@@ -17,9 +17,11 @@ import {
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
+  assertSafeStoragePath,
   RegistryNameCollisionError,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
+  UnsafeStoragePathError,
   type RegistryEntry,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
@@ -688,5 +690,104 @@ describe('resolveRegistryEntry backward-compat with non-canonical stored paths (
     // Pass the canonical form as the target — resolver must still match.
     const hit = resolveRegistryEntry(entries, realDir);
     expect(hit).toBe(entries[0]);
+  });
+});
+
+// ─── assertSafeStoragePath (#1003 review — @magyargergo) ─────────────
+//
+// Guard rail against destroying more than the `.gitnexus/` subfolder.
+// `~/.gitnexus/registry.json` is user-writable plain text, so a
+// corrupted or hand-edited entry could put storagePath anywhere.
+// These tests use synthetic `RegistryEntry` fixtures (no disk I/O)
+// because the guard is a pure string check — it must not depend on
+// the paths existing.
+
+describe('assertSafeStoragePath (#1003)', () => {
+  const prefix = process.platform === 'win32' ? 'D:\\' : '/tmp/';
+  const repoPath = `${prefix}projects${path.sep}my-repo`;
+  const base: Omit<RegistryEntry, 'storagePath'> = {
+    name: 'my-repo',
+    path: repoPath,
+    indexedAt: '2026-04-21T00:00:00.000Z',
+    lastCommit: 'deadbee',
+  };
+
+  it('accepts the canonical <repo>/.gitnexus storage path', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(repoPath, '.gitnexus'),
+    };
+    expect(() => assertSafeStoragePath(entry)).not.toThrow();
+  });
+
+  it('rejects when storagePath equals the repo path itself (would delete the code)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: repoPath, // catastrophic: rm the working tree
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is a parent of the repo path', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.dirname(repoPath), // also catastrophic
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is empty (path.resolve falls back to cwd)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: '', // path.resolve('') === process.cwd() — would rm cwd
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath points somewhere totally unrelated', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: `${prefix}some${path.sep}other${path.sep}place`,
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is a sibling .gitnexus (right basename, wrong parent)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(`${prefix}different${path.sep}repo`, '.gitnexus'),
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('UnsafeStoragePathError carries the original entry + expected + actual paths', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: `${prefix}evil${path.sep}path`,
+    };
+    try {
+      assertSafeStoragePath(entry);
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnsafeStoragePathError);
+      const err = e as UnsafeStoragePathError;
+      expect(err.kind).toBe('UnsafeStoragePathError');
+      expect(err.entry).toBe(entry);
+      // Expected path is the canonical `<repo>/.gitnexus`.
+      expect(err.expectedStoragePath).toBe(path.join(path.resolve(repoPath), '.gitnexus'));
+      // Actual path is the corrupted value (resolved).
+      expect(err.actualStoragePath).toBe(path.resolve(entry.storagePath));
+      // Message must suggest the recovery action.
+      expect(err.message).toContain('registry.json');
+    }
+  });
+
+  it('Windows: storagePath match is case-insensitive to match register/unregister semantics', () => {
+    if (process.platform !== 'win32') return;
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(repoPath.toUpperCase(), '.GITNEXUS'),
+    };
+    // Should accept because Windows paths are case-insensitive.
+    expect(() => assertSafeStoragePath(entry)).not.toThrow();
   });
 });

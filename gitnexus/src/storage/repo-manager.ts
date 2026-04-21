@@ -551,6 +551,75 @@ export class RegistryAmbiguousTargetError extends Error {
 }
 
 /**
+ * Thrown by {@link assertSafeStoragePath} when a registry entry's
+ * `storagePath` does NOT point at the expected `<entry.path>/.gitnexus`
+ * subfolder. CLI destructive commands (`remove`, `clean --all`) should
+ * catch this and exit non-zero without deleting anything — the usual
+ * cause is a corrupted or hand-edited `~/.gitnexus/registry.json`, and
+ * proceeding would mean `fs.rm(recursive: true)` on whatever odd path
+ * the entry is pointing at.
+ */
+export class UnsafeStoragePathError extends Error {
+  readonly kind = 'UnsafeStoragePathError' as const;
+  constructor(
+    public readonly entry: RegistryEntry,
+    public readonly expectedStoragePath: string,
+    public readonly actualStoragePath: string,
+  ) {
+    super(
+      `Refusing to remove storage path for safety: expected ` +
+        `"${expectedStoragePath}" under the repo's .gitnexus subfolder, ` +
+        `but the registry entry has "${actualStoragePath}". ` +
+        `This usually means the registry entry is corrupted or was ` +
+        `hand-edited. Delete the entry manually from ~/.gitnexus/registry.json ` +
+        `and re-run analyze.`,
+    );
+    this.name = 'UnsafeStoragePathError';
+  }
+}
+
+/**
+ * Guard rail for destructive CLI paths (`remove` #664,
+ * `clean --all` #258, future MCP `remove` tool): verify that a
+ * registry entry's `storagePath` is the canonical `<repo>/.gitnexus`
+ * subfolder of its `path`. If not, throw {@link UnsafeStoragePathError}
+ * so the caller exits without touching disk.
+ *
+ * Why this exists (#1003 review — @magyargergo):
+ *   - `~/.gitnexus/registry.json` is a plain-text user-writable file.
+ *     A corrupted, hand-edited, or downgrade/upgrade-racing entry
+ *     could plausibly end up with `storagePath === ""` (resolves to
+ *     cwd), `storagePath === path` (the repo root!), `storagePath`
+ *     equal to a parent/sibling of the repo, or simply any arbitrary
+ *     filesystem path.
+ *   - `fs.rm(recursive: true, force: true)` on ANY of those would be
+ *     a runtime disaster — at best delete the user's working tree, at
+ *     worst nuke an unrelated directory tree they happen to own.
+ *   - `clean` (default, cwd-scoped) is safe by construction — it
+ *     re-derives storagePath from `findRepo(cwd)` and never trusts
+ *     the registry field. But `clean --all` DOES iterate the registry
+ *     and trust each entry's stored storagePath (same shape as
+ *     `remove`), so this helper must be wired into that loop too.
+ *   - `server/api.ts` recomputes storagePath from `getStoragePath(entry.path)`
+ *     and so is likewise safe-by-construction.
+ *
+ * Pure string check — does NOT require the paths to exist on disk.
+ * Windows: case-insensitive; POSIX: case-sensitive. Matches the
+ * comparison shape used elsewhere in this module.
+ */
+export const assertSafeStoragePath = (entry: RegistryEntry): void => {
+  const expected = path.join(path.resolve(entry.path), '.gitnexus');
+  const actual = path.resolve(entry.storagePath);
+  const matches =
+    process.platform === 'win32'
+      ? expected.toLowerCase() === actual.toLowerCase()
+      : expected === actual;
+  if (!matches) {
+    throw new UnsafeStoragePathError(entry, expected, actual);
+  }
+};
+
+/**
  * Resolve a user-supplied target string (from `gitnexus remove <target>`
  * or equivalent MCP tool argument) to a single registry entry.
  *

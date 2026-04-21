@@ -539,6 +539,195 @@ describe('CLI end-to-end', () => {
         fs.rmSync(parentB, { recursive: true, force: true });
       }
     }, 240000); // 4-min outer budget (2 × ~60s analyze + 2 × fast remove)
+
+    it('refuses to proceed when a registry entry points storagePath outside <repo>/.gitnexus (#1003)', () => {
+      // Regression guard for the safety gap flagged by @magyargergo on
+      // PR #1003: `~/.gitnexus/registry.json` is a user-writable JSON
+      // file, so a corrupted or hand-edited entry could point
+      // storagePath at the repo root (catastrophic: rm the working
+      // tree) or at any other arbitrary path. `remove --force` must
+      // refuse to call fs.rm when storagePath isn't the canonical
+      // `<entry.path>/.gitnexus`. We verify:
+      //   1. Exit code 1 with the actionable "registry entry corrupted"
+      //      hint.
+      //   2. The .gitnexus/ storage dir is UNTOUCHED.
+      //   3. The repo itself (entry.path) is UNTOUCHED.
+      //   4. The registry entry is NOT removed (no partial mutation).
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-poison-'));
+      const repo = makeMiniRepoCopy('poisoned', 'gn-poison-');
+      const parent = path.dirname(repo);
+
+      try {
+        // Index the repo normally first so the registry has a valid
+        // entry we can then poison.
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'poisoned-alias'],
+          repo,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(r1.status).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const original = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(original).toHaveLength(1);
+
+        // Poison the entry: set storagePath to the REPO ROOT itself.
+        // If the guard isn't in place, `remove --force` would call
+        // `fs.rm(repo, {recursive: true, force: true})` and wipe the
+        // entire working tree.
+        const poisoned = [{ ...original[0], storagePath: repo }];
+        fs.writeFileSync(registryPath, JSON.stringify(poisoned, null, 2));
+
+        // Sanity: storage dir and working tree both still exist.
+        expect(fs.existsSync(path.join(repo, '.gitnexus'))).toBe(true);
+        expect(fs.existsSync(repo)).toBe(true);
+        expect(fs.existsSync(path.join(repo, '.git'))).toBe(true);
+
+        // Attempt the remove — must FAIL without deleting anything.
+        const r2 = runCliWithEnv(
+          ['remove', 'poisoned-alias', '--force'],
+          parent,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r2.status === null) return;
+
+        expect(
+          r2.status,
+          [`remove should have exited 1`, `stdout: ${r2.stdout}`, `stderr: ${r2.stderr}`].join(
+            '\n',
+          ),
+        ).toBe(1);
+        const r2Output = `${r2.stdout}${r2.stderr}`;
+        // Must surface the actionable "registry corrupted" hint, not
+        // just a raw fs.rm error.
+        expect(r2Output).toMatch(/Refusing to remove/i);
+        expect(r2Output).toMatch(/registry\.json/i);
+
+        // Repo + .gitnexus dir + .git dir must all still exist — the
+        // guard aborts BEFORE fs.rm. This is the whole point of the
+        // test: the working tree is not allowed to disappear.
+        expect(fs.existsSync(repo), 'repo working tree must survive').toBe(true);
+        expect(fs.existsSync(path.join(repo, '.gitnexus')), 'storage dir must survive').toBe(true);
+        expect(fs.existsSync(path.join(repo, '.git')), '.git must survive').toBe(true);
+
+        // Registry unchanged — no partial mutation.
+        const afterRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterRegistry).toHaveLength(1);
+        expect(afterRegistry[0].storagePath).toBe(repo); // still poisoned (we did that)
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
+    }, 120000); // 2-min budget (1 × ~60s analyze + 1 × fast remove-refused)
+  });
+
+  // ─── clean --all: same safety guard applies (#1003 review) ───────
+  //
+  // The `clean --all` path iterates over the registry and calls
+  // `fs.rm(entry.storagePath)` — identical trust-the-registry pattern
+  // as `remove` had before the guard. A poisoned entry must be SKIPPED
+  // (not aborted), so clean --all preserves its existing per-repo
+  // error-tolerance semantics: one bad entry does not halt cleanup of
+  // the rest. We verify:
+  //   1. The poisoned entry is NOT deleted (working tree + .gitnexus
+  //      survive), and the CLI prints a "Refusing to clean" message.
+  //   2. The poisoned entry is left in the registry (nothing was
+  //      mutated for it).
+  //   3. A co-existing well-formed entry IS still cleaned (both its
+  //      .gitnexus dir AND its registry entry are gone).
+  describe('clean --all with a poisoned registry entry (#1003)', () => {
+    it('skips poisoned entries, cleans valid ones, never deletes the working tree', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-clean-poison-'));
+      const repoBad = makeMiniRepoCopy('bad-repo', 'gn-clean-bad-');
+      const repoGood = makeMiniRepoCopy('good-repo', 'gn-clean-good-');
+      const parentBad = path.dirname(repoBad);
+      const parentGood = path.dirname(repoGood);
+
+      try {
+        // Analyze both so the registry has two well-formed entries.
+        for (const [repo, alias] of [
+          [repoBad, 'bad-alias'],
+          [repoGood, 'good-alias'],
+        ] as const) {
+          const r = runCliWithEnv(
+            ['analyze', '--name', alias],
+            repo,
+            { GITNEXUS_HOME: gnHome },
+            60000,
+          );
+          if (r.status === null) return;
+          expect(r.status, `analyze ${alias} exited ${r.status}: ${r.stdout}${r.stderr}`).toBe(0);
+        }
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const original = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(original).toHaveLength(2);
+
+        // Poison the 'bad-alias' entry by pointing its storagePath at
+        // the repo root itself. If the guard isn't wired into the
+        // clean --all loop, `clean --all --force` would fs.rm the
+        // working tree.
+        const poisoned = original.map((e: { name: string; storagePath: string; path: string }) =>
+          e.name === 'bad-alias' ? { ...e, storagePath: repoBad } : e,
+        );
+        fs.writeFileSync(registryPath, JSON.stringify(poisoned, null, 2));
+
+        // Sanity: both working trees and .gitnexus dirs still exist.
+        expect(fs.existsSync(repoBad)).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.gitnexus'))).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.git'))).toBe(true);
+        expect(fs.existsSync(path.join(repoGood, '.gitnexus'))).toBe(true);
+
+        // clean --all --force from a neutral cwd (parentBad), so the
+        // command isn't "inside" either repo.
+        const r = runCliWithEnv(
+          ['clean', '--all', '--force'],
+          parentBad,
+          { GITNEXUS_HOME: gnHome },
+          30000,
+        );
+        if (r.status === null) return;
+
+        // clean --all's per-entry error handling always exits 0 at
+        // the end (it only logs per-repo failures). The important
+        // assertions are on side effects, not the exit code.
+        const output = `${r.stdout}${r.stderr}`;
+        expect(output).toMatch(/Refusing to clean/i);
+        expect(output).toMatch(/bad-alias/);
+
+        // Poisoned repo: working tree + .gitnexus + .git all SURVIVE.
+        expect(fs.existsSync(repoBad), 'poisoned repo working tree must survive').toBe(true);
+        expect(
+          fs.existsSync(path.join(repoBad, '.gitnexus')),
+          'poisoned repo .gitnexus must survive (guard refused to rm repo root)',
+        ).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.git')), '.git must survive').toBe(true);
+
+        // Good repo: its .gitnexus IS gone (cleanup succeeded despite
+        // the poisoned sibling entry — per-entry error tolerance is
+        // preserved).
+        expect(
+          fs.existsSync(path.join(repoGood, '.gitnexus')),
+          'good repo .gitnexus should be cleaned',
+        ).toBe(false);
+        // But the good repo's working tree stays (clean never touches
+        // anything outside .gitnexus).
+        expect(fs.existsSync(repoGood), 'good repo working tree must survive').toBe(true);
+
+        // Registry post-state: poisoned entry still present (skipped,
+        // not mutated); good entry unregistered.
+        const afterRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterRegistry).toHaveLength(1);
+        expect(afterRegistry[0].name).toBe('bad-alias');
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentBad, { recursive: true, force: true });
+        fs.rmSync(parentGood, { recursive: true, force: true });
+      }
+    }, 240000); // 4-min budget (2 × ~60s analyze + 1 × fast clean --all)
   });
 
   describe('unhappy path', () => {

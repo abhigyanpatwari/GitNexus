@@ -30,9 +30,11 @@ import fs from 'fs/promises';
 import {
   readRegistry,
   resolveRegistryEntry,
+  assertSafeStoragePath,
   unregisterRepo,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
+  UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
 
 export const removeCommand = async (target: string, options?: { force?: boolean }) => {
@@ -70,6 +72,24 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     console.log(`   Storage: ${entry.storagePath}`);
     console.log('\nRun with --force to confirm deletion.');
     return;
+  }
+
+  // Safety guard (#1003 review — @magyargergo): refuse to proceed if
+  // the registry entry's `storagePath` isn't the canonical
+  // `<entry.path>/.gitnexus` subfolder. `~/.gitnexus/registry.json` is
+  // user-writable, so a corrupted or hand-edited entry could point
+  // storagePath at the repo root, an empty string (→ cwd), a parent
+  // dir, or anywhere else; `fs.rm(recursive: true, force: true)` on
+  // any of those would be a runtime disaster. Bail before touching
+  // disk, with an actionable hint for recovering a broken registry.
+  try {
+    assertSafeStoragePath(entry);
+  } catch (err) {
+    if (err instanceof UnsafeStoragePathError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
   }
 
   // Deletion order: fs.rm first, then unregister. If fs.rm fails mid-way,
