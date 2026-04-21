@@ -195,6 +195,149 @@ const CSHARP_SCOPE_QUERY = `
       (invocation_expression
         function: (identifier) @type-binding.type)))) @type-binding.alias
 
+;; Type bindings — field declaration: \`private City _city;\`. Attaches
+;; to the enclosing class scope via positionIndex, so \`this._city.X\`
+;; can look up _city's type on the class.
+(field_declaration
+  (variable_declaration
+    type: (identifier) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+(field_declaration
+  (variable_declaration
+    type: (generic_name) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+(field_declaration
+  (variable_declaration
+    type: (qualified_name) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation
+
+;; Type bindings — property declaration: \`public User Owner { get; set; }\`.
+(property_declaration
+  type: (identifier) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.annotation
+
+(property_declaration
+  type: (generic_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.annotation
+
+(property_declaration
+  type: (qualified_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.annotation
+
+(property_declaration
+  type: (nullable_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.annotation
+
+;; Type bindings — assignment rebind: \`alias = Factory();\` where
+;; \`alias\` was previously declared. Same alias shape as \`var x = F();\`.
+(assignment_expression
+  left: (identifier) @type-binding.name
+  right: (invocation_expression
+    function: (identifier) @type-binding.type)) @type-binding.alias
+
+;; Type bindings — assignment with constructor: \`alias = new User();\`.
+(assignment_expression
+  left: (identifier) @type-binding.name
+  right: (object_creation_expression
+    type: (identifier) @type-binding.type)) @type-binding.constructor
+
+(assignment_expression
+  left: (identifier) @type-binding.name
+  right: (object_creation_expression
+    type: (generic_name) @type-binding.type)) @type-binding.constructor
+
+;; Type bindings — \`is\` pattern: \`if (obj is User u) { u.Save(); }\`.
+;; The declaration_pattern carries both the matched type and the
+;; binding name; scope narrowing to the guarded branch is simplified
+;; to function-scope (matches Python's match-case treatment) since we
+;; don't emit @scope.block.
+(is_pattern_expression
+  pattern: (declaration_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(is_pattern_expression
+  pattern: (declaration_pattern
+    type: (generic_name) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(is_pattern_expression
+  pattern: (declaration_pattern
+    type: (qualified_name) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+;; Type bindings — \`case User u:\` inside a switch section.
+;; tree-sitter-c-sharp's switch_section directly contains the
+;; declaration_pattern / recursive_pattern (no case_pattern_switch_label
+;; wrapper as in other C# grammars).
+(switch_section
+  (declaration_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(switch_section
+  (declaration_pattern
+    type: (generic_name) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+;; Type bindings — recursive_pattern with named binding:
+;; \`x is User { Age: 1 } u\` / \`case User { Age: 1 } u:\`. type + name
+;; are named fields on recursive_pattern; inner property/positional
+;; clauses don't affect the binding.
+(is_pattern_expression
+  pattern: (recursive_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(switch_section
+  (recursive_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+;; Type bindings — typed foreach: \`foreach (User u in xs)\`.
+;; Shape parity with \`User u = …;\` — left binds to the declared type.
+(foreach_statement
+  type: (identifier) @type-binding.type
+  left: (identifier) @type-binding.name) @type-binding.annotation
+
+(foreach_statement
+  type: (generic_name) @type-binding.type
+  left: (identifier) @type-binding.name) @type-binding.annotation
+
+(foreach_statement
+  type: (qualified_name) @type-binding.type
+  left: (identifier) @type-binding.name) @type-binding.annotation
+
+(foreach_statement
+  type: (nullable_type) @type-binding.type
+  left: (identifier) @type-binding.name) @type-binding.annotation
+
+;; Type bindings — \`var\` foreach: \`foreach (var u in xs)\`. Alias to
+;; the iterable's identifier / chain so chain-follow unwraps
+;; \`List<User>\` / \`Dictionary<K,V>.Values\` to the element type via
+;; the generic-stripper in interpret.ts. Mirrors Python's for-loop
+;; alias patterns.
+(foreach_statement
+  type: (implicit_type)
+  left: (identifier) @type-binding.name
+  right: (identifier) @type-binding.type) @type-binding.alias
+
+(foreach_statement
+  type: (implicit_type)
+  left: (identifier) @type-binding.name
+  right: (member_access_expression) @type-binding.type) @type-binding.alias
+
+(foreach_statement
+  type: (implicit_type)
+  left: (identifier) @type-binding.name
+  right: (invocation_expression
+    function: (identifier) @type-binding.type)) @type-binding.alias
+
 ;; Return-type captures on method_declaration / property_declaration /
 ;; field_declaration are deferred — tree-sitter-c-sharp does not expose
 ;; the return/field type under a simple named field that pattern-matches
