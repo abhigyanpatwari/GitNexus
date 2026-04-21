@@ -11,13 +11,15 @@ permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +64,11 @@ jobs:
         working-directory: gitnexus-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Smoke test unpacked desktop bundle
+        if: matrix.os == 'windows-latest'
+        run: node scripts/smoke-unpacked.mjs
+        working-directory: gitnexus-desktop
 
       - name: Build desktop package
         run: ${{ matrix.command }}

@@ -37,6 +37,7 @@ const GITNEXUS_SERVER_READY_TIMEOUT_MS = 30_000;
 const GITNEXUS_WEB_READY_TIMEOUT_MS = 60_000;
 const GITNEXUS_WEB_READY_POLL_MS = 500;
 const PACKAGED_WEB_SERVER_HOST = '127.0.0.1';
+const IS_DESKTOP_SMOKE_TEST = process.env.GITNEXUS_DESKTOP_SMOKE_TEST === '1';
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -409,9 +410,24 @@ const sendStaticResponse = (assetPath: string | null, response: ServerResponse):
   createReadStream(assetPath).pipe(response);
 };
 
+const getRequestedPath = (requestUrl: string): string | null => {
+  try {
+    return decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
+  } catch {
+    return null;
+  }
+};
+
 const handlePackagedWebRequest = (request: IncomingMessage, response: ServerResponse): void => {
   const requestUrl = request.url ?? '/';
-  const requestedPath = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
+  const requestedPath = getRequestedPath(requestUrl);
+
+  if (!requestedPath) {
+    response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    response.end('Bad request');
+    return;
+  }
+
   sendStaticResponse(normalizeStaticPath(GITNEXUS_WEB_PACKAGED_DIR, requestedPath), response);
 };
 
@@ -580,7 +596,7 @@ const loadShellRenderer = async (window: BrowserWindow): Promise<void> => {
     return;
   }
 
-  const rendererEntry = path.join(__dirname, '../renderer/src/renderer/index.html');
+  const rendererEntry = path.join(__dirname, '../renderer/index.html');
   console.info(`[gitnexus-desktop] Loading shell renderer file: ${rendererEntry}`);
   await window.loadFile(rendererEntry);
 };
@@ -732,6 +748,12 @@ async function createWindow(): Promise<void> {
 
   if (!window.isDestroyed()) {
     window.show();
+
+    if (IS_DESKTOP_SMOKE_TEST) {
+      setTimeout(() => {
+        app.quit();
+      }, 1_000);
+    }
   }
 }
 

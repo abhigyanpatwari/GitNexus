@@ -272,14 +272,43 @@ const runNpm = (args, cwd) => {
   }
 };
 
-const overlayDirectoryContents = (sourceDirectory, destinationDirectory) => {
+const overlayDependencyPackages = (sourceDirectory, destinationDirectory, dependencyMap) => {
   mkdirSync(destinationDirectory, { recursive: true });
 
-  for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
-    cpSync(path.join(sourceDirectory, entry.name), path.join(destinationDirectory, entry.name), {
-      force: true,
-      recursive: true,
-    });
+  for (const packageName of Object.keys(dependencyMap)) {
+    const sourcePath = path.join(sourceDirectory, ...packageName.split('/'));
+    const destinationPath = path.join(destinationDirectory, ...packageName.split('/'));
+
+    if (!existsSync(sourcePath)) {
+      continue;
+    }
+
+    if (existsSync(destinationPath)) {
+      continue;
+    }
+
+    mkdirSync(path.dirname(destinationPath), { recursive: true });
+
+    try {
+      cpSync(sourcePath, destinationPath, {
+        dereference: true,
+        force: true,
+        recursive: true,
+      });
+    } catch (error) {
+      const errorCode = error?.code;
+      const isLockedPathError =
+        (errorCode === 'EPIPE' || errorCode === 'EBUSY' || errorCode === 'EPERM') &&
+        existsSync(destinationPath);
+
+      if (!isLockedPathError) {
+        throw error;
+      }
+
+      console.warn(
+        `[gitnexus-desktop] Skipping locked dependency path during repair: ${destinationPath}`,
+      );
+    }
   }
 };
 
@@ -313,9 +342,10 @@ const repairGitNexusPackages = (dependencyMap, label) => {
     runNpm(['install', '--no-package-lock'], repairDirectory);
 
     replaceDirectGitNexusPackages(dependencyMap);
-    overlayDirectoryContents(
+    overlayDependencyPackages(
       path.join(repairDirectory, 'node_modules'),
       path.join(gitnexusRoot, 'node_modules'),
+      dependencyMap,
     );
   } finally {
     rmSync(repairDirectory, { force: true, recursive: true });
@@ -329,6 +359,20 @@ const runCommand = (command, args) => {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+};
+
+const getPosixCommandLine = (pid) => {
+  if (!pid) {
+    return '';
+  }
+
+  const lookup = runCommand('ps', ['-p', String(pid), '-o', 'args=']);
+
+  if (lookup.status !== 0) {
+    return '';
+  }
+
+  return lookup.stdout.trim();
 };
 
 const findPortOwner = (port) => {
@@ -357,7 +401,7 @@ const findPortOwner = (port) => {
     return JSON.parse(lookup.stdout.trim());
   }
 
-  const lookup = runCommand('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpcn']);
+  const lookup = runCommand('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc']);
 
   if (lookup.status !== 0 || !lookup.stdout.trim()) {
     return null;
@@ -370,10 +414,10 @@ const findPortOwner = (port) => {
       owner.pid = Number.parseInt(line.slice(1), 10);
     } else if (line.startsWith('c')) {
       owner.name = line.slice(1);
-    } else if (line.startsWith('n')) {
-      owner.commandLine = line.slice(1);
     }
   }
+
+  owner.commandLine = getPosixCommandLine(owner.pid);
 
   return owner.pid ? owner : null;
 };
