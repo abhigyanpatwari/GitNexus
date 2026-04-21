@@ -25,7 +25,6 @@
  * ## The five passes
  *
  *   1. **Build scope tree.** Walk `@scope.*` matches. For each, consult
- *      `provider.shouldCreateScope` (default true) and
  *      `provider.resolveScopeKind` (default: suffix of the capture name).
  *      Derive parent by lexical-range containment. Hand the resulting
  *      `Scope[]` to `buildScopeTree` for validation.
@@ -95,7 +94,6 @@ import type { LanguageProvider } from './language-provider.js';
  */
 export type ScopeExtractorHooks = Pick<
   LanguageProvider,
-  | 'shouldCreateScope'
   | 'resolveScopeKind'
   | 'bindingScopeFor'
   | 'interpretImport'
@@ -308,9 +306,7 @@ function draftToScope(draft: ScopeDraft): Scope {
 /**
  * Convert `@scope.*` matches into `ScopeDraft[]`. Parent relationships
  * are derived from range containment (outermost scope containing `range`
- * becomes the parent). Scopes with `shouldCreateScope === false` are
- * silently omitted — their children reparent to the next enclosing
- * real scope.
+ * becomes the parent).
  */
 function pass1BuildScopes(
   matches: readonly CaptureMatch[],
@@ -321,7 +317,6 @@ function pass1BuildScopes(
     readonly match: CaptureMatch;
     readonly range: Range;
     readonly kind: ScopeKind;
-    readonly create: boolean;
     readonly id: ScopeId;
   }
 
@@ -331,9 +326,8 @@ function pass1BuildScopes(
     if (anchor === undefined) continue;
     const kind = resolveKindForScopeMatch(match, anchor, provider);
     if (kind === null) continue;
-    const create = provider.shouldCreateScope?.(match) ?? true;
     const id = makeScopeId({ filePath, range: anchor.range, kind });
-    candidates.push({ match, range: anchor.range, kind, create, id });
+    candidates.push({ match, range: anchor.range, kind, id });
   }
 
   // Sort by (startLine, startCol) ASC, (endLine, endCol) DESC so outer
@@ -354,13 +348,9 @@ function pass1BuildScopes(
       stack.pop();
     }
 
-    if (cand.create) {
-      const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
-      drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
-      stack.push(cand);
-    }
-    // If `cand.create === false`, we don't push it onto the stack — child
-    // scopes will reparent to whatever's below it.
+    const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
+    drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
+    stack.push(cand);
   }
 
   return drafts;

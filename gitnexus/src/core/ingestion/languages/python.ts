@@ -38,8 +38,6 @@ import {
   pythonImportOwningScope,
   pythonMergeBindings,
   pythonReceiverBinding,
-  pythonShouldCreateScope,
-  pythonShouldShadow,
   resolvePythonImportTarget,
 } from './python/index.js';
 
@@ -98,11 +96,9 @@ export const pythonProvider = defineLanguage({
   emitScopeCaptures: emitPythonScopeCaptures,
   interpretImport: interpretPythonImport,
   interpretTypeBinding: interpretPythonTypeBinding,
-  shouldCreateScope: pythonShouldCreateScope,
   bindingScopeFor: pythonBindingScopeFor,
   importOwningScope: pythonImportOwningScope,
   mergeBindings: pythonMergeBindings,
-  shouldShadow: pythonShouldShadow,
   receiverBinding: pythonReceiverBinding,
   arityCompatibility: pythonArityCompatibility,
   resolveImportTarget: resolvePythonImportTarget,

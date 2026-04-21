@@ -7,7 +7,6 @@
  */
 
 import type {
-  BindingRef,
   CaptureMatch,
   ParsedImport,
   Scope,
@@ -15,15 +14,6 @@ import type {
   ScopeTree,
   TypeRef,
 } from 'gitnexus-shared';
-
-// ─── shouldCreateScope ────────────────────────────────────────────────────
-
-/** We never emit `@scope.block` for Python (no block scope in the
- *  language), so this hook only ever sees scopes we explicitly want to
- *  materialize. Always-on. */
-export function pythonShouldCreateScope(_captures: CaptureMatch): boolean {
-  return true;
-}
 
 // ─── bindingScopeFor ──────────────────────────────────────────────────────
 
@@ -53,18 +43,6 @@ export function pythonImportOwningScope(
 ): ScopeId | null {
   if (innermost.kind === 'Function' || innermost.kind === 'Class') return innermost.id;
   return null;
-}
-
-// ─── shouldShadow ─────────────────────────────────────────────────────────
-
-/** Standard Python lexical scoping. The central default (`true` — any
- *  binding shadows) is correct. Wildcard transparency is handled by
- *  `pythonMergeBindings`, not by toggling shadowing here.
- *
- *  Implemented as an explicit pass-through so reviewers don't have to
- *  re-derive the analysis from absence. */
-export function pythonShouldShadow(_scope: Scope, _bindings: readonly BindingRef[]): boolean {
-  return true;
 }
 
 // ─── receiverBinding ──────────────────────────────────────────────────────

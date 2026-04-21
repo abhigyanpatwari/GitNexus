@@ -80,9 +80,7 @@ export { pythonMergeBindings } from './merge-bindings.js';
 export { pythonArityCompatibility } from './arity.js';
 export { resolvePythonImportTarget, type PythonResolveContext } from './import-target.js';
 export {
-  pythonShouldCreateScope,
   pythonBindingScopeFor,
   pythonImportOwningScope,
-  pythonShouldShadow,
   pythonReceiverBinding,
 } from './simple-hooks.js';

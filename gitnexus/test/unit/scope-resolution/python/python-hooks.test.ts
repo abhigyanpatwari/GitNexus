@@ -23,8 +23,6 @@ import {
   pythonImportOwningScope,
   pythonMergeBindings,
   pythonReceiverBinding,
-  pythonShouldShadow,
-  pythonShouldCreateScope,
   pythonBindingScopeFor,
   resolvePythonImportTarget,
 } from '../../../../src/core/ingestion/languages/python/index.js';
@@ -217,18 +215,10 @@ describe('pythonImportOwningScope', () => {
   });
 });
 
-// ─── shouldShadow / shouldCreateScope / bindingScopeFor — defensive ───────
+// ─── bindingScopeFor — defensive ──────────────────────────────────────────
 
-describe('pythonShouldShadow / pythonShouldCreateScope / pythonBindingScopeFor', () => {
-  it('shouldShadow always returns true (standard LEGB)', () => {
-    expect(pythonShouldShadow(fnScope(), [])).toBe(true);
-  });
-
-  it('shouldCreateScope always returns true (no @scope.block emitted)', () => {
-    expect(pythonShouldCreateScope({})).toBe(true);
-  });
-
-  it('bindingScopeFor delegates to default for every input', () => {
+describe('pythonBindingScopeFor', () => {
+  it('delegates to default for every input', () => {
     expect(pythonBindingScopeFor({}, fnScope(), {} as never)).toBeNull();
   });
 });

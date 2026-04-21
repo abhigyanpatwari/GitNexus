@@ -387,19 +387,6 @@ interface LanguageProviderConfig {
   readonly resolveScopeKind?: (captures: CaptureMatch) => ScopeKind | null;
 
   /**
-   * Should this scope capture materialize as a real `Scope` node? Return
-   * `false` to skip scope creation while still emitting declarations that
-   * would have gone inside (they attach to the enclosing real scope).
-   *
-   * Example: Python `if`/`for`/`while` bodies capture as `@scope.block` but
-   * Python has no block scope — hook returns `false` and child declarations
-   * lift to the enclosing function/module.
-   *
-   * Default: undefined (treated as `true` — always create).
-   */
-  readonly shouldCreateScope?: (captures: CaptureMatch) => boolean;
-
-  /**
    * Override where a declaration's name becomes visible. By default the name
    * is bound in the innermost enclosing scope; return a different `ScopeId`
    * to hoist it (JS `var` → enclosing function scope; Ruby `def` inside
@@ -509,19 +496,6 @@ interface LanguageProviderConfig {
   ) => 'free' | 'member' | 'constructor' | 'index';
 
   // ── Resolution phase (RFC §4v2) ────────────────────────────────────
-
-  /**
-   * Does a binding at this scope shadow bindings of the same name in outer
-   * scopes? Default: any binding shadows (standard lexical scoping). Return
-   * `false` for transparent-scope edge cases (Python `from x import *`
-   * contexts, JS `var` hoisting quirks, COBOL PARAGRAPH transparency).
-   *
-   * Consulted by `Registry.lookup` Step 1 and by `resolveTypeRef` for
-   * shadowing decisions during the lexical chain walk.
-   *
-   * Default: undefined (treated as `true` — any binding shadows).
-   */
-  readonly shouldShadow?: (scope: Scope, bindings: readonly BindingRef[]) => boolean;
 
   /**
    * Is this callable definition compatible with the given call-site arity?
