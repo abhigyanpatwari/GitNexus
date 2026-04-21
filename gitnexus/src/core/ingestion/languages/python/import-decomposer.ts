@@ -12,8 +12,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { findChildOfType, nodeToCapture, syntheticCapture } from './ast-utils.js';
+import {
+  findChild,
+  nodeToCapture,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 
 /** Tag a single decomposed import. Mirrors the `case` arms of
  *  `interpretPythonImport`. */
@@ -49,8 +53,8 @@ function splitImportStmt(stmtNode: SyntaxNode): CaptureMatch[] {
         }),
       );
     } else if (child.type === 'aliased_import') {
-      const dotted = findChildOfType(child, 'dotted_name');
-      const alias = findChildOfType(child, 'identifier');
+      const dotted = findChild(child, 'dotted_name');
+      const alias = findChild(child, 'identifier');
       if (dotted !== null && alias !== null) {
         out.push(
           buildImportMatch(stmtNode, {
@@ -75,7 +79,7 @@ function splitImportFromStmt(stmtNode: SyntaxNode): CaptureMatch[] {
 
   // Wildcard? tree-sitter-python represents `*` as a `wildcard_import`
   // child and emits no name children.
-  const wildcardChild = findChildOfType(stmtNode, 'wildcard_import');
+  const wildcardChild = findChild(stmtNode, 'wildcard_import');
   if (wildcardChild !== null) {
     out.push(
       buildImportMatch(stmtNode, {
@@ -104,8 +108,8 @@ function splitImportFromStmt(stmtNode: SyntaxNode): CaptureMatch[] {
         }),
       );
     } else if (child.type === 'aliased_import') {
-      const dotted = findChildOfType(child, 'dotted_name');
-      const alias = findChildOfType(child, 'identifier');
+      const dotted = findChild(child, 'dotted_name');
+      const alias = findChild(child, 'identifier');
       if (dotted !== null && alias !== null) {
         out.push(
           buildImportMatch(stmtNode, {

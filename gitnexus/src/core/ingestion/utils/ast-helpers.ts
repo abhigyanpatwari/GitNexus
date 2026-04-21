@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { Capture, NodeLabel, Range } from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 import { generateId } from '../../../lib/utils.js';
 
@@ -488,6 +488,84 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type === type) return child;
+  }
+  return null;
+}
+
+// ============================================================================
+// Capture + range helpers (formerly python/ast-utils.ts — language-agnostic)
+// ============================================================================
+
+/** Convert a tree-sitter node to a `Capture` with 1-based line numbers
+ *  (matching RFC §2.1). The tag includes the leading `@`. */
+export function nodeToCapture(name: string, node: SyntaxNode): Capture {
+  return {
+    name,
+    range: {
+      startLine: node.startPosition.row + 1,
+      startCol: node.startPosition.column,
+      endLine: node.endPosition.row + 1,
+      endCol: node.endPosition.column,
+    },
+    text: node.text,
+  };
+}
+
+/** Build a `Capture` whose range mirrors `atNode` but whose `text` is
+ *  caller-supplied. Used to synthesize markers that don't have a
+ *  corresponding source token. */
+export function syntheticCapture(name: string, atNode: SyntaxNode, text: string): Capture {
+  return {
+    name,
+    range: {
+      startLine: atNode.startPosition.row + 1,
+      startCol: atNode.startPosition.column,
+      endLine: atNode.endPosition.row + 1,
+      endCol: atNode.endPosition.column,
+    },
+    text,
+  };
+}
+
+function rangeMatches(node: SyntaxNode, range: Range): boolean {
+  return (
+    node.startPosition.row + 1 === range.startLine &&
+    node.startPosition.column === range.startCol &&
+    node.endPosition.row + 1 === range.endLine &&
+    node.endPosition.column === range.endCol
+  );
+}
+
+/** Walk a subtree to find a node whose range exactly matches AND whose
+ *  type matches `expectedType` (when given). When multiple nodes share
+ *  the range — e.g., `function_definition` and its inner `block` body
+ *  for a one-liner — the type filter disambiguates.
+ *
+ *  Iterative depth-first-left-to-right via an explicit stack. Children
+ *  are pushed in reverse index order so LIFO pop visits them in source
+ *  order. Prunes branches that can't contain the target range by
+ *  row bounds — same optimization the prior recursive form used, minus
+ *  the early-break since stack-push is cheap. */
+export function findNodeAtRange(
+  root: SyntaxNode,
+  range: Range,
+  expectedType?: string,
+): SyntaxNode | null {
+  const startRow = range.startLine - 1;
+  const endRow = range.endLine - 1;
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (rangeMatches(node, range) && (expectedType === undefined || node.type === expectedType)) {
+      return node;
+    }
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child === null) continue;
+      if (child.endPosition.row < startRow) continue;
+      if (child.startPosition.row > endRow) continue;
+      stack.push(child);
+    }
   }
   return null;
 }

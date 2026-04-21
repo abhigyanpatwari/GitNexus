@@ -10,8 +10,7 @@
  */
 
 import type { CaptureMatch } from 'gitnexus-shared';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { nodeToCapture, syntheticCapture } from './ast-utils.js';
+import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
 /** Walk up to the enclosing `class_definition`, ignoring the immediate
  *  `decorated_definition` wrapper. Returns `null` when the function is

@@ -17,7 +17,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from './ast-utils.js';
+import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
