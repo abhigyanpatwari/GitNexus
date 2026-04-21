@@ -45,6 +45,7 @@ import {
 } from '../scope/walkers.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
+import { resolveDefGraphId } from '../graph-bridge/ids.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -70,6 +71,67 @@ export function emitReceiverBoundCalls(
   const seen = new Set<string>();
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
   const collapse = provider.collapseMemberCallsByCallerTarget === true;
+
+  // Build an interface → implementors map from IMPLEMENTS edges.
+  // Maps Interface graph-id → list of implementor class scope-def-ids.
+  // We translate graph-ids back to scope-resolution DefIds via
+  // `parsedFiles.localDefs` lookup so downstream `findOwnedMember`
+  // (which keys by DefId) can find the implementor's members.
+  const graphIdToClassDef = new Map<string, SymbolDefinition>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (def.type !== 'Class' && def.type !== 'Interface') continue;
+      const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+      if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
+    }
+  }
+  const implementorsByInterfaceDefId = new Map<string, SymbolDefinition[]>();
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    const ifaceDef = graphIdToClassDef.get(rel.targetId);
+    const implDef = graphIdToClassDef.get(rel.sourceId);
+    if (ifaceDef === undefined || implDef === undefined) continue;
+    let list = implementorsByInterfaceDefId.get(ifaceDef.nodeId);
+    if (list === undefined) {
+      list = [];
+      implementorsByInterfaceDefId.set(ifaceDef.nodeId, list);
+    }
+    list.push(implDef);
+  }
+
+  /** Emit secondary CALLS edges with reason='interface-dispatch'
+   *  when the primary receiver-typed edge targeted an Interface's
+   *  method. Each implementing class's same-named method gets a
+   *  secondary edge (excluding the primary target itself). */
+  const emitInterfaceDispatchFor = (
+    ownerDef: SymbolDefinition,
+    memberName: string,
+    primaryMemberDef: SymbolDefinition,
+    site: ParsedFile['referenceSites'][number],
+    confidence: number,
+  ): number => {
+    if (ownerDef.type !== 'Interface') return 0;
+    const impls = implementorsByInterfaceDefId.get(ownerDef.nodeId);
+    if (impls === undefined) return 0;
+    let n = 0;
+    for (const implDef of impls) {
+      const implMember = findOwnedMember(implDef.nodeId, memberName, index);
+      if (implMember === undefined) continue;
+      if (implMember.nodeId === primaryMemberDef.nodeId) continue;
+      const ok = tryEmitEdge(
+        graph,
+        scopes,
+        nodeLookup,
+        site,
+        implMember,
+        'interface-dispatch',
+        seen,
+        confidence,
+        collapse,
+      );
+      if (ok) n++;
+    }
+    return n;
+  };
 
   for (const parsed of parsedFiles) {
     const namespaceTargets = collectNamespaceTargets(parsed, scopes);
@@ -291,7 +353,7 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, index);
+            memberDef = pickOverload(ownerId, memberName, site, index);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -317,6 +379,10 @@ export function emitReceiverBoundCalls(
               collapse,
             );
             if (ok) emitted++;
+            // Interface dispatch: when the primary owner is an
+            // Interface, emit secondary CALLS edges to every
+            // implementing class's same-named method.
+            emitted += emitInterfaceDispatchFor(ownerDef, memberName, memberDef, site, confidence);
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
@@ -370,4 +436,62 @@ export function emitReceiverBoundCalls(
   }
 
   return emitted;
+}
+
+/** Resolve a member by name on a class def, narrowing by argument
+ *  types when multiple overloads share the name. Falls back to the
+ *  first-seen def (legacy `findOwnedMember` semantics) when there's
+ *  no narrowing signal or when `argumentTypes` is unavailable. */
+function pickOverload(
+  ownerId: string,
+  memberName: string,
+  site: ParsedFile['referenceSites'][number],
+  index: WorkspaceResolutionIndex,
+): SymbolDefinition | undefined {
+  const overloads = index.membersByOwner.get(ownerId)?.get(memberName);
+  if (overloads === undefined || overloads.length === 0) {
+    return findOwnedMember(ownerId, memberName, index);
+  }
+  if (overloads.length === 1) return overloads[0];
+
+  const argTypes = site.argumentTypes;
+  const argCount = site.arity;
+
+  // First filter by arity: exact-required-match wins over variadic.
+  const arityMatches =
+    argCount === undefined
+      ? overloads
+      : overloads.filter((d) => {
+          const max = d.parameterCount;
+          const min = d.requiredParameterCount;
+          if (max !== undefined && argCount > max) {
+            const variadic =
+              d.parameterTypes !== undefined &&
+              d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));
+            if (!variadic) return false;
+          }
+          if (min !== undefined && argCount < min) return false;
+          return true;
+        });
+  const candidates = arityMatches.length > 0 ? arityMatches : overloads;
+
+  // Then narrow by argument-type alignment when both sides are known.
+  if (argTypes !== undefined && argTypes.length > 0) {
+    const typed = candidates.filter((d) => {
+      const params = d.parameterTypes;
+      if (params === undefined) return false;
+      // Compare each arg-type slot against the corresponding param.
+      // Empty arg-type means "unknown" — counts as match. Mismatches
+      // disqualify.
+      for (let i = 0; i < argTypes.length && i < params.length; i++) {
+        if (argTypes[i] === '') continue;
+        if (argTypes[i] !== params[i]) return false;
+      }
+      return true;
+    });
+    if (typed.length === 1) return typed[0];
+    if (typed.length > 0) return typed[0];
+  }
+
+  return candidates[0];
 }

@@ -159,11 +159,26 @@ export function emitCsharpScopeCaptures(
         findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
-        const n =
+        const args =
           argList === null
-            ? 0
-            : argList.namedChildren.filter((c) => c !== null && c.type === 'argument').length;
-        grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(n));
+            ? []
+            : argList.namedChildren.filter((c) => c !== null && c.type === 'argument');
+        grouped['@reference.arity'] = syntheticCapture(
+          '@reference.arity',
+          callNode,
+          String(args.length),
+        );
+
+        // Infer argument types from literal nodes so overload
+        // disambiguation can narrow same-arity candidates by param
+        // type. Non-literal arguments emit empty string to indicate
+        // "unknown" — consumers treat unknown as any-match.
+        const argTypes = args.map((arg) => inferArgType(arg!));
+        grouped['@reference.parameter-types'] = syntheticCapture(
+          '@reference.parameter-types',
+          callNode,
+          JSON.stringify(argTypes),
+        );
       }
     }
 
@@ -245,6 +260,38 @@ function synthesizePrimaryConstructor(typeNode: SyntaxNode): CaptureMatch | null
 }
 
 type SyntaxNode = ReturnType<ReturnType<typeof getCsharpParser>['parse']>['rootNode'];
+
+/** Infer a C# argument's static type from literal / constructor
+ *  patterns. Returns `''` when the arg has no statically-derivable
+ *  type (e.g. identifier — would require full type inference). */
+function inferArgType(argNode: SyntaxNode): string {
+  // `argument > expression` — tree-sitter-c-sharp wraps the value.
+  const expr = argNode.namedChild(0);
+  if (expr === null) return '';
+  switch (expr.type) {
+    case 'integer_literal':
+      return 'int';
+    case 'real_literal':
+      return 'double';
+    case 'string_literal':
+    case 'verbatim_string_literal':
+    case 'interpolated_string_expression':
+    case 'raw_string_literal':
+      return 'string';
+    case 'character_literal':
+      return 'char';
+    case 'boolean_literal':
+      return 'bool';
+    case 'null_literal':
+      return 'null';
+    case 'object_creation_expression': {
+      const typeNode = expr.childForFieldName('type');
+      return typeNode?.text ?? '';
+    }
+    default:
+      return '';
+  }
+}
 
 /** Find the first C# function-like node at the given range. The
  *  declaration anchor range covers the whole method/constructor/etc.

@@ -53,11 +53,18 @@ export function emitFreeCallFallback(
           fnDef = pickConstructorOrClass(classDef, workspaceIndex);
         }
       }
+      // Implicit-this overload narrowing: an unqualified call inside
+      // a method body might be calling a sibling overload on the
+      // enclosing class. When the workspace has multiple methods of
+      // the same name in a single class, choose the best match by
+      // arity + argument types.
+      if (fnDef === undefined && workspaceIndex !== undefined) {
+        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex);
+      }
       if (fnDef === undefined) {
         fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
       }
       if (fnDef === undefined) continue;
-
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
       if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
@@ -101,4 +108,83 @@ function pickConstructorOrClass(
     if (def.type === 'Constructor') return def;
   }
   return classDef;
+}
+
+/** Walk up from the call-site scope to the enclosing class scope,
+ *  pick a method member by name with overload narrowing on arity +
+ *  argument types. Returns undefined if there's no enclosing class
+ *  or no matching method. Used for implicit-this calls inside a
+ *  class body where multiple overloads share the call name. */
+function pickImplicitThisOverload(
+  site: {
+    readonly inScope: ScopeId;
+    readonly name: string;
+    readonly arity?: number;
+    readonly argumentTypes?: readonly string[];
+  },
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+): SymbolDefinition | undefined {
+  // Find the enclosing Class scope by walking parents.
+  let curId: ScopeId | null = site.inScope;
+  let classScopeId: ScopeId | undefined;
+  while (curId !== null) {
+    const sc = scopes.scopeTree.getScope(curId);
+    if (sc === undefined) break;
+    if (sc.kind === 'Class') {
+      classScopeId = sc.id;
+      break;
+    }
+    curId = sc.parent;
+  }
+  if (classScopeId === undefined) return undefined;
+
+  // Find the Class def for that scope by reverse-lookup in
+  // classScopeByDefId.
+  let classDefId: string | undefined;
+  for (const [defId, scope] of workspaceIndex.classScopeByDefId) {
+    if (scope.id === classScopeId) {
+      classDefId = defId;
+      break;
+    }
+  }
+  if (classDefId === undefined) return undefined;
+
+  const overloads = workspaceIndex.membersByOwner.get(classDefId)?.get(site.name);
+  if (overloads === undefined || overloads.length === 0) return undefined;
+  if (overloads.length === 1) return overloads[0];
+
+  const argTypes = site.argumentTypes;
+  const argCount = site.arity;
+  // Filter by arity (same logic as pickOverload in receiver-bound-calls).
+  const arityMatches =
+    argCount === undefined
+      ? overloads
+      : overloads.filter((d) => {
+          const max = d.parameterCount;
+          const min = d.requiredParameterCount;
+          if (max !== undefined && argCount > max) {
+            const variadic =
+              d.parameterTypes !== undefined &&
+              d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));
+            if (!variadic) return false;
+          }
+          if (min !== undefined && argCount < min) return false;
+          return true;
+        });
+  const candidates = arityMatches.length > 0 ? arityMatches : overloads;
+
+  if (argTypes !== undefined && argTypes.length > 0) {
+    const typed = candidates.filter((d) => {
+      const params = d.parameterTypes;
+      if (params === undefined) return false;
+      for (let i = 0; i < argTypes.length && i < params.length; i++) {
+        if (argTypes[i] === '') continue;
+        if (argTypes[i] !== params[i]) return false;
+      }
+      return true;
+    });
+    if (typed.length >= 1) return typed[0];
+  }
+  return candidates[0];
 }

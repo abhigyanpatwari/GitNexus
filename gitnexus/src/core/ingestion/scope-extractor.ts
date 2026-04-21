@@ -800,6 +800,7 @@ function pass5CollectReferences(
         : undefined;
     const explicitReceiver = extractExplicitReceiver(match);
     const arity = extractArity(match);
+    const argumentTypes = extractArgumentTypes(match);
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -809,6 +810,7 @@ function pass5CollectReferences(
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
+      ...(argumentTypes !== undefined ? { argumentTypes } : {}),
     };
     referenceSites.push(site);
   }
@@ -882,6 +884,18 @@ function extractArity(match: CaptureMatch): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function extractArgumentTypes(match: CaptureMatch): readonly string[] | undefined {
+  const cap = match['@reference.parameter-types'];
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) return parsed;
+  } catch {
+    /* malformed — fall through */
+  }
+  return undefined;
+}
+
 // ─── Internal: range + capture utilities ───────────────────────────────────
 
 function rangesEqual(a: Range, b: Range): boolean {
@@ -931,6 +945,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.name',
   '@reference.receiver',
   '@reference.arity',
+  '@reference.parameter-types',
+  '@declaration.parameter-count',
+  '@declaration.required-parameter-count',
+  '@declaration.parameter-types',
 ]);
 
 /**

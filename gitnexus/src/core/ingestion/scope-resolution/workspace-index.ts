@@ -30,6 +30,11 @@ export interface WorkspaceResolutionIndex {
    *  Built from `parsed.localDefs` so class-owned members land in the
    *  right bucket via their `ownerId`. */
   readonly memberByOwner: ReadonlyMap<string, ReadonlyMap<string, SymbolDefinition>>;
+  /** Multi-valued variant of `memberByOwner` so consumers narrowing
+   *  by parameter types (overload resolution) can see every candidate.
+   *  `memberByOwner` continues to return the first-seen def to
+   *  preserve existing consumers. */
+  readonly membersByOwner: ReadonlyMap<string, ReadonlyMap<string, readonly SymbolDefinition[]>>;
 
   /** File path → (simple-name → first matching module-scope-owned
    *  `SymbolDefinition`). Backs `findExportedDef` — the lookup for
@@ -57,6 +62,7 @@ export function buildWorkspaceResolutionIndex(
   const classScopeByDefId = new Map<string, Scope>();
   const moduleScopeByFile = new Map<string, Scope>();
   const memberByOwner = new Map<string, Map<string, SymbolDefinition>>();
+  const membersByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
   const defsByFileAndName = new Map<string, Map<string, SymbolDefinition>>();
   const callablesBySimpleName = new Map<string, SymbolDefinition[]>();
 
@@ -127,11 +133,23 @@ export function buildWorkspaceResolutionIndex(
       }
       // First-seen wins to match `findOwnedMember` semantics.
       if (!memberBucket.has(simple)) memberBucket.set(simple, def);
+
+      // Multi-valued variant — keeps every overload for
+      // parameter-type narrowing.
+      let membersBucket = membersByOwner.get(ownerId);
+      if (membersBucket === undefined) {
+        membersBucket = new Map();
+        membersByOwner.set(ownerId, membersBucket);
+      }
+      const overloads = membersBucket.get(simple);
+      if (overloads === undefined) membersBucket.set(simple, [def]);
+      else overloads.push(def);
     }
   }
 
   return {
     classScopeByDefId,
+    membersByOwner,
     memberByOwner,
     defsByFileAndName,
     callablesBySimpleName,

@@ -84,6 +84,18 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     if (qualified !== undefined && qualified.length > 0) {
       const qKey = qualifiedKey(props.filePath, node.label, qualified);
       if (!lookup.has(qKey)) lookup.set(qKey, node.id);
+      // Overload-disambiguating key: include parameter types so two
+      // same-arity overloads (e.g. `Lookup(int)` vs `Lookup(string)`)
+      // map to distinct graph nodes. Legacy parse-phase encodes the
+      // type tag into the node id; we register both that node id and
+      // a parameter-types-suffixed key so resolveDefGraphId can find
+      // the right overload by matching its def's parameterTypes.
+      const pTypes = (props as { parameterTypes?: readonly string[] }).parameterTypes;
+      if (pTypes !== undefined && pTypes.length > 0 && node.label === 'Method') {
+        const pKey = qualifiedKey(props.filePath, node.label, `${qualified}~${pTypes.join(',')}`);
+        // Each overload is unique — set unconditionally.
+        lookup.set(pKey, node.id);
+      }
     }
 
     // Fallback key: simple name. First-wins within a file — used when
