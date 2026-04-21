@@ -38,7 +38,7 @@ import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
-export interface RunScopeResolutionInput {
+interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly onWarn?: (message: string) => void;
@@ -52,7 +52,7 @@ export interface RunScopeResolutionInput {
   readonly treeCache?: { get(filePath: string): unknown };
 }
 
-export interface RunScopeResolutionStats {
+interface RunScopeResolutionStats {
   readonly filesProcessed: number;
   readonly filesSkipped: number;
   readonly importsEmitted: number;

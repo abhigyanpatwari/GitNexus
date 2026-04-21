@@ -72,7 +72,6 @@
  * `test/integration/resolvers/python.test.ts`.
  */
 
-export { PYTHON_SCOPE_QUERY } from './query.js';
 export { emitPythonScopeCaptures } from './captures.js';
 export { getPythonCaptureCacheStats, resetPythonCaptureCacheStats } from './cache-stats.js';
 export { interpretPythonImport, interpretPythonTypeBinding } from './interpret.js';

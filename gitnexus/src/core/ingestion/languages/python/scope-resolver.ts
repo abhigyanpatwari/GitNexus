@@ -1,28 +1,22 @@
 /**
- * Python `ScopeResolver` and the `resolvePythonScope` entry point.
+ * Python `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed
+ * by the generic `runScopeResolution` orchestrator.
  *
  * The provider is a thin wiring object — Python's specific bits
  * (super recognizer, LEGB merge precedence, Python's relative-import
- * resolver, the simplified MRO walk) plug into the generic
- * `runScopeResolution` orchestrator from `scope-resolution/`.
+ * resolver, the simplified MRO walk) plug into `runScopeResolution`.
  *
  * Migration reference: when bringing up the next language
  * (TypeScript / Java / Kotlin / Ruby), copy this file's structure —
  * implement the 6 required `ScopeResolver` fields, optionally toggle
- * the 2 booleans, and call `runScopeResolution(input, provider)`.
+ * the 2 booleans, and register in `scope-resolution/pipeline/registry.ts`.
  */
 
 import type { ParsedFile, Scope, WorkspaceIndex } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import {
-  buildMro,
-  defaultLinearize,
-  populateClassOwnedMembers,
-  runScopeResolution,
-  type ScopeResolver,
-  type RunScopeResolutionInput,
-  type RunScopeResolutionStats,
-} from '../../scope-resolution/index.js';
+import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { pythonProvider } from '../python.js';
 import {
   pythonArityCompatibility,
@@ -78,10 +72,3 @@ const pythonScopeResolver: ScopeResolver = {
 };
 
 export { pythonScopeResolver };
-
-export interface ResolvePythonScopeInput extends RunScopeResolutionInput {}
-export interface ResolvePythonScopeStats extends RunScopeResolutionStats {}
-
-export function resolvePythonScope(input: ResolvePythonScopeInput): ResolvePythonScopeStats {
-  return runScopeResolution(input, pythonScopeResolver);
-}

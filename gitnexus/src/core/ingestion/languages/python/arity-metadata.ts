@@ -18,7 +18,7 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { pythonMethodConfig } from '../../method-extractors/configs/python.js';
 
-export interface PythonArityMetadata {
+interface PythonArityMetadata {
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;

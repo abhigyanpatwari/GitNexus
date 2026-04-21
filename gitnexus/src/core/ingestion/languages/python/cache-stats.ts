@@ -9,7 +9,7 @@
  * doesn't carry a module-global counter and its reset/export surface.
  */
 
-export const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
+const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
 
 let CACHE_HITS = 0;
 let CACHE_MISSES = 0;

@@ -34,7 +34,7 @@ import {
  *  pathological recursion if the receiver text is malformed. */
 const COMPOUND_RECEIVER_MAX_DEPTH = 4;
 
-export interface ResolveCompoundReceiverOptions {
+interface ResolveCompoundReceiverOptions {
   /** When true (default), if method lookup fails on the receiver's
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
@@ -152,7 +152,7 @@ export function resolveCompoundReceiverClass(
 
 /** Find the index of the `(` that matches the trailing `)` of a
  *  call-expression text. Returns -1 if unbalanced. */
-export function matchingOpenParen(text: string): number {
+function matchingOpenParen(text: string): number {
   if (!text.endsWith(')')) return -1;
   let depth = 0;
   for (let i = text.length - 1; i >= 0; i--) {

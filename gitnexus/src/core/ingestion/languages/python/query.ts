@@ -13,7 +13,7 @@
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 
-export const PYTHON_SCOPE_QUERY = `
+const PYTHON_SCOPE_QUERY = `
 ;; Scopes
 (module) @scope.module
 (class_definition) @scope.class

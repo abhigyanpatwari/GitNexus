@@ -30,7 +30,7 @@ const RECHAIN_MAX_DEPTH = 8;
  *  `followChainedRef` but operates on post-finalize Scope objects so
  *  it can see imported return-types propagated by
  *  `propagateImportedReturnTypes`. */
-export function followChainPostFinalize(
+function followChainPostFinalize(
   start: TypeRef,
   fromScopeId: ScopeId,
   scopes: ScopeResolutionIndexes,

@@ -32,7 +32,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
  * fallback resolution doesn't fight the precise emission. The key is
  * `${filePath}:${startLine}:${startCol}`.
  */
-export type ReferenceSiteSkipSet = ReadonlySet<string>;
+type ReferenceSiteSkipSet = ReadonlySet<string>;
 
 export function emitReferencesViaLookup(
   graph: KnowledgeGraph,

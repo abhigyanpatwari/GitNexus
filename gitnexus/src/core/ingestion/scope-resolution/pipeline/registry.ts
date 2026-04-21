@@ -21,7 +21,3 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   SupportedLanguages,
   ScopeResolver
 >([[SupportedLanguages.Python, pythonScopeResolver]]);
-
-export function getScopeResolver(lang: SupportedLanguages): ScopeResolver | undefined {
-  return SCOPE_RESOLVERS.get(lang);
-}

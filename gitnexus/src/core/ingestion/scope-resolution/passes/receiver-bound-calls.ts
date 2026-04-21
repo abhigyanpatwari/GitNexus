@@ -49,7 +49,7 @@ import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
  *  refactors lighter — callers only need to populate what we read. */
-export type ReceiverBoundProviderSubset = Pick<
+type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
   'isSuperReceiver' | 'fieldFallbackOnMethodLookup'
 >;

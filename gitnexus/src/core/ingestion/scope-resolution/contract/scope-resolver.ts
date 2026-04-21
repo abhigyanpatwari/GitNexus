@@ -77,7 +77,6 @@ import type {
   BindingRef,
   Callsite,
   ParsedFile,
-  Scope,
   ScopeId,
   SupportedLanguages,
   SymbolDefinition,
@@ -210,7 +209,3 @@ export interface ScopeResolver {
    */
   readonly fieldFallbackOnMethodLookup?: boolean;
 }
-
-// Re-export Scope so consumers don't need to dig into `gitnexus-shared`
-// for the type they're already using transitively.
-export type { Scope };
