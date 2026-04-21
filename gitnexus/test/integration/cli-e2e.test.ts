@@ -394,11 +394,22 @@ describe('CLI end-to-end', () => {
 
         // Dry-run: must NOT delete. Use parentA as cwd so the test
         // never runs with the to-be-removed storage dir as its cwd.
+        //
+        // Assert the FULL dry-run output shape, not just the `--force`
+        // hint (#1003 senior-reviewer NIT): `remove.ts` prints the
+        // alias, the resolved path, AND the storage path. Verifying
+        // all three appear catches silent format regressions
+        // (e.g. a future refactor that accidentally drops one of the
+        // three `console.log` lines, or swaps `entry.path` for
+        // `entry.name` in the output).
         const r2 = runCliWithEnv(['remove', 'alias-a'], parentA, { GITNEXUS_HOME: gnHome }, 15000);
         if (r2.status === null) return;
         expect(r2.status).toBe(0);
         const r2Output = `${r2.stdout}${r2.stderr}`;
         expect(r2Output).toMatch(/Run with --force/i);
+        expect(r2Output, 'dry-run must surface the alias').toContain('alias-a');
+        expect(r2Output, 'dry-run must surface the repo path').toContain(afterIndex[0].path);
+        expect(r2Output, 'dry-run must surface the storage path').toContain(storagePath);
         expect(fs.existsSync(storagePath)).toBe(true);
         // Registry still has the entry.
         expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(1);
@@ -419,7 +430,15 @@ describe('CLI end-to-end', () => {
             `stderr: ${r3.stderr}`,
           ].join('\n'),
         ).toBe(0);
-        expect(`${r3.stdout}${r3.stderr}`).toMatch(/Removed/i);
+        // Success-case output shape: `Removed: <alias>` header plus the
+        // same path-and-storagePath lines the dry-run prints (same NIT
+        // rationale — the success branch mirrors the dry-run's three
+        // console.log calls, so it has the same silent-regression risk).
+        const r3Output = `${r3.stdout}${r3.stderr}`;
+        expect(r3Output).toMatch(/Removed/i);
+        expect(r3Output, 'success output must surface the alias').toContain('alias-a');
+        expect(r3Output, 'success output must surface the repo path').toContain(afterIndex[0].path);
+        expect(r3Output, 'success output must surface the storage path').toContain(storagePath);
         expect(fs.existsSync(storagePath)).toBe(false);
         expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(0);
 
