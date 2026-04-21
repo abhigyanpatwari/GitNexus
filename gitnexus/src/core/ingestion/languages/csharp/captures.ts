@@ -144,9 +144,80 @@ export function emitCsharpScopeCaptures(
     }
 
     out.push(grouped);
+
+    // Synthesize primary-constructor declarations on class/record
+    // declarations that carry a `parameter_list` child (C# 12 syntax
+    // `public class User(string name, int age) { ... }` or
+    // `public record Person(string FirstName, string LastName)`).
+    // Legacy `csharpMethodConfig.extractPrimaryConstructor` runs via
+    // the parse phase; the scope-resolution path needs its own emit so
+    // `new User(...)` resolves to a Constructor def in memberByOwner.
+    if (
+      grouped['@declaration.class'] !== undefined ||
+      grouped['@declaration.record'] !== undefined
+    ) {
+      const anchor = grouped['@declaration.class'] ?? grouped['@declaration.record']!;
+      const typeNode =
+        findNodeAtRange(tree.rootNode, anchor.range, 'class_declaration') ??
+        findNodeAtRange(tree.rootNode, anchor.range, 'record_declaration');
+      if (typeNode !== null) {
+        const synth = synthesizePrimaryConstructor(typeNode);
+        if (synth !== null) out.push(synth);
+      }
+    }
   }
 
   return out;
+}
+
+/** C# 12 primary constructor: `class X(a, b) { }` / `record X(a, b)`.
+ *  The parameters are a bare `parameter_list` named child of the type
+ *  declaration (no `constructor_declaration` node). Emit a synthetic
+ *  @declaration.constructor match so the extractor creates a
+ *  Constructor def in memberByOwner — free-call-fallback's
+ *  `pickConstructorOrClass` then targets it for `new X(...)` calls. */
+function synthesizePrimaryConstructor(typeNode: SyntaxNode): CaptureMatch | null {
+  // Skip types with an explicit constructor_declaration — that would
+  // create duplicate defs.
+  const body = typeNode.childForFieldName('body');
+  if (body !== null) {
+    for (let i = 0; i < body.namedChildCount; i++) {
+      const child = body.namedChild(i);
+      if (child !== null && child.type === 'constructor_declaration') return null;
+    }
+  }
+  let paramList: SyntaxNode | null = null;
+  for (let i = 0; i < typeNode.namedChildCount; i++) {
+    const child = typeNode.namedChild(i);
+    if (child !== null && child.type === 'parameter_list') {
+      paramList = child;
+      break;
+    }
+  }
+  if (paramList === null) return null;
+
+  const nameNode = typeNode.childForFieldName('name');
+  if (nameNode === null) return null;
+
+  const paramCount = paramList.namedChildren.filter(
+    (c) => c !== null && c.type === 'parameter',
+  ).length;
+
+  const m: Record<string, Capture> = {
+    '@declaration.constructor': nodeToCapture('@declaration.constructor', paramList),
+    '@declaration.name': syntheticCapture('@declaration.name', nameNode, nameNode.text),
+    '@declaration.parameter-count': syntheticCapture(
+      '@declaration.parameter-count',
+      paramList,
+      String(paramCount),
+    ),
+    '@declaration.required-parameter-count': syntheticCapture(
+      '@declaration.required-parameter-count',
+      paramList,
+      String(paramCount),
+    ),
+  };
+  return m;
 }
 
 type SyntaxNode = ReturnType<ReturnType<typeof getCsharpParser>['parse']>['rootNode'];

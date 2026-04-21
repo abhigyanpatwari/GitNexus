@@ -17,12 +17,13 @@
  * generalization plan.
  */
 
-import type { ParsedFile, Reference, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
-import { findCallableBindingInScope } from '../scope/walkers.js';
+import { findCallableBindingInScope, findClassBindingInScope } from '../scope/walkers.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -31,6 +32,7 @@ export function emitFreeCallFallback(
   nodeLookup: GraphNodeLookup,
   _referenceIndex: { readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]> },
   handledSites: Set<string>,
+  workspaceIndex?: WorkspaceResolutionIndex,
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
@@ -40,7 +42,20 @@ export function emitFreeCallFallback(
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
 
-      const fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+      // Constructor form (`new User(...)`): resolve the class, then
+      // emit CALLS to its explicit Constructor def (when present) or
+      // to the Class node itself (implicit constructor). Legacy emits
+      // the same two targets; see test expectations.
+      let fnDef: SymbolDefinition | undefined;
+      if (site.callForm === 'constructor') {
+        const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
+        if (classDef !== undefined) {
+          fnDef = pickConstructorOrClass(classDef, workspaceIndex);
+        }
+      }
+      if (fnDef === undefined) {
+        fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+      }
       if (fnDef === undefined) continue;
 
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
@@ -68,4 +83,22 @@ export function emitFreeCallFallback(
     }
   }
   return emitted;
+}
+
+/** For a constructor call `new X(...)`, return the X class's explicit
+ *  Constructor def (by walking memberByOwner) or the Class def itself
+ *  when no explicit Constructor exists. Matches legacy behavior —
+ *  tests assert targetLabel === 'Class' for implicit ctors and
+ *  targetLabel === 'Constructor' for explicit ones. */
+function pickConstructorOrClass(
+  classDef: SymbolDefinition,
+  workspaceIndex: WorkspaceResolutionIndex | undefined,
+): SymbolDefinition {
+  if (workspaceIndex === undefined) return classDef;
+  const members = workspaceIndex.memberByOwner.get(classDef.nodeId);
+  if (members === undefined) return classDef;
+  for (const [, def] of members) {
+    if (def.type === 'Constructor') return def;
+  }
+  return classDef;
 }

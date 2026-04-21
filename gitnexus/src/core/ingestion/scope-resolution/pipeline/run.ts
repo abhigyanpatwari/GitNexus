@@ -180,6 +180,7 @@ export function runScopeResolution(
     nodeLookup,
     referenceIndex,
     handledSites,
+    workspaceIndex,
   );
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
