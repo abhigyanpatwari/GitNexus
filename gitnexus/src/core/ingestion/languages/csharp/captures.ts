@@ -17,10 +17,28 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture } from '../../utils/ast-helpers.js';
+import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
+import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
+
+/** Declaration anchors that carry function-like arity metadata. */
+const FUNCTION_DECL_TAGS = [
+  '@declaration.method',
+  '@declaration.constructor',
+  '@declaration.function',
+] as const;
+
+/** tree-sitter-c-sharp node types that the method extractor accepts. */
+const FUNCTION_NODE_TYPES = [
+  'method_declaration',
+  'constructor_declaration',
+  'destructor_declaration',
+  'operator_declaration',
+  'conversion_operator_declaration',
+  'local_function_statement',
+] as const;
 
 export function emitCsharpScopeCaptures(
   sourceText: string,
@@ -72,8 +90,55 @@ export function emitCsharpScopeCaptures(
       continue;
     }
 
+    // Synthesize arity metadata on function-like declarations so the
+    // registry can narrow overloads (C# relies heavily on this). Mirrors
+    // Python's captures.ts pattern — one anchor per match, so we find
+    // the first tag that matches.
+    const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
+    if (declTag !== undefined) {
+      const anchor = grouped[declTag]!;
+      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      if (fnNode !== null) {
+        const arity = computeCsharpArityMetadata(fnNode);
+        if (arity.parameterCount !== undefined) {
+          grouped['@declaration.parameter-count'] = syntheticCapture(
+            '@declaration.parameter-count',
+            fnNode,
+            String(arity.parameterCount),
+          );
+        }
+        if (arity.requiredParameterCount !== undefined) {
+          grouped['@declaration.required-parameter-count'] = syntheticCapture(
+            '@declaration.required-parameter-count',
+            fnNode,
+            String(arity.requiredParameterCount),
+          );
+        }
+        if (arity.parameterTypes !== undefined) {
+          grouped['@declaration.parameter-types'] = syntheticCapture(
+            '@declaration.parameter-types',
+            fnNode,
+            JSON.stringify(arity.parameterTypes),
+          );
+        }
+      }
+    }
+
     out.push(grouped);
   }
 
   return out;
+}
+
+type SyntaxNode = ReturnType<ReturnType<typeof getCsharpParser>['parse']>['rootNode'];
+
+/** Find the first C# function-like node at the given range. The
+ *  declaration anchor range covers the whole method/constructor/etc.
+ *  node, but the tag alone doesn't tell us which node type. */
+function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
+  for (const nodeType of FUNCTION_NODE_TYPES) {
+    const n = findNodeAtRange(rootNode, range, nodeType);
+    if (n !== null) return n as SyntaxNode;
+  }
+  return null;
 }

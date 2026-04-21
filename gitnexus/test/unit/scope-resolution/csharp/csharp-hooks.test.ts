@@ -17,8 +17,10 @@ import {
   csharpReceiverBinding,
 } from '../../../../src/core/ingestion/languages/csharp/simple-hooks.js';
 import { csharpMergeBindings } from '../../../../src/core/ingestion/languages/csharp/merge-bindings.js';
+import { csharpArityCompatibility } from '../../../../src/core/ingestion/languages/csharp/arity.js';
 import type {
   BindingRef,
+  Callsite,
   CaptureMatch,
   ParsedImport,
   Scope,
@@ -129,6 +131,62 @@ describe('csharpMergeBindings — shadowing precedence', () => {
 
   it('empty in → empty out', () => {
     expect(csharpMergeBindings(scope, [])).toEqual([]);
+  });
+});
+
+describe('csharpArityCompatibility', () => {
+  const callsite = (arity: number): Callsite => ({ arity });
+  const def = (o: Partial<SymbolDefinition> = {}): SymbolDefinition =>
+    ({ nodeId: 'd1', filePath: 't.cs', type: 'Function', ...o }) as SymbolDefinition;
+
+  it('unknown when both parameter counts are missing', () => {
+    expect(csharpArityCompatibility(def(), callsite(2))).toBe('unknown');
+  });
+
+  it('compatible inside [required, total]', () => {
+    expect(
+      csharpArityCompatibility(def({ parameterCount: 3, requiredParameterCount: 1 }), callsite(2)),
+    ).toBe('compatible');
+  });
+
+  it('incompatible below required', () => {
+    expect(
+      csharpArityCompatibility(def({ parameterCount: 3, requiredParameterCount: 2 }), callsite(1)),
+    ).toBe('incompatible');
+  });
+
+  it('incompatible above max without variadic', () => {
+    expect(
+      csharpArityCompatibility(def({ parameterCount: 2, requiredParameterCount: 0 }), callsite(5)),
+    ).toBe('incompatible');
+  });
+
+  it('compatible above declared params when def has `params` variadic', () => {
+    expect(
+      csharpArityCompatibility(
+        def({ parameterCount: undefined, requiredParameterCount: 0, parameterTypes: ['params'] }),
+        callsite(7),
+      ),
+    ).toBe('compatible');
+  });
+
+  it('compatible above declared params when variadic token prefixes', () => {
+    expect(
+      csharpArityCompatibility(
+        def({
+          parameterCount: undefined,
+          requiredParameterCount: 1,
+          parameterTypes: ['string', 'params int[]'],
+        }),
+        callsite(4),
+      ),
+    ).toBe('compatible');
+  });
+
+  it('unknown for negative arity (defensive)', () => {
+    expect(
+      csharpArityCompatibility(def({ parameterCount: 3, requiredParameterCount: 1 }), callsite(-1)),
+    ).toBe('unknown');
   });
 });
 

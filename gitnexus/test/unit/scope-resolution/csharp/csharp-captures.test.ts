@@ -213,6 +213,59 @@ describe('emitCsharpScopeCaptures — type bindings', () => {
   });
 });
 
+describe('emitCsharpScopeCaptures — arity metadata synthesis', () => {
+  it('synthesizes parameter-count + required-parameter-count on method declarations', () => {
+    const m = findMatch(
+      'class A { public void M(int a, int b = 1) { } }',
+      (t) =>
+        t.includes('@declaration.method') &&
+        t.includes('@declaration.parameter-count') &&
+        t.includes('@declaration.required-parameter-count'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.parameter-count'].text).toBe('2');
+    expect(m!['@declaration.required-parameter-count'].text).toBe('1');
+  });
+
+  it('synthesizes parameter-types on method declarations', () => {
+    const m = findMatch(
+      'class A { public void M(User u, int n) { } }',
+      (t) => t.includes('@declaration.method') && t.includes('@declaration.parameter-types'),
+    );
+    expect(m).toBeDefined();
+    const types = JSON.parse(m!['@declaration.parameter-types'].text);
+    expect(types).toEqual(['User', 'int']);
+  });
+
+  it('leaves parameter-count undefined for `params` variadic methods', () => {
+    const m = findMatch('class A { public void M(params int[] xs) { } }', (t) =>
+      t.includes('@declaration.method'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.parameter-count']).toBeUndefined();
+    expect(m!['@declaration.required-parameter-count']).toBeUndefined();
+    const types = JSON.parse(m!['@declaration.parameter-types'].text);
+    expect(types).toContain('params');
+  });
+
+  it('synthesizes arity on constructor declarations', () => {
+    const m = findMatch('class A { public A(int a, int b) { } }', (t) =>
+      t.includes('@declaration.constructor'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.parameter-count'].text).toBe('2');
+    expect(m!['@declaration.required-parameter-count'].text).toBe('2');
+  });
+
+  it('synthesizes arity on local function declarations', () => {
+    const m = findMatch('class A { void M() { void Local(int x) { } } }', (t) =>
+      t.includes('@declaration.function'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.parameter-count'].text).toBe('1');
+  });
+});
+
 describe('emitCsharpScopeCaptures — references', () => {
   it('captures free call invocations', () => {
     const m = findMatch('class A { void M() { Foo(); } }', (t) =>
