@@ -41,6 +41,25 @@ function parseQualifiedFromId(id: string, label: NodeLabel, filePath: string): s
   return hash === -1 ? suffix : suffix.slice(0, hash);
 }
 
+/**
+ * Build a qualified-key string in a separate keyspace from simple-key
+ * strings. Prefix `<q>` can't appear in a valid filePath on any OS, so
+ * no collision between the two keyspaces is possible.
+ *
+ * Includes the node label so a top-level `def save` (Function,
+ * qualifier = `save`) doesn't alias a class method `User.save` (Method,
+ * simple name = `save`) whose Function-typed qualifier would collapse
+ * to the same simple-key slot in a single map.
+ */
+export function qualifiedKey(filePath: string, label: NodeLabel, qualifiedName: string): string {
+  return `<q>:${filePath}::${label}::${qualifiedName}`;
+}
+
+/** Simple-name key (legacy fallback keyspace — no `<q>` prefix). */
+export function simpleKey(filePath: string, name: string): string {
+  return `${filePath}::${name}`;
+}
+
 export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
   const lookup = new Map<string, string>();
   for (const node of graph.iterNodes()) {
@@ -52,15 +71,18 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
 
-    // Primary key: fully-qualified name when available. Class nodes
-    // carry `qualifiedName` in their properties (set by the parsing
-    // processor). Method/Function nodes do not, so derive the
-    // qualifier from the node id — that's where the parse-phase
-    // encoded it.
+    // Primary key: fully-qualified name + label, in a separate
+    // keyspace from simple names. Class nodes carry `qualifiedName`
+    // in their properties (set by the parsing processor).
+    // Method/Function nodes do not, so derive the qualifier from the
+    // node id — that's where the parse-phase encoded it. Including
+    // the label avoids a collision when a free Function's qualifier
+    // happens to equal a Method's simple name (e.g. top-level
+    // `def save` vs `class User: def save`).
     const qualified =
       props.qualifiedName ?? parseQualifiedFromId(node.id, node.label, props.filePath);
     if (qualified !== undefined && qualified.length > 0) {
-      const qKey = `${props.filePath}::${qualified}`;
+      const qKey = qualifiedKey(props.filePath, node.label, qualified);
       if (!lookup.has(qKey)) lookup.set(qKey, node.id);
     }
 
@@ -68,8 +90,8 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     // the caller doesn't know the qualifier (unqualified free-call
     // fallback, cross-file resolution where MethodRegistry already
     // disambiguated the owner).
-    const simpleKey = `${props.filePath}::${props.name}`;
-    if (!lookup.has(simpleKey)) lookup.set(simpleKey, node.id);
+    const sKey = simpleKey(props.filePath, props.name);
+    if (!lookup.has(sKey)) lookup.set(sKey, node.id);
   }
   return lookup;
 }

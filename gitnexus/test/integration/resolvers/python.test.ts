@@ -2277,3 +2277,57 @@ describe('Python same-file method-name collision across classes', () => {
     expect(targets[1]).toContain('User.save');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Module export vs class method collision within the same file
+// Codex review on PR #980 flagged: buildWorkspaceResolutionIndex feeds
+// defsByFileAndName and callablesBySimpleName from parsed.localDefs (every
+// def in the file, flat). A class method declared before a top-level
+// function with the same simple name wins the file-level export lookup,
+// so `mod.save(x)` silently binds to `User.save`.
+// ---------------------------------------------------------------------------
+
+describe('Python module export vs method-name collision in same file', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-module-export-vs-method-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('mod.save(x) resolves to the module-level Function, not User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromModuleExport = saveCalls.find((c) => c.source === 'use_module_export');
+    expect(fromModuleExport).toBeDefined();
+    // Target must be the top-level Function save, not the User.save Method.
+    // Node id format: `Function:mod.py:save` vs `Method:mod.py:User.save#0`.
+    expect(fromModuleExport!.rel.targetId).toContain('Function:');
+    expect(fromModuleExport!.rel.targetId).toContain('mod.py:save');
+    expect(fromModuleExport!.rel.targetId).not.toContain('User.save');
+  });
+
+  it('u.save() resolves to User.save Method via typed receiver', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromMethod = saveCalls.find((c) => c.source === 'use_method');
+    expect(fromMethod).toBeDefined();
+    expect(fromMethod!.rel.targetId).toContain('User.save');
+  });
+
+  it('exactly two CALLS edges to save — one to the free function, one to the method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    expect(saveCalls).toHaveLength(2);
+    const targetIds = saveCalls.map((c) => c.rel.targetId).sort();
+    // One Function target, one Method target. Exact shape pins the fix.
+    const hasFunctionTarget = targetIds.some(
+      (id) => id.startsWith('Function:') && !id.includes('User.save'),
+    );
+    const hasMethodTarget = targetIds.some((id) => id.includes('User.save'));
+    expect(hasFunctionTarget).toBe(true);
+    expect(hasMethodTarget).toBe(true);
+  });
+});

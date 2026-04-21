@@ -17,32 +17,46 @@
  * migrate.
  */
 
-import type { ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { NodeLabel, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
-import { isLinkableLabel, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import {
+  isLinkableLabel,
+  qualifiedKey,
+  simpleKey,
+  type GraphNodeLookup,
+} from '../graph-bridge/node-lookup.js';
 
 /**
  * Look up a `SymbolDefinition` in the graph node lookup.
  *
- * Tries the fully-qualified name FIRST — that's the only correct key
- * when two classes in the same file define a method with the same
- * simple name (`class User: def save` + `class Document: def save`).
+ * Tries the type-prefixed fully-qualified key FIRST. That's the only
+ * correct key when:
+ *   - Two classes in the same file define a method with the same
+ *     simple name (`class User: def save` + `class Document: def save`).
+ *   - A top-level function and a class method share a simple name
+ *     (`def save` + `class User: def save` — the Function's qualifier
+ *     is just `save`, which would alias the Method's simple-key slot
+ *     without the type prefix).
+ *
  * Falls back to the simple name for definitions whose qualifier the
  * lookup didn't capture (rare, but keeps cross-file simple-name
- * resolution working).
+ * resolution working for languages that don't yet synthesize
+ * qualifiers).
  */
 export function resolveDefGraphId(
   filePath: string,
-  def: { qualifiedName?: string },
+  def: { qualifiedName?: string; type?: NodeLabel },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
-  const qualifiedHit = nodeLookup.get(`${filePath}::${qn}`);
-  if (qualifiedHit !== undefined) return qualifiedHit;
+  if (def.type !== undefined) {
+    const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
+    if (qualifiedHit !== undefined) return qualifiedHit;
+  }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
-  return nodeLookup.get(`${filePath}::${simpleName}`);
+  return nodeLookup.get(simpleKey(filePath, simpleName));
 }
 
 /** Derive the simple (unqualified) name of a def from its `qualifiedName`. */
