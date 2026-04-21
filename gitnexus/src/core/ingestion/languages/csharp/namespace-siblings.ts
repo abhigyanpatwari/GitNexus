@@ -126,6 +126,41 @@ export function populateCsharpNamespaceSiblings(
   // pattern (see `propagateImportedReturnTypes` which does the same
   // for module-scope typeBindings).
   const finalized = indexes.bindings as Map<ScopeId, Map<string, BindingRef[]>>;
+
+  // Cross-namespace imports: for each file's `using X;` directive,
+  // if `X` matches a known namespace bucket, inject that bucket's
+  // classes into the importer's module scope. This is what makes
+  // `new User()` in `namespace App;` resolve to `User` declared in
+  // a sibling file with `namespace Models;` when the importer says
+  // `using Models;`. Legacy uses csproj directory↔namespace mapping;
+  // the scope-resolver layer uses the declared namespace directly.
+  for (const parsed of parsedFiles) {
+    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    if (moduleScope === undefined) continue;
+    for (const imp of parsed.parsedImports) {
+      if (imp.kind !== 'namespace') continue;
+      const targetNs = imp.targetRaw;
+      if (targetNs === null || targetNs === '') continue;
+      const bucket = buckets.get(targetNs);
+      if (bucket === undefined) continue;
+      for (const def of bucket.classDefs) {
+        if (def.filePath === parsed.filePath) continue;
+        const q = def.qualifiedName ?? '';
+        const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
+        if (simpleName === '') continue;
+        let scopeBindings = finalized.get(moduleScope.id);
+        if (scopeBindings === undefined) {
+          scopeBindings = new Map<string, BindingRef[]>();
+          finalized.set(moduleScope.id, scopeBindings);
+        }
+        const existing = scopeBindings.get(simpleName) ?? [];
+        if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
+        existing.push({ def, origin: 'namespace' });
+        scopeBindings.set(simpleName, existing);
+      }
+    }
+  }
+
   for (const [, bucket] of buckets) {
     // De-dup by (nodeId, filePath) across multiple declarations (e.g.
     // partial classes declaring the same name in two files — we take
