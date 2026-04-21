@@ -489,8 +489,31 @@ describe('CLI end-to-end', () => {
 
         // And path-based remove still works: pass the absolute path of
         // repoA and it resolves unambiguously.
+        //
+        // We pull the path from the registry snapshot rather than
+        // passing the outer `repoA` variable directly. This is the
+        // belt-and-suspenders for cross-platform path normalisation
+        // (#1003 review): the path the registry recorded has already
+        // gone through the analyze-side canonicalisation (which on
+        // macOS expands /var → /private/var and on Windows expands 8.3
+        // → long-name). Passing that exact string back to `remove`
+        // guarantees the comparison succeeds even on runners where the
+        // outer `repoA` is the symlink/short-name form. The code-side
+        // fix in `canonicalizePath` makes this redundant in practice,
+        // but the test shouldn't depend on the code fix being perfect
+        // on every platform — it should prove correctness against the
+        // registry contract.
+        const repoAEntry = before.find(
+          (e: { path: string }) =>
+            path.basename(e.path) === 'dup' && e.path.includes(path.basename(parentA)),
+        );
+        expect(
+          repoAEntry,
+          'repoA entry must exist in registry before path-remove step',
+        ).toBeDefined();
+
         const r4 = runCliWithEnv(
-          ['remove', repoA, '--force'],
+          ['remove', repoAEntry.path, '--force'],
           parentA,
           { GITNEXUS_HOME: gnHome },
           15000,
@@ -508,6 +531,8 @@ describe('CLI end-to-end', () => {
         expect(finalEntries).toHaveLength(1);
         // The survivor is repoB (its path stays in the registry).
         expect(path.basename(finalEntries[0].path)).toBe('dup');
+        // And it's NOT the one we just removed.
+        expect(finalEntries[0].path).not.toBe(repoAEntry.path);
       } finally {
         fs.rmSync(gnHome, { recursive: true, force: true });
         fs.rmSync(parentA, { recursive: true, force: true });

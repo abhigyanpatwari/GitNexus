@@ -7,9 +7,49 @@
  */
 
 import fs from 'fs/promises';
+import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { getInferredRepoName } from './git.js';
+
+/**
+ * Normalise a repo path for registry comparison across platforms
+ * (#664 review feedback from @evander-wang).
+ *
+ * Why this exists: `path.resolve` alone is NOT enough for
+ * cross-platform registry stability.
+ *   - **macOS**: tmpdirs and `/var` are symlinks to `/private/var`.
+ *     A child process that stored `/private/var/folders/.../repo` in
+ *     the registry cannot later be matched by an outer caller that
+ *     supplies the symlink form `/var/folders/.../repo`. `path.resolve`
+ *     does not follow symlinks; `realpathSync.native` does.
+ *   - **Windows**: GitHub runners surface tmpdirs in 8.3 short-name
+ *     form (`RUNNERA~1\...`), but `process.cwd()` often returns the
+ *     long form (`runneradmin\...`). `realpathSync.native` normalises
+ *     both sides to the long-name canonical path.
+ *
+ * Fallback behaviour: if the path does not exist on disk (e.g. a user
+ * passed `gitnexus remove some-alias` and the alias misses every
+ * registry entry, or the caller is resolving a path that was deleted
+ * after registration), we return `path.resolve(p)` rather than
+ * throwing. This preserves the idempotent-on-missing semantics of
+ * `resolveRegistryEntry` / `remove`.
+ *
+ * Backwards compatibility: this function is applied to BOTH the
+ * caller-supplied input AND each stored `entry.path` at compare time
+ * inside `resolveRegistryEntry`, so registries written by older
+ * versions (where `registerRepo` only ran `path.resolve`) still match
+ * correctly. Newly-written entries are canonicalised at write time too
+ * so the registry stabilises over analyze/re-analyze cycles.
+ */
+export const canonicalizePath = (p: string): string => {
+  const resolved = path.resolve(p);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+};
 
 export interface RepoMeta {
   repoPath: string;
@@ -349,12 +389,22 @@ export const registerRepo = async (
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
 ): Promise<string> => {
-  const resolved = path.resolve(repoPath);
+  // Canonicalise the caller's path up-front (#1003 review) — expands
+  // macOS /var → /private/var and Windows 8.3 → long-name so the
+  // registry entry stays matchable by `resolveRegistryEntry` regardless
+  // of which form the caller hands us.
+  const resolved = canonicalizePath(repoPath);
   const { storagePath } = getStoragePaths(resolved);
 
   const entries = await readRegistry();
   const existingIdx = entries.findIndex((e) => {
-    const a = path.resolve(e.path);
+    // Canonicalise the STORED entry too so pre-canonicalisation
+    // registries (written by older versions, or the same version before
+    // this review fix) still match correctly. `canonicalizePath` falls
+    // back to `path.resolve` when the path no longer exists on disk, so
+    // stale entries that have been rm'd externally still resolve to a
+    // stable key instead of throwing.
+    const a = canonicalizePath(e.path);
     const b = resolved;
     return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   });
@@ -393,7 +443,7 @@ export const registerRepo = async (
       (e, i) =>
         i !== existingIdx &&
         e.name.toLowerCase() === name.toLowerCase() &&
-        path.resolve(e.path) !== resolved,
+        canonicalizePath(e.path) !== resolved,
     );
     if (collidingEntry) {
       throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
@@ -424,9 +474,16 @@ export const registerRepo = async (
  * Called after `gitnexus clean`.
  */
 export const unregisterRepo = async (repoPath: string): Promise<void> => {
-  const resolved = path.resolve(repoPath);
+  // Canonicalise BOTH sides so an unregister call issued with the
+  // symlink form (`/var/folders/.../repo`) still matches an entry
+  // written with the realpath form (`/private/var/folders/.../repo`),
+  // and vice versa. Matches the semantics of `registerRepo` and
+  // `resolveRegistryEntry` post-#1003 review.
+  const resolved = canonicalizePath(repoPath);
   const entries = await readRegistry();
-  const filtered = entries.filter((e) => path.resolve(e.path) !== resolved);
+  const matches = (a: string, b: string) =>
+    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
   await writeRegistry(filtered);
 };
 
@@ -504,12 +561,19 @@ export class RegistryAmbiguousTargetError extends Error {
  * `GITNEXUS_HOME`.
  */
 export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): RegistryEntry => {
-  // Tier 1: path match. Normalise both sides the same way
-  // `registerRepo` / `unregisterRepo` do.
-  const resolvedTarget = path.resolve(target);
+  // Tier 1: path match. Canonicalise BOTH sides so symlink and
+  // Windows-8.3 quirks don't cause a false miss — e.g. the caller
+  // passes `/var/folders/.../repo` while the registry has
+  // `/private/var/folders/.../repo` (both resolve to the same
+  // `realpath.native`). See `canonicalizePath` for the rationale.
+  //
+  // Canonicalising the STORED entry (not just the input) is what gives
+  // us backward-compat for registries written by versions that only
+  // ran `path.resolve` — both get canonicalised here at compare time.
+  const canonicalTarget = canonicalizePath(target);
   const pathMatch = entries.find((e) => {
-    const a = path.resolve(e.path);
-    const b = resolvedTarget;
+    const a = canonicalizePath(e.path);
+    const b = canonicalTarget;
     return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   });
   if (pathMatch) return pathMatch;

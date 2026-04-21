@@ -16,6 +16,7 @@ import {
   registerRepo,
   listRegisteredRepos,
   resolveRegistryEntry,
+  canonicalizePath,
   RegistryNameCollisionError,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
@@ -603,5 +604,89 @@ describe('resolveRegistryEntry (#664)', () => {
     // match first.
     expect(hit.path).toBe(pathW);
     expect(hit.name).toBe('website');
+  });
+});
+
+// ─── canonicalizePath (#1003 review — @evander-wang / @magyargergo) ──
+//
+// Shields `registerRepo`, `unregisterRepo`, and `resolveRegistryEntry`
+// against cross-platform path-form divergence: macOS symlink expansion
+// (/var → /private/var) and Windows 8.3 short-name expansion
+// (RUNNERA~1 → runneradmin). The helper also underpins backwards
+// compatibility with registries written by versions that only ran
+// `path.resolve` — by canonicalising the stored entry at compare time,
+// both pre- and post-fix entries converge to the same key.
+//
+// These tests avoid snapshotting a specific realpath value (that would
+// be platform-fragile); instead they assert:
+//   - canonicalizePath is idempotent (f(f(x)) == f(x))
+//   - canonicalizePath falls back cleanly when the path doesn't exist
+//   - resolveRegistryEntry matches a stored entry even when the target
+//     and the stored value disagree on one-step normalisation (simulated
+//     via a fixture that stores the de-canonicalised form of a real
+//     existing path).
+
+describe('canonicalizePath (#1003)', () => {
+  it('is idempotent — canonicalizePath(canonicalizePath(x)) === canonicalizePath(x)', async () => {
+    // Use the vitest project-root as a known-existing path. `os.tmpdir()`
+    // would work too but process.cwd() is guaranteed to exist for the
+    // test runner.
+    const p = process.cwd();
+    const once = canonicalizePath(p);
+    const twice = canonicalizePath(once);
+    expect(twice).toBe(once);
+  });
+
+  it('falls back to path.resolve when the target does not exist', () => {
+    // Construct a definitely-nonexistent path under tmpdir. Using
+    // random-ish segments so we don't collide with anything real.
+    const ghost = path.join(os.tmpdir(), 'gnx-never-exists-____', 'still-not-there');
+    const got = canonicalizePath(ghost);
+    // Must not throw, must not resolve to something weird — should be
+    // identical to `path.resolve(ghost)` since realpathSync.native will
+    // have thrown and we swallowed it.
+    expect(got).toBe(path.resolve(ghost));
+  });
+
+  it('returns an absolute path for relative input even when the path is missing', () => {
+    // Relative path that does not exist. Must still be absolute
+    // (fallback path: path.resolve normalises even non-existent inputs).
+    const rel = './does-not-exist-zzz-' + Date.now();
+    const got = canonicalizePath(rel);
+    expect(path.isAbsolute(got)).toBe(true);
+  });
+});
+
+describe('resolveRegistryEntry backward-compat with non-canonical stored paths (#1003)', () => {
+  it('matches a stored entry even when the target was passed in canonical form', async () => {
+    // Simulate the bug-producing scenario without depending on a real
+    // symlink/8.3 discrepancy (those are platform-specific and flaky to
+    // set up in CI). We take a REAL path that exists
+    // (canonicalizePath-stable), store a known-non-canonical copy of it
+    // in a fake RegistryEntry, then resolve with the canonical form and
+    // assert the match.
+    //
+    // Construct a non-canonical string that resolves to the same real
+    // path. `path.join` auto-normalises `.` and trailing separators, so
+    // we build the string by raw concat to keep it string-unequal to
+    // `realDir` until `canonicalizePath` runs.
+    const realDir = process.cwd();
+    const nonCanonical = realDir + path.sep + '.'; // e.g. /work/gitnexus/.
+    // Sanity: these are string-unequal before canonicalisation.
+    expect(nonCanonical).not.toBe(realDir);
+
+    const entries: RegistryEntry[] = [
+      {
+        name: 'stored-under-noncanonical-form',
+        path: nonCanonical,
+        storagePath: path.join(nonCanonical, '.gitnexus'),
+        indexedAt: '2026-04-20T00:00:00.000Z',
+        lastCommit: 'deadbee',
+      },
+    ];
+
+    // Pass the canonical form as the target — resolver must still match.
+    const hit = resolveRegistryEntry(entries, realDir);
+    expect(hit).toBe(entries[0]);
   });
 });
