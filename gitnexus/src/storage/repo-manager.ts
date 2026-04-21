@@ -389,23 +389,33 @@ export const registerRepo = async (
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
 ): Promise<string> => {
-  // Canonicalise the caller's path up-front (#1003 review) — expands
-  // macOS /var → /private/var and Windows 8.3 → long-name so the
-  // registry entry stays matchable by `resolveRegistryEntry` regardless
-  // of which form the caller hands us.
-  const resolved = canonicalizePath(repoPath);
+  // Preserve the caller's chosen path form in the registry — don't
+  // canonicalise at write time. This matters for two reasons:
+  //   1. `list` and error messages show the path the user actually
+  //      knows (e.g. the 8.3 short form they typed), not a runtime-
+  //      resolved long form they've never seen.
+  //   2. Keeps pre-existing #829 test assertions that compare
+  //      `err.existingPath` against `path.resolve(tmpPath)` stable.
+  // Canonicalisation is applied at COMPARE points only (see below),
+  // which is where the cross-platform divergence actually matters.
+  const resolved = path.resolve(repoPath);
   const { storagePath } = getStoragePaths(resolved);
+
+  // Canonical form used strictly for comparison — `realpathSync.native`
+  // expands macOS /var → /private/var and Windows 8.3 → long-name,
+  // falling back to `path.resolve` when the path doesn't exist.
+  const canonicalInput = canonicalizePath(repoPath);
 
   const entries = await readRegistry();
   const existingIdx = entries.findIndex((e) => {
     // Canonicalise the STORED entry too so pre-canonicalisation
-    // registries (written by older versions, or the same version before
-    // this review fix) still match correctly. `canonicalizePath` falls
-    // back to `path.resolve` when the path no longer exists on disk, so
-    // stale entries that have been rm'd externally still resolve to a
-    // stable key instead of throwing.
+    // registries (written by older versions, or paths passed in a
+    // different form) still match correctly. `canonicalizePath` falls
+    // back to `path.resolve` when the path no longer exists on disk,
+    // so stale entries that have been rm'd externally still resolve
+    // to a stable key instead of throwing.
     const a = canonicalizePath(e.path);
-    const b = resolved;
+    const b = canonicalInput;
     return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   });
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
@@ -439,11 +449,14 @@ export const registerRepo = async (
   // messages and list output #829 ships).
   const explicitName = opts?.name !== undefined || isPreservedAlias;
   if (explicitName && !opts?.allowDuplicateName) {
+    // Compare canonical-vs-canonical here too so `/var/foo` and
+    // `/private/var/foo` (same repo, different form) aren't treated as
+    // two colliding paths.
     const collidingEntry = entries.find(
       (e, i) =>
         i !== existingIdx &&
         e.name.toLowerCase() === name.toLowerCase() &&
-        canonicalizePath(e.path) !== resolved,
+        canonicalizePath(e.path) !== canonicalInput,
     );
     if (collidingEntry) {
       throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
