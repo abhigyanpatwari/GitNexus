@@ -20,9 +20,9 @@ const GITNEXUS_PORT = 4747;
 const GITNEXUS_HOST = 'localhost';
 const GITNEXUS_SERVER_URL = `http://${GITNEXUS_HOST}:${GITNEXUS_PORT}`;
 const GITNEXUS_SERVER_HEALTH_URLS = [
-  `${GITNEXUS_SERVER_URL}/api/repos`,
-  `http://127.0.0.1:${GITNEXUS_PORT}/api/repos`,
-  `http://[::1]:${GITNEXUS_PORT}/api/repos`,
+  `${GITNEXUS_SERVER_URL}/api/info`,
+  `http://127.0.0.1:${GITNEXUS_PORT}/api/info`,
+  `http://[::1]:${GITNEXUS_PORT}/api/info`,
 ];
 const GITNEXUS_DEV_RUNTIME_DIR = path.resolve(__dirname, '../../../gitnexus');
 const GITNEXUS_WEB_DEV_HOST = 'localhost';
