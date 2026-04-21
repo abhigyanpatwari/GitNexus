@@ -380,24 +380,13 @@ export async function runGroupImpact(
 
   const localObj = local as Record<string, unknown> | null;
   if (localObj?.error && typeof localObj.error === 'string') {
-    const empty: GroupImpactResult = {
-      local,
-      group: name,
-      cross: [],
-      outOfScope: [],
-      truncated: false,
-      truncatedRepos: [],
-      summary: {
-        direct: 0,
-        processes_affected: 0,
-        modules_affected: 0,
-        cross_repo_hits: 0,
-      },
-      risk: 'UNKNOWN',
-      timeoutMs,
-      crossDepthWarning,
-    };
-    return empty;
+    // Fail closed: the local-impact phase errored (missing symbol, graph-load
+    // failure, thrown exception wrapped by safeLocalImpact, or port-returned
+    // `{ error }`). Do NOT wrap it into a zero-hit success payload — callers
+    // branch on top-level `error`, and a blast-radius tool reporting "no
+    // impact" on the failure path is a false negative on a safety-critical
+    // signal. Bubble the error so consumers treat it as a failure.
+    return { error: `Local impact failed for ${repoPath}: ${localObj.error}` };
   }
 
   if (servicePrefix) {

@@ -149,6 +149,92 @@ describe('cross-impact', () => {
     }
   });
 
+  it('test_runGroupImpact_local_phase_error_bubbles_as_top_level_error', async () => {
+    // Regression for #1004: when the local-impact phase returns a structured
+    // `{ error: ... }` payload, groupImpact MUST surface it as a top-level
+    // `{ error }` instead of a zero-hit GroupImpactResult. Otherwise callers
+    // that branch on top-level `error` silently treat a failed analysis as
+    // "no impact across the group" — a false negative on the failure path
+    // of a blast-radius tool.
+    const { tmpDir, cleanup } = tmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(async () => ({
+          id: 'be',
+          name: 'reg-be',
+          repoPath: '/r',
+          storagePath: '/r/.gitnexus',
+        })),
+        impact: vi.fn(async () => ({ error: 'symbol not found: Sym' })),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'app/backend',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('symbol not found: Sym');
+        expect(r.error).toContain('app/backend');
+      }
+      // And ensure we didn't silently fall back to a zero-hit success payload.
+      expect((r as { summary?: unknown }).summary).toBeUndefined();
+      expect((r as { cross?: unknown }).cross).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
+  it('test_runGroupImpact_local_phase_thrown_exception_bubbles_as_top_level_error', async () => {
+    // Companion to the #1004 regression: safeLocalImpact wraps thrown
+    // exceptions from port.impact() as `{ error }` payloads. Those must
+    // bubble to the caller as top-level errors too, not be swallowed into
+    // an empty success payload.
+    const { tmpDir, cleanup } = tmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(async () => ({
+          id: 'be',
+          name: 'reg-be',
+          repoPath: '/r',
+          storagePath: '/r/.gitnexus',
+        })),
+        impact: vi.fn(async () => {
+          throw new Error('graph-load failure: .gitnexus missing');
+        }),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'app/backend',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('graph-load failure');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {
     const { tmpDir, groupDir, cleanup } = tmpGroup();
     vi.stubEnv('GITNEXUS_HOME', tmpDir);
