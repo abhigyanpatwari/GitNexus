@@ -2331,3 +2331,83 @@ describe('Python module export vs method-name collision in same file', () => {
     expect(hasMethodTarget).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Class-body attribute leak into module export index
+// Codex round-2 review on PR #980: defsByFileAndName indexes ALL defs
+// owned by every child scope of the module, including class-body defs
+// (e.g. `User.MAX_USERS`). `mod.MAX_USERS` / `from mod import MAX_USERS`
+// can silently bind to a class attribute that's not a module export.
+// ---------------------------------------------------------------------------
+
+describe('Python class-body attribute does NOT leak into module export index', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-attr-export-leak'),
+      () => {},
+    );
+  }, 60000);
+
+  it('mod.MAX_USERS does not resolve to User.MAX_USERS as a module export', () => {
+    // Any edge sourced from `use_class_attr` must NOT target a node
+    // that represents `User.MAX_USERS`. Under the bug, CALLS/USES/
+    // ACCESSES could silently bind to the class attribute.
+    const edges = [
+      ...getRelationships(result, 'CALLS'),
+      ...getRelationships(result, 'USES'),
+      ...getRelationships(result, 'ACCESSES'),
+    ];
+    const fromConsumer = edges.filter((e) => e.source === 'use_class_attr');
+    for (const edge of fromConsumer) {
+      expect(edge.rel.targetId).not.toContain('User.MAX_USERS');
+    }
+  });
+
+  it('mod.helper() still resolves to the top-level Function (happy-path guard)', () => {
+    // Regression guard: the narrowing fix must not drop legitimate
+    // top-level function exports. Without this, the fix would over-
+    // narrow and break normal `mod.helper()` calls.
+    const calls = getRelationships(result, 'CALLS');
+    const helperCall = calls.find((c) => c.source === 'use_helper' && c.target === 'helper');
+    expect(helperCall).toBeDefined();
+    expect(helperCall!.rel.targetId).toContain('mod.py:helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Function-local import + cross-file return-type propagation
+// Codex round-2 flagged this as potentially broken, but empirically the
+// finalize-algorithm hoists the `from svc import get_user` binding to
+// the app.py module scope (observed via indexes.bindings dump), so
+// `propagateImportedReturnTypes`'s module-scope pass already handles
+// it. These assertions pin that working behavior as a regression
+// guard against any future change to binding-scope routing.
+// ---------------------------------------------------------------------------
+
+describe('Python function-local import feeds chained receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-function-local-import-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge do_work -> get_user (free call, baseline sanity)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getUserCall = calls.find((c) => c.source === 'do_work' && c.target === 'get_user');
+    expect(getUserCall).toBeDefined();
+    expect(getUserCall!.rel.targetId).toContain('svc.py:get_user');
+  });
+
+  it('emits CALLS edge do_work -> User.save via function-local-scoped import return-type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.source === 'do_work' && c.target === 'save');
+    expect(saveCall).toBeDefined();
+    // Target must be the User.save Method in svc.py.
+    expect(saveCall!.rel.targetId).toContain('User.save');
+  });
+});

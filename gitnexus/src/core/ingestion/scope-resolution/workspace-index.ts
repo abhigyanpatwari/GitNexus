@@ -72,50 +72,43 @@ export function buildWorkspaceResolutionIndex(
       if (cd !== undefined) classScopeByDefId.set(cd.nodeId, scope);
     }
 
-    // Module-export pass — populates the file-level export lookup
-    // and the workspace callable fallback with ONLY module-level
-    // defs. "Module-level" here means: defs owned by the module scope
-    // OR by any scope whose parent is the module scope (top-level
-    // class and function declarations live in their own Class /
-    // Function scopes whose parent is the module scope — not in
-    // moduleScope.ownedDefs).
+    // Module-export pass — use the module scope's own `bindings` map
+    // as the source of truth for "what names this module exports".
+    // The scope extractor populates moduleScope.bindings with exactly
+    // the names visible at module level: top-level class/function
+    // declarations, module-level variable assignments, imports, etc.
+    // Filtering to `origin === 'local'` keeps only locally-defined
+    // names (not imports or wildcard re-exports brought in from
+    // elsewhere), which matches the pre-fix invariant that
+    // defsByFileAndName was built from `parsed.localDefs`.
     //
-    // Methods (Function/Method defs whose owning scope's parent is a
-    // Class scope) and nested-function defs (parent is another
-    // Function scope) are intentionally excluded — they are not
-    // import-visible as `from mod import X` / `mod.X()` targets.
-    // Without this filter, a class method can win the file-level
-    // export lookup by parse order and produce silently wrong CALLS
-    // edges.
+    // Class methods, class-body attributes, and nested-function defs
+    // are NOT in moduleScope.bindings — they're bound at their
+    // containing (Class or Function) scope — so they're naturally
+    // excluded, no per-kind filter required.
     let fileBucket = defsByFileAndName.get(parsed.filePath);
     if (fileBucket === undefined) {
       fileBucket = new Map();
       defsByFileAndName.set(parsed.filePath, fileBucket);
     }
     if (moduleScope !== undefined) {
-      const addExport = (def: SymbolDefinition): void => {
-        const simple = simpleQualifiedName(def);
-        if (simple === undefined) return;
-        // First-seen wins to match `findExportedDef` semantics.
-        if (!fileBucket!.has(simple)) fileBucket!.set(simple, def);
-        if (def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor') {
-          let bucket = callablesBySimpleName.get(simple);
-          if (bucket === undefined) {
-            bucket = [];
-            callablesBySimpleName.set(simple, bucket);
+      for (const [, refs] of moduleScope.bindings) {
+        for (const ref of refs) {
+          if (ref.origin !== 'local') continue;
+          const def = ref.def;
+          const simple = simpleQualifiedName(def);
+          if (simple === undefined) continue;
+          // First-seen wins to match `findExportedDef` semantics.
+          if (!fileBucket.has(simple)) fileBucket.set(simple, def);
+          if (def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor') {
+            let bucket = callablesBySimpleName.get(simple);
+            if (bucket === undefined) {
+              bucket = [];
+              callablesBySimpleName.set(simple, bucket);
+            }
+            bucket.push(def);
           }
-          bucket.push(def);
         }
-      };
-      // Defs directly owned by the module scope (rare — usually
-      // module-level variable assignments and re-exports).
-      for (const def of moduleScope.ownedDefs) addExport(def);
-      // Defs whose containing scope is a direct child of the module
-      // scope — top-level class declarations and top-level function
-      // declarations each get their own scope with parent = module.
-      for (const scope of parsed.scopes) {
-        if (scope.parent !== moduleScope.id) continue;
-        for (const def of scope.ownedDefs) addExport(def);
       }
     }
 
