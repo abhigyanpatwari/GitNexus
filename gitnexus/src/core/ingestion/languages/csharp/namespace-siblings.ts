@@ -27,6 +27,9 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 /** `namespace Foo.Bar { ... }` or `namespace Foo.Bar;` — capture the dotted name. */
 const NAMESPACE_RE = /\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)\s*[;{]/g;
 
+/** `using static Foo.Bar.Baz;` — capture the dotted static-class path. */
+const USING_STATIC_RE = /\busing\s+static\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;/g;
+
 /** Content of a file, keyed by filePath. Caller sources this from the
  *  pipeline's file list before the pass runs. */
 export interface CsharpSiblingInputs {
@@ -182,6 +185,62 @@ export function populateCsharpNamespaceSiblings(
           if (moduleTypeBindings.has(boundName)) continue;
           moduleTypeBindings.set(boundName, typeRef);
         }
+      }
+    }
+  }
+
+  // `using static X.Y.Z;` — expose every public static method of
+  // class Z as a free-callable binding in the importer's module
+  // scope, so `Record(...)` (without `Logger.` qualifier) resolves
+  // to `Logger.Record`.
+  for (const parsed of parsedFiles) {
+    const content = inputs.fileContents.get(parsed.filePath);
+    if (content === undefined) continue;
+    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    if (moduleScope === undefined) continue;
+
+    USING_STATIC_RE.lastIndex = 0;
+    let sm: RegExpExecArray | null;
+    while ((sm = USING_STATIC_RE.exec(content)) !== null) {
+      const fullPath = sm[1]!;
+      const lastDot = fullPath.lastIndexOf('.');
+      if (lastDot === -1) continue;
+      const className = fullPath.slice(lastDot + 1);
+      const enclosingNs = fullPath.slice(0, lastDot);
+
+      // Find the target class in the named namespace bucket.
+      const bucket = buckets.get(enclosingNs);
+      if (bucket === undefined) continue;
+      const targetDef = bucket.classDefs.find((d) => {
+        const q = d.qualifiedName ?? '';
+        const simple = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
+        return simple === className;
+      });
+      if (targetDef === undefined) continue;
+
+      // Inject the class's member methods into the importer's module
+      // scope. `memberByOwner` wasn't built yet here, so we walk the
+      // file's localDefs to find members with `ownerId === targetDef.nodeId`.
+      const targetFile = parsedFiles.find((p) => p.filePath === targetDef.filePath);
+      if (targetFile === undefined) continue;
+      for (const memberDef of targetFile.localDefs) {
+        if ((memberDef as { ownerId?: string }).ownerId !== targetDef.nodeId) continue;
+        if (memberDef.type !== 'Method' && memberDef.type !== 'Function') continue;
+        const mq = memberDef.qualifiedName ?? '';
+        const simpleName = mq.includes('.') ? mq.slice(mq.lastIndexOf('.') + 1) : mq;
+        if (simpleName === '') continue;
+
+        // Add to `indexes.bindings[moduleScope]` so
+        // `findCallableBindingInScope` picks it up.
+        let scopeBindings = finalized.get(moduleScope.id);
+        if (scopeBindings === undefined) {
+          scopeBindings = new Map<string, BindingRef[]>();
+          finalized.set(moduleScope.id, scopeBindings);
+        }
+        const existing = scopeBindings.get(simpleName) ?? [];
+        if (existing.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
+        existing.push({ def: memberDef, origin: 'import' });
+        scopeBindings.set(simpleName, existing);
       }
     }
   }
