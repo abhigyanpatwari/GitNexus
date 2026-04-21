@@ -172,6 +172,17 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
     (def as { qualifiedName: string }).qualifiedName = `${classQ}.${q}`;
   };
 
+  // Depth invariant (verified empirically against Python scope-extractor
+  // 2026-04-21): a nested `def helper` declared inside a method body
+  // lives in its OWN Function scope whose parent is the method's Function
+  // scope (not the Class scope). That means the `parentScope.kind ===
+  // 'Class'` branch below only matches DIRECT class-scope children —
+  // method defs themselves — and never stamps arbitrary nested defs with
+  // `ownerId = classDef.nodeId`. If an adversarial reviewer raises this
+  // as a potential false-attribution bug, verify first with a scope dump
+  // on `class U: def save(self): def helper(): ...` — helper.ownerId will
+  // remain undefined. The theoretical concern is real only if the
+  // extractor ever stops creating scopes for inner defs.
   for (const scope of parsed.scopes) {
     // Methods: function scope whose parent is a Class scope. Owner is
     // the parent's Class def.

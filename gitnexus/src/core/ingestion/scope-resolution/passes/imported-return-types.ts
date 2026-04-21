@@ -67,6 +67,20 @@ export function followChainPostFinalize(
  * After propagation, re-runs the chain-follow on every scope's
  * typeBindings — the in-extractor pass-4 ran before propagation and
  * missed any chain whose terminal lived in a foreign file.
+ *
+ * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
+ * documents that function-local `from x import y` binds `y` to the
+ * inner function scope, which would make a module-only write miss
+ * non-module importers. In practice `finalize-algorithm` hoists those
+ * bindings into `indexes.bindings[moduleScope]` regardless of where
+ * the `import` statement appears — the integration fixture
+ * `python-function-local-import-chain` exercises a chained
+ * receiver-bound call `u = get_user(); u.save()` inside a function
+ * body and emits the expected `do_work → User.save` edge. The
+ * module-scope write is sufficient today. If finalize routing ever
+ * changes to honor the hook's per-scope contract, this pass must
+ * iterate `indexes.bindings` over every scope and mirror into the
+ * binding-owning scope's `typeBindings`, not just the module's.
  */
 export function propagateImportedReturnTypes(
   parsedFiles: readonly ParsedFile[],

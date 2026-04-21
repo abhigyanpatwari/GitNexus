@@ -17,6 +17,19 @@
  * (TypeScript `import * as X`, Java static import, Ruby `require`)
  * uses this directly. `ParsedImport.kind === 'namespace'` is the
  * cross-language hook.
+ *
+ * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
+ * documents that function-local and class-body imports bind to the
+ * inner scope, which would make a module-only read incomplete. In
+ * practice `finalize-algorithm` places ALL of a file's ImportEdges
+ * onto `indexes.imports[moduleScope]` regardless of where the
+ * `import` statement appears — the integration fixtures
+ * `python-function-local-namespace-import` and
+ * `python-class-body-namespace-import` both emit correct CALLS edges
+ * with reason "namespace-receiver", demonstrating that the module-
+ * scope read is sufficient today. If finalize routing ever changes to
+ * honor the hook's per-scope contract, this function must walk the
+ * reference-site scope chain (mirror `findExportedDefByName`).
  */
 
 import type { ParsedFile } from 'gitnexus-shared';

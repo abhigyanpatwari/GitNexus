@@ -2411,3 +2411,65 @@ describe('Python function-local import feeds chained receiver-bound call', () =>
     expect(saveCall!.rel.targetId).toContain('User.save');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Function-local namespace import: `def f(): import svc as s; s.call()`
+// Codex round-3 flagged this pattern as potentially broken because
+// collectNamespaceTargets reads only module-scope imports. Empirically
+// the edge IS emitted (finalize hoists ImportEdges onto the module
+// scope), so these assertions pin the working behavior. If finalize
+// routing ever changes to match pythonImportOwningScope's per-scope
+// contract, this block will flip red and signal the need to make
+// collectNamespaceTargets scope-chain-aware.
+// ---------------------------------------------------------------------------
+
+describe('Python function-local namespace import feeds receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-function-local-namespace-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge outer -> svc.call via function-local `import svc as s`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callEdge = calls.find((c) => c.source === 'outer' && c.target === 'call');
+    expect(callEdge).toBeDefined();
+    expect(callEdge!.rel.targetId).toContain('svc.py:call');
+  });
+
+  it('sanity: unrelated function without local import is still parsed as a Function node', () => {
+    const fns = result.graph.nodes.filter(
+      (n) => n.label === 'Function' && n.properties.name === 'sanity',
+    );
+    expect(fns).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class-body namespace import: `class A: import mod; def use(): mod.helper()`
+// Same theoretical concern as the function-local case above, same
+// empirical outcome — finalize hoists the ImportEdge to the module
+// scope so the namespace-receiver path finds it from inside A.use.
+// These assertions pin that working behavior.
+// ---------------------------------------------------------------------------
+
+describe('Python class-body namespace import feeds method receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-body-namespace-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge A.use -> mod.helper via class-body `import mod`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
+    expect(callEdge).toBeDefined();
+    expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+  });
+});
