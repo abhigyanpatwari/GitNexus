@@ -41,8 +41,47 @@ const FTS_INDEXES: ReadonlyArray<{
  * Per-process cache for the MCP pool path: tracks which `(repoId, table)`
  * pairs have been ensured. The CLI/pipeline path gets its own cache inside
  * `lbug-adapter.ts` keyed by table/index, scoped to the singleton connection.
+ *
+ * IMPORTANT: an entry is added ONLY when the index was confirmed to exist
+ * (CREATE_FTS_INDEX succeeded, or failed with `'already exists'`). Other
+ * failures (transient lock errors, missing extension, etc.) leave the key
+ * unset so the next query retries instead of silently caching the failure.
+ *
+ * Entries for a given repoId are invalidated when its pool is closed —
+ * see the `addPoolCloseListener` registration in `searchFTSFromLbug`.
  */
 const ensuredPoolFTS = new Set<string>();
+
+/**
+ * Drop all ensured-FTS cache entries for a given repoId.
+ *
+ * Called from the pool-close listener so that a pool teardown / recreation
+ * forces the next `searchFTSFromLbug` call to re-issue `CREATE_FTS_INDEX`
+ * against the fresh connection rather than trust stale ensure-state from a
+ * previous pool lifetime.
+ *
+ * Exported for tests; the listener wiring is internal.
+ */
+export function invalidateEnsuredFTSForRepo(repoId: string): void {
+  const prefix = `${repoId}:`;
+  for (const key of ensuredPoolFTS) {
+    if (key.startsWith(prefix)) ensuredPoolFTS.delete(key);
+  }
+}
+
+/**
+ * Tracks whether we've already wired the pool-close listener for this
+ * process. The pool adapter is dynamically imported, so registration
+ * happens lazily on the first MCP-pool-backed FTS query.
+ */
+let poolCloseListenerRegistered = false;
+function registerPoolCloseListenerOnce(
+  addPoolCloseListener: (listener: (repoId: string) => void) => void,
+): void {
+  if (poolCloseListenerRegistered) return;
+  poolCloseListenerRegistered = true;
+  addPoolCloseListener((repoId) => invalidateEnsuredFTSForRepo(repoId));
+}
 
 async function ensureFTSIndexViaExecutor(
   executor: (cypher: string) => Promise<any[]>,
@@ -58,16 +97,25 @@ async function ensureFTSIndexViaExecutor(
     await executor(
       `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'porter')`,
     );
+    // Index was created successfully — safe to cache.
+    ensuredPoolFTS.add(key);
   } catch (e: any) {
     // 'already exists' is the happy path (index persists on disk between
-    // process invocations) — anything else we swallow because FTS is
-    // best-effort: queryFTS itself returns [] on missing-index errors.
+    // process invocations) — cache it. Anything else is treated as a
+    // transient failure: surface a one-time warning and leave the key
+    // unset so the NEXT query retries rather than silently using a
+    // cached failure (which previously disabled BM25 for the whole
+    // process for that repo).
     const msg = String(e?.message ?? '');
-    if (!msg.includes('already exists')) {
-      // Best-effort — continue without index, queryFTS will fall back to [].
+    if (msg.includes('already exists')) {
+      ensuredPoolFTS.add(key);
+    } else {
+      console.warn(
+        `[gitnexus] FTS index ensure failed for repo "${repoId}" table "${table}" ` +
+          `(index "${indexName}"): ${msg || e}. Will retry on next query.`,
+      );
     }
   }
-  ensuredPoolFTS.add(key);
 }
 
 /**
@@ -131,7 +179,13 @@ export const searchFTSFromLbug = async (
     // Use MCP connection pool via dynamic import
     // IMPORTANT: FTS queries run sequentially to avoid connection contention.
     // The MCP pool supports multiple connections, but FTS is best run serially.
-    const { executeQuery } = await import('../lbug/pool-adapter.js');
+    const poolMod = await import('../lbug/pool-adapter.js');
+    const { executeQuery, addPoolCloseListener } = poolMod;
+    // Register the pool-close listener lazily on first use so a teardown of
+    // the pool entry (LRU eviction, idle timeout, explicit close) drops the
+    // matching `ensuredPoolFTS` entries. Without this, stale ensure-state
+    // can outlive the pool that produced it.
+    registerPoolCloseListenerOnce(addPoolCloseListener);
     const executor = (cypher: string) => executeQuery(repoId, cypher);
 
     // Lazy-create FTS indexes on first query for this repo (analyze no longer
