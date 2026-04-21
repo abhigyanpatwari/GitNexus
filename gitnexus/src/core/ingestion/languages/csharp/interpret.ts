@@ -73,9 +73,11 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // receiver-typed resolution treats these identically.
   const rawType = stripQualifier(stripGeneric(stripNullable(typeCap.text.trim())));
 
-  // Anchor captures distinguish the source of the binding.
+  // Anchor captures distinguish the source of the binding. Order
+  // matters: more-specific anchors take precedence.
   let source: TypeRef['source'] = 'parameter-annotation';
-  if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
+  if (captures['@type-binding.self'] !== undefined) source = 'self';
+  else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.alias'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';

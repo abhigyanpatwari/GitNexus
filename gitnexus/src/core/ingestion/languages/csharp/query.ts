@@ -207,9 +207,23 @@ const CSHARP_SCOPE_QUERY = `
   function: (identifier) @reference.name) @reference.call.free
 
 ;; References — member calls: \`obj.Method()\`
+;; \`(_)\` matches only named nodes in tree-sitter queries. \`this\` and
+;; \`base\` are anonymous tokens in tree-sitter-c-sharp (unlike Python's
+;; \`self\` which is a regular identifier), so they need explicit
+;; patterns to emit a receiver capture.
 (invocation_expression
   function: (member_access_expression
     expression: (_) @reference.receiver
+    name: (identifier) @reference.name)) @reference.call.member
+
+(invocation_expression
+  function: (member_access_expression
+    expression: "this" @reference.receiver
+    name: (identifier) @reference.name)) @reference.call.member
+
+(invocation_expression
+  function: (member_access_expression
+    expression: "base" @reference.receiver
     name: (identifier) @reference.name)) @reference.call.member
 
 ;; References — null-conditional member calls: \`obj?.Method()\`
@@ -242,6 +256,16 @@ const CSHARP_SCOPE_QUERY = `
 (assignment_expression
   left: (member_access_expression
     expression: (_) @reference.receiver
+    name: (identifier) @reference.name)) @reference.write.member
+
+(assignment_expression
+  left: (member_access_expression
+    expression: "this" @reference.receiver
+    name: (identifier) @reference.name)) @reference.write.member
+
+(assignment_expression
+  left: (member_access_expression
+    expression: "base" @reference.receiver
     name: (identifier) @reference.name)) @reference.write.member
 `;
 

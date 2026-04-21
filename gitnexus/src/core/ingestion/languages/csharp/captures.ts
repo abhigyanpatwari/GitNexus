@@ -20,6 +20,7 @@ import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
+import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 
@@ -87,6 +88,24 @@ export function emitCsharpScopeCaptures(
       // Defensive fallback: emit the raw match so the extractor at
       // least sees an anchor, even without markers.
       out.push(grouped);
+      continue;
+    }
+
+    // Synthesize `this` / `base` receiver type-bindings on every
+    // instance method-like. Tree-sitter can't cleanly express "the
+    // implicit receiver of a non-static member of a class/struct/
+    // record/interface" via a static `.scm` pattern, so we walk up
+    // the AST in code. Mirrors Python's `self`/`cls` synthesis on
+    // `@scope.function` matches.
+    if (grouped['@scope.function'] !== undefined) {
+      out.push(grouped);
+      const anchor = grouped['@scope.function']!;
+      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      if (fnNode !== null) {
+        for (const synth of synthesizeCsharpReceiverBinding(fnNode)) {
+          out.push(synth);
+        }
+      }
       continue;
     }
 

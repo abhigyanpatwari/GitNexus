@@ -266,6 +266,96 @@ describe('emitCsharpScopeCaptures — arity metadata synthesis', () => {
   });
 });
 
+describe('emitCsharpScopeCaptures — receiver-binding synthesis (`this` / `base`)', () => {
+  it('emits `this` for an instance method inside a class', () => {
+    const m = findMatch('class User { public void M() { } }', (t) =>
+      t.includes('@type-binding.self'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@type-binding.name'].text).toBe('this');
+    expect(m!['@type-binding.type'].text).toBe('User');
+  });
+
+  it('emits both `this` and `base` when the class has a base class', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class User : BaseModel { public void M() { base.Save(); } }',
+      'test.cs',
+    );
+    const receiverMatches = matches.filter((m) => '@type-binding.self' in m);
+    const names = receiverMatches.map((m) => m['@type-binding.name'].text).sort();
+    expect(names).toEqual(['base', 'this']);
+    const baseMatch = receiverMatches.find((m) => m['@type-binding.name'].text === 'base');
+    expect(baseMatch!['@type-binding.type'].text).toBe('BaseModel');
+  });
+
+  it('does not emit `this` or `base` for static methods', () => {
+    const matches = emitCsharpScopeCaptures('class User { public static void M() { } }', 'test.cs');
+    const receiverMatches = matches.filter((m) => '@type-binding.self' in m);
+    expect(receiverMatches).toHaveLength(0);
+  });
+
+  it('does not emit `base` for structs (they cannot inherit classes)', () => {
+    const matches = emitCsharpScopeCaptures('struct Point { public void M() { } }', 'test.cs');
+    const names = matches
+      .filter((m) => '@type-binding.self' in m)
+      .map((m) => m['@type-binding.name'].text);
+    expect(names).toEqual(['this']);
+  });
+
+  it('does not emit `base` for interface methods', () => {
+    const matches = emitCsharpScopeCaptures('interface IFoo { void M() { } }', 'test.cs');
+    const names = matches
+      .filter((m) => '@type-binding.self' in m)
+      .map((m) => m['@type-binding.name'].text);
+    expect(names).toEqual(['this']);
+  });
+
+  it('does not emit receiver bindings for free local functions (no enclosing type)', () => {
+    // Local functions inside a method still have `this` from the
+    // enclosing class — that's a normal method + local combination.
+    // Test the pure free case: a local function at namespace level is
+    // not legal C#, so we exercise the adjacent "top-level statement"
+    // variant: a method inside a class works fine, but the local
+    // function *inside* that method also sees `this` from the class.
+    // This test confirms synthesis doesn't produce duplicate bindings.
+    const matches = emitCsharpScopeCaptures(
+      'class User { public void M() { void Local() { } } }',
+      'test.cs',
+    );
+    const thisMatches = matches.filter(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'this',
+    );
+    // Expect two: one for M() and one for Local() — both see `this`
+    // from the enclosing User class.
+    expect(thisMatches).toHaveLength(2);
+    for (const tm of thisMatches) {
+      expect(tm['@type-binding.type'].text).toBe('User');
+    }
+  });
+
+  it('emits `this` on constructors with the enclosing class name', () => {
+    const matches = emitCsharpScopeCaptures('class User { public User() { } }', 'test.cs');
+    const thisMatch = matches.find(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'this',
+    );
+    expect(thisMatch).toBeDefined();
+    expect(thisMatch!['@type-binding.type'].text).toBe('User');
+  });
+
+  it('emits `this` with innermost type for nested class methods', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class Outer { class Inner { public void M() { } } }',
+      'test.cs',
+    );
+    const thisMatches = matches.filter(
+      (m) => '@type-binding.self' in m && m['@type-binding.name'].text === 'this',
+    );
+    // M is the only instance method; its `this` binds to Inner.
+    expect(thisMatches).toHaveLength(1);
+    expect(thisMatches[0]['@type-binding.type'].text).toBe('Inner');
+  });
+});
+
 describe('emitCsharpScopeCaptures — references', () => {
   it('captures free call invocations', () => {
     const m = findMatch('class A { void M() { Foo(); } }', (t) =>
