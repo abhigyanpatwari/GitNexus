@@ -326,4 +326,98 @@ describe('createKnowledgeGraph', () => {
       expect(g.relationshipCount).toBe(1);
     });
   });
+
+  // ─── Reverse-adjacency + file indexes ─────────────────────────────
+  // Pin the behavior of the nodeIdsByFile + edgeIdsByNode indexes
+  // that back removeNode / removeNodesByFile. These replace the prior
+  // O(N) full-map scans with O(edges-touching-node) and
+  // O(file-nodes × avg-edges-per-node) respectively.
+
+  describe('removeNode reverse-adjacency', () => {
+    it('removes only edges touching the removed node', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/a.ts'));
+      g.addNode(makeNode('fn:c', 'c', 'src/c.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+      g.addRelationship(makeRel('fn:b', 'fn:c'));
+      g.addRelationship(makeRel('fn:a', 'fn:c'));
+
+      g.removeNode('fn:b');
+
+      // Two edges touched fn:b (a→b and b→c); only a→c survives.
+      expect(g.relationshipCount).toBe(1);
+      const survivors = [...g.iterRelationships()];
+      expect(survivors[0].sourceId).toBe('fn:a');
+      expect(survivors[0].targetId).toBe('fn:c');
+    });
+
+    it('handles self-edges without double-counting or crashing', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:a'));
+      expect(g.relationshipCount).toBe(1);
+
+      g.removeNode('fn:a');
+      expect(g.relationshipCount).toBe(0);
+      expect(g.nodeCount).toBe(0);
+    });
+
+    it('removes orphan node with no edges cleanly', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      expect(g.removeNode('fn:a')).toBe(true);
+      expect(g.nodeCount).toBe(0);
+    });
+  });
+
+  describe('removeNodesByFile via file index', () => {
+    it('removes only nodes matching the file path', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/a.ts'));
+      g.addNode(makeNode('fn:c', 'c', 'src/other.ts'));
+
+      const removed = g.removeNodesByFile('src/a.ts');
+      expect(removed).toBe(2);
+      expect(g.nodeCount).toBe(1);
+      expect(g.getNode('fn:c')).toBeDefined();
+    });
+
+    it('returns 0 when no node matches the file path', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      expect(g.removeNodesByFile('src/missing.ts')).toBe(0);
+      expect(g.nodeCount).toBe(1);
+    });
+
+    it('also removes edges whose endpoints lived on the removed file', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/b.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+      expect(g.relationshipCount).toBe(1);
+
+      g.removeNodesByFile('src/a.ts');
+      // Removing fn:a also removed the a→b edge; fn:b survives.
+      expect(g.nodeCount).toBe(1);
+      expect(g.relationshipCount).toBe(0);
+    });
+
+    it('does not index nodes without a filePath property', () => {
+      const g = createKnowledgeGraph();
+      // Cluster/Community nodes and similar have no filePath.
+      const node: Parameters<typeof g.addNode>[0] = {
+        id: 'cluster:x',
+        label: 'Community',
+        properties: { name: 'x' },
+      };
+      g.addNode(node);
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+
+      expect(g.removeNodesByFile('src/a.ts')).toBe(1);
+      expect(g.nodeCount).toBe(1);
+      expect(g.getNode('cluster:x')).toBeDefined();
+    });
+  });
 });
