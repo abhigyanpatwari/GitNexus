@@ -130,6 +130,50 @@ export function populateCsharpNamespaceSiblings(
   // for module-scope typeBindings).
   const finalized = indexes.bindings as Map<ScopeId, Map<string, BindingRef[]>>;
 
+  // Cross-namespace type-binding propagation: for each file, mirror
+  // method return-type bindings from same-namespace sibling files and
+  // from files in namespaces the importer `using`s, into the
+  // importer's Module scope typeBindings. This enables
+  // chain-follow from `var u = svc.GetUser()` → `GetUser → User`
+  // even across files — without it the chain stalls at `GetUser`
+  // because the return binding lives in the defining file's Module
+  // scope, which isn't an ancestor of the importer's scope chain.
+  for (const parsed of parsedFiles) {
+    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    if (moduleScope === undefined) continue;
+    const moduleTypeBindings = moduleScope.typeBindings as Map<
+      string,
+      import('gitnexus-shared').TypeRef
+    >;
+
+    // Accessible namespaces = this file's own namespaces + every
+    // `using namespace X;` target.
+    const accessibleNamespaces = new Set<string>();
+    const fileContent = inputs.fileContents.get(parsed.filePath) ?? '';
+    NAMESPACE_RE.lastIndex = 0;
+    let nm: RegExpExecArray | null;
+    while ((nm = NAMESPACE_RE.exec(fileContent)) !== null) accessibleNamespaces.add(nm[1]!);
+    if (accessibleNamespaces.size === 0) accessibleNamespaces.add('');
+    for (const imp of parsed.parsedImports) {
+      if (imp.kind === 'namespace' && imp.targetRaw !== null) {
+        accessibleNamespaces.add(imp.targetRaw);
+      }
+    }
+
+    for (const nsName of accessibleNamespaces) {
+      const bucket = buckets.get(nsName);
+      if (bucket === undefined) continue;
+      for (const scopeInfo of bucket.scopes) {
+        if (scopeInfo.filePath === parsed.filePath) continue;
+        if (scopeInfo.scope.kind !== 'Module') continue;
+        for (const [boundName, typeRef] of scopeInfo.scope.typeBindings) {
+          if (moduleTypeBindings.has(boundName)) continue;
+          moduleTypeBindings.set(boundName, typeRef);
+        }
+      }
+    }
+  }
+
   // Cross-namespace imports: for each file's `using X;` directive,
   // if `X` matches a known namespace bucket, inject that bucket's
   // classes into the importer's module scope. This is what makes
