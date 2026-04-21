@@ -287,6 +287,36 @@ export function emitReceiverBoundCalls(
               emitted++;
               handledSites.add(siteKey);
             }
+            continue;
+          }
+        }
+      }
+
+      // ── Case 5: class-as-receiver (static call / type member) ────
+      // `Animal.Classify()` — receiver name resolves to a Class
+      // binding, not a typeBinding. Look up the member on the class's
+      // MRO chain. Python syntactically collapses this with free
+      // calls; C# (and other statically-typed languages) distinguish
+      // via the member_access_expression shape.
+      if (typeRef === undefined) {
+        const classDef = findClassBindingInScope(site.inScope, receiverName, scopes);
+        if (classDef !== undefined) {
+          const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
+          let memberDef: SymbolDefinition | undefined;
+          for (const ownerId of chain) {
+            memberDef = findOwnedMember(ownerId, memberName, index);
+            if (memberDef !== undefined) break;
+          }
+          if (memberDef !== undefined) {
+            const reason =
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : 'scope-resolution: class-receiver';
+            const ok = tryEmitEdge(graph, scopes, nodeLookup, site, memberDef, reason, seen);
+            if (ok) {
+              emitted++;
+              handledSites.add(siteKey);
+            }
           }
         }
       }

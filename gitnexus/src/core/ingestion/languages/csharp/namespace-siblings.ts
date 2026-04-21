@@ -73,7 +73,10 @@ export function populateCsharpNamespaceSiblings(
     NAMESPACE_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = NAMESPACE_RE.exec(content)) !== null) names.push(m[1]!);
-    if (names.length === 0) continue;
+    // Files with no `namespace X;` declaration still share visibility
+    // — they all live in the default (global) namespace. Use the
+    // empty-string bucket key for this case.
+    if (names.length === 0) names.push('');
 
     const namespaceScopes = parsed.scopes.filter((s) => s.kind === 'Namespace');
     // With file-scoped namespaces (`namespace X;`), the Namespace
