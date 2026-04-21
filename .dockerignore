@@ -14,6 +14,8 @@ coverage
 .env.local
 .env.*.local
 
+**/*.tsbuildinfo
+
 .gitnexus
 gitnexus-web/playwright-report
 gitnexus-web/test-results

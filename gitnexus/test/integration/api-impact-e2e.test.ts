@@ -17,6 +17,7 @@ import { API_IMPACT_SEED_DATA, API_IMPACT_FTS_INDEXES } from '../fixtures/api-im
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+  findSiblingClones: vi.fn().mockResolvedValue([]),
 }));
 
 withTestLbugDB(

@@ -22,6 +22,66 @@ export const getCurrentCommit = (repoPath: string): string => {
 };
 
 /**
+ * Get a stable canonical identifier for the repo's `origin` remote, if any.
+ *
+ * Used to fingerprint two on-disk clones as the same logical repository
+ * (issue #XXX — silent graph drift across sibling clones). `path` alone
+ * is unreliable: worktrees, "clean clone for indexing" hygiene, and
+ * multi-agent workspaces routinely have the same repo at multiple
+ * absolute paths. The remote URL is the only on-disk signal that
+ * survives those conventions.
+ *
+ * Normalisation strategy:
+ *   - Strip a trailing `.git` so `https://x/y` and `https://x/y.git` collapse.
+ *   - Strip a trailing `/` for the same reason.
+ *   - `git@github.com:foo/bar` and `https://github.com/foo/bar` are
+ *     intentionally NOT collapsed — they are different remotes from
+ *     git's perspective and we don't want to assert equivalence.
+ *   - Lower-case the host portion so `GitHub.com` and `github.com`
+ *     don't desync; preserves case in path because some hosts
+ *     (Bitbucket Server) treat repo paths case-sensitively.
+ *
+ * Returns `undefined` when there is no origin remote, the directory
+ * isn't a git repo, or git itself isn't available.
+ */
+export const getRemoteUrl = (repoPath: string): string | undefined => {
+  let raw: string;
+  try {
+    raw = execSync('git config --get remote.origin.url', {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return undefined;
+  }
+  if (!raw) return undefined;
+
+  let normalised = raw.replace(/\/$/, '').replace(/\.git$/, '');
+
+  // Lower-case the host segment of `scheme://[user@]host[:port]/...`
+  // and the host segment of `git@host:owner/repo` SCP form.
+  // SSH user-segment regex deliberately accepts the common
+  // `git@`/`<alnum>-_@` cases. Less common usernames (e.g. with
+  // dots) fall through to the URL-form branch — they will simply
+  // not get host-case normalisation, which is acceptable: the raw
+  // `git config` output is still a valid fingerprint, just slightly
+  // less collapsible across host casings.
+  const sshMatch = normalised.match(/^(git@|[a-zA-Z0-9_-]+@)([^:/]+)(:.+)$/);
+  if (sshMatch) {
+    normalised = `${sshMatch[1]}${sshMatch[2].toLowerCase()}${sshMatch[3]}`;
+  } else {
+    const urlMatch = normalised.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/]+)(\/.*)?$/);
+    if (urlMatch) {
+      normalised = `${urlMatch[1]}${urlMatch[2].toLowerCase()}${urlMatch[3] ?? ''}`;
+    }
+  }
+
+  return normalised;
+};
+
+/**
  * Find the git repository root from any path inside the repo
  */
 export const getGitRoot = (fromPath: string): string | null => {

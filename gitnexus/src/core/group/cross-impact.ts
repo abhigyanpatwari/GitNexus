@@ -15,7 +15,7 @@ import type {
   OutOfScopeLink,
 } from './types.js';
 import type { GroupRepoHandle, GroupToolPort } from './service.js';
-import { loadGroupConfig } from './config-parser.js';
+import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
@@ -329,6 +329,8 @@ export async function runGroupImpact(
   try {
     config = await loadGroupConfig(groupDir);
   } catch (e) {
+    if (e instanceof GroupNotFoundError)
+      return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
@@ -344,9 +346,6 @@ export async function runGroupImpact(
     minConfidence,
   };
 
-  // Single shared deadline for Phase 1 (local walk) + Phase 2 (bridge fan-out).
-  // Phase 1 still gets the full budget; Phase 2 only uses whatever wall-clock
-  // time is left, so total work cannot exceed `timeoutMs`.
   const deadline = Date.now() + Math.max(0, timeoutMs);
 
   const { value: local, timedOut: localTimedOut } = await safeLocalImpact(
@@ -357,7 +356,7 @@ export async function runGroupImpact(
   );
 
   if (localTimedOut) {
-    const base = local as Record<string, unknown>;
+    const _base = local as Record<string, unknown>;
     return {
       local,
       group: name,
@@ -464,7 +463,6 @@ export async function runGroupImpact(
         continue;
       }
       if (!repoInSubgroup(n.neighborRepo, subgroup)) {
-        // CrossLink convention: consumer -> provider
         outOfScope.push({
           from: direction === 'upstream' ? n.neighborRepo : repoPath,
           to: direction === 'upstream' ? repoPath : n.neighborRepo,

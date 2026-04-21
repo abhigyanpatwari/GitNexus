@@ -55,6 +55,14 @@ export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  /**
+   * Canonical `origin` remote URL captured at index time. Used to
+   * fingerprint the same logical repo across multiple on-disk clones
+   * (worktrees, agent workspaces, "clean clone for indexing"). When
+   * absent (no remote configured, git unavailable, etc.) the repo is
+   * treated as path-only and sibling-clone detection is skipped.
+   */
+  remoteUrl?: string;
   stats?: {
     files?: number;
     nodes?: number;
@@ -82,6 +90,8 @@ export interface RegistryEntry {
   storagePath: string;
   indexedAt: string;
   lastCommit: string;
+  /** See {@link RepoMeta.remoteUrl}. Mirrored from meta at register time. */
+  remoteUrl?: string;
   stats?: RepoMeta['stats'];
 }
 
@@ -469,6 +479,7 @@ export const registerRepo = async (
     storagePath,
     indexedAt: meta.indexedAt,
     lastCommit: meta.lastCommit,
+    remoteUrl: meta.remoteUrl,
     stats: meta.stats,
   };
 
@@ -764,3 +775,69 @@ export const saveCLIConfig = async (config: CLIConfig): Promise<void> => {
     }
   }
 };
+
+// ─── Sibling-clone detection ─────────────────────────────────────────────
+//
+// A "sibling clone" is a different on-disk path that points at the same
+// logical repository (same `origin` remote URL) as a registered index.
+// This shows up in three operationally important shapes (see issue):
+//
+//   1. The same repo is checked out under multiple paths (worktrees,
+//      multi-agent workspaces). Only one is indexed; the others silently
+//      diverge from the graph.
+//   2. The indexed clone is itself behind its own HEAD (the existing
+//      `checkStaleness` already handles this case).
+//   3. A query is issued from a `cwd` that lives inside a sibling clone
+//      whose HEAD has drifted from the indexed `lastCommit`.
+//
+// Detection is intentionally remote-URL-based and does NOT walk the
+// filesystem hunting for unregistered clones — only registered entries
+// are considered. The `cwd`-driven branch ({@link checkSiblingDrift})
+// also accepts an unregistered cwd, because the live caller's working
+// directory is the one place we can cheaply learn about an
+// unregistered clone.
+
+/**
+ * Find other registered entries whose `remoteUrl` matches the given
+ * one, excluding `selfPath` (case-insensitive on Windows). Entries
+ * without a `remoteUrl` are ignored — we cannot prove sibling-ness
+ * without a fingerprint.
+ */
+export const findSiblingClones = async (
+  remoteUrl: string | undefined,
+  selfPath: string,
+): Promise<RegistryEntry[]> => {
+  if (!remoteUrl) return [];
+  const entries = await readRegistry();
+  const isWin = process.platform === 'win32';
+  const norm = (p: string) => (isWin ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const self = norm(selfPath);
+  return entries.filter((e) => e.remoteUrl === remoteUrl && norm(e.path) !== self);
+};
+
+/**
+ * Description of how a working directory relates to a registered index.
+ *
+ * `match` semantics:
+ *   - `path`              — `cwd` is inside the registered entry's path.
+ *   - `sibling-by-remote` — `cwd` is in a different on-disk clone of the
+ *                           same repo (same `remoteUrl`).
+ *   - `none`              — no relationship found.
+ */
+export interface CwdMatch {
+  match: 'path' | 'sibling-by-remote' | 'none';
+  entry?: RegistryEntry;
+  /** The git toplevel of `cwd`, when `cwd` is inside a git work tree. */
+  cwdGitRoot?: string;
+  /** HEAD of the cwd's clone, when resolvable. */
+  cwdHead?: string;
+  /**
+   * Number of commits the registered `lastCommit` is behind the
+   * sibling-clone HEAD, when both refs are known to the cwd's clone.
+   * `undefined` when the comparison cannot be performed (e.g. the
+   * indexed commit isn't reachable from cwd).
+   */
+  drift?: number;
+  /** Human-readable hint, set whenever the situation warrants warning. */
+  hint?: string;
+}
