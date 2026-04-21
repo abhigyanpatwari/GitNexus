@@ -145,6 +145,18 @@ let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
 /**
+ * In-process cache of FTS indexes that have been ensured against the current
+ * connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips inside a
+ * single CLI/MCP session — the first call to `ensureFTSIndex` for a given
+ * `(tableName, indexName)` pays the LadybugDB cost (~440 ms even when the
+ * index already exists on disk), subsequent calls are a Set lookup. Cleared
+ * by `closeLbug` so a re-init starts fresh.
+ *
+ * Key format: `${tableName}:${indexName}`.
+ */
+const ensuredFTSIndexes = new Set<string>();
+
+/**
  * Check if an error indicates a missing column or table (schema-level problem)
  * rather than a transient/connection error. Used for legacy DB fallback logic.
  */
@@ -1037,6 +1049,7 @@ export const closeLbug = async (): Promise<void> => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  ensuredFTSIndexes.clear();
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;
@@ -1217,6 +1230,29 @@ export const createFTSIndex = async (
       throw e;
     }
   }
+};
+
+/**
+ * Lazy-create an FTS index, caching the fact in-process.
+ *
+ * Used by `queryFTS` so that `analyze` doesn't pay the ~440 ms × 5 fixed
+ * LadybugDB cost up-front (it dominates analyze on small repos). Instead,
+ * the cost is moved to the first `query`/`context` call in a session,
+ * where it's amortised across many lookups.
+ *
+ * Safe to call repeatedly — the in-process Set guarantees only the first
+ * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.
+ */
+export const ensureFTSIndex = async (
+  tableName: string,
+  indexName: string,
+  properties: string[],
+  stemmer: string = 'porter',
+): Promise<void> => {
+  const key = `${tableName}:${indexName}`;
+  if (ensuredFTSIndexes.has(key)) return;
+  await createFTSIndex(tableName, indexName, properties, stemmer);
+  ensuredFTSIndexes.add(key);
 };
 
 /**

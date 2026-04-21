@@ -9,7 +9,7 @@
 
   <h2>Join the official Discord to discuss ideas, issues etc!</h2>
 
-  <a href="https://discord.gg/AAsRVT6fGb">
+  <a href="https://discord.gg/MgJrmsqr62">
     <img src="https://img.shields.io/discord/1477255801545429032?color=5865F2&logo=discord&logoColor=white" alt="Discord"/>
   </a>
   <a href="https://www.npmjs.com/package/gitnexus">
@@ -194,6 +194,7 @@ gitnexus analyze --force         # Force full re-index
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos

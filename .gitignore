@@ -105,3 +105,6 @@ local_docs/
 
 undefined/
 _bmad/
+# Local agent scratch / review prompts (never commit)
+.tmp/
+.agents/

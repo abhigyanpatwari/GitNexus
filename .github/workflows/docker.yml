@@ -135,6 +135,9 @@ jobs:
       # the type=semver patterns would not match. In that case we add an explicit
       # type=raw tag using the version already verified above, so the same
       # image-naming rules apply regardless of how the workflow was triggered.
+      # NOTE: We check `inputs.tag` rather than `github.event_name` because in a
+      # reusable workflow the github context is inherited from the caller —
+      # `github.event_name` would still be "push", not "workflow_call".
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
@@ -145,7 +148,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.event_name == 'workflow_call' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ inputs.tag != '' }}
 
       - name: Build and push
         id: build

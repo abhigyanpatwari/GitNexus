@@ -64,16 +64,16 @@ const FUNCTION_LIKE_TYPES = new Set([
  * numbers don't apply.
  */
 export const findFunctionNode = (root: any): any | null => {
-  if (FUNCTION_LIKE_TYPES.has(root.type)) return root;
-
-  for (let i = 0; i < root.namedChildCount; i++) {
-    const child = root.namedChild(i);
-    if (!child) continue;
-    if (FUNCTION_LIKE_TYPES.has(child.type)) return child;
-    const found = findFunctionNode(child);
-    if (found) return found;
+  // Iterative DFS — avoids stack overflow on deeply nested ASTs.
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (FUNCTION_LIKE_TYPES.has(node.type)) return node;
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child) stack.push(child);
+    }
   }
-
   return null;
 };
 
@@ -98,15 +98,15 @@ export const findDeclarationNode = (root: any): any | null => {
     'impl_item', // Rust: impl
   ]);
 
-  if (CLASS_LIKE_TYPES.has(root.type)) return root;
-
-  for (let i = 0; i < root.namedChildCount; i++) {
-    const child = root.namedChild(i);
-    if (!child) continue;
-    if (CLASS_LIKE_TYPES.has(child.type)) return child;
-    const found = findDeclarationNode(child);
-    if (found) return found;
+  // Iterative DFS — avoids stack overflow on deeply nested ASTs.
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (CLASS_LIKE_TYPES.has(node.type)) return node;
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child) stack.push(child);
+    }
   }
-
   return null;
 };

@@ -1,10 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
-import { contentHashForNode } from '../../src/core/embeddings/embedding-pipeline.js';
+import {
+  contentHashForNode,
+  EMBEDDING_TEXT_VERSION,
+} from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
 import { DEFAULT_EMBEDDING_CONFIG, EMBEDDABLE_LABELS } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
+
+const CLASS_CHUNK_SIZE = 90;
+const CLASS_OVERLAP = 10;
 
 // ────────────────────────────────────────────────────────────────────────────
 // contentHashForNode
@@ -32,6 +38,8 @@ describe('contentHashForNode', () => {
   it('matches sha1(generateEmbeddingText(node, node.content))', () => {
     const node = makeNode();
     const expected = createHash('sha1')
+      .update(EMBEDDING_TEXT_VERSION)
+      .update('\n')
       .update(generateEmbeddingText(node, node.content))
       .digest('hex');
     expect(contentHashForNode(node)).toBe(expected);
@@ -55,6 +63,10 @@ describe('contentHashForNode', () => {
     const hashWithEmptyConfig = contentHashForNode(node, {});
     const hashWithFullDefaults = contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG);
     expect(hashWithEmptyConfig).toBe(hashWithFullDefaults);
+  });
+
+  it('exports a text template version marker', () => {
+    expect(EMBEDDING_TEXT_VERSION).toBe('v2');
   });
 });
 
@@ -437,6 +449,118 @@ describe('runEmbeddingPipeline incremental filter', () => {
     // The CREATE_VECTOR_INDEX query should have been called via executeQuery
     const vectorIndexCalls = queryCalls.filter((c) => c.includes('CREATE_VECTOR_INDEX'));
     expect(vectorIndexCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not inject preceding context when overlap is disabled', async () => {
+    const embedBatchSpy = vi
+      .fn()
+      .mockImplementation((texts: string[]) =>
+        Promise.resolve(texts.map(() => new Float32Array(384))),
+      );
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: embedBatchSpy,
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const node = makeNode({
+      label: 'Class',
+      name: 'Parser',
+      content: `class Parser {
+  options: ParserOptions;
+  cache: Map<string, any>;
+  parseJSON() { return JSON.parse("{}"); }
+  validate() { return true; }
+}`,
+      startLine: 1,
+      endLine: 6,
+    });
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      { chunkSize: 90, overlap: 0 },
+      undefined,
+      undefined,
+      new Map(),
+    );
+
+    const embeddedTexts = embedBatchSpy.mock.calls.flatMap((call) => call[0] as string[]);
+    const laterChunks = embeddedTexts.slice(1);
+    expect(laterChunks.length).toBeGreaterThan(0);
+    for (const text of laterChunks) {
+      expect(text).not.toContain('[preceding context]:');
+    }
+  });
+
+  it('truncates preceding context to the configured overlap size', async () => {
+    const embedBatchSpy = vi
+      .fn()
+      .mockImplementation((texts: string[]) =>
+        Promise.resolve(texts.map(() => new Float32Array(384))),
+      );
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: embedBatchSpy,
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const node = makeNode({
+      label: 'Class',
+      name: 'Parser',
+      content: `class Parser {
+  options: ParserOptions;
+  cache: Map<string, any>;
+  parseJSON() { return JSON.parse("{}"); }
+  validate() { return true; }
+}`,
+      startLine: 1,
+      endLine: 6,
+    });
+
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      { chunkSize: CLASS_CHUNK_SIZE, overlap: CLASS_OVERLAP },
+      undefined,
+      undefined,
+      new Map(),
+    );
+
+    const embeddedTexts = embedBatchSpy.mock.calls.flatMap((call) => call[0] as string[]);
+    const laterChunk = embeddedTexts.find((text) => text.includes('[preceding context]:'));
+    expect(laterChunk).toBeDefined();
+    expect(laterChunk).toContain('[preceding context]: ...');
+    const precedingContextLine = laterChunk
+      ?.split('\n')
+      .find((line) => line.startsWith('[preceding context]: ...'));
+    expect(precedingContextLine).toBeDefined();
+    expect(precedingContextLine).toContain('ring, any>');
+    expect(precedingContextLine).not.toContain('parseJSON() {');
   });
 
   it('throws when DELETE for stale nodes fails with non-trivial error', async () => {

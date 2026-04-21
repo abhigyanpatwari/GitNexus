@@ -18,11 +18,18 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
   resolveLanguageKey: vi.fn((language: string) => language),
 }));
 
-vi.mock('gitnexus-shared', () => ({
+const { getLanguageFromFilename } = vi.hoisted(() => ({
   getLanguageFromFilename: vi.fn().mockReturnValue('typescript'),
 }));
 
+vi.mock('gitnexus-shared', () => ({
+  getLanguageFromFilename,
+}));
+
 import { chunkNode } from '../../src/core/embeddings/chunker.js';
+
+const CLASS_PREV_TAIL_SAMPLE = 30;
+const STRUCT_PREV_TAIL_SAMPLE = 20;
 
 type FakeNode = {
   type: string;
@@ -183,10 +190,18 @@ describe('embedding-chunking integration', () => {
     const chunks = await chunkNode(node.label, node.content, node.filePath, 20, 25, 90, 0);
     expect(chunks).toHaveLength(2);
 
-    const secondText = generateEmbeddingText(node, chunks[1].text);
+    const secondText = generateEmbeddingText(
+      node,
+      chunks[1].text,
+      {},
+      chunks[1].chunkIndex,
+      chunks[0].text.slice(-CLASS_PREV_TAIL_SAMPLE),
+    );
     expect(secondText).toContain('Class: Parser');
-    expect(secondText).toContain('Methods: parseJSON, validate');
-    expect(secondText).toContain('Properties: options, cache');
+    expect(secondText).toContain('Container: class Parser {');
+    expect(secondText).toContain('[preceding context]: ...');
+    expect(secondText).not.toContain('Methods: parseJSON, validate');
+    expect(secondText).not.toContain('Properties: options, cache');
     expect(secondText).toContain('parseJSON(text: string)');
   });
 
@@ -220,7 +235,51 @@ describe('embedding-chunking integration', () => {
     const text = generateEmbeddingText(node, chunks[0].text);
     expect(text).toContain('Interface: Handler');
     expect(text).toContain('Methods: handle, validate');
+    expect(text).toContain('Container: interface Handler {');
     expect(text).toContain('readonly name: string;');
+  });
+
+  it('struct chunks retain structural container context', async () => {
+    getLanguageFromFilename.mockReturnValue('rust');
+    const node = makeNode({
+      label: 'Struct',
+      name: 'User',
+      fieldNames: ['name', 'email', 'age', 'address'],
+      content: `struct User {
+  name: String,
+  email: String,
+  age: u32,
+  address: String,
+}`,
+      startLine: 40,
+      endLine: 45,
+      filePath: 'src/user.rs',
+    });
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue(
+        makeDeclarationTree('struct_item', 'declaration_list', node.content, [
+          { text: 'name: String,', type: 'field_definition' },
+          { text: 'email: String,', type: 'field_definition' },
+          { text: 'age: u32,', type: 'field_definition' },
+          { text: 'address: String,', type: 'field_definition' },
+        ]),
+      ),
+    });
+
+    const chunks = await chunkNode(node.label, node.content, node.filePath, 40, 45, 45, 0);
+    expect(chunks).toHaveLength(2);
+
+    const secondText = generateEmbeddingText(
+      node,
+      chunks[1].text,
+      {},
+      chunks[1].chunkIndex,
+      chunks[0].text.slice(-STRUCT_PREV_TAIL_SAMPLE),
+    );
+    expect(secondText).toContain('Struct: User');
+    expect(secondText).toContain('Container: struct User {');
+    expect(secondText).not.toContain('Properties: name, email, age, address');
+    expect(secondText).toContain('age: u32,');
   });
 
   it('metadata is present in every chunk', () => {

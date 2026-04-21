@@ -42,10 +42,14 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `tool_map` | MCP/RPC tool definitions and handlers |
 | `shape_check` | Response shape vs consumer property access mismatches |
 | `group_list` | List repo groups or details for one group |
-| `group_query` | Cross-repo search in a group (reciprocal rank fusion) |
-| `group_sync` | Rebuild group Contract Registry (`contracts.json`) |
-| `group_contracts` | Inspect group contracts and cross-links |
-| `group_status` | Index and Contract Registry staleness per repo in a group |
+| `group_sync` | Rebuild group Contract Registry (`contracts.json`) and bridge graph |
+
+`query`, `context`, and `impact` are group-aware: pass `repo: "@<groupName>"` (or `"@<groupName>/<memberPath>"` to scope to one member) plus optional `service: "<monorepo/path>"`. Group-mode `query` merges per-repo results via Reciprocal Rank Fusion; group-mode `impact` runs the local walk in the chosen member and fans out across boundaries via the Contract Bridge (`gitnexus/src/core/group/cross-impact.ts`). The previously-planned `group_query`, `group_context`, `group_impact`, `group_contracts`, `group_status` MCP tools are intentionally not introduced — group-level state is exposed via resources instead:
+
+| Resource URI | Purpose |
+|--------------|---------|
+| `gitnexus://group/{name}/contracts` | Contract Registry (provider/consumer rows + cross-links) |
+| `gitnexus://group/{name}/status` | Per-member index + Contract Registry staleness |
 
 ## Where to change what
 
@@ -55,6 +59,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | Parsing/graph construction | `src/core/ingestion/pipeline-phases/` + `pipeline.ts` |
 | Graph schema/DB | `src/core/lbug/` (`schema.ts`, `lbug-adapter.ts`) |
 | MCP tools/resources | `src/mcp/server.ts`, `tools.ts`, `resources.ts` |
+| Cross-repo groups (sync, contracts, `@<group>` routing) | `src/core/group/` (`service.ts`, `cross-impact.ts`, `sync.ts`, `bridge-db.ts`) |
 | Search ranking | `src/core/search/` (BM25, hybrid fusion) |
 | Embeddings | `src/core/embeddings/` + `src/core/run-analyze.ts` |
 | Wiki generation | `src/core/wiki/` |
