@@ -195,6 +195,77 @@ const CSHARP_SCOPE_QUERY = `
       (invocation_expression
         function: (identifier) @type-binding.type)))) @type-binding.alias
 
+;; Type bindings — identifier-to-identifier alias: \`var alias = u;\`.
+;; The resolver's chain-follow walks from \`alias\` → \`u\` → u's
+;; declared type, so we only need to tag the rename here.
+(local_declaration_statement
+  (variable_declaration
+    type: (implicit_type)
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (identifier) @type-binding.type))) @type-binding.alias
+
+;; Type bindings — chained method-call alias: \`var u = svc.GetUser();\`.
+;; The chain-follow then walks GetUser's return-type binding.
+(local_declaration_statement
+  (variable_declaration
+    type: (implicit_type)
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (invocation_expression
+        function: (member_access_expression
+          name: (identifier) @type-binding.type))))) @type-binding.alias
+
+;; Type bindings — \`await\` propagation: \`var u = await Factory();\`.
+;; Strip the await wrapper to get the underlying invocation; interpret
+;; layer's stripGeneric handles Task<T> / ValueTask<T>.
+(local_declaration_statement
+  (variable_declaration
+    type: (implicit_type)
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (await_expression
+        (invocation_expression
+          function: (identifier) @type-binding.type))))) @type-binding.alias
+
+(local_declaration_statement
+  (variable_declaration
+    type: (implicit_type)
+    (variable_declarator
+      name: (identifier) @type-binding.name
+      (await_expression
+        (invocation_expression
+          function: (member_access_expression
+            name: (identifier) @type-binding.type)))))) @type-binding.alias
+
+;; Type bindings — identifier-to-identifier assignment rebind:
+;; \`alias = u;\` — aliases the rhs identifier's current type.
+(assignment_expression
+  left: (identifier) @type-binding.name
+  right: (identifier) @type-binding.type) @type-binding.alias
+
+;; Type bindings — method return type: \`public User GetUser() { ... }\`.
+;; Anchor on the method_declaration so bindingScopeFor can hoist the
+;; binding from function scope to the enclosing class/module scope
+;; (callers, not the function body, look up the return type by the
+;; function's name). Required for cross-file return-type propagation
+;; via propagateImportedReturnTypes.
+(method_declaration
+  returns: (identifier) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.return
+
+(method_declaration
+  returns: (generic_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.return
+
+(method_declaration
+  returns: (qualified_name) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.return
+
+(method_declaration
+  returns: (nullable_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.return
+
 ;; Type bindings — field declaration: \`private City _city;\`. Attaches
 ;; to the enclosing class scope via positionIndex, so \`this._city.X\`
 ;; can look up _city's type on the class.
