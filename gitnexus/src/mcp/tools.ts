@@ -15,9 +15,12 @@ export interface ToolDefinition {
       {
         type: string;
         description?: string;
-        default?: any;
+        default?: unknown;
         items?: { type: string };
         enum?: string[];
+        minimum?: number;
+        maximum?: number;
+        minLength?: number;
       }
     >;
     required: string[];
@@ -55,7 +58,11 @@ Returns results grouped by process (execution flow):
 - process_symbols: all symbols in those flows with file locations and module (functional area)
 - definitions: standalone types/interfaces not in any process
 
-Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.`,
+Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
+
+GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
+
+SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -69,11 +76,19 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
           description:
             'What you want to find (e.g., "existing auth validation logic"). Helps ranking.',
         },
-        limit: { type: 'number', description: 'Max processes to return (default: 5)', default: 5 },
+        limit: {
+          type: 'number',
+          description: 'Max processes to return (default: 5)',
+          default: 5,
+          minimum: 1,
+          maximum: 100,
+        },
         max_symbols: {
           type: 'number',
           description: 'Max symbols per process (default: 10)',
           default: 10,
+          minimum: 1,
+          maximum: 200,
         },
         include_content: {
           type: 'boolean',
@@ -82,7 +97,14 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists.',
+        },
+        service: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Optional monorepo service root (relative path, "/" separators). In group mode (@repo), prefix-matches symbol file paths; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
       required: ['query'],
@@ -156,7 +178,11 @@ AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/pro
 
 Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
 
-NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).`,
+NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
+
+GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
+
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -178,7 +204,14 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+        },
+        service: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Optional monorepo service root (relative path). Applies in group mode (@repo) only; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
       required: [],
@@ -273,7 +306,11 @@ TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members,
 Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints.
 
 EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES
-Confidence: 1.0 = certain, <0.8 = fuzzy match`,
+Confidence: 1.0 = certain, <0.8 = fuzzy match
+
+GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge.
+
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -298,8 +335,18 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match`,
         },
         maxDepth: {
           type: 'number',
-          description: 'Max relationship depth (default: 3)',
+          description: 'Max relationship depth (default: 3, server clamps to 1–32)',
           default: 3,
+          minimum: 1,
+          maximum: 32,
+        },
+        crossDepth: {
+          type: 'number',
+          description:
+            'Cross-repository hop depth via contract bridge (default: 1; values above server maximum are clamped)',
+          default: 1,
+          minimum: 1,
+          maximum: 32,
         },
         relationTypes: {
           type: 'array',
@@ -308,10 +355,42 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match`,
             'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default)',
         },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
-        minConfidence: { type: 'number', description: 'Minimum confidence 0-1 (default: 0.7)' },
+        minConfidence: {
+          type: 'number',
+          description:
+            'Minimum edge confidence 0–1 (default: 0 when omitted; server clamps to 0–1)',
+          default: 0,
+          minimum: 0,
+          maximum: 1,
+        },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+        },
+        service: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Optional monorepo service root (relative path). Applies when "repo" is group mode (@…); ignored for a normal repo name. Empty string is rejected server-side.',
+        },
+        subgroup: {
+          type: 'string',
+          description:
+            'Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description:
+            'Wall-clock budget in milliseconds for the Phase-1 local impact leg (default 30000)',
+          minimum: 1,
+          maximum: 3600000,
+        },
+        timeout: {
+          type: 'number',
+          description: 'Alias of timeoutMs (milliseconds) when timeoutMs is omitted',
+          minimum: 1,
+          maximum: 3600000,
         },
       },
       required: ['target', 'direction'],
@@ -425,51 +504,6 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
           description: 'Exact + BM25 only (Demo PR: same as default exact path)',
         },
         exactOnly: { type: 'boolean', description: 'Exact match only in cascade' },
-      },
-      required: ['name'],
-    },
-  },
-  {
-    name: 'group_contracts',
-    description: `Inspect contracts and cross-links from the group's contracts.json.
-
-WHEN TO USE: Debug cross-repo links after group_sync.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Group name' },
-        type: { type: 'string', description: 'Filter by contract type (http, topic, …)' },
-        repo: { type: 'string', description: 'Filter by group repo path (e.g. app/backend)' },
-        unmatchedOnly: { type: 'boolean', description: 'Only contracts with no cross-link' },
-      },
-      required: ['name'],
-    },
-  },
-  {
-    name: 'group_query',
-    description: `Run the query tool across all repos in a group and merge process results via reciprocal rank fusion.
-
-WHEN TO USE: Semantic / hybrid search across a whole product group.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Group name' },
-        query: { type: 'string', description: 'Search query' },
-        subgroup: { type: 'string', description: 'Limit to repo paths under this prefix' },
-        limit: { type: 'number', description: 'Max merged results (default 5)' },
-      },
-      required: ['name', 'query'],
-    },
-  },
-  {
-    name: 'group_status',
-    description: `Report index staleness (commit vs HEAD) and Contract Registry staleness (indexedAt) for each repo in a group.
-
-WHEN TO USE: Before group_sync or when agents should refresh indexes.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Group name' },
       },
       required: ['name'],
     },

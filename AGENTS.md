@@ -47,6 +47,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-04-19 | 1.5.0 | Cross-repo impact (#794): `impact`/`query`/`context` accept `repo: "@<group>"` + `service`. Removed `group_query`/`group_contracts`/`group_status` MCP tools; added `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` resources. |
 | 2026-04-16 | 1.4.0 | Fixed: web UI description, pre-commit behavior, MCP tools (7->16), added gitnexus-shared, removed stale vite-plugin-wasm gotcha. |
 | 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
 | 2026-03-24 | 1.2.0 | Fixed gitnexus:start block duplication. |
@@ -100,6 +101,17 @@ This project is indexed by GitNexus as **gitnexus** (18208 symbols, 25369 relati
 | `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
 | `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
 | `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+| `api_impact` | Pre-change API route impact | `gitnexus_api_impact({route: "/api/users", method: "GET"})` |
+| `route_map` | Route → handler → consumer map | `gitnexus_route_map({})` |
+| `tool_map` | MCP/RPC tool definitions | `gitnexus_tool_map({})` |
+| `shape_check` | Response shape vs consumer access | `gitnexus_shape_check({route: "/api/users"})` |
+| `group_list` | List repo groups | `gitnexus_group_list({})` |
+| `group_sync` | Rebuild group Contract Registry | `gitnexus_group_sync({name: "myGroup"})` |
+| `query` (group mode) | Cross-repo search in a group (RRF-merged) | `gitnexus_query({repo: "@myGroup", query: "auth"})` |
+| `context` (group mode) | 360° view across all member repos | `gitnexus_context({repo: "@myGroup", name: "validateUser"})` |
+| `impact` (group mode) | Cross-repo blast radius via Contract Bridge | `gitnexus_impact({repo: "@myGroup", target: "X", direction: "upstream"})` |
+
+> Group mode: pass `repo: "@<groupName>"` to fan out across all member repos, or `repo: "@<groupName>/<memberPath>"` to target a single member (path keys from `group.yaml`). Optional `service: "<monorepo/path>"` filters by service root. Group-level state (contracts, staleness) lives in the resources table below — there are **no** `group_query` / `group_context` / `group_impact` / `group_contracts` / `group_status` MCP tools.
 
 ## Impact Risk Levels
 
@@ -113,10 +125,12 @@ This project is indexed by GitNexus as **gitnexus** (18208 symbols, 25369 relati
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/gitnexus/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/gitnexus/clusters` | All functional areas |
-| `gitnexus://repo/gitnexus/processes` | All execution flows |
-| `gitnexus://repo/gitnexus/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/GitNexus/context` | Codebase overview, index freshness |
+| `gitnexus://repo/GitNexus/clusters` | All functional areas |
+| `gitnexus://repo/GitNexus/processes` | All execution flows |
+| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
+| `gitnexus://group/{name}/contracts` | Group Contract Registry (provider/consumer rows + cross-links) |
+| `gitnexus://group/{name}/status` | Per-member index + Contract Registry staleness report |
 
 ## Self-Check Before Finishing
 

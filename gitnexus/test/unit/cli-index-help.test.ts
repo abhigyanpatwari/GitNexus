@@ -43,6 +43,16 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--repo <name>');
   });
 
+  it('detect-changes help exposes compare scope and base-ref flags', () => {
+    const result = runHelp('detect-changes');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gitnexus detect-changes|detect_changes [options]');
+    expect(result.stdout).toContain('--scope <scope>');
+    expect(result.stdout).toContain('--base-ref <ref>');
+    expect(result.stdout).toContain('--repo <name>');
+  });
+
   it('wiki help shows provider, review, and verbose flags', () => {
     const result = runHelp('wiki');
 

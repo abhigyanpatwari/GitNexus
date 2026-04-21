@@ -11,6 +11,8 @@ RUN npm ci --prefix gitnexus-shared
 COPY gitnexus-shared ./gitnexus-shared
 RUN npm run build --prefix gitnexus-shared
 
+COPY gitnexus/package.json ./gitnexus/
+
 COPY gitnexus-web/package.json gitnexus-web/package-lock.json ./gitnexus-web/
 RUN npm ci --prefix gitnexus-web
 

@@ -185,6 +185,83 @@ export function registerGroupCommands(program: Command): void {
     });
 
   group
+    .command('impact <name>')
+    .description('Cross-repo impact for a symbol in one member repo of a group')
+    .requiredOption('--target <symbol>', 'Symbol or file name to analyze')
+    .requiredOption(
+      '--repo <groupPath>',
+      'Member path from group.yaml (e.g. app/backend), not the indexed repo name',
+    )
+    .option('--direction <dir>', 'upstream or downstream', 'upstream')
+    .option('--service <path>', 'Optional monorepo service directory prefix (path filter)')
+    .option(
+      '--subgroup <path>',
+      'Optional prefix limiting which group repos participate in cross fan-out',
+    )
+    .option('--max-depth <n>', 'Max graph traversal depth')
+    .option('--cross-depth <n>', 'Cross-repository hop depth')
+    .option('--min-confidence <n>', 'Minimum relation confidence (0–1)')
+    .option('--include-tests', 'Include test files in traversal', false)
+    .option('--timeout-ms <n>', 'Phase-1 local impact wall time in milliseconds')
+    .option('--json', 'JSON output')
+    .action(async (name: string, opts: Record<string, string | boolean | undefined>) => {
+      const { LocalBackend } = await import('../mcp/local/local-backend.js');
+
+      const backend = new LocalBackend();
+      try {
+        await backend.init();
+
+        const payload: Record<string, unknown> = {
+          name,
+          repo: opts.repo,
+          target: opts.target,
+          direction: (opts.direction as string) || 'upstream',
+        };
+        if (opts.service) payload.service = opts.service;
+        if (opts.subgroup) payload.subgroup = opts.subgroup;
+        if (opts.maxDepth !== undefined && opts.maxDepth !== '') {
+          const n = parseInt(String(opts.maxDepth), 10);
+          if (!Number.isNaN(n)) payload.maxDepth = n;
+        }
+        if (opts.crossDepth !== undefined && opts.crossDepth !== '') {
+          const n = parseInt(String(opts.crossDepth), 10);
+          if (!Number.isNaN(n)) payload.crossDepth = n;
+        }
+        if (opts.minConfidence !== undefined && opts.minConfidence !== '') {
+          const n = parseFloat(String(opts.minConfidence));
+          if (!Number.isNaN(n)) payload.minConfidence = n;
+        }
+        if (opts.timeoutMs !== undefined && opts.timeoutMs !== '') {
+          const n = parseInt(String(opts.timeoutMs), 10);
+          if (!Number.isNaN(n)) payload.timeoutMs = n;
+        }
+        if (opts.includeTests) payload.includeTests = true;
+
+        const raw = await backend.getGroupService().groupImpact(payload);
+        if (raw && typeof raw === 'object' && 'error' in raw) {
+          console.error(String((raw as { error: string }).error));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (opts.json) {
+          console.log(JSON.stringify(raw, null, 2));
+        } else {
+          const summary = (raw as { summary?: Record<string, number> })?.summary;
+          const risk = (raw as { risk?: string })?.risk;
+          console.log(`Group impact for "${name}" (${String(opts.repo)}): risk=${risk ?? '?'}`);
+          if (summary) {
+            console.log(
+              `  direct=${summary.direct ?? 0} processes=${summary.processes_affected ?? 0} cross=${summary.cross_repo_hits ?? 0}`,
+            );
+          }
+        }
+      } finally {
+        await backend.dispose().catch(() => {});
+      }
+    });
+
+  group
     .command('query <name> <query>')
     .description('Search execution flows across all repos in a group')
     .option('--subgroup <path>', 'Limit search scope')

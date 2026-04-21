@@ -517,6 +517,86 @@ Route::delete('/users/{id}', [UserController::class, 'destroy']);
     });
   });
 
+  describe('consumer extraction — PHP', () => {
+    it('extracts Laravel Http facade calls', async () => {
+      const dir = path.join(tmpDir, 'php-http-facade');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/Client.php'),
+        `<?php
+use Illuminate\\Support\\Facades\\Http;
+
+class Client {
+    public function run() {
+        Http::get('/api/users');
+        Http::post('/api/orders/42');
+        Http::delete('/api/users/7');
+    }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Guzzle $client->method() calls', async () => {
+      const dir = path.join(tmpDir, 'php-guzzle');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/ApiClient.php'),
+        `<?php
+use GuzzleHttp\\Client;
+
+class ApiClient {
+    public function run(Client $client) {
+        $client->get('/api/health');
+        $client->post('/api/orders/42');
+    }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/health')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts file_get_contents HTTP calls', async () => {
+      const dir = path.join(tmpDir, 'php-fgc');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/fetch.php'),
+        `<?php
+function fetchRemote() {
+    $data = file_get_contents('https://example.test/api/items/1');
+    $local = file_get_contents('/tmp/local-file.txt');
+    return $data;
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/items/{param}')).toBeDefined();
+      // file paths and stream wrappers must not emit consumer contracts
+      expect(consumers.find((c) => c.meta.path === '/tmp/local-file.txt')).toBeUndefined();
+    });
+  });
+
   describe('provider extraction — FastAPI', () => {
     it('extracts FastAPI @app.get decorator patterns', async () => {
       const dir = path.join(tmpDir, 'fastapi');

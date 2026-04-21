@@ -84,38 +84,140 @@ export function getResourceTemplates(): ResourceTemplate[] {
       description: 'Step-by-step execution trace',
       mimeType: 'text/yaml',
     },
+    {
+      uriTemplate: 'gitnexus://group/{name}/contracts',
+      name: 'Group Contract Registry',
+      description:
+        'Cross-repo contract registry for a repository group. Optional query: type, repo, unmatchedOnly (true|false).',
+      mimeType: 'text/yaml',
+    },
+    {
+      uriTemplate: 'gitnexus://group/{name}/status',
+      name: 'Group Index Status',
+      description: 'Per-repo index and contract-registry staleness for a repository group',
+      mimeType: 'text/yaml',
+    },
   ];
 }
 
-/**
- * Parse a resource URI to extract the repo name and resource type.
- */
-function parseUri(uri: string): { repoName?: string; resourceType: string; param?: string } {
-  if (uri === 'gitnexus://repos') return { resourceType: 'repos' };
-  if (uri === 'gitnexus://setup') return { resourceType: 'setup' };
+/** Query parameters for `gitnexus://group/{name}/contracts` */
+export type GroupContractsResourceFilter = {
+  type?: string;
+  repo?: string;
+  unmatchedOnly?: boolean;
+};
 
-  // Repo-scoped: gitnexus://repo/{name}/context
-  const repoMatch = uri.match(/^gitnexus:\/\/repo\/([^/]+)\/(.+)$/);
-  if (repoMatch) {
-    const repoName = decodeURIComponent(repoMatch[1]);
-    const rest = repoMatch[2];
+/** Normalized parse result for GitNexus MCP resource URIs */
+export type ParsedGitnexusResource =
+  | { kind: 'repos' }
+  | { kind: 'setup' }
+  | {
+      kind: 'repo';
+      repoName: string;
+      resourceType: string;
+      param?: string;
+    }
+  | {
+      kind: 'group';
+      groupName: string;
+      resourceType: 'contracts';
+      contractsFilter: GroupContractsResourceFilter;
+    }
+  | { kind: 'group'; groupName: string; resourceType: 'status' };
+
+function parseUnmatchedOnlyParam(raw: string | null): boolean | undefined {
+  if (raw === null) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === '1') return true;
+  if (v === 'false' || v === '0') return false;
+  return undefined;
+}
+
+/**
+ * Parse a GitNexus resource URI (repos, setup, per-repo, or per-group templates).
+ * Used by `readResource` and tests (round-trip / dispatch coverage).
+ */
+export function parseResourceUri(uri: string): ParsedGitnexusResource {
+  if (uri === 'gitnexus://repos') return { kind: 'repos' };
+  if (uri === 'gitnexus://setup') return { kind: 'setup' };
+
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    throw new Error(`Unknown resource URI: ${uri}`);
+  }
+
+  if (u.protocol !== 'gitnexus:') {
+    throw new Error(`Unknown resource URI: ${uri}`);
+  }
+
+  if (u.hostname === 'group') {
+    const segments = u.pathname
+      .replace(/^\/+|\/+$/g, '')
+      .split('/')
+      .filter(Boolean);
+    if (segments.length < 2) {
+      throw new Error(
+        `Invalid group resource URI (expected gitnexus://group/{name}/contracts or .../status): ${uri}`,
+      );
+    }
+    const tail = segments[segments.length - 1]!;
+    if (tail !== 'contracts' && tail !== 'status') {
+      throw new Error(`Unknown group resource path in URI: ${uri}`);
+    }
+    const groupName = segments
+      .slice(0, -1)
+      .map((s) => decodeURIComponent(s))
+      .join('/');
+    if (!groupName) {
+      throw new Error(`Invalid group resource URI (empty group name): ${uri}`);
+    }
+    if (tail === 'status') {
+      return { kind: 'group', groupName, resourceType: 'status' };
+    }
+    const contractsFilter: GroupContractsResourceFilter = {};
+    const type = u.searchParams.get('type');
+    if (type && type.trim()) contractsFilter.type = type.trim();
+    const repo = u.searchParams.get('repo');
+    if (repo && repo.trim()) contractsFilter.repo = repo.trim();
+    if (u.searchParams.has('unmatchedOnly')) {
+      const coerced = parseUnmatchedOnlyParam(u.searchParams.get('unmatchedOnly'));
+      if (coerced !== undefined) contractsFilter.unmatchedOnly = coerced;
+    }
+    return { kind: 'group', groupName, resourceType: 'contracts', contractsFilter };
+  }
+
+  if (u.hostname === 'repo') {
+    const segments = u.pathname
+      .replace(/^\/+|\/+$/g, '')
+      .split('/')
+      .filter(Boolean);
+    if (segments.length < 2) {
+      throw new Error(`Unknown resource URI: ${uri}`);
+    }
+    const repoName = decodeURIComponent(segments[0]!);
+    const restEncoded = segments.slice(1);
+    const rest = restEncoded.map((s) => decodeURIComponent(s)).join('/');
 
     if (rest.startsWith('cluster/')) {
       return {
+        kind: 'repo',
         repoName,
         resourceType: 'cluster',
-        param: decodeURIComponent(rest.replace('cluster/', '')),
+        param: rest.replace(/^cluster\//, ''),
       };
     }
     if (rest.startsWith('process/')) {
       return {
+        kind: 'repo',
         repoName,
         resourceType: 'process',
-        param: decodeURIComponent(rest.replace('process/', '')),
+        param: rest.replace(/^process\//, ''),
       };
     }
 
-    return { repoName, resourceType: rest };
+    return { kind: 'repo', repoName, resourceType: rest };
   }
 
   throw new Error(`Unknown resource URI: ${uri}`);
@@ -125,16 +227,21 @@ function parseUri(uri: string): { repoName?: string; resourceType: string; param
  * Read a resource and return its content
  */
 export async function readResource(uri: string, backend: LocalBackend): Promise<string> {
-  const parsed = parseUri(uri);
+  const parsed = parseResourceUri(uri);
 
-  // Global repos list — no repo context needed
-  if (parsed.resourceType === 'repos') {
+  if (parsed.kind === 'repos') {
     return getReposResource(backend);
   }
 
-  // Setup resource — returns AGENTS.md content for all repos
-  if (parsed.resourceType === 'setup') {
+  if (parsed.kind === 'setup') {
     return getSetupResource(backend);
+  }
+
+  if (parsed.kind === 'group') {
+    if (parsed.resourceType === 'contracts') {
+      return backend.readGroupContractsResource(parsed.groupName, parsed.contractsFilter);
+    }
+    return backend.readGroupStatusResource(parsed.groupName);
   }
 
   const repoName = parsed.repoName;
@@ -241,6 +348,10 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  - gitnexus://repo/${context.projectName}/processes: All execution flows`);
   lines.push(`  - gitnexus://repo/${context.projectName}/cluster/{name}: Module details`);
   lines.push(`  - gitnexus://repo/${context.projectName}/process/{name}: Process trace`);
+  lines.push(
+    '  - gitnexus://group/{name}/contracts: Group contract registry (optional ?type=&repo=&unmatchedOnly=)',
+  );
+  lines.push('  - gitnexus://group/{name}/status: Group index / contract staleness');
 
   return lines.join('\n');
 }
