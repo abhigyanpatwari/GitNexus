@@ -84,6 +84,7 @@ import type {
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { LanguageProvider } from '../../language-provider.js';
+import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -208,4 +209,23 @@ export interface ScopeResolver {
    * check.
    */
   readonly fieldFallbackOnMethodLookup?: boolean;
+
+  /**
+   * Optional post-finalize hook to inject cross-file bindings that
+   * aren't modeled via explicit imports. C# uses this to make every
+   * type declared in `namespace X` visible to every other file
+   * declaring the same namespace — a compiler-implicit import that
+   * has no syntactic counterpart to drive the normal import-target
+   * resolver through. Runs after `buildWorkspaceResolutionIndex` and
+   * before `propagateImportedReturnTypes`.
+   *
+   * Most languages leave this undefined. Python / TypeScript / Java
+   * require explicit imports for cross-file visibility, so there's no
+   * analogous pass to run.
+   */
+  readonly populateNamespaceSiblings?: (
+    parsedFiles: readonly ParsedFile[],
+    indexes: ScopeResolutionIndexes,
+    ctx: { readonly fileContents: ReadonlyMap<string, string> },
+  ) => void;
 }

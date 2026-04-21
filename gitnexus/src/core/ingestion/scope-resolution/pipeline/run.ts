@@ -136,6 +136,15 @@ export function runScopeResolution(
   // finalize (so module-scope bindings are available).
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles);
 
+  // Cross-file implicit-namespace visibility (C#). Must run before
+  // propagateImportedReturnTypes so the latter pass sees siblings'
+  // class bindings when chasing return-type chains across files.
+  if (provider.populateNamespaceSiblings !== undefined) {
+    const fileContents = new Map<string, string>();
+    for (const f of files) fileContents.set(f.path, f.content);
+    provider.populateNamespaceSiblings(parsedFiles, indexes, { fileContents });
+  }
+
   // Cross-file return-type propagation (Contract Invariant I3 timing:
   // after finalize, before resolve).
   if (provider.propagatesReturnTypesAcrossImports !== false) {

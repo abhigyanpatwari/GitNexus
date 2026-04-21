@@ -18,6 +18,7 @@ import {
   resolveCsharpImportTarget,
   type CsharpResolveContext,
 } from './index.js';
+import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
 
 const csharpScopeResolver: ScopeResolver = {
   language: SupportedLanguages.CSharp,
@@ -57,6 +58,12 @@ const csharpScopeResolver: ScopeResolver = {
   // plain identifier (no `()` call like Python's `super(...)`) — `base`
   // is a keyword-like receiver, not a callable.
   isSuperReceiver: (text) => text.trim() === 'base',
+
+  // Same-namespace cross-file visibility — C# makes every type
+  // declared in `namespace X` visible to other files declaring the
+  // same namespace, without any `using` directive. See
+  // `namespace-siblings.ts` for the implementation.
+  populateNamespaceSiblings: populateCsharpNamespaceSiblings,
 
   // C# is statically typed — type information is reliable. Field-
   // fallback heuristic stays off (the type-binding layer already

@@ -1,0 +1,177 @@
+/**
+ * C# same-namespace cross-file visibility.
+ *
+ * C# makes every type declared in `namespace X` visible to every other
+ * file that also declares `namespace X`, without any explicit `using`
+ * directive. Python has no equivalent — every cross-file reference
+ * needs an explicit import — so this is a C#-specific pass.
+ *
+ * Without this: `Service.cs` (namespace `FieldTypes`) can't see
+ * `User` declared in `Models.cs` (same namespace), so `user.Address`
+ * field-chain resolution fails at `findClassBindingInScope('User')`
+ * in the Service.cs scope chain.
+ *
+ * Implementation: after the finalize pass populates `indexes.bindings`
+ * (from explicit `using` directives), walk every file's Namespace
+ * scope(s), discover their names via a regex over the source text
+ * (simpler than threading a `@declaration.namespace` capture through
+ * the extractor), group classes by namespace, and inject cross-file
+ * sibling classes into each Namespace scope's finalized bindings
+ * with `origin: 'namespace'` — a tier below `local` so a local
+ * declaration still shadows a cross-file sibling with the same name.
+ */
+
+import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+
+/** `namespace Foo.Bar { ... }` or `namespace Foo.Bar;` — capture the dotted name. */
+const NAMESPACE_RE = /\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)\s*[;{]/g;
+
+/** Content of a file, keyed by filePath. Caller sources this from the
+ *  pipeline's file list before the pass runs. */
+export interface CsharpSiblingInputs {
+  readonly fileContents: ReadonlyMap<string, string>;
+}
+
+/**
+ * Mutate `indexes.bindings` in-place, adding cross-file sibling class
+ * defs to each Namespace scope. Class-like defs (Class / Interface /
+ * Struct / Record / Enum) are visible cross-file; method / field
+ * members are not.
+ */
+export function populateCsharpNamespaceSiblings(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+  inputs: CsharpSiblingInputs,
+): void {
+  // Group namespace scopes by their dotted name. Each entry carries
+  // the scope id so we can inject bindings post-hoc, plus the
+  // file's own class-like defs for cross-pollination.
+  interface NamespaceBucket {
+    readonly scopes: { filePath: string; scopeId: ScopeId; scope: Scope }[];
+    readonly classDefs: SymbolDefinition[];
+  }
+  const buckets = new Map<string, NamespaceBucket>();
+  const getBucket = (name: string): NamespaceBucket => {
+    let b = buckets.get(name);
+    if (b === undefined) {
+      b = { scopes: [], classDefs: [] };
+      buckets.set(name, b);
+    }
+    return b;
+  };
+
+  for (const parsed of parsedFiles) {
+    const content = inputs.fileContents.get(parsed.filePath);
+    if (content === undefined) continue;
+
+    // Collect declared namespace names from source. Order matters for
+    // matching scope to name when a file has multiple namespaces:
+    // scope-extractor emits Namespace scopes in source order, so the
+    // first regex match aligns with the first Namespace scope, etc.
+    const names: string[] = [];
+    NAMESPACE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = NAMESPACE_RE.exec(content)) !== null) names.push(m[1]!);
+    if (names.length === 0) continue;
+
+    const namespaceScopes = parsed.scopes.filter((s) => s.kind === 'Namespace');
+    // With file-scoped namespaces (`namespace X;`), the Namespace
+    // scope's range covers only the declaration line, not the rest of
+    // the file — so classes below it land under the Module scope, not
+    // the Namespace scope. Group top-level classes by "any class whose
+    // parent scope is Module or Namespace" and attribute them to the
+    // first declared namespace in the file. Multiple-namespace files
+    // are rare enough that first-wins is the right first pass; fix
+    // when the parity suite surfaces a case.
+    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    const topLevelParentIds = new Set<ScopeId>();
+    if (moduleScope !== undefined) topLevelParentIds.add(moduleScope.id);
+    for (const ns of namespaceScopes) topLevelParentIds.add(ns.id);
+
+    // Attribute all top-level classes to the first-declared namespace
+    // in this file. Multiple-namespace files are rare and can be
+    // addressed if the parity suite surfaces a case. Inject into BOTH
+    // the Module and the Namespace scopes — the Module scope is on
+    // the ancestor chain of every function body (the Namespace scope
+    // is not, because file-scoped `namespace X;` has a 1-line range).
+    const firstName = names[0]!;
+    const bucket = getBucket(firstName);
+    if (moduleScope !== undefined) {
+      bucket.scopes.push({
+        filePath: parsed.filePath,
+        scopeId: moduleScope.id,
+        scope: moduleScope,
+      });
+    }
+    for (const ns of namespaceScopes) {
+      bucket.scopes.push({ filePath: parsed.filePath, scopeId: ns.id, scope: ns });
+    }
+
+    for (const s of parsed.scopes) {
+      if (s.kind !== 'Class') continue;
+      if (s.parent === null || !topLevelParentIds.has(s.parent)) continue;
+      for (const def of s.ownedDefs) {
+        if (isTypeDef(def)) {
+          bucket.classDefs.push(def);
+          break;
+        }
+      }
+    }
+  }
+
+  // Inject cross-file siblings into each namespace scope's finalized
+  // bindings. `indexes.bindings` is typed `ReadonlyMap<ScopeId, ...>`
+  // but is a plain Map at runtime; mutating here is the established
+  // pattern (see `propagateImportedReturnTypes` which does the same
+  // for module-scope typeBindings).
+  const finalized = indexes.bindings as Map<ScopeId, Map<string, BindingRef[]>>;
+  for (const [, bucket] of buckets) {
+    // De-dup by (nodeId, filePath) across multiple declarations (e.g.
+    // partial classes declaring the same name in two files — we take
+    // both and leave de-dup to downstream consumers of bindings).
+    const defsByName = new Map<string, SymbolDefinition[]>();
+    for (const def of bucket.classDefs) {
+      // Simple name = last segment of qualifiedName (e.g. `App.User` → `User`).
+      const q = def.qualifiedName ?? '';
+      const key = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
+      if (key === '') continue;
+      const arr = defsByName.get(key) ?? [];
+      arr.push(def);
+      defsByName.set(key, arr);
+    }
+
+    for (const { scopeId, filePath } of bucket.scopes) {
+      let scopeBindings = finalized.get(scopeId);
+      if (scopeBindings === undefined) {
+        scopeBindings = new Map<string, BindingRef[]>();
+        finalized.set(scopeId, scopeBindings);
+      }
+      for (const [name, defs] of defsByName) {
+        // Skip names already present locally — `origin: 'local'` in
+        // scope.bindings would naturally shadow the cross-file
+        // namespace entry, but we also keep this index lean.
+        const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
+        if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
+
+        const existing = scopeBindings.get(name) ?? [];
+        for (const def of defs) {
+          if (def.filePath === filePath) continue; // don't self-reference
+          if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
+          existing.push({ def, origin: 'namespace' });
+        }
+        if (existing.length > 0) scopeBindings.set(name, existing);
+      }
+    }
+  }
+}
+
+function isTypeDef(def: SymbolDefinition): boolean {
+  return (
+    def.type === 'Class' ||
+    def.type === 'Interface' ||
+    def.type === 'Struct' ||
+    def.type === 'Record' ||
+    def.type === 'Enum'
+  );
+}
