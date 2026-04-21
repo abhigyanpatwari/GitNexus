@@ -71,6 +71,11 @@ const csharpScopeResolver: ScopeResolver = {
   // since signatures are authoritative.
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
+
+  // C# matches legacy DAG by collapsing member-call CALLS edges to
+  // `(caller, target)` — multiple `g.Greet(...)` sites from Main
+  // yield ONE edge, not one per site.
+  collapseMemberCallsByCallerTarget: true,
 };
 
 export { csharpScopeResolver };

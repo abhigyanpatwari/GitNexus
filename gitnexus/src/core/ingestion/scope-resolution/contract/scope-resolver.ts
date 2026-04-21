@@ -211,6 +211,15 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
+   * Collapse member-call CALLS edges by `(caller, target)` rather
+   * than per-site. Default `false` (scope-resolution's contract
+   * invariant is per-site dedup). C# enables this to match the
+   * legacy DAG's member-call collapsing where multiple call sites
+   * from the same caller to the same target yield one edge.
+   */
+  readonly collapseMemberCallsByCallerTarget?: boolean;
+
+  /**
    * Optional post-finalize hook to inject cross-file bindings that
    * aren't modeled via explicit imports. C# uses this to make every
    * type declared in `namespace X` visible to every other file

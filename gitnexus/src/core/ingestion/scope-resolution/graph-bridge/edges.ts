@@ -68,6 +68,7 @@ export function tryEmitEdge(
   reason: string,
   seen: Set<string>,
   confidence = 0.85,
+  collapseByCallerTarget = false,
 ): boolean {
   const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
@@ -76,7 +77,14 @@ export function tryEmitEdge(
   if (targetGraphId === undefined) return false;
   if (edgeType === undefined) return false;
 
-  const dedupKey = `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  // CALLS edges may collapse to `(caller, target)` granularity when
+  // the provider opts in (C# matches legacy DAG behavior this way).
+  // Write/read ACCESSES keep per-site dedup so multiple writes to the
+  // same field on different lines produce distinct edges.
+  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
+  const dedupKey = useCollapsed
+    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
+    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
   if (seen.has(dedupKey)) return false;
   seen.add(dedupKey);
 

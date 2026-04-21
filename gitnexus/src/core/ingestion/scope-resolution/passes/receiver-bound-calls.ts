@@ -51,7 +51,7 @@ import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
  *  refactors lighter — callers only need to populate what we read. */
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
-  'isSuperReceiver' | 'fieldFallbackOnMethodLookup'
+  'isSuperReceiver' | 'fieldFallbackOnMethodLookup' | 'collapseMemberCallsByCallerTarget'
 >;
 
 export function emitReceiverBoundCalls(
@@ -69,6 +69,7 @@ export function emitReceiverBoundCalls(
   // from the reference index — see Contract Invariant I5.
   const seen = new Set<string>();
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
+  const collapse = provider.collapseMemberCallsByCallerTarget === true;
 
   for (const parsed of parsedFiles) {
     const namespaceTargets = collectNamespaceTargets(parsed, scopes);
@@ -100,11 +101,15 @@ export function emitReceiverBoundCalls(
               memberDef,
               'scope-resolution: super-receiver',
               seen,
+              0.85,
+              collapse,
             );
-            if (ok) {
-              emitted++;
-              handledSites.add(siteKey);
-            }
+            if (ok) emitted++;
+            // Always mark handled when the site was resolved, even
+            // if the edge was deduplicated (collapse mode), so
+            // `emitReferencesViaLookup` doesn't re-emit from the
+            // reference index.
+            handledSites.add(siteKey);
             continue;
           }
         }
@@ -135,11 +140,15 @@ export function emitReceiverBoundCalls(
               memberDef,
               memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
+              0.85,
+              collapse,
             );
-            if (ok) {
-              emitted++;
-              handledSites.add(siteKey);
-            }
+            if (ok) emitted++;
+            // Always mark handled when the site was resolved, even
+            // if the edge was deduplicated (collapse mode), so
+            // `emitReferencesViaLookup` doesn't re-emit from the
+            // reference index.
+            handledSites.add(siteKey);
             continue;
           }
         }
@@ -158,11 +167,11 @@ export function emitReceiverBoundCalls(
             memberDef,
             memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
             seen,
+            0.85,
+            collapse,
           );
-          if (ok) {
-            emitted++;
-            handledSites.add(siteKey);
-          }
+          if (ok) emitted++;
+          handledSites.add(siteKey);
           continue;
         }
       }
@@ -185,11 +194,11 @@ export function emitReceiverBoundCalls(
             memberDef,
             memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
             seen,
+            0.85,
+            collapse,
           );
-          if (ok) {
-            emitted++;
-            handledSites.add(siteKey);
-          }
+          if (ok) emitted++;
+          handledSites.add(siteKey);
           continue;
         }
       }
@@ -254,11 +263,15 @@ export function emitReceiverBoundCalls(
               memberDef,
               memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
+              0.85,
+              collapse,
             );
-            if (ok) {
-              emitted++;
-              handledSites.add(siteKey);
-            }
+            if (ok) emitted++;
+            // Always mark handled when the site was resolved, even
+            // if the edge was deduplicated (collapse mode), so
+            // `emitReferencesViaLookup` doesn't re-emit from the
+            // reference index.
+            handledSites.add(siteKey);
             continue;
           }
         }
@@ -294,11 +307,14 @@ export function emitReceiverBoundCalls(
               reason,
               seen,
               confidence,
+              collapse,
             );
-            if (ok) {
-              emitted++;
-              handledSites.add(siteKey);
-            }
+            if (ok) emitted++;
+            // Always mark handled when the site was resolved, even
+            // if the edge was deduplicated (collapse mode), so
+            // `emitReferencesViaLookup` doesn't re-emit from the
+            // reference index.
+            handledSites.add(siteKey);
             continue;
           }
         }
@@ -336,11 +352,10 @@ export function emitReceiverBoundCalls(
               reason,
               seen,
               confidence,
+              collapse,
             );
-            if (ok) {
-              emitted++;
-              handledSites.add(siteKey);
-            }
+            if (ok) emitted++;
+            handledSites.add(siteKey);
           }
         }
       }
