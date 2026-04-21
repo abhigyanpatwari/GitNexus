@@ -160,7 +160,19 @@ export function populateCsharpNamespaceSiblings(
       }
     }
 
-    for (const nsName of accessibleNamespaces) {
+    // For each accessible namespace, also walk up the dotted path —
+    // `using static X.Y.Z;` targets a type, so the real namespace is
+    // `X.Y`. Both parse into `accessibleNamespaces` as-is; we probe
+    // the bucket map with every prefix.
+    const expandedNamespaces = new Set<string>(accessibleNamespaces);
+    for (const ns of accessibleNamespaces) {
+      const segments = ns.split('.');
+      for (let i = segments.length - 1; i > 0; i--) {
+        expandedNamespaces.add(segments.slice(0, i).join('.'));
+      }
+    }
+
+    for (const nsName of expandedNamespaces) {
       const bucket = buckets.get(nsName);
       if (bucket === undefined) continue;
       for (const scopeInfo of bucket.scopes) {
