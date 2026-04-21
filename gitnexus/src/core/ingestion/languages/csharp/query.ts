@@ -370,6 +370,24 @@ const CSHARP_SCOPE_QUERY = `
     type: (identifier) @type-binding.type
     name: (identifier) @type-binding.name)) @type-binding.annotation
 
+;; Type bindings — switch-expression arms: \`obj switch { User u => …, Repo { Name: "x" } r => … }\`.
+;; Distinct from the \`switch_statement\` shape above — expression-switch
+;; uses \`switch_expression_arm\` nodes.
+(switch_expression_arm
+  (declaration_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(switch_expression_arm
+  (declaration_pattern
+    type: (generic_name) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(switch_expression_arm
+  (recursive_pattern
+    type: (identifier) @type-binding.type
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
 ;; Type bindings — typed foreach: \`foreach (User u in xs)\`.
 ;; Shape parity with \`User u = …;\` — left binds to the declared type.
 (foreach_statement

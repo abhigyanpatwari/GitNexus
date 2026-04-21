@@ -133,7 +133,7 @@ export function emitReceiverBoundCalls(
               nodeLookup,
               site,
               memberDef,
-              'scope-resolution: chain-receiver',
+              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
             );
             if (ok) {
@@ -156,7 +156,7 @@ export function emitReceiverBoundCalls(
             nodeLookup,
             site,
             memberDef,
-            'scope-resolution: namespace-receiver',
+            memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
             seen,
           );
           if (ok) {
@@ -183,7 +183,7 @@ export function emitReceiverBoundCalls(
             nodeLookup,
             site,
             memberDef,
-            'scope-resolution: class-receiver',
+            memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
             seen,
           );
           if (ok) {
@@ -211,7 +211,7 @@ export function emitReceiverBoundCalls(
                 nodeLookup,
                 site,
                 memberDef,
-                'scope-resolution: dotted-typebinding',
+                memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
                 seen,
               );
               if (ok) {
@@ -252,7 +252,7 @@ export function emitReceiverBoundCalls(
               nodeLookup,
               site,
               memberDef,
-              'scope-resolution: chain-typebinding',
+              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
               seen,
             );
             if (ok) {
@@ -281,8 +281,20 @@ export function emitReceiverBoundCalls(
             const reason =
               site.kind === 'write' || site.kind === 'read'
                 ? site.kind
-                : 'scope-resolution: typeref-receiver';
-            const ok = tryEmitEdge(graph, scopes, nodeLookup, site, memberDef, reason, seen);
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+            );
             if (ok) {
               emitted++;
               handledSites.add(siteKey);
@@ -311,8 +323,20 @@ export function emitReceiverBoundCalls(
             const reason =
               site.kind === 'write' || site.kind === 'read'
                 ? site.kind
-                : 'scope-resolution: class-receiver';
-            const ok = tryEmitEdge(graph, scopes, nodeLookup, site, memberDef, reason, seen);
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+            );
             if (ok) {
               emitted++;
               handledSites.add(siteKey);
