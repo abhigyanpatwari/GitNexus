@@ -83,5 +83,44 @@ export function resolveCsharpImportTarget(
 
   if (exactFile !== null) return exactFile;
   if (suffixFile !== null) return suffixFile;
-  return directoryChild;
+  if (directoryChild !== null) return directoryChild;
+
+  // Progressive prefix stripping — mirrors csproj's root-namespace
+  // mapping without the csproj. `using CrossFile.Models;` in a repo
+  // laid out `Models/User.cs` (no `CrossFile/` prefix) works because
+  // the legacy resolver consults csproj; the scope-resolver layer
+  // doesn't have csproj, so we try each suffix of the namespace path
+  // against `.cs` files and directories.
+  //
+  // Also handles `using static CrossFile.Models.UserFactory;` —
+  // strip the leading segment, try `Models/UserFactory.cs`; strip
+  // two, try `UserFactory.cs`.
+  const segments = pathLike.split('/').filter(Boolean);
+  for (let skip = 1; skip < segments.length; skip++) {
+    const tail = segments.slice(skip).join('/');
+    if (tail === '') continue;
+    const tailFile = `${tail}.cs`;
+    const tailSuffix = `/${tailFile}`;
+    const tailDir = `${tail}/`;
+    const tailSuffixDir = `/${tailDir}`;
+    let tailDirectChild: string | null = null;
+    for (const raw of ctx.allFilePaths) {
+      const f = raw.replace(/\\/g, '/');
+      if (!f.endsWith('.cs')) continue;
+      if (f === tailFile) return raw;
+      if (f.endsWith(tailSuffix)) return raw;
+      if (tailDirectChild === null) {
+        const atRoot = f.startsWith(tailDir);
+        const atNested = f.includes(tailSuffixDir);
+        if (atRoot || atNested) {
+          const idx = atRoot ? 0 : f.indexOf(tailSuffixDir) + 1;
+          const after = f.slice(idx + tailDir.length);
+          if (after.length > 0 && !after.includes('/')) tailDirectChild = raw;
+        }
+      }
+    }
+    if (tailDirectChild !== null) return tailDirectChild;
+  }
+
+  return null;
 }

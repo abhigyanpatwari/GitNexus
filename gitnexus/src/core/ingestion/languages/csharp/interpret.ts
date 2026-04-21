@@ -51,10 +51,19 @@ export function interpretCsharpImport(captures: CaptureMatch): ParsedImport | nu
     }
     case 'static': {
       // `using static System.Math;` — brings static members of Math into
-      // unqualified scope. Semantically closest to a wildcard: any name
-      // can resolve to a static member of the target type. Merge-bindings
-      // (Unit 4) ranks wildcards lowest so locals still shadow.
-      return { kind: 'wildcard', targetRaw: sourceCap.text };
+      // unqualified scope. Semantically closest to a wildcard, but we
+      // map to `namespace` here so finalize emits the File→File IMPORTS
+      // edge without requiring `expandsWildcardTo` (which would list
+      // every exported member). Static-member unqualified-access is a
+      // deferred limitation; the usual cross-file lookup via
+      // namespace-siblings covers `Target.Member` calls.
+      const lastSegment = sourceCap.text.split('.').pop() ?? sourceCap.text;
+      return {
+        kind: 'namespace',
+        localName: lastSegment,
+        importedName: sourceCap.text,
+        targetRaw: sourceCap.text,
+      };
     }
     default:
       return null;

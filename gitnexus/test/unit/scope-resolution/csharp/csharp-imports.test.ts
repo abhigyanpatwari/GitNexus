@@ -55,12 +55,21 @@ describe('interpretCsharpImport — using flavors', () => {
     });
   });
 
-  it('interprets `using static X.Y;` as a wildcard import', () => {
-    // `using static` brings static members of the target type into
-    // unqualified scope. Merge-bindings (Unit 4) ranks wildcards
-    // lowest so locals still shadow them.
+  it('interprets `using static X.Y;` as a namespace import targeting the type', () => {
+    // `using static` brings static members into unqualified scope.
+    // Initially this was mapped to `kind: 'wildcard'` but that
+    // requires `expandsWildcardTo` to materialize any IMPORTS edge;
+    // we map to `namespace` so the File→File edge still emits and
+    // the namespace-siblings pass (which walks known namespaces)
+    // picks up the target file's classes. Unqualified static-member
+    // access is a deferred limitation — see csharp/index.ts.
     const [imp] = importsFor('using static System.Math;\nclass A {}');
-    expect(imp).toEqual({ kind: 'wildcard', targetRaw: 'System.Math' });
+    expect(imp).toEqual({
+      kind: 'namespace',
+      localName: 'Math',
+      importedName: 'System.Math',
+      targetRaw: 'System.Math',
+    });
   });
 
   it('strips `global::` qualifier — `using global::X.Y;` → namespace X.Y', () => {
@@ -91,7 +100,7 @@ describe('interpretCsharpImport — using flavors', () => {
     `;
     const imps = importsFor(src);
     expect(imps).toHaveLength(4);
-    expect(imps.map((p) => p.kind)).toEqual(['namespace', 'namespace', 'alias', 'wildcard']);
+    expect(imps.map((p) => p.kind)).toEqual(['namespace', 'namespace', 'alias', 'namespace']);
   });
 });
 
