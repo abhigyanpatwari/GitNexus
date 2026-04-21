@@ -303,8 +303,9 @@ interface LanguageProviderConfig {
 
   /**
    * Emit scope captures from raw source, **pre-grouped per tree-sitter
-   * query match**. Tree-sitter-based providers run a `scopes.scm` query
-   * and emit one `CaptureMatch` per query match; standalone providers
+   * query match**. Tree-sitter-based providers run a scope query
+   * (embedded as a string constant in each language's `query.ts`) and
+   * emit one `CaptureMatch` per query match; standalone providers
    * (COBOL) emit matches from a regex tagger. The return shape is
    * parser-agnostic: the central `ScopeExtractor` consumes
    * `CaptureMatch[]` without knowing which parser produced them.

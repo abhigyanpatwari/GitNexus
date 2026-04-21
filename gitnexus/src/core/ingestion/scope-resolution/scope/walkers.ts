@@ -159,7 +159,7 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   // when the def sits inside a class. Without this, two classes in the
   // same file that share a method name collide at the graph-bridge lookup
   // (`node-lookup.ts` keys by (filePath, qualifiedName) and falls back to
-  // simple name only). Python's `scopes.scm` doesn't emit
+  // simple name only). Python's scope query doesn't emit
   // `@declaration.qualified_name` for nested methods, so the finalized
   // defs arrive here with simple names — we stamp the qualifier while
   // we're already walking class scopes for ownerId.
