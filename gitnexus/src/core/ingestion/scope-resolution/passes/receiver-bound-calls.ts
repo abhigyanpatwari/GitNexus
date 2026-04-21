@@ -52,7 +52,10 @@ import { resolveDefGraphId } from '../graph-bridge/ids.js';
  *  refactors lighter — callers only need to populate what we read. */
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
-  'isSuperReceiver' | 'fieldFallbackOnMethodLookup' | 'collapseMemberCallsByCallerTarget'
+  | 'isSuperReceiver'
+  | 'fieldFallbackOnMethodLookup'
+  | 'collapseMemberCallsByCallerTarget'
+  | 'unwrapCollectionAccessor'
 >;
 
 export function emitReceiverBoundCalls(
@@ -184,7 +187,7 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           index,
-          { fieldFallback },
+          { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
         );
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
@@ -302,20 +305,26 @@ export function emitReceiverBoundCalls(
         !typeRef.rawName.includes('(') &&
         !namespaceTargets.has(typeRef.rawName.split('.')[0]!)
       ) {
-        // For collection-accessor suffixes (`.Values`, `.Keys`) the
-        // raw typeRef already describes a plain dotted access that
-        // `resolveCompoundReceiverClass` can walk directly — don't
-        // append `()` which would misroute to its call-expression
-        // branch.
-        const tail = typeRef.rawName.split('.').pop() ?? '';
-        const isAccessor = tail === 'Values' || tail === 'Keys';
-        const ownerDef = resolveCompoundReceiverClass(
-          isAccessor ? typeRef.rawName : typeRef.rawName + '()',
+        // Try the plain dotted-field walk first — covers property /
+        // collection-accessor shapes (`.Values`, Kotlin `.size`) and
+        // field chains. Fall back to call-form (`x()`) which treats
+        // the last segment as a method invocation.
+        let ownerDef = resolveCompoundReceiverClass(
+          typeRef.rawName,
           typeRef.declaredAtScope,
           scopes,
           index,
-          { fieldFallback },
+          { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
         );
+        if (ownerDef === undefined) {
+          ownerDef = resolveCompoundReceiverClass(
+            typeRef.rawName + '()',
+            typeRef.declaredAtScope,
+            scopes,
+            index,
+            { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
+          );
+        }
         if (ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;

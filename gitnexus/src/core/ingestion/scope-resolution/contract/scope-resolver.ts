@@ -211,6 +211,26 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
+   * Unwrap a collection-accessor expression on a typed receiver to
+   * its element type. Called by `resolveCompoundReceiverClass` when
+   * walking dotted member-access chains like `data.Values` where
+   * `data` is Dictionary-like. The provider returns the element
+   * type's simple name, or `undefined` when the accessor doesn't
+   * unwrap (letting the regular field-walk resume).
+   *
+   * C#: `{ receiverType: 'Dictionary<string, User>', accessor: 'Values' }`
+   *     → `'User'`.
+   * Other languages (Python, Java, TypeScript) don't share C#'s
+   * property-access convention for Dictionary views, so leave this
+   * undefined and use method-call shapes (`.values()`) via the
+   * regular call-expression branch.
+   */
+  readonly unwrapCollectionAccessor?: (
+    receiverType: string,
+    accessor: string,
+  ) => string | undefined;
+
+  /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
    * than per-site. Default `false` (scope-resolution's contract
    * invariant is per-site dedup). C# enables this to match the

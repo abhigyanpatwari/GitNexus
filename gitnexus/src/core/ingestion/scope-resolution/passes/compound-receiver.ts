@@ -39,6 +39,14 @@ interface ResolveCompoundReceiverOptions {
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
   readonly fieldFallback?: boolean;
+  /** Language-specific accessor unwrap — `data.Values` on a
+   *  Dictionary<K,V>-typed receiver yields V (C#), etc. Returns the
+   *  element type's simple name, or `undefined` to let the regular
+   *  field-walk handle the access. */
+  readonly unwrapCollectionAccessor?: (
+    receiverType: string,
+    accessor: string,
+  ) => string | undefined;
 }
 
 export function resolveCompoundReceiverClass(
@@ -156,23 +164,22 @@ export function resolveCompoundReceiverClass(
   // Pure dotted access `obj.field[.field]…` — walk fields.
   const parts = text.split('.');
 
-  // Collection accessor suffix — if the final segment is
-  // `.Values` / `.Keys`, resolve the prefix first (recursively for
-  // nested cases like `this.data.Values`) and unwrap its
-  // Dictionary<K,V> generic. Handled before the class-resolution
-  // step because Dictionary isn't a local class def.
-  const last = parts[parts.length - 1]!;
-  if ((last === 'Values' || last === 'Keys') && parts.length >= 2) {
+  // Language-specific collection-accessor suffix (C#'s `data.Values`
+  // on Dictionary<K,V>, etc.). When the provider hook recognizes
+  // the final segment and unwraps the receiver's generic, return
+  // the element class directly. Resolved before the field-walk
+  // because Dictionary-family types aren't local class defs.
+  if (options.unwrapCollectionAccessor !== undefined && parts.length >= 2) {
+    const last = parts[parts.length - 1]!;
     const prefix = parts.slice(0, -1).join('.');
-    // Find the receiver type for the prefix. Single-segment: direct
-    // typeBinding; multi-segment: recurse to resolve class + walk fields.
     let prefixType: TypeRef | undefined;
     if (parts.length === 2) {
       prefixType = findReceiverTypeBinding(inScope, prefix, scopes);
     } else {
       // Recursive resolution: walk the prefix as a dotted class chain
       // to find its typeRef. We need the TypeRef (not the class def)
-      // because we want to inspect its Dictionary<K,V> generic args.
+      // because the hook inspects the raw generic args (e.g.
+      // `Dictionary<string, User>`).
       const headInner = parts[0]!;
       let cur = findReceiverTypeBinding(inScope, headInner, scopes);
       for (let i = 1; i < parts.length - 1 && cur !== undefined; i++) {
@@ -187,9 +194,8 @@ export function resolveCompoundReceiverClass(
       prefixType = cur;
     }
     if (prefixType !== undefined) {
-      const args = extractDictionaryArgs(prefixType.rawName);
-      if (args !== undefined) {
-        const elemName = last === 'Values' ? args.value : args.key;
+      const elemName = options.unwrapCollectionAccessor(prefixType.rawName, last);
+      if (elemName !== undefined) {
         return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes);
       }
     }
@@ -208,35 +214,6 @@ export function resolveCompoundReceiverClass(
     currentClass = findClassBindingInScope(fieldType.declaredAtScope, fieldType.rawName, scopes);
   }
   return currentClass;
-}
-
-/** Extract (K, V) from `Dictionary<K, V>` / `IDictionary<K, V>` /
- *  `IReadOnlyDictionary<K, V>` / `SortedDictionary<K, V>`. Returns
- *  undefined if the type name doesn't match a Dictionary-family
- *  generic or the argument list isn't exactly two top-level args. */
-function extractDictionaryArgs(rawName: string): { key: string; value: string } | undefined {
-  const match = rawName.match(
-    /^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?(?:Dictionary|IDictionary|IReadOnlyDictionary|SortedDictionary|ConcurrentDictionary|ImmutableDictionary)<(.+)>$/,
-  );
-  if (match === null) return undefined;
-  const inner = match[1]!;
-  // Split on the top-level comma (tolerate nested `<...>`).
-  let depth = 0;
-  let commaIdx = -1;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (ch === '<') depth++;
-    else if (ch === '>') depth--;
-    else if (ch === ',' && depth === 0) {
-      commaIdx = i;
-      break;
-    }
-  }
-  if (commaIdx === -1) return undefined;
-  return {
-    key: inner.slice(0, commaIdx).trim(),
-    value: inner.slice(commaIdx + 1).trim(),
-  };
 }
 
 /** Find the index of the `(` that matches the trailing `)` of a

@@ -19,6 +19,7 @@ import {
   type CsharpResolveContext,
 } from './index.js';
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
+import { unwrapCsharpCollectionAccessor } from './accessor-unwrap.js';
 
 const csharpScopeResolver: ScopeResolver = {
   language: SupportedLanguages.CSharp,
@@ -71,6 +72,11 @@ const csharpScopeResolver: ScopeResolver = {
   // since signatures are authoritative.
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
+
+  // `data.Values` / `data.Keys` on Dictionary-like receivers unwrap
+  // to the value / key element type. Other languages use method-call
+  // syntax for the same access and leave this hook undefined.
+  unwrapCollectionAccessor: unwrapCsharpCollectionAccessor,
 
   // C# matches legacy DAG by collapsing member-call CALLS edges to
   // `(caller, target)` — multiple `g.Greet(...)` sites from Main
