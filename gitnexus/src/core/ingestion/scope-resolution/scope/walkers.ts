@@ -183,13 +183,25 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   // on `class U: def save(self): def helper(): ...` — helper.ownerId will
   // remain undefined. The theoretical concern is real only if the
   // extractor ever stops creating scopes for inner defs.
+  // Class-like def types: Class scope covers C#'s interface/struct/
+  // record/enum too (they all collapse to @scope.class per the query
+  // contract). Interface default methods land as children of the
+  // Interface def here.
+  const isClassLike = (t: string): boolean =>
+    t === 'Class' ||
+    t === 'Interface' ||
+    t === 'Struct' ||
+    t === 'Record' ||
+    t === 'Enum' ||
+    t === 'Trait';
+
   for (const scope of parsed.scopes) {
     // Methods: function scope whose parent is a Class scope. Owner is
-    // the parent's Class def.
+    // the parent's class-like def.
     if (scope.parent !== null) {
       const parentScope = scopesById.get(scope.parent);
       if (parentScope !== undefined && parentScope.kind === 'Class') {
-        const classDef = parentScope.ownedDefs.find((d) => d.type === 'Class');
+        const classDef = parentScope.ownedDefs.find((d) => isClassLike(d.type));
         if (classDef !== undefined) {
           for (const def of scope.ownedDefs) {
             (def as { ownerId?: string }).ownerId = classDef.nodeId;
@@ -199,9 +211,9 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
       }
     }
     // Class-body fields: defs directly owned by a Class scope (the
-    // class def itself excluded).
+    // class-like def itself excluded).
     if (scope.kind === 'Class') {
-      const classDef = scope.ownedDefs.find((d) => d.type === 'Class');
+      const classDef = scope.ownedDefs.find((d) => isClassLike(d.type));
       if (classDef !== undefined) {
         for (const def of scope.ownedDefs) {
           if (def === classDef) continue;
