@@ -107,6 +107,26 @@ export function resolveCompoundReceiverClass(
         retType = candidate;
         break;
       }
+      // Fallback: walk up from the class scope looking for a return-
+      // type binding on an ancestor (Module) scope. Some languages
+      // (C#) hoist method return-type bindings to Module scope so
+      // `propagateImportedReturnTypes` can mirror them cross-file;
+      // this loop restores the owner-chain lookup path for those
+      // languages without forcing a class-scope copy.
+      if (cs !== undefined) {
+        let curId: ScopeId | null = cs.parent;
+        while (curId !== null) {
+          const curScope = scopes.scopeTree.getScope(curId);
+          if (curScope === undefined) break;
+          const cand = curScope.typeBindings.get(methodName);
+          if (cand !== undefined) {
+            retType = cand;
+            break;
+          }
+          curId = curScope.parent;
+        }
+        if (retType !== undefined) break;
+      }
     }
 
     if (retType === undefined && fieldFallback) {

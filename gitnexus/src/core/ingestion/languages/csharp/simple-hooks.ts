@@ -23,12 +23,31 @@ import type {
  *  attach to the innermost Namespace scope (which the scope query emits
  *  for both `namespace X { }` and `namespace X;` forms).
  *
- *  Returns `null` to delegate. */
+ *  Exception: **method return-type bindings** (`@type-binding.return`)
+ *  must hoist all the way to the Module scope. The default auto-hoist
+ *  in the central extractor only promotes one level (Function → its
+ *  parent). For C# methods the parent is always a Class, so without
+ *  this override the return binding gets stuck at the Class scope,
+ *  where it's invisible to:
+ *    - chain-follow's parent-chain walk in `followChainPostFinalize`
+ *      (tests: `var u = GetUser(); u.Save()` single-file);
+ *    - cross-file `propagateImportedReturnTypes`, which reads only
+ *      `sourceModule.typeBindings`.
+ *  Walking to Module restores both paths. */
 export function csharpBindingScopeFor(
-  _decl: CaptureMatch,
-  _innermost: Scope,
-  _tree: ScopeTree,
+  decl: CaptureMatch,
+  innermost: Scope,
+  tree: ScopeTree,
 ): ScopeId | null {
+  if (decl['@type-binding.return'] !== undefined) {
+    let cur: Scope | undefined = innermost;
+    while (cur !== undefined && cur.kind !== 'Module') {
+      const parentId: ScopeId | null = cur.parent ?? null;
+      if (parentId === null) break;
+      cur = tree.getScope(parentId);
+    }
+    if (cur !== undefined && cur.kind === 'Module') return cur.id;
+  }
   return null;
 }
 
