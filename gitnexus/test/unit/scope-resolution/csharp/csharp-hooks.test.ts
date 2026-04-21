@@ -16,7 +16,16 @@ import {
   csharpImportOwningScope,
   csharpReceiverBinding,
 } from '../../../../src/core/ingestion/languages/csharp/simple-hooks.js';
-import type { CaptureMatch, ParsedImport, Scope, ScopeTree, TypeRef } from 'gitnexus-shared';
+import { csharpMergeBindings } from '../../../../src/core/ingestion/languages/csharp/merge-bindings.js';
+import type {
+  BindingRef,
+  CaptureMatch,
+  ParsedImport,
+  Scope,
+  ScopeTree,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 
 function fakeScope(
   kind: Scope['kind'],
@@ -70,6 +79,56 @@ describe('csharpImportOwningScope', () => {
     // gate flags any regression.
     const fn = fakeScope('Function', 'fn-1');
     expect(csharpImportOwningScope(fakeImport, fn, fakeTree)).toBe('fn-1');
+  });
+});
+
+describe('csharpMergeBindings — shadowing precedence', () => {
+  const scope = fakeScope('Function');
+  const def = (nodeId: string): SymbolDefinition =>
+    ({ nodeId, filePath: 't.cs', type: 'Function' }) as SymbolDefinition;
+  const binding = (origin: BindingRef['origin'], nodeId: string): BindingRef =>
+    ({ def: def(nodeId), origin }) as BindingRef;
+
+  it('local declaration shadows `using` import', () => {
+    const local = binding('local', 'L');
+    const imp = binding('import', 'I');
+    expect(csharpMergeBindings(scope, [imp, local])).toEqual([local]);
+  });
+
+  it('explicit `using` shadows `using static` (wildcard)', () => {
+    const imp = binding('import', 'I');
+    const wc = binding('wildcard', 'W');
+    expect(csharpMergeBindings(scope, [wc, imp])).toEqual([imp]);
+  });
+
+  it('local shadows both `using` and `using static`', () => {
+    const local = binding('local', 'L');
+    const imp = binding('import', 'I');
+    const wc = binding('wildcard', 'W');
+    expect(csharpMergeBindings(scope, [wc, imp, local])).toEqual([local]);
+  });
+
+  it('keeps overload siblings at the same tier', () => {
+    const a = binding('local', 'A');
+    const b = binding('local', 'B');
+    expect(csharpMergeBindings(scope, [a, b])).toEqual([a, b]);
+  });
+
+  it('dedupes same-nodeId bindings', () => {
+    const a = binding('local', 'A');
+    const a2 = binding('local', 'A');
+    expect(csharpMergeBindings(scope, [a, a2])).toHaveLength(1);
+  });
+
+  it('namespace and reexport tie with explicit import (same tier)', () => {
+    const ns = binding('namespace', 'N');
+    const re = binding('reexport', 'R');
+    const imp = binding('import', 'I');
+    expect(csharpMergeBindings(scope, [ns, re, imp])).toHaveLength(3);
+  });
+
+  it('empty in → empty out', () => {
+    expect(csharpMergeBindings(scope, [])).toEqual([]);
   });
 });
 
