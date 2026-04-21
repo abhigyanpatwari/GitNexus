@@ -143,6 +143,30 @@ export function emitCsharpScopeCaptures(
       }
     }
 
+    // Synthesize `@reference.arity` on every callsite so the
+    // registry's arity filter can narrow overloads. Count the
+    // `argument` named children of the backing `argument_list`.
+    // Python doesn't synthesize this today; C# needs it because the
+    // language has method overloading and the suite asserts overload
+    // resolution.
+    const callTag = (
+      ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
+    ).find((t) => grouped[t] !== undefined);
+    if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
+      const anchor = grouped[callTag]!;
+      const callNode =
+        findNodeAtRange(tree.rootNode, anchor.range, 'invocation_expression') ??
+        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      if (callNode !== null) {
+        const argList = callNode.childForFieldName('arguments');
+        const n =
+          argList === null
+            ? 0
+            : argList.namedChildren.filter((c) => c !== null && c.type === 'argument').length;
+        grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(n));
+      }
+    }
+
     out.push(grouped);
 
     // Synthesize primary-constructor declarations on class/record
