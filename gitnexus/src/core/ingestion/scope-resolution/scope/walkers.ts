@@ -292,10 +292,12 @@ export function findExportedDefByName(
   }
   // Workspace-wide fallback: iterate every file's Module scope (via
   // the scope-tied `moduleScopeByFile` lookup) and return the first
-  // locally-declared callable binding matching `name`. Mirrors the
-  // original `callablesBySimpleName[0]` semantics — first-seen-by-
-  // file wins, bindings filtered to `origin === 'local'` and the
-  // callable types Function/Method/Constructor.
+  // locally-declared callable binding matching `name`. First-seen-
+  // by-file wins; bindings filtered to `origin === 'local'` and the
+  // callable types Function/Method/Constructor. We walk scopes here
+  // rather than consult `SemanticModel.symbols.lookupCallableByName`
+  // because the `origin === 'local'` module-export-visibility filter
+  // is a scope concept the raw symbol index doesn't express.
   for (const [, moduleScope] of index.moduleScopeByFile) {
     const refs = moduleScope.bindings.get(name);
     if (refs === undefined) continue;

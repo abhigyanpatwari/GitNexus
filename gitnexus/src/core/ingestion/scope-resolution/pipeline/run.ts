@@ -172,11 +172,11 @@ export function runScopeResolution(
     methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId),
   };
 
-  // Build the workspace resolution index ONCE — turns every
-  // findOwnedMember / findExportedDef / classScopeByDefId lookup in
-  // the downstream passes from O(N×D) to O(1). Must run AFTER
-  // populateOwners (so memberByOwner is correct) and AFTER
-  // finalize (so module-scope bindings are available).
+  // Build the workspace resolution index ONCE — scope-valued lookups
+  // (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel`
+  // cannot carry. Must run AFTER `populateOwners` (so owned defs are
+  // attributed correctly) and AFTER finalize (so module-scope
+  // bindings are available).
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles);
 
   // Cross-file implicit-namespace visibility (C#). Must run before
