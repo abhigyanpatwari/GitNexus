@@ -138,6 +138,44 @@
  *     `ScopeResolutionIndexes` is a read-guidance surface for
  *     consumers, NOT an immutability promise during the resolve phase.
  *
+ *   - **I9 — `SemanticModel` is the single authoritative symbol store.**
+ *     Every symbol-indexed lookup (key = `nodeId | simpleName |
+ *     qualifiedName | filePath`) resolves through
+ *     `SemanticModel.{symbols,types,methods,fields}`. Scope-resolution
+ *     passes MUST NOT maintain parallel owner-keyed or name-keyed
+ *     symbol indexes — `WorkspaceResolutionIndex` is reserved for
+ *     `Scope`-valued lookups that `SemanticModel` structurally cannot
+ *     carry.
+ *
+ *     The `runScopeResolution` orchestrator guarantees this invariant
+ *     in two steps:
+ *       1. The legacy `parse` phase populates `SemanticModel` via
+ *          `symbolTable.add(...)`. For languages whose extractor
+ *          resolves `enclosingClassId` at parse time, class-body defs
+ *          are correctly owner-keyed there.
+ *       2. The `reconcileOwnership` pass runs after
+ *          `provider.populateOwners(parsed)` and registers any def in
+ *          `parsed.localDefs[i]` with a corrected `ownerId` that the
+ *          legacy pass missed (primarily Python class-body methods).
+ *          Idempotent — duplicates are skipped by `nodeId`.
+ *
+ *     Contract for consumers: `model` is `MutableSemanticModel` only
+ *     during those two write phases. Downstream passes receive a
+ *     narrowed `SemanticModel` (read-only) handle. This is enforced by
+ *     `runScopeResolution`'s type-level narrowing at the phase
+ *     boundary.
+ *
+ *     The dev-mode runtime validator (`validateOwnershipParity`)
+ *     surfaces any drift between `parsed.localDefs` ownership and the
+ *     registries via `onWarn` when
+ *     `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+ *
+ *     This invariant is a **transitional shim**: the architectural
+ *     end state is for every language's parse-time extractor to emit
+ *     the correct `ownerId` directly, removing the need for
+ *     reconciliation. Tracked as a follow-up; see ARCHITECTURE.md §
+ *     "Semantic-model source of truth".
+ *
  * ## Semantic-model source of truth
  *
  * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
