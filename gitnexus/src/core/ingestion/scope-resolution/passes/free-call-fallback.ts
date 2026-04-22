@@ -20,6 +20,7 @@
 import type { ParsedFile, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
@@ -32,6 +33,7 @@ export function emitFreeCallFallback(
   nodeLookup: GraphNodeLookup,
   _referenceIndex: { readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]> },
   handledSites: Set<string>,
+  model: SemanticModel,
   workspaceIndex?: WorkspaceResolutionIndex,
 ): number {
   let emitted = 0;
@@ -59,7 +61,7 @@ export function emitFreeCallFallback(
       // the same name in a single class, choose the best match by
       // arity + argument types.
       if (fnDef === undefined && workspaceIndex !== undefined) {
-        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex);
+        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
       }
       if (fnDef === undefined) {
         fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
@@ -93,18 +95,18 @@ export function emitFreeCallFallback(
 }
 
 /** For a constructor call `new X(...)`, return the X class's explicit
- *  Constructor def (by walking memberByOwner) or the Class def itself
- *  when no explicit Constructor exists. Matches legacy behavior —
- *  tests assert targetLabel === 'Class' for implicit ctors and
- *  targetLabel === 'Constructor' for explicit ones. */
+ *  Constructor def (by walking the class scope's ownedDefs) or the
+ *  Class def itself when no explicit Constructor exists. Matches
+ *  legacy behavior — tests assert targetLabel === 'Class' for implicit
+ *  ctors and targetLabel === 'Constructor' for explicit ones. */
 function pickConstructorOrClass(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex | undefined,
 ): SymbolDefinition {
   if (workspaceIndex === undefined) return classDef;
-  const members = workspaceIndex.memberByOwner.get(classDef.nodeId);
-  if (members === undefined) return classDef;
-  for (const [, def] of members) {
+  const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
+  if (classScope === undefined) return classDef;
+  for (const def of classScope.ownedDefs) {
     if (def.type === 'Constructor') return def;
   }
   return classDef;
@@ -124,6 +126,7 @@ function pickImplicitThisOverload(
   },
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
+  model: SemanticModel,
 ): SymbolDefinition | undefined {
   // Find the enclosing Class scope by walking parents.
   let curId: ScopeId | null = site.inScope;
@@ -150,8 +153,8 @@ function pickImplicitThisOverload(
   }
   if (classDefId === undefined) return undefined;
 
-  const overloads = workspaceIndex.membersByOwner.get(classDefId)?.get(site.name);
-  if (overloads === undefined || overloads.length === 0) return undefined;
+  const overloads = model.methods.lookupAllByOwner(classDefId, site.name);
+  if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 
   const argTypes = site.argumentTypes;

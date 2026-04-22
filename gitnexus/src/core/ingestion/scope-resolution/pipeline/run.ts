@@ -25,6 +25,8 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import type { MutableSemanticModel } from '../../model/semantic-model.js';
+import { simpleQualifiedName } from '../graph-bridge/ids.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
@@ -40,6 +42,16 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
+  /**
+   * Semantic model populated by the legacy `parse` phase. Scope-
+   * resolution consumes its `TypeRegistry` / `MethodRegistry` /
+   * `SymbolTable` lookups instead of rebuilding parallel indexes from
+   * `ParsedFile[]`. See ARCHITECTURE.md § "Semantic-model source of
+   * truth". Tests that invoke `runScopeResolution` in isolation pass a
+   * freshly-created `MutableSemanticModel` populated from the same
+   * `ParsedFile[]` to mirror the pipeline shape.
+   */
+  readonly model: MutableSemanticModel;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly onWarn?: (message: string) => void;
   /**
@@ -65,7 +77,7 @@ export function runScopeResolution(
   input: RunScopeResolutionInput,
   provider: ScopeResolver,
 ): RunScopeResolutionStats {
-  const { graph, files } = input;
+  const { graph, files, model } = input;
   const onWarn = input.onWarn ?? (() => {});
   const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
   const tStart = PROF ? process.hrtime.bigint() : 0n;
@@ -89,6 +101,37 @@ export function runScopeResolution(
     }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
+  }
+
+  // Reconcile scope-resolution's ownership view into the SemanticModel.
+  // For migrated languages (Python in particular) the legacy extractor
+  // emits class-body members without `ownerId` —
+  // `provider.populateOwners(parsed)` above stamps the correct ownerId
+  // on `parsed.localDefs[i]`. Without this pass those defs would be
+  // invisible to `model.methods.lookupMethodByOwner` /
+  // `model.fields.lookupFieldByOwner`, forcing scope-resolution to
+  // maintain a parallel owner-keyed index. The pass is idempotent: we
+  // skip defs already present under `(ownerId, simpleName)` by nodeId,
+  // so re-running it (or running after a language whose legacy
+  // extractor does populate ownerId, e.g. C#) doesn't introduce
+  // duplicates.
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      const ownerId = (def as { ownerId?: string }).ownerId;
+      if (ownerId === undefined) continue;
+      const simple = simpleQualifiedName(def);
+      if (simple === undefined) continue;
+
+      if (def.type === 'Method' || def.type === 'Function' || def.type === 'Constructor') {
+        const existing = input.model.methods.lookupAllByOwner(ownerId, simple);
+        if (existing.some((e) => e.nodeId === def.nodeId)) continue;
+        input.model.methods.register(ownerId, simple, def);
+      } else if (def.type === 'Property' || def.type === 'Variable') {
+        const existing = input.model.fields.lookupFieldByOwner(ownerId, simple);
+        if (existing !== undefined && existing.nodeId === def.nodeId) continue;
+        input.model.fields.register(ownerId, simple, def);
+      }
+    }
   }
 
   if (parsedFiles.length === 0) {
@@ -175,6 +218,7 @@ export function runScopeResolution(
     handledSites,
     provider,
     workspaceIndex,
+    model,
   );
   const freeCallExtras = emitFreeCallFallback(
     graph,
@@ -183,6 +227,7 @@ export function runScopeResolution(
     nodeLookup,
     referenceIndex,
     handledSites,
+    model,
     workspaceIndex,
   );
   const { emitted, skipped } = emitReferencesViaLookup(

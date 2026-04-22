@@ -21,6 +21,7 @@
 
 import type { ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /**
@@ -289,38 +290,70 @@ export function findExportedDefByName(
     }
     currentId = scope.parent;
   }
-  // Workspace-wide fallback: O(1) lookup via the pre-built
-  // `callablesBySimpleName` index. First-seen-by-file wins (matches
-  // the previous nested-loop semantics where the outer iteration is
-  // `parsedFiles`).
-  return index.callablesBySimpleName.get(name)?.[0];
+  // Workspace-wide fallback: iterate every file's Module scope (via
+  // the scope-tied `moduleScopeByFile` lookup) and return the first
+  // locally-declared callable binding matching `name`. Mirrors the
+  // original `callablesBySimpleName[0]` semantics — first-seen-by-
+  // file wins, bindings filtered to `origin === 'local'` and the
+  // callable types Function/Method/Constructor.
+  for (const [, moduleScope] of index.moduleScopeByFile) {
+    const refs = moduleScope.bindings.get(name);
+    if (refs === undefined) continue;
+    for (const ref of refs) {
+      if (ref.origin !== 'local') continue;
+      const t = ref.def.type;
+      if (t === 'Function' || t === 'Method' || t === 'Constructor') return ref.def;
+    }
+  }
+  return undefined;
 }
 
 /**
- * Find a member of a class by simple name — O(1) lookup via the
- * pre-built `memberByOwner` index from `WorkspaceResolutionIndex`.
+ * Find a member of a class by simple name — delegates to
+ * `SemanticModel.methods` (methods / functions / constructors) with a
+ * fallback to `SemanticModel.fields` (properties / fields /
+ * variables). After `runScopeResolution`'s reconciliation pass
+ * populates both registries from `parsed.localDefs[i].ownerId`
+ * (post-`populateOwners`), this is the single authoritative view of
+ * class membership — no parallel scope-resolution index needed.
  *
- * Pre-index baseline: O(N × D) per call (full parsedFiles scan).
- * Indexed: O(1) `Map.get`. The receiver-bound dispatcher calls this
- * up to (sites × MRO depth) times per workspace.
+ * Returns the first-seen overload for methods without arity or
+ * return-type narrowing. Callers that need arity-aware dispatch use
+ * `lookupMethodByOwner(owner, name, argCount)` directly.
  */
 export function findOwnedMember(
   ownerDefId: string,
   memberName: string,
-  index: WorkspaceResolutionIndex,
+  model: SemanticModel,
 ): SymbolDefinition | undefined {
-  return index.memberByOwner.get(ownerDefId)?.get(memberName);
+  const method = model.methods.lookupAllByOwner(ownerDefId, memberName)[0];
+  if (method !== undefined) return method;
+  return model.fields.lookupFieldByOwner(ownerDefId, memberName);
 }
 
 /**
  * Find a file-level def (top-of-module class / function / variable)
- * by `simpleName` — O(1) lookup via the pre-built
- * `defsByFileAndName` index.
+ * by simple name — consults the target file's Module scope's
+ * finalized bindings. Only defs bound at module-scope with
+ * `origin === 'local'` qualify, matching the historical
+ * "module-export-visible" semantics. Class methods and class-body
+ * fields bind at their containing class scope and are naturally
+ * excluded.
+ *
+ * Reads from `WorkspaceResolutionIndex.moduleScopeByFile` (scope-tied
+ * lookup that doesn't live on `SemanticModel`).
  */
 export function findExportedDef(
   targetFile: string,
   memberName: string,
   index: WorkspaceResolutionIndex,
 ): SymbolDefinition | undefined {
-  return index.defsByFileAndName.get(targetFile)?.get(memberName);
+  const moduleScope = index.moduleScopeByFile.get(targetFile);
+  if (moduleScope === undefined) return undefined;
+  const refs = moduleScope.bindings.get(memberName);
+  if (refs === undefined) return undefined;
+  for (const ref of refs) {
+    if (ref.origin === 'local') return ref.def;
+  }
+  return undefined;
 }

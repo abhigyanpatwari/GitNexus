@@ -32,6 +32,7 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
@@ -67,6 +68,7 @@ export function emitReceiverBoundCalls(
   handledSites: Set<string>,
   provider: ReceiverBoundProviderSubset,
   index: WorkspaceResolutionIndex,
+  model: SemanticModel,
 ): number {
   let emitted = 0;
   // Per-pass dedup so the multiple cases don't double-emit if two of
@@ -124,7 +126,7 @@ export function emitReceiverBoundCalls(
     if (impls === undefined) return 0;
     let n = 0;
     for (const implDef of impls) {
-      const implMember = findOwnedMember(implDef.nodeId, memberName, index);
+      const implMember = findOwnedMember(implDef.nodeId, memberName, model);
       if (implMember === undefined) continue;
       if (implMember.nodeId === primaryMemberDef.nodeId) continue;
       const ok = tryEmitEdge(
@@ -161,7 +163,7 @@ export function emitReceiverBoundCalls(
           const ancestors = scopes.methodDispatch.mroFor(enclosingClass.nodeId);
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of ancestors) {
-            memberDef = findOwnedMember(ownerId, memberName, index);
+            memberDef = findOwnedMember(ownerId, memberName, model);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -200,7 +202,7 @@ export function emitReceiverBoundCalls(
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, index);
+            memberDef = findOwnedMember(ownerId, memberName, model);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -254,7 +256,7 @@ export function emitReceiverBoundCalls(
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
         let memberDef: SymbolDefinition | undefined;
         for (const ownerId of chain) {
-          memberDef = findOwnedMember(ownerId, memberName, index);
+          memberDef = findOwnedMember(ownerId, memberName, model);
           if (memberDef !== undefined) break;
         }
         if (memberDef !== undefined) {
@@ -284,7 +286,7 @@ export function emitReceiverBoundCalls(
         if (targetFile3 !== undefined && className.length > 0) {
           const classDef3 = findExportedDef(targetFile3, className, index);
           if (classDef3 !== undefined) {
-            const memberDef = findOwnedMember(classDef3.nodeId, memberName, index);
+            const memberDef = findOwnedMember(classDef3.nodeId, memberName, model);
             if (memberDef !== undefined) {
               const ok = tryEmitEdge(
                 graph,
@@ -336,7 +338,7 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, index);
+            memberDef = findOwnedMember(ownerId, memberName, model);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -369,7 +371,7 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
-            memberDef = pickOverload(ownerId, memberName, site, index);
+            memberDef = pickOverload(ownerId, memberName, site, model);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -421,7 +423,7 @@ export function emitReceiverBoundCalls(
           const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, index);
+            memberDef = findOwnedMember(ownerId, memberName, model);
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
@@ -462,11 +464,14 @@ function pickOverload(
   ownerId: string,
   memberName: string,
   site: ParsedFile['referenceSites'][number],
-  index: WorkspaceResolutionIndex,
+  model: SemanticModel,
 ): SymbolDefinition | undefined {
-  const overloads = index.membersByOwner.get(ownerId)?.get(memberName);
-  if (overloads === undefined || overloads.length === 0) {
-    return findOwnedMember(ownerId, memberName, index);
+  const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
+  if (overloads.length === 0) {
+    // Non-callable member (field / property / variable) — ACCESSES
+    // write/read sites target these too. Fall back to the field
+    // registry so owner-scoped attribute access resolves.
+    return model.fields.lookupFieldByOwner(ownerId, memberName);
   }
   if (overloads.length === 1) return overloads[0];
 
