@@ -34,7 +34,7 @@ export function emitFreeCallFallback(
   _referenceIndex: { readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]> },
   handledSites: Set<string>,
   model: SemanticModel,
-  workspaceIndex?: WorkspaceResolutionIndex,
+  workspaceIndex: WorkspaceResolutionIndex,
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
@@ -60,7 +60,7 @@ export function emitFreeCallFallback(
       // enclosing class. When the workspace has multiple methods of
       // the same name in a single class, choose the best match by
       // arity + argument types.
-      if (fnDef === undefined && workspaceIndex !== undefined) {
+      if (fnDef === undefined) {
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
       }
       if (fnDef === undefined) {
@@ -101,9 +101,8 @@ export function emitFreeCallFallback(
  *  ctors and targetLabel === 'Constructor' for explicit ones. */
 function pickConstructorOrClass(
   classDef: SymbolDefinition,
-  workspaceIndex: WorkspaceResolutionIndex | undefined,
+  workspaceIndex: WorkspaceResolutionIndex,
 ): SymbolDefinition {
-  if (workspaceIndex === undefined) return classDef;
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
   if (classScope === undefined) return classDef;
   for (const def of classScope.ownedDefs) {

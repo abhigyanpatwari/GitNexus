@@ -25,7 +25,7 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
-import type { MutableSemanticModel } from '../../model/semantic-model.js';
+import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
@@ -77,7 +77,7 @@ export function runScopeResolution(
   input: RunScopeResolutionInput,
   provider: ScopeResolver,
 ): RunScopeResolutionStats {
-  const { graph, files, model } = input;
+  const { graph, files } = input;
   const onWarn = input.onWarn ?? (() => {});
   const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
   const tStart = PROF ? process.hrtime.bigint() : 0n;
@@ -107,8 +107,15 @@ export function runScopeResolution(
   // See `reconcile-ownership.ts` for the full rationale (Contract
   // Invariant I9). Debug-mode validator runs immediately after to
   // catch drift between `parsed.localDefs` and the registries.
+  //
+  // PHASE BOUNDARY: `input.model` is `MutableSemanticModel` up to this
+  // point (write phase: reconciliation). After this line no further
+  // writes are expected — downstream passes consume `readonlyModel`
+  // (narrowed to `SemanticModel`) so accidental writes would surface
+  // as type errors.
   reconcileOwnership(parsedFiles, input.model);
   validateOwnershipParity(parsedFiles, input.model, onWarn);
+  const readonlyModel: SemanticModel = input.model;
 
   if (parsedFiles.length === 0) {
     return {
@@ -194,7 +201,7 @@ export function runScopeResolution(
     handledSites,
     provider,
     workspaceIndex,
-    model,
+    readonlyModel,
   );
   const freeCallExtras = emitFreeCallFallback(
     graph,
@@ -203,7 +210,7 @@ export function runScopeResolution(
     nodeLookup,
     referenceIndex,
     handledSites,
-    model,
+    readonlyModel,
     workspaceIndex,
   );
   const { emitted, skipped } = emitReferencesViaLookup(
