@@ -11,6 +11,7 @@ import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
@@ -323,7 +324,8 @@ const processParsingSequential = async (
 ) => {
   const parser = await loadParser();
   const total = files.length;
-  const skippedLanguages = new Map<string, number>();
+  const logSkipped = isVerboseIngestionEnabled();
+  const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -342,10 +344,10 @@ const processParsingSequential = async (
     const language = getLanguageFromFilename(file.path);
 
     if (!language) continue;
-
-    // Skip unsupported languages (e.g. Swift when tree-sitter-swift not installed)
     if (!isLanguageAvailable(language)) {
-      skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
+      if (skippedByLang) {
+        skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+      }
       continue;
     }
 
@@ -370,7 +372,7 @@ const processParsingSequential = async (
       continue; // parser unavailable — safety net
     }
 
-    let tree;
+    let tree: Parser.Tree;
     try {
       tree = parser.parse(parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent.length),
@@ -395,8 +397,8 @@ const processParsingSequential = async (
       continue;
     }
 
-    let query;
-    let matches;
+    let query: Parser.Query;
+    let matches: Parser.QueryMatch[];
     try {
       const language = parser.getLanguage();
       query = new Parser.Query(language, queryString);
@@ -690,11 +692,12 @@ const processParsingSequential = async (
     });
   }
 
-  if (skippedLanguages.size > 0) {
-    const summary = Array.from(skippedLanguages.entries())
-      .map(([lang, count]) => `${lang}: ${count}`)
-      .join(', ');
-    console.warn(`  Skipped unsupported languages: ${summary}`);
+  if (skippedByLang && skippedByLang.size > 0) {
+    for (const [lang, count] of skippedByLang.entries()) {
+      console.warn(
+        `[ingestion] Skipped ${count} ${lang} file(s) in parsing processing — ${lang} parser not available.`,
+      );
+    }
   }
 };
 
