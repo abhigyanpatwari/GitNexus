@@ -53,7 +53,27 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: gitnexus-desktop/package-lock.json
+          cache-dependency-path: |
+            gitnexus-shared/package-lock.json
+            gitnexus/package-lock.json
+            gitnexus-web/package-lock.json
+            gitnexus-desktop/package-lock.json
+
+      - name: Install shared dependencies
+        run: npm ci
+        working-directory: gitnexus-shared
+
+      - name: Build shared package
+        run: npm run build
+        working-directory: gitnexus-shared
+
+      - name: Install GitNexus dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
 
       - name: Install desktop dependencies
         run: npm ci
