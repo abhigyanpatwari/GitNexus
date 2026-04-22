@@ -2,6 +2,7 @@
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
   Last updated: 2026-03-22
+  | 2026-04-22 | 1.4.0 | Added Cypher query rules under GitNexus rules section. |
 -->
 
 Last reviewed: 2026-04-13
@@ -52,3 +53,12 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 ## GitNexus rules
 
 See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.md](AGENTS.md)** for the canonical MCP tools, impact analysis rules, and index instructions.
+
+### Cypher Query Rules (Global)
+
+When using the `gitnexus_cypher` tool in ANY project:
+
+- **NEVER** use native relationship syntax like `-[:CALLS]->` or `-[:DEFINES]->`
+- **ALWAYS** use `-[:CodeRelation {type: 'CALLS'}]->` syntax
+- Classes connect to Methods via `HAS_METHOD` (not `DEFINES`)
+- Read `gitnexus://repo/{repo-name}/schema` if unsure about the schema
