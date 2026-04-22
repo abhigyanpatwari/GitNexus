@@ -28,6 +28,8 @@ const electronVersion =
   desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
 const electronBuilderVersion =
   desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
+// electron-rebuild v4 requires Node 22+, but desktop packaging currently runs on Node 20.
+const electronRebuildVersion = '3.7.2';
 const bundledNodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node';
 const electronBuilderCliPath = path.join(packageRoot, 'node_modules', 'electron-builder', 'cli.js');
 const builderUtilRequire = createRequire(
@@ -277,6 +279,39 @@ const syncPackagedRuntimeResources = () => {
   }
 };
 
+const rebuildPackagedNativeModules = () => {
+  const resourceRoots = resolvePackagedResourceRoots();
+
+  if (resourceRoots.length === 0) {
+    return;
+  }
+
+  for (const resourceRoot of resourceRoots) {
+    const packagedRuntimeRoot = path.join(resourceRoot, 'gitnexus');
+    const packagedNodeModulesRoot = path.join(packagedRuntimeRoot, 'node_modules');
+
+    if (!fs.existsSync(packagedNodeModulesRoot)) {
+      continue;
+    }
+
+    const rebuildCommand = [
+      `npx --yes -p @electron/rebuild@${electronRebuildVersion} electron-rebuild`,
+      '--force',
+      '--types prod,optional',
+      `--version "${electronVersion}"`,
+      `--module-dir "${packagedNodeModulesRoot}"`,
+      process.platform === 'win32' ? '--sequential' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    console.log(
+      `[build] rebuilding packaged native modules for Electron ${electronVersion} in ${packagedRuntimeRoot}`,
+    );
+    runCommand(rebuildCommand, packagedRuntimeRoot);
+  }
+};
+
 const repairAppBuilderLibPackage = () => {
   const repairDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), 'gitnexus-desktop-app-builder-lib-'),
@@ -423,6 +458,7 @@ runCommand('npm run build', gitnexusWebRoot);
 
 runCommand(builderCommand, packageRoot, builderEnvironment);
 syncPackagedRuntimeResources();
+rebuildPackagedNativeModules();
 
 const artifacts = listArtifacts(outputDir);
 

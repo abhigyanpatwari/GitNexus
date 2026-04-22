@@ -511,6 +511,13 @@ const stopPackagedWebServer = (): void => {
   packagedWebServerUrl = null;
 };
 
+const exitStartupFailure = (): void => {
+  stopGitNexusServer();
+  stopPackagedWebServer();
+  stopWebDevServer();
+  process.exit(1);
+};
+
 const getDesktopShellState = (window: BrowserWindow): DesktopShellState => {
   return {
     appName: DESKTOP_APP_NAME,
@@ -764,15 +771,14 @@ app.whenReady().then(async () => {
     await createWindow();
   } catch (error) {
     showStartupError(error);
-    app.quit();
-    return;
+    exitStartupFailure();
   }
 
   app.on('activate', () => {
     if (openWindows.size === 0) {
       void createWindow().catch((error) => {
         showStartupError(error);
-        app.quit();
+        exitStartupFailure();
       });
     }
   });
