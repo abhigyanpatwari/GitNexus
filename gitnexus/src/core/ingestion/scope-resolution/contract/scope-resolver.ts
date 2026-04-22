@@ -211,19 +211,17 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
-   * Unwrap a collection-accessor expression on a typed receiver to
-   * its element type. Called by `resolveCompoundReceiverClass` when
-   * walking dotted member-access chains like `data.Values` where
-   * `data` is Dictionary-like. The provider returns the element
-   * type's simple name, or `undefined` when the accessor doesn't
-   * unwrap (letting the regular field-walk resume).
+   * Unwrap a property-style collection accessor on a typed receiver
+   * to its element type. Called by `resolveCompoundReceiverClass`
+   * when walking dotted member-access chains of the form
+   * `receiver.Accessor`. The provider returns the element type's
+   * simple name, or `undefined` when the accessor doesn't unwrap —
+   * in which case the regular field-walk resumes.
    *
-   * C#: `{ receiverType: 'Dictionary<string, User>', accessor: 'Values' }`
-   *     → `'User'`.
-   * Other languages (Python, Java, TypeScript) don't share C#'s
-   * property-access convention for Dictionary views, so leave this
-   * undefined and use method-call shapes (`.values()`) via the
-   * regular call-expression branch.
+   * Use this only for languages that expose collection views as
+   * properties rather than method calls; languages whose collection
+   * views are `.values()` / `.keys()` method calls leave this
+   * undefined and let the normal call-expression branch handle them.
    */
   readonly unwrapCollectionAccessor?: (
     receiverType: string,
@@ -232,25 +230,28 @@ export interface ScopeResolver {
 
   /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
-   * than per-site. Default `false` (scope-resolution's contract
-   * invariant is per-site dedup). C# enables this to match the
-   * legacy DAG's member-call collapsing where multiple call sites
-   * from the same caller to the same target yield one edge.
+   * than per-site. Default `false` — scope-resolution's contract
+   * invariant is per-site dedup.
+   *
+   * Enable this when the language's graph convention is one edge per
+   * caller/target pair regardless of how many syntactic sites exist,
+   * e.g. to match a legacy graph's edge count so downstream
+   * consumers don't see a migration-induced inflation.
    */
   readonly collapseMemberCallsByCallerTarget?: boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
-   * aren't modeled via explicit imports. C# uses this to make every
-   * type declared in `namespace X` visible to every other file
-   * declaring the same namespace — a compiler-implicit import that
-   * has no syntactic counterpart to drive the normal import-target
-   * resolver through. Runs after `buildWorkspaceResolutionIndex` and
-   * before `propagateImportedReturnTypes`.
+   * aren't modeled via explicit imports. Runs after
+   * `buildWorkspaceResolutionIndex` and before
+   * `propagateImportedReturnTypes`.
    *
-   * Most languages leave this undefined. Python / TypeScript / Java
-   * require explicit imports for cross-file visibility, so there's no
-   * analogous pass to run.
+   * Use this for languages where a compiler-implicit visibility rule
+   * makes names visible across files without a syntactic import —
+   * for example a shared-namespace convention where types declared
+   * in the same namespace see each other without a `using` / `import`
+   * statement. Languages that require explicit imports for cross-file
+   * visibility leave this undefined.
    */
   readonly populateNamespaceSiblings?: (
     parsedFiles: readonly ParsedFile[],
@@ -263,13 +264,12 @@ export interface ScopeResolver {
    * class scope to ancestor (Module) scopes when looking up a
    * method's return-type typeBinding. Default `false`.
    *
-   * Set `true` when a language stores method return-type bindings at
-   * Module scope (rather than on each class) so cross-file return-
-   * type propagation can mirror them. Without this walk-up, chain
-   * resolution fails for methods whose return types were hoisted to
-   * module scope.
+   * Set `true` only when the provider stores method return-type
+   * bindings on the enclosing Module scope rather than on the class
+   * scope. Without this walk-up, chain resolution fails for methods
+   * whose return types were hoisted to module scope.
    *
-   * Languages that attach return-type bindings directly to the class
+   * Providers that attach return-type bindings directly to the class
    * scope leave this undefined — enabling the walk-up for them would
    * add an unnecessary branch and risk picking up unrelated module-
    * level bindings.
