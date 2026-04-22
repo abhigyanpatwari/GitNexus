@@ -338,12 +338,12 @@ npm run dev
 
 ## Docker
 
-The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`:
+The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`. Each image is published to both **GitHub Container Registry** (GHCR) and **Docker Hub** — same build, same digest, same Cosign signature — so pick whichever registry you prefer:
 
-| Image                                              | Purpose                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------- |
-| `ghcr.io/abhigyanpatwari/gitnexus:latest`          | CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) |
-| `ghcr.io/abhigyanpatwari/gitnexus-web:latest`      | Static web UI (port `4173`)                                            |
+| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror                           |
+| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
+| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `abhigyanpatwari/gitnexus:latest`           |
+| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `abhigyanpatwari/gitnexus-web:latest`       |
 
 > **Heads-up — image rename.** Earlier releases published the web UI under
 > `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
@@ -404,8 +404,11 @@ The Docker images are version-locked to the npm package:
 - Stable images are **only published from `vX.Y.Z` git tags** (via `docker.yml`
   triggered directly by the tag push), and the workflow refuses to build unless
   the tag exactly matches `gitnexus/package.json`'s version. So
-  `ghcr.io/abhigyanpatwari/gitnexus:1.6.2` is byte-for-byte the same release
-  as `npm install gitnexus@1.6.2` — no drift, no floating builds from `main`.
+  `ghcr.io/abhigyanpatwari/gitnexus:1.6.2` (and its Docker Hub mirror
+  `abhigyanpatwari/gitnexus:1.6.2`) is byte-for-byte the same release as
+  `npm install gitnexus@1.6.2` — no drift, no floating builds from `main`.
+  Both registries receive the same digest from a single build step, so you can
+  pull from either and the signature verifies identically.
 - Release-candidate images (e.g. `:1.7.0-rc.1`) are published alongside each
   RC npm release. They are built by `release-candidate.yml` calling `docker.yml`
   as a reusable workflow after the RC tag is created and pushed.
@@ -426,11 +429,18 @@ sensitive environments:
 cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
   --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Same signature verifies the Docker Hub mirror (identical digest):
+cosign verify docker.io/abhigyanpatwari/gitnexus:1.6.2 \
+  --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 The regex pins the certificate identity to this repo's `docker.yml` workflow
 **run from a `v*` tag** — rejecting unsigned images, images signed by other
-workflows, and images signed from unprotected refs.
+workflows, and images signed from unprotected refs. It is identical for both
+registries because both sets of tags were signed at the same digest in one
+workflow run.
 
 **Release candidates** — signed from `refs/heads/main` (the caller's ref when
 `release-candidate.yml` invokes `docker.yml` as a reusable workflow):
