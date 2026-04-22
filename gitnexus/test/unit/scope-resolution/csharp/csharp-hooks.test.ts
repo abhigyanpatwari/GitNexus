@@ -85,7 +85,6 @@ describe('csharpImportOwningScope', () => {
 });
 
 describe('csharpMergeBindings — shadowing precedence', () => {
-  const scope = fakeScope('Function');
   const def = (nodeId: string): SymbolDefinition =>
     ({ nodeId, filePath: 't.cs', type: 'Function' }) as SymbolDefinition;
   const binding = (origin: BindingRef['origin'], nodeId: string): BindingRef =>
@@ -94,43 +93,43 @@ describe('csharpMergeBindings — shadowing precedence', () => {
   it('local declaration shadows `using` import', () => {
     const local = binding('local', 'L');
     const imp = binding('import', 'I');
-    expect(csharpMergeBindings(scope, [imp, local])).toEqual([local]);
+    expect(csharpMergeBindings([imp, local])).toEqual([local]);
   });
 
   it('explicit `using` shadows `using static` (wildcard)', () => {
     const imp = binding('import', 'I');
     const wc = binding('wildcard', 'W');
-    expect(csharpMergeBindings(scope, [wc, imp])).toEqual([imp]);
+    expect(csharpMergeBindings([wc, imp])).toEqual([imp]);
   });
 
   it('local shadows both `using` and `using static`', () => {
     const local = binding('local', 'L');
     const imp = binding('import', 'I');
     const wc = binding('wildcard', 'W');
-    expect(csharpMergeBindings(scope, [wc, imp, local])).toEqual([local]);
+    expect(csharpMergeBindings([wc, imp, local])).toEqual([local]);
   });
 
   it('keeps overload siblings at the same tier', () => {
     const a = binding('local', 'A');
     const b = binding('local', 'B');
-    expect(csharpMergeBindings(scope, [a, b])).toEqual([a, b]);
+    expect(csharpMergeBindings([a, b])).toEqual([a, b]);
   });
 
   it('dedupes same-nodeId bindings', () => {
     const a = binding('local', 'A');
     const a2 = binding('local', 'A');
-    expect(csharpMergeBindings(scope, [a, a2])).toHaveLength(1);
+    expect(csharpMergeBindings([a, a2])).toHaveLength(1);
   });
 
   it('namespace and reexport tie with explicit import (same tier)', () => {
     const ns = binding('namespace', 'N');
     const re = binding('reexport', 'R');
     const imp = binding('import', 'I');
-    expect(csharpMergeBindings(scope, [ns, re, imp])).toHaveLength(3);
+    expect(csharpMergeBindings([ns, re, imp])).toHaveLength(3);
   });
 
   it('empty in → empty out', () => {
-    expect(csharpMergeBindings(scope, [])).toEqual([]);
+    expect(csharpMergeBindings([])).toEqual([]);
   });
 });
 

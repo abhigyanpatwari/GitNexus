@@ -24,7 +24,7 @@
  * earlier binding.
  */
 
-import type { BindingRef, Scope } from 'gitnexus-shared';
+import type { BindingRef } from 'gitnexus-shared';
 
 const TIER_LOCAL = 0;
 const TIER_IMPORT = 1;
@@ -46,10 +46,7 @@ function tierOf(b: BindingRef): number {
   }
 }
 
-export function csharpMergeBindings(
-  _scope: Scope,
-  bindings: readonly BindingRef[],
-): readonly BindingRef[] {
+export function csharpMergeBindings(bindings: readonly BindingRef[]): readonly BindingRef[] {
   if (bindings.length === 0) return bindings;
 
   let bestTier = Number.POSITIVE_INFINITY;

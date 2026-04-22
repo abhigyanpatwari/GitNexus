@@ -6,7 +6,7 @@
  * canonical shape.
  */
 
-import type { ParsedFile, Scope, WorkspaceIndex } from 'gitnexus-shared';
+import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -27,24 +27,19 @@ const csharpScopeResolver: ScopeResolver = {
   importEdgeReason: 'csharp-scope: using',
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    // CsharpResolveContext expects a mutable Set; the orchestrator
-    // hands us a ReadonlySet — safe to widen since the resolver only
-    // reads.
-    const ws: CsharpResolveContext = {
-      fromFile,
-      allFilePaths: allFilePaths as Set<string>,
-    };
+    const ws: CsharpResolveContext = { fromFile, allFilePaths };
+    // `WorkspaceIndex` is an opaque `unknown` placeholder in the
+    // shared contract, so `ws` passes structurally without a cast.
     return resolveCsharpImportTarget(
       { kind: 'namespace', localName: '_', importedName: '_', targetRaw },
-      ws as unknown as WorkspaceIndex,
+      ws,
     );
   },
 
-  // C# shadowing: local > using > using static.
-  mergeBindings: (existing, incoming, scopeId) => {
-    const fakeScope = { id: scopeId } as unknown as Scope;
-    return [...csharpMergeBindings(fakeScope, [...existing, ...incoming])];
-  },
+  // C# shadowing: local > using > using static. The per-scope id is
+  // unused by the C# implementation (shadowing is computed purely
+  // from the binding tier), so we don't need to synthesize a Scope.
+  mergeBindings: (existing, incoming) => [...csharpMergeBindings([...existing, ...incoming])],
 
   // Adapter: csharpArityCompatibility uses (def, callsite); the
   // contract is (callsite, def).

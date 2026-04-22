@@ -22,13 +22,17 @@ import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 
 export interface CsharpResolveContext {
   readonly fromFile: string;
-  readonly allFilePaths: Set<string>;
+  readonly allFilePaths: ReadonlySet<string>;
 }
 
 export function resolveCsharpImportTarget(
   parsedImport: ParsedImport,
   workspaceIndex: WorkspaceIndex,
 ): string | null {
+  // WorkspaceIndex is `unknown` in the shared contract (Ring 1
+  // placeholder). The scope-resolution orchestrator hands us a
+  // CsharpResolveContext-shaped object; narrow structurally rather
+  // than via a cast chain so unexpected shapes return null cleanly.
   const ctx = workspaceIndex as CsharpResolveContext | undefined;
   if (
     ctx === undefined ||

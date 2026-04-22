@@ -159,7 +159,7 @@ export const csharpProvider = defineLanguage({
   interpretTypeBinding: interpretCsharpTypeBinding,
   bindingScopeFor: csharpBindingScopeFor,
   importOwningScope: csharpImportOwningScope,
-  mergeBindings: csharpMergeBindings,
+  mergeBindings: (_scope, bindings) => csharpMergeBindings(bindings),
   receiverBinding: csharpReceiverBinding,
   arityCompatibility: csharpArityCompatibility,
   resolveImportTarget: resolveCsharpImportTarget,
