@@ -52,6 +52,8 @@ import {
   inferFunctionLabel,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
+  computeFunctionArityId,
+  clearFunctionArityIdCache,
 } from '../utils/ast-helpers.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
@@ -359,6 +361,7 @@ const clearCaches = (): void => {
   exportCache.clear();
   fieldInfoCache.clear();
   methodInfoCache.clear();
+  clearFunctionArityIdCache();
 };
 
 // ============================================================================
@@ -555,51 +558,21 @@ const findEnclosingFunctionId = (
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
       if (funcName) {
-        // Apply labelOverride so label matches definition phase (e.g., Kotlin Function→Method).
-        // null means "skip as definition" — keep original label for scope identification.
-        let finalLabel = label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current, label);
-          if (override !== null) finalLabel = override;
+        const encLang = getLanguageFromFilename(filePath);
+        if (encLang) {
+          const result = computeFunctionArityId(current, filePath, provider, encLang);
+          functionIdCache.set(node, result);
+          return result;
         }
-        // Qualify with enclosing class to match definition-phase node IDs
+        // Fallback for languages without a registered provider — should not happen
         const classInfo = cachedFindEnclosingClassInfo(
           current,
           filePath,
           provider.resolveEnclosingOwner,
         );
         const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
-        // Use the same MethodExtractor (getMethodInfo) as the definition phase.
-        // When same-arity collisions exist, also append ~type1,type2.
-        let arity: number | undefined;
-        let encTypeTag = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang = getLanguageFromFilename(filePath);
-          const classNode =
-            findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
-          if (classNode && encLang) {
-            const methodMap = getMethodInfo(classNode, provider, {
-              filePath,
-              language: encLang,
-            });
-            const defLine = current.startPosition.row + 1;
-            const info = methodMap?.get(`${funcName}:${defLine}`);
-            if (info) {
-              arity = info.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : info.parameters.length;
-              if (methodMap && arity !== undefined) {
-                const g = buildCollisionGroups(methodMap);
-                encTypeTag =
-                  typeTagForId(methodMap, funcName, arity, info, encLang, g) +
-                  constTagForId(methodMap, funcName, arity, info, g);
-              }
-            }
-          }
-        }
-        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
-        const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
+        const finalLabel = label;
+        const result = generateId(finalLabel, `${filePath}:${qualifiedName}`);
         functionIdCache.set(node, result);
         return result;
       }
@@ -610,51 +583,24 @@ const findEnclosingFunctionId = (
     if (provider.enclosingFunctionFinder) {
       const customResult = provider.enclosingFunctionFinder(current);
       if (customResult) {
-        let finalLabel: NodeLabel = customResult.label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current.previousSibling, finalLabel);
-          if (override !== null) finalLabel = override;
+        const sigNode = current.previousSibling ?? current;
+        const encLang = getLanguageFromFilename(filePath);
+        if (encLang) {
+          const result = computeFunctionArityId(sigNode, filePath, provider, encLang);
+          functionIdCache.set(node, result);
+          return result;
         }
-        // Qualify custom result with enclosing class
+        // Fallback for languages without a registered provider
+        const finalLabel = customResult.label;
         const classInfo = cachedFindEnclosingClassInfo(
-          current.previousSibling ?? current,
+          sigNode,
           filePath,
           provider.resolveEnclosingOwner,
         );
         const qualifiedName = classInfo
           ? `${classInfo.className}.${customResult.funcName}`
           : customResult.funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
-        // When same-arity collisions exist, also append ~type1,type2.
-        const sigNode = current.previousSibling ?? current;
-        let arity2: number | undefined;
-        let encTypeTag2 = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang2 = getLanguageFromFilename(filePath);
-          const classNode2 =
-            findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
-          if (classNode2 && encLang2) {
-            const methodMap2 = getMethodInfo(classNode2, provider, {
-              filePath,
-              language: encLang2,
-            });
-            const defLine2 = sigNode.startPosition.row + 1;
-            const info2 = methodMap2?.get(`${customResult.funcName}:${defLine2}`);
-            if (info2) {
-              arity2 = info2.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : info2.parameters.length;
-              if (methodMap2 && arity2 !== undefined) {
-                const g2 = buildCollisionGroups(methodMap2);
-                encTypeTag2 =
-                  typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
-                  constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
-              }
-            }
-          }
-        }
-        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
-        const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
+        const result = generateId(finalLabel, `${filePath}:${qualifiedName}`);
         functionIdCache.set(node, result);
         return result;
       }

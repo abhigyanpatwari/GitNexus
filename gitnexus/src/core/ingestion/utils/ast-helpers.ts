@@ -1,6 +1,9 @@
 import type Parser from 'tree-sitter';
 import type { Capture, NodeLabel, Range } from 'gitnexus-shared';
+import { SupportedLanguages } from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
+import type { MethodInfo } from '../method-types.js';
+import { buildCollisionGroups, typeTagForId, constTagForId } from './method-props.js';
 import { generateId } from '../../../lib/utils.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
@@ -568,4 +571,129 @@ export function findNodeAtRange(
     }
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Centralized function ID generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the canonical node ID for a function/method/constructor AST node.
+ *
+ * SINGLE SOURCE OF TRUTH for generating IDs that include the #<arity> and
+ * ~<typeTag> suffixes. Both the definition phase (parse-worker.ts) and the
+ * call resolution phase (parse-worker.ts and call-processor.ts) MUST call
+ * this function to ensure ID consistency.
+ */
+export function computeFunctionArityId(
+  funcNode: SyntaxNode,
+  filePath: string,
+  provider: LanguageProvider,
+  language: SupportedLanguages,
+): string {
+  const efnResult = provider.methodExtractor?.extractFunctionName?.(funcNode);
+  const funcName = efnResult?.funcName ?? genericFuncName(funcNode);
+  const label = efnResult?.label ?? inferFunctionLabel(funcNode.type);
+
+  let finalLabel: NodeLabel = label;
+  if (provider.labelOverride) {
+    const override = provider.labelOverride(funcNode, label);
+    if (override !== null) finalLabel = override;
+  }
+
+  // Use the name child node for findEnclosingClassInfo (mirrors definition phase)
+  // so that Go method_declaration receiver type is detected correctly.
+  const classLookupNode = funcNode.childForFieldName?.('name') ?? funcNode;
+  const classInfo = findEnclosingClassInfo(classLookupNode, filePath);
+  const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
+
+  let arity: number | undefined;
+  let encTypeTag = '';
+
+  if (finalLabel === 'Method' || finalLabel === 'Constructor') {
+    // Tier 1: Try classNode-based method map lookup
+    const classNode = findClassNodeForMethod(funcNode, provider);
+    if (classNode) {
+      const methodMap = getMethodInfoCached(classNode, provider, filePath, language);
+      const defLine = funcNode.startPosition.row + 1;
+      const info = methodMap?.get(`${funcName}:${defLine}`);
+      if (info) {
+        arity = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
+        if (methodMap && arity !== undefined) {
+          const groups = buildCollisionGroups(methodMap);
+          encTypeTag =
+            typeTagForId(methodMap, funcName, arity, info, language, groups) +
+            constTagForId(methodMap, funcName, arity, info, groups);
+        }
+      }
+    }
+
+    // Tier 2: extractFromNode fallback — for top-level method declarations
+    // without an enclosing class node (Go method_declaration, etc.)
+    if (arity === undefined && provider.methodExtractor?.extractFromNode) {
+      const nodeInfo = provider.methodExtractor.extractFromNode(funcNode, {
+        filePath,
+        language,
+      });
+      if (nodeInfo) {
+        arity = nodeInfo.parameters.some((p) => p.isVariadic)
+          ? undefined
+          : nodeInfo.parameters.length;
+      }
+    }
+  }
+
+  const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
+  return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
+}
+
+/**
+ * Walk up from funcNode to find the enclosing class/struct declaration node.
+ */
+function findClassNodeForMethod(
+  funcNode: SyntaxNode,
+  provider: LanguageProvider,
+): SyntaxNode | null {
+  let current = funcNode.parent;
+  while (current) {
+    if (provider.methodExtractor?.isTypeDeclaration(current)) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+/**
+ * Cached method info extraction for a class node. Delegates to the
+ * MethodExtractor and caches by classNode.startIndex.
+ */
+const _methodInfoCache = new Map<number, Map<string, MethodInfo>>();
+
+function getMethodInfoCached(
+  classNode: SyntaxNode,
+  provider: LanguageProvider,
+  filePath: string,
+  language: SupportedLanguages,
+): Map<string, MethodInfo> | undefined {
+  if (!provider.methodExtractor) return undefined;
+
+  const cacheKey = classNode.startIndex;
+  let cached = _methodInfoCache.get(cacheKey);
+  if (cached) return cached;
+
+  const result = provider.methodExtractor.extract(classNode, { filePath, language });
+  if (!result?.methods?.length) return undefined;
+
+  cached = new Map<string, MethodInfo>();
+  for (const method of result.methods) {
+    cached.set(`${method.name}:${method.line}`, method);
+  }
+  _methodInfoCache.set(cacheKey, cached);
+  return cached;
+}
+
+/** Clear the internal method info cache. Called between files. */
+export function clearFunctionArityIdCache(): void {
+  _methodInfoCache.clear();
 }
