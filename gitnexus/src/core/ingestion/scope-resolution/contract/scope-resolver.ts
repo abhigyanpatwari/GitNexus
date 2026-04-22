@@ -8,11 +8,19 @@
  *
  *   1. Implement `ScopeResolver` in
  *      `gitnexus/src/core/ingestion/languages/<lang>/scope-resolver.ts`.
- *      Six required fields (language, languageProvider,
+ *      Nine required fields (language, languageProvider,
  *      importEdgeReason, resolveImportTarget, mergeBindings,
  *      arityCompatibility, buildMro, populateOwners, isSuperReceiver)
- *      plus two optional booleans (propagatesReturnTypesAcrossImports,
- *      fieldFallbackOnMethodLookup).
+ *      plus optional toggles / hooks:
+ *        - propagatesReturnTypesAcrossImports (default true)
+ *        - fieldFallbackOnMethodLookup (default true — turn OFF for
+ *          statically-typed languages; the heuristic over-connects)
+ *        - unwrapCollectionAccessor — property-style collection views
+ *        - collapseMemberCallsByCallerTarget — one edge per caller/target
+ *        - populateNamespaceSiblings — cross-file implicit visibility
+ *        - hoistTypeBindingsToModule — enable ONLY when method return
+ *          types are stored on the enclosing Module scope; most
+ *          languages attach them to the class scope and leave this off
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
@@ -59,18 +67,109 @@
  *
  * ## Contract Invariants the orchestrator depends on
  *
- * (See the plan for the full list. Highlights only here.)
+ * These are non-obvious behaviors that the orchestrator and the
+ * existing Python + C# resolvers depend on. Future implementers will
+ * break them silently if not documented.
  *
- *   - **I1 — Phase 4 emission order is load-bearing.** Receiver-bound
- *     pass FIRST, then free-call fallback, then `emitReferencesViaLookup`.
- *   - **I3 — `propagateImportedReturnTypes` runs after finalize and
- *     before `resolveReferenceSites`.** It mutates non-frozen
- *     `Scope.typeBindings`. Do not freeze typeBindings in any
- *     downstream refactor.
+ *   - **I1 — Phase 4 emission order is load-bearing.** `emitReceiverBoundCalls`
+ *     runs FIRST (populates `handledSites`), then `emitFreeCallFallback`,
+ *     then `emitReferencesViaLookup` (consumes `handledSites` as a skip
+ *     set), then `emitImportEdges`. Reordering breaks same-name collision
+ *     resolution: the shared lookup can mis-resolve `app_metrics.get_metrics()`
+ *     to a same-named local function, and only the precise per-receiver
+ *     pass running first prevents the wrong edge.
+ *
+ *   - **I2 — `handledSites` semantics.** A site is added to
+ *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
+ *     Sites a pass touched but couldn't resolve do NOT get marked —
+ *     they still get a chance from the shared resolver. Exception:
+ *     the free-call fallback marks the site unconditionally after
+ *     attempting emission (even on dedup-collapse), because the
+ *     per-(caller, target) collapse semantics require multiple call
+ *     sites in the same caller body not produce multiple edges.
+ *
+ *   - **I3 — `propagateImportedReturnTypes` mutation timing.** The
+ *     pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
+ *     `draftToScope`, NOT frozen). It MUST run AFTER `finalizeScopeModel`
+ *     (so `indexes.bindings` is populated) and BEFORE
+ *     `resolveReferenceSites` (so resolution sees the propagated types).
+ *     The pass also re-runs `followChainPostFinalize` on every scope's
+ *     typeBindings because scope-extractor's pass-4 already ran and
+ *     missed any chain whose terminal lives in a foreign file.
+ *
+ *   - **I4 — `emitReceiverBoundCalls` case order.** Cases are evaluated
+ *     in this order; the FIRST that emits an edge wins:
+ *       1. super branch (`provider.isSuperReceiver(receiverName)`)
+ *       2. Case 0 compound (`receiverName` has `.` or `(`)
+ *       3. Case 1 namespace-receiver
+ *       4. Case 2 class-name receiver
+ *       5. Case 3 dotted typeBinding for namespace prefix
+ *       6. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *     Reordering or merging cases changes resolution semantics. The
+ *     numbering is part of the contract — keep the comments.
+ *
  *   - **I5 — Pre-seeding `seen` from `referenceIndex` is forbidden.**
- *     The receiver-bound pass relies on this never happening.
+ *     Earlier versions of the receiver-bound pass pre-populated `seen`
+ *     to avoid double-emit. After Phase 4 was reordered, pre-seeding
+ *     became actively harmful: it suppresses correct emissions for
+ *     sites the shared resolver happened to resolve to a wrong target.
+ *     The orchestrator MUST NOT pre-seed.
  *
- * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
+ *   - **I6 — `Scope.typeBindings` is mutable post-finalize.** `draftToScope`
+ *     (in `scope-extractor.ts`) builds `typeBindings` as a plain
+ *     `new Map(...)` — not frozen, intentionally. Passes below rely on
+ *     this. Do NOT freeze `typeBindings` in any downstream refactor.
+ *
+ *   - **I7 — `ScopeResolver` and `LanguageProvider` are distinct contracts.**
+ *     Python and C# pass the SAME function reference through both
+ *     interfaces where they share a hook name — no second copy of the
+ *     logic. Rationale for not collapsing them: lifecycles differ
+ *     (parsing-side runs once per file at extract time, emit-side runs
+ *     once per workspace at resolve time), and merging would create a
+ *     god-interface that complicates future migrations.
+ *
+ *   - **I8 — Post-finalize hooks may mutate `Scope.typeBindings` and
+ *     `indexes.bindings`.** `propagateImportedReturnTypes` and
+ *     `populateNamespaceSiblings` both write to these structures via
+ *     `as Map<...>` casts through `ReadonlyMap` facades. Downstream
+ *     consumers MUST NOT freeze or snapshot these maps before all
+ *     post-finalize hooks have run. The `ReadonlyMap<...>` type on
+ *     `ScopeResolutionIndexes` is a read-guidance surface for
+ *     consumers, NOT an immutability promise during the resolve phase.
+ *
+ * ## Semantic-model source of truth
+ *
+ * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
+ * is the single semantic model consumed by both the legacy DAG and the
+ * scope-resolution pipeline. Scope-resolution passes MUST NOT build a
+ * parallel parse representation; if a pass needs AST-level facts that
+ * `ParsedFile` doesn't expose, it should reuse the orchestrator's
+ * `treeCache` (see `RunScopeResolutionInput.treeCache`) rather than
+ * re-invoke `parser.parse(...)` on its own.
+ *
+ * ## Same-graph guarantee
+ *
+ * Edges emitted by `runScopeResolution` and edges emitted by the legacy
+ * DAG are indistinguishable to downstream consumers:
+ *   - Node identity: same `generateId(...)` helper, same qualified-name
+ *     keyspace, same File/Folder/Method/Class node labels.
+ *   - Edge vocabulary: `'import-resolved' | 'global' | 'local-call' |
+ *     'same-file' | 'interface-dispatch' | 'read' | 'write'` — both
+ *     paths emit the same reasons (see
+ *     `gitnexus/src/core/ingestion/call-processor.ts` for the legacy
+ *     emitter and `passes/receiver-bound-calls.ts` /
+ *     `passes/free-call-fallback.ts` for the scope-resolution emitters).
+ *   - Overload disambiguation: both paths use
+ *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
+ *     method has overloads — see `graph-bridge/ids.ts`.
+ *
+ * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
+ * runs both paths on every migrated language's fixture corpus and
+ * fails if the graph outputs diverge.
+ *
+ * Plan that introduced most of these invariants:
+ * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
 import type {

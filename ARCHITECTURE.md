@@ -215,9 +215,23 @@ Both hooks are optional on `LanguageProvider`. Ruby is the only current implemen
 The Call-Resolution DAG is the **legacy path**. RFC #909 Ring 3 introduces a parallel **scope-resolution pipeline** (next section) that replaces stages 1–6 with a scope-indexed registry lookup. Both paths ship side-by-side and are gated per-language via `MIGRATED_LANGUAGES` + the `REGISTRY_PRIMARY_<LANG>` env var.
 
 - **Unmigrated language** → Call-Resolution DAG runs; scope-resolution phase is a no-op.
-- **Migrated language** (currently: Python) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
+- **Migrated language** (currently: Python, C#) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
 - `import-processor` still populates `importMap` for migrated languages — heritage's `ctx.resolve` reads it to disambiguate parent classes. Only edge emission is gated.
 - CI runs BOTH paths for every migrated language on every PR (`.github/workflows/ci-scope-parity.yml`); both must pass.
+
+#### Same-graph guarantee
+
+Edges emitted by the scope-resolution pipeline and edges emitted by the legacy DAG are indistinguishable to downstream consumers (MCP tools, HTTP API, embeddings, group bridge):
+
+- **Node identity** — both paths use `generateId(...)` from `lib/utils.ts`, the same qualified-name keyspace, and the same node labels (`File`, `Folder`, `Class`, `Method`, `Function`, …). Overload disambiguation suffixes `parameterTypes` into the id consistently — see `scope-resolution/graph-bridge/ids.ts` and the legacy emitter in `call-processor.ts`.
+- **Edge vocabulary** — both paths emit the same reasons: `'import-resolved' | 'global' | 'local-call' | 'same-file' | 'interface-dispatch' | 'read' | 'write'`. Migrating a language must not change which reasons consumers see for previously-resolved edges.
+- **Confidence tier** — both paths attach a numeric `confidence` to each edge using the same scale.
+
+The CI parity workflow (`.github/workflows/ci-scope-parity.yml`) runs both paths against every migrated language's fixture corpus and fails on any divergence.
+
+#### Semantic-model source of truth
+
+`ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single semantic model both paths consume. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
 
 ---
 
@@ -260,6 +274,11 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `arityCompatibility` | Provider consumed by registry during `MethodRegistry.lookup` Step 2 |
 | `importEdgeReason` | Confidence-tier string for IMPORTS edge reason field |
 | `propagatesReturnTypesAcrossImports?` | Opt out of cross-file return-type propagation (default on) |
+| `fieldFallbackOnMethodLookup?` | Statically-typed languages turn this OFF — the heuristic over-connects (default on) |
+| `unwrapCollectionAccessor?` | Property-style collection views (`data.Values` on Dictionary-like receivers) — default off |
+| `collapseMemberCallsByCallerTarget?` | One CALLS edge per (caller, target) instead of per-site — default off |
+| `populateNamespaceSiblings?` | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache` |
+| `hoistTypeBindingsToModule?` | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level |
 
 ### Per-language registration
 
@@ -284,6 +303,9 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 | `registry-primary-flag.ts` | `MIGRATED_LANGUAGES` set + `isRegistryPrimary(lang)` |
 | `languages/python/index.ts` | Python `ScopeResolver` hooks + known-limitation docs |
 | `languages/python/captures.ts` | `emitPythonScopeCaptures` (honors cross-phase Tree cache) |
+| `languages/csharp/index.ts` | C# `ScopeResolver` hooks + known-limitation docs |
+| `languages/csharp/captures.ts` | `emitCsharpScopeCaptures` (honors cross-phase Tree cache) |
+| `languages/csharp/namespace-siblings.ts` | Cross-file implicit-namespace visibility hook (reads `treeCache`) |
 
 ### Performance notes
 
