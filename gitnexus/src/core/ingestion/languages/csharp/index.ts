@@ -53,6 +53,19 @@
  *   8. **Expression-bodied `=>` members** — handled by the method
  *      extractor, but receiver synthesis for `=> this.Field` shortcuts
  *      follows the same path as block-bodied methods.
+ *   9. **Regex-based namespace-sibling detection** —
+ *      `namespace-siblings.ts` scans raw file content for `namespace X`
+ *      and `using static X.Y` to compute same-namespace cross-file
+ *      visibility. Known misses (each acknowledged in-file):
+ *        a. `global using static X.Y;` is not detected.
+ *        b. Aliased `using static X = Y.Z;` is not detected.
+ *        c. Multi-namespace files: classes are attributed to the first
+ *           declared namespace only.
+ *        d. Preprocessor-gated `namespace` declarations are seen as
+ *           whichever branch is textually present.
+ *      See `namespace-siblings.ts`'s file-head comment for the full
+ *      rationale; refactor to AST-driven detection is deferred to a
+ *      separate PR.
  *
  * Shadow-harness corpus parity is the authoritative signal for which
  * of these matter in practice. The CI parity gate blocks any PR that

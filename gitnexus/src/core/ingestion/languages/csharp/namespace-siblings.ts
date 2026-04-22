@@ -19,6 +19,37 @@
  * sibling classes into each Namespace scope's finalized bindings
  * with `origin: 'namespace'` — a tier below `local` so a local
  * declaration still shadows a cross-file sibling with the same name.
+ *
+ * ## Why regex and not the AST
+ *
+ * The pass is file-path-driven and only needs two pieces of info per
+ * file: which `namespace X` it declares, and which `using static X.Y`
+ * it pulls in. The tree-sitter tree isn't available at the pass's
+ * call site (the scope-resolution orchestrator feeds raw
+ * `fileContents` — re-parsing just to count namespaces would cost
+ * more than the regex walk). We accept the regex's known misses (see
+ * below) in exchange for a cheap, allocation-free pass.
+ *
+ * ## Known misses
+ *
+ * The regex-based detection silently skips:
+ *   - `global using static X.Y;` (no plain `using static` token).
+ *   - Aliased `using static X = Y.Z;` (the `=` breaks the pattern).
+ *   - Attributed namespace declarations like `[assembly: X]
+ *     namespace Y` — the regex still matches `namespace Y` but any
+ *     trailing `[attr]` before `{` on the same line would fail.
+ *   - Multi-namespace files: the `first-wins` attribution below
+ *     groups all top-level classes under the first declared
+ *     namespace; truly interleaved namespaces are rare but lose
+ *     fidelity here.
+ *   - `namespace` identifiers split by preprocessor `#if` /
+ *     conditional compilation — the regex sees whichever branch is
+ *     textually present.
+ *
+ * The limitations are mirrored in `csharp/index.ts`'s ledger so the
+ * operator-visible surface and the in-code justification stay in sync.
+ * If additional precision is required, refactor to consume the
+ * `@namespace.name` capture via the extractor (deferred — separate PR).
  */
 
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
