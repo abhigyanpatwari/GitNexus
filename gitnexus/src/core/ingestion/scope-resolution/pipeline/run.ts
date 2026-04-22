@@ -142,7 +142,10 @@ export function runScopeResolution(
   if (provider.populateNamespaceSiblings !== undefined) {
     const fileContents = new Map<string, string>();
     for (const f of files) fileContents.set(f.path, f.content);
-    provider.populateNamespaceSiblings(parsedFiles, indexes, { fileContents });
+    provider.populateNamespaceSiblings(parsedFiles, indexes, {
+      fileContents,
+      treeCache,
+    });
   }
 
   // Cross-file return-type propagation (Contract Invariant I3 timing:

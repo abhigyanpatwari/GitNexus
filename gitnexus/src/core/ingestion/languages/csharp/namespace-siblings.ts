@@ -12,59 +12,97 @@
  * in the Service.cs scope chain.
  *
  * Implementation: after the finalize pass populates `indexes.bindings`
- * (from explicit `using` directives), walk every file's Namespace
- * scope(s), discover their names via a regex over the source text
- * (simpler than threading a `@declaration.namespace` capture through
- * the extractor), group classes by namespace, and inject cross-file
- * sibling classes into each Namespace scope's finalized bindings
- * with `origin: 'namespace'` — a tier below `local` so a local
- * declaration still shadows a cross-file sibling with the same name.
+ * (from explicit `using` directives), walk each file's tree-sitter
+ * AST for `namespace_declaration` / `file_scoped_namespace_declaration`
+ * and `using_directive` nodes. The orchestrator hands us its
+ * `treeCache` so files already parsed by `extractParsedFile` are
+ * re-used instead of re-parsed — `ParsedFile`'s underlying tree is
+ * the single source of truth. Group classes by namespace, and inject
+ * cross-file sibling classes into each Namespace scope's finalized
+ * bindings with `origin: 'namespace'` — a tier below `local` so a
+ * local declaration still shadows a cross-file sibling with the same
+ * name.
  *
- * ## Why regex and not the AST
- *
- * The pass is file-path-driven and only needs two pieces of info per
- * file: which `namespace X` it declares, and which `using static X.Y`
- * it pulls in. The tree-sitter tree isn't available at the pass's
- * call site (the scope-resolution orchestrator feeds raw
- * `fileContents` — re-parsing just to count namespaces would cost
- * more than the regex walk). We accept the regex's known misses (see
- * below) in exchange for a cheap, allocation-free pass.
- *
- * ## Known misses
- *
- * The regex-based detection silently skips:
- *   - `global using static X.Y;` (no plain `using static` token).
- *   - Aliased `using static X = Y.Z;` (the `=` breaks the pattern).
- *   - Attributed namespace declarations like `[assembly: X]
- *     namespace Y` — the regex still matches `namespace Y` but any
- *     trailing `[attr]` before `{` on the same line would fail.
- *   - Multi-namespace files: the `first-wins` attribution below
- *     groups all top-level classes under the first declared
- *     namespace; truly interleaved namespaces are rare but lose
- *     fidelity here.
- *   - `namespace` identifiers split by preprocessor `#if` /
- *     conditional compilation — the regex sees whichever branch is
- *     textually present.
- *
- * The limitations are mirrored in `csharp/index.ts`'s ledger so the
- * operator-visible surface and the in-code justification stay in sync.
- * If additional precision is required, refactor to consume the
- * `@namespace.name` capture via the extractor (deferred — separate PR).
+ * The tree-sitter walk is authoritative: it sees `global using static`,
+ * aliased `using static X = Y.Z;`, attributed namespace declarations,
+ * and preprocessor-guarded declarations correctly because the
+ * tree-sitter grammar parses them as real nodes (not textual
+ * coincidences).
  */
 
+import type { SyntaxNode } from 'tree-sitter';
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { getCsharpParser } from './query.js';
 
-/** `namespace Foo.Bar { ... }` or `namespace Foo.Bar;` — capture the dotted name. */
-const NAMESPACE_RE = /\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)\s*[;{]/g;
+interface CsharpFileStructure {
+  /** Declared namespace names in file source order. Empty array means
+   *  the file has no `namespace X;` / `namespace X { }` declaration
+   *  and sits in the default (global) namespace. */
+  readonly namespaces: readonly string[];
+  /** Dotted paths from `using static X.Y.Z;` (including
+   *  `global using static` and aliased `using static A = X.Y.Z;`). */
+  readonly usingStaticPaths: readonly string[];
+}
 
-/** `using static Foo.Bar.Baz;` — capture the dotted static-class path. */
-const USING_STATIC_RE = /\busing\s+static\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;/g;
+/** Build a structural view of a C# file by walking the tree-sitter
+ *  AST. Prefers `cachedTree` (handed in via `treeCache`) so we don't
+ *  re-parse files the orchestrator already parsed for `extractParsedFile`;
+ *  falls back to a fresh parse on cache miss. Parser singleton is
+ *  shared across calls. */
+function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
+  type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
+  const tree = (cachedTree as CsharpTree | undefined) ?? getCsharpParser().parse(content);
+  const namespaces: string[] = [];
+  const usingStaticPaths: string[] = [];
 
-/** Content of a file, keyed by filePath. Caller sources this from the
- *  pipeline's file list before the pass runs. */
+  const visit = (node: SyntaxNode): void => {
+    if (
+      node.type === 'namespace_declaration' ||
+      node.type === 'file_scoped_namespace_declaration'
+    ) {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode !== null) namespaces.push(nameNode.text);
+    } else if (node.type === 'using_directive') {
+      // Inspect the directive's own text for the `static` keyword
+      // (tree-sitter-c-sharp does not expose it as a named child).
+      // This is a single-node-scoped text inspection, not a whole-file
+      // regex, so it stays well within AST semantics.
+      if (/^\s*(?:global\s+)?using\s+static\s/.test(node.text)) {
+        // Path lives on the `name:` field when the using-directive is
+        // aliased (`using static A = X.Y.Z;`); otherwise it's the
+        // first named child.
+        const aliasField = node.childForFieldName('name');
+        let pathNode: SyntaxNode | null = null;
+        if (aliasField !== null) {
+          for (const c of node.namedChildren) {
+            if (c !== null && c.startIndex !== aliasField.startIndex) {
+              pathNode = c;
+              break;
+            }
+          }
+        } else {
+          pathNode = node.namedChildren[0] ?? null;
+        }
+        if (pathNode !== null) usingStaticPaths.push(pathNode.text);
+      }
+    }
+    for (const child of node.namedChildren) {
+      if (child !== null) visit(child);
+    }
+  };
+
+  visit(tree.rootNode);
+  return { namespaces, usingStaticPaths };
+}
+
+/** Content + (optional) pre-parsed tree-sitter trees keyed by filePath.
+ *  The orchestrator builds `fileContents` from the pipeline's file list;
+ *  `treeCache` is the same `scopeTreeCache` already populated by the
+ *  parse phase, so cache hits avoid a second `parser.parse()`. */
 export interface CsharpSiblingInputs {
   readonly fileContents: ReadonlyMap<string, string>;
+  readonly treeCache?: { get(filePath: string): unknown };
 }
 
 /**
@@ -78,6 +116,18 @@ export function populateCsharpNamespaceSiblings(
   indexes: ScopeResolutionIndexes,
   inputs: CsharpSiblingInputs,
 ): void {
+  // Build a structural view (namespaces + using-static paths) per
+  // file once up-front. Reuses the orchestrator's `treeCache` so
+  // files already parsed by `extractParsedFile` don't get re-parsed
+  // here — single-source-of-truth for the AST.
+  const structureByFile = new Map<string, CsharpFileStructure>();
+  for (const parsed of parsedFiles) {
+    const content = inputs.fileContents.get(parsed.filePath);
+    if (content === undefined) continue;
+    const cachedTree = inputs.treeCache?.get(parsed.filePath);
+    structureByFile.set(parsed.filePath, extractFileStructure(content, cachedTree));
+  }
+
   // Group namespace scopes by their dotted name. Each entry carries
   // the scope id so we can inject bindings post-hoc, plus the
   // file's own class-like defs for cross-pollination.
@@ -96,21 +146,12 @@ export function populateCsharpNamespaceSiblings(
   };
 
   for (const parsed of parsedFiles) {
-    const content = inputs.fileContents.get(parsed.filePath);
-    if (content === undefined) continue;
+    const struct = structureByFile.get(parsed.filePath);
+    if (struct === undefined) continue;
 
-    // Collect declared namespace names from source. Order matters for
-    // matching scope to name when a file has multiple namespaces:
-    // scope-extractor emits Namespace scopes in source order, so the
-    // first regex match aligns with the first Namespace scope, etc.
-    const names: string[] = [];
-    NAMESPACE_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = NAMESPACE_RE.exec(content)) !== null) names.push(m[1]!);
-    // Files with no `namespace X;` declaration still share visibility
-    // — they all live in the default (global) namespace. Use the
-    // empty-string bucket key for this case.
-    if (names.length === 0) names.push('');
+    // Declared namespace names, source order (AST walk visits children
+    // left-to-right, matching the scope-extractor's ordering).
+    const names = struct.namespaces.length > 0 ? [...struct.namespaces] : [''];
 
     const namespaceScopes = parsed.scopes.filter((s) => s.kind === 'Namespace');
     // With file-scoped namespaces (`namespace X;`), the Namespace
@@ -181,12 +222,13 @@ export function populateCsharpNamespaceSiblings(
     >;
 
     // Accessible namespaces = this file's own namespaces + every
-    // `using namespace X;` target.
+    // `using namespace X;` target. Source of truth is the cached AST
+    // structure captured above.
     const accessibleNamespaces = new Set<string>();
-    const fileContent = inputs.fileContents.get(parsed.filePath) ?? '';
-    NAMESPACE_RE.lastIndex = 0;
-    let nm: RegExpExecArray | null;
-    while ((nm = NAMESPACE_RE.exec(fileContent)) !== null) accessibleNamespaces.add(nm[1]!);
+    const struct = structureByFile.get(parsed.filePath);
+    if (struct !== undefined) {
+      for (const n of struct.namespaces) accessibleNamespaces.add(n);
+    }
     if (accessibleNamespaces.size === 0) accessibleNamespaces.add('');
     for (const imp of parsed.parsedImports) {
       if (imp.kind === 'namespace' && imp.targetRaw !== null) {
@@ -223,17 +265,15 @@ export function populateCsharpNamespaceSiblings(
   // `using static X.Y.Z;` — expose every public static method of
   // class Z as a free-callable binding in the importer's module
   // scope, so `Record(...)` (without `Logger.` qualifier) resolves
-  // to `Logger.Record`.
+  // to `Logger.Record`. AST walk above captured these (including
+  // `global using static` and aliased forms).
   for (const parsed of parsedFiles) {
-    const content = inputs.fileContents.get(parsed.filePath);
-    if (content === undefined) continue;
+    const struct = structureByFile.get(parsed.filePath);
+    if (struct === undefined) continue;
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
-    USING_STATIC_RE.lastIndex = 0;
-    let sm: RegExpExecArray | null;
-    while ((sm = USING_STATIC_RE.exec(content)) !== null) {
-      const fullPath = sm[1]!;
+    for (const fullPath of struct.usingStaticPaths) {
       const lastDot = fullPath.lastIndexOf('.');
       if (lastDot === -1) continue;
       const className = fullPath.slice(lastDot + 1);

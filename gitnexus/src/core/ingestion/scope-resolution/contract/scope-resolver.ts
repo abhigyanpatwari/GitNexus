@@ -256,7 +256,16 @@ export interface ScopeResolver {
   readonly populateNamespaceSiblings?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
-    ctx: { readonly fileContents: ReadonlyMap<string, string> },
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      /** Pre-parsed tree-sitter trees keyed by file path. Same cache
+       *  the orchestrator hands to `extractParsedFile`; passing it
+       *  through here lets per-language hooks read the AST without
+       *  triggering a second parse. Cache miss = the hook re-parses
+       *  itself; the cache is opt-in for hooks that need AST-level
+       *  facts beyond what `ParsedFile` exposes. */
+      readonly treeCache?: { get(filePath: string): unknown };
+    },
   ) => void;
 
   /**
