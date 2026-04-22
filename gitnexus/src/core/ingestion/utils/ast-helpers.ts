@@ -619,7 +619,7 @@ export function computeFunctionArityId(
       const info = methodMap?.get(`${funcName}:${defLine}`);
       if (info) {
         arity = info.parameters.some((p) => p.isVariadic) ? undefined : info.parameters.length;
-        if (methodMap && arity !== undefined) {
+        if (arity !== undefined) {
           const groups = buildCollisionGroups(methodMap);
           encTypeTag =
             typeTagForId(methodMap, funcName, arity, info, language, groups) +

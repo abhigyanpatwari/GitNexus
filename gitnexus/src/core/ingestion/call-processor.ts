@@ -47,6 +47,7 @@ import {
   genericFuncName,
   inferFunctionLabel,
   computeFunctionArityId,
+  clearFunctionArityIdCache,
 } from './utils/ast-helpers.js';
 import {
   countCallArguments,
@@ -1234,6 +1235,7 @@ export const processCalls = async (
     }
 
     ctx.clearCache();
+    clearFunctionArityIdCache();
   }
 
   // ── Resolve deferred write-access edges ──

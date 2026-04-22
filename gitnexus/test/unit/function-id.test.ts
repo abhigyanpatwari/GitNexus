@@ -3,8 +3,10 @@ import Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { computeFunctionArityId } from '../../src/core/ingestion/utils/ast-helpers.js';
-import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
+import {
+  computeFunctionArityId,
+  findDescendant,
+} from '../../src/core/ingestion/utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,22 +17,6 @@ function parseGo(code: string): { tree: Parser.Tree; parser: Parser } {
   parser.setLanguage(Go);
   const tree = parser.parse(code);
   return { tree, parser };
-}
-
-function findNode(
-  root: Parser.Tree['rootNode'],
-  predicate: (n: SyntaxNode) => boolean,
-): SyntaxNode | null {
-  const stack: SyntaxNode[] = [root];
-  while (stack.length) {
-    const node = stack.pop()!;
-    if (predicate(node)) return node;
-    for (let i = node.namedChildCount - 1; i >= 0; i--) {
-      const child = node.namedChild(i);
-      if (child) stack.push(child);
-    }
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +39,7 @@ describe('computeFunctionArityId', () => {
 
     const { tree } = parseGo(code);
 
-    const methodDecl = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
+    const methodDecl = findDescendant(tree.rootNode, 'method_declaration');
     expect(methodDecl).not.toBeNull();
 
     const id = computeFunctionArityId(methodDecl!, 'example.go', provider, SupportedLanguages.Go);
@@ -64,7 +50,7 @@ describe('computeFunctionArityId', () => {
     const code = ['package example', '', 'func callee() {}'].join('\n');
 
     const { tree } = parseGo(code);
-    const funcDecl = findNode(tree.rootNode, (n) => n.type === 'function_declaration');
+    const funcDecl = findDescendant(tree.rootNode, 'function_declaration');
     expect(funcDecl).not.toBeNull();
 
     const id = computeFunctionArityId(funcDecl!, 'util.go', provider, SupportedLanguages.Go);
@@ -83,7 +69,7 @@ describe('computeFunctionArityId', () => {
     ].join('\n');
 
     const { tree } = parseGo(code);
-    const methodDecl = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
+    const methodDecl = findDescendant(tree.rootNode, 'method_declaration');
     expect(methodDecl).not.toBeNull();
 
     const id = computeFunctionArityId(methodDecl!, 'service.go', provider, SupportedLanguages.Go);
