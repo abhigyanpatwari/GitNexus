@@ -257,4 +257,22 @@ export interface ScopeResolver {
     indexes: ScopeResolutionIndexes,
     ctx: { readonly fileContents: ReadonlyMap<string, string> },
   ) => void;
+
+  /**
+   * Whether the compound-receiver resolver should walk up from a
+   * class scope to ancestor (Module) scopes when looking up a
+   * method's return-type typeBinding. Default `false`.
+   *
+   * Set `true` when a language stores method return-type bindings at
+   * Module scope (rather than on each class) so cross-file return-
+   * type propagation can mirror them. Without this walk-up, chain
+   * resolution fails for methods whose return types were hoisted to
+   * module scope.
+   *
+   * Languages that attach return-type bindings directly to the class
+   * scope leave this undefined — enabling the walk-up for them would
+   * add an unnecessary branch and risk picking up unrelated module-
+   * level bindings.
+   */
+  readonly hoistTypeBindingsToModule?: boolean;
 }

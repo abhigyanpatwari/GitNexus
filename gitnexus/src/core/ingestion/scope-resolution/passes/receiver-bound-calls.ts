@@ -56,6 +56,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'fieldFallbackOnMethodLookup'
   | 'collapseMemberCallsByCallerTarget'
   | 'unwrapCollectionAccessor'
+  | 'hoistTypeBindingsToModule'
 >;
 
 export function emitReceiverBoundCalls(
@@ -74,6 +75,12 @@ export function emitReceiverBoundCalls(
   const seen = new Set<string>();
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
   const collapse = provider.collapseMemberCallsByCallerTarget === true;
+  const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
+  const compoundOpts = {
+    fieldFallback,
+    unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
+    hoistTypeBindingsToModule,
+  };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
   // Maps Interface graph-id → list of implementor class scope-def-ids.
@@ -187,7 +194,7 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           index,
-          { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
+          compoundOpts,
         );
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
@@ -314,7 +321,7 @@ export function emitReceiverBoundCalls(
           typeRef.declaredAtScope,
           scopes,
           index,
-          { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
+          compoundOpts,
         );
         if (ownerDef === undefined) {
           ownerDef = resolveCompoundReceiverClass(
@@ -322,7 +329,7 @@ export function emitReceiverBoundCalls(
             typeRef.declaredAtScope,
             scopes,
             index,
-            { fieldFallback, unwrapCollectionAccessor: provider.unwrapCollectionAccessor },
+            compoundOpts,
           );
         }
         if (ownerDef !== undefined) {

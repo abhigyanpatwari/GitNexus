@@ -82,6 +82,12 @@ const csharpScopeResolver: ScopeResolver = {
   // `(caller, target)` — multiple `g.Greet(...)` sites from Main
   // yield ONE edge, not one per site.
   collapseMemberCallsByCallerTarget: true,
+
+  // C# hoists method return-type bindings to the enclosing Module
+  // scope so `propagateImportedReturnTypes` can mirror them across
+  // files. The compound-receiver walker needs to walk up from the
+  // class scope to find them; see the contract field for rationale.
+  hoistTypeBindingsToModule: true,
 };
 
 export { csharpScopeResolver };
