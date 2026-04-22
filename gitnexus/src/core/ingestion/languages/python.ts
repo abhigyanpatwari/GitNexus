@@ -98,7 +98,7 @@ export const pythonProvider = defineLanguage({
   interpretTypeBinding: interpretPythonTypeBinding,
   bindingScopeFor: pythonBindingScopeFor,
   importOwningScope: pythonImportOwningScope,
-  mergeBindings: pythonMergeBindings,
+  mergeBindings: (_scope, bindings) => pythonMergeBindings(bindings),
   receiverBinding: pythonReceiverBinding,
   arityCompatibility: pythonArityCompatibility,
   resolveImportTarget: resolvePythonImportTarget,
