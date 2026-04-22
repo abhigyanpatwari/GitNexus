@@ -192,3 +192,231 @@ describe('setupClaudeCode', () => {
     });
   });
 });
+
+describe('setupCodeBuddy', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+  let platformDescriptor: PropertyDescriptor | undefined;
+
+  const setPlatform = (value: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', {
+      value,
+      configurable: true,
+    });
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-codebuddy-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    // Create ~/.codebuddy for both MCP config and skills
+    await fs.mkdir(path.join(tempHome, '.codebuddy'), { recursive: true });
+
+    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+
+    if (platformDescriptor) {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('writes MCP config to ~/.codebuddy/mcp.json', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.codebuddy', 'mcp.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('skips when ~/.codebuddy directory does not exist', async () => {
+    await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(path.join(tempHome, '.codebuddy', 'mcp.json'))).rejects.toThrow();
+  });
+
+  it('preserves existing config in ~/.codebuddy/mcp.json', async () => {
+    setPlatform('linux');
+
+    await fs.writeFile(
+      path.join(tempHome, '.codebuddy', 'mcp.json'),
+      JSON.stringify({ existingKey: 'keep-me', mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.codebuddy', 'mcp.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.existingKey).toBe('keep-me');
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('installs skills to ~/.codebuddy/skills/', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillsDir = path.join(tempHome, '.codebuddy', 'skills');
+    const exists = await fs
+      .stat(skillsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(true);
+  });
+
+  it('skips skills when ~/.codebuddy/ does not exist', async () => {
+    setPlatform('linux');
+
+    await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillsDir = path.join(tempHome, '.codebuddy', 'skills');
+    const exists = await fs
+      .stat(skillsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(false);
+  });
+});
+
+describe('setupQoder', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+  let platformDescriptor: PropertyDescriptor | undefined;
+
+  const setPlatform = (value: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', {
+      value,
+      configurable: true,
+    });
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-qoder-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    // Create ~/.qoder for both MCP config and skills
+    await fs.mkdir(path.join(tempHome, '.qoder'), { recursive: true });
+
+    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+
+    if (platformDescriptor) {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('writes MCP config to ~/.qoder/mcp.json', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.qoder', 'mcp.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('skips when ~/.qoder directory does not exist', async () => {
+    await fs.rm(path.join(tempHome, '.qoder'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(path.join(tempHome, '.qoder', 'mcp.json'))).rejects.toThrow();
+  });
+
+  it('preserves existing config in ~/.qoder/mcp.json', async () => {
+    setPlatform('linux');
+
+    await fs.writeFile(
+      path.join(tempHome, '.qoder', 'mcp.json'),
+      JSON.stringify({ existingKey: 'keep-me', mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.qoder', 'mcp.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.existingKey).toBe('keep-me');
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('installs skills to ~/.qoder/skills/', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillsDir = path.join(tempHome, '.qoder', 'skills');
+    const exists = await fs
+      .stat(skillsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(true);
+  });
+
+  it('skips skills when ~/.qoder/ does not exist', async () => {
+    setPlatform('linux');
+
+    await fs.rm(path.join(tempHome, '.qoder'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillsDir = path.join(tempHome, '.qoder', 'skills');
+    const exists = await fs
+      .stat(skillsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(false);
+  });
+});

@@ -310,6 +310,42 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
   await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
 }
 
+async function setupCodeBuddy(result: SetupResult): Promise<void> {
+  const codebuddyDir = path.join(os.homedir(), '.codebuddy');
+  if (!(await dirExists(codebuddyDir))) {
+    result.skipped.push('CodeBuddy (not installed)');
+    return;
+  }
+
+  const mcpPath = path.join(codebuddyDir, 'mcp.json');
+  try {
+    const existing = await readJsonFile(mcpPath);
+    const updated = mergeMcpConfig(existing);
+    await writeJsonFile(mcpPath, updated);
+    result.configured.push('CodeBuddy');
+  } catch (err: any) {
+    result.errors.push(`CodeBuddy: ${err.message}`);
+  }
+}
+
+async function setupQoder(result: SetupResult): Promise<void> {
+  const qoderDir = path.join(os.homedir(), '.qoder');
+  if (!(await dirExists(qoderDir))) {
+    result.skipped.push('Qoder (not installed)');
+    return;
+  }
+
+  const mcpPath = path.join(qoderDir, 'mcp.json');
+  try {
+    const existing = await readJsonFile(mcpPath);
+    const updated = mergeMcpConfig(existing);
+    await writeJsonFile(mcpPath, updated);
+    result.configured.push('Qoder');
+  } catch (err: any) {
+    result.errors.push(`Qoder: ${err.message}`);
+  }
+}
+
 async function setupCodex(result: SetupResult): Promise<void> {
   const codexDir = path.join(os.homedir(), '.codex');
   if (!(await dirExists(codexDir))) {
@@ -454,6 +490,44 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 }
 
 /**
+ * Install global CodeBuddy skills to ~/.codebuddy/skills/
+ */
+async function installCodeBuddySkills(result: SetupResult): Promise<void> {
+  const codebuddyDir = path.join(os.homedir(), '.codebuddy');
+  if (!(await dirExists(codebuddyDir))) return;
+
+  const skillsDir = path.join(codebuddyDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(
+        `CodeBuddy skills (${installed.length} skills → ~/.codebuddy/skills/)`,
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`CodeBuddy skills: ${err.message}`);
+  }
+}
+
+/**
+ * Install global Qoder skills to ~/.qoder/skills/
+ */
+async function installQoderSkills(result: SetupResult): Promise<void> {
+  const qoderDir = path.join(os.homedir(), '.qoder');
+  if (!(await dirExists(qoderDir))) return;
+
+  const skillsDir = path.join(qoderDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Qoder skills (${installed.length} skills → ~/.qoder/skills/)`);
+    }
+  } catch (err: any) {
+    result.errors.push(`Qoder skills: ${err.message}`);
+  }
+}
+
+/**
  * Install global Codex skills to ~/.agents/skills/gitnexus/
  */
 async function installCodexSkills(result: SetupResult): Promise<void> {
@@ -493,6 +567,8 @@ export const setupCommand = async () => {
   await setupCursor(result);
   await setupClaudeCode(result);
   await setupOpenCode(result);
+  await setupCodeBuddy(result);
+  await setupQoder(result);
   await setupCodex(result);
 
   // Install global skills for platforms that support them
@@ -500,6 +576,8 @@ export const setupCommand = async () => {
   await installClaudeCodeHooks(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
+  await installCodeBuddySkills(result);
+  await installQoderSkills(result);
   await installCodexSkills(result);
 
   // Print results

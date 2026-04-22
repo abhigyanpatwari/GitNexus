@@ -123,18 +123,26 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
-  it('installs skills files', async () => {
+  it('does not install skills to .claude/skills/gitnexus/', async () => {
+    const stats = { nodes: 10 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    // Should NOT create .claude/skills/gitnexus/ during analyze
+    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
+    const exists = await fs
+      .stat(skillsDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(false);
+  });
+
+  it('does not install skills to ~/.codebuddy/skills/ or ~/.qoder/skills/', async () => {
     const stats = { nodes: 10 };
     const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
-    // Should have installed skill files
-    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
-    try {
-      const entries = await fs.readdir(skillsDir, { recursive: true });
-      expect(entries.length).toBeGreaterThan(0);
-    } catch {
-      // Skills dir may not be created if skills source doesn't exist in test context
-    }
+    // analyze should not install any skills
+    expect(result.files.find((f) => f.includes('.codebuddy/skills/'))).toBeUndefined();
+    expect(result.files.find((f) => f.includes('.qoder/skills/'))).toBeUndefined();
   });
 
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
