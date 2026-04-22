@@ -46,9 +46,8 @@ import {
   findEnclosingClassInfo,
   genericFuncName,
   inferFunctionLabel,
+  computeFunctionArityId,
 } from './utils/ast-helpers.js';
-import { typeTagForId, constTagForId, buildCollisionGroups } from './utils/method-props.js';
-import type { MethodInfo } from './method-types.js';
 import {
   countCallArguments,
   inferCallForm,
@@ -316,14 +315,6 @@ const TYPE_PRESERVING_METHODS = new Set([
   'orElseThrow', // Java Optional
 ]);
 
-/** Cache for method extraction results in findEnclosingFunction fallback path.
- *  Keyed by classNode.id to avoid re-extracting the same class body per call site.
- *  Cleared between files at line ~611 in the processCalls file loop. */
-const enclosingFnExtractCache = new Map<
-  number,
-  import('./method-types.js').ExtractedMethods | null
->();
-
 /**
  * Walk up the AST from a node to find the enclosing function/method.
  * Returns null if the call is at module/file level (top-level code).
@@ -367,70 +358,13 @@ const findEnclosingFunction = (
           }
         }
 
-        // Fallback: qualify the generated ID to match definition-phase node IDs
-        let finalLabel = label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current, label);
-          if (override !== null) finalLabel = override;
+        // Fallback: compute ID via shared function (consistent with definition phase)
+        const encLang = getLanguageFromFilename(filePath);
+        if (encLang) {
+          return computeFunctionArityId(current, filePath, provider, encLang);
         }
-        const classInfo2 = findEnclosingClassInfo(current, filePath);
-        const qualifiedName = classInfo2 ? `${classInfo2.className}.${funcName}` : funcName;
-        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
-        const language = getLanguageFromFilename(filePath);
-        let arity: number | undefined;
-        let encTypeTag = '';
-        if (
-          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
-          provider.methodExtractor &&
-          language
-        ) {
-          // Get class method map (cached per classNode.id) and look up current method
-          // by funcName:line. This avoids per-call-site extractFromNode AST walks.
-          let classNode = current.parent;
-          while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
-            classNode = classNode.parent;
-          }
-          let info: MethodInfo | undefined;
-          if (classNode) {
-            let extracted = enclosingFnExtractCache.get(classNode.id);
-            if (extracted === undefined) {
-              extracted =
-                provider.methodExtractor.extract(classNode, { filePath, language }) ?? null;
-              enclosingFnExtractCache.set(classNode.id, extracted);
-            }
-            if (extracted?.methods?.length) {
-              const defLine = current.startPosition.row + 1;
-              info = extracted.methods.find((m) => m.name === funcName && m.line === defLine);
-              if (info) {
-                arity = info.parameters.some((p) => p.isVariadic)
-                  ? undefined
-                  : info.parameters.length;
-              }
-              if (arity !== undefined && info) {
-                const methodMap = new Map<string, MethodInfo>();
-                for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
-                const groups = buildCollisionGroups(methodMap);
-                encTypeTag =
-                  typeTagForId(methodMap, funcName, arity, info, language, groups) +
-                  constTagForId(methodMap, funcName, arity, info, groups);
-              }
-            }
-          }
-          // Fallback: extractFromNode for top-level methods without a class
-          if (!info && provider.methodExtractor.extractFromNode) {
-            const nodeInfo = provider.methodExtractor.extractFromNode(current, {
-              filePath,
-              language,
-            });
-            if (nodeInfo) {
-              arity = nodeInfo.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : nodeInfo.parameters.length;
-            }
-          }
-        }
-        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
-        return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
+        // Last resort for languages without a registered provider
+        return generateId(label, `${filePath}:${funcName}`);
       }
     }
 
@@ -457,78 +391,13 @@ const findEnclosingFunction = (
             return resolved.candidates[0].nodeId;
           }
         }
-        let finalLabel = customResult.label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current.previousSibling!, finalLabel);
-          if (override !== null) finalLabel = override;
-        }
-        const classInfo2 = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
-        const qualifiedName = classInfo2
-          ? `${classInfo2.className}.${customResult.funcName}`
-          : customResult.funcName;
-        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
         const sigNode = current.previousSibling ?? current;
-        const language2 = getLanguageFromFilename(filePath);
-        let arity2: number | undefined;
-        let encTypeTag2 = '';
-        if (
-          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
-          provider.methodExtractor &&
-          language2
-        ) {
-          let classNode2 = (current.previousSibling ?? current).parent;
-          while (classNode2 && !provider.methodExtractor.isTypeDeclaration(classNode2)) {
-            classNode2 = classNode2.parent;
-          }
-          let info2: MethodInfo | undefined;
-          if (classNode2) {
-            let extracted2 = enclosingFnExtractCache.get(classNode2.id);
-            if (extracted2 === undefined) {
-              extracted2 =
-                provider.methodExtractor.extract(classNode2, { filePath, language: language2 }) ??
-                null;
-              enclosingFnExtractCache.set(classNode2.id, extracted2);
-            }
-            if (extracted2?.methods?.length) {
-              const defLine2 = sigNode.startPosition.row + 1;
-              info2 = extracted2.methods.find(
-                (m) => m.name === customResult.funcName && m.line === defLine2,
-              );
-              if (info2) {
-                arity2 = info2.parameters.some((p) => p.isVariadic)
-                  ? undefined
-                  : info2.parameters.length;
-              }
-              if (arity2 !== undefined && info2) {
-                const methodMap = new Map<string, MethodInfo>();
-                for (const m of extracted2.methods) methodMap.set(`${m.name}:${m.line}`, m);
-                const groups2 = buildCollisionGroups(methodMap);
-                encTypeTag2 =
-                  typeTagForId(
-                    methodMap,
-                    customResult.funcName,
-                    arity2,
-                    info2,
-                    language2,
-                    groups2,
-                  ) + constTagForId(methodMap, customResult.funcName, arity2, info2, groups2);
-              }
-            }
-          }
-          if (!info2 && provider.methodExtractor.extractFromNode) {
-            const nodeInfo = provider.methodExtractor.extractFromNode(sigNode, {
-              filePath,
-              language: language2,
-            });
-            if (nodeInfo) {
-              arity2 = nodeInfo.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : nodeInfo.parameters.length;
-            }
-          }
+        const encLang2 = getLanguageFromFilename(filePath);
+        if (encLang2) {
+          return computeFunctionArityId(sigNode, filePath, provider, encLang2);
         }
-        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
-        return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
+        // Last resort for languages without a registered provider
+        return generateId(customResult.label, `${filePath}:${customResult.funcName}`);
       }
     }
 
@@ -864,7 +733,6 @@ export const processCalls = async (
   for (let i = 0; i < prepared.length; i++) {
     const { file, language, provider, tree, matches, parentMap, typeEnv } = prepared[i];
 
-    enclosingFnExtractCache.clear();
     onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 
