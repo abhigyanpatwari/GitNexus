@@ -198,6 +198,100 @@ describe('C# member-call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Collection-accessor unwrap (Unit 6c): data.Values on Dictionary<K,V>
+// resolves to the value type's class.
+// ---------------------------------------------------------------------------
+
+describe('C# collection-accessor unwrap', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-collection-accessor'), () => {});
+  }, 60000);
+
+  it('resolves RenderAll → Render through Dictionary<string, Widget>.Values', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const renderCall = calls.find((c) => c.source === 'RenderAll' && c.target === 'Render');
+    expect(renderCall).toBeDefined();
+    expect(renderCall!.targetFilePath).toBe('Models/Widget.cs');
+    expect(['import-resolved', 'global']).toContain(renderCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// using-static member injection (Unit 6d): `using static X.Y;` exposes Y's
+// static methods as free-callables in the consumer.
+// ---------------------------------------------------------------------------
+
+describe('C# using static member injection', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-using-static'), () => {});
+  }, 60000);
+
+  it('resolves Compute → Square via `using static Helpers.MathUtils;`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sqCall = calls.find((c) => c.source === 'Compute' && c.target === 'Square');
+    expect(sqCall).toBeDefined();
+    expect(sqCall!.targetFilePath).toBe('Helpers/MathUtils.cs');
+    expect(['import-resolved', 'global']).toContain(sqCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overload disambiguation + interface dispatch (Unit 6e).
+// ---------------------------------------------------------------------------
+
+describe('C# overload disambiguation and interface dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-overload-interface'), () => {});
+  }, 60000);
+
+  it('Run → Log resolves to the 2-arg overload (arity narrowing)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Log');
+    // With collapse-by-caller-target enabled and arity narrowing, Run
+    // should bind to the 2-arg overload only — not the 1-arg sibling.
+    expect(logCalls.length).toBe(1);
+    // Verify targetId points to the 2-arg overload by checking the
+    // target Method node's parameterTypes length.
+    const target = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(target).toBeDefined();
+    const parameterTypes = (target!.properties as { parameterTypes?: string[] }).parameterTypes;
+    expect(parameterTypes).toBeDefined();
+    expect(parameterTypes!.length).toBe(2);
+  });
+
+  it('Run → Greet emits primary edge to IGreeter.Greet plus interface-dispatch siblings', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Greet');
+    // One primary edge (IGreeter.Greet) + two interface-dispatch edges
+    // (EnGreeter.Greet, FrGreeter.Greet).
+    expect(greetCalls.length).toBe(3);
+
+    const primaries = greetCalls.filter((c) => c.rel.reason !== 'interface-dispatch');
+    expect(primaries.length).toBe(1);
+    expect(primaries[0].targetFilePath).toBe('Greeting/IGreeter.cs');
+
+    const fanout = greetCalls.filter((c) => c.rel.reason === 'interface-dispatch');
+    expect(fanout.length).toBe(2);
+    const fanoutPaths = fanout.map((c) => c.targetFilePath).sort();
+    expect(fanoutPaths).toEqual(['Greeting/EnGreeter.cs', 'Greeting/FrGreeter.cs']);
+  });
+
+  it('interface-dispatch fan-out excludes the primary target (no self-edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = calls.filter((c) => c.source === 'Run' && c.rel.reason === 'interface-dispatch');
+    for (const edge of fanout) {
+      expect(edge.targetFilePath).not.toBe('Greeting/IGreeter.cs');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Primary constructor resolution: class User(string name, int age) { }
 // ---------------------------------------------------------------------------
 
