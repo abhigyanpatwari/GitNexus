@@ -224,7 +224,7 @@ describe('splitRelCsvByLabelPair', () => {
 
     // Wait for readline to process, then error while paused on drain
     await new Promise((r) => setTimeout(r, 50));
-    expect(streams.length).toBeGreaterThan(0);
+    expect(streams.length).toBe(1);
     streams[0].triggerError(new Error('disk full'));
 
     await expect(promise).rejects.toThrow('disk full');
@@ -252,9 +252,9 @@ describe('splitRelCsvByLabelPair', () => {
     // in afterEach). Poll until the harness reaches the intended state.
     await expect.poll(() => streams.length, { interval: 10, timeout: 10_000 }).toBe(1);
     streams[0].unblock();
-    await expect
-      .poll(() => streams.length, { interval: 10, timeout: 10_000 })
-      .toBeGreaterThanOrEqual(2);
+    // Exactly two pair keys before the third CSV row: Function|Class then
+    // File|Method; the loop is blocked on the second stream's header drain.
+    await expect.poll(() => streams.length, { interval: 10, timeout: 10_000 }).toBe(2);
     streams[0].triggerError(new Error('EMFILE'));
 
     await expect(promise).rejects.toThrow('EMFILE');
