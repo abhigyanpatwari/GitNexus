@@ -146,6 +146,18 @@ Two publish workflows ship `gitnexus` to npm:
   # then redispatch the workflow with force: true
   ```
 
+  **Docker Hub credentials (maintainers):** CI logs in with a **Docker Hub
+  Personal Access Token** only — do not add the Docker account password to
+  GitHub. In Docker Hub: *Account settings → Security → New access token*
+  (read/write for the `akonlabs/gitnexus` and `akonlabs/gitnexus-web`
+  repositories). Store the token as repository secret **`DOCKERHUB_TOKEN`**.
+  Store the Docker Hub **username** (Docker ID or bot user that owns the
+  token) as repository variable **`DOCKERHUB_USERNAME`** (preferred, not
+  sensitive) or, for legacy setups, as secret `DOCKERHUB_USERNAME`. The
+  `docker/login-action` step maps the PAT to its `password` input per Docker’s
+  documented GitHub Actions pattern; OIDC-only push to `docker.io` is not
+  supported by Hub yet.
+
   **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
   are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
   the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.

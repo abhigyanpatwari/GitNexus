@@ -140,14 +140,20 @@ jobs:
       # signatures. GHCR remains authoritative (it is the registry the
       # ClusterImagePolicy globs against by default), but Docker Hub is the
       # registry most users reach for first, so we publish there too.
-      # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a scoped
-      # access token, NOT the account password) with write access to the
-      # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
+      # Docker Hub auth is token-only in practice: create a Personal Access Token
+      # (Hub → Account settings → Security → New access token) with push scope to
+      # `akonlabs/gitnexus` and `akonlabs/gitnexus-web`. Never store the account
+      # password in GitHub — `docker/login-action` still names the token field
+      # `password` (Docker API), but the value must be the PAT.
+      # Prefer repo Variable `DOCKERHUB_USERNAME` (Docker ID or bot user) + Secret
+      # `DOCKERHUB_TOKEN` (the PAT). `secrets.DOCKERHUB_USERNAME` remains supported
+      # for older setups. OIDC-only login to docker.io is not available yet
+      # (docker/roadmap#314).
       - name: Log in to Docker Hub
         if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Computes image tags and labels from the verified semver tag:
