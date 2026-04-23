@@ -153,12 +153,14 @@ describe('sequential native parser availability', () => {
   it('skips Swift files in processParsing when the native parser is unavailable', async () => {
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
 
-    await expect(processParsing(
-      createKnowledgeGraph(),
-      [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
-      createSymbolTable(),
-      createASTCache(),
-    )).resolves.toBeNull();
+    await expect(
+      processParsing(
+        createKnowledgeGraph(),
+        [{ path: 'App.swift', content: 'class AppViewController: UIViewController {}' }],
+        createSymbolTable(),
+        createASTCache(),
+      ),
+    ).resolves.toBeNull();
 
     expect(parserLoader.loadLanguage).not.toHaveBeenCalled();
   });
