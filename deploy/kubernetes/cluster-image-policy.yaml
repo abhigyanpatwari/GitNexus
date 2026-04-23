@@ -46,12 +46,14 @@ spec:
   images:
     - glob: 'ghcr.io/abhigyanpatwari/gitnexus*'
     # Docker Hub references can appear in three forms at admission time
-    # (`docker.io/...`, `index.docker.io/...`, and bare `abhigyanpatwari/...`
-    # with the default registry implied). List all three so the policy cannot
-    # be sidestepped by the choice of registry prefix.
-    - glob: 'docker.io/abhigyanpatwari/gitnexus*'
-    - glob: 'index.docker.io/abhigyanpatwari/gitnexus*'
-    - glob: 'abhigyanpatwari/gitnexus*'
+    # (`docker.io/...`, `index.docker.io/...`, and bare `akonlabs/...` with
+    # the default registry implied). List all three so the policy cannot be
+    # sidestepped by the choice of registry prefix. The Docker Hub namespace
+    # is `akonlabs` rather than `abhigyanpatwari` because the Docker Hub org
+    # differs from the GitHub org.
+    - glob: 'docker.io/akonlabs/gitnexus*'
+    - glob: 'index.docker.io/akonlabs/gitnexus*'
+    - glob: 'akonlabs/gitnexus*'
   authorities:
     - name: gitnexus-cosign-keyless
       keyless:

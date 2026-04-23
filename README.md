@@ -342,8 +342,8 @@ The official Docker setup ships **two signed images** orchestrated by `docker-co
 
 | Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror                           |
 | ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
-| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `abhigyanpatwari/gitnexus:latest`           |
-| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `abhigyanpatwari/gitnexus-web:latest`       |
+| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`                  |
+| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest`              |
 
 > **Heads-up — image rename.** Earlier releases published the web UI under
 > `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
@@ -405,7 +405,7 @@ The Docker images are version-locked to the npm package:
   triggered directly by the tag push), and the workflow refuses to build unless
   the tag exactly matches `gitnexus/package.json`'s version. So
   `ghcr.io/abhigyanpatwari/gitnexus:1.6.2` (and its Docker Hub mirror
-  `abhigyanpatwari/gitnexus:1.6.2`) is byte-for-byte the same release as
+  `akonlabs/gitnexus:1.6.2`) is byte-for-byte the same release as
   `npm install gitnexus@1.6.2` — no drift, no floating builds from `main`.
   Both registries receive the same digest from a single build step, so you can
   pull from either and the signature verifies identically.
@@ -431,7 +431,7 @@ cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Same signature verifies the Docker Hub mirror (identical digest):
-cosign verify docker.io/abhigyanpatwari/gitnexus:1.6.2 \
+cosign verify docker.io/akonlabs/gitnexus:1.6.2 \
   --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - 'v*'
-  # No workflow_dispatch: publishing is exclusively tag-driven so that every
-  # signed image corresponds 1:1 to a published `gitnexus@X.Y.Z` on npm. A
-  # manual run from a branch ref would fail the version check below anyway.
+  pull_request:
+  # workflow_dispatch is allowed for dry-run testing only. Publishing is still
+  # exclusively tag-driven so that every signed image corresponds 1:1 to a
+  # published `gitnexus@X.Y.Z` on npm. dry_run:true (the default) skips all
+  # push, sign, and attestation steps — the build runs but nothing is published.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip push, signing, and attestations'
+        required: false
+        default: true
+        type: boolean
   workflow_call:
     inputs:
       tag:
@@ -61,7 +70,7 @@ jobs:
 
     steps:
       - name: Validate tag input
-        if: github.event_name == 'workflow_call'
+        if: github.event_name == 'workflow_call' || github.event_name == 'push'
         shell: bash
         env:
           TAG_INPUT: ${{ inputs.tag }}
@@ -85,6 +94,7 @@ jobs:
       # `gitnexus@X.Y.Z` published to npm — no drift, no surprises.
       - name: Verify tag matches gitnexus/package.json version
         id: version
+        if: github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
         shell: bash
         env:
           # For workflow_call the tag comes from the caller input; for push events
@@ -119,6 +129,7 @@ jobs:
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
@@ -131,8 +142,9 @@ jobs:
       # registry most users reach for first, so we publish there too.
       # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a scoped
       # access token, NOT the account password) with write access to the
-      # `abhigyanpatwari/gitnexus` and `abhigyanpatwari/gitnexus-web` repos.
+      # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
       - name: Log in to Docker Hub
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -158,10 +170,13 @@ jobs:
           # Dual-registry publish. metadata-action expands the same tag set
           # against every image ref listed here, and build-push-action pushes
           # one build to all of them, so the GHCR and Docker Hub images share
-          # a digest and are byte-identical.
+          # a digest and are byte-identical. The Docker Hub namespace
+          # (`akonlabs`) is hardcoded because it differs from the GitHub org
+          # (`abhigyanpatwari`) — `github.repository_owner` would produce the
+          # wrong ref.
           images: |
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
-            docker.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+            docker.io/akonlabs/${{ matrix.image.slug }}
           flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
@@ -176,7 +191,7 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image.slug }}
@@ -197,6 +212,7 @@ jobs:
       # Do NOT relax to `@.*` — that accepts signatures from any ref, including
       # unprotected branches and PRs, and defeats the supply-chain guarantee.
       - name: Sign image with Cosign (keyless)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         env:
           # Cosign v2 (installed by sigstore/cosign-installer above) makes
           # keyless the default. COSIGN_EXPERIMENTAL is a v1-only opt-in flag
@@ -218,6 +234,7 @@ jobs:
       # is identical across registries (same build, same push), so consumers
       # pulling from either GHCR or Docker Hub see the same provenance.
       - name: Generate build provenance attestation (GHCR)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
@@ -225,8 +242,9 @@ jobs:
           push-to-registry: true
 
       - name: Generate build provenance attestation (Docker Hub)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: docker.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+          subject-name: docker.io/akonlabs/${{ matrix.image.slug }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true

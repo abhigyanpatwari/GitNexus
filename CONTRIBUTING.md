@@ -130,7 +130,7 @@ Two publish workflows ship `gitnexus` to npm:
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
     (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`, mirrored to
-    `docker.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`). The images are signed
+    `docker.io/akonlabs/gitnexus:1.7.0-rc.1`). The images are signed
     with Cosign; the OIDC identity is `docker.yml@refs/heads/main` (the
     caller's ref — see README.md § Docker for the verify command).
 
