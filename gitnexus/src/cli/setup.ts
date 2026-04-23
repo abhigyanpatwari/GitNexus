@@ -13,6 +13,7 @@ import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
+import { parseTree, modify, applyEdits, ParseError } from 'jsonc-parser';
 import { getGlobalDir } from '../storage/repo-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -76,6 +77,23 @@ function getMcpEntry() {
 }
 
 /**
+ * OpenCode uses a different MCP format: { type: "local", command: [...] }
+ * where command is a flat array (command + args combined).
+ */
+function getOpenCodeMcpEntry() {
+  const bin = resolveGitnexusBin();
+
+  if (bin) {
+    return { type: 'local', command: [bin, 'mcp'] };
+  }
+
+  if (process.platform === 'win32') {
+    return { type: 'local', command: ['cmd', '/c', 'npx', '-y', 'gitnexus@latest', 'mcp'] };
+  }
+  return { type: 'local', command: ['npx', '-y', 'gitnexus@latest', 'mcp'] };
+}
+
+/**
  * Merge gitnexus entry into an existing MCP config JSON object.
  * Returns the updated config.
  */
@@ -108,6 +126,62 @@ async function readJsonFile(filePath: string): Promise<any | null> {
 async function writeJsonFile(filePath: string, data: any): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+/**
+ * Detect indentation style from file content.
+ * Returns formatting options matching the file's existing style.
+ */
+function detectIndentation(raw: string): { tabSize: number; insertSpaces: boolean } {
+  const firstIndented = raw.match(/^( +|\t)/m);
+  if (!firstIndented) return { tabSize: 2, insertSpaces: true };
+  if (firstIndented[1] === '\t') return { tabSize: 1, insertSpaces: false };
+  return { tabSize: firstIndented[1].length, insertSpaces: true };
+}
+
+/**
+ * Merge a key/value pair into a JSONC config file, preserving comments and formatting.
+ * If the file is genuinely corrupt (not valid JSONC), leaves it untouched.
+ */
+async function mergeJsoncFile(
+  filePath: string,
+  keyPath: string[],
+  value: unknown,
+): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    raw = '';
+  }
+
+  if (raw.trim().length === 0) {
+    const config: any = {};
+    let parent: any = config;
+    for (let i = 0; i < keyPath.length; i++) {
+      if (i === keyPath.length - 1) {
+        parent[keyPath[i]] = value;
+      } else {
+        parent[keyPath[i]] = {};
+        parent = parent[keyPath[i]];
+      }
+    }
+    await writeJsonFile(filePath, config);
+    return true;
+  }
+
+  const parseErrors: ParseError[] = [];
+  const tree = parseTree(raw, parseErrors);
+
+  if (tree && tree.type === 'object' && parseErrors.length === 0) {
+    const formattingOptions = detectIndentation(raw);
+    const edits = modify(raw, keyPath, value, { formattingOptions });
+    const result = applyEdits(raw, edits);
+    await fs.writeFile(filePath, result, 'utf-8');
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -267,12 +341,14 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 
   const configPath = path.join(opencodeDir, 'opencode.json');
   try {
-    const existing = await readJsonFile(configPath);
-    const config = existing || {};
-    if (!config.mcp) config.mcp = {};
-    config.mcp.gitnexus = getMcpEntry();
-    await writeJsonFile(configPath, config);
-    result.configured.push('OpenCode');
+    const ok = await mergeJsoncFile(configPath, ['mcp', 'gitnexus'], getOpenCodeMcpEntry());
+    if (ok) {
+      result.configured.push('OpenCode');
+    } else {
+      result.errors.push(
+        'OpenCode: opencode.json is corrupt — skipping to preserve existing content',
+      );
+    }
   } catch (err: any) {
     result.errors.push(`OpenCode: ${err.message}`);
   }

@@ -65,6 +65,7 @@
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
     "js-yaml": "^4.1.1",
+    "jsonc-parser": "^3.3.1",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.40.3",
     "onnxruntime-node": "^1.24.0",
