@@ -155,6 +155,7 @@ gitnexus analyze --force         # Force full re-index
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
+gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
@@ -306,6 +307,21 @@ NODE_OPTIONS="--max-old-space-size=16384" npx gitnexus analyze
 echo "vendor/" >> .gitnexusignore
 echo "dist/" >> .gitnexusignore
 ```
+
+### Large files are being skipped
+
+By default the walker skips files larger than **512 KB** (see log line `Skipped N large files (>512KB)`). Raise the threshold via either the CLI flag or the environment variable — both accept a value in **KB**:
+
+```bash
+# CLI flag (takes precedence over the env var)
+npx gitnexus analyze --max-file-size 2048     # skip only files > 2 MB
+
+# Environment variable (persists across commands)
+export GITNEXUS_MAX_FILE_SIZE=2048
+npx gitnexus analyze
+```
+
+Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
 
 ## Privacy
 
