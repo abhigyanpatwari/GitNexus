@@ -46,8 +46,10 @@ program
   .addHelpText(
     'after',
     '\nEnvironment variables:\n' +
-      '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
-      '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.',
+      '  GITNEXUS_NO_GITIGNORE=1    Skip .gitignore parsing (still reads .gitnexusignore)\n' +
+      '  GITNEXUS_MAX_FILE_SIZE=N   Override large-file skip threshold (KB). Default 512, max 32768.\n' +
+      '  GITNEXUS_INDEX_TEST_DIRS=1 Opt-in: index __tests__ and __mocks__ directories\n' +
+      '                             (off by default — useful for QE workflows that trace test coverage).',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 

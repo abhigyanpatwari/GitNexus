@@ -274,15 +274,38 @@ const IGNORED_FILES = new Set([
 // entries in DEFAULT_IGNORE_LIST — this is intentional. The hardcoded list protects
 // against indexing directories that are almost never source code (node_modules, .git, etc.).
 // Users who need to include such directories should remove them from the hardcoded list.
+//
+// Narrow escape hatch (#771): the GITNEXUS_INDEX_TEST_DIRS env var lets operators
+// opt into indexing `__tests__` and `__mocks__` specifically, for Quality
+// Engineering use cases where test files are the primary index target (tracing
+// coverage via CALLS edges). All other hardcoded entries remain unaffected — this
+// is deliberately scoped to the two names the issue asks for.
+
+/**
+ * Effective directory-ignore check. Mirrors the `GITNEXUS_NO_GITIGNORE` env-var
+ * pattern: the default (env unset) preserves the hardcoded list exactly.
+ * `isHardcodedIgnoredDirectory` stays a pure membership check — callers that
+ * want the raw list semantic still get it. Callers that want the runtime
+ * effective ignore (walker / shouldIgnorePath) go through this helper.
+ */
+const isEffectivelyIgnoredDirectory = (name: string): boolean => {
+  if (!DEFAULT_IGNORE_LIST.has(name)) return false;
+  if ((name === '__tests__' || name === '__mocks__') && !!process.env.GITNEXUS_INDEX_TEST_DIRS) {
+    return false;
+  }
+  return true;
+};
+
 export const shouldIgnorePath = (filePath: string): boolean => {
   const normalizedPath = filePath.replace(/\\/g, '/');
   const parts = normalizedPath.split('/');
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
 
-  // Check if any path segment is in ignore list
+  // Check if any path segment is in ignore list (respecting the
+  // GITNEXUS_INDEX_TEST_DIRS opt-in for __tests__ / __mocks__ per #771).
   for (const part of parts) {
-    if (DEFAULT_IGNORE_LIST.has(part)) {
+    if (isEffectivelyIgnoredDirectory(part)) {
       return true;
     }
   }
@@ -392,11 +415,12 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       return shouldIgnorePath(rel);
     },
     childrenIgnored(p: Path): boolean {
-      // Fast path: check directory name against hardcoded list.
+      // Fast path: check directory name against hardcoded list, respecting
+      // the GITNEXUS_INDEX_TEST_DIRS opt-in per #771.
       // Note: dot-directories (.git, .vscode, etc.) are primarily excluded by
       // glob's `dot: false` option in filesystem-walker.ts. This check is
       // defense-in-depth — do not remove `dot: false` assuming this covers it.
-      if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
+      if (isEffectivelyIgnoredDirectory(p.name)) return true;
       // Check against .gitignore / .gitnexusignore patterns.
       // Since childrenIgnored is only called for directories, always test with
       // a trailing slash. This ensures directory-only negation patterns (e.g.

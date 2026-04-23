@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -216,6 +216,98 @@ describe('isHardcodedIgnoredDirectory', () => {
     expect(isHardcodedIgnoredDirectory('lib')).toBe(false);
     expect(isHardcodedIgnoredDirectory('app')).toBe(false);
     expect(isHardcodedIgnoredDirectory('local')).toBe(false);
+  });
+});
+
+// ─── GITNEXUS_INDEX_TEST_DIRS opt-in (#771) ─────────────────────────
+//
+// The env var lets Quality Engineering users opt into indexing
+// __tests__ and __mocks__ so they can trace test coverage via CALLS
+// edges. These tests lock in:
+//   - default behaviour (env unset) is byte-identical to pre-#771
+//   - env set removes EXACTLY __tests__ and __mocks__ from the
+//     effective ignore set — other hardcoded entries stay ignored
+//   - test-adjacent dirs the issue did NOT ask for (__snapshots__,
+//     snapshots, fixtures, .jest) remain ignored regardless — this
+//     is a scope-discipline lock; a future expansion would fail here
+//   - `isHardcodedIgnoredDirectory` export semantic is unchanged
+//     (it's a raw-membership query, not an effective-runtime query)
+describe('GITNEXUS_INDEX_TEST_DIRS opt-in (#771)', () => {
+  const savedEnv = process.env.GITNEXUS_INDEX_TEST_DIRS;
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
+    } else {
+      process.env.GITNEXUS_INDEX_TEST_DIRS = savedEnv;
+    }
+  });
+
+  describe('default behaviour — env unset', () => {
+    beforeEach(() => {
+      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
+    });
+
+    it('ignores __tests__ directory paths', () => {
+      expect(shouldIgnorePath('src/__tests__/foo.test.ts')).toBe(true);
+      expect(shouldIgnorePath('__tests__/index.test.js')).toBe(true);
+    });
+
+    it('ignores __mocks__ directory paths', () => {
+      expect(shouldIgnorePath('src/__mocks__/api.ts')).toBe(true);
+      expect(shouldIgnorePath('pkg/__mocks__/fs.js')).toBe(true);
+    });
+  });
+
+  describe('opt-in behaviour — env set', () => {
+    beforeEach(() => {
+      process.env.GITNEXUS_INDEX_TEST_DIRS = '1';
+    });
+
+    it('does NOT ignore __tests__ paths', () => {
+      expect(shouldIgnorePath('src/__tests__/foo.test.ts')).toBe(false);
+      expect(shouldIgnorePath('__tests__/index.test.js')).toBe(false);
+    });
+
+    it('does NOT ignore __mocks__ paths', () => {
+      expect(shouldIgnorePath('src/__mocks__/api.ts')).toBe(false);
+      expect(shouldIgnorePath('pkg/__mocks__/fs.js')).toBe(false);
+    });
+
+    it('still ignores other hardcoded entries (node_modules, .git, dist, __pycache__)', () => {
+      // Opt-in is scoped narrowly — every other auto-filter stays active.
+      expect(shouldIgnorePath('node_modules/foo.js')).toBe(true);
+      expect(shouldIgnorePath('.git/HEAD')).toBe(true);
+      expect(shouldIgnorePath('dist/bundle.js')).toBe(true);
+      expect(shouldIgnorePath('src/__pycache__/module.pyc')).toBe(true);
+    });
+
+    it('still ignores test-adjacent dirs the issue did NOT ask to unlock', () => {
+      // Scope-discipline guard — #771 explicitly names __tests__ and
+      // __mocks__. Other test-adjacent entries (__snapshots__, snapshots,
+      // fixtures, .jest) stay ignored. A future PR that widens the
+      // opt-in without filing a new issue would fail here.
+      expect(shouldIgnorePath('src/__snapshots__/foo.snap')).toBe(true);
+      expect(shouldIgnorePath('test/snapshots/foo.snap')).toBe(true);
+      expect(shouldIgnorePath('pkg/fixtures/data.json')).toBe(true);
+      expect(shouldIgnorePath('.jest/cache.js')).toBe(true);
+    });
+  });
+
+  describe('isHardcodedIgnoredDirectory export is unchanged by env var', () => {
+    it('returns true for __tests__ regardless of env', () => {
+      // The raw-membership query has a different contract from the
+      // effective-runtime query. `isHardcodedIgnoredDirectory` is
+      // "is this in the hardcoded list?" — the list itself does not
+      // change. The runtime decision changes via shouldIgnorePath.
+      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
+      expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
+      expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
+
+      process.env.GITNEXUS_INDEX_TEST_DIRS = '1';
+      expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
+      expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
+    });
   });
 });
 
