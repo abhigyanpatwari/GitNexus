@@ -75,18 +75,21 @@ export function csharpImportOwningScope(
 // ─── receiverBinding ──────────────────────────────────────────────────────
 
 /** Look up `this` or `base` in the function scope's type bindings.
- *  Returns `null` for free functions (no `this`), static methods (no
- *  `this` binding synthesized), and non-Function scopes.
  *
  *  `this` and `base` are synthesized as type bindings on instance
- *  methods during capture emission (receiver-binding.ts, planned for a
- *  follow-up unit). Until that synthesis lands this hook returns `null`
- *  for every instance method, which matches the legacy fallback
- *  behavior — the central extractor then walks the enclosing class
- *  scope to recover the receiver type.
+ *  methods during capture emission (`receiver-binding.ts`) — `this`
+ *  for every method inside a class/struct/record/interface body, and
+ *  `base` additionally for methods of a class-like type with an
+ *  explicit `base_list`. This hook therefore returns a non-null
+ *  `TypeRef` for instance-method bodies.
  *
- *  Matches `pythonReceiverBinding`'s shape so the two provider wirings
- *  stay symmetric. */
+ *  Returns `null` for:
+ *    - static methods (no `this` synthesized)
+ *    - free functions / module-level code (no enclosing class)
+ *    - non-Function scopes
+ *
+ *  Matches `pythonReceiverBinding`'s shape so the two provider
+ *  wirings stay symmetric. */
 export function csharpReceiverBinding(functionScope: Scope): TypeRef | null {
   if (functionScope.kind !== 'Function') return null;
   return functionScope.typeBindings.get('this') ?? functionScope.typeBindings.get('base') ?? null;

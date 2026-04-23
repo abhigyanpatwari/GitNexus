@@ -25,6 +25,26 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /**
+ * True when a def's `type` names a class-like declaration — every kind
+ * that collapses to `@scope.class` in the scope-extractor query contract.
+ *
+ * Semantics widened historically from `'Class' | 'Interface'` to cover
+ * C#-shape languages (struct, record, enum, trait). Languages that emit
+ * only `'Class'` are unaffected — the extra kinds never appear in their
+ * parsed output.
+ */
+export function isClassLike(t: string): boolean {
+  return (
+    t === 'Class' ||
+    t === 'Interface' ||
+    t === 'Struct' ||
+    t === 'Record' ||
+    t === 'Enum' ||
+    t === 'Trait'
+  );
+}
+
+/**
  * Walk the scope chain from `startScope` looking for a typeBinding
  * named `receiverName`. Returns the TypeRef or undefined if no binding
  * exists in the chain.
@@ -49,7 +69,11 @@ export function findReceiverTypeBinding(
 }
 
 /**
- * Look up a class-kind binding by name in the given scope's chain.
+ * Look up a class-like binding by name in the given scope's chain.
+ *
+ * "Class-like" covers `Class | Interface | Struct | Record | Enum |
+ * Trait` via the shared `isClassLike` predicate — every kind that
+ * collapses to `@scope.class` in the scope-extractor query contract.
  *
  * Walks the scope chain upward and consults TWO sources at each step:
  *   1. `scope.bindings` — populated during scope-extraction Pass 2 with
@@ -75,7 +99,7 @@ export function findClassBindingInScope(
     const localBindings = scope.bindings.get(receiverName);
     if (localBindings !== undefined) {
       for (const b of localBindings) {
-        if (b.def.type === 'Class' || b.def.type === 'Interface') return b.def;
+        if (isClassLike(b.def.type)) return b.def;
       }
     }
 
@@ -83,7 +107,7 @@ export function findClassBindingInScope(
     const importedBindings = finalizedScopeBindings?.get(receiverName);
     if (importedBindings !== undefined) {
       for (const b of importedBindings) {
-        if (b.def.type === 'Class' || b.def.type === 'Interface') return b.def;
+        if (isClassLike(b.def.type)) return b.def;
       }
     }
 
@@ -184,18 +208,6 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
   // on `class U: def save(self): def helper(): ...` — helper.ownerId will
   // remain undefined. The theoretical concern is real only if the
   // extractor ever stops creating scopes for inner defs.
-  // Class-like def types: Class scope covers C#'s interface/struct/
-  // record/enum too (they all collapse to @scope.class per the query
-  // contract). Interface default methods land as children of the
-  // Interface def here.
-  const isClassLike = (t: string): boolean =>
-    t === 'Class' ||
-    t === 'Interface' ||
-    t === 'Struct' ||
-    t === 'Record' ||
-    t === 'Enum' ||
-    t === 'Trait';
-
   for (const scope of parsed.scopes) {
     // Methods: function scope whose parent is a Class scope. Owner is
     // the parent's class-like def.
@@ -243,7 +255,7 @@ export function findEnclosingClassDef(
     const scope = scopes.scopeTree.getScope(currentId);
     if (scope === undefined) return undefined;
     if (scope.kind === 'Class') {
-      const cd = scope.ownedDefs.find((d) => d.type === 'Class');
+      const cd = scope.ownedDefs.find((d) => isClassLike(d.type));
       if (cd !== undefined) return cd;
     }
     currentId = scope.parent;

@@ -40,7 +40,7 @@ function parsePython(source: string, filePath: string) {
 }
 
 describe('WorkspaceResolutionIndex — scope-only maps', () => {
-  it('exposes classScopeByDefId and moduleScopeByFile only', () => {
+  it('exposes classScopeByDefId, classScopeIdToDefId, and moduleScopeByFile', () => {
     const parsed = parsePython(
       `
 class User:
@@ -50,6 +50,7 @@ class User:
     );
     const index = buildWorkspaceResolutionIndex([parsed]);
     expect(index.classScopeByDefId).toBeInstanceOf(Map);
+    expect(index.classScopeIdToDefId).toBeInstanceOf(Map);
     expect(index.moduleScopeByFile).toBeInstanceOf(Map);
     // No symbol-indexed duplicates.
     expect((index as { memberByOwner?: unknown }).memberByOwner).toBeUndefined();
@@ -195,5 +196,51 @@ class User:
     const found = findOwnedMember(classDef!.nodeId, 'save', model);
     expect(found?.type).toBe('Function');
     expect(found?.qualifiedName).toBe('User.save');
+  });
+});
+
+describe('classScopeIdToDefId — inverse-map invariant', () => {
+  it('classScopeIdToDefId is populated in sync with classScopeByDefId and is an exact inverse', () => {
+    const parsed = parsePython(
+      `
+class User:
+    def save(self) -> bool:
+        return True
+
+class Admin:
+    def promote(self) -> None:
+        pass
+`,
+      'mod.py',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+
+    // Same size — the two maps are populated in lockstep.
+    expect(index.classScopeIdToDefId.size).toBe(index.classScopeByDefId.size);
+    expect(index.classScopeIdToDefId.size).toBe(2);
+
+    // Forward → reverse round-trip.
+    for (const [defId, scope] of index.classScopeByDefId) {
+      expect(index.classScopeIdToDefId.get(scope.id)).toBe(defId);
+    }
+
+    // Reverse → forward round-trip.
+    for (const [scopeId, defId] of index.classScopeIdToDefId) {
+      const scope = index.classScopeByDefId.get(defId);
+      expect(scope).toBeDefined();
+      expect(scope!.id).toBe(scopeId);
+    }
+  });
+
+  it('classScopeIdToDefId is empty for a file with no classes', () => {
+    const parsed = parsePython(
+      `
+def helper() -> int:
+    return 42
+`,
+      'mod.py',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    expect(index.classScopeIdToDefId.size).toBe(0);
   });
 });

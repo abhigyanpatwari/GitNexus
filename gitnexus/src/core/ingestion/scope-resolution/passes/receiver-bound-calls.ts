@@ -10,8 +10,11 @@
  *      MRO walk skipping self
  *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver
  *   3. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
- *   4. **Case 2 (class-name)** — receiver resolves to a Class binding →
- *      MRO walk on that class
+ *   4. **Case 2 (class-name / static receiver)** — receiver resolves to a
+ *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
+ *      walk on that class. Also handles static-style invocations
+ *      (`ILogger.Warn(...)`) with kind-aware reason/confidence for
+ *      read/write ACCESSES.
  *   5. **Case 3 (dotted typeBinding for namespace prefix)** —
  *      `typeRef.rawName` like `models.User`
  *   6. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
@@ -47,6 +50,7 @@ import {
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
+import { narrowOverloadCandidates } from './overload-narrowing.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -260,15 +264,22 @@ export function emitReceiverBoundCalls(
           if (memberDef !== undefined) break;
         }
         if (memberDef !== undefined) {
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : memberDef.filePath !== parsed.filePath
+                ? 'import-resolved'
+                : 'global';
+          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
           const ok = tryEmitEdge(
             graph,
             scopes,
             nodeLookup,
             site,
             memberDef,
-            memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+            reason,
             seen,
-            0.85,
+            confidence,
             collapse,
           );
           if (ok) emitted++;
@@ -410,46 +421,6 @@ export function emitReceiverBoundCalls(
           }
         }
       }
-
-      // ── Case 5: class-as-receiver (static call / type member) ────
-      // `Animal.Classify()` — receiver name resolves to a Class
-      // binding, not a typeBinding. Look up the member on the class's
-      // MRO chain. Python syntactically collapses this with free
-      // calls; C# (and other statically-typed languages) distinguish
-      // via the member_access_expression shape.
-      if (typeRef === undefined) {
-        const classDef = findClassBindingInScope(site.inScope, receiverName, scopes);
-        if (classDef !== undefined) {
-          const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
-          let memberDef: SymbolDefinition | undefined;
-          for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
-          }
-          if (memberDef !== undefined) {
-            const reason =
-              site.kind === 'write' || site.kind === 'read'
-                ? site.kind
-                : memberDef.filePath !== parsed.filePath
-                  ? 'import-resolved'
-                  : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
-            const ok = tryEmitEdge(
-              graph,
-              scopes,
-              nodeLookup,
-              site,
-              memberDef,
-              reason,
-              seen,
-              confidence,
-              collapse,
-            );
-            if (ok) emitted++;
-            handledSites.add(siteKey);
-          }
-        }
-      }
     }
   }
 
@@ -475,44 +446,6 @@ function pickOverload(
   }
   if (overloads.length === 1) return overloads[0];
 
-  const argTypes = site.argumentTypes;
-  const argCount = site.arity;
-
-  // First filter by arity: exact-required-match wins over variadic.
-  const arityMatches =
-    argCount === undefined
-      ? overloads
-      : overloads.filter((d) => {
-          const max = d.parameterCount;
-          const min = d.requiredParameterCount;
-          if (max !== undefined && argCount > max) {
-            const variadic =
-              d.parameterTypes !== undefined &&
-              d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));
-            if (!variadic) return false;
-          }
-          if (min !== undefined && argCount < min) return false;
-          return true;
-        });
-  const candidates = arityMatches.length > 0 ? arityMatches : overloads;
-
-  // Then narrow by argument-type alignment when both sides are known.
-  if (argTypes !== undefined && argTypes.length > 0) {
-    const typed = candidates.filter((d) => {
-      const params = d.parameterTypes;
-      if (params === undefined) return false;
-      // Compare each arg-type slot against the corresponding param.
-      // Empty arg-type means "unknown" — counts as match. Mismatches
-      // disqualify.
-      for (let i = 0; i < argTypes.length && i < params.length; i++) {
-        if (argTypes[i] === '') continue;
-        if (argTypes[i] !== params[i]) return false;
-      }
-      return true;
-    });
-    if (typed.length === 1) return typed[0];
-    if (typed.length > 0) return typed[0];
-  }
-
-  return candidates[0];
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  return candidates[0] ?? overloads[0];
 }

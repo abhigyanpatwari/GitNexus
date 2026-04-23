@@ -2216,3 +2216,137 @@ describe('C# parse completeness (#903 regression)', () => {
     expect(targets).toContain('IFoo → Bar');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Finding 1: record inheritance + base.Save() resolves via isClassLike widening
+// ---------------------------------------------------------------------------
+
+describe('C# record base resolution (record inheritance + base.Save)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-record-base'), () => {});
+  }, 60000);
+
+  it('detects BaseEntity and UserRecord', () => {
+    // Records project as label 'Record' (class-like) in the graph.
+    const records = getNodesByLabel(result, 'Record');
+    const classes = getNodesByLabel(result, 'Class');
+    const all = [...records, ...classes];
+    expect(all).toContain('BaseEntity');
+    expect(all).toContain('UserRecord');
+  });
+
+  it('does not emit a spurious self-EXTENDS (record heritage not emitted by C# heritage queries)', () => {
+    // NOTE: C# tree-sitter heritage queries cover class/interface
+    // declarations but not `record_declaration`, so records don't
+    // emit an EXTENDS edge today. The record-base linkage is still
+    // visible via `base.Save()` resolution (next test). This
+    // assertion pins the negative invariant so a future heritage
+    // extension for records can flip both tests at once.
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
+    expect(selfExtend).toBeUndefined();
+  });
+
+  it('resolves base.Save() inside UserRecord.Save to BaseEntity.Save (not self)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(
+      (c) =>
+        c.source === 'Save' &&
+        c.target === 'Save' &&
+        c.targetFilePath === 'src/Models/BaseEntity.cs',
+    );
+    expect(baseSave).toBeDefined();
+    // No self-call: no CALLS edge where target is Save in UserRecord.cs.
+    const selfSave = calls.find(
+      (c) =>
+        c.source === 'Save' &&
+        c.target === 'Save' &&
+        c.targetFilePath === 'src/Models/UserRecord.cs',
+    );
+    expect(selfSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 4: struct overload dispatch exercises the extracted
+// narrowOverloadCandidates utility via implicit-this free calls.
+// ---------------------------------------------------------------------------
+
+describe('C# struct overload dispatch (implicit-this narrowing)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-struct-overloads'), () => {});
+  }, 60000);
+
+  it('detects Calc struct', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    const classes = getNodesByLabel(result, 'Class');
+    const all = [...structs, ...classes];
+    expect(all).toContain('Calc');
+  });
+
+  it('detects two Add overloads with distinct parameterCount', () => {
+    const methods = getNodesByLabelFull(result, 'Method').filter((m) => m.name === 'Add');
+    expect(methods.length).toBeGreaterThanOrEqual(2);
+    const arities = methods.map((m) => m.properties.parameterCount as number).sort();
+    expect(arities).toContain(1);
+    expect(arities).toContain(2);
+  });
+
+  it('Run() -> Add emits CALLS edges to distinct Add overloads (implicit-this narrowing)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runToAdd = calls.filter((c) => c.source === 'Run' && c.target === 'Add');
+    // The registry-primary pipeline exercises `pickImplicitThisOverload`
+    // + `narrowOverloadCandidates` and MUST resolve both Add(int) and
+    // Add(int, int) to distinct targets. A silent regression in either
+    // helper would drop an edge or merge both onto one target — pin
+    // exact counts so either failure mode surfaces immediately.
+    // The legacy DAG path (REGISTRY_PRIMARY_CSHARP=0) does not
+    // implement implicit-`this` struct overload narrowing, so we
+    // accept any count there; the registry-primary path remains the
+    // authoritative guarantee.
+    if (process.env['REGISTRY_PRIMARY_CSHARP'] !== '0') {
+      expect(runToAdd.length).toBe(2);
+      const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+      expect(targetIds.size).toBe(2);
+    } else {
+      expect(runToAdd.length).toBeLessThanOrEqual(2);
+      if (runToAdd.length >= 2) {
+        const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+        expect(targetIds.size).toBe(runToAdd.length);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5: merged Case 2 covers Interface static-style invocation
+// (`ILogger.Warn(...)` from a class method).
+// ---------------------------------------------------------------------------
+
+describe('C# interface receiver static invocation (merged Case 2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-interface-receiver-static'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects ILogger interface and Runner class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('ILogger');
+    expect(getNodesByLabel(result, 'Class')).toContain('Runner');
+  });
+
+  it('Go() -> ILogger.Warn CALLS edge points at src/ILogger.cs with import-resolved or global reason', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const warnCall = calls.find((c) => c.source === 'Go' && c.target === 'Warn');
+    expect(warnCall).toBeDefined();
+    expect(warnCall!.targetFilePath).toBe('src/ILogger.cs');
+    expect(['import-resolved', 'global']).toContain(warnCall!.rel.reason);
+  });
+});

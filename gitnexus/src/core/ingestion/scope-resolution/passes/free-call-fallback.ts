@@ -25,6 +25,7 @@ import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import { findCallableBindingInScope, findClassBindingInScope } from '../scope/walkers.js';
+import { narrowOverloadCandidates } from './overload-narrowing.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -141,52 +142,14 @@ function pickImplicitThisOverload(
   }
   if (classScopeId === undefined) return undefined;
 
-  // Find the Class def for that scope by reverse-lookup in
-  // classScopeByDefId.
-  let classDefId: string | undefined;
-  for (const [defId, scope] of workspaceIndex.classScopeByDefId) {
-    if (scope.id === classScopeId) {
-      classDefId = defId;
-      break;
-    }
-  }
+  // O(1) reverse-lookup via inverse map on WorkspaceResolutionIndex.
+  const classDefId = workspaceIndex.classScopeIdToDefId.get(classScopeId);
   if (classDefId === undefined) return undefined;
 
   const overloads = model.methods.lookupAllByOwner(classDefId, site.name);
   if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 
-  const argTypes = site.argumentTypes;
-  const argCount = site.arity;
-  // Filter by arity (same logic as pickOverload in receiver-bound-calls).
-  const arityMatches =
-    argCount === undefined
-      ? overloads
-      : overloads.filter((d) => {
-          const max = d.parameterCount;
-          const min = d.requiredParameterCount;
-          if (max !== undefined && argCount > max) {
-            const variadic =
-              d.parameterTypes !== undefined &&
-              d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));
-            if (!variadic) return false;
-          }
-          if (min !== undefined && argCount < min) return false;
-          return true;
-        });
-  const candidates = arityMatches.length > 0 ? arityMatches : overloads;
-
-  if (argTypes !== undefined && argTypes.length > 0) {
-    const typed = candidates.filter((d) => {
-      const params = d.parameterTypes;
-      if (params === undefined) return false;
-      for (let i = 0; i < argTypes.length && i < params.length; i++) {
-        if (argTypes[i] === '') continue;
-        if (argTypes[i] !== params[i]) return false;
-      }
-      return true;
-    });
-    if (typed.length >= 1) return typed[0];
-  }
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
   return candidates[0];
 }
