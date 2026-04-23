@@ -379,6 +379,10 @@ jobs:
     needs: [guard, publish]
     if: needs.guard.outputs.should_run == 'true' && needs.publish.outputs.vtag != ''
     uses: ./.github/workflows/docker.yml
+    # Reusable workflows do not receive caller secrets unless inherited; without
+    # this, DOCKERHUB_* / GITHUB_TOKEN are empty in docker.yml → "Username and
+    # password required" on Docker Hub login (see same pattern on `ci:` above).
+    secrets: inherit
     permissions:
       contents: read
       packages: write
