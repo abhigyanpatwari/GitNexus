@@ -321,6 +321,25 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
     expect(filter.ignored(mkPath('node_modules/foo.js'))).toBe(true);
   });
 
+  it('`!parent/` + `parent/child/` re-ignore: child still blocked (last-match-wins)', async () => {
+    // .gitignore semantics: a later more-specific rule overrides an
+    // earlier negation. The negation unlocks the hardcoded block on
+    // `__tests__/`, but the subsequent `__tests__/generated/` line
+    // re-ignores that subset. `__tests__/foo.test.ts` stays allowed;
+    // `__tests__/generated/foo.ts` stays blocked. This locks in the
+    // guarantee the design comment makes about "standard rules still
+    // layer on top" for the compound case.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n__tests__/generated/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    // Parent negation still in effect: top-level tests allowed.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(false);
+    // Re-ignored subdirectory: children blocked at file level AND at
+    // the directory-descent level, so ingestion never walks in.
+    expect(filter.ignored(mkPath('__tests__/generated/foo.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__/generated'))).toBe(true);
+  });
+
   it('shouldIgnorePath (raw hardcoded check) is unchanged — wiki / external callers unaffected', async () => {
     // `shouldIgnorePath` is called from `core/wiki/generator.ts` and
     // doesn't have access to per-repo `.gitnexusignore` config. Its

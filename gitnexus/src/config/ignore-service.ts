@@ -420,7 +420,11 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
  * Precedence (#771): user's `.gitnexusignore` negation patterns take
  * priority over the hardcoded list, matching `.gitignore` semantics.
  * An explicit `!pattern` rule unignores descendants even when they
- * would otherwise be blocked by DEFAULT_IGNORE_LIST.
+ * would otherwise be blocked by DEFAULT_IGNORE_LIST — UNLESS a more
+ * specific rule in the same file re-ignores a subset (e.g.
+ * `!__tests__/` paired with `__tests__/generated/` blocks the child
+ * while leaving the parent negated). Last-match-wins is enforced by
+ * consulting `ig.ignores(rel)` after `hasExplicitUnignore`.
  */
 export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptions) => {
   const ig = await loadIgnoreRules(repoPath, options);
@@ -433,8 +437,12 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       if (!rel) return false;
       // User's .gitnexusignore negation takes precedence over hardcoded
       // rules (#771). If any ancestor or the path itself was explicitly
-      // unignored, respect that override.
-      if (ig && hasExplicitUnignore(ig, rel)) return false;
+      // unignored AND no more-specific rule re-ignores this exact path,
+      // allow it through. The `!ig.ignores(rel)` guard matches
+      // .gitignore's last-match-wins semantics: `!__tests__/` followed
+      // by `__tests__/generated/` negates the parent but still blocks
+      // the re-ignored child.
+      if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel)) return false;
       // Check .gitignore / .gitnexusignore patterns
       if (ig && ig.ignores(rel)) return true;
       // Fall back to hardcoded rules
@@ -449,8 +457,10 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // User's .gitnexusignore negation takes precedence (#771) — if the
       // user explicitly unignored this directory or any ancestor via a
       // !pattern rule, allow descent even if the directory name is in
-      // DEFAULT_IGNORE_LIST.
-      if (ig && rel && hasExplicitUnignore(ig, rel)) return false;
+      // DEFAULT_IGNORE_LIST. The `!ig.ignores(rel + '/')` guard keeps
+      // last-match-wins: `!__tests__/` + `__tests__/generated/` still
+      // blocks descent into `__tests__/generated/`.
+      if (ig && rel && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
       // Hardcoded list: block descent into well-known noise directories.
       if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
       // Check against .gitignore / .gitnexusignore patterns.
