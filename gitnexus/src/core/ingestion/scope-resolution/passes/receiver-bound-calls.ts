@@ -171,13 +171,29 @@ export function emitReceiverBoundCalls(
             if (memberDef !== undefined) break;
           }
           if (memberDef !== undefined) {
+            // Super/base calls resolve through the MRO chain, not
+            // through imports — the ancestor method is found by
+            // walking `methodDispatch.mroFor(enclosingClass)`, which
+            // is independent of whether a `using` / `import` directive
+            // brought the ancestor into scope. We emit the canonical
+            // `'global'` tier (ARCHITECTURE.md § Scope-Resolution
+            // Pipeline — edge vocabulary).
+            //
+            // Known legacy-path asymmetry: the C# legacy DAG also
+            // classifies `base.Save()` as `'global'` (same-graph); the
+            // Python legacy DAG classifies `super().save()` as
+            // `'import-resolved'` because Python's ancestor lookup
+            // flows through `typeEnv.lookup(...)` which resolves the
+            // superclass via its `import`/`from … import …` binding.
+            // Closing that gap requires realigning the legacy tier
+            // classifier and is tracked separately.
             const ok = tryEmitEdge(
               graph,
               scopes,
               nodeLookup,
               site,
               memberDef,
-              'scope-resolution: super-receiver',
+              'global',
               seen,
               0.85,
               collapse,

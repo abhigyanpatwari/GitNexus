@@ -616,6 +616,14 @@ describe('C# base resolution', () => {
         c.targetFilePath === 'src/Models/BaseModel.cs',
     );
     expect(baseSave).toBeDefined();
+    // Pin the canonical edge-reason for super/base calls. The super-branch
+    // of receiver-bound-calls resolves through the MRO chain (not through
+    // imports), which the legacy DAG's tier classifier places in the
+    // `'global'` bucket (see `toResolveResult` in `call-processor.ts`).
+    // Emitting `'global'` unconditionally keeps the same-graph parity
+    // guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline) and matches
+    // the legacy path under `REGISTRY_PRIMARY_CSHARP=0`.
+    expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
     );
@@ -650,6 +658,7 @@ describe('C# generic parent base resolution', () => {
         c.targetFilePath === 'src/Models/BaseModel.cs',
     );
     expect(baseSave).toBeDefined();
+    expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
     );
@@ -2258,7 +2267,13 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/BaseEntity.cs',
     );
     expect(baseSave).toBeDefined();
-    // No self-call: no CALLS edge where target is Save in UserRecord.cs.
+    // NOTE: no `rel.reason` assertion here. Records don't emit EXTENDS
+    // edges today (see the negative-invariant test above), so the
+    // super-branch MRO lookup returns no ancestor and the edge is
+    // produced by the downstream reference-index fallback instead of
+    // the canonical super path. The `csharp-super-resolution` and
+    // `csharp-generic-parent` suites pin the super-branch reason on
+    // paths that do go through MRO.
     const selfSave = calls.find(
       (c) =>
         c.source === 'Save' &&

@@ -655,6 +655,18 @@ describe('Python super resolution', () => {
       (c) => c.source === 'save' && c.target === 'save' && c.targetFilePath === 'models/base.py',
     );
     expect(superSave).toBeDefined();
+    // NOTE: no `rel.reason` assertion here. The legacy DAG classifies
+    // Python `super()` as `'import-resolved'` (the ancestor arrives via
+    // `from base import BaseModel`), while the scope-resolution super-
+    // branch emits the canonical `'global'` (super resolves via MRO,
+    // not through an import directive). That legacy-path asymmetry is
+    // pre-existing (the scope-resolution path previously emitted the
+    // non-standard `'scope-resolution: super-receiver'`) and closing it
+    // requires realigning the legacy tier classifier, which is out of
+    // scope here. The C# `csharp-super-resolution` + `csharp-generic-
+    // parent` suites pin `'global'` because C# legacy also emits
+    // `'global'` for `base` calls, giving us a same-graph guarantee
+    // on at least one migrated language.
     const repoSave = calls.find(
       (c) => c.target === 'save' && c.targetFilePath === 'models/repo.py',
     );

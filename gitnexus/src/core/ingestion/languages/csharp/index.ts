@@ -11,9 +11,16 @@
  *   - `import-decomposer.ts`   — each `using` → ParsedImport-shaped captures
  *   - `interpret.ts`           — capture-match → `ParsedImport` / `ParsedTypeBinding`
  *   - `simple-hooks.ts`        — small/no-op hooks made explicit
+ *   - `receiver-binding.ts`    — synthesize `this`/`base` type-bindings on
+ *                                instance-method entry
  *   - `merge-bindings.ts`      — C# `using` precedence
  *   - `arity.ts`               — C# arity compatibility (`params`, default values)
  *   - `arity-metadata.ts`      — synthesize arity metadata from declarations
+ *   - `accessor-unwrap.ts`     — `.Values` / `.Keys` receiver-type unwrap for
+ *                                `Dictionary<K,V>` chains
+ *   - `namespace-siblings.ts`  — AST-driven cross-file implicit-namespace
+ *                                visibility (file/namespace attribution, no
+ *                                regex; reuses orchestrator's treeCache)
  *   - `import-target.ts`       — `(ParsedImport, WorkspaceIndex) → file path` adapter
  *   - `scope-resolver.ts`      — `ScopeResolver` registered in `SCOPE_RESOLVERS`
  *   - `cache-stats.ts`         — PROF_SCOPE_RESOLUTION cache hit/miss counters
