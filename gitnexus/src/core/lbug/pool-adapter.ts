@@ -358,7 +358,14 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       await available[0].query('LOAD EXTENSION fts');
       shared.ftsLoaded = true;
     } catch {
-      // Extension may not be installed — FTS queries will fail gracefully
+      // Extension not cached locally — try INSTALL (downloads from remote) then LOAD
+      try {
+        await available[0].query('INSTALL fts');
+        await available[0].query('LOAD EXTENSION fts');
+        shared.ftsLoaded = true;
+      } catch {
+        // FTS unavailable — queries will fail gracefully
+      }
     }
   }
 
@@ -437,7 +444,14 @@ export async function initLbugWithDb(
       await available[0].query('LOAD EXTENSION fts');
       shared.ftsLoaded = true;
     } catch {
-      // Extension may already be loaded or not installed
+      // Extension not cached locally — try INSTALL (downloads from remote) then LOAD
+      try {
+        await available[0].query('INSTALL fts');
+        await available[0].query('LOAD EXTENSION fts');
+        shared.ftsLoaded = true;
+      } catch {
+        // FTS unavailable — queries will fail gracefully
+      }
     }
   }
 

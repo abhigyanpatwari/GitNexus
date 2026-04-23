@@ -1155,8 +1155,14 @@ export const loadFTSExtension = async (): Promise<void> => {
     // Try loading locally first (no network required)
     await conn.query('LOAD EXTENSION fts');
     ftsLoaded = true;
-  } catch {
-    // Fall back to install + load (requires network)
+  } catch (err: any) {
+    // Fall back to install + load (requires network).  Log a breadcrumb so
+    // cache corruption / version mismatches leave a diagnostic trail instead
+    // of a silent fall-through to the (slower, network-bound) INSTALL path.
+    console.debug(
+      'GitNexus: FTS LOAD from cache failed, will attempt INSTALL:',
+      err?.message || '',
+    );
     try {
       await conn.query('INSTALL fts');
       await conn.query('LOAD EXTENSION fts');
