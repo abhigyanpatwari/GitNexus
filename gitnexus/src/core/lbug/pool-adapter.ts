@@ -17,6 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
+import { loadFTSExtension } from './lbug-adapter.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -354,19 +355,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Done BEFORE pool registration so no concurrent checkout can grab
   // the connection while the async FTS load is in progress.
   if (!shared.ftsLoaded) {
-    try {
-      await available[0].query('LOAD EXTENSION fts');
-      shared.ftsLoaded = true;
-    } catch {
-      // Extension not cached locally — try INSTALL (downloads from remote) then LOAD
-      try {
-        await available[0].query('INSTALL fts');
-        await available[0].query('LOAD EXTENSION fts');
-        shared.ftsLoaded = true;
-      } catch {
-        // FTS unavailable — queries will fail gracefully
-      }
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0]);
   }
 
   // Load VECTOR extension once per shared Database for semantic search support.
@@ -440,19 +429,7 @@ export async function initLbugWithDb(
 
   // Load FTS extension if not already loaded on this Database
   if (!shared.ftsLoaded) {
-    try {
-      await available[0].query('LOAD EXTENSION fts');
-      shared.ftsLoaded = true;
-    } catch {
-      // Extension not cached locally — try INSTALL (downloads from remote) then LOAD
-      try {
-        await available[0].query('INSTALL fts');
-        await available[0].query('LOAD EXTENSION fts');
-        shared.ftsLoaded = true;
-      } catch {
-        // FTS unavailable — queries will fail gracefully
-      }
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0]);
   }
 
   // Load VECTOR extension for semantic search support

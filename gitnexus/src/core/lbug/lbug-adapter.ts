@@ -1144,29 +1144,41 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
  * Load the FTS extension (required before using FTS functions).
- * Safe to call multiple times — tracks loaded state via module-level ftsLoaded.
+ *
+ * Safe to call multiple times — when invoked without arguments, tracks loaded
+ * state via module-level `ftsLoaded`. When invoked with an explicit
+ * connection, loads on that connection and returns whether the load
+ * succeeded — letting callers (e.g. the pool adapter) track their own state.
+ *
+ * Tries `LOAD EXTENSION fts` first so previously-cached installs skip the
+ * network entirely; falls back to `INSTALL` + `LOAD` only when the extension
+ * hasn't been cached yet.
  */
-export const loadFTSExtension = async (): Promise<void> => {
-  if (ftsLoaded) return;
-  if (!conn) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
+export const loadFTSExtension = async (targetConn?: lbug.Connection): Promise<boolean> => {
+  const useModuleState = targetConn === undefined;
+  if (useModuleState) {
+    if (ftsLoaded) return true;
+    if (!conn) {
+      throw new Error('LadybugDB not initialized. Call initLbug first.');
+    }
+    targetConn = conn;
   }
+
+  const markLoaded = (): true => {
+    if (useModuleState) ftsLoaded = true;
+    return true;
+  };
+
   try {
     // Try loading locally first (no network required)
-    await conn.query('LOAD EXTENSION fts');
-    ftsLoaded = true;
-  } catch (err: any) {
-    // Fall back to install + load (requires network).  Log a breadcrumb so
-    // cache corruption / version mismatches leave a diagnostic trail instead
-    // of a silent fall-through to the (slower, network-bound) INSTALL path.
-    console.debug(
-      'GitNexus: FTS LOAD from cache failed, will attempt INSTALL:',
-      err?.message || '',
-    );
+    await targetConn!.query('LOAD EXTENSION fts');
+    return markLoaded();
+  } catch {
+    // Fall back to install + load (requires network)
     try {
-      await conn.query('INSTALL fts');
-      await conn.query('LOAD EXTENSION fts');
-      ftsLoaded = true;
+      await targetConn!.query('INSTALL fts');
+      await targetConn!.query('LOAD EXTENSION fts');
+      return markLoaded();
     } catch (err: any) {
       const msg = err?.message || '';
       if (
@@ -1174,10 +1186,10 @@ export const loadFTSExtension = async (): Promise<void> => {
         msg.includes('already installed') ||
         msg.includes('already exists')
       ) {
-        ftsLoaded = true;
-      } else {
-        console.error('GitNexus: FTS extension load failed:', msg);
+        return markLoaded();
       }
+      console.error('GitNexus: FTS extension load failed:', msg);
+      return false;
     }
   }
 };
