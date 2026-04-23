@@ -1156,12 +1156,11 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
  */
 export const loadFTSExtension = async (targetConn?: lbug.Connection): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
-  if (useModuleState) {
-    if (ftsLoaded) return true;
-    if (!conn) {
-      throw new Error('LadybugDB not initialized. Call initLbug first.');
-    }
-    targetConn = conn;
+  if (useModuleState && ftsLoaded) return true;
+
+  const c: lbug.Connection | null = targetConn ?? conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
   const markLoaded = (): true => {
@@ -1171,13 +1170,13 @@ export const loadFTSExtension = async (targetConn?: lbug.Connection): Promise<bo
 
   try {
     // Try loading locally first (no network required)
-    await targetConn!.query('LOAD EXTENSION fts');
+    await c.query('LOAD EXTENSION fts');
     return markLoaded();
   } catch {
     // Fall back to install + load (requires network)
     try {
-      await targetConn!.query('INSTALL fts');
-      await targetConn!.query('LOAD EXTENSION fts');
+      await c.query('INSTALL fts');
+      await c.query('LOAD EXTENSION fts');
       return markLoaded();
     } catch (err: any) {
       const msg = err?.message || '';

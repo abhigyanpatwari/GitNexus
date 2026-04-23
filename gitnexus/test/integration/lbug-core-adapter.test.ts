@@ -45,6 +45,31 @@ withTestLbugDB(
         ).resolves.toBeUndefined();
       });
 
+      it('loadFTSExtension(conn): loads on an explicit connection and returns true', async () => {
+        const lbug = (await import('@ladybugdb/core')).default;
+        const { loadFTSExtension, getDatabase } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        const db = getDatabase();
+        expect(db).not.toBeNull();
+
+        // Fresh Connection on the same Database — simulates the pool adapter's
+        // path where loadFTSExtension is called with an explicit connection
+        // rather than the module-level singleton.
+        const freshConn = new lbug.Connection(db!);
+        try {
+          const loaded = await loadFTSExtension(freshConn);
+          expect(loaded).toBe(true);
+
+          // Idempotent on the same connection — calling again still returns true
+          // (exercises the "already loaded" catch branch in the fallback path).
+          const loadedAgain = await loadFTSExtension(freshConn);
+          expect(loadedAgain).toBe(true);
+        } finally {
+          await freshConn.close().catch(() => {});
+        }
+      });
+
       it('getLbugStats: returns correct node and edge counts for seeded data', async () => {
         const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 
