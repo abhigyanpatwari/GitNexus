@@ -43,6 +43,21 @@ export const getMaxFileSizeBytes = (): number => {
   return bytes;
 };
 
+/**
+ * Build the CLI banner message announcing an active file-size override.
+ * Returns `null` when the effective threshold equals the default — the caller
+ * should print nothing in that case. The returned message reflects the
+ * *effective* post-clamp threshold, not the raw env value, so operators reading
+ * startup output see the actual configuration the walker will use.
+ */
+export const getMaxFileSizeBannerMessage = (): string | null => {
+  const effectiveBytes = getMaxFileSizeBytes();
+  if (effectiveBytes === DEFAULT_MAX_FILE_SIZE_BYTES) return null;
+  const effectiveKb = effectiveBytes / 1024;
+  const defaultKb = DEFAULT_MAX_FILE_SIZE_BYTES / 1024;
+  return `  GITNEXUS_MAX_FILE_SIZE: effective threshold ${effectiveKb}KB (default ${defaultKb}KB)`;
+};
+
 /** Test-only: reset the warn-once cache so repeated test runs can re-observe warnings. */
 export const _resetMaxFileSizeWarnings = (): void => {
   warned.clear();

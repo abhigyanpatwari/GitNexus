@@ -20,6 +20,7 @@ import {
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
@@ -142,10 +143,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
   }
 
-  if (process.env.GITNEXUS_MAX_FILE_SIZE) {
-    console.log(
-      `  GITNEXUS_MAX_FILE_SIZE=${process.env.GITNEXUS_MAX_FILE_SIZE}KB — overriding default 512KB file-size skip threshold\n`,
-    );
+  const maxFileSizeBanner = getMaxFileSizeBannerMessage();
+  if (maxFileSizeBanner) {
+    console.log(`${maxFileSizeBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
