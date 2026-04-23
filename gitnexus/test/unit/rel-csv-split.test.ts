@@ -247,14 +247,14 @@ describe('splitRelCsvByLabelPair', () => {
       mockFactory(streams, { blocked: true }),
     );
 
-    // The first pair stream is created immediately and blocks on its header
-    // write. Unblock it once so the loop advances and creates the second
-    // pair stream (also blocked). Now both streams exist — trigger the error.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(streams.length).toBe(1);
+    // The first pair stream is created once readline has delivered a data row;
+    // fixed sleeps race on slow Windows CI (streams.length still 0 → ENOTEMPTY
+    // in afterEach). Poll until the harness reaches the intended state.
+    await expect.poll(() => streams.length, { interval: 10, timeout: 10_000 }).toBe(1);
     streams[0].unblock();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(streams.length).toBeGreaterThanOrEqual(2);
+    await expect
+      .poll(() => streams.length, { interval: 10, timeout: 10_000 })
+      .toBeGreaterThanOrEqual(2);
     streams[0].triggerError(new Error('EMFILE'));
 
     await expect(promise).rejects.toThrow('EMFILE');
