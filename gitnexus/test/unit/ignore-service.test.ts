@@ -219,95 +219,124 @@ describe('isHardcodedIgnoredDirectory', () => {
   });
 });
 
-// ─── GITNEXUS_INDEX_TEST_DIRS opt-in (#771) ─────────────────────────
+// ─── .gitnexusignore negation can override hardcoded list (#771) ────
 //
-// The env var lets Quality Engineering users opt into indexing
-// __tests__ and __mocks__ so they can trace test coverage via CALLS
-// edges. These tests lock in:
-//   - default behaviour (env unset) is byte-identical to pre-#771
-//   - env set removes EXACTLY __tests__ and __mocks__ from the
-//     effective ignore set — other hardcoded entries stay ignored
-//   - test-adjacent dirs the issue did NOT ask for (__snapshots__,
-//     snapshots, fixtures, .jest) remain ignored regardless — this
-//     is a scope-discipline lock; a future expansion would fail here
-//   - `isHardcodedIgnoredDirectory` export semantic is unchanged
-//     (it's a raw-membership query, not an effective-runtime query)
-describe('GITNEXUS_INDEX_TEST_DIRS opt-in (#771)', () => {
-  const savedEnv = process.env.GITNEXUS_INDEX_TEST_DIRS;
+// Per @magyargergo's review: `.gitnexusignore` should honour
+// `.gitignore`-style negation against the hardcoded DEFAULT_IGNORE_LIST.
+// A `!__tests__/` line in `.gitnexusignore` must re-enable indexing of
+// `__tests__/` even though the hardcoded list would normally block it.
+// These tests exercise the full `createIgnoreFilter` surface with real
+// temp files (the negation logic lives in `createIgnoreFilter`, not in
+// `shouldIgnorePath` — the latter stays pure-hardcoded for callers like
+// the wiki generator that don't have per-repo config context).
+//
+// Locks in:
+//   1. Default (no .gitnexusignore) — hardcoded list still blocks
+//      __tests__ / __mocks__ / node_modules (byte-identical pre-#771).
+//   2. `!__tests__/` negation — __tests__ and its descendants are
+//      indexed; other hardcoded entries (node_modules, .git) stay
+//      blocked.
+//   3. Broader negation (e.g. `!node_modules/`) also works — design is
+//      general, not special-cased to the 2 test dirs.
+//   4. Negation applies both to the directory itself (`childrenIgnored`
+//      allows descent) AND to descendants (`ignored` allows files).
+//   5. `shouldIgnorePath` pure-hardcoded contract is preserved — the
+//      wiki generator and other callers without per-repo config get
+//      deterministic behavior.
+describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771)', () => {
+  let tmpDir: string;
 
-  afterEach(() => {
-    if (savedEnv === undefined) {
-      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
-    } else {
-      process.env.GITNEXUS_INDEX_TEST_DIRS = savedEnv;
-    }
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-negation-'));
   });
 
-  describe('default behaviour — env unset', () => {
-    beforeEach(() => {
-      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
-    });
-
-    it('ignores __tests__ directory paths', () => {
-      expect(shouldIgnorePath('src/__tests__/foo.test.ts')).toBe(true);
-      expect(shouldIgnorePath('__tests__/index.test.js')).toBe(true);
-    });
-
-    it('ignores __mocks__ directory paths', () => {
-      expect(shouldIgnorePath('src/__mocks__/api.ts')).toBe(true);
-      expect(shouldIgnorePath('pkg/__mocks__/fs.js')).toBe(true);
-    });
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  describe('opt-in behaviour — env set', () => {
-    beforeEach(() => {
-      process.env.GITNEXUS_INDEX_TEST_DIRS = '1';
-    });
+  /** Synthetic path-scurry Path helper. `createIgnoreFilter.ignored` /
+   *  `childrenIgnored` only look at `.relative()` and `.name`, so a
+   *  minimal shape with those two is enough to exercise the logic. */
+  const mkPath = (rel: string) =>
+    ({
+      relative: () => rel.replace(/\\/g, '/'),
+      name: rel.split(/[/\\]/).pop() || rel,
+    }) as unknown as Parameters<Awaited<ReturnType<typeof createIgnoreFilter>>['ignored']>[0];
 
-    it('does NOT ignore __tests__ paths', () => {
-      expect(shouldIgnorePath('src/__tests__/foo.test.ts')).toBe(false);
-      expect(shouldIgnorePath('__tests__/index.test.js')).toBe(false);
-    });
-
-    it('does NOT ignore __mocks__ paths', () => {
-      expect(shouldIgnorePath('src/__mocks__/api.ts')).toBe(false);
-      expect(shouldIgnorePath('pkg/__mocks__/fs.js')).toBe(false);
-    });
-
-    it('still ignores other hardcoded entries (node_modules, .git, dist, __pycache__)', () => {
-      // Opt-in is scoped narrowly — every other auto-filter stays active.
-      expect(shouldIgnorePath('node_modules/foo.js')).toBe(true);
-      expect(shouldIgnorePath('.git/HEAD')).toBe(true);
-      expect(shouldIgnorePath('dist/bundle.js')).toBe(true);
-      expect(shouldIgnorePath('src/__pycache__/module.pyc')).toBe(true);
-    });
-
-    it('still ignores test-adjacent dirs the issue did NOT ask to unlock', () => {
-      // Scope-discipline guard — #771 explicitly names __tests__ and
-      // __mocks__. Other test-adjacent entries (__snapshots__, snapshots,
-      // fixtures, .jest) stay ignored. A future PR that widens the
-      // opt-in without filing a new issue would fail here.
-      expect(shouldIgnorePath('src/__snapshots__/foo.snap')).toBe(true);
-      expect(shouldIgnorePath('test/snapshots/foo.snap')).toBe(true);
-      expect(shouldIgnorePath('pkg/fixtures/data.json')).toBe(true);
-      expect(shouldIgnorePath('.jest/cache.js')).toBe(true);
-    });
+  it('default (no .gitnexusignore): __tests__ still blocked by hardcoded list', async () => {
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(true);
   });
 
-  describe('isHardcodedIgnoredDirectory export is unchanged by env var', () => {
-    it('returns true for __tests__ regardless of env', () => {
-      // The raw-membership query has a different contract from the
-      // effective-runtime query. `isHardcodedIgnoredDirectory` is
-      // "is this in the hardcoded list?" — the list itself does not
-      // change. The runtime decision changes via shouldIgnorePath.
-      delete process.env.GITNEXUS_INDEX_TEST_DIRS;
-      expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
-      expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
+  it('`!__tests__/` negation unlocks the directory and its descendants', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(false);
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    expect(filter.ignored(mkPath('src/__tests__/nested.test.ts'))).toBe(false);
+  });
 
-      process.env.GITNEXUS_INDEX_TEST_DIRS = '1';
-      expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
-      expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
-    });
+  it('`!__mocks__/` negation unlocks __mocks__ but NOT __tests__', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__mocks__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('__mocks__/api.ts'))).toBe(false);
+    // __tests__ not negated — hardcoded list still blocks it.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(true);
+  });
+
+  it('negation generalises — `!node_modules/` unlocks a different hardcoded entry', async () => {
+    // The design isn't special-cased to the two names from the issue —
+    // it honours any negation the user writes. Lock this in with a
+    // broader example that proves the mechanism, not the dir name.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!node_modules/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.childrenIgnored(mkPath('node_modules'))).toBe(false);
+    expect(filter.ignored(mkPath('node_modules/express/index.js'))).toBe(false);
+  });
+
+  it('negation of one hardcoded entry does not leak to others', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    // __tests__ negated → allowed.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    // But node_modules / .git / dist not negated → still blocked.
+    expect(filter.ignored(mkPath('node_modules/pkg/index.js'))).toBe(true);
+    expect(filter.ignored(mkPath('.git/HEAD'))).toBe(true);
+    expect(filter.ignored(mkPath('dist/bundle.js'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('node_modules'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('.git'))).toBe(true);
+  });
+
+  it('standard `.gitignore` rules (no negation) still layer on top of hardcoded', async () => {
+    // Pre-#771 behaviour: if .gitnexusignore says `my-dir/`, that dir
+    // is ignored in addition to the hardcoded list. Non-negation
+    // rules are unaffected by this PR.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'my-dir/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('my-dir/file.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('my-dir'))).toBe(true);
+    // Hardcoded still blocks unaffected paths.
+    expect(filter.ignored(mkPath('node_modules/foo.js'))).toBe(true);
+  });
+
+  it('shouldIgnorePath (raw hardcoded check) is unchanged — wiki / external callers unaffected', async () => {
+    // `shouldIgnorePath` is called from `core/wiki/generator.ts` and
+    // doesn't have access to per-repo `.gitnexusignore` config. Its
+    // contract stays "is this path in the hardcoded list?". The #771
+    // negation override lives only inside `createIgnoreFilter`, which
+    // IS called with config context. This asymmetry is deliberate.
+    expect(shouldIgnorePath('__tests__/foo.test.ts')).toBe(true);
+    expect(shouldIgnorePath('__mocks__/api.ts')).toBe(true);
+    expect(shouldIgnorePath('node_modules/pkg/index.js')).toBe(true);
+  });
+
+  it('isHardcodedIgnoredDirectory (raw membership) unchanged by negation', async () => {
+    // Pure membership query — the list itself doesn't mutate.
+    expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('node_modules')).toBe(true);
   });
 });
 
