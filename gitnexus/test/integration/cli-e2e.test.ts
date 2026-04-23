@@ -172,6 +172,13 @@ describe('CLI end-to-end', () => {
     expect(combined).toMatch(/Repository|not indexed/i);
   });
 
+  // The vitest test-level timeout (60 s) must exceed the subprocess
+  // timeout (30 s) so the "Accept timeout as valid on slow CI"
+  // branch can actually fire on slow runners (Windows CI routinely
+  // comes in at ~2x macOS wall-clock). Without a larger test-level
+  // timeout, the default 30 s vitest timeout races the 30 s
+  // subprocess timeout and the `if (result.status === null) return;`
+  // tolerance never activates.
   it('analyze command runs pipeline on mini-repo', () => {
     const result = runCli('analyze', MINI_REPO, 30000);
 
@@ -191,7 +198,7 @@ describe('CLI end-to-end', () => {
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
-  });
+  }, 60_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //

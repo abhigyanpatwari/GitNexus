@@ -313,7 +313,7 @@ export function parseArgs(args: string[]) {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -467,7 +467,7 @@ module.exports = { logError, logInfo, createEntry };
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -598,7 +598,7 @@ def check_length(text, max_len=255):
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -728,7 +728,7 @@ func (u *User) Validate() bool {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -862,7 +862,7 @@ public class User {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -962,7 +962,7 @@ pub fn format_error(err: &str) -> String {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1306,7 +1306,7 @@ namespace Data
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1499,7 +1499,7 @@ double distance(double x1, double y1, double x2, double y2) {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1692,7 +1692,7 @@ void log_init(void) {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1927,7 +1927,7 @@ function db_close() {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2116,7 +2116,7 @@ fun dbClose() {
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2251,7 +2251,7 @@ def compile_model(config):
 `,
     });
     result = runSkillsCli(tmpDir);
-  }, 50000);
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
