@@ -2290,10 +2290,9 @@ describe('C# struct overload dispatch (implicit-this narrowing)', () => {
 
   it('detects two Add overloads with distinct parameterCount', () => {
     const methods = getNodesByLabelFull(result, 'Method').filter((m) => m.name === 'Add');
-    expect(methods.length).toBeGreaterThanOrEqual(2);
+    expect(methods.length).toBe(2);
     const arities = methods.map((m) => m.properties.parameterCount as number).sort();
-    expect(arities).toContain(1);
-    expect(arities).toContain(2);
+    expect(arities).toEqual([1, 2]);
   });
 
   it('Run() -> Add emits CALLS edges to distinct Add overloads (implicit-this narrowing)', () => {
@@ -2348,5 +2347,61 @@ describe('C# interface receiver static invocation (merged Case 2)', () => {
     expect(warnCall).toBeDefined();
     expect(warnCall!.targetFilePath).toBe('src/ILogger.cs');
     expect(['import-resolved', 'global']).toContain(warnCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5 (continued): merged Case 2 kind-aware branch for class-name
+// receiver on WRITE ACCESSES. `Counters.Hits = 42` resolves receiver via
+// `findClassBindingInScope` (no typeBinding on `Counters`), which is the
+// exact path lifted from the deleted Case 5. Verifies `reason === 'write'`
+// and `confidence === 1.0` — the semantic upgrade over the pre-merge
+// Case 2, which emitted `import-resolved`/`global` at 0.85 for the same
+// sites. Also pins per-site dedup (two distinct writes → two edges).
+// C# tree-sitter queries emit only `write.member` captures today, so a
+// read-side counterpart would have no reference site and is intentionally
+// not asserted.
+// ---------------------------------------------------------------------------
+
+describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-class-static-field-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Counters and Runner classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['Counters', 'Runner']),
+    );
+  });
+
+  it('Touch() -> Hits and Touch() -> Misses each emit ACCESSES write with confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writesFromTouch = accesses.filter(
+      (e) => e.source === 'Touch' && e.rel.reason === 'write',
+    );
+    // Per-site dedup key is (caller, target, line, col) — two writes on
+    // distinct lines must produce two distinct edges.
+    expect(writesFromTouch.length).toBe(2);
+    for (const edge of writesFromTouch) {
+      expect(edge.rel.confidence).toBe(1.0);
+      expect(edge.targetFilePath).toBe('src/Counters.cs');
+    }
+    expect(writesFromTouch.map((e) => e.target).sort()).toEqual(['Hits', 'Misses']);
+  });
+
+  it('does not emit any CALLS edges for the static field writes', () => {
+    // `Counters.Hits = 42` is a field write, not a call. A regression
+    // that misclassifies the site would surface as a spurious CALLS
+    // edge here.
+    const calls = getRelationships(result, 'CALLS');
+    const stray = calls.filter(
+      (c) => c.source === 'Touch' && (c.target === 'Hits' || c.target === 'Misses'),
+    );
+    expect(stray).toEqual([]);
   });
 });
