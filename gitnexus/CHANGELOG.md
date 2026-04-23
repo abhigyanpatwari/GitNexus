@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable large-file skip threshold** — the walker's 512 KB default is now overridable via `GITNEXUS_MAX_FILE_SIZE` (KB) or `gitnexus analyze --max-file-size <kb>`. Values are clamped to the 32 MB tree-sitter ceiling, invalid inputs fall back to the default with a one-time warning, and the CLI banner reports the effective post-clamp threshold when an override is active (#991, #1044).
+
 ### Performance
 
 - **`analyze` ~33% faster** — moved FTS index creation from the analyze pipeline to first-use lazy initialisation. The 5 `CREATE_FTS_INDEX` calls cost ~440 ms each in LadybugDB regardless of table size (≈2 s fixed overhead) and dominated runtime on small repos and slow CI runners. The cost now amortises across the first `query`/`context` call in a session via a new `ensureFTSIndex` helper. Mini-repo `analyze` measured locally on Windows: 6.4 s → 4.0 s warm; on CI Windows runners (≈3× slower) restores comfortable headroom against the 30 s e2e test budget.

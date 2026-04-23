@@ -42,9 +42,7 @@ const moduleScopeMatch = (): CaptureMatch => ({
  * `ScopeExtractorHooks`); the real worker always has a full provider.
  */
 function fakeProvider(
-  hooks: Partial<
-    Pick<LanguageProvider, 'emitScopeCaptures' | 'shouldCreateScope' | 'resolveScopeKind'>
-  >,
+  hooks: Partial<Pick<LanguageProvider, 'emitScopeCaptures' | 'resolveScopeKind'>>,
 ): LanguageProvider {
   return hooks as unknown as LanguageProvider;
 }
@@ -93,21 +91,6 @@ describe('extractParsedFile', () => {
       extractParsedFile(provider, 'the real text', 'deep/path/file.ts');
       expect(seenText).toBe('the real text');
       expect(seenPath).toBe('deep/path/file.ts');
-    });
-
-    it('honors provider hooks beyond emitScopeCaptures (shouldCreateScope)', () => {
-      // A Block scope the provider declines to create — the resulting
-      // ParsedFile should have only the Module scope, not the Block.
-      const provider = fakeProvider({
-        emitScopeCaptures: () => [
-          moduleScopeMatch(),
-          { '@scope.block': cap('@scope.block', 10, 0, 20, 0) },
-        ],
-        shouldCreateScope: (match) => match['@scope.block'] === undefined,
-      });
-      const result = extractParsedFile(provider, 'src', 'a.ts');
-      expect(result!.scopes).toHaveLength(1);
-      expect(result!.scopes[0]!.kind).toBe('Module');
     });
   });
 

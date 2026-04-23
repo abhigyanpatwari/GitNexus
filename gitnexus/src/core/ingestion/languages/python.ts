@@ -29,6 +29,17 @@ import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitPythonScopeCaptures,
+  interpretPythonImport,
+  interpretPythonTypeBinding,
+  pythonArityCompatibility,
+  pythonBindingScopeFor,
+  pythonImportOwningScope,
+  pythonMergeBindings,
+  pythonReceiverBinding,
+  resolvePythonImportTarget,
+} from './python/index.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -77,4 +88,18 @@ export const pythonProvider = defineLanguage({
   classExtractor: createClassExtractor(pythonClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   builtInNames: BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  // Python is the first migration. See ./python/index.ts for the
+  // full per-hook rationale and the canonical capture vocabulary in
+  // ./python/query.ts (PYTHON_SCOPE_QUERY constant).
+  emitScopeCaptures: emitPythonScopeCaptures,
+  interpretImport: interpretPythonImport,
+  interpretTypeBinding: interpretPythonTypeBinding,
+  bindingScopeFor: pythonBindingScopeFor,
+  importOwningScope: pythonImportOwningScope,
+  mergeBindings: (_scope, bindings) => pythonMergeBindings(bindings),
+  receiverBinding: pythonReceiverBinding,
+  arityCompatibility: pythonArityCompatibility,
+  resolveImportTarget: resolvePythonImportTarget,
 });

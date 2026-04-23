@@ -25,6 +25,17 @@ import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitCsharpScopeCaptures,
+  interpretCsharpImport,
+  interpretCsharpTypeBinding,
+  csharpBindingScopeFor,
+  csharpImportOwningScope,
+  csharpMergeBindings,
+  csharpReceiverBinding,
+  csharpArityCompatibility,
+  resolveCsharpImportTarget,
+} from './csharp/index.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'Console',
@@ -138,4 +149,18 @@ export const csharpProvider = defineLanguage({
   classExtractor: createClassExtractor(csharpClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.CSharp),
   builtInNames: BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  // C# is the second migration after Python. See ./csharp/index.ts for
+  // the full per-hook rationale and the canonical capture vocabulary
+  // in ./csharp/query.ts (CSHARP_SCOPE_QUERY constant).
+  emitScopeCaptures: emitCsharpScopeCaptures,
+  interpretImport: interpretCsharpImport,
+  interpretTypeBinding: interpretCsharpTypeBinding,
+  bindingScopeFor: csharpBindingScopeFor,
+  importOwningScope: csharpImportOwningScope,
+  mergeBindings: (_scope, bindings) => csharpMergeBindings(bindings),
+  receiverBinding: csharpReceiverBinding,
+  arityCompatibility: csharpArityCompatibility,
+  resolveImportTarget: resolveCsharpImportTarget,
 });

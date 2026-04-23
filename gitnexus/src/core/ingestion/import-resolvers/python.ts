@@ -53,11 +53,15 @@ export function resolvePythonImportInternal(
 
   // Normalize for Windows backslashes
   const importerDir = currentFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
-  if (!importerDir) return null;
 
-  if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`))
-    return `${importerDir}/${pathLike}/__init__.py`;
-  if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
+  // Proximity check — only applies when the importer lives in a subdirectory.
+  // Root-level importers (importerDir === '') skip straight to the ancestor
+  // walk below, which handles the root case correctly (prefix becomes '').
+  if (importerDir) {
+    if (allFiles.has(`${importerDir}/${pathLike}/__init__.py`))
+      return `${importerDir}/${pathLike}/__init__.py`;
+    if (allFiles.has(`${importerDir}/${pathLike}.py`)) return `${importerDir}/${pathLike}.py`;
+  }
 
   // Ancestor directory walk — Python resolves bare imports against sys.path entries,
   // which typically includes the project root and package directories. Walk up from the

@@ -6,7 +6,13 @@
  */
 
 import fs from 'fs/promises';
-import { findRepo, unregisterRepo, listRegisteredRepos } from '../storage/repo-manager.js';
+import {
+  findRepo,
+  unregisterRepo,
+  listRegisteredRepos,
+  assertSafeStoragePath,
+  UnsafeStoragePathError,
+} from '../storage/repo-manager.js';
 
 export const cleanCommand = async (options?: { force?: boolean; all?: boolean }) => {
   // --all flag: clean all indexed repos
@@ -27,6 +33,24 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
 
     const entries = await listRegisteredRepos();
     for (const entry of entries) {
+      // Safety guard (#1003 review — @magyargergo): same rationale as
+      // remove.ts. `~/.gitnexus/registry.json` is user-writable, so a
+      // corrupted or hand-edited entry could point storagePath at the
+      // repo root, an empty string, or anywhere else — and
+      // fs.rm(recursive: true) on any of those would be catastrophic.
+      // Skip poisoned entries without touching disk, but keep going
+      // through the rest of the registry (preserves the existing
+      // per-repo error-tolerance semantics of `clean --all`).
+      try {
+        assertSafeStoragePath(entry);
+      } catch (err) {
+        if (err instanceof UnsafeStoragePathError) {
+          console.error(`Refusing to clean ${entry.name}: ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
+
       try {
         await fs.rm(entry.storagePath, { recursive: true, force: true });
         await unregisterRepo(entry.path);

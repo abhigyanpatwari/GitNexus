@@ -15,7 +15,14 @@ import {
   loadCLIConfig,
   registerRepo,
   listRegisteredRepos,
+  resolveRegistryEntry,
+  canonicalizePath,
+  assertSafeStoragePath,
   RegistryNameCollisionError,
+  RegistryNotFoundError,
+  RegistryAmbiguousTargetError,
+  UnsafeStoragePathError,
+  type RegistryEntry,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
@@ -451,5 +458,336 @@ describe('getInferredRepoName + registerRepo (#979 — git remote inference)', (
     } finally {
       await tmp.cleanup();
     }
+  });
+});
+
+// ─── resolveRegistryEntry (#664 — gitnexus remove <target>) ──────────
+//
+// The resolver is a pure function over a `RegistryEntry[]` snapshot, so
+// these tests build synthetic entries inline and do NOT touch
+// ~/.gitnexus. No GITNEXUS_HOME sandboxing needed. This also means the
+// tests are platform-portable on Windows where realpath semantics on
+// tmpdirs can diverge between runs (see the #955 CI pivot).
+
+describe('resolveRegistryEntry (#664)', () => {
+  // A well-known synthetic registry with two same-name entries (which
+  // can only exist in reality after `--allow-duplicate-name` — #829) and
+  // one unique-name entry. Path prefixes differ across platforms so the
+  // tests stay meaningful regardless of `process.platform`.
+  const prefix = process.platform === 'win32' ? 'D:\\' : '/tmp/';
+  const pathA = `${prefix}projects${path.sep}gnx-a${path.sep}app`;
+  const pathB = `${prefix}projects${path.sep}gnx-b${path.sep}app`;
+  const pathW = `${prefix}work${path.sep}website`;
+
+  const entries: RegistryEntry[] = [
+    {
+      name: 'app',
+      path: pathA,
+      storagePath: `${pathA}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'aaaaaaa',
+    },
+    {
+      name: 'app',
+      path: pathB,
+      storagePath: `${pathB}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'bbbbbbb',
+    },
+    {
+      name: 'website',
+      path: pathW,
+      storagePath: `${pathW}${path.sep}.gitnexus`,
+      indexedAt: '2026-04-18T00:00:00.000Z',
+      lastCommit: 'ccccccc',
+    },
+  ];
+
+  it('resolves by absolute path to the exact entry (path tier beats name tier)', () => {
+    const hit = resolveRegistryEntry(entries, pathA);
+    expect(hit).toBe(entries[0]);
+    expect(hit.path).toBe(pathA);
+
+    const hit2 = resolveRegistryEntry(entries, pathB);
+    expect(hit2).toBe(entries[1]);
+    expect(hit2.path).toBe(pathB);
+  });
+
+  it('resolves by unique name to the only matching entry', () => {
+    const hit = resolveRegistryEntry(entries, 'website');
+    expect(hit).toBe(entries[2]);
+    expect(hit.name).toBe('website');
+  });
+
+  it('name match is case-insensitive', () => {
+    expect(resolveRegistryEntry(entries, 'WEBSITE')).toBe(entries[2]);
+    expect(resolveRegistryEntry(entries, 'Website')).toBe(entries[2]);
+  });
+
+  it('path match is case-insensitive on Windows only', () => {
+    if (process.platform !== 'win32') {
+      // On POSIX, a differently-cased path must NOT match. Verify by
+      // lower-casing a mixed-case copy of pathW and expecting a miss.
+      const upper = pathW.toUpperCase();
+      expect(() => resolveRegistryEntry(entries, upper)).toThrow(RegistryNotFoundError);
+      return;
+    }
+    const upper = pathA.toUpperCase();
+    const hit = resolveRegistryEntry(entries, upper);
+    expect(hit).toBe(entries[0]);
+  });
+
+  it('throws RegistryAmbiguousTargetError when name matches multiple entries', () => {
+    // Two 'app' entries exist only because of --allow-duplicate-name
+    // (#829). The resolver MUST refuse to guess.
+    expect(() => resolveRegistryEntry(entries, 'app')).toThrow(RegistryAmbiguousTargetError);
+    try {
+      resolveRegistryEntry(entries, 'app');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryAmbiguousTargetError);
+      const err = e as RegistryAmbiguousTargetError;
+      expect(err.kind).toBe('RegistryAmbiguousTargetError');
+      expect(err.target).toBe('app');
+      expect(err.matches).toHaveLength(2);
+      // Error message must include both paths so the CLI can surface
+      // them without string-matching on `.message`.
+      expect(err.message).toContain(pathA);
+      expect(err.message).toContain(pathB);
+    }
+  });
+
+  it('throws RegistryNotFoundError when no entry matches', () => {
+    expect(() => resolveRegistryEntry(entries, 'nonexistent')).toThrow(RegistryNotFoundError);
+    try {
+      resolveRegistryEntry(entries, 'nonexistent');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryNotFoundError);
+      const err = e as RegistryNotFoundError;
+      expect(err.kind).toBe('RegistryNotFoundError');
+      expect(err.target).toBe('nonexistent');
+      // availableNames is disambiguated: 'app' appears twice, so both
+      // `app (path)` variants are included; 'website' is unique so it
+      // stays plain — matches the resolveRepo disambiguation shape.
+      expect(err.availableNames).toContain('website');
+      expect(err.availableNames.some((n) => n.startsWith('app ('))).toBe(true);
+      // Error message surfaces the hint.
+      expect(err.message).toContain('website');
+    }
+  });
+
+  it('throws RegistryNotFoundError with "no repositories registered" hint when registry is empty', () => {
+    try {
+      resolveRegistryEntry([], 'anything');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RegistryNotFoundError);
+      const err = e as RegistryNotFoundError;
+      expect(err.availableNames).toEqual([]);
+      expect(err.message).toContain('No repositories are currently registered');
+    }
+  });
+
+  it('path match wins over name match (never ambiguous)', () => {
+    // Construct a pathological fixture where a registry entry's NAME
+    // happens to equal another entry's PATH. The path tier must win
+    // without triggering ambiguity.
+    const weird: RegistryEntry[] = [
+      { ...entries[2] }, // 'website' at pathW
+      {
+        name: pathW, // degenerate: name equals another entry's path
+        path: `${prefix}elsewhere${path.sep}odd`,
+        storagePath: `${prefix}elsewhere${path.sep}odd${path.sep}.gitnexus`,
+        indexedAt: '2026-04-18T00:00:00.000Z',
+        lastCommit: 'ddddddd',
+      },
+    ];
+    const hit = resolveRegistryEntry(weird, pathW);
+    // Must match the entry whose PATH is pathW, not the one whose NAME
+    // is pathW — because Tier 1 runs before Tier 2 and finds the path
+    // match first.
+    expect(hit.path).toBe(pathW);
+    expect(hit.name).toBe('website');
+  });
+});
+
+// ─── canonicalizePath (#1003 review — @evander-wang / @magyargergo) ──
+//
+// Shields `registerRepo`, `unregisterRepo`, and `resolveRegistryEntry`
+// against cross-platform path-form divergence: macOS symlink expansion
+// (/var → /private/var) and Windows 8.3 short-name expansion
+// (RUNNERA~1 → runneradmin). The helper also underpins backwards
+// compatibility with registries written by versions that only ran
+// `path.resolve` — by canonicalising the stored entry at compare time,
+// both pre- and post-fix entries converge to the same key.
+//
+// These tests avoid snapshotting a specific realpath value (that would
+// be platform-fragile); instead they assert:
+//   - canonicalizePath is idempotent (f(f(x)) == f(x))
+//   - canonicalizePath falls back cleanly when the path doesn't exist
+//   - resolveRegistryEntry matches a stored entry even when the target
+//     and the stored value disagree on one-step normalisation (simulated
+//     via a fixture that stores the de-canonicalised form of a real
+//     existing path).
+
+describe('canonicalizePath (#1003)', () => {
+  it('is idempotent — canonicalizePath(canonicalizePath(x)) === canonicalizePath(x)', async () => {
+    // Use the vitest project-root as a known-existing path. `os.tmpdir()`
+    // would work too but process.cwd() is guaranteed to exist for the
+    // test runner.
+    const p = process.cwd();
+    const once = canonicalizePath(p);
+    const twice = canonicalizePath(once);
+    expect(twice).toBe(once);
+  });
+
+  it('falls back to path.resolve when the target does not exist', () => {
+    // Construct a definitely-nonexistent path under tmpdir. Using
+    // random-ish segments so we don't collide with anything real.
+    const ghost = path.join(os.tmpdir(), 'gnx-never-exists-____', 'still-not-there');
+    const got = canonicalizePath(ghost);
+    // Must not throw, must not resolve to something weird — should be
+    // identical to `path.resolve(ghost)` since realpathSync.native will
+    // have thrown and we swallowed it.
+    expect(got).toBe(path.resolve(ghost));
+  });
+
+  it('returns an absolute path for relative input even when the path is missing', () => {
+    // Relative path that does not exist. Must still be absolute
+    // (fallback path: path.resolve normalises even non-existent inputs).
+    const rel = './does-not-exist-zzz-' + Date.now();
+    const got = canonicalizePath(rel);
+    expect(path.isAbsolute(got)).toBe(true);
+  });
+});
+
+describe('resolveRegistryEntry backward-compat with non-canonical stored paths (#1003)', () => {
+  it('matches a stored entry even when the target was passed in canonical form', async () => {
+    // Simulate the bug-producing scenario without depending on a real
+    // symlink/8.3 discrepancy (those are platform-specific and flaky to
+    // set up in CI). We take a REAL path that exists
+    // (canonicalizePath-stable), store a known-non-canonical copy of it
+    // in a fake RegistryEntry, then resolve with the canonical form and
+    // assert the match.
+    //
+    // Construct a non-canonical string that resolves to the same real
+    // path. `path.join` auto-normalises `.` and trailing separators, so
+    // we build the string by raw concat to keep it string-unequal to
+    // `realDir` until `canonicalizePath` runs.
+    const realDir = process.cwd();
+    const nonCanonical = realDir + path.sep + '.'; // e.g. /work/gitnexus/.
+    // Sanity: these are string-unequal before canonicalisation.
+    expect(nonCanonical).not.toBe(realDir);
+
+    const entries: RegistryEntry[] = [
+      {
+        name: 'stored-under-noncanonical-form',
+        path: nonCanonical,
+        storagePath: path.join(nonCanonical, '.gitnexus'),
+        indexedAt: '2026-04-20T00:00:00.000Z',
+        lastCommit: 'deadbee',
+      },
+    ];
+
+    // Pass the canonical form as the target — resolver must still match.
+    const hit = resolveRegistryEntry(entries, realDir);
+    expect(hit).toBe(entries[0]);
+  });
+});
+
+// ─── assertSafeStoragePath (#1003 review — @magyargergo) ─────────────
+//
+// Guard rail against destroying more than the `.gitnexus/` subfolder.
+// `~/.gitnexus/registry.json` is user-writable plain text, so a
+// corrupted or hand-edited entry could put storagePath anywhere.
+// These tests use synthetic `RegistryEntry` fixtures (no disk I/O)
+// because the guard is a pure string check — it must not depend on
+// the paths existing.
+
+describe('assertSafeStoragePath (#1003)', () => {
+  const prefix = process.platform === 'win32' ? 'D:\\' : '/tmp/';
+  const repoPath = `${prefix}projects${path.sep}my-repo`;
+  const base: Omit<RegistryEntry, 'storagePath'> = {
+    name: 'my-repo',
+    path: repoPath,
+    indexedAt: '2026-04-21T00:00:00.000Z',
+    lastCommit: 'deadbee',
+  };
+
+  it('accepts the canonical <repo>/.gitnexus storage path', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(repoPath, '.gitnexus'),
+    };
+    expect(() => assertSafeStoragePath(entry)).not.toThrow();
+  });
+
+  it('rejects when storagePath equals the repo path itself (would delete the code)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: repoPath, // catastrophic: rm the working tree
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is a parent of the repo path', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.dirname(repoPath), // also catastrophic
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is empty (path.resolve falls back to cwd)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: '', // path.resolve('') === process.cwd() — would rm cwd
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath points somewhere totally unrelated', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: `${prefix}some${path.sep}other${path.sep}place`,
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('rejects when storagePath is a sibling .gitnexus (right basename, wrong parent)', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(`${prefix}different${path.sep}repo`, '.gitnexus'),
+    };
+    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+  });
+
+  it('UnsafeStoragePathError carries the original entry + expected + actual paths', () => {
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: `${prefix}evil${path.sep}path`,
+    };
+    try {
+      assertSafeStoragePath(entry);
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnsafeStoragePathError);
+      const err = e as UnsafeStoragePathError;
+      expect(err.kind).toBe('UnsafeStoragePathError');
+      expect(err.entry).toBe(entry);
+      // Expected path is the canonical `<repo>/.gitnexus`.
+      expect(err.expectedStoragePath).toBe(path.join(path.resolve(repoPath), '.gitnexus'));
+      // Actual path is the corrupted value (resolved).
+      expect(err.actualStoragePath).toBe(path.resolve(entry.storagePath));
+      // Message must suggest the recovery action.
+      expect(err.message).toContain('registry.json');
+    }
+  });
+
+  it('Windows: storagePath match is case-insensitive to match register/unregister semantics', () => {
+    if (process.platform !== 'win32') return;
+    const entry: RegistryEntry = {
+      ...base,
+      storagePath: path.join(repoPath.toUpperCase(), '.GITNEXUS'),
+    };
+    // Should accept because Windows paths are case-insensitive.
+    expect(() => assertSafeStoragePath(entry)).not.toThrow();
   });
 });

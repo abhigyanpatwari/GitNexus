@@ -1,0 +1,109 @@
+name: Scope Resolution Parity
+
+# Reusable workflow — called from ci.yml. Does NOT declare concurrency;
+# it inherits the caller's concurrency group per the convention documented
+# in CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+#
+# ── Purpose (RFC #909 Ring 3, §6.4 "Observability gates") ──────────────
+# For every language in `MIGRATED_LANGUAGES` (exported from
+# `gitnexus/src/core/ingestion/registry-primary-flag.ts`), run the
+# resolver integration test at `test/integration/resolvers/<slug>.test.ts`
+# TWICE on every PR:
+#
+#   1. `REGISTRY_PRIMARY_<LANG>=0` — legacy DAG path (guarantees we haven't
+#      broken the old path while migrating).
+#   2. `REGISTRY_PRIMARY_<LANG>=1` — registry-primary path (guarantees the
+#      new path carries the same behavior — the parity gate).
+#
+# BOTH must pass. The source of truth is the TypeScript constant — adding
+# a language to that `Set` is the ONLY contributor action; CI auto-
+# discovers it, runs parity, and the language's default production path
+# flips to registry-primary in the same change.
+#
+# When the set is empty (e.g. mid-Ring-3 for every language), the parity
+# matrix is skipped and the workflow reports success — no-op until a
+# language is explicitly claimed migrated.
+
+on:
+  workflow_call:
+
+jobs:
+  discover:
+    name: Discover migrated languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      languages: ${{ steps.read.outputs.languages }}
+      has-any: ${{ steps.read.outputs.has-any }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+
+      - name: Extract MIGRATED_LANGUAGES from registry-primary-flag.ts
+        id: read
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          # `tsx` evaluates the TS source directly (no build step), imports
+          # the exported `Set`, and emits a GH-Actions-friendly JSON matrix.
+          LANGS=$(npx tsx scripts/ci-list-migrated-languages.ts)
+          COUNT=$(printf '%s' "$LANGS" | jq 'length')
+          HAS_ANY="false"
+          if [[ "$COUNT" -gt 0 ]]; then HAS_ANY="true"; fi
+          echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
+          echo "has-any=$HAS_ANY" >> "$GITHUB_OUTPUT"
+          echo "Discovered $COUNT migrated language(s): $LANGS"
+          echo "Parity matrix will run: $HAS_ANY"
+
+  parity:
+    name: ${{ matrix.lang.slug }} parity
+    needs: discover
+    if: needs.discover.outputs.has-any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One language failing must not abort the others — we want the full
+      # parity matrix result on a single CI run so a reviewer sees every
+      # regression at once rather than one-at-a-time.
+      fail-fast: false
+      matrix:
+        lang: ${{ fromJSON(needs.discover.outputs.languages) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Verify resolver test file exists
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          TEST_FILE="test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"
+          if [[ ! -f "$TEST_FILE" ]]; then
+            echo "::error title=Missing resolver test::\
+          Expected $TEST_FILE for '${{ matrix.lang.slug }}' (listed in \
+          MIGRATED_LANGUAGES). Either fix the slug or add the test file \
+          before listing this language as migrated."
+            exit 1
+          fi
+
+      - name: Resolver tests — legacy DAG (REGISTRY_PRIMARY_${{ matrix.lang.envvar }}=0)
+        shell: bash
+        working-directory: gitnexus
+        env:
+          FLAG_NAME: REGISTRY_PRIMARY_${{ matrix.lang.envvar }}
+        # Explicitly force the flag to `0` even though it also defaults to
+        # `MIGRATED_LANGUAGES.has(lang)` — once a language is in the set,
+        # the default flips to registry-primary, so an unset env var would
+        # silently re-run the same path as step #2. `env FOO=0 cmd` spawns
+        # `cmd` with the override scoped to just this invocation.
+        run: env "$FLAG_NAME=0" npx vitest run "test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"
+
+      - name: Resolver tests — registry-primary (REGISTRY_PRIMARY_${{ matrix.lang.envvar }}=1)
+        shell: bash
+        working-directory: gitnexus
+        env:
+          FLAG_NAME: REGISTRY_PRIMARY_${{ matrix.lang.envvar }}
+        run: env "$FLAG_NAME=1" npx vitest run "test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"

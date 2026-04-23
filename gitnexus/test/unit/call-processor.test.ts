@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   processCalls,
   processCallsFromExtracted,
@@ -2227,10 +2227,22 @@ describe('processCallsFromExtracted — interface dispatch', () => {
 describe('processCalls — D0 MRO fast path (SM-10)', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
+  let prevRegistryPython: string | undefined;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+    // These tests exercise the LEGACY call-resolution DAG directly
+    // using .py fixtures. Python defaults to registry-primary now
+    // (MIGRATED_LANGUAGES), which gates call-processor out for
+    // Python files. Force the flag off so the legacy DAG runs.
+    prevRegistryPython = process.env['REGISTRY_PRIMARY_PYTHON'];
+    process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
+  });
+
+  afterEach(() => {
+    if (prevRegistryPython === undefined) delete process.env['REGISTRY_PRIMARY_PYTHON'];
+    else process.env['REGISTRY_PRIMARY_PYTHON'] = prevRegistryPython;
   });
 
   const setupChildParent = () => {
@@ -2974,10 +2986,20 @@ describe('processAssignmentsFromExtracted', () => {
 describe('D2 widen path: lookupCallableByName via module alias', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
+  let prevRegistryPython: string | undefined;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+    // Force legacy DAG for .py fixtures — Python is registry-primary
+    // by default (MIGRATED_LANGUAGES) which would gate processCalls out.
+    prevRegistryPython = process.env['REGISTRY_PRIMARY_PYTHON'];
+    process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
+  });
+
+  afterEach(() => {
+    if (prevRegistryPython === undefined) delete process.env['REGISTRY_PRIMARY_PYTHON'];
+    else process.env['REGISTRY_PRIMARY_PYTHON'] = prevRegistryPython;
   });
 
   it('resolves method via module alias widen using lookupCallableByName', async () => {

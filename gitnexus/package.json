@@ -60,11 +60,12 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "glob": "^13.0.6",
-    "graphology": "^0.25.4",
+    "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
     "js-yaml": "^4.1.1",
+    "jsonc-parser": "^3.3.1",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.40.3",
     "onnxruntime-node": "^1.24.0",
@@ -81,7 +82,7 @@
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
-    "uuid": "^13.0.0"
+    "uuid": "^14.0.0"
   },
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
@@ -92,14 +93,14 @@
     "tree-sitter-swift": "^0.6.0"
   },
   "devDependencies": {
-    "gitnexus-shared": "file:../gitnexus-shared",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^20.0.0",
-    "@types/uuid": "^10.0.0",
+    "@types/node": "^25.6.0",
+    "@types/uuid": "^11.0.0",
     "@vitest/coverage-v8": "^4.0.18",
+    "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"

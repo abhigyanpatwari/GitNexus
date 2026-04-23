@@ -41,7 +41,7 @@ import {
   getHeritageStrategyForLanguage,
 } from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
-import { createASTCache } from '../ast-cache.js';
+import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
@@ -109,6 +109,15 @@ export async function runChunkedParseAndResolve(
   bindingAccumulator: BindingAccumulator;
   resolutionContext: ReturnType<typeof createResolutionContext>;
   usedWorkerPool: boolean;
+  /** Cross-phase tree-sitter Tree cache populated by the sequential
+   *  parse path. Distinct from the chunk-local `astCache` used inside
+   *  the parse loop (that one is cleared between chunks). Empty when
+   *  every chunk ran via the worker pool (workers can't return native
+   *  tree-sitter Trees across the MessageChannel). Downstream phases
+   *  (scope-resolution) read from this to skip re-parsing the same
+   *  source. See plan
+   *  docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 4). */
+  scopeTreeCache: ASTCache;
 }> {
   const ctx = createResolutionContext();
   const symbolTable = ctx.model.symbols;
@@ -220,9 +229,18 @@ export async function runChunkedParseAndResolve(
 
   let filesParsedSoFar = 0;
 
-  // AST cache sized for one chunk (sequential fallback uses it for import/call/heritage)
+  // Two caches with different lifetimes:
+  //   - `astCache` (chunk-local, cleared between chunks) — call /
+  //     heritage / import processors read it during parse to avoid
+  //     re-parsing within the same chunk.
+  //   - `scopeTreeCache` (total-parseable-sized, never cleared by
+  //     parse-impl) — exposed via ParseOutput so scope-resolution can
+  //     skip a second tree-sitter parse. Worker-mode parses don't
+  //     populate either; consumers fall back to a fresh parse.
+  // See plan docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 4).
   const maxChunkFiles = chunks.reduce((max, c) => Math.max(max, c.length), 0);
   let astCache = createASTCache(maxChunkFiles);
+  const scopeTreeCache = createASTCache(Math.max(parseableScanned.length, 1));
 
   // Build import resolution context once — suffix index, file lists, resolve cache.
   const importCtx = buildImportResolutionContext(allPaths);
@@ -267,6 +285,7 @@ export async function runChunkedParseAndResolve(
         chunkFiles,
         symbolTable,
         astCache,
+        scopeTreeCache,
         (current, _total, filePath) => {
           const globalCurrent = filesParsedSoFar + current;
           const parsingProgress = 20 + (globalCurrent / totalParseable) * 62;
@@ -595,5 +614,11 @@ export async function runChunkedParseAndResolve(
     // sequential fallback handled every chunk (either due to `skipWorkers`,
     // the file-count/byte thresholds, or a pool-creation failure).
     usedWorkerPool: workerPool !== undefined,
+    // Surface the persistent scope cache so downstream phases
+    // (scope-resolution) can skip re-parsing files that the
+    // sequential path already parsed. Survives chunk boundaries; the
+    // chunk-local `astCache` above is intentionally NOT exposed
+    // because parse-impl clears it between chunks.
+    scopeTreeCache,
   };
 }

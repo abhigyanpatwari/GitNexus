@@ -64,32 +64,48 @@ function buildAdjacency(graph: KnowledgeGraph) {
   // Track which edge type each parent link came from
   const parentEdgeType = new Map<string, Map<string, 'EXTENDS' | 'IMPLEMENTS'>>();
 
-  graph.forEachRelationship((rel) => {
-    if (rel.type === 'EXTENDS' || rel.type === 'IMPLEMENTS') {
-      let parents = parentMap.get(rel.sourceId);
-      if (!parents) {
-        parents = [];
-        parentMap.set(rel.sourceId, parents);
-      }
-      parents.push(rel.targetId);
-
-      let edgeTypes = parentEdgeType.get(rel.sourceId);
-      if (!edgeTypes) {
-        edgeTypes = new Map();
-        parentEdgeType.set(rel.sourceId, edgeTypes);
-      }
-      edgeTypes.set(rel.targetId, rel.type);
+  // Three typed iterations replace one full-relationship-map scan
+  // with per-edge type checks. Each consumes only the edges of the
+  // type it cares about — see plan
+  // docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 2).
+  for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
+    let parents = parentMap.get(rel.sourceId);
+    if (!parents) {
+      parents = [];
+      parentMap.set(rel.sourceId, parents);
     }
+    parents.push(rel.targetId);
 
-    if (rel.type === 'HAS_METHOD') {
-      let methods = methodMap.get(rel.sourceId);
-      if (!methods) {
-        methods = [];
-        methodMap.set(rel.sourceId, methods);
-      }
-      methods.push(rel.targetId);
+    let edgeTypes = parentEdgeType.get(rel.sourceId);
+    if (!edgeTypes) {
+      edgeTypes = new Map();
+      parentEdgeType.set(rel.sourceId, edgeTypes);
     }
-  });
+    edgeTypes.set(rel.targetId, 'EXTENDS');
+  }
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    let parents = parentMap.get(rel.sourceId);
+    if (!parents) {
+      parents = [];
+      parentMap.set(rel.sourceId, parents);
+    }
+    parents.push(rel.targetId);
+
+    let edgeTypes = parentEdgeType.get(rel.sourceId);
+    if (!edgeTypes) {
+      edgeTypes = new Map();
+      parentEdgeType.set(rel.sourceId, edgeTypes);
+    }
+    edgeTypes.set(rel.targetId, 'IMPLEMENTS');
+  }
+  for (const rel of graph.iterRelationshipsByType('HAS_METHOD')) {
+    let methods = methodMap.get(rel.sourceId);
+    if (!methods) {
+      methods = [];
+      methodMap.set(rel.sourceId, methods);
+    }
+    methods.push(rel.targetId);
+  }
 
   return { parentMap, methodMap, parentEdgeType };
 }

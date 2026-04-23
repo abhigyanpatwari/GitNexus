@@ -1,4 +1,5 @@
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
+import { DEFAULT_MAX_FILE_SIZE_BYTES, getMaxFileSizeBytes } from './utils/max-file-size.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
@@ -22,9 +23,6 @@ export interface FilePath {
 
 const READ_CONCURRENCY = 32;
 
-/** Skip files larger than 512KB — they're usually generated/vendored and crash tree-sitter */
-const MAX_FILE_SIZE = 512 * 1024;
-
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
  * Memory: ~10MB for 100K files vs ~1GB+ with content.
@@ -34,6 +32,7 @@ export const walkRepositoryPaths = async (
   onProgress?: (current: number, total: number, filePath: string) => void,
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath);
+  const maxFileSizeBytes = getMaxFileSizeBytes();
 
   const filtered = await glob('**/*', {
     cwd: repoPath,
@@ -52,7 +51,7 @@ export const walkRepositoryPaths = async (
       batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
-        if (stat.size > MAX_FILE_SIZE) {
+        if (stat.size > maxFileSizeBytes) {
           skippedLarge++;
           skippedLargePaths.push(relativePath.replace(/\\/g, '/'));
           return null;
@@ -73,9 +72,9 @@ export const walkRepositoryPaths = async (
   }
 
   if (skippedLarge > 0) {
-    console.warn(
-      `  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`,
-    );
+    const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
+    const suffix = isDefault ? ', likely generated/vendored' : '';
+    console.warn(`  Skipped ${skippedLarge} large files (>${maxFileSizeBytes / 1024}KB${suffix})`);
     if (isVerboseIngestionEnabled()) {
       for (const p of skippedLargePaths) {
         console.warn(`  - ${p}`);

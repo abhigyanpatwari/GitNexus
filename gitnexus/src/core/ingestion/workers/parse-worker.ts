@@ -568,32 +568,48 @@ const findEnclosingFunctionId = (
           filePath,
           provider.resolveEnclosingOwner,
         );
-        const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
+        const encLang = getLanguageFromFilename(filePath);
+        const standaloneMethodInfo =
+          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          encLang === SupportedLanguages.Go &&
+          provider.methodExtractor?.extractFromNode
+            ? provider.methodExtractor.extractFromNode(current, {
+                filePath,
+                language: encLang,
+              })
+            : null;
+        const ownerName = classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
+        const qualifiedName = ownerName ? `${ownerName}.${funcName}` : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
         let arity: number | undefined;
         let encTypeTag = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang = getLanguageFromFilename(filePath);
-          const classNode =
-            findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
-          if (classNode && encLang) {
-            const methodMap = getMethodInfo(classNode, provider, {
-              filePath,
-              language: encLang,
-            });
-            const defLine = current.startPosition.row + 1;
-            const info = methodMap?.get(`${funcName}:${defLine}`);
-            if (info) {
-              arity = info.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : info.parameters.length;
-              if (methodMap && arity !== undefined) {
-                const g = buildCollisionGroups(methodMap);
-                encTypeTag =
-                  typeTagForId(methodMap, funcName, arity, info, encLang, g) +
-                  constTagForId(methodMap, funcName, arity, info, g);
+          if (standaloneMethodInfo) {
+            arity = standaloneMethodInfo.parameters.some((p) => p.isVariadic)
+              ? undefined
+              : standaloneMethodInfo.parameters.length;
+          } else {
+            const classNode =
+              findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
+            if (classNode && encLang) {
+              const methodMap = getMethodInfo(classNode, provider, {
+                filePath,
+                language: encLang,
+              });
+              const defLine = current.startPosition.row + 1;
+              const info = methodMap?.get(`${funcName}:${defLine}`);
+              if (info) {
+                arity = info.parameters.some((p) => p.isVariadic)
+                  ? undefined
+                  : info.parameters.length;
+                if (methodMap && arity !== undefined) {
+                  const g = buildCollisionGroups(methodMap);
+                  encTypeTag =
+                    typeTagForId(methodMap, funcName, arity, info, encLang, g) +
+                    constTagForId(methodMap, funcName, arity, info, g);
+                }
               }
             }
           }

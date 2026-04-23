@@ -89,10 +89,25 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
   };
 }
 
+export class GroupNotFoundError extends Error {
+  constructor(public readonly groupName: string) {
+    super(`Group "${groupName}" not found`);
+    this.name = 'GroupNotFoundError';
+  }
+}
+
 export async function loadGroupConfig(groupDir: string): Promise<GroupConfig> {
   const fsp = await import('node:fs/promises');
   const path = await import('node:path');
   const yamlPath = path.join(groupDir, 'group.yaml');
-  const content = await fsp.readFile(yamlPath, 'utf-8');
+  let content: string;
+  try {
+    content = await fsp.readFile(yamlPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new GroupNotFoundError(path.basename(groupDir));
+    }
+    throw err;
+  }
   return parseGroupConfig(content);
 }

@@ -29,6 +29,7 @@ import type {
 } from '../workers/parse-worker.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
+import type { ASTCache } from '../ast-cache.js';
 
 export interface ParseOutput {
   /**
@@ -63,6 +64,23 @@ export interface ParseOutput {
    * see `PipelineOptions.workerThresholdsForTest`.
    */
   readonly usedWorkerPool: boolean;
+  /**
+   * Cross-phase tree-sitter Tree cache populated by the sequential
+   * parse path. Separate from the chunk-local `astCache` used *inside*
+   * the parse phase (which is cleared between chunks) — this one
+   * survives the whole phase and hands Trees to scope-resolution so
+   * it can skip a second parse.
+   *
+   * Empty entries for files that ran through the worker pool
+   * (workers can't return native tree-sitter Trees across the
+   * MessageChannel). Cache miss is safe — consumers fall back to a
+   * fresh parse. See plan
+   * docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 4).
+   *
+   * Disposed by `scopeResolutionPhase` (the sole consumer) via
+   * `scopeTreeCache.clear()` after its extract loop finishes.
+   */
+  readonly scopeTreeCache: ASTCache;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

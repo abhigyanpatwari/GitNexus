@@ -39,6 +39,37 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 
 /**
+ * Languages whose RFC #909 Ring 3 scope-resolution migration is complete.
+ *
+ * This is the single source of truth for "migrated" — the list drives:
+ *
+ *   1. **Production default behavior.** `isRegistryPrimary(lang)` returns
+ *      `true` by default for languages in this set (env-var override to
+ *      any falsy value still wins — e.g. `REGISTRY_PRIMARY_PYTHON=0`).
+ *   2. **CI parity gate.** `.github/workflows/ci-scope-parity.yml` auto-
+ *      discovers this set and, for every language in it, runs the
+ *      resolver integration test at `test/integration/resolvers/<slug>.test.ts`
+ *      TWICE on every PR — once with the legacy DAG (flag forced off)
+ *      and once with the registry-primary path (flag forced on). BOTH
+ *      must pass. Adding a language is automatic — no workflow edit,
+ *      no JSON registry.
+ *   3. **Legacy-path gating.** `call-processor.ts` / `import-processor.ts`
+ *      skip per-language work when `isRegistryPrimary(lang)` is `true`,
+ *      so this set also controls what gets silenced in the legacy DAG.
+ *
+ * Add a language here ONLY after shadow parity ≥ 99% fixtures / ≥ 98%
+ * corpus per RFC §6.4. The parity CI gate will block the PR otherwise.
+ *
+ * The set is intentionally a static TypeScript literal (not a JSON import,
+ * not an env lookup) so CI can discover it via `tsx` without a build step
+ * and reviewers see the change inline with the code that consumes it.
+ */
+export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<SupportedLanguages>([
+  SupportedLanguages.Python,
+  SupportedLanguages.CSharp,
+]);
+
+/**
  * Return the env-var name that controls a given language's registry-
  * primary flag. Exported for test assertions and for the PR-labeling
  * CI job that cross-references per-language flag changes.
@@ -48,15 +79,17 @@ export function envVarNameFor(lang: SupportedLanguages): string {
 }
 
 /**
- * Whether `lang` has been flipped to registry-primary call resolution.
+ * Whether `lang` runs through the registry-primary call-resolution path.
  *
- * Returns `false` by default — a language must explicitly set its env
- * var to a truthy value to opt in. The flag is the sole control surface:
- * flipping it requires no code change, and reverting it requires no code
- * change.
+ * Resolution order: an explicit env-var value wins (so operators and CI
+ * can force either path for a given run), and the default falls back to
+ * `MIGRATED_LANGUAGES.has(lang)` — so languages whose migration is
+ * complete default to registry-primary without touching any env.
  */
 export function isRegistryPrimary(lang: SupportedLanguages): boolean {
-  return parseFlag(process.env[envVarNameFor(lang)]);
+  const raw = process.env[envVarNameFor(lang)];
+  if (raw !== undefined) return parseFlag(raw);
+  return MIGRATED_LANGUAGES.has(lang);
 }
 
 /**
