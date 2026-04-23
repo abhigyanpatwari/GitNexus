@@ -78,6 +78,12 @@ export interface AnalyzeOptions {
    * `allowDuplicateName` option end-to-end.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Override the walker's large-file skip threshold (#991). Value in KB;
+   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
+   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
+   */
+  maxFileSize?: string;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -85,6 +91,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
+  }
+
+  if (options?.maxFileSize) {
+    process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -129,6 +139,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (process.env.GITNEXUS_NO_GITIGNORE) {
     console.log(
       '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
+    );
+  }
+
+  if (process.env.GITNEXUS_MAX_FILE_SIZE) {
+    console.log(
+      `  GITNEXUS_MAX_FILE_SIZE=${process.env.GITNEXUS_MAX_FILE_SIZE}KB — overriding default 512KB file-size skip threshold\n`,
     );
   }
 

@@ -39,9 +39,15 @@ program
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
+  .option(
+    '--max-file-size <kb>',
+    'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
+  )
   .addHelpText(
     'after',
-    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)',
+    '\nEnvironment variables:\n' +
+      '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
+      '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
