@@ -4,13 +4,73 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-04-24
+
 ### Added
 
-- **Configurable large-file skip threshold** — the walker's 512 KB default is now overridable via `GITNEXUS_MAX_FILE_SIZE` (KB) or `gitnexus analyze --max-file-size <kb>`. Values are clamped to the 32 MB tree-sitter ceiling, invalid inputs fall back to the default with a one-time warning, and the CLI banner reports the effective post-clamp threshold when an override is active (#991, #1044).
+- **Cross-repo impact analysis** — `@repo` MCP routing plus group resources let impact queries span multiple indexed repositories in a group (#794, #984)
+- **Python scope-based call resolution** — registry-primary flip, performance, and generalization work from RFC #909 Ring 3 (#980)
+- **C# scope-resolution migration** — C# now runs on the registry-primary path alongside Python (#934, #1019)
+- **RFC #909 Ring 1 & Ring 2 scope-resolution infrastructure** — the shared foundation for language-agnostic scope resolution:
+  - Scope-resolution types and constants, `LanguageProvider` hook extension (#910, #911, #949, #950)
+  - `ScopeTree` + `PositionIndex` + `makeScopeId` (#912, #961)
+  - `DefIndex` / `ModuleScopeIndex` / `QualifiedNameIndex` (#913, #958)
+  - `MethodDispatchIndex` materialized view over `HeritageMap` (#914, #960)
+  - `resolveTypeRef` strict single-return type resolver (#916, #959)
+  - SCC-aware finalize with bounded fixpoint (#915, #962)
+  - `ClassRegistry` / `MethodRegistry` / `FieldRegistry` + 7-step lookup (#917, #963)
+  - Shadow-mode diff + aggregate, parity harness + static dashboard (#918, #923, #951, #972)
+  - `ScopeExtractor` driver with 5-pass CaptureMatch → ParsedFile (#919, #965)
+  - `ScopeExtractor` wired into parse-worker + processor (#920, #969)
+  - `finalize-orchestrator` materializes `ScopeResolutionIndexes` (#921, #970)
+  - Per-language `resolveImportTarget` adapter (#922, #971)
+  - `REGISTRY_PRIMARY_<LANG>` per-language flag reader (#924, #968)
+  - `emit-references` drains `ReferenceIndex` to graph edges (#925, #973)
+- **`gitnexus analyze --name <alias>`** with duplicate-name guard in the repo registry (#955)
+- **`gitnexus remove <target>`** unindexes a registered repo by name or path (#664, #1003)
+- **Auto-infer registry name** from `git remote.origin.url` when `--name` is omitted (#981)
+- **Sibling-clone drift detection** — indexed repos are fingerprinted by remote URL so duplicate registrations are caught before graph divergence (#982)
+- **Configurable large-file skip threshold** — the walker's 512 KB default is now overridable via `GITNEXUS_MAX_FILE_SIZE` (KB) or `gitnexus analyze --max-file-size <kb>`. Values are clamped to the 32 MB tree-sitter ceiling, invalid inputs fall back to the default with a one-time warning, and the CLI banner reports the effective post-clamp threshold when an override is active (#991, #1044, #1045)
+- **`GITNEXUS_INDEX_TEST_DIRS` opt-in** for `__tests__` / `__mocks__` traversal (#771, #1046)
+- **`analyze` embedding preservation** — existing embeddings are preserved by default, `--force` regenerates them, `--drop-embeddings` opts out entirely (CLI + HTTP API) (#1055)
+- **Structural embedding chunking** with data-driven `CHUNKING_RULES` dispatch, replacing the flat line-based split (#987)
+- **PHP HTTP consumer detection** for the extractor catalogue (#993)
+- **Per-phase search timing** instrumentation across the query pipeline (#953)
+- **MCP disambiguation ranking** — `context` / `impact` candidates are ranked and expose `kind` / `file_path` hints (#888)
+- **Docker images for UI + CLI/server** shipped via `docker-compose` with cosign signing (#967), RC image builds (#978), and GHCR → Docker Hub mirroring (#1029)
 
-### Performance
+### Fixed
 
-- **`analyze` ~33% faster** — moved FTS index creation from the analyze pipeline to first-use lazy initialisation. The 5 `CREATE_FTS_INDEX` calls cost ~440 ms each in LadybugDB regardless of table size (≈2 s fixed overhead) and dominated runtime on small repos and slow CI runners. The cost now amortises across the first `query`/`context` call in a session via a new `ensureFTSIndex` helper. Mini-repo `analyze` measured locally on Windows: 6.4 s → 4.0 s warm; on CI Windows runners (≈3× slower) restores comfortable headroom against the 30 s e2e test budget.
+- **Go CALLS edges for receiver methods** — worker source IDs now align with the main pipeline, restoring receiver-method call edges (#1043)
+- **Node 22 DEP0151 warning** from `tree-sitter-c-sharp` import silenced (#1013, #1049)
+- **FTS index bootstrap** tries a local `LOAD` before `INSTALL` so offline/air-gapped runs no longer fail on network errors (#726)
+- **FTS ensure failures** are no longer cached and are invalidated on pool teardown (#1006)
+- **`groupImpact` local-impact errors** now bubble to the caller instead of being swallowed (#1004, #1007)
+- **Friendly error** when a group name is not found, with regression test for #903 (#989)
+- **`bm25` results** return FTS-matched symbols instead of an arbitrary `LIMIT 3` slice (#806)
+- **Embedding AST traversal** switched from recursion to iterative DFS, fixing stack overflow on deeply nested files (#990)
+- **React component path detection** runs before lowercasing, so mixed-case `.jsx`/`.tsx` files are recognised (#260)
+- **`detect-changes` ENOBUFS** by setting `maxBuffer` on `git` / `rg` `execFileSync` invocations (#957)
+- **`detect-changes` in direct CLI** — command was wired to MCP only; now exposed on the CLI as well (#892)
+- **CLI gitnexus markers** — `<!-- gitnexus:* -->` is only matched at section position, no longer inside code/prose (#1041, #1042)
+- **`opencode.json` setup** preserves existing comments and config during install (#998)
+- **Sequential parser logging** — skipped languages are now logged instead of silently dropped (#1021)
+- **`cli-e2e` fixture isolation** from the shared mini-repo, plus stabilised `rel-csv-split` stream teardown on Windows via `expect.poll` (#954, #1052)
+- **Docker** — RC build guarded against empty `vtag`, `inputs.tag` used to detect `workflow_call` context, web builder stage now copies `gitnexus/package.json`, base image switched from alpine to debian (#983, #996, #997, #1014)
+- **CI** — reusable `docker.yml` now inherits secrets from `release-candidate.yml` (#1054)
+
+### Changed
+
+- **`setup` config I/O unified** on `mergeJsoncFile` across all writers (#1031)
+- **Docker CI** gains a retry wrapper for `build-push` with visibility and hardened shell
+
+### Chore / Dependencies
+
+- Dependency bumps: `graphology` 0.25.4 → 0.26.0 (#1001), `uuid` 13 → 14 (#1000), `@huggingface/transformers` (#1035), `@types/node` (#1002), `@types/uuid` (#1016), `vitest` 4.1.4 → 4.1.5 (#1017), `@vitest/coverage-v8` (#1018)
+- gitnexus-web dependency bumps: `vite` 5.4.21 → 6.4.2 → 7.3.2 → 8.0.10 + `vitest` 4 (#1061, #1062, #1063), `lucide-react` 0.562.0 → 1.11.0 with local GitHub SVG fallback (#1038), `@langchain/anthropic` 1.3.10 → 1.3.27 (#1039), `@babel/types` (#1037)
+- gitnexus-shared dependency bumps: `typescript` (#1034)
+- GitHub Actions bumps: `actions/setup-node` 6.3.0 → 6.4.0 (#1033)
+- Documentation: repo-wide `DoD.md` Definition of Done (#1032), gRPC microservices group guide (#906, #994), `group add` / `group remove` README fixes (#1020), CLI docs include `--skip-git` (#750), README Discord link updated
 
 ## [1.6.2] - 2026-04-18
 
