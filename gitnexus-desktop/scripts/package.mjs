@@ -30,7 +30,6 @@ const electronBuilderVersion =
   desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
 // electron-rebuild v4 requires Node 22+, but desktop packaging currently runs on Node 20.
 const electronRebuildVersion = '3.7.2';
-const bundledNodeExecutableName = process.platform === 'win32' ? 'node.exe' : 'node';
 const electronBuilderCliPath = path.join(packageRoot, 'node_modules', 'electron-builder', 'cli.js');
 const builderUtilRequire = createRequire(
   path.join(packageRoot, 'node_modules', 'builder-util', 'out', 'util.js'),
@@ -141,8 +140,6 @@ const builderEnvironment = {
   ),
   GITNEXUS_DESKTOP_GITNEXUS_SKILLS: toBuilderRelativePath(path.join(gitnexusRoot, 'skills')),
   GITNEXUS_DESKTOP_GITNEXUS_VENDOR: toBuilderRelativePath(path.join(gitnexusRoot, 'vendor')),
-  GITNEXUS_DESKTOP_NODE_EXECUTABLE: process.execPath,
-  GITNEXUS_DESKTOP_NODE_RESOURCE_PATH: `gitnexus-node/${bundledNodeExecutableName}`,
   GITNEXUS_DESKTOP_WEB_DIST: toBuilderRelativePath(path.join(gitnexusWebRoot, 'dist')),
 };
 

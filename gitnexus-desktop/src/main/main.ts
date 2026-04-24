@@ -5,6 +5,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  getPackagedRendererEntry,
+  getRequestedPath,
+  normalizeStaticPath,
+} from './runtime-paths.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DESKTOP_APP_NAME = 'GitNexus Desktop';
@@ -251,6 +257,7 @@ const getNodeProcessEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.Pr
   };
 
   if (app.isPackaged) {
+    // Packaged mode reuses Electron's embedded Node runtime via process.execPath.
     environment.ELECTRON_RUN_AS_NODE = '1';
   }
 
@@ -367,55 +374,56 @@ const ensureWebDevServerStarted = async (): Promise<void> => {
   );
 };
 
-const normalizeStaticPath = (rootDir: string, requestPath: string): string | null => {
-  const normalizedRoot = path.resolve(rootDir);
-  const requestedFile = requestPath === '/' ? '/index.html' : requestPath;
-  const resolvedPath = path.resolve(normalizedRoot, `.${requestedFile}`);
-  const isInsideRoot =
-    resolvedPath === normalizedRoot || resolvedPath.startsWith(`${normalizedRoot}${path.sep}`);
-
-  if (!isInsideRoot) {
-    return null;
-  }
-
-  if (existsSync(resolvedPath) && statSync(resolvedPath).isFile()) {
-    return resolvedPath;
-  }
-
-  if (requestPath === '/' || path.extname(requestedFile) === '') {
-    return path.join(normalizedRoot, 'index.html');
-  }
-
-  return resolvedPath;
-};
-
-const sendStaticResponse = (assetPath: string | null, response: ServerResponse): void => {
+export const sendStaticResponse = (assetPath: string | null, response: ServerResponse): void => {
   if (!assetPath) {
     response.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     response.end('Forbidden');
     return;
   }
 
-  if (!existsSync(assetPath) || !statSync(assetPath).isFile()) {
+  try {
+    if (!existsSync(assetPath) || !statSync(assetPath).isFile()) {
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('Not found');
+      return;
+    }
+  } catch {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     response.end('Not found');
     return;
   }
 
   const contentType = MIME_TYPES[path.extname(assetPath)] ?? 'application/octet-stream';
-  response.writeHead(200, {
-    'Cache-Control': 'no-store',
-    'Content-Type': contentType,
-  });
-  createReadStream(assetPath).pipe(response);
-};
+  const stream = createReadStream(assetPath);
 
-const getRequestedPath = (requestUrl: string): string | null => {
-  try {
-    return decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
-  } catch {
-    return null;
-  }
+  stream.once('error', () => {
+    if (!response.headersSent) {
+      response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('Internal server error');
+      return;
+    }
+
+    response.destroy();
+  });
+
+  response.once('close', () => {
+    if (!stream.destroyed) {
+      stream.destroy();
+    }
+  });
+
+  stream.once('open', () => {
+    if (response.destroyed) {
+      stream.destroy();
+      return;
+    }
+
+    response.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'Content-Type': contentType,
+    });
+    stream.pipe(response);
+  });
 };
 
 const handlePackagedWebRequest = (request: IncomingMessage, response: ServerResponse): void => {
@@ -565,6 +573,7 @@ const updateContentViewBounds = (window: BrowserWindow): void => {
 };
 
 const createEmbeddedContentView = (contentUrl: string): BrowserView => {
+  // BrowserView is deprecated in Electron; keep this isolated until we migrate to WebContentsView.
   const contentView = new BrowserView({
     webPreferences: {
       contextIsolation: true,
@@ -603,7 +612,7 @@ const loadShellRenderer = async (window: BrowserWindow): Promise<void> => {
     return;
   }
 
-  const rendererEntry = path.join(__dirname, '../renderer/index.html');
+  const rendererEntry = getPackagedRendererEntry(__dirname);
   console.info(`[gitnexus-desktop] Loading shell renderer file: ${rendererEntry}`);
   await window.loadFile(rendererEntry);
 };

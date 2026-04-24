@@ -165,6 +165,9 @@ const gitnexusDesktopRuntimeDependencyNames = [
   'pandemonium',
   'uuid',
 ];
+const unmanagedGitNexusRuntimeDependencyNames = Object.keys(gitnexusPackageJson.dependencies ?? {})
+  .filter((packageName) => !gitnexusDesktopRuntimeDependencyNames.includes(packageName))
+  .sort();
 
 const gitnexusDesktopBuildDependencyNames = ['@types/node', 'gitnexus-shared', 'typescript'];
 
@@ -300,13 +303,14 @@ const overlayDependencyPackages = (sourceDirectory, destinationDirectory, depend
       const isLockedPathError =
         (errorCode === 'EPIPE' || errorCode === 'EBUSY' || errorCode === 'EPERM') &&
         existsSync(destinationPath);
+      const isExistingPathError = errorCode === 'EEXIST' && existsSync(destinationPath);
 
-      if (!isLockedPathError) {
+      if (!isLockedPathError && !isExistingPathError) {
         throw error;
       }
 
       console.warn(
-        `[gitnexus-desktop] Skipping locked dependency path during repair: ${destinationPath}`,
+        `[gitnexus-desktop] Skipping already-present dependency path during repair: ${destinationPath}`,
       );
     }
   }
@@ -524,6 +528,13 @@ if (
 ) {
   console.info('[gitnexus-desktop] Refreshing gitnexus-shared dependencies.');
   runNpm(['ci'], sharedRoot);
+}
+
+if (unmanagedGitNexusRuntimeDependencyNames.length > 0) {
+  console.warn(
+    '[gitnexus-desktop] Runtime repair does not yet manage these direct GitNexus dependencies:\n' +
+      unmanagedGitNexusRuntimeDependencyNames.map((packageName) => `  - ${packageName}`).join('\n'),
+  );
 }
 
 if (isGitNexusRuntimeInstallStale()) {

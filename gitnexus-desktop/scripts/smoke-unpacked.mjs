@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +106,26 @@ const resolveLatestExecutable = () => {
   };
 };
 
+const prepareExecutableForSmokeTest = (executablePath) => {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const result = spawnSync('xattr', ['-cr', executablePath], { stdio: 'inherit' });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if ((result.status ?? 0) !== 0) {
+    throw new Error(`Failed to clear macOS quarantine attributes for ${executablePath}.`);
+  }
+};
+
+const getSmokeTestArguments = () => {
+  return process.platform === 'linux' ? ['--no-sandbox'] : [];
+};
+
 const runSmokeTest = async () => {
   const { executablePath, releaseDir: latestReleaseDir } = resolveLatestExecutable();
 
@@ -119,10 +139,11 @@ const runSmokeTest = async () => {
     throw new Error(`Unable to locate the unpacked desktop executable under ${latestReleaseDir}.`);
   }
 
+  prepareExecutableForSmokeTest(executablePath);
   console.info(`[gitnexus-desktop] Smoke testing unpacked app: ${executablePath}`);
 
   await new Promise((resolve, reject) => {
-    const childProcess = spawn(executablePath, [], {
+    const childProcess = spawn(executablePath, getSmokeTestArguments(), {
       cwd: path.dirname(executablePath),
       env: {
         ...process.env,

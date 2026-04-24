@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["vitest.config.ts", "test/**/*.ts", "src/main/runtime-paths.ts"]
+}

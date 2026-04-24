@@ -14,10 +14,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  validate:
+    name: Validate desktop package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gitnexus-desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: gitnexus-desktop
+
+      - name: Typecheck desktop package
+        run: npm run typecheck
+        working-directory: gitnexus-desktop
+
+      - name: Run desktop unit tests
+        run: npm test
+        working-directory: gitnexus-desktop
+
   package:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    needs: validate
     permissions:
       contents: read
     strategy:
@@ -85,8 +112,13 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Start Xvfb
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
       - name: Smoke test unpacked desktop bundle
-        if: matrix.os == 'windows-latest'
         run: node scripts/smoke-unpacked.mjs
         working-directory: gitnexus-desktop
 

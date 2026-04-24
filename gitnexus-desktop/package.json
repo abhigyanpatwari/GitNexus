@@ -21,7 +21,8 @@
     "build:mac": "node scripts/package.mjs --mac dmg",
     "build:linux": "node scripts/package.mjs --linux AppImage",
     "build:all": "node scripts/package.mjs --win nsis --mac dmg --linux AppImage",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.renderer.json"
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.vitest.json",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
@@ -32,6 +33,7 @@
     "electron-builder": "26.8.1",
     "electron-vite": "^5.0.0",
     "typescript": "^6.0.3",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "vitest": "^4.0.18"
   }
 }
