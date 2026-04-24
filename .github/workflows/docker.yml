@@ -69,8 +69,14 @@ jobs:
             slug: gitnexus
 
     steps:
+      # Only the workflow_call path requires a non-empty `inputs.tag` — callers
+      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
+      # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
+      # empty and validating it here would break every real release (#1064).
+      # The downstream "Verify tag matches gitnexus/package.json version" step
+      # handles both event types by falling back to GITHUB_REF.
       - name: Validate tag input
-        if: github.event_name == 'workflow_call' || github.event_name == 'push'
+        if: github.event_name == 'workflow_call'
         shell: bash
         env:
           TAG_INPUT: ${{ inputs.tag }}
