@@ -228,7 +228,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddings: options?.embeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
+        noStats: options?.noStats ?? (options?.stats === false),
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -298,7 +298,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats ?? (options?.stats === false) },
           );
         }
       } catch {

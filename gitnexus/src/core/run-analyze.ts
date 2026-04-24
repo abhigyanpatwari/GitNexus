@@ -379,7 +379,7 @@ export async function runFullAnalysis(
           processes: pipelineResult.processResult?.stats.totalProcesses,
         },
         undefined,
-        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
+        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats ?? (options.stats === false) },
       );
     } catch {
       // Best-effort — don't fail the entire analysis for context file issues
