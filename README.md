@@ -185,6 +185,26 @@ command = "npx"
 args = ["-y", "gitnexus@latest", "mcp"]
 ```
 
+#### Codex Plugin (Local Installation)
+
+For local development with the GitNexus Codex plugin:
+
+```bash
+# Clone this repository, then reference the plugin in your Codex config
+# Edit ~/.codex/config.toml (system) or .codex/config.toml (project):
+
+[[plugins]]
+name = "gitnexus"
+source = "local"
+path = "/path/to/GitNexus/gitnexus-codex-plugin"
+
+[mcp_servers.gitnexus]
+command = "npx"
+args = ["-y", "gitnexus@latest", "mcp"]
+```
+
+Then restart Codex and the plugin will be available.
+
 ### CLI Commands
 
 ```bash

@@ -1,0 +1,17 @@
+{
+  "name": "gitnexus",
+  "description": "Code intelligence powered by a knowledge graph. Provides execution flow tracing, blast radius analysis, and augmented search across your codebase.",
+  "version": "1.3.6",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GitNexus",
+    "category": "Developer Tools",
+    "capabilities": ["code-exploration", "impact-analysis", "debugging", "refactoring", "code-review"]
+  },
+  "author": {
+    "name": "GitNexus"
+  },
+  "homepage": "https://github.com/abhigyanpatwari/GitNexus",
+  "repository": "https://github.com/abhigyanpatwari/GitNexus"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "gitnexus-codex-marketplace",
+  "interface": {
+    "displayName": "GitNexus"
+  },
+  "plugins": [
+    {
+      "name": "gitnexus",
+      "version": "1.3.6",
+      "source": {
+        "source": "local",
+        "path": "./gitnexus-codex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
