@@ -286,8 +286,16 @@ const rebuildPackagedNativeModules = () => {
   for (const resourceRoot of resourceRoots) {
     const packagedRuntimeRoot = path.join(resourceRoot, 'gitnexus');
     const packagedNodeModulesRoot = path.join(packagedRuntimeRoot, 'node_modules');
+    const packagedRuntimePackageJson = path.join(packagedRuntimeRoot, 'package.json');
 
     if (!fs.existsSync(packagedNodeModulesRoot)) {
+      continue;
+    }
+
+    if (!fs.existsSync(packagedRuntimePackageJson)) {
+      console.warn(
+        `[build] skipping native module rebuild because runtime package.json is missing at ${packagedRuntimePackageJson}`,
+      );
       continue;
     }
 
@@ -296,7 +304,7 @@ const rebuildPackagedNativeModules = () => {
       '--force',
       '--types prod,optional',
       `--version "${electronVersion}"`,
-      `--module-dir "${packagedNodeModulesRoot}"`,
+      `--module-dir "${packagedRuntimeRoot}"`,
       process.platform === 'win32' ? '--sequential' : '',
     ]
       .filter(Boolean)
