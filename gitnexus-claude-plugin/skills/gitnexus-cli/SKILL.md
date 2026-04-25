@@ -21,6 +21,7 @@ Run from the project root. This parses all source files, builds the knowledge gr
 |------|--------|
 | `--force` | Force full re-index even if up to date |
 | `--embeddings` | Enable embedding generation for semantic search (off by default) |
+| `--drop-embeddings` | Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves them. |
 
 **When to run:** First time in a project, after major code changes, or when `gitnexus://repo/{name}/context` reports the index is stale.
 

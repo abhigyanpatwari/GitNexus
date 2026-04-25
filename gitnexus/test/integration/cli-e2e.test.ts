@@ -172,6 +172,13 @@ describe('CLI end-to-end', () => {
     expect(combined).toMatch(/Repository|not indexed/i);
   });
 
+  // The vitest test-level timeout (60 s) must exceed the subprocess
+  // timeout (30 s) so the "Accept timeout as valid on slow CI"
+  // branch can actually fire on slow runners (Windows CI routinely
+  // comes in at ~2x macOS wall-clock). Without a larger test-level
+  // timeout, the default 30 s vitest timeout races the 30 s
+  // subprocess timeout and the `if (result.status === null) return;`
+  // tolerance never activates.
   it('analyze command runs pipeline on mini-repo', () => {
     const result = runCli('analyze', MINI_REPO, 30000);
 
@@ -191,7 +198,7 @@ describe('CLI end-to-end', () => {
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
-  });
+  }, 60_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //
@@ -343,6 +350,410 @@ describe('CLI end-to-end', () => {
         fs.rmSync(parentB, { recursive: true, force: true });
       }
     }, 360000); // 6-min outer budget (4 × ~60s analyze calls + fixture setup)
+  });
+
+  // ─── gitnexus remove <target> (#664) ─────────────────────────────
+  //
+  // End-to-end regression guard for the remove command:
+  //   1. `remove <alias>` without --force is a dry-run (exit 0, preserves state)
+  //   2. `remove <alias> --force` deletes the .gitnexus/ directory
+  //      AND unregisters from the global registry
+  //   3. `remove <unknown>` is idempotent (exit 0 with a warning)
+  //   4. `remove <ambiguous>` (two entries share the alias via
+  //      --allow-duplicate-name) exits 1 with a disambiguation hint
+  //      and leaves the registry unchanged.
+  //
+  // Every assertion reads the real registry.json on disk, so any
+  // regression in remove.ts → resolveRegistryEntry → unregisterRepo
+  // will surface here.
+  describe('remove <target> (#664)', () => {
+    it('dry-run lists, --force deletes, missing target is a no-op warning', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-remove-'));
+      const repoA = makeMiniRepoCopy('remove-me', 'gn-rm-a-');
+      const parentA = path.dirname(repoA);
+
+      try {
+        // Index the repo under a custom alias so we can target it by
+        // name below. `--name` guarantees a stable alias regardless of
+        // how the host resolves the basename/remote-inferred name.
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'alias-a'],
+          repoA,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(
+          r1.status,
+          [`analyze exited with ${r1.status}`, `stdout: ${r1.stdout}`, `stderr: ${r1.stderr}`].join(
+            '\n',
+          ),
+        ).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const afterIndex = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterIndex).toHaveLength(1);
+        expect(afterIndex[0].name).toBe('alias-a');
+        // Storage dir must exist before remove so we can assert its
+        // disappearance below.
+        const storagePath = afterIndex[0].storagePath;
+        expect(fs.existsSync(storagePath)).toBe(true);
+
+        // Dry-run: must NOT delete. Use parentA as cwd so the test
+        // never runs with the to-be-removed storage dir as its cwd.
+        //
+        // Assert the FULL dry-run output shape, not just the `--force`
+        // hint (#1003 senior-reviewer NIT): `remove.ts` prints the
+        // alias, the resolved path, AND the storage path. Verifying
+        // all three appear catches silent format regressions
+        // (e.g. a future refactor that accidentally drops one of the
+        // three `console.log` lines, or swaps `entry.path` for
+        // `entry.name` in the output).
+        const r2 = runCliWithEnv(['remove', 'alias-a'], parentA, { GITNEXUS_HOME: gnHome }, 15000);
+        if (r2.status === null) return;
+        expect(r2.status).toBe(0);
+        const r2Output = `${r2.stdout}${r2.stderr}`;
+        expect(r2Output).toMatch(/Run with --force/i);
+        expect(r2Output, 'dry-run must surface the alias').toContain('alias-a');
+        expect(r2Output, 'dry-run must surface the repo path').toContain(afterIndex[0].path);
+        expect(r2Output, 'dry-run must surface the storage path').toContain(storagePath);
+        expect(fs.existsSync(storagePath)).toBe(true);
+        // Registry still has the entry.
+        expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(1);
+
+        // --force: must delete storage AND unregister.
+        const r3 = runCliWithEnv(
+          ['remove', 'alias-a', '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r3.status === null) return;
+        expect(
+          r3.status,
+          [
+            `remove --force exited with ${r3.status}`,
+            `stdout: ${r3.stdout}`,
+            `stderr: ${r3.stderr}`,
+          ].join('\n'),
+        ).toBe(0);
+        // Success-case output shape: `Removed: <alias>` header plus the
+        // same path-and-storagePath lines the dry-run prints (same NIT
+        // rationale — the success branch mirrors the dry-run's three
+        // console.log calls, so it has the same silent-regression risk).
+        const r3Output = `${r3.stdout}${r3.stderr}`;
+        expect(r3Output).toMatch(/Removed/i);
+        expect(r3Output, 'success output must surface the alias').toContain('alias-a');
+        expect(r3Output, 'success output must surface the repo path').toContain(afterIndex[0].path);
+        expect(r3Output, 'success output must surface the storage path').toContain(storagePath);
+        expect(fs.existsSync(storagePath)).toBe(false);
+        expect(JSON.parse(fs.readFileSync(registryPath, 'utf-8'))).toHaveLength(0);
+
+        // Idempotent: removing the same alias AGAIN must exit 0 with a
+        // warning (so `remove X && analyze Y` keeps working in scripts).
+        const r4 = runCliWithEnv(['remove', 'alias-a'], parentA, { GITNEXUS_HOME: gnHome }, 15000);
+        if (r4.status === null) return;
+        expect(r4.status).toBe(0);
+        expect(`${r4.stdout}${r4.stderr}`).toMatch(/Nothing to remove/i);
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentA, { recursive: true, force: true });
+      }
+    }, 180000); // 3-min outer budget (1 × ~60s analyze + 3 × fast remove calls)
+
+    it('ambiguous target (two entries share alias via --allow-duplicate-name) errors without mutating registry', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-rm-amb-'));
+      const repoA = makeMiniRepoCopy('dup', 'gn-dup-a-');
+      const repoB = makeMiniRepoCopy('dup', 'gn-dup-b-');
+      const parentA = path.dirname(repoA);
+      const parentB = path.dirname(repoB);
+
+      try {
+        // Two repos registered under the same alias — only possible via
+        // --allow-duplicate-name (#829).
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'shared'],
+          repoA,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(r1.status).toBe(0);
+
+        const r2 = runCliWithEnv(
+          ['analyze', '--name', 'shared', '--allow-duplicate-name'],
+          repoB,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r2.status === null) return;
+        expect(r2.status).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const before = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(before).toHaveLength(2);
+
+        // `remove shared` must refuse to guess — exit 1, disambiguation hint.
+        const r3 = runCliWithEnv(
+          ['remove', 'shared', '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r3.status === null) return;
+        expect(r3.status).toBe(1);
+        const r3Output = `${r3.stdout}${r3.stderr}`;
+        expect(r3Output).toMatch(/Multiple registered repos match/i);
+        // Both paths must be surfaced in the hint so the user knows
+        // which ones to disambiguate between.
+        expect(r3Output).toMatch(/dup/);
+
+        // Registry unchanged — the failed resolution must NOT have
+        // mutated state.
+        const after = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(after).toHaveLength(2);
+
+        // And path-based remove still works: pass the absolute path of
+        // repoA and it resolves unambiguously.
+        //
+        // We pull the path from the registry snapshot rather than
+        // passing the outer `repoA` variable directly. This is the
+        // belt-and-suspenders for cross-platform path normalisation
+        // (#1003 review): the path the registry recorded has already
+        // gone through the analyze-side canonicalisation (which on
+        // macOS expands /var → /private/var and on Windows expands 8.3
+        // → long-name). Passing that exact string back to `remove`
+        // guarantees the comparison succeeds even on runners where the
+        // outer `repoA` is the symlink/short-name form. The code-side
+        // fix in `canonicalizePath` makes this redundant in practice,
+        // but the test shouldn't depend on the code fix being perfect
+        // on every platform — it should prove correctness against the
+        // registry contract.
+        const repoAEntry = before.find(
+          (e: { path: string }) =>
+            path.basename(e.path) === 'dup' && e.path.includes(path.basename(parentA)),
+        );
+        expect(
+          repoAEntry,
+          'repoA entry must exist in registry before path-remove step',
+        ).toBeDefined();
+
+        const r4 = runCliWithEnv(
+          ['remove', repoAEntry.path, '--force'],
+          parentA,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r4.status === null) return;
+        expect(
+          r4.status,
+          [
+            `remove-by-path exited with ${r4.status}`,
+            `stdout: ${r4.stdout}`,
+            `stderr: ${r4.stderr}`,
+          ].join('\n'),
+        ).toBe(0);
+        const finalEntries = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(finalEntries).toHaveLength(1);
+        // The survivor is repoB (its path stays in the registry).
+        expect(path.basename(finalEntries[0].path)).toBe('dup');
+        // And it's NOT the one we just removed.
+        expect(finalEntries[0].path).not.toBe(repoAEntry.path);
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentA, { recursive: true, force: true });
+        fs.rmSync(parentB, { recursive: true, force: true });
+      }
+    }, 240000); // 4-min outer budget (2 × ~60s analyze + 2 × fast remove)
+
+    it('refuses to proceed when a registry entry points storagePath outside <repo>/.gitnexus (#1003)', () => {
+      // Regression guard for the safety gap flagged by @magyargergo on
+      // PR #1003: `~/.gitnexus/registry.json` is a user-writable JSON
+      // file, so a corrupted or hand-edited entry could point
+      // storagePath at the repo root (catastrophic: rm the working
+      // tree) or at any other arbitrary path. `remove --force` must
+      // refuse to call fs.rm when storagePath isn't the canonical
+      // `<entry.path>/.gitnexus`. We verify:
+      //   1. Exit code 1 with the actionable "registry entry corrupted"
+      //      hint.
+      //   2. The .gitnexus/ storage dir is UNTOUCHED.
+      //   3. The repo itself (entry.path) is UNTOUCHED.
+      //   4. The registry entry is NOT removed (no partial mutation).
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-poison-'));
+      const repo = makeMiniRepoCopy('poisoned', 'gn-poison-');
+      const parent = path.dirname(repo);
+
+      try {
+        // Index the repo normally first so the registry has a valid
+        // entry we can then poison.
+        const r1 = runCliWithEnv(
+          ['analyze', '--name', 'poisoned-alias'],
+          repo,
+          { GITNEXUS_HOME: gnHome },
+          60000,
+        );
+        if (r1.status === null) return;
+        expect(r1.status).toBe(0);
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const original = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(original).toHaveLength(1);
+
+        // Poison the entry: set storagePath to the REPO ROOT itself.
+        // If the guard isn't in place, `remove --force` would call
+        // `fs.rm(repo, {recursive: true, force: true})` and wipe the
+        // entire working tree.
+        const poisoned = [{ ...original[0], storagePath: repo }];
+        fs.writeFileSync(registryPath, JSON.stringify(poisoned, null, 2));
+
+        // Sanity: storage dir and working tree both still exist.
+        expect(fs.existsSync(path.join(repo, '.gitnexus'))).toBe(true);
+        expect(fs.existsSync(repo)).toBe(true);
+        expect(fs.existsSync(path.join(repo, '.git'))).toBe(true);
+
+        // Attempt the remove — must FAIL without deleting anything.
+        const r2 = runCliWithEnv(
+          ['remove', 'poisoned-alias', '--force'],
+          parent,
+          { GITNEXUS_HOME: gnHome },
+          15000,
+        );
+        if (r2.status === null) return;
+
+        expect(
+          r2.status,
+          [`remove should have exited 1`, `stdout: ${r2.stdout}`, `stderr: ${r2.stderr}`].join(
+            '\n',
+          ),
+        ).toBe(1);
+        const r2Output = `${r2.stdout}${r2.stderr}`;
+        // Must surface the actionable "registry corrupted" hint, not
+        // just a raw fs.rm error.
+        expect(r2Output).toMatch(/Refusing to remove/i);
+        expect(r2Output).toMatch(/registry\.json/i);
+
+        // Repo + .gitnexus dir + .git dir must all still exist — the
+        // guard aborts BEFORE fs.rm. This is the whole point of the
+        // test: the working tree is not allowed to disappear.
+        expect(fs.existsSync(repo), 'repo working tree must survive').toBe(true);
+        expect(fs.existsSync(path.join(repo, '.gitnexus')), 'storage dir must survive').toBe(true);
+        expect(fs.existsSync(path.join(repo, '.git')), '.git must survive').toBe(true);
+
+        // Registry unchanged — no partial mutation.
+        const afterRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterRegistry).toHaveLength(1);
+        expect(afterRegistry[0].storagePath).toBe(repo); // still poisoned (we did that)
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
+    }, 120000); // 2-min budget (1 × ~60s analyze + 1 × fast remove-refused)
+  });
+
+  // ─── clean --all: same safety guard applies (#1003 review) ───────
+  //
+  // The `clean --all` path iterates over the registry and calls
+  // `fs.rm(entry.storagePath)` — identical trust-the-registry pattern
+  // as `remove` had before the guard. A poisoned entry must be SKIPPED
+  // (not aborted), so clean --all preserves its existing per-repo
+  // error-tolerance semantics: one bad entry does not halt cleanup of
+  // the rest. We verify:
+  //   1. The poisoned entry is NOT deleted (working tree + .gitnexus
+  //      survive), and the CLI prints a "Refusing to clean" message.
+  //   2. The poisoned entry is left in the registry (nothing was
+  //      mutated for it).
+  //   3. A co-existing well-formed entry IS still cleaned (both its
+  //      .gitnexus dir AND its registry entry are gone).
+  describe('clean --all with a poisoned registry entry (#1003)', () => {
+    it('skips poisoned entries, cleans valid ones, never deletes the working tree', () => {
+      const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-clean-poison-'));
+      const repoBad = makeMiniRepoCopy('bad-repo', 'gn-clean-bad-');
+      const repoGood = makeMiniRepoCopy('good-repo', 'gn-clean-good-');
+      const parentBad = path.dirname(repoBad);
+      const parentGood = path.dirname(repoGood);
+
+      try {
+        // Analyze both so the registry has two well-formed entries.
+        for (const [repo, alias] of [
+          [repoBad, 'bad-alias'],
+          [repoGood, 'good-alias'],
+        ] as const) {
+          const r = runCliWithEnv(
+            ['analyze', '--name', alias],
+            repo,
+            { GITNEXUS_HOME: gnHome },
+            60000,
+          );
+          if (r.status === null) return;
+          expect(r.status, `analyze ${alias} exited ${r.status}: ${r.stdout}${r.stderr}`).toBe(0);
+        }
+
+        const registryPath = path.join(gnHome, 'registry.json');
+        const original = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(original).toHaveLength(2);
+
+        // Poison the 'bad-alias' entry by pointing its storagePath at
+        // the repo root itself. If the guard isn't wired into the
+        // clean --all loop, `clean --all --force` would fs.rm the
+        // working tree.
+        const poisoned = original.map((e: { name: string; storagePath: string; path: string }) =>
+          e.name === 'bad-alias' ? { ...e, storagePath: repoBad } : e,
+        );
+        fs.writeFileSync(registryPath, JSON.stringify(poisoned, null, 2));
+
+        // Sanity: both working trees and .gitnexus dirs still exist.
+        expect(fs.existsSync(repoBad)).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.gitnexus'))).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.git'))).toBe(true);
+        expect(fs.existsSync(path.join(repoGood, '.gitnexus'))).toBe(true);
+
+        // clean --all --force from a neutral cwd (parentBad), so the
+        // command isn't "inside" either repo.
+        const r = runCliWithEnv(
+          ['clean', '--all', '--force'],
+          parentBad,
+          { GITNEXUS_HOME: gnHome },
+          30000,
+        );
+        if (r.status === null) return;
+
+        // clean --all's per-entry error handling always exits 0 at
+        // the end (it only logs per-repo failures). The important
+        // assertions are on side effects, not the exit code.
+        const output = `${r.stdout}${r.stderr}`;
+        expect(output).toMatch(/Refusing to clean/i);
+        expect(output).toMatch(/bad-alias/);
+
+        // Poisoned repo: working tree + .gitnexus + .git all SURVIVE.
+        expect(fs.existsSync(repoBad), 'poisoned repo working tree must survive').toBe(true);
+        expect(
+          fs.existsSync(path.join(repoBad, '.gitnexus')),
+          'poisoned repo .gitnexus must survive (guard refused to rm repo root)',
+        ).toBe(true);
+        expect(fs.existsSync(path.join(repoBad, '.git')), '.git must survive').toBe(true);
+
+        // Good repo: its .gitnexus IS gone (cleanup succeeded despite
+        // the poisoned sibling entry — per-entry error tolerance is
+        // preserved).
+        expect(
+          fs.existsSync(path.join(repoGood, '.gitnexus')),
+          'good repo .gitnexus should be cleaned',
+        ).toBe(false);
+        // But the good repo's working tree stays (clean never touches
+        // anything outside .gitnexus).
+        expect(fs.existsSync(repoGood), 'good repo working tree must survive').toBe(true);
+
+        // Registry post-state: poisoned entry still present (skipped,
+        // not mutated); good entry unregistered.
+        const afterRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+        expect(afterRegistry).toHaveLength(1);
+        expect(afterRegistry[0].name).toBe('bad-alias');
+      } finally {
+        fs.rmSync(gnHome, { recursive: true, force: true });
+        fs.rmSync(parentBad, { recursive: true, force: true });
+        fs.rmSync(parentGood, { recursive: true, force: true });
+      }
+    }, 240000); // 4-min budget (2 × ~60s analyze + 1 × fast clean --all)
   });
 
   describe('unhappy path', () => {

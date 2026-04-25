@@ -247,4 +247,177 @@ describe('createKnowledgeGraph', () => {
     expect(remaining[0].sourceId).toBe('fn:b');
     expect(remaining[0].targetId).toBe('fn:c');
   });
+
+  // ─── iterRelationshipsByType ───────────────────────────────────────
+
+  describe('iterRelationshipsByType', () => {
+    it('yields only the requested type', () => {
+      const g = createKnowledgeGraph();
+      g.addRelationship(makeRel('fn:a', 'fn:b', 'CALLS'));
+      g.addRelationship(makeRel('fn:b', 'fn:c', 'CALLS'));
+      g.addRelationship(makeRel('cls:X', 'cls:Y', 'EXTENDS'));
+      g.addRelationship(makeRel('cls:Y', 'cls:Z', 'EXTENDS'));
+
+      const calls = [...g.iterRelationshipsByType('CALLS')];
+      const extends_ = [...g.iterRelationshipsByType('EXTENDS')];
+      expect(calls).toHaveLength(2);
+      expect(extends_).toHaveLength(2);
+      // Identity assertions guard against a bucket-key swap bug that
+      // would return the wrong edges with the right count.
+      expect(calls.every((r) => r.type === 'CALLS')).toBe(true);
+      expect(extends_.every((r) => r.type === 'EXTENDS')).toBe(true);
+      expect(new Set(calls.map((r) => r.sourceId))).toEqual(new Set(['fn:a', 'fn:b']));
+    });
+
+    it('retains an empty bucket after last edge removed and reuses it on re-add', () => {
+      const g = createKnowledgeGraph();
+      g.addRelationship(makeRel('cls:X', 'cls:Y', 'EXTENDS'));
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(1);
+      g.removeRelationship('cls:X-EXTENDS-cls:Y');
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(0);
+      // Re-add the same type — bucket must still be live.
+      g.addRelationship(makeRel('cls:A', 'cls:B', 'EXTENDS'));
+      const again = [...g.iterRelationshipsByType('EXTENDS')];
+      expect(again).toHaveLength(1);
+      expect(again[0].sourceId).toBe('cls:A');
+    });
+
+    it('returns a fresh empty iterator when the type has no edges', () => {
+      const g = createKnowledgeGraph();
+      g.addRelationship(makeRel('fn:a', 'fn:b', 'CALLS'));
+      // Two consecutive calls must each be exhaustible — guards against
+      // returning a single shared exhausted iterator.
+      expect([...g.iterRelationshipsByType('IMPLEMENTS')]).toHaveLength(0);
+      expect([...g.iterRelationshipsByType('IMPLEMENTS')]).toHaveLength(0);
+    });
+
+    it('reflects removeRelationship on both indexes', () => {
+      const g = createKnowledgeGraph();
+      g.addRelationship(makeRel('cls:X', 'cls:Y', 'EXTENDS'));
+      g.addRelationship(makeRel('cls:Y', 'cls:Z', 'EXTENDS'));
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(2);
+
+      g.removeRelationship('cls:X-EXTENDS-cls:Y');
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(1);
+      expect(g.relationshipCount).toBe(1);
+    });
+
+    it('reflects removeNode on both indexes', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('cls:X', 'X', 'src/x.ts'));
+      g.addNode(makeNode('cls:Y', 'Y', 'src/y.ts'));
+      g.addRelationship(makeRel('cls:X', 'cls:Y', 'EXTENDS'));
+      g.addRelationship(makeRel('cls:X', 'cls:Y', 'IMPLEMENTS'));
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(1);
+      expect([...g.iterRelationshipsByType('IMPLEMENTS')]).toHaveLength(1);
+
+      g.removeNode('cls:Y');
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(0);
+      expect([...g.iterRelationshipsByType('IMPLEMENTS')]).toHaveLength(0);
+      expect([...g.iterRelationships()]).toHaveLength(0);
+    });
+
+    it('dedupes by id across both indexes', () => {
+      const g = createKnowledgeGraph();
+      const rel = makeRel('cls:X', 'cls:Y', 'EXTENDS');
+      g.addRelationship(rel);
+      g.addRelationship(rel); // dedup by id
+      expect([...g.iterRelationshipsByType('EXTENDS')]).toHaveLength(1);
+      expect(g.relationshipCount).toBe(1);
+    });
+  });
+
+  // ─── Reverse-adjacency + file indexes ─────────────────────────────
+  // Pin the behavior of the nodeIdsByFile + edgeIdsByNode indexes
+  // that back removeNode / removeNodesByFile. These replace the prior
+  // O(N) full-map scans with O(edges-touching-node) and
+  // O(file-nodes × avg-edges-per-node) respectively.
+
+  describe('removeNode reverse-adjacency', () => {
+    it('removes only edges touching the removed node', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/a.ts'));
+      g.addNode(makeNode('fn:c', 'c', 'src/c.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+      g.addRelationship(makeRel('fn:b', 'fn:c'));
+      g.addRelationship(makeRel('fn:a', 'fn:c'));
+
+      g.removeNode('fn:b');
+
+      // Two edges touched fn:b (a→b and b→c); only a→c survives.
+      expect(g.relationshipCount).toBe(1);
+      const survivors = [...g.iterRelationships()];
+      expect(survivors[0].sourceId).toBe('fn:a');
+      expect(survivors[0].targetId).toBe('fn:c');
+    });
+
+    it('handles self-edges without double-counting or crashing', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:a'));
+      expect(g.relationshipCount).toBe(1);
+
+      g.removeNode('fn:a');
+      expect(g.relationshipCount).toBe(0);
+      expect(g.nodeCount).toBe(0);
+    });
+
+    it('removes orphan node with no edges cleanly', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      expect(g.removeNode('fn:a')).toBe(true);
+      expect(g.nodeCount).toBe(0);
+    });
+  });
+
+  describe('removeNodesByFile via file index', () => {
+    it('removes only nodes matching the file path', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/a.ts'));
+      g.addNode(makeNode('fn:c', 'c', 'src/other.ts'));
+
+      const removed = g.removeNodesByFile('src/a.ts');
+      expect(removed).toBe(2);
+      expect(g.nodeCount).toBe(1);
+      expect(g.getNode('fn:c')).toBeDefined();
+    });
+
+    it('returns 0 when no node matches the file path', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      expect(g.removeNodesByFile('src/missing.ts')).toBe(0);
+      expect(g.nodeCount).toBe(1);
+    });
+
+    it('also removes edges whose endpoints lived on the removed file', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/b.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+      expect(g.relationshipCount).toBe(1);
+
+      g.removeNodesByFile('src/a.ts');
+      // Removing fn:a also removed the a→b edge; fn:b survives.
+      expect(g.nodeCount).toBe(1);
+      expect(g.relationshipCount).toBe(0);
+    });
+
+    it('does not index nodes without a filePath property', () => {
+      const g = createKnowledgeGraph();
+      // Cluster/Community nodes and similar have no filePath.
+      const node: Parameters<typeof g.addNode>[0] = {
+        id: 'cluster:x',
+        label: 'Community',
+        properties: { name: 'x' },
+      };
+      g.addNode(node);
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+
+      expect(g.removeNodesByFile('src/a.ts')).toBe(1);
+      expect(g.nodeCount).toBe(1);
+      expect(g.getNode('cluster:x')).toBeDefined();
+    });
+  });
 });

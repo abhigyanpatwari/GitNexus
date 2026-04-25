@@ -157,26 +157,6 @@ describe('Pass 1: scope tree', () => {
     for (const fn of fns) expect(fn.parent).toBe(mod.id);
   });
 
-  it('honors `provider.shouldCreateScope === false` by reparenting children to next real scope', () => {
-    // Block at [10:0..25:0] is SUPPRESSED; inner function at [12:0..20:0]
-    // should reparent to the enclosing Module instead of the Block.
-    const result = extract(
-      [
-        scopeMatch('module', 1, 0, 100, 0),
-        scopeMatch('block', 10, 0, 25, 0),
-        scopeMatch('function', 12, 0, 20, 0),
-      ],
-      'a.ts',
-      mockProvider({
-        shouldCreateScope: (match) => match['@scope.block'] === undefined,
-      }),
-    );
-    const mod = result.scopes.find((s) => s.kind === 'Module')!;
-    const fn = result.scopes.find((s) => s.kind === 'Function')!;
-    expect(result.scopes).toHaveLength(2); // block suppressed
-    expect(fn.parent).toBe(mod.id);
-  });
-
   it('uses `provider.resolveScopeKind` to override the default kind from the suffix', () => {
     // Provider upgrades a `@scope.block` to `Expression` for a comprehension-
     // style use case.

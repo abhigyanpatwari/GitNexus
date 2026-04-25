@@ -1,0 +1,3 @@
+package example
+
+func callee() {}

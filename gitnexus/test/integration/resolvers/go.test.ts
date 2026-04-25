@@ -172,6 +172,26 @@ describe('Go member-call resolution', () => {
   });
 });
 
+describe('Go receiver method free-call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-receiver-method-free-call'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 60000);
+
+  it('resolves Caller -> callee when a receiver method calls a package-level function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const calleeCall = calls.find((c) => c.source === 'Caller' && c.target === 'callee');
+    expect(calleeCall).toBeDefined();
+    expect(calleeCall!.targetLabel).toBe('Function');
+    expect(calleeCall!.targetFilePath).toBe('util.go');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Struct literal resolution: User{...} resolves to Struct node
 // ---------------------------------------------------------------------------

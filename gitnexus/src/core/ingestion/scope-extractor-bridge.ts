@@ -38,10 +38,11 @@ export function extractParsedFile(
   sourceText: string,
   filePath: string,
   onWarn?: ScopeBridgeWarn,
+  cachedTree?: unknown,
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   try {
-    const captures = provider.emitScopeCaptures(sourceText, filePath);
+    const captures = provider.emitScopeCaptures(sourceText, filePath, cachedTree);
     return extractScope(captures, filePath, provider);
   } catch (err) {
     const message = `scope extraction failed for ${filePath}: ${

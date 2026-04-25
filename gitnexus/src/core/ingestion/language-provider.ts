@@ -303,8 +303,9 @@ interface LanguageProviderConfig {
 
   /**
    * Emit scope captures from raw source, **pre-grouped per tree-sitter
-   * query match**. Tree-sitter-based providers run a `scopes.scm` query
-   * and emit one `CaptureMatch` per query match; standalone providers
+   * query match**. Tree-sitter-based providers run a scope query
+   * (embedded as a string constant in each language's `query.ts`) and
+   * emit one `CaptureMatch` per query match; standalone providers
    * (COBOL) emit matches from a regex tagger. The return shape is
    * parser-agnostic: the central `ScopeExtractor` consumes
    * `CaptureMatch[]` without knowing which parser produced them.
@@ -329,7 +330,21 @@ interface LanguageProviderConfig {
    *
    * Default: undefined (language continues to use legacy DAG).
    */
-  readonly emitScopeCaptures?: (sourceText: string, filePath: string) => readonly CaptureMatch[];
+  readonly emitScopeCaptures?: (
+    sourceText: string,
+    filePath: string,
+    /**
+     * Optional pre-parsed tree-sitter Tree the caller has already
+     * produced (e.g. from the parse phase's AST cache). When supplied,
+     * the provider SHOULD skip its own `parser.parse(sourceText)` and
+     * run its capture query against the supplied tree directly. Typed
+     * as `unknown` here to avoid leaking the tree-sitter dependency
+     * into the provider contract — the provider casts at use site.
+     * Cache miss (parameter omitted or undefined) is always safe and
+     * MUST trigger a fresh parse.
+     */
+    cachedTree?: unknown,
+  ) => readonly CaptureMatch[];
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
@@ -371,19 +386,6 @@ interface LanguageProviderConfig {
    * suffix — `@scope.function` → `'Function'`, etc.).
    */
   readonly resolveScopeKind?: (captures: CaptureMatch) => ScopeKind | null;
-
-  /**
-   * Should this scope capture materialize as a real `Scope` node? Return
-   * `false` to skip scope creation while still emitting declarations that
-   * would have gone inside (they attach to the enclosing real scope).
-   *
-   * Example: Python `if`/`for`/`while` bodies capture as `@scope.block` but
-   * Python has no block scope — hook returns `false` and child declarations
-   * lift to the enclosing function/module.
-   *
-   * Default: undefined (treated as `true` — always create).
-   */
-  readonly shouldCreateScope?: (captures: CaptureMatch) => boolean;
 
   /**
    * Override where a declaration's name becomes visible. By default the name
@@ -495,19 +497,6 @@ interface LanguageProviderConfig {
   ) => 'free' | 'member' | 'constructor' | 'index';
 
   // ── Resolution phase (RFC §4v2) ────────────────────────────────────
-
-  /**
-   * Does a binding at this scope shadow bindings of the same name in outer
-   * scopes? Default: any binding shadows (standard lexical scoping). Return
-   * `false` for transparent-scope edge cases (Python `from x import *`
-   * contexts, JS `var` hoisting quirks, COBOL PARAGRAPH transparency).
-   *
-   * Consulted by `Registry.lookup` Step 1 and by `resolveTypeRef` for
-   * shadowing decisions during the lexical chain walk.
-   *
-   * Default: undefined (treated as `true` — any binding shadows).
-   */
-  readonly shouldShadow?: (scope: Scope, bindings: readonly BindingRef[]) => boolean;
 
   /**
    * Is this callable definition compatible with the given call-site arity?

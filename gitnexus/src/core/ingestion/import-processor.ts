@@ -25,6 +25,7 @@ import type {
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { isDev } from './utils/env.js';
+import { isRegistryPrimary } from './registry-primary-flag.js';
 
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
@@ -105,6 +106,8 @@ function createImportEdgeHelpers(graph: KnowledgeGraph, importMap: ImportMap) {
   let totalImportsResolved = 0;
 
   const addImportGraphEdge = (filePath: string, resolvedPath: string) => {
+    const language = getLanguageFromFilename(filePath);
+    if (language !== null && isRegistryPrimary(language)) return;
     const sourceId = generateId('File', filePath);
     const targetId = generateId('File', resolvedPath);
     const relId = generateId('IMPORTS', `${filePath}->${resolvedPath}`);

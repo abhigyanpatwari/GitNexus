@@ -29,7 +29,7 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
@@ -53,6 +53,15 @@ export interface AnalyzeOptions {
    */
   force?: boolean;
   embeddings?: boolean;
+  /**
+   * Explicitly drop any embeddings present in the existing index instead of
+   * preserving them. Only meaningful when `embeddings` is false/undefined:
+   * the default behavior in that case is to load the previously generated
+   * embeddings and re-insert them after the rebuild so a routine
+   * re-analyze does not silently wipe a long embedding pass (#issue: analyze
+   * silently wipes existing embeddings when run without --embeddings).
+   */
+  dropEmbeddings?: boolean;
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
@@ -93,6 +102,12 @@ export interface AnalyzeResult {
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
 const EMBEDDING_NODE_LIMIT = 50_000;
+
+// Re-export the pure flag-derivation helper so external callers (and tests)
+// keep importing from this module's stable surface.
+export { deriveEmbeddingMode } from './embedding-mode.js';
+export type { EmbeddingMode } from './embedding-mode.js';
+import { deriveEmbeddingMode as _deriveEmbeddingMode } from './embedding-mode.js';
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -160,10 +175,51 @@ export async function runFullAnalysis(
   }
 
   // ── Cache embeddings from existing index before rebuild ────────────
+  // Four modes:
+  //   --embeddings              -> load cache, restore, then generate any new ones
+  //   --force (with existing
+  //    embeddings)              -> auto-imply --embeddings: load cache, restore,
+  //                                regenerate embeddings for new/changed nodes
+  //                                (a forced re-index of an embedded repo
+  //                                shouldn't quietly downgrade to "preserve only")
+  //   (default)                 -> if existing index has embeddings, preserve them
+  //                                (load + restore, but do not generate); otherwise no-op
+  //   --drop-embeddings         -> skip cache load entirely; rebuild wipes embeddings
+  //
+  // The default-preserve branch is what makes a routine `analyze` (e.g. a
+  // post-commit hook) safe: a multi-minute embedding pass is no longer
+  // silently dropped just because the caller omitted `--embeddings`.
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: CachedEmbedding[] = [];
 
-  if (options.embeddings && existingMeta && !options.force) {
+  const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
+  const {
+    forceRegenerateEmbeddings,
+    preserveExistingEmbeddings,
+    shouldGenerateEmbeddings,
+    shouldLoadCache,
+  } = _deriveEmbeddingMode(options, existingEmbeddingCount);
+
+  if (options.dropEmbeddings && existingEmbeddingCount > 0) {
+    log(
+      `Dropping ${existingEmbeddingCount} existing embeddings (--drop-embeddings). ` +
+        `Re-run with --embeddings to regenerate.`,
+    );
+  } else if (forceRegenerateEmbeddings) {
+    log(
+      `--force on a repo with ${existingEmbeddingCount} existing embeddings: ` +
+        `regenerating embeddings for new/changed nodes. ` +
+        `Pass --drop-embeddings to wipe them instead.`,
+    );
+  } else if (preserveExistingEmbeddings) {
+    log(
+      `Preserving ${existingEmbeddingCount} existing embeddings. ` +
+        `Pass --embeddings to also generate embeddings for new/changed nodes, ` +
+        `or --drop-embeddings to wipe them.`,
+    );
+  }
+
+  if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initLbug(lbugPath);
@@ -171,7 +227,17 @@ export async function runFullAnalysis(
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
       await closeLbug();
-    } catch {
+    } catch (err: any) {
+      // Surface cache-load failures explicitly: silently swallowing here would
+      // re-introduce the original silent-data-loss symptom (embeddings end up
+      // at 0 in meta.json with no diagnostic) through a different door.
+      log(
+        `Warning: could not load cached embeddings ` +
+          `(${err?.message ?? String(err)}). ` +
+          `Embeddings will not be preserved on this run.`,
+      );
+      cachedEmbeddingNodeIds = new Set<string>();
+      cachedEmbeddings = [];
       try {
         await closeLbug();
       } catch {
@@ -253,7 +319,7 @@ export async function runFullAnalysis(
     const stats = await getLbugStats();
     let embeddingSkipped = true;
 
-    if (options.embeddings) {
+    if (shouldGenerateEmbeddings) {
       if (stats.nodes <= EMBEDDING_NODE_LIMIT) {
         embeddingSkipped = false;
       }
@@ -318,6 +384,13 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      // Captured here (not at registration) so it travels with the
+      // on-disk meta.json — sibling-clone fingerprinting works for
+      // out-of-tree consumers (group-status, future tooling) without
+      // a second git shellout. `undefined` when the repo has no
+      // origin remote, which is fine: paths-only repos behave as
+      // before.
+      remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,

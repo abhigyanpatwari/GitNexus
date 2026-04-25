@@ -24,6 +24,11 @@ program
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option(
+    '--drop-embeddings',
+    'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
+      'preserves any embeddings already present in the index.',
+  )
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
@@ -39,9 +44,17 @@ program
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
+  .option(
+    '--max-file-size <kb>',
+    'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
+  )
   .addHelpText(
     'after',
-    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1  Skip .gitignore parsing (still reads .gitnexusignore)',
+    '\nEnvironment variables:\n' +
+      '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
+      '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
+      '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
+      '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
@@ -82,6 +95,15 @@ program
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
+
+program
+  .command('remove <target>')
+  .description(
+    'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). ' +
+      'Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
+  )
+  .option('-f, --force', 'Skip confirmation prompt')
+  .action(createLazyAction(() => import('./remove.js'), 'removeCommand'));
 
 program
   .command('wiki [path]')

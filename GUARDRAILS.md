@@ -19,7 +19,7 @@ Maintainer may widen scope per task.
 2. **Never rename with find-and-replace** in GitNexus-indexed projects — use `rename` MCP tool with `dry_run: true` first, review `graph` vs `text_search` edits. No separate `gitnexus rename` CLI exists.
 3. **Run impact analysis before editing shared symbols** — `impact` (upstream) for functions/classes/methods others call. Do not ignore HIGH/CRITICAL without maintainer sign-off.
 4. **Run `detect_changes` before commit** — confirm diffs map to expected symbols/processes when the graph is available.
-5. **Preserve embeddings** — if `.gitnexus/meta.json` shows embeddings, use `npx gitnexus analyze --embeddings`; plain `analyze` drops them.
+5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in `.gitnexus/meta.json` (the previous behavior wiped them). Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).
 
 ---
 
@@ -36,8 +36,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Embeddings vanished after analyze
 
 - **Trigger:** Semantic search quality drops; `stats.embeddings` in `meta.json` is 0 after refresh.
-- **Do:** `npx gitnexus analyze --embeddings`, confirm `meta.json` reflects stored embeddings.
-- **Why:** Embedding generation is opt-in; analyze without the flag does not preserve prior vectors.
+- **Do:** Re-run `npx gitnexus analyze --embeddings` to regenerate. Check the analyze log for a `Warning: could not load cached embeddings` line — if present, the cache restore failed (corrupt DB / schema mismatch) and the rebuild had nothing to preserve. If you intentionally passed `--drop-embeddings`, this is expected.
+- **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; the only ways to end up at zero are an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache.
 
 ### MCP lists no repos
 

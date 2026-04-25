@@ -25,7 +25,6 @@
  * ## The five passes
  *
  *   1. **Build scope tree.** Walk `@scope.*` matches. For each, consult
- *      `provider.shouldCreateScope` (default true) and
  *      `provider.resolveScopeKind` (default: suffix of the capture name).
  *      Derive parent by lexical-range containment. Hand the resulting
  *      `Scope[]` to `buildScopeTree` for validation.
@@ -95,7 +94,6 @@ import type { LanguageProvider } from './language-provider.js';
  */
 export type ScopeExtractorHooks = Pick<
   LanguageProvider,
-  | 'shouldCreateScope'
   | 'resolveScopeKind'
   | 'bindingScopeFor'
   | 'interpretImport'
@@ -308,9 +306,7 @@ function draftToScope(draft: ScopeDraft): Scope {
 /**
  * Convert `@scope.*` matches into `ScopeDraft[]`. Parent relationships
  * are derived from range containment (outermost scope containing `range`
- * becomes the parent). Scopes with `shouldCreateScope === false` are
- * silently omitted — their children reparent to the next enclosing
- * real scope.
+ * becomes the parent).
  */
 function pass1BuildScopes(
   matches: readonly CaptureMatch[],
@@ -321,7 +317,6 @@ function pass1BuildScopes(
     readonly match: CaptureMatch;
     readonly range: Range;
     readonly kind: ScopeKind;
-    readonly create: boolean;
     readonly id: ScopeId;
   }
 
@@ -331,9 +326,8 @@ function pass1BuildScopes(
     if (anchor === undefined) continue;
     const kind = resolveKindForScopeMatch(match, anchor, provider);
     if (kind === null) continue;
-    const create = provider.shouldCreateScope?.(match) ?? true;
     const id = makeScopeId({ filePath, range: anchor.range, kind });
-    candidates.push({ match, range: anchor.range, kind, create, id });
+    candidates.push({ match, range: anchor.range, kind, id });
   }
 
   // Sort by (startLine, startCol) ASC, (endLine, endCol) DESC so outer
@@ -354,13 +348,9 @@ function pass1BuildScopes(
       stack.pop();
     }
 
-    if (cand.create) {
-      const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
-      drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
-      stack.push(cand);
-    }
-    // If `cand.create === false`, we don't push it onto the stack — child
-    // scopes will reparent to whatever's below it.
+    const parent = stack.length > 0 ? stack[stack.length - 1]!.id : null;
+    drafts.push(makeDraft(cand.id, parent, cand.kind, cand.range, filePath));
+    stack.push(cand);
   }
 
   return drafts;
@@ -465,8 +455,20 @@ function pass2AttachDeclarations(
     // populated during Pass 2: those fields are written across passes,
     // so reading them mid-extraction yields a partial view. The
     // `scopeTree` argument is similarly snapshot-before-mutation.
+    //
+    // Auto-hoist for scope-creating declarations: when the declaration's
+    // anchor range is the same node that produced `innermost` (e.g. a
+    // `function_definition` is both `@scope.function` and the
+    // `@declaration.function` anchor), the name is visible OUTSIDE the
+    // body, not inside. Hoisting to the parent scope is what every
+    // mainstream language wants for function/class declarations. Hooks
+    // can override by returning a non-null scope id.
+    const autoHostedId =
+      innermost.parent !== null && rangesEqual(anchor.range, innermost.range)
+        ? innermost.parent
+        : innermost.id;
     const bindingScopeId =
-      provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? innermost.id;
+      provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? autoHostedId;
     const bindingHost = draftById.get(bindingScopeId) ?? innermost;
 
     const nameKey = deriveDeclarationName(match, def);
@@ -495,12 +497,42 @@ function buildDefFromDeclarationMatch(
   const qualifiedCap = match['@declaration.qualified_name'];
   const qualifiedName = qualifiedCap?.text;
 
+  // Optional arity metadata — producers (e.g. Python emit-captures)
+  // synthesize these on function/method declarations. Their absence is
+  // the normal case for other producers; readers treat undefined as
+  // "unknown" per `SymbolDefinition` contract.
+  const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
+  const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
+  const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
     filePath,
     type,
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
+    ...(parameterCount !== undefined ? { parameterCount } : {}),
+    ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
+    ...(parameterTypes !== undefined ? { parameterTypes } : {}),
   };
+}
+
+function parseIntCapture(cap: { readonly text: string } | undefined): number | undefined {
+  if (cap === undefined) return undefined;
+  const n = Number.parseInt(cap.text, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function parseJsonStringArrayCapture(
+  cap: { readonly text: string } | undefined,
+): string[] | undefined {
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed.every((x): x is string => typeof x === 'string') ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
@@ -624,9 +656,19 @@ function pass4CollectTypeBindings(
     const innermost = draftById.get(innermostId);
     if (innermost === undefined) continue;
 
+    // Auto-hoist for scope-creating type bindings (e.g. Python's
+    // `@type-binding.return` whose anchor is the function_definition
+    // itself). Same condition as Pass 2 — when the anchor coincides
+    // with the innermost scope's range, the binding belongs in the
+    // enclosing scope (callers, not the function body, look up the
+    // return type by the function's name).
+    const autoHostedId =
+      innermost.parent !== null && rangesEqual(anchor.range, innermost.range)
+        ? innermost.parent
+        : innermost.id;
     // `bindingScopeFor` may hoist the type binding to an outer scope.
     const hostId =
-      provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? innermost.id;
+      provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? autoHostedId;
     const host = draftById.get(hostId) ?? innermost;
 
     const typeRef: TypeRef = {
@@ -634,7 +676,96 @@ function pass4CollectTypeBindings(
       declaredAtScope: host.id,
       source: parsed.source,
     };
-    host.typeBindings.set(parsed.boundName, typeRef);
+    // Prefer stronger sources when multiple matches fire for the same
+    // bound name in the same scope. Example: `u: User = find()` matches
+    // both the annotation and constructor-inferred patterns; the explicit
+    // annotation (stronger source) must win over the call-site guess
+    // regardless of query-match arrival order.
+    const existing = host.typeBindings.get(parsed.boundName);
+    if (
+      existing === undefined ||
+      typeBindingStrength(typeRef.source) >= typeBindingStrength(existing.source)
+    ) {
+      host.typeBindings.set(parsed.boundName, typeRef);
+    }
+  }
+
+  // ── Transitive closure over identifier-chain type bindings ─────────
+  // Captures like `(assignment left: (ident) right: (ident))` emit a
+  // TypeRef whose `rawName` is the RHS identifier. When the RHS name is
+  // itself a bound variable with a known type in the same scope (or a
+  // parent scope), follow the chain so `alias` ultimately points at the
+  // class type — not at another local variable name. Without this,
+  // `resolveTypeRef` hits the chained name, sees it's a local Variable
+  // (non-type kind), and strict-returns null.
+  for (const draft of drafts) {
+    for (const [name, ref] of draft.typeBindings) {
+      const resolved = followChainedRef(ref, draftById);
+      if (resolved !== ref) draft.typeBindings.set(name, resolved);
+    }
+  }
+}
+
+/** Max chain depth: practical programs rarely exceed 4-5 re-bindings;
+ *  the cap just prevents runaway loops when providers emit cycles. */
+const CHAIN_MAX_DEPTH = 16;
+
+/**
+ * Follow an identifier-chain TypeRef through successive typeBindings
+ * lookups in the declaring scope and its ancestors. Returns the terminal
+ * TypeRef (or the original if the chain dead-ends or cycles).
+ */
+function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeDraft>): TypeRef {
+  let current = start;
+  const visited = new Set<string>();
+  for (let depth = 0; depth < CHAIN_MAX_DEPTH; depth++) {
+    // A rawName containing a dot (`models.User`) goes through
+    // `QualifiedNameIndex` at resolution time — don't follow it here.
+    if (current.rawName.includes('.')) return current;
+
+    // Look up the current rawName in the declaring scope and walk up
+    // the chain until we hit a scope that has a binding for it.
+    let scopeId: ScopeId | null = current.declaredAtScope;
+    let next: TypeRef | undefined;
+    while (scopeId !== null) {
+      const scope = draftById.get(scopeId);
+      if (scope === undefined) break;
+      next = scope.typeBindings.get(current.rawName);
+      if (next !== undefined) break;
+      scopeId = scope.parent;
+    }
+
+    if (next === undefined) return current; // dead end — nothing to chain to
+    if (next === current) return current; // self-ref
+    if (visited.has(next.rawName)) return current; // cycle guard
+    visited.add(next.rawName);
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Priority ordering when multiple `TypeRef`s compete for the same bound
+ * name in the same scope. Higher number wins; ties keep the later match
+ * (last-write-wins preserves historical order within a tier).
+ *
+ * Rationale: explicit annotations always beat inferred ones because they
+ * reflect user intent. `self`/`cls` are treated as strongly as annotations
+ * because they are language-required receiver types.
+ */
+function typeBindingStrength(source: TypeRef['source']): number {
+  switch (source) {
+    case 'annotation':
+    case 'parameter-annotation':
+    case 'return-annotation':
+    case 'self':
+      return 2;
+    case 'assignment-inferred':
+    case 'constructor-inferred':
+    case 'receiver-propagated':
+      return 1;
+    default:
+      return 0;
   }
 }
 
@@ -669,6 +800,7 @@ function pass5CollectReferences(
         : undefined;
     const explicitReceiver = extractExplicitReceiver(match);
     const arity = extractArity(match);
+    const argumentTypes = extractArgumentTypes(match);
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -678,6 +810,7 @@ function pass5CollectReferences(
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
+      ...(argumentTypes !== undefined ? { argumentTypes } : {}),
     };
     referenceSites.push(site);
   }
@@ -751,7 +884,28 @@ function extractArity(match: CaptureMatch): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function extractArgumentTypes(match: CaptureMatch): readonly string[] | undefined {
+  const cap = match['@reference.parameter-types'];
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) return parsed;
+  } catch {
+    /* malformed — fall through */
+  }
+  return undefined;
+}
+
 // ─── Internal: range + capture utilities ───────────────────────────────────
+
+function rangesEqual(a: Range, b: Range): boolean {
+  return (
+    a.startLine === b.startLine &&
+    a.startCol === b.startCol &&
+    a.endLine === b.endLine &&
+    a.endCol === b.endCol
+  );
+}
 
 function rangeStrictlyContains(outer: Range, inner: Range): boolean {
   if (
@@ -791,6 +945,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.name',
   '@reference.receiver',
   '@reference.arity',
+  '@reference.parameter-types',
+  '@declaration.parameter-count',
+  '@declaration.required-parameter-count',
+  '@declaration.parameter-types',
 ]);
 
 /**

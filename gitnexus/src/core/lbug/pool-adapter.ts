@@ -17,6 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
+import { loadFTSExtension } from './lbug-adapter.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -34,6 +35,30 @@ interface PoolEntry {
 }
 
 const pool = new Map<string, PoolEntry>();
+
+/**
+ * Listeners notified when a pool entry is torn down (LRU eviction, idle
+ * timeout, explicit close). Used by upper layers (e.g. the BM25 search
+ * module) to invalidate per-repo caches that must not outlive the pool
+ * entry that produced them.
+ *
+ * Listeners run synchronously inside `closeOne` after the pool entry has
+ * been removed; throwing listeners are isolated so one bad listener does
+ * not prevent others from firing or break teardown.
+ */
+type PoolCloseListener = (repoId: string) => void;
+const poolCloseListeners = new Set<PoolCloseListener>();
+
+/**
+ * Subscribe to pool-close events. Returns a disposer that removes the
+ * listener (handy for tests).
+ */
+export function addPoolCloseListener(listener: PoolCloseListener): () => void {
+  poolCloseListeners.add(listener);
+  return () => {
+    poolCloseListeners.delete(listener);
+  };
+}
 
 /**
  * Shared Database cache keyed by resolved dbPath.
@@ -159,6 +184,16 @@ function closeOne(repoId: string): void {
   }
 
   pool.delete(repoId);
+
+  // Notify listeners AFTER the pool entry is gone so any cache-invalidation
+  // they perform is consistent with `isLbugReady(repoId) === false`.
+  for (const listener of poolCloseListeners) {
+    try {
+      listener(repoId);
+    } catch {
+      // Isolate listener failures — teardown must complete.
+    }
+  }
 }
 
 /**
@@ -320,12 +355,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Done BEFORE pool registration so no concurrent checkout can grab
   // the connection while the async FTS load is in progress.
   if (!shared.ftsLoaded) {
-    try {
-      await available[0].query('LOAD EXTENSION fts');
-      shared.ftsLoaded = true;
-    } catch {
-      // Extension may not be installed — FTS queries will fail gracefully
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0]);
   }
 
   // Load VECTOR extension once per shared Database for semantic search support.
@@ -399,12 +429,7 @@ export async function initLbugWithDb(
 
   // Load FTS extension if not already loaded on this Database
   if (!shared.ftsLoaded) {
-    try {
-      await available[0].query('LOAD EXTENSION fts');
-      shared.ftsLoaded = true;
-    } catch {
-      // Extension may already be loaded or not installed
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0]);
   }
 
   // Load VECTOR extension for semantic search support

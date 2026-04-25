@@ -32,6 +32,7 @@ import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -198,6 +199,7 @@ interface RepoHandle {
   lbugPath: string;
   indexedAt: string;
   lastCommit: string;
+  remoteUrl?: string;
   stats?: RegistryEntry['stats'];
 }
 
@@ -208,6 +210,13 @@ export class LocalBackend {
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
   private groupToolSvc: GroupService | null = null;
+  /**
+   * One-shot stderr warnings for sibling-clone drift, keyed by
+   * `${repoId}|${cwdGitRoot}`. Without this guard every tool call
+   * from inside a sibling clone would print the same warning,
+   * making MCP stderr unreadable.
+   */
+  private warnedSiblingDrift: Set<string> = new Set();
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -275,6 +284,7 @@ export class LocalBackend {
         lbugPath,
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
+        remoteUrl: entry.remoteUrl,
         stats: entry.stats,
       };
 
@@ -333,12 +343,26 @@ export class LocalBackend {
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
     const result = this.resolveRepoFromCache(repoParam);
-    if (result) return result;
+    if (result) {
+      // Issue: silent graph drift across sibling clones.
+      // If the caller's cwd lives in a *different* on-disk clone of
+      // the same repo (matched by `remoteUrl`), warn once per
+      // (repo, cwd) pair on stderr. We do not fail or refuse to
+      // serve — the index is still the best answer we have — but
+      // the operator/agent has to know the answer may be stale.
+      this.maybeWarnSiblingDrift(result).catch(() => {
+        /* best-effort; never throw from resolveRepo */
+      });
+      return result;
+    }
 
     // Miss — refresh registry and try once more
     await this.refreshRepos();
     const retried = this.resolveRepoFromCache(repoParam);
-    if (retried) return retried;
+    if (retried) {
+      this.maybeWarnSiblingDrift(retried).catch(() => {});
+      return retried;
+    }
 
     // Still no match — throw with helpful message
     if (this.repos.size === 0) {
@@ -476,18 +500,128 @@ export class LocalBackend {
    * List all registered repos with their metadata.
    * Re-reads the global registry so newly indexed repos are discovered
    * without restarting the MCP server.
+   *
+   * Each entry includes:
+   *   - `staleness`: if the indexed clone's own HEAD has moved past
+   *     the recorded `lastCommit` (option D in the issue's fix list).
+   *   - `siblings`: other registered entries sharing the same
+   *     `remoteUrl` (option B's payoff: callers can see at a glance
+   *     that another clone of the same logical repo is registered).
+   *   - `remoteUrl`: the canonical origin URL recorded at index time.
    */
   async listRepos(): Promise<
-    Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }>
+    Array<{
+      name: string;
+      path: string;
+      indexedAt: string;
+      lastCommit: string;
+      remoteUrl?: string;
+      stats?: any;
+      staleness?: { commitsBehind: number; hint?: string };
+      siblings?: Array<{ name: string; path: string; lastCommit: string }>;
+    }>
   > {
     await this.refreshRepos();
-    return [...this.repos.values()].map((h) => ({
-      name: h.name,
-      path: h.repoPath,
-      indexedAt: h.indexedAt,
-      lastCommit: h.lastCommit,
-      stats: h.stats,
-    }));
+    const handles = [...this.repos.values()];
+
+    // Pre-group registered handles by `remoteUrl` so the sibling
+    // lookup is O(1) per handle. We reuse the in-memory `this.repos`
+    // (already populated by `refreshRepos`) instead of doing a fresh
+    // `readRegistry()` per entry — that would be N file reads for N
+    // registered repos.
+    const isWin = process.platform === 'win32';
+    const norm = (p: string) => (isWin ? path.resolve(p).toLowerCase() : path.resolve(p));
+    const byRemote = new Map<string, RepoHandle[]>();
+    for (const h of handles) {
+      if (!h.remoteUrl) continue;
+      const list = byRemote.get(h.remoteUrl) ?? [];
+      list.push(h);
+      byRemote.set(h.remoteUrl, list);
+    }
+
+    return handles.map((h) => {
+      const stale = checkStaleness(h.repoPath, h.lastCommit);
+      const selfNorm = norm(h.repoPath);
+      const siblings = h.remoteUrl
+        ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
+        : [];
+      return {
+        name: h.name,
+        path: h.repoPath,
+        indexedAt: h.indexedAt,
+        lastCommit: h.lastCommit,
+        remoteUrl: h.remoteUrl,
+        stats: h.stats,
+        staleness: stale.isStale
+          ? { commitsBehind: stale.commitsBehind, hint: stale.hint }
+          : undefined,
+        siblings:
+          siblings.length > 0
+            ? siblings.map((s) => ({
+                name: s.name,
+                path: s.repoPath,
+                lastCommit: s.lastCommit,
+              }))
+            : undefined,
+      };
+    });
+  }
+
+  /**
+   * Best-effort sibling-clone drift warning.
+   *
+   * When the resolved index has a `remoteUrl` recorded and the caller's
+   * `process.cwd()` is inside a *different* clone of the same repo, emit
+   * one stderr line per (repo, cwd) pair so the operator knows the
+   * graph may be stale relative to what's actually on disk under their
+   * cwd. Silent on path matches and on repos without a remote URL.
+   *
+   * Limitation: in MCP stdio server mode `process.cwd()` is the
+   * server's CWD at start time, *not* the agent client's CWD. The
+   * warning therefore only fires when the MCP server itself was
+   * launched from inside a sibling clone (typical for `npx gitnexus
+   * serve` from a polecat workspace). Surfacing the client's CWD
+   * would require a per-tool-call `cwd` parameter — out of scope for
+   * the current MCP contract.
+   *
+   * Pure side-effect (stderr); never affects the returned handle.
+   * After the first computation for a given (repo, cwd) pair the
+   * result is cached so subsequent `resolveRepo()` calls don't
+   * re-shell-out to git.
+   */
+  private async maybeWarnSiblingDrift(handle: RepoHandle): Promise<void> {
+    if (!handle.remoteUrl) return;
+    let cwd: string;
+    try {
+      cwd = process.cwd();
+    } catch {
+      return;
+    }
+    // Early-exit cache: keyed on (repo, cwd) BEFORE any git shellout.
+    // After the first call for a given cwd, this short-circuits the
+    // up-to-four `execSync`/`execFileSync` calls inside `checkCwdMatch`
+    // — important for MCP-server mode where `process.cwd()` is constant
+    // and `resolveRepo` runs on every tool call.
+    const cacheKey = `${handle.id}|${cwd}`;
+    if (this.warnedSiblingDrift.has(cacheKey)) return;
+
+    const match = await checkCwdMatch(cwd);
+    if (
+      match.match !== 'sibling-by-remote' ||
+      !match.entry ||
+      !match.cwdGitRoot ||
+      match.entry.path !== handle.repoPath ||
+      !match.hint
+    ) {
+      // Cache "nothing to warn about" outcomes too — `checkCwdMatch`
+      // is deterministic for a fixed (registry, cwd) pair, so re-running
+      // it yields nothing new.
+      this.warnedSiblingDrift.add(cacheKey);
+      return;
+    }
+
+    this.warnedSiblingDrift.add(cacheKey);
+    console.error(`GitNexus: ${match.hint}`);
   }
 
   // ─── Tool Dispatch ───────────────────────────────────────────────

@@ -655,6 +655,18 @@ describe('Python super resolution', () => {
       (c) => c.source === 'save' && c.target === 'save' && c.targetFilePath === 'models/base.py',
     );
     expect(superSave).toBeDefined();
+    // NOTE: no `rel.reason` assertion here. The legacy DAG classifies
+    // Python `super()` as `'import-resolved'` (the ancestor arrives via
+    // `from base import BaseModel`), while the scope-resolution super-
+    // branch emits the canonical `'global'` (super resolves via MRO,
+    // not through an import directive). That legacy-path asymmetry is
+    // pre-existing (the scope-resolution path previously emitted the
+    // non-standard `'scope-resolution: super-receiver'`) and closing it
+    // requires realigning the legacy tier classifier, which is out of
+    // scope here. The C# `csharp-super-resolution` + `csharp-generic-
+    // parent` suites pin `'global'` because C# legacy also emits
+    // `'global'` for `base` calls, giving us a same-graph guarantee
+    // on at least one migrated language.
     const repoSave = calls.find(
       (c) => c.target === 'save' && c.targetFilePath === 'models/repo.py',
     );
@@ -2229,5 +2241,247 @@ describe('Python Grandchild→Child→Parent — 3-level C3 MRO walk (SM-11)', (
     );
     expect(gpCall).toBeDefined();
     expect(gpCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-file method-name collision across classes
+// PR #980 review feedback — without a qualified-name key in the node lookup,
+// User.save and Document.save share the bucket `models.py::save`, so every
+// d.save() CALLS edge silently resolves to the first save() seen.
+// ---------------------------------------------------------------------------
+
+describe('Python same-file method-name collision across classes', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-same-file-method-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('u.save() resolves to User.save, not Document.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromUseUser = saveCalls.find((c) => c.source === 'use_user');
+    expect(fromUseUser).toBeDefined();
+    // targetId encodes qualifier: Method:models.py:User.save#0
+    expect(fromUseUser!.rel.targetId).toContain('User.save');
+    expect(fromUseUser!.rel.targetId).not.toContain('Document.save');
+  });
+
+  it('d.save() resolves to Document.save, not User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromUseDoc = saveCalls.find((c) => c.source === 'use_document');
+    expect(fromUseDoc).toBeDefined();
+    expect(fromUseDoc!.rel.targetId).toContain('Document.save');
+    expect(fromUseDoc!.rel.targetId).not.toContain('User.save');
+  });
+
+  it('exactly two CALLS edges to save() — one per class, no duplication to wrong target', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    expect(saveCalls).toHaveLength(2);
+    const targets = saveCalls.map((c) => c.rel.targetId).sort();
+    expect(targets[0]).toContain('Document.save');
+    expect(targets[1]).toContain('User.save');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module export vs class method collision within the same file
+// Codex review on PR #980 flagged: buildWorkspaceResolutionIndex feeds
+// defsByFileAndName and callablesBySimpleName from parsed.localDefs (every
+// def in the file, flat). A class method declared before a top-level
+// function with the same simple name wins the file-level export lookup,
+// so `mod.save(x)` silently binds to `User.save`.
+// ---------------------------------------------------------------------------
+
+describe('Python module export vs method-name collision in same file', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-module-export-vs-method-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('mod.save(x) resolves to the module-level Function, not User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromModuleExport = saveCalls.find((c) => c.source === 'use_module_export');
+    expect(fromModuleExport).toBeDefined();
+    // Target must be the top-level Function save, not the User.save Method.
+    // Node id format: `Function:mod.py:save` vs `Method:mod.py:User.save#0`.
+    expect(fromModuleExport!.rel.targetId).toContain('Function:');
+    expect(fromModuleExport!.rel.targetId).toContain('mod.py:save');
+    expect(fromModuleExport!.rel.targetId).not.toContain('User.save');
+  });
+
+  it('u.save() resolves to User.save Method via typed receiver', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    const fromMethod = saveCalls.find((c) => c.source === 'use_method');
+    expect(fromMethod).toBeDefined();
+    expect(fromMethod!.rel.targetId).toContain('User.save');
+  });
+
+  it('exactly two CALLS edges to save — one to the free function, one to the method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save');
+    expect(saveCalls).toHaveLength(2);
+    const targetIds = saveCalls.map((c) => c.rel.targetId).sort();
+    // One Function target, one Method target. Exact shape pins the fix.
+    const hasFunctionTarget = targetIds.some(
+      (id) => id.startsWith('Function:') && !id.includes('User.save'),
+    );
+    const hasMethodTarget = targetIds.some((id) => id.includes('User.save'));
+    expect(hasFunctionTarget).toBe(true);
+    expect(hasMethodTarget).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class-body attribute leak into module export index
+// Codex round-2 review on PR #980: defsByFileAndName indexes ALL defs
+// owned by every child scope of the module, including class-body defs
+// (e.g. `User.MAX_USERS`). `mod.MAX_USERS` / `from mod import MAX_USERS`
+// can silently bind to a class attribute that's not a module export.
+// ---------------------------------------------------------------------------
+
+describe('Python class-body attribute does NOT leak into module export index', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-attr-export-leak'),
+      () => {},
+    );
+  }, 60000);
+
+  it('mod.MAX_USERS does not resolve to User.MAX_USERS as a module export', () => {
+    // Any edge sourced from `use_class_attr` must NOT target a node
+    // that represents `User.MAX_USERS`. Under the bug, CALLS/USES/
+    // ACCESSES could silently bind to the class attribute.
+    const edges = [
+      ...getRelationships(result, 'CALLS'),
+      ...getRelationships(result, 'USES'),
+      ...getRelationships(result, 'ACCESSES'),
+    ];
+    const fromConsumer = edges.filter((e) => e.source === 'use_class_attr');
+    for (const edge of fromConsumer) {
+      expect(edge.rel.targetId).not.toContain('User.MAX_USERS');
+    }
+  });
+
+  it('mod.helper() still resolves to the top-level Function (happy-path guard)', () => {
+    // Regression guard: the narrowing fix must not drop legitimate
+    // top-level function exports. Without this, the fix would over-
+    // narrow and break normal `mod.helper()` calls.
+    const calls = getRelationships(result, 'CALLS');
+    const helperCall = calls.find((c) => c.source === 'use_helper' && c.target === 'helper');
+    expect(helperCall).toBeDefined();
+    expect(helperCall!.rel.targetId).toContain('mod.py:helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Function-local import + cross-file return-type propagation
+// Codex round-2 flagged this as potentially broken, but empirically the
+// finalize-algorithm hoists the `from svc import get_user` binding to
+// the app.py module scope (observed via indexes.bindings dump), so
+// `propagateImportedReturnTypes`'s module-scope pass already handles
+// it. These assertions pin that working behavior as a regression
+// guard against any future change to binding-scope routing.
+// ---------------------------------------------------------------------------
+
+describe('Python function-local import feeds chained receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-function-local-import-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge do_work -> get_user (free call, baseline sanity)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getUserCall = calls.find((c) => c.source === 'do_work' && c.target === 'get_user');
+    expect(getUserCall).toBeDefined();
+    expect(getUserCall!.rel.targetId).toContain('svc.py:get_user');
+  });
+
+  it('emits CALLS edge do_work -> User.save via function-local-scoped import return-type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.source === 'do_work' && c.target === 'save');
+    expect(saveCall).toBeDefined();
+    // Target must be the User.save Method in svc.py.
+    expect(saveCall!.rel.targetId).toContain('User.save');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Function-local namespace import: `def f(): import svc as s; s.call()`
+// Codex round-3 flagged this pattern as potentially broken because
+// collectNamespaceTargets reads only module-scope imports. Empirically
+// the edge IS emitted (finalize hoists ImportEdges onto the module
+// scope), so these assertions pin the working behavior. If finalize
+// routing ever changes to match pythonImportOwningScope's per-scope
+// contract, this block will flip red and signal the need to make
+// collectNamespaceTargets scope-chain-aware.
+// ---------------------------------------------------------------------------
+
+describe('Python function-local namespace import feeds receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-function-local-namespace-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge outer -> svc.call via function-local `import svc as s`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callEdge = calls.find((c) => c.source === 'outer' && c.target === 'call');
+    expect(callEdge).toBeDefined();
+    expect(callEdge!.rel.targetId).toContain('svc.py:call');
+  });
+
+  it('sanity: unrelated function without local import is still parsed as a Function node', () => {
+    const fns = result.graph.nodes.filter(
+      (n) => n.label === 'Function' && n.properties.name === 'sanity',
+    );
+    expect(fns).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class-body namespace import: `class A: import mod; def use(): mod.helper()`
+// Same theoretical concern as the function-local case above, same
+// empirical outcome — finalize hoists the ImportEdge to the module
+// scope so the namespace-receiver path finds it from inside A.use.
+// These assertions pin that working behavior.
+// ---------------------------------------------------------------------------
+
+describe('Python class-body namespace import feeds method receiver-bound call', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-class-body-namespace-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits CALLS edge A.use -> mod.helper via class-body `import mod`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
+    expect(callEdge).toBeDefined();
+    expect(callEdge!.rel.targetId).toContain('mod.py:helper');
   });
 });

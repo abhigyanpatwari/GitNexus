@@ -1145,7 +1145,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // POST /api/analyze — start a new analysis job
   app.post('/api/analyze', async (req, res) => {
     try {
-      const { url: repoUrl, path: repoLocalPath, force, embeddings } = req.body;
+      const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
 
       // Input type validation
       if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1339,7 +1339,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             child.send({
               type: 'start',
               repoPath: targetPath,
-              options: { force: !!force, embeddings: !!embeddings },
+              options: {
+                force: !!force,
+                embeddings: !!embeddings,
+                dropEmbeddings: !!dropEmbeddings,
+              },
             });
           };
 
