@@ -26,8 +26,6 @@ export default {
     },
   },
   renderer: {
-    root: '.',
-    base: './',
     server: {
       host: 'localhost',
       port: 5174,

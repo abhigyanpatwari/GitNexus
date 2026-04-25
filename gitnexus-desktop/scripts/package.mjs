@@ -313,6 +313,25 @@ const rebuildPackagedNativeModules = () => {
     console.log(
       `[build] rebuilding packaged native modules for Electron ${electronVersion} in ${packagedRuntimeRoot}`,
     );
+
+    // node-tree-sitter's binding.gyp hardcodes -std=c++17 / /std:c++17 across
+    // all published versions. Electron 41's V8 headers require C++20. Env-var
+    // overrides (CXXFLAGS, CL) don't help because GYP places per-target
+    // cflags_cc AFTER environment flags, and the last -std= flag wins. Patch
+    // the binding.gyp files directly before rebuilding.
+    for (const entry of fs.readdirSync(packagedNodeModulesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const gypPath = path.join(packagedNodeModulesRoot, entry.name, 'binding.gyp');
+      if (!fs.existsSync(gypPath)) continue;
+      const original = fs.readFileSync(gypPath, 'utf8');
+      if (!original.includes('c++17')) continue;
+      const patched = original
+        .replaceAll('-std=c++17', '-std=c++20')
+        .replaceAll('/std:c++17', '/std:c++20')
+        .replaceAll('"c++17"', '"c++20"');
+      fs.writeFileSync(gypPath, patched);
+      console.log(`[build] patched ${gypPath}: c++17 → c++20 for Electron ${electronVersion}`);
+    }
     runCommand(rebuildCommand, packagedRuntimeRoot);
   }
 };
