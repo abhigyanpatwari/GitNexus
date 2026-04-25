@@ -4,17 +4,18 @@ ARG TARGETPLATFORM
 # ── Builder ────────────────────────────────────────────────────────────
 # Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
 # tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
-FROM node:22-alpine AS builder
+FROM node:22-trixie-slim AS builder
 
 WORKDIR /app
 
 # Toolchain for node-gyp / native builds.
-RUN apk add --no-cache python3 make g++ git
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ git && rm -rf /var/lib/apt/lists/*
 
 # Build gitnexus-shared first — gitnexus depends on it as a workspace.
 COPY gitnexus-shared/package.json gitnexus-shared/package-lock.json ./gitnexus-shared/
 RUN npm ci --prefix gitnexus-shared
 COPY gitnexus-shared ./gitnexus-shared
+RUN rm -f gitnexus-shared/tsconfig.tsbuildinfo
 RUN npm run build --prefix gitnexus-shared
 
 # Copy the full gitnexus package before installing — `npm ci` triggers
@@ -28,10 +29,10 @@ RUN npm ci --prefix gitnexus
 RUN npm prune --omit=dev --prefix gitnexus
 
 # ── Runtime ────────────────────────────────────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:22-trixie-slim AS runtime
 
 # curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
-RUN apk add --no-cache curl git
+RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

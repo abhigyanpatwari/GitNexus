@@ -33,6 +33,33 @@ const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
 
 /**
+ * Find the index of a section marker that occupies its own line.
+ * Unlike `indexOf`, this rejects inline prose references like
+ * `` See the `<!-- gitnexus:start -->` block `` that appear
+ * mid-sentence (#1041). A marker counts as section-position only when:
+ *   - preceded by newline or start-of-file, AND
+ *   - followed by newline, `\r` (CRLF files), or end-of-file.
+ * The generator always emits each marker alone on its line, so this
+ * matches every legitimate section and none of the inline mentions.
+ *
+ * `startFrom` lets the end-marker lookup start after the already-found
+ * start marker, avoiding a scan from 0 and guaranteeing we never pick
+ * up an end marker that appears earlier in the file than the start.
+ */
+function findSectionMarkerIndex(content: string, marker: string, startFrom = 0): number {
+  let idx = content.indexOf(marker, startFrom);
+  while (idx !== -1) {
+    const atLineStart = idx === 0 || content[idx - 1] === '\n';
+    const endPos = idx + marker.length;
+    const atLineEnd =
+      endPos === content.length || content[endPos] === '\n' || content[endPos] === '\r';
+    if (atLineStart && atLineEnd) return idx;
+    idx = content.indexOf(marker, idx + 1);
+  }
+  return -1;
+}
+
+/**
  * Generate the full GitNexus context content.
  *
  * Design principles (learned from real agent behavior and industry research):
@@ -163,9 +190,18 @@ async function upsertGitNexusSection(
 
   const existingContent = await fs.readFile(filePath, 'utf-8');
 
-  // Check if GitNexus section already exists
-  const startIdx = existingContent.indexOf(GITNEXUS_START_MARKER);
-  const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
+  // Check if GitNexus section already exists. Matching is restricted
+  // to markers that occupy their own line so that inline prose
+  // references (e.g. `` See the `<!-- gitnexus:start -->` block `` in
+  // the shipped CLAUDE.md) are NOT treated as section delimiters
+  // (#1041). The end-marker scan starts after the start-marker so it
+  // can never pick up an earlier end in the file.
+  const startIdx = findSectionMarkerIndex(existingContent, GITNEXUS_START_MARKER);
+  const endIdx = findSectionMarkerIndex(
+    existingContent,
+    GITNEXUS_END_MARKER,
+    startIdx === -1 ? 0 : startIdx,
+  );
 
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
     // Replace existing section

@@ -5,7 +5,12 @@ import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
-import CSharp from 'tree-sitter-c-sharp';
+// Explicit subpath import: tree-sitter-c-sharp declares `type: "module"` with
+// `main: "bindings/node"` (no extension) and no `exports` field, which triggers
+// Node 22's DEP0151 deprecation warning on the bare-package import. Importing
+// the built entrypoint directly bypasses the deprecated ESM main-field
+// resolution. (#1013)
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';

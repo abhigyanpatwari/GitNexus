@@ -108,3 +108,4 @@ _bmad/
 # Local agent scratch / review prompts (never commit)
 .tmp/
 .agents/
+.context/

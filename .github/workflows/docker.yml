@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - 'v*'
-  # No workflow_dispatch: publishing is exclusively tag-driven so that every
-  # signed image corresponds 1:1 to a published `gitnexus@X.Y.Z` on npm. A
-  # manual run from a branch ref would fail the version check below anyway.
+  pull_request:
+  # workflow_dispatch is allowed for dry-run testing only. Publishing is still
+  # exclusively tag-driven so that every signed image corresponds 1:1 to a
+  # published `gitnexus@X.Y.Z` on npm. dry_run:true (the default) skips all
+  # push, sign, and attestation steps — the build runs but nothing is published.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip push, signing, and attestations'
+        required: false
+        default: true
+        type: boolean
   workflow_call:
     inputs:
       tag:
@@ -60,6 +69,12 @@ jobs:
             slug: gitnexus
 
     steps:
+      # Only the workflow_call path requires a non-empty `inputs.tag` — callers
+      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
+      # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
+      # empty and validating it here would break every real release (#1064).
+      # The downstream "Verify tag matches gitnexus/package.json version" step
+      # handles both event types by falling back to GITHUB_REF.
       - name: Validate tag input
         if: github.event_name == 'workflow_call'
         shell: bash
@@ -85,6 +100,7 @@ jobs:
       # `gitnexus@X.Y.Z` published to npm — no drift, no surprises.
       - name: Verify tag matches gitnexus/package.json version
         id: version
+        if: github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
         shell: bash
         env:
           # For workflow_call the tag comes from the caller input; for push events
@@ -119,11 +135,26 @@ jobs:
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docker Hub is a mirror of GHCR: same tags, same digests, same Cosign
+      # signatures. GHCR remains authoritative (it is the registry the
+      # ClusterImagePolicy globs against by default), but Docker Hub is the
+      # registry most users reach for first, so we publish there too.
+      # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a scoped
+      # access token, NOT the account password) with write access to the
+      # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
+      - name: Log in to Docker Hub
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Computes image tags and labels from the verified semver tag:
       #   v1.2.3        → :1.2.3, :1.2, :1, :latest (auto, only for non-prerelease)
@@ -142,7 +173,16 @@ jobs:
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+          # Dual-registry publish. metadata-action expands the same tag set
+          # against every image ref listed here, and build-push-action pushes
+          # one build to all of them, so the GHCR and Docker Hub images share
+          # a digest and are byte-identical. The Docker Hub namespace
+          # (`akonlabs`) is hardcoded because it differs from the GitHub org
+          # (`abhigyanpatwari`) — `github.repository_owner` would produce the
+          # wrong ref.
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+            docker.io/akonlabs/${{ matrix.image.slug }}
           flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
@@ -150,20 +190,23 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ inputs.tag != '' }}
 
+      # Transient 502s from GHCR / Docker Hub / GHA cache during multi-platform
+      # exports are retried inside `.github/actions/docker-build-push-retry`
+      # (see docker/build-push-action#1422 — retry policy stays out of the
+      # upstream action). `ignore-error=true` on cache-to avoids cache export
+      # flakes failing an otherwise successful push.
       - name: Build and push
         id: build
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: ./.github/actions/docker-build-push-retry
         with:
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image.slug }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image.slug }}
-          provenance: mode=max
-          sbom: true
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.slug }},ignore-error=true
 
       # Cosign keyless signing. Each pushed tag is signed by the workflow's
       # OIDC identity, so consumers can verify the image with the strict,
@@ -178,6 +221,7 @@ jobs:
       # Do NOT relax to `@.*` — that accepts signatures from any ref, including
       # unprotected branches and PRs, and defeats the supply-chain guarantee.
       - name: Sign image with Cosign (keyless)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         env:
           # Cosign v2 (installed by sigstore/cosign-installer above) makes
           # keyless the default. COSIGN_EXPERIMENTAL is a v1-only opt-in flag
@@ -193,10 +237,23 @@ jobs:
             [[ -n "$tag" ]] && cosign sign --yes "${tag}@${DIGEST}"
           done <<< "$TAGS"
 
-      # Attach the SBOM produced by buildx as a verifiable attestation on the digest.
-      - name: Generate build provenance attestation
+      # Attach the SBOM produced by buildx as a verifiable attestation on the
+      # digest. Attestations are pushed as OCI referrers to the registry named
+      # in `subject-name`, so we call the action once per registry. The digest
+      # is identical across registries (same build, same push), so consumers
+      # pulling from either GHCR or Docker Hub see the same provenance.
+      - name: Generate build provenance attestation (GHCR)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate build provenance attestation (Docker Hub)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: docker.io/akonlabs/${{ matrix.image.slug }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true

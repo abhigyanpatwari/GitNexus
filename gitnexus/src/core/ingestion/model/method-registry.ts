@@ -50,6 +50,16 @@ export interface MethodRegistry {
   lookupMethodByName(name: string): readonly SymbolDefinition[];
 
   /**
+   * Return every overload registered under `(ownerNodeId, methodName)`,
+   * unfiltered by arity or return type. This is the raw owner-scoped
+   * view — callers that need arity narrowing or unambiguous single-
+   * result semantics should use `lookupMethodByOwner` instead.
+   *
+   * Returns `[]` on miss so callers can iterate without null checks.
+   */
+  lookupAllByOwner(ownerNodeId: string, methodName: string): readonly SymbolDefinition[];
+
+  /**
    * True iff at least one registered def has `type === 'Function'` — i.e.,
    * a Python/Rust/Kotlin class method emitted by the worker as
    * `Function + ownerId` rather than as a strict `Method` label. Such defs
@@ -162,6 +172,13 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     return methodsByName.get(name) ?? EMPTY;
   };
 
+  const lookupAllByOwner = (
+    ownerNodeId: string,
+    methodName: string,
+  ): readonly SymbolDefinition[] => {
+    return methodByOwner.get(`${ownerNodeId}\0${methodName}`) ?? EMPTY;
+  };
+
   const register = (ownerNodeId: string, methodName: string, def: SymbolDefinition): void => {
     const key = `${ownerNodeId}\0${methodName}`;
     const existing = methodByOwner.get(key);
@@ -195,6 +212,7 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
   return {
     lookupMethodByOwner,
     lookupMethodByName,
+    lookupAllByOwner,
     register,
     clear,
     get hasFunctionMethods() {

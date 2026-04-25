@@ -11,6 +11,7 @@ import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
@@ -318,11 +319,13 @@ const processParsingSequential = async (
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
   astCache: ASTCache,
+  scopeTreeCache: ASTCache | undefined,
   onFileProgress?: FileProgressCallback,
 ) => {
   const parser = await loadParser();
   const total = files.length;
-  const skippedLanguages = new Map<string, number>();
+  const logSkipped = isVerboseIngestionEnabled();
+  const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -341,10 +344,10 @@ const processParsingSequential = async (
     const language = getLanguageFromFilename(file.path);
 
     if (!language) continue;
-
-    // Skip unsupported languages (e.g. Swift when tree-sitter-swift not installed)
     if (!isLanguageAvailable(language)) {
-      skippedLanguages.set(language, (skippedLanguages.get(language) || 0) + 1);
+      if (skippedByLang) {
+        skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
+      }
       continue;
     }
 
@@ -369,7 +372,7 @@ const processParsingSequential = async (
       continue; // parser unavailable — safety net
     }
 
-    let tree;
+    let tree: Parser.Tree;
     try {
       tree = parser.parse(parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent.length),
@@ -382,13 +385,20 @@ const processParsingSequential = async (
     astCache.set(file.path, tree);
 
     const provider = getProvider(language);
+    // Mirror into the cross-phase cache only when the language has a
+    // scope-resolution consumer — otherwise we retain Trees no one
+    // reads. parse-impl clears `astCache` between chunks;
+    // `scopeTreeCache` survives until scope-resolution disposes it.
+    if (provider.emitScopeCaptures !== undefined) {
+      scopeTreeCache?.set(file.path, tree);
+    }
     const queryString = provider.treeSitterQueries;
     if (!queryString) {
       continue;
     }
 
-    let query;
-    let matches;
+    let query: Parser.Query;
+    let matches: Parser.QueryMatch[];
     try {
       const language = parser.getLanguage();
       query = new Parser.Query(language, queryString);
@@ -682,11 +692,12 @@ const processParsingSequential = async (
     });
   }
 
-  if (skippedLanguages.size > 0) {
-    const summary = Array.from(skippedLanguages.entries())
-      .map(([lang, count]) => `${lang}: ${count}`)
-      .join(', ');
-    console.warn(`  Skipped unsupported languages: ${summary}`);
+  if (skippedByLang && skippedByLang.size > 0) {
+    for (const [lang, count] of skippedByLang.entries()) {
+      console.warn(
+        `[ingestion] Skipped ${count} ${lang} file(s) in parsing processing — ${lang} parser not available.`,
+      );
+    }
   }
 };
 
@@ -699,10 +710,27 @@ export const processParsing = async (
   files: { path: string; content: string }[],
   symbolTable: SymbolTableWriter,
   astCache: ASTCache,
+  /**
+   * Persistent tree cache (separate from `astCache`, which the caller
+   * clears between chunks). Sequential parses additionally write the
+   * Tree here so cross-phase consumers (scope-resolution) can read it.
+   * Worker-mode parses skip — Trees can't cross MessageChannels.
+   * Pass `undefined` if no consumer needs cross-phase access.
+   */
+  scopeTreeCache: ASTCache | undefined,
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
 ): Promise<WorkerExtractedData | null> => {
   if (workerPool) {
+    if (scopeTreeCache !== undefined && process.env.PROF_SCOPE_RESOLUTION === '1') {
+      // Trees can't cross MessageChannels, so worker-parsed files land
+      // in scope-resolution with an empty cache and get re-parsed.
+      // Surfacing this in PROF mode prevents silent perf cliffs when
+      // a repo crosses the worker-pool threshold.
+      console.warn(
+        `[scope-resolution prof] worker pool engaged for ${files.length} files — cross-phase tree cache will be empty; scope-resolution re-parses.`,
+      );
+    }
     try {
       return await processParsingWithWorkers(
         graph,
@@ -721,6 +749,13 @@ export const processParsing = async (
   }
 
   // Fallback: sequential parsing (no pre-extracted data)
-  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
+  await processParsingSequential(
+    graph,
+    files,
+    symbolTable,
+    astCache,
+    scopeTreeCache,
+    onFileProgress,
+  );
   return null;
 };

@@ -15,7 +15,7 @@ import type {
   OutOfScopeLink,
 } from './types.js';
 import type { GroupRepoHandle, GroupToolPort } from './service.js';
-import { loadGroupConfig } from './config-parser.js';
+import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
@@ -329,6 +329,8 @@ export async function runGroupImpact(
   try {
     config = await loadGroupConfig(groupDir);
   } catch (e) {
+    if (e instanceof GroupNotFoundError)
+      return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
@@ -344,9 +346,6 @@ export async function runGroupImpact(
     minConfidence,
   };
 
-  // Single shared deadline for Phase 1 (local walk) + Phase 2 (bridge fan-out).
-  // Phase 1 still gets the full budget; Phase 2 only uses whatever wall-clock
-  // time is left, so total work cannot exceed `timeoutMs`.
   const deadline = Date.now() + Math.max(0, timeoutMs);
 
   const { value: local, timedOut: localTimedOut } = await safeLocalImpact(
@@ -357,7 +356,7 @@ export async function runGroupImpact(
   );
 
   if (localTimedOut) {
-    const base = local as Record<string, unknown>;
+    const _base = local as Record<string, unknown>;
     return {
       local,
       group: name,
@@ -380,24 +379,13 @@ export async function runGroupImpact(
 
   const localObj = local as Record<string, unknown> | null;
   if (localObj?.error && typeof localObj.error === 'string') {
-    const empty: GroupImpactResult = {
-      local,
-      group: name,
-      cross: [],
-      outOfScope: [],
-      truncated: false,
-      truncatedRepos: [],
-      summary: {
-        direct: 0,
-        processes_affected: 0,
-        modules_affected: 0,
-        cross_repo_hits: 0,
-      },
-      risk: 'UNKNOWN',
-      timeoutMs,
-      crossDepthWarning,
-    };
-    return empty;
+    // Fail closed: the local-impact phase errored (missing symbol, graph-load
+    // failure, thrown exception wrapped by safeLocalImpact, or port-returned
+    // `{ error }`). Do NOT wrap it into a zero-hit success payload — callers
+    // branch on top-level `error`, and a blast-radius tool reporting "no
+    // impact" on the failure path is a false negative on a safety-critical
+    // signal. Bubble the error so consumers treat it as a failure.
+    return { error: `Local impact failed for ${repoPath}: ${localObj.error}` };
   }
 
   if (servicePrefix) {
@@ -475,7 +463,6 @@ export async function runGroupImpact(
         continue;
       }
       if (!repoInSubgroup(n.neighborRepo, subgroup)) {
-        // CrossLink convention: consumer -> provider
         outOfScope.push({
           from: direction === 'upstream' ? n.neighborRepo : repoPath,
           to: direction === 'upstream' ? repoPath : n.neighborRepo,

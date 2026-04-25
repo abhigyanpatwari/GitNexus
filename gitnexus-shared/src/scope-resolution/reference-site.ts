@@ -71,4 +71,12 @@ export interface ReferenceSite {
   readonly explicitReceiver?: { readonly name: string };
   /** Argument count at the call site; used by `provider.arityCompatibility`. */
   readonly arity?: number;
+  /**
+   * Inferred argument types at the call site, one per argument. An
+   * empty-string entry means "unknown" — consumers narrowing overload
+   * candidates treat unknown as any-match. Populated by languages
+   * that can derive types from literals / constructor expressions
+   * (C#: `42` → `'int'`, `"alice"` → `'string'`).
+   */
+  readonly argumentTypes?: readonly string[];
 }

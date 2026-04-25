@@ -1,0 +1,105 @@
+# Wraps docker/build-push-action with one automatic retry. Upstream explicitly
+# keeps retry out of the action (docker/build-push-action#1422); a local
+# composite keeps docker.yml readable and pins the same action SHA in one place.
+name: Docker build-push (with retry)
+description: >-
+  Runs docker/build-push-action twice on failure with a configurable backoff,
+  then exposes the digest from whichever attempt succeeded.
+
+inputs:
+  context:
+    description: Build context path
+    required: false
+    default: '.'
+  file:
+    description: Dockerfile path (relative to repo root)
+    required: true
+  platforms:
+    description: Comma-separated platforms list for buildx
+    required: true
+  push:
+    description: Whether to push (string 'true' or 'false')
+    required: true
+  tags:
+    description: Newline-separated image tags (from docker/metadata-action)
+    required: true
+  labels:
+    description: Labels string (from docker/metadata-action)
+    required: true
+  cache-from:
+    description: buildx cache-from value
+    required: true
+  cache-to:
+    description: buildx cache-to value (include ignore-error=true for GHA cache flakes)
+    required: true
+  retry-wait-seconds:
+    description: Seconds to sleep before the second attempt
+    required: false
+    default: '45'
+
+outputs:
+  digest:
+    description: Manifest digest from the successful build attempt
+    value: ${{ steps.resolve.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build and push (attempt 1)
+      id: try1
+      continue-on-error: true
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push == 'true' }}
+        tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        provenance: mode=max
+        sbom: true
+
+    - name: Backoff before Docker build retry
+      if: steps.try1.outcome == 'failure'
+      shell: bash
+      env:
+        RETRY_WAIT_SECONDS: ${{ inputs.retry-wait-seconds }}
+      run: |
+        echo "::warning::Docker build-push attempt 1 failed; retrying in ${RETRY_WAIT_SECONDS}s…"
+        sleep "${RETRY_WAIT_SECONDS}"
+
+    - name: Build and push (attempt 2)
+      id: try2
+      if: steps.try1.outcome == 'failure'
+      uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push == 'true' }}
+        tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+        provenance: mode=max
+        sbom: true
+
+    - name: Resolve image digest
+      id: resolve
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ steps.try1.outcome }}" = "success" ]; then
+          echo "digest=${{ steps.try1.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ "${{ steps.try2.outcome }}" = "success" ]; then
+          echo "::notice::docker-build-push retry succeeded (attempt 2); investigate if this recurs across runs."
+          echo "digest=${{ steps.try2.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::error::Docker build and push failed after two attempts (registry/cache flake or real build error)."
+        exit 1

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -6,6 +6,7 @@ import {
   walkRepositoryPaths,
   readFileContents,
 } from '../../src/core/ingestion/filesystem-walker.js';
+import { _resetMaxFileSizeWarnings } from '../../src/core/ingestion/utils/max-file-size.js';
 
 describe('filesystem-walker', () => {
   let tmpDir: string;
@@ -319,6 +320,82 @@ describe('filesystem-walker', () => {
       const contents = await readFileContents(tmpDir, ['src/image.png']);
       // May return content or skip — should not throw
       expect(contents.size).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe('large file skip threshold (#991)', () => {
+    let sizeDir: string;
+    const BIG_FILE = 'src/big.ts';
+    const BIG_FILE_BYTES = 600 * 1024;
+    const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeAll(async () => {
+      sizeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-test-'));
+      await fs.mkdir(path.join(sizeDir, 'src'), { recursive: true });
+      await fs.writeFile(path.join(sizeDir, 'src', 'small.ts'), 'export const x = 1;');
+      await fs.writeFile(path.join(sizeDir, BIG_FILE), 'x'.repeat(BIG_FILE_BYTES));
+    });
+
+    afterAll(async () => {
+      await fs.rm(sizeDir, { recursive: true, force: true });
+    });
+
+    beforeEach(() => {
+      delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      _resetMaxFileSizeWarnings();
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      } else {
+        process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL_ENV;
+      }
+      warnSpy.mockRestore();
+    });
+
+    it('skips a 600KB file by default', async () => {
+      const files = await walkRepositoryPaths(sizeDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths).toContain('src/small.ts');
+      expect(paths).not.toContain(BIG_FILE);
+    });
+
+    it('includes the 600KB file when GITNEXUS_MAX_FILE_SIZE=1024', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = '1024';
+      const files = await walkRepositoryPaths(sizeDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths).toContain(BIG_FILE);
+    });
+
+    it('falls back to default and warns once on invalid GITNEXUS_MAX_FILE_SIZE', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = 'abc';
+      const files = await walkRepositoryPaths(sizeDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths).not.toContain(BIG_FILE);
+      const invalidWarnings = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('must be a positive integer'),
+      );
+      expect(invalidWarnings).toHaveLength(1);
+    });
+
+    it('omits the "generated/vendored" suffix when threshold is overridden', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = '1';
+      await walkRepositoryPaths(sizeDir);
+      const skipWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('Skipped '));
+      expect(skipWarnings.length).toBeGreaterThan(0);
+      for (const call of skipWarnings) {
+        expect(String(call[0])).not.toContain('generated/vendored');
+      }
+    });
+
+    it('keeps the "generated/vendored" suffix under the default threshold', async () => {
+      await walkRepositoryPaths(sizeDir);
+      const skipWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('Skipped '));
+      expect(skipWarnings.length).toBeGreaterThan(0);
+      expect(String(skipWarnings[0][0])).toContain('generated/vendored');
     });
   });
 });

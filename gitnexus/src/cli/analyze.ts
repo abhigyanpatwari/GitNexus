@@ -20,6 +20,7 @@ import {
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
@@ -55,6 +56,12 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  /**
+   * Explicitly drop existing embeddings on rebuild instead of preserving
+   * them. Without this flag, a routine `analyze` keeps any embeddings
+   * already present in the index even when `--embeddings` is omitted.
+   */
+  dropEmbeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
@@ -78,6 +85,12 @@ export interface AnalyzeOptions {
    * `allowDuplicateName` option end-to-end.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Override the walker's large-file skip threshold (#991). Value in KB;
+   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
+   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
+   */
+  maxFileSize?: string;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -85,6 +98,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
+  }
+
+  if (options?.maxFileSize) {
+    process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -130,6 +147,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log(
       '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
     );
+  }
+
+  const maxFileSizeBanner = getMaxFileSizeBannerMessage();
+  if (maxFileSizeBanner) {
+    console.log(`${maxFileSizeBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
@@ -210,6 +232,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
         embeddings: options?.embeddings,
+        dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
         noStats: options?.noStats,

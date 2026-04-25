@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -216,6 +216,146 @@ describe('isHardcodedIgnoredDirectory', () => {
     expect(isHardcodedIgnoredDirectory('lib')).toBe(false);
     expect(isHardcodedIgnoredDirectory('app')).toBe(false);
     expect(isHardcodedIgnoredDirectory('local')).toBe(false);
+  });
+});
+
+// ─── .gitnexusignore negation can override hardcoded list (#771) ────
+//
+// Per @magyargergo's review: `.gitnexusignore` should honour
+// `.gitignore`-style negation against the hardcoded DEFAULT_IGNORE_LIST.
+// A `!__tests__/` line in `.gitnexusignore` must re-enable indexing of
+// `__tests__/` even though the hardcoded list would normally block it.
+// These tests exercise the full `createIgnoreFilter` surface with real
+// temp files (the negation logic lives in `createIgnoreFilter`, not in
+// `shouldIgnorePath` — the latter stays pure-hardcoded for callers like
+// the wiki generator that don't have per-repo config context).
+//
+// Locks in:
+//   1. Default (no .gitnexusignore) — hardcoded list still blocks
+//      __tests__ / __mocks__ / node_modules (byte-identical pre-#771).
+//   2. `!__tests__/` negation — __tests__ and its descendants are
+//      indexed; other hardcoded entries (node_modules, .git) stay
+//      blocked.
+//   3. Broader negation (e.g. `!node_modules/`) also works — design is
+//      general, not special-cased to the 2 test dirs.
+//   4. Negation applies both to the directory itself (`childrenIgnored`
+//      allows descent) AND to descendants (`ignored` allows files).
+//   5. `shouldIgnorePath` pure-hardcoded contract is preserved — the
+//      wiki generator and other callers without per-repo config get
+//      deterministic behavior.
+describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ignore-negation-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Synthetic path-scurry Path helper. `createIgnoreFilter.ignored` /
+   *  `childrenIgnored` only look at `.relative()` and `.name`, so a
+   *  minimal shape with those two is enough to exercise the logic. */
+  const mkPath = (rel: string) =>
+    ({
+      relative: () => rel.replace(/\\/g, '/'),
+      name: rel.split(/[/\\]/).pop() || rel,
+    }) as unknown as Parameters<Awaited<ReturnType<typeof createIgnoreFilter>>['ignored']>[0];
+
+  it('default (no .gitnexusignore): __tests__ still blocked by hardcoded list', async () => {
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(true);
+  });
+
+  it('`!__tests__/` negation unlocks the directory and its descendants', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(false);
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    expect(filter.ignored(mkPath('src/__tests__/nested.test.ts'))).toBe(false);
+  });
+
+  it('`!__mocks__/` negation unlocks __mocks__ but NOT __tests__', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__mocks__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('__mocks__/api.ts'))).toBe(false);
+    // __tests__ not negated — hardcoded list still blocks it.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(true);
+  });
+
+  it('negation generalises — `!node_modules/` unlocks a different hardcoded entry', async () => {
+    // The design isn't special-cased to the two names from the issue —
+    // it honours any negation the user writes. Lock this in with a
+    // broader example that proves the mechanism, not the dir name.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!node_modules/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.childrenIgnored(mkPath('node_modules'))).toBe(false);
+    expect(filter.ignored(mkPath('node_modules/express/index.js'))).toBe(false);
+  });
+
+  it('negation of one hardcoded entry does not leak to others', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    // __tests__ negated → allowed.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    // But node_modules / .git / dist not negated → still blocked.
+    expect(filter.ignored(mkPath('node_modules/pkg/index.js'))).toBe(true);
+    expect(filter.ignored(mkPath('.git/HEAD'))).toBe(true);
+    expect(filter.ignored(mkPath('dist/bundle.js'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('node_modules'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('.git'))).toBe(true);
+  });
+
+  it('standard `.gitignore` rules (no negation) still layer on top of hardcoded', async () => {
+    // Pre-#771 behaviour: if .gitnexusignore says `my-dir/`, that dir
+    // is ignored in addition to the hardcoded list. Non-negation
+    // rules are unaffected by this PR.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'my-dir/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    expect(filter.ignored(mkPath('my-dir/file.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('my-dir'))).toBe(true);
+    // Hardcoded still blocks unaffected paths.
+    expect(filter.ignored(mkPath('node_modules/foo.js'))).toBe(true);
+  });
+
+  it('`!parent/` + `parent/child/` re-ignore: child still blocked (last-match-wins)', async () => {
+    // .gitignore semantics: a later more-specific rule overrides an
+    // earlier negation. The negation unlocks the hardcoded block on
+    // `__tests__/`, but the subsequent `__tests__/generated/` line
+    // re-ignores that subset. `__tests__/foo.test.ts` stays allowed;
+    // `__tests__/generated/foo.ts` stays blocked. This locks in the
+    // guarantee the design comment makes about "standard rules still
+    // layer on top" for the compound case.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!__tests__/\n__tests__/generated/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+    // Parent negation still in effect: top-level tests allowed.
+    expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(false);
+    // Re-ignored subdirectory: children blocked at file level AND at
+    // the directory-descent level, so ingestion never walks in.
+    expect(filter.ignored(mkPath('__tests__/generated/foo.ts'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('__tests__/generated'))).toBe(true);
+  });
+
+  it('shouldIgnorePath (raw hardcoded check) is unchanged — wiki / external callers unaffected', async () => {
+    // `shouldIgnorePath` is called from `core/wiki/generator.ts` and
+    // doesn't have access to per-repo `.gitnexusignore` config. Its
+    // contract stays "is this path in the hardcoded list?". The #771
+    // negation override lives only inside `createIgnoreFilter`, which
+    // IS called with config context. This asymmetry is deliberate.
+    expect(shouldIgnorePath('__tests__/foo.test.ts')).toBe(true);
+    expect(shouldIgnorePath('__mocks__/api.ts')).toBe(true);
+    expect(shouldIgnorePath('node_modules/pkg/index.js')).toBe(true);
+  });
+
+  it('isHardcodedIgnoredDirectory (raw membership) unchanged by negation', async () => {
+    // Pure membership query — the list itself doesn't mutate.
+    expect(isHardcodedIgnoredDirectory('__tests__')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('__mocks__')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('node_modules')).toBe(true);
   });
 });
 

@@ -6,7 +6,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
-import { loadGroupConfig } from './config-parser.js';
+import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
@@ -221,7 +221,14 @@ export class GroupService {
       return { groups };
     }
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-    const config = await loadGroupConfig(groupDir);
+    let config: GroupConfig;
+    try {
+      config = await loadGroupConfig(groupDir);
+    } catch (err) {
+      if (err instanceof GroupNotFoundError)
+        return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
+      throw err;
+    }
     return {
       name: config.name,
       description: config.description,
@@ -234,7 +241,14 @@ export class GroupService {
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-    const config = await loadGroupConfig(groupDir);
+    let config: GroupConfig;
+    try {
+      config = await loadGroupConfig(groupDir);
+    } catch (err) {
+      if (err instanceof GroupNotFoundError)
+        return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
+      throw err;
+    }
     const result = await syncGroup(config, {
       groupDir,
       exactOnly: Boolean(params.exactOnly),
@@ -313,6 +327,14 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (e) {
+      if (e instanceof GroupNotFoundError)
+        return {
+          group: name,
+          target: target || uid,
+          service: servicePrefix,
+          error: `Group "${name}" not found. Run group_list to see configured groups.`,
+          results: [],
+        };
       return {
         group: name,
         target: target || uid,
@@ -326,9 +348,6 @@ export class GroupService {
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    // Per-repo work is independent (each repo opens its own DB handle and the
-    // group-level result preserves repo iteration order via the indexed map).
-    // Errors are caught per repo so one slow/failed member does not block the rest.
     const results: GroupContextResult['results'] = await Promise.all(
       memberEntries.map(async ([repoPath, registryName]) => {
         try {
@@ -384,14 +403,19 @@ export class GroupService {
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-    const config = await loadGroupConfig(groupDir);
+    let config: GroupConfig;
+    try {
+      config = await loadGroupConfig(groupDir);
+    } catch (err) {
+      if (err instanceof GroupNotFoundError)
+        return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
+      throw err;
+    }
 
     const memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    // Per-repo query is independent; run them concurrently and isolate
-    // failures so one slow/failed member does not block the rest.
     const perRepo = await Promise.all(
       memberEntries.map(async ([repoPath, registryName]) => {
         try {
@@ -436,7 +460,14 @@ export class GroupService {
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
-    const config = await loadGroupConfig(groupDir);
+    let config: GroupConfig;
+    try {
+      config = await loadGroupConfig(groupDir);
+    } catch (err) {
+      if (err instanceof GroupNotFoundError)
+        return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
+      throw err;
+    }
     const registry = await readContractRegistry(groupDir);
 
     const repoStatuses: Record<

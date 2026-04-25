@@ -12,6 +12,7 @@ import {
   envVarNameFor,
   isRegistryPrimary,
   primaryLanguages,
+  MIGRATED_LANGUAGES,
 } from '../../src/core/ingestion/registry-primary-flag.js';
 
 // ─── Test isolation ─────────────────────────────────────────────────────────
@@ -58,9 +59,12 @@ describe('envVarNameFor', () => {
 // ─── isRegistryPrimary ─────────────────────────────────────────────────────
 
 describe('isRegistryPrimary', () => {
-  it('returns false by default (no env var set)', () => {
+  it('returns MIGRATED_LANGUAGES membership by default (no env var set)', () => {
+    // Ring 3: languages in MIGRATED_LANGUAGES are registry-primary by
+    // default — operators don't need to set an env var for the rolled-out
+    // migration to take effect. Unmigrated languages default to false.
     for (const lang of Object.values(SupportedLanguages)) {
-      expect(isRegistryPrimary(lang)).toBe(false);
+      expect(isRegistryPrimary(lang)).toBe(MIGRATED_LANGUAGES.has(lang));
     }
   });
 
@@ -104,16 +108,21 @@ describe('isRegistryPrimary', () => {
   it('isolates flags per-language (one on does not affect others)', () => {
     process.env['REGISTRY_PRIMARY_PYTHON'] = 'true';
     expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(true);
+    // Java and Go are not in MIGRATED_LANGUAGES — default false stays
+    // false regardless of Python's flag.
     expect(isRegistryPrimary(SupportedLanguages.Java)).toBe(false);
     expect(isRegistryPrimary(SupportedLanguages.Go)).toBe(false);
   });
 
   it('respects a mid-process env-var mutation (no stale cache)', () => {
-    expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(false);
-    process.env['REGISTRY_PRIMARY_PYTHON'] = 'true';
-    expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(true);
-    delete process.env['REGISTRY_PRIMARY_PYTHON'];
-    expect(isRegistryPrimary(SupportedLanguages.Python)).toBe(false);
+    // Use Java — not in MIGRATED_LANGUAGES — so the unset default is
+    // deterministically `false`, independent of which languages have
+    // been flipped to registry-primary.
+    expect(isRegistryPrimary(SupportedLanguages.Java)).toBe(false);
+    process.env['REGISTRY_PRIMARY_JAVA'] = 'true';
+    expect(isRegistryPrimary(SupportedLanguages.Java)).toBe(true);
+    delete process.env['REGISTRY_PRIMARY_JAVA'];
+    expect(isRegistryPrimary(SupportedLanguages.Java)).toBe(false);
   });
 
   it('handles the CPlusPlus → REGISTRY_PRIMARY_CPP mapping correctly', () => {
@@ -129,19 +138,31 @@ describe('isRegistryPrimary', () => {
 // ─── primaryLanguages ──────────────────────────────────────────────────────
 
 describe('primaryLanguages', () => {
-  it('returns an empty set when no flags are set', () => {
-    expect(primaryLanguages().size).toBe(0);
+  it('returns MIGRATED_LANGUAGES when no flags are set', () => {
+    // Default-on for migrated languages (Ring 3); unmigrated stay off.
+    const enabled = primaryLanguages();
+    expect(enabled.size).toBe(MIGRATED_LANGUAGES.size);
+    for (const lang of MIGRATED_LANGUAGES) {
+      expect(enabled.has(lang)).toBe(true);
+    }
   });
 
-  it('returns exactly the flipped languages', () => {
-    process.env['REGISTRY_PRIMARY_PYTHON'] = 'true';
+  it('returns exactly the flipped languages (env opts in unmigrated, opts out migrated)', () => {
+    // Python and C# are migrated (default-on); both explicitly off via
+    // env vars. Go and Java are unmigrated (default-off); Go opted in,
+    // Java left off. This pins the semantics across all
+    // MIGRATED_LANGUAGES — as languages migrate, add their
+    // `REGISTRY_PRIMARY_<LANG> = 'false'` line here alongside Python / C#.
+    process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
+    process.env['REGISTRY_PRIMARY_CSHARP'] = 'false';
     process.env['REGISTRY_PRIMARY_GO'] = '1';
-    process.env['REGISTRY_PRIMARY_JAVA'] = 'false'; // explicitly off
     const enabled = primaryLanguages();
-    expect(enabled.has(SupportedLanguages.Python)).toBe(true);
+    expect(enabled.has(SupportedLanguages.Python)).toBe(false);
+    expect(enabled.has(SupportedLanguages.CSharp)).toBe(false);
     expect(enabled.has(SupportedLanguages.Go)).toBe(true);
     expect(enabled.has(SupportedLanguages.Java)).toBe(false);
-    expect(enabled.size).toBe(2);
+    // Only Go is on: migrated defaults overridden off, Go explicitly on.
+    expect(enabled.size).toBe(1);
   });
 
   it('returns a plain Set (not a frozen proxy) — consistent shape', () => {
