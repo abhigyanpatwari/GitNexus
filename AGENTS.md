@@ -155,7 +155,7 @@ npx gitnexus analyze --drop-embeddings  # explicit opt-in to wipe existing embed
 
 Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no longer drops existing vectors — pass `--drop-embeddings` to wipe.
 
-> Claude Code: PostToolUse hook handles this after `git commit` and `git merge`.
+> Claude Code: PostToolUse hook detects a stale index after `git commit` and `git merge` and prompts the agent to run `analyze`. The hook does not invoke `analyze` itself.
 
 ## CLI Skills
 
