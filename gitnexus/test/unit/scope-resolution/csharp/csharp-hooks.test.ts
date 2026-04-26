@@ -216,7 +216,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       typeBindings: new Map(),
     }) as unknown as Scope;
 
-  it('writes namespace siblings to augmentations after UTF-8-heavy cache-miss parsing', () => {
+  it('writes namespace siblings to the augmentation channel without touching frozen finalized bindings', () => {
     // Verifies the post-finalize binding-augmentation contract for the
     // C# namespace-siblings hook (per ScopeResolver I8 + the
     // `bindingAugmentations` doc on `ScopeResolutionIndexes`):
@@ -261,15 +261,14 @@ describe('populateCsharpNamespaceSiblings', () => {
       [moduleA.id, new Map<string, readonly BindingRef[]>([['B', frozenBucket]])],
     ]);
     const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
-    const padding = '漢'.repeat(190_000);
 
     populateCsharpNamespaceSiblings(
       parsedFiles,
       { bindings, bindingAugmentations } as unknown as ScopeResolutionIndexes,
       {
         fileContents: new Map([
-          ['a.cs', `namespace Demo;\n// ${padding}\nclass A { }\n`],
-          ['b.cs', `namespace Demo;\n// ${padding}\nclass B { }\n`],
+          ['a.cs', 'namespace Demo;\nclass A { }\n'],
+          ['b.cs', 'namespace Demo;\nclass B { }\n'],
         ]),
       },
     );
@@ -282,6 +281,46 @@ describe('populateCsharpNamespaceSiblings', () => {
     const augmented = bindingAugmentations.get(moduleA.id)?.get('B') ?? [];
     expect(augmented.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
     expect(Object.isFrozen(augmented)).toBe(false);
+  });
+
+  it('parses UTF-8-heavy cache-miss files before namespace sibling injection', () => {
+    const sibling = classDef('def:b.B', 'b.cs', 'Demo.B');
+    const moduleA = scope('scope:a:module', 'Module', 'a.cs');
+    const moduleB = scope('scope:b:module', 'Module', 'b.cs');
+    const classB = scope('scope:b:class', 'Class', 'b.cs', moduleB.id, [sibling]);
+    const parsedFiles: ParsedFile[] = [
+      {
+        filePath: 'a.cs',
+        moduleScope: moduleA.id,
+        scopes: Object.freeze([moduleA]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+      {
+        filePath: 'b.cs',
+        moduleScope: moduleB.id,
+        scopes: Object.freeze([moduleB, classB]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([sibling]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+    ];
+    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const padding = '漢'.repeat(190_000);
+
+    populateCsharpNamespaceSiblings(
+      parsedFiles,
+      { bindings: new Map(), bindingAugmentations } as unknown as ScopeResolutionIndexes,
+      {
+        fileContents: new Map([
+          ['a.cs', `namespace Demo;\n// ${padding}\nclass A { }\n`],
+          ['b.cs', `namespace Demo;\n// ${padding}\nclass B { }\n`],
+        ]),
+      },
+    );
+
+    expect(bindingAugmentations.get(moduleA.id)?.get('B')?.[0]?.def.nodeId).toBe('def:b.B');
   });
 });
 

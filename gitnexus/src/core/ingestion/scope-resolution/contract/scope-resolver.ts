@@ -148,11 +148,14 @@
  *     append cross-file bindings synthesized after finalize (C#
  *     same-namespace visibility, `using static` member exposure)
  *     into this channel, NOT into `indexes.bindings`. Inner arrays
- *     here are NEVER frozen — hooks `push()` directly. Read-side
- *     consumers MUST query both channels via `lookupBindingsAt`
+ *     here are NEVER frozen — hooks `push()` directly. Any consumer
+ *     that reads post-finalize workspace bindings MUST query both
+ *     index channels via `lookupBindingsAt`
  *     (`scope-resolution/scope/walkers.ts`); the helper merges the
  *     two layers and dedupes by `def.nodeId` with augmentations
- *     layered above finalized buckets.
+ *     layered above finalized buckets. Per-`Scope.bindings` local
+ *     declarations are the lexical extraction channel and remain a
+ *     separate first-tier lookup for local shadowing.
  *
  *     `Scope.typeBindings` remains mutable post-finalize per I6 (it
  *     is intentionally not frozen at any point).

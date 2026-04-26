@@ -30,7 +30,16 @@ import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/t
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import { propagateImportedReturnTypes } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  Scope,
+  ScopeId,
+  ScopeTree,
+  SymbolDefinition,
+} from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import type { WorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 
 interface InMemoryFile {
   readonly path: string;
@@ -195,6 +204,61 @@ import { helper } from './service';
     if (appHelper !== undefined) {
       expect(appHelper.rawName.length).toBeGreaterThan(0);
     }
+  });
+
+  it('mirrors import return types from bindingAugmentations-only refs', () => {
+    const appScopeId = 'scope:app' as ScopeId;
+    const sourceScopeId = 'scope:source' as ScopeId;
+    const appModule = {
+      id: appScopeId,
+      kind: 'Module',
+      parent: null,
+      filePath: 'app.ts',
+      bindings: new Map(),
+      typeBindings: new Map(),
+    } as unknown as Scope;
+    const sourceModule = {
+      id: sourceScopeId,
+      kind: 'Module',
+      parent: null,
+      filePath: 'source.ts',
+      bindings: new Map(),
+      typeBindings: new Map([['getUser', { rawName: 'User', source: 'return-annotation' }]]),
+    } as unknown as Scope;
+    const importedDef = {
+      nodeId: 'def:source.getUser',
+      filePath: 'source.ts',
+      qualifiedName: 'getUser',
+      type: 'Function',
+    } as SymbolDefinition;
+    const scopeTree = {
+      getScope: (id: ScopeId) => {
+        if (id === appScopeId) return appModule;
+        if (id === sourceScopeId) return sourceModule;
+        return undefined;
+      },
+    } as unknown as ScopeTree;
+    const indexes = {
+      scopeTree,
+      bindings: new Map(),
+      bindingAugmentations: new Map([
+        [
+          appScopeId,
+          new Map([['getUser', [{ def: importedDef, origin: 'import' } as BindingRef]]]),
+        ],
+      ]),
+      sccs: [{ files: ['app.ts'] }],
+    } as unknown as ScopeResolutionIndexes;
+    const workspaceIndex = {
+      moduleScopeByFile: new Map([
+        ['app.ts', appModule],
+        ['source.ts', sourceModule],
+      ]),
+    } as unknown as WorkspaceResolutionIndex;
+
+    propagateImportedReturnTypes([], indexes, workspaceIndex);
+
+    expect(appModule.typeBindings.get('getUser')?.rawName).toBe('User');
   });
 
   it('does not throw on a cyclic SCC (partial fixpoint, best-effort)', () => {

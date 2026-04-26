@@ -175,6 +175,8 @@ export function runScopeResolution(
   // Cross-file implicit-namespace visibility (C#). Must run before
   // propagateImportedReturnTypes so the latter pass sees siblings'
   // class bindings when chasing return-type chains across files.
+  // The hook writes to `bindingAugmentations` only; finalized
+  // `indexes.bindings` remains immutable post-finalize (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     const fileContents = new Map<string, string>();
     for (const f of files) fileContents.set(f.path, f.content);

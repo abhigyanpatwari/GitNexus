@@ -29,18 +29,12 @@ const mkIndexes = (
   }) as unknown as ScopeResolutionIndexes;
 
 describe('validateBindingsImmutability', () => {
-  const originalNodeEnv = process.env.NODE_ENV;
-  const originalGate = process.env.VALIDATE_SEMANTIC_MODEL;
-
   afterEach(() => {
-    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = originalNodeEnv;
-    if (originalGate === undefined) delete process.env.VALIDATE_SEMANTIC_MODEL;
-    else process.env.VALIDATE_SEMANTIC_MODEL = originalGate;
+    vi.unstubAllEnvs();
   });
 
   it('is silent when finalized buckets are frozen and augmentation buckets are mutable', () => {
-    process.env.NODE_ENV = 'development';
+    vi.stubEnv('NODE_ENV', 'development');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
       ['scope:a:module', new Map([['Foo', Object.freeze([mkRef('def:Foo')])]])],
     ]);
@@ -56,7 +50,7 @@ describe('validateBindingsImmutability', () => {
   });
 
   it('warns when a bucket in indexes.bindings is NOT frozen', () => {
-    process.env.NODE_ENV = 'development';
+    vi.stubEnv('NODE_ENV', 'development');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
       ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
     ]);
@@ -73,7 +67,7 @@ describe('validateBindingsImmutability', () => {
   });
 
   it('warns when a bucket in indexes.bindingAugmentations IS frozen', () => {
-    process.env.NODE_ENV = 'development';
+    vi.stubEnv('NODE_ENV', 'development');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>();
     const augmentations = new Map<ScopeId, Map<string, BindingRef[]>>([
       ['scope:a:module', new Map([['Bar', Object.freeze([mkRef('def:Bar')]) as BindingRef[]]])],
@@ -89,8 +83,22 @@ describe('validateBindingsImmutability', () => {
     expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
   });
 
+  it('does not detect semantically wrong frozen replacements in indexes.bindings', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
+      ['scope:a:module', new Map([['Foo', Object.freeze([mkRef('def:Wrong')])]])],
+    ]);
+    const augmentations = new Map<ScopeId, Map<string, BindingRef[]>>();
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(mkIndexes(bindings, augmentations), onWarn);
+
+    expect(violations).toBe(0);
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+
   it('counts violations across multiple scopes', () => {
-    process.env.NODE_ENV = 'development';
+    vi.stubEnv('NODE_ENV', 'development');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
       ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
       ['scope:b:module', new Map([['Bar', [mkRef('def:Bar')] as readonly BindingRef[]]])],
@@ -105,7 +113,7 @@ describe('validateBindingsImmutability', () => {
   });
 
   it('is a no-op when NODE_ENV=production', () => {
-    process.env.NODE_ENV = 'production';
+    vi.stubEnv('NODE_ENV', 'production');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
       ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
     ]);
@@ -119,8 +127,8 @@ describe('validateBindingsImmutability', () => {
   });
 
   it('is a no-op when VALIDATE_SEMANTIC_MODEL=0', () => {
-    process.env.NODE_ENV = 'development';
-    process.env.VALIDATE_SEMANTIC_MODEL = '0';
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv('VALIDATE_SEMANTIC_MODEL', '0');
     const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
       ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
     ]);

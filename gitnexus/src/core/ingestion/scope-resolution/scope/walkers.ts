@@ -415,7 +415,12 @@ export function findOwnedMember(
  * excluded.
  *
  * Reads from `WorkspaceResolutionIndex.moduleScopeByFile` (scope-tied
- * lookup that doesn't live on `SemanticModel`).
+ * lookup that doesn't live on `SemanticModel`). This intentionally
+ * does NOT call `lookupBindingsAt`: `findExportedDef` answers "what
+ * did the target file declare locally at module scope?", while
+ * `bindingAugmentations` models importer-side visibility created by
+ * post-finalize hooks. Callers that need importer-visible exports use
+ * `findExportedDefByName`, which is dual-channel aware.
  */
 export function findExportedDef(
   targetFile: string,

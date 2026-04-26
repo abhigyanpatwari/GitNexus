@@ -62,7 +62,7 @@ export interface ScopeResolutionIndexes {
   readonly methodDispatch: MethodDispatchIndex;
   /** Finalized `ImportEdge[]` per module scope. */
   readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
-  /** Merged bindings (local + imports + wildcards) per module scope.
+  /** Finalize-output bindings (local + imports + wildcards) per module scope.
    *  Inner `BindingRef[]` arrays are frozen by `materializeBindings`;
    *  this channel is permanently immutable post-finalize. Consumers
    *  MUST read via `lookupBindingsAt` so the augmentation channel is
