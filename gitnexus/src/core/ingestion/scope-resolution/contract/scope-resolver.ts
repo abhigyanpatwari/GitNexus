@@ -136,14 +136,40 @@
  *     once per workspace at resolve time), and merging would create a
  *     god-interface that complicates future migrations.
  *
- *   - **I8 — Post-finalize hooks may mutate `Scope.typeBindings` and
- *     `indexes.bindings`.** `propagateImportedReturnTypes` and
- *     `populateNamespaceSiblings` both write to these structures via
- *     `as Map<...>` casts through `ReadonlyMap` facades. Downstream
- *     consumers MUST NOT freeze or snapshot these maps before all
- *     post-finalize hooks have run. The `ReadonlyMap<...>` type on
- *     `ScopeResolutionIndexes` is a read-guidance surface for
- *     consumers, NOT an immutability promise during the resolve phase.
+ *   - **I8 — Two-channel binding lifecycle.**
+ *     `indexes.bindings` is the **finalize-output channel**. After
+ *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
+ *     are deep-frozen by `materializeBindings` and MUST NOT be
+ *     mutated by any post-finalize hook. Treat `indexes.bindings` as
+ *     immutable from the moment `finalizeScopeModel` returns.
+ *
+ *     `indexes.bindingAugmentations` is the **post-finalize
+ *     append-only channel**. Hooks like `populateNamespaceSiblings`
+ *     append cross-file bindings synthesized after finalize (C#
+ *     same-namespace visibility, `using static` member exposure)
+ *     into this channel, NOT into `indexes.bindings`. Inner arrays
+ *     here are NEVER frozen — hooks `push()` directly. Read-side
+ *     consumers MUST query both channels via `lookupBindingsAt`
+ *     (`scope-resolution/scope/walkers.ts`); the helper merges the
+ *     two layers and dedupes by `def.nodeId` with augmentations
+ *     layered above finalized buckets.
+ *
+ *     `Scope.typeBindings` remains mutable post-finalize per I6 (it
+ *     is intentionally not frozen at any point).
+ *
+ *     The `ReadonlyMap<...>` types on `ScopeResolutionIndexes` are
+ *     compile-time read-guidance for consumers; structural mutation
+ *     of `bindingAugmentations` is performed via a deliberate
+ *     `as Map<...>` cast inside the hook implementations and is the
+ *     ONLY sanctioned channel for post-finalize binding fanout.
+ *
+ *     The dev-mode runtime validator
+ *     (`validateBindingsImmutability` in
+ *     `scope-resolution/validate-bindings-immutability.ts`) surfaces
+ *     any drift — i.e. a hook writing to `indexes.bindings` instead
+ *     of `bindingAugmentations`, or producing a non-frozen finalized
+ *     bucket — via `onWarn` when
+ *     `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
  *
  *   - **I9 — `SemanticModel` is the single authoritative symbol store.**
  *     Every symbol-indexed lookup (key = `nodeId | simpleName |

@@ -10,8 +10,16 @@
  * Lifecycle contract (RFC §2.8): scopes are **constructed during extraction,
  * linked during finalize, immutable after finalize**. All fields are
  * `readonly` at the type level; `Object.freeze` is applied at runtime in dev
- * builds. `ReferenceIndex` is the sole structure populated after freeze — by
- * resolution, before emission.
+ * builds.
+ *
+ * Two structures are populated after freeze:
+ *   1. `ReferenceIndex` — by resolution, before emission.
+ *   2. `ScopeResolutionIndexes.bindingAugmentations` — the dedicated
+ *      append-only post-finalize binding channel (e.g. C# same-namespace
+ *      cross-file fanout). The companion `indexes.bindings` is the
+ *      finalize-output channel and is deep-frozen by `materializeBindings`;
+ *      walkers consult both via `lookupBindingsAt`. See `ScopeResolver`
+ *      Invariant I8 for the full lifecycle contract.
  */
 
 import type { NodeLabel } from '../graph/types.js';

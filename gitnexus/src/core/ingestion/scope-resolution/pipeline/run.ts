@@ -27,6 +27,7 @@ import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
+import { validateBindingsImmutability } from './validate-bindings-immutability.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
@@ -194,6 +195,13 @@ export function runScopeResolution(
     propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
   }
   const tPropagate = PROF ? process.hrtime.bigint() : 0n;
+
+  // Dev-mode I8 invariant guard. Runs once after all post-finalize
+  // hooks (`populateNamespaceSiblings`, `propagateImportedReturnTypes`)
+  // have had a chance to drift, so a single sweep covers the full
+  // post-finalize surface visible to `resolveReferenceSites`. No-op
+  // in production.
+  validateBindingsImmutability(indexes, onWarn);
 
   // ── Phase 3: resolve references via Registry.lookup ────────────────────
   const registryProviders: RegistryProviders = {
