@@ -15,6 +15,7 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import os from 'os';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -161,7 +162,7 @@ export const initEmbedder = async (
       // ./node_modules/.cache inside its own install dir, which is unwritable
       // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).
       // Respect HF_HOME if set, otherwise fall back to ~/.cache/huggingface.
-      env.cacheDir = process.env.HF_HOME ?? `${process.env.HOME}/.cache/huggingface`;
+      env.cacheDir = process.env.HF_HOME ?? join(os.homedir(), '.cache', 'huggingface');
 
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
