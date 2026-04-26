@@ -77,6 +77,7 @@ function makeCtx(files: string[], overrides: Partial<ResolveCtx['configs']> = {}
       composerConfig: null,
       swiftPackageConfig: null,
       csharpConfigs: [],
+      zigBuildZon: null,
       ...overrides,
     },
   };

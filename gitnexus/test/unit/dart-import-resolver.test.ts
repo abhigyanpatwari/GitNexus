@@ -37,6 +37,7 @@ function makeCtx(files: string[]): ResolveCtx {
       composerConfig: null,
       swiftPackageConfig: null,
       csharpConfigs: [],
+      zigBuildZon: null,
     },
   };
 }

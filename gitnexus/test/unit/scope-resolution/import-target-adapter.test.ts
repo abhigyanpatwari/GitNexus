@@ -34,6 +34,7 @@ const emptyCtx: ResolveCtx = {
     composerConfig: null,
     swiftPackageConfig: null,
     csharpConfigs: [],
+    zigBuildZon: null,
   },
 };
 

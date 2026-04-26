@@ -9,7 +9,12 @@ import { createStandardStrategy } from '../standard.js';
 import { resolveZigImportInternal } from '../zig.js';
 
 export const zigModuleStrategy: ImportResolverStrategy = (rawImportPath, filePath, ctx) => {
-  const resolved = resolveZigImportInternal(filePath, rawImportPath, ctx.allFilePaths);
+  const resolved = resolveZigImportInternal(
+    filePath,
+    rawImportPath,
+    ctx.allFilePaths,
+    ctx.configs.zigBuildZon,
+  );
   return resolved ? { kind: 'files', files: [resolved] } : null;
 };
 

@@ -10,7 +10,7 @@ import type {
   CSharpProjectConfig,
   ComposerConfig,
 } from '../language-config.js';
-import type { SwiftPackageConfig } from '../language-config.js';
+import type { SwiftPackageConfig, ZigBuildZonConfig } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
 import type { SupportedLanguages } from 'gitnexus-shared';
 
@@ -32,6 +32,7 @@ export interface ImportConfigs {
   composerConfig: ComposerConfig | null;
   swiftPackageConfig: SwiftPackageConfig | null;
   csharpConfigs: CSharpProjectConfig[];
+  zigBuildZon: ZigBuildZonConfig | null;
 }
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
