@@ -65,6 +65,16 @@ describe('Python scopes — module / class / function', () => {
     expect(f.scopes[0]!.kind).toBe('Module');
   });
 
+  it('case 01b: large cache-miss files use the adaptive tree-sitter buffer', () => {
+    const functions = Array.from(
+      { length: 1600 },
+      (_, i) => `def f_${i}():\n    return ${i}\n`,
+    ).join('\n');
+    const f = parse(functions);
+    expect(scopesByKind(f, 'Module')).toHaveLength(1);
+    expect(scopesByKind(f, 'Function')).toHaveLength(1600);
+  });
+
   it('case 02: module-level assignment produces a Variable declaration in Module scope', () => {
     const f = parse('x = 1\n');
     expect(scopesByKind(f, 'Module')).toHaveLength(1);

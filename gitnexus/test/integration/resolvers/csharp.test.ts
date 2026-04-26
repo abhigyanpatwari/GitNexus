@@ -2420,3 +2420,67 @@ describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch
     expect(stray).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1066 regression: large source files (>32 KB) combined with a
+// cross-namespace `using` and a colliding local class. Pins both fixes in
+// the resolver dataset:
+//
+//   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
+//      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
+//      fails to reparse with "Invalid argument" and CreateUser is dropped.
+//   2. populateCsharpNamespaceSiblings must clone frozen finalize-produced
+//      BindingRef[] arrays before pushing, otherwise the cross-namespace
+//      inject loop throws "Cannot add property N, object is not extensible"
+//      when the importer also declares the same simple name locally.
+// ---------------------------------------------------------------------------
+
+describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    // Force the worker pool path with low thresholds so the scope-resolution
+    // cache-miss reparse actually fires (workers can't share Tree instances
+    // across MessageChannels). This is what reproduces the >32 KB
+    // "Invalid argument" failure end-to-end through the pipeline.
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-large-cache-miss-resolution'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 120000);
+
+  it('extracts UserService.CreateUser despite the >32 KB source size', () => {
+    // Without the adaptive-buffer fix, UserService.cs would fail to reparse
+    // on cache miss and CreateUser would not be extracted at all.
+    expect(getNodesByLabel(result, 'Method')).toEqual(
+      expect.arrayContaining(['CreateUser', 'Save']),
+    );
+  });
+
+  it('detects all three classes (User, Helper, UserService)', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['User', 'Helper', 'UserService']),
+    );
+  });
+
+  it('resolves CreateUser -> User constructor across same namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find(
+      (c) => c.source === 'CreateUser' && c.target === 'User' && c.targetLabel === 'Class',
+    );
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetFilePath).toBe('Models/User.cs');
+  });
+
+  it('resolves CreateUser -> Save through namespace siblings', () => {
+    // Without the freeze fix, populateCsharpNamespaceSiblings throws on
+    // the colliding `Helper` bucket, aborting the whole scopeResolution
+    // phase, so no CALLS edges from CreateUser would be emitted at all.
+    const calls = getRelationships(result, 'CALLS');
+    const save = calls.find((c) => c.source === 'CreateUser' && c.target === 'Save');
+    expect(save).toBeDefined();
+    expect(save!.targetFilePath).toBe('Models/User.cs');
+    expect(['import-resolved', 'global']).toContain(save!.rel.reason);
+  });
+});

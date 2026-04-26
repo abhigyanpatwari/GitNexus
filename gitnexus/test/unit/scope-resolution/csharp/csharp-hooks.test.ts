@@ -18,16 +18,20 @@ import {
 } from '../../../../src/core/ingestion/languages/csharp/simple-hooks.js';
 import { csharpMergeBindings } from '../../../../src/core/ingestion/languages/csharp/merge-bindings.js';
 import { csharpArityCompatibility } from '../../../../src/core/ingestion/languages/csharp/arity.js';
+import { populateCsharpNamespaceSiblings } from '../../../../src/core/ingestion/languages/csharp/namespace-siblings.js';
 import type {
   BindingRef,
   Callsite,
   CaptureMatch,
+  ParsedFile,
   ParsedImport,
   Scope,
+  ScopeId,
   ScopeTree,
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
 function fakeScope(
   kind: Scope['kind'],
@@ -186,6 +190,83 @@ describe('csharpArityCompatibility', () => {
     expect(
       csharpArityCompatibility(def({ parameterCount: 3, requiredParameterCount: 1 }), callsite(-1)),
     ).toBe('unknown');
+  });
+});
+
+describe('populateCsharpNamespaceSiblings', () => {
+  const classDef = (nodeId: string, filePath: string, qualifiedName: string): SymbolDefinition =>
+    ({ nodeId, filePath, qualifiedName, type: 'Class' }) as SymbolDefinition;
+
+  const scope = (
+    id: string,
+    kind: Scope['kind'],
+    filePath: string,
+    parent: ScopeId | null = null,
+    ownedDefs: readonly SymbolDefinition[] = [],
+  ): Scope =>
+    ({
+      id: id as ScopeId,
+      kind,
+      parent,
+      filePath,
+      range: { startLine: 1, startColumn: 0, endLine: 10, endColumn: 0 },
+      bindings: new Map(),
+      imports: [],
+      ownedDefs,
+      typeBindings: new Map(),
+    }) as unknown as Scope;
+
+  it('copies frozen finalized binding buckets before injecting namespace siblings', () => {
+    // Reproduces the pre-fix `Cannot add property N, object is not extensible`
+    // crash without invoking the C# parser at all — `bindings` carries a
+    // pre-frozen `BindingRef[]` directly. The companion fixture
+    // `csharp-large-cache-miss-resolution` covers the buffer-size path
+    // end-to-end through the resolver pipeline.
+    const existing = classDef('def:external.B', 'external.cs', 'Other.B');
+    const sibling = classDef('def:b.B', 'b.cs', 'Demo.B');
+    const moduleA = scope('scope:a:module', 'Module', 'a.cs');
+    const moduleB = scope('scope:b:module', 'Module', 'b.cs');
+    const classB = scope('scope:b:class', 'Class', 'b.cs', moduleB.id, [sibling]);
+    const parsedFiles: ParsedFile[] = [
+      {
+        filePath: 'a.cs',
+        moduleScope: moduleA.id,
+        scopes: Object.freeze([moduleA]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+      {
+        filePath: 'b.cs',
+        moduleScope: moduleB.id,
+        scopes: Object.freeze([moduleB, classB]),
+        parsedImports: Object.freeze([]),
+        localDefs: Object.freeze([sibling]),
+        referenceSites: Object.freeze([]),
+      } as ParsedFile,
+    ];
+    const bindings = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>([
+      [
+        moduleA.id,
+        new Map<string, readonly BindingRef[]>([
+          ['B', Object.freeze([{ def: existing, origin: 'import' } as BindingRef])],
+        ]),
+      ],
+    ]);
+
+    populateCsharpNamespaceSiblings(
+      parsedFiles,
+      { bindings } as unknown as ScopeResolutionIndexes,
+      {
+        fileContents: new Map([
+          ['a.cs', 'namespace Demo;\nclass A { }\n'],
+          ['b.cs', 'namespace Demo;\nclass B { }\n'],
+        ]),
+      },
+    );
+
+    const injected = bindings.get(moduleA.id)?.get('B') ?? [];
+    expect(injected.map((b) => b.def.nodeId)).toEqual(['def:external.B', 'def:b.B']);
   });
 });
 

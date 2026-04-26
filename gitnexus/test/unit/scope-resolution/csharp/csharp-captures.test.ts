@@ -26,6 +26,13 @@ describe('emitCsharpScopeCaptures — scopes', () => {
     expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
   });
 
+  it('parses large cache-miss files with the adaptive tree-sitter buffer', () => {
+    const methods = Array.from({ length: 1500 }, (_, i) => `public void M${i}() { }`).join('\n');
+    const all = tagsFor(`namespace Large;\nclass Big {\n${methods}\n}`);
+    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
+    expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(1500);
+  });
+
   it('captures block-scoped namespaces as @scope.namespace', () => {
     const all = tagsFor('namespace Foo.Bar { class A { } }');
     expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);

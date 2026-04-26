@@ -37,6 +37,13 @@ describe('emitTsScopeCaptures — scopes', () => {
     expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
   });
 
+  it('parses large cache-miss files with the adaptive tree-sitter buffer', () => {
+    const methods = Array.from({ length: 2500 }, (_, i) => `  m${i}(): void {}`).join('\n');
+    const all = tagsFor(`class Big {\n${methods}\n}`);
+    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
+    expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(2500);
+  });
+
   it('captures internal_module as @scope.namespace', () => {
     const all = tagsFor('namespace Foo { class A { } }');
     expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);

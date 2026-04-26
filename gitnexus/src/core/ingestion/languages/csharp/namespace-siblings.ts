@@ -34,6 +34,7 @@ import type { SyntaxNode } from 'tree-sitter';
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
+import { getTreeSitterBufferSize } from '../../constants.js';
 
 interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
@@ -52,7 +53,11 @@ interface CsharpFileStructure {
  *  shared across calls. */
 function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
-  const tree = (cachedTree as CsharpTree | undefined) ?? getCsharpParser().parse(content);
+  const tree =
+    (cachedTree as CsharpTree | undefined) ??
+    getCsharpParser().parse(content, undefined, {
+      bufferSize: getTreeSitterBufferSize(content.length),
+    });
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
 
@@ -200,10 +205,13 @@ export function populateCsharpNamespaceSiblings(
 
   // Inject cross-file siblings into each namespace scope's finalized
   // bindings. `indexes.bindings` is typed `ReadonlyMap<ScopeId, ...>`
-  // but is a plain Map at runtime; mutating here is the established
-  // pattern (see `propagateImportedReturnTypes` which does the same
-  // for module-scope typeBindings).
-  const finalized = indexes.bindings as Map<ScopeId, Map<string, BindingRef[]>>;
+  // but the outer/inner Maps are plain `Map` at runtime — safe to
+  // `set()` directly. The inner `BindingRef[]` arrays, however, are
+  // frozen by `finalize-algorithm.ts` (`Object.freeze(refs.slice())`).
+  // Use `cloneBindingBucket` to copy before pushing, then `set()` the
+  // new array back. The same shape applies in
+  // `propagateImportedReturnTypes` for module-scope typeBindings.
+  const finalized = indexes.bindings as Map<ScopeId, Map<string, readonly BindingRef[]>>;
 
   // Cross-namespace type-binding propagation: for each file, mirror
   // method return-type bindings from same-namespace sibling files and
@@ -303,12 +311,8 @@ export function populateCsharpNamespaceSiblings(
 
         // Add to `indexes.bindings[moduleScope]` so
         // `findCallableBindingInScope` picks it up.
-        let scopeBindings = finalized.get(moduleScope.id);
-        if (scopeBindings === undefined) {
-          scopeBindings = new Map<string, BindingRef[]>();
-          finalized.set(moduleScope.id, scopeBindings);
-        }
-        const existing = scopeBindings.get(simpleName) ?? [];
+        const scopeBindings = getMutableScopeBindings(finalized, moduleScope.id);
+        const existing = cloneBindingBucket(scopeBindings, simpleName);
         if (existing.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
         existing.push({ def: memberDef, origin: 'import' });
         scopeBindings.set(simpleName, existing);
@@ -337,12 +341,8 @@ export function populateCsharpNamespaceSiblings(
         const q = def.qualifiedName ?? '';
         const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
         if (simpleName === '') continue;
-        let scopeBindings = finalized.get(moduleScope.id);
-        if (scopeBindings === undefined) {
-          scopeBindings = new Map<string, BindingRef[]>();
-          finalized.set(moduleScope.id, scopeBindings);
-        }
-        const existing = scopeBindings.get(simpleName) ?? [];
+        const scopeBindings = getMutableScopeBindings(finalized, moduleScope.id);
+        const existing = cloneBindingBucket(scopeBindings, simpleName);
         if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
         existing.push({ def, origin: 'namespace' });
         scopeBindings.set(simpleName, existing);
@@ -366,11 +366,7 @@ export function populateCsharpNamespaceSiblings(
     }
 
     for (const { scopeId, filePath } of bucket.scopes) {
-      let scopeBindings = finalized.get(scopeId);
-      if (scopeBindings === undefined) {
-        scopeBindings = new Map<string, BindingRef[]>();
-        finalized.set(scopeId, scopeBindings);
-      }
+      const scopeBindings = getMutableScopeBindings(finalized, scopeId);
       for (const [name, defs] of defsByName) {
         // Skip names already present locally — `origin: 'local'` in
         // scope.bindings would naturally shadow the cross-file
@@ -378,7 +374,7 @@ export function populateCsharpNamespaceSiblings(
         const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
-        const existing = scopeBindings.get(name) ?? [];
+        const existing = cloneBindingBucket(scopeBindings, name);
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
           if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
@@ -388,6 +384,30 @@ export function populateCsharpNamespaceSiblings(
       }
     }
   }
+}
+
+function getMutableScopeBindings(
+  finalized: Map<ScopeId, Map<string, readonly BindingRef[]>>,
+  scopeId: ScopeId,
+): Map<string, readonly BindingRef[]> {
+  let scopeBindings = finalized.get(scopeId);
+  if (scopeBindings === undefined) {
+    scopeBindings = new Map<string, readonly BindingRef[]>();
+    finalized.set(scopeId, scopeBindings);
+  }
+  return scopeBindings;
+}
+
+/** Clone the (possibly frozen) bucket at `name` into a fresh mutable
+ *  array. Required because `finalize-algorithm.ts` freezes the inner
+ *  `BindingRef[]` arrays it produces (`Object.freeze(refs.slice())`),
+ *  so we must not push onto whatever `scopeBindings.get(name)` returns
+ *  directly — clone, mutate, then `set()` the new array back. */
+function cloneBindingBucket(
+  scopeBindings: Map<string, readonly BindingRef[]>,
+  name: string,
+): BindingRef[] {
+  return [...(scopeBindings.get(name) ?? [])];
 }
 
 function isTypeDef(def: SymbolDefinition): boolean {

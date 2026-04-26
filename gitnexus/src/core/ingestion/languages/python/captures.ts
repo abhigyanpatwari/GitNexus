@@ -23,6 +23,7 @@ import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
+import { getTreeSitterBufferSize } from '../../constants.js';
 
 export function emitPythonScopeCaptures(
   sourceText: string,
@@ -36,7 +37,9 @@ export function emitPythonScopeCaptures(
   // here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = getPythonParser().parse(sourceText);
+    tree = getPythonParser().parse(sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText.length),
+    });
     recordCacheMiss();
   } else {
     recordCacheHit();
