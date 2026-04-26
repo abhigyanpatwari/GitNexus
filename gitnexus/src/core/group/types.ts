@@ -33,6 +33,8 @@ export interface MatchingConfig {
   bm25_threshold: number;
   embedding_threshold: number;
   max_candidates_per_step: number;
+  exclude_links_paths?: string[];
+  exclude_links_param_only_paths?: boolean;
 }
 
 export interface SymbolRef {

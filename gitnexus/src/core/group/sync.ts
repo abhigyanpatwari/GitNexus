@@ -208,7 +208,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
-  const { matched, unmatched } = runExactMatch(autoContracts);
+  const { matched, unmatched } = runExactMatch(autoContracts, undefined, config.matching);
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the

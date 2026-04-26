@@ -19,6 +19,8 @@ const DEFAULT_MATCHING = {
   bm25_threshold: 0.7,
   embedding_threshold: 0.65,
   max_candidates_per_step: 3,
+  exclude_links_paths: [] as string[],
+  exclude_links_param_only_paths: false,
 };
 
 export function parseGroupConfig(yamlContent: string): GroupConfig {
