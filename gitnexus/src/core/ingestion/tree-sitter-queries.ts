@@ -1332,6 +1332,66 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+// Zig queries — works with @tree-sitter-grammars/tree-sitter-zig.
+// Zig has no top-level struct/enum/union node types; instead these are anonymous
+// values bound to a `variable_declaration`. We capture the variable_declaration
+// as the type-bearing node and let the class extractor disambiguate.
+//
+// Top-level const/var queries use a #not-match? predicate to exclude
+// declarations whose RHS is a struct/enum/union — those would otherwise
+// double-emit alongside @definition.struct/@definition.enum/@definition.class.
+export const ZIG_QUERIES = `
+; ── Functions (top-level and FFI) ────────────────────────────────────────────
+(source_file
+  (function_declaration name: (identifier) @name) @definition.function)
+
+; ── Container types bound to a variable_declaration ──────────────────────────
+; pub const Pioneer = struct { ... };
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @definition.struct
+; pub const State = enum { ... };
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @definition.enum
+; const Tag = union(enum) { ... };  — labelled as Class (no Union NodeLabel)
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @definition.class
+
+; ── Methods inside container bodies ──────────────────────────────────────────
+(struct_declaration
+  (function_declaration name: (identifier) @name) @definition.method)
+(enum_declaration
+  (function_declaration name: (identifier) @name) @definition.method)
+(union_declaration
+  (function_declaration name: (identifier) @name) @definition.method)
+
+; ── Container fields (struct fields, enum members, union variants) ───────────
+(struct_declaration
+  (container_field name: (identifier) @name) @definition.property)
+(union_declaration
+  (container_field name: (identifier) @name) @definition.property)
+(enum_declaration
+  (container_field name: (identifier) @name) @definition.property)
+
+; ── Imports: @import("path") builtin ─────────────────────────────────────────
+(builtin_function
+  (builtin_identifier) @_b
+  (arguments (string (string_content) @import.source))
+  (#eq? @_b "@import")) @import
+
+; ── Calls ─────────────────────────────────────────────────────────────────────
+(call_expression function: (identifier) @call.name) @call
+(call_expression
+  function: (field_expression member: (identifier) @call.name)) @call
+
+; ── Top-level const/var (excluding type declarations) ────────────────────────
+(source_file
+  (variable_declaration (identifier) @name) @definition.const
+  (#not-match? @definition.const "(struct|enum|union)\\\\s*[({]"))
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1350,5 +1410,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.Zig]: ZIG_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

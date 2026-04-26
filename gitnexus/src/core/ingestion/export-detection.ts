@@ -246,3 +246,32 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/**
+ * Zig: a definition is exported when the enclosing declaration carries the
+ * `pub` keyword. `pub` is an anonymous (unnamed) child of the declaration
+ * node — function_declaration, variable_declaration, etc.
+ */
+const ZIG_DECL_TYPES: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'variable_declaration',
+  'struct_declaration',
+  'enum_declaration',
+  'union_declaration',
+  'container_field',
+]);
+
+export const zigExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (ZIG_DECL_TYPES.has(current.type)) {
+      for (let i = 0; i < current.childCount; i++) {
+        const child = current.child(i);
+        if (child && !child.isNamed && child.text === 'pub') return true;
+      }
+      return false;
+    }
+    current = current.parent;
+  }
+  return false;
+};

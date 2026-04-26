@@ -55,6 +55,7 @@
     "@ladybugdb/core": "^0.15.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
+    "@tree-sitter-grammars/tree-sitter-zig": "^1.1.2",
     "cli-progress": "^3.12.0",
     "commander": "^14.0.3",
     "cors": "^2.8.5",
@@ -101,6 +102,7 @@
     "@types/uuid": "^11.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",
+    "graphology-types": "^0.24.8",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
     "vitest": "^4.0.18"
