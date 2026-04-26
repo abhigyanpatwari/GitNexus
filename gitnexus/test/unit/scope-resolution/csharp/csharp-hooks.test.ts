@@ -216,12 +216,23 @@ describe('populateCsharpNamespaceSiblings', () => {
       typeBindings: new Map(),
     }) as unknown as Scope;
 
-  it('copies frozen finalized binding buckets before injecting namespace siblings', () => {
-    // Reproduces the pre-fix `Cannot add property N, object is not extensible`
-    // crash without invoking the C# parser at all — `bindings` carries a
-    // pre-frozen `BindingRef[]` directly. The companion fixture
-    // `csharp-large-cache-miss-resolution` covers the buffer-size path
-    // end-to-end through the resolver pipeline.
+  it('writes namespace siblings to the augmentation channel without touching frozen finalized bindings', () => {
+    // Verifies the post-finalize binding-augmentation contract for the
+    // C# namespace-siblings hook (per ScopeResolver I8 + the
+    // `bindingAugmentations` doc on `ScopeResolutionIndexes`):
+    //   * `indexes.bindings` (the finalize output) stays frozen and
+    //     its inner `BindingRef[]` arrays are NEVER mutated by the
+    //     hook — proven here by passing a frozen bucket and asserting
+    //     it survives unchanged.
+    //   * Cross-file siblings are appended to
+    //     `indexes.bindingAugmentations`, the dedicated mutable
+    //     append-only buffer.
+    //   * Walkers downstream (`lookupBindingsAt`) merge the two layers
+    //     transparently — covered by walkers-augmentations.test.ts.
+    // Reproduces the pre-architecture `Cannot add property N, object
+    // is not extensible` crash by carrying a pre-frozen `BindingRef[]`
+    // through `indexes.bindings`. End-to-end coverage is in the
+    // `csharp-large-cache-miss-resolution` fixture.
     const existing = classDef('def:external.B', 'external.cs', 'Other.B');
     const sibling = classDef('def:b.B', 'b.cs', 'Demo.B');
     const moduleA = scope('scope:a:module', 'Module', 'a.cs');
@@ -245,18 +256,15 @@ describe('populateCsharpNamespaceSiblings', () => {
         referenceSites: Object.freeze([]),
       } as ParsedFile,
     ];
+    const frozenBucket = Object.freeze([{ def: existing, origin: 'import' } as BindingRef]);
     const bindings = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>([
-      [
-        moduleA.id,
-        new Map<string, readonly BindingRef[]>([
-          ['B', Object.freeze([{ def: existing, origin: 'import' } as BindingRef])],
-        ]),
-      ],
+      [moduleA.id, new Map<string, readonly BindingRef[]>([['B', frozenBucket]])],
     ]);
+    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
 
     populateCsharpNamespaceSiblings(
       parsedFiles,
-      { bindings } as unknown as ScopeResolutionIndexes,
+      { bindings, bindingAugmentations } as unknown as ScopeResolutionIndexes,
       {
         fileContents: new Map([
           ['a.cs', 'namespace Demo;\nclass A { }\n'],
@@ -265,8 +273,14 @@ describe('populateCsharpNamespaceSiblings', () => {
       },
     );
 
-    const injected = bindings.get(moduleA.id)?.get('B') ?? [];
-    expect(injected.map((b) => b.def.nodeId)).toEqual(['def:external.B', 'def:b.B']);
+    const finalized = bindings.get(moduleA.id)?.get('B') ?? [];
+    expect(finalized).toBe(frozenBucket);
+    expect(finalized.map((b) => b.def.nodeId)).toEqual(['def:external.B']);
+    expect(Object.isFrozen(finalized)).toBe(true);
+
+    const augmented = bindingAugmentations.get(moduleA.id)?.get('B') ?? [];
+    expect(augmented.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
+    expect(Object.isFrozen(augmented)).toBe(false);
   });
 });
 

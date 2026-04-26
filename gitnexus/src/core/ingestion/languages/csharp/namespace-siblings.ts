@@ -203,15 +203,15 @@ export function populateCsharpNamespaceSiblings(
     }
   }
 
-  // Inject cross-file siblings into each namespace scope's finalized
-  // bindings. `indexes.bindings` is typed `ReadonlyMap<ScopeId, ...>`
-  // but the outer/inner Maps are plain `Map` at runtime — safe to
-  // `set()` directly. The inner `BindingRef[]` arrays, however, are
-  // frozen by `finalize-algorithm.ts` (`Object.freeze(refs.slice())`).
-  // Use `cloneBindingBucket` to copy before pushing, then `set()` the
-  // new array back. The same shape applies in
-  // `propagateImportedReturnTypes` for module-scope typeBindings.
-  const finalized = indexes.bindings as Map<ScopeId, Map<string, readonly BindingRef[]>>;
+  // Inject cross-file siblings into each namespace scope's
+  // post-finalize augmentation channel (per I8). The
+  // `indexes.bindingAugmentations` map is the dedicated mutable
+  // append-only buffer for post-finalize hooks: inner `BindingRef[]`
+  // arrays here are NEVER frozen (unlike `indexes.bindings`, which
+  // `materializeBindings` freezes). Walkers consult both channels
+  // via `lookupBindingsAt`; we never need to consult or mutate
+  // `indexes.bindings`.
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
   // Cross-namespace type-binding propagation: for each file, mirror
   // method return-type bindings from same-namespace sibling files and
@@ -309,13 +309,13 @@ export function populateCsharpNamespaceSiblings(
         const simpleName = mq.includes('.') ? mq.slice(mq.lastIndexOf('.') + 1) : mq;
         if (simpleName === '') continue;
 
-        // Add to `indexes.bindings[moduleScope]` so
-        // `findCallableBindingInScope` picks it up.
-        const scopeBindings = getMutableScopeBindings(finalized, moduleScope.id);
-        const existing = cloneBindingBucket(scopeBindings, simpleName);
-        if (existing.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
-        existing.push({ def: memberDef, origin: 'import' });
-        scopeBindings.set(simpleName, existing);
+        // Append to the augmentation bucket for the importer's module
+        // scope. `findCallableBindingInScope` reads via
+        // `lookupBindingsAt`, which fans out across `bindings` +
+        // `bindingAugmentations`.
+        const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
+        if (bucketArr.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
+        bucketArr.push({ def: memberDef, origin: 'import' });
       }
     }
   }
@@ -341,11 +341,9 @@ export function populateCsharpNamespaceSiblings(
         const q = def.qualifiedName ?? '';
         const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
         if (simpleName === '') continue;
-        const scopeBindings = getMutableScopeBindings(finalized, moduleScope.id);
-        const existing = cloneBindingBucket(scopeBindings, simpleName);
-        if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
-        existing.push({ def, origin: 'namespace' });
-        scopeBindings.set(simpleName, existing);
+        const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
+        if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+        bucketArr.push({ def, origin: 'namespace' });
       }
     }
   }
@@ -366,7 +364,6 @@ export function populateCsharpNamespaceSiblings(
     }
 
     for (const { scopeId, filePath } of bucket.scopes) {
-      const scopeBindings = getMutableScopeBindings(finalized, scopeId);
       for (const [name, defs] of defsByName) {
         // Skip names already present locally — `origin: 'local'` in
         // scope.bindings would naturally shadow the cross-file
@@ -374,40 +371,40 @@ export function populateCsharpNamespaceSiblings(
         const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
-        const existing = cloneBindingBucket(scopeBindings, name);
+        let bucketArr: BindingRef[] | null = null;
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
-          if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
-          existing.push({ def, origin: 'namespace' });
+          if (bucketArr === null) bucketArr = getAugmentationBucket(augmentations, scopeId, name);
+          if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+          bucketArr.push({ def, origin: 'namespace' });
         }
-        if (existing.length > 0) scopeBindings.set(name, existing);
       }
     }
   }
 }
 
-function getMutableScopeBindings(
-  finalized: Map<ScopeId, Map<string, readonly BindingRef[]>>,
+/** Get-or-create a mutable inner bucket inside the `bindingAugmentations`
+ *  channel. The inner arrays here are mutable by contract (see
+ *  `ScopeResolutionIndexes.bindingAugmentations` doc + scope-resolver I8);
+ *  callers may `push` directly. Allocating the outer/inner Maps lazily
+ *  keeps the augmentation footprint zero for files with no cross-file
+ *  fanout. */
+function getAugmentationBucket(
+  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
   scopeId: ScopeId,
-): Map<string, readonly BindingRef[]> {
-  let scopeBindings = finalized.get(scopeId);
-  if (scopeBindings === undefined) {
-    scopeBindings = new Map<string, readonly BindingRef[]>();
-    finalized.set(scopeId, scopeBindings);
-  }
-  return scopeBindings;
-}
-
-/** Clone the (possibly frozen) bucket at `name` into a fresh mutable
- *  array. Required because `finalize-algorithm.ts` freezes the inner
- *  `BindingRef[]` arrays it produces (`Object.freeze(refs.slice())`),
- *  so we must not push onto whatever `scopeBindings.get(name)` returns
- *  directly — clone, mutate, then `set()` the new array back. */
-function cloneBindingBucket(
-  scopeBindings: Map<string, readonly BindingRef[]>,
   name: string,
 ): BindingRef[] {
-  return [...(scopeBindings.get(name) ?? [])];
+  let scopeBindings = augmentations.get(scopeId);
+  if (scopeBindings === undefined) {
+    scopeBindings = new Map<string, BindingRef[]>();
+    augmentations.set(scopeId, scopeBindings);
+  }
+  let bucketArr = scopeBindings.get(name);
+  if (bucketArr === undefined) {
+    bucketArr = [];
+    scopeBindings.set(name, bucketArr);
+  }
+  return bucketArr;
 }
 
 function isTypeDef(def: SymbolDefinition): boolean {
