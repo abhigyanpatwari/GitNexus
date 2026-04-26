@@ -141,6 +141,11 @@ export function finalizeScopeModel(
     methodDispatch,
     imports: finalizeOut.imports,
     bindings: finalizeOut.bindings,
+    // Empty post-finalize augmentation channel. Populated (if at all)
+    // by language hooks like `populateCsharpNamespaceSiblings` running
+    // AFTER `finalizeScopeModel` returns, before `resolveReferenceSites`
+    // consumes the bundle. Most languages leave it empty.
+    bindingAugmentations: new Map(),
     referenceSites: Object.freeze([...allReferenceSites]),
     sccs: finalizeOut.sccs,
     stats: finalizeOut.stats,
