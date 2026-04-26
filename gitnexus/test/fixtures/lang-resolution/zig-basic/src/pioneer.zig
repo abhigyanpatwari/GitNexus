@@ -1,5 +1,10 @@
 pub const State = enum { idle, working };
 
+pub const Tag = union(enum) {
+    none,
+    energy: u32,
+};
+
 pub const Pioneer = struct {
     energy: u32,
 

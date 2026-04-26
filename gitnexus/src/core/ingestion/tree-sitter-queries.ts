@@ -1354,10 +1354,10 @@ export const ZIG_QUERIES = `
 (variable_declaration
   (identifier) @name
   (enum_declaration)) @definition.enum
-; const Tag = union(enum) { ... };  — labelled as Class (no Union NodeLabel)
+; const Tag = union(enum) { ... };
 (variable_declaration
   (identifier) @name
-  (union_declaration)) @definition.class
+  (union_declaration)) @definition.union
 
 ; ── Methods inside container bodies ──────────────────────────────────────────
 (struct_declaration

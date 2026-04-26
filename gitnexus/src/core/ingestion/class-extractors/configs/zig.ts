@@ -59,7 +59,7 @@ export const zigClassConfig: ClassExtractionConfig = {
     if (!container) return undefined;
     if (container.type === 'struct_declaration') return 'Struct';
     if (container.type === 'enum_declaration') return 'Enum';
-    if (container.type === 'union_declaration') return 'Class';
+    if (container.type === 'union_declaration') return 'Union';
     return undefined;
   },
 

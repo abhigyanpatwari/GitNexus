@@ -23,6 +23,12 @@ describe('Zig basic resolution', () => {
     expect(getNodesByLabel(result, 'Enum')).toContain('State');
   });
 
+  it('labels `union(enum)` declarations as Union (not Class)', () => {
+    expect(getNodesByLabel(result, 'Union')).toContain('Tag');
+    // Negative-side check: Tag must NOT also appear under Class.
+    expect(getNodesByLabel(result, 'Class')).not.toContain('Tag');
+  });
+
   it('extracts top-level functions from main.zig', () => {
     const fns = getNodesByLabel(result, 'Function');
     expect(fns).toContain('main');
