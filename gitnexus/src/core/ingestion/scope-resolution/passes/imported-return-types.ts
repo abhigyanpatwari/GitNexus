@@ -42,6 +42,7 @@
 import type { ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import { lookupBindingsAt, namesAtScope } from '../scope/walkers.js';
 
 /**
  * Max chain depth for the post-finalize re-follow. Effective end-to-end
@@ -136,14 +137,17 @@ export function propagateImportedReturnTypes(
     for (const filePath of scc.files) {
       const importerModule = moduleScopeByFile.get(filePath);
       if (importerModule === undefined) continue;
-      const finalizedBindings = indexes.bindings.get(importerModule.id);
-      if (finalizedBindings === undefined) continue;
 
-      for (const [localName, refs] of finalizedBindings) {
+      // Iterate the union of finalized + augmented binding names at
+      // this scope so post-finalize hooks (e.g. `using static`
+      // augmentations from `populateCsharpNamespaceSiblings`) are
+      // visible to the import-derived typeBinding mirror. See I8.
+      for (const localName of namesAtScope(importerModule.id, indexes)) {
         // Skip if importer already has a typeBinding for this name —
         // an explicit local annotation must win over import-derived.
         if (importerModule.typeBindings.has(localName)) continue;
 
+        const refs = lookupBindingsAt(importerModule.id, localName, indexes);
         for (const ref of refs) {
           if (ref.origin !== 'import' && ref.origin !== 'reexport') continue;
           const sourceModule = moduleScopeByFile.get(ref.def.filePath);
