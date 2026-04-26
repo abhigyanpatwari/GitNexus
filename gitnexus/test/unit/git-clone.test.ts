@@ -22,6 +22,21 @@ describe('git-clone', () => {
     it('handles nested paths', () => {
       expect(extractRepoName('https://gitlab.com/group/subgroup/repo.git')).toBe('repo');
     });
+
+    it('strips leading dashes to prevent argument injection', () => {
+      expect(extractRepoName('https://github.com/user/--upload-pack=payload.git')).toBe('upload-pack=payload');
+      expect(extractRepoName('https://github.com/user/-repo')).toBe('repo');
+    });
+
+    it('sanitizes unsafe directory characters', () => {
+      expect(extractRepoName('https://github.com/user/repo<tag>.git')).toBe('repo_tag_');
+      expect(extractRepoName('https://github.com/user/repo:name')).toBe('repo_name');
+    });
+
+    it('handles colons in SSH URLs correctly', () => {
+      expect(extractRepoName('git@github.com:user/my-repo.git')).toBe('my-repo');
+      expect(extractRepoName('git@github.com:my-repo.git')).toBe('my-repo');
+    });
   });
 
   describe('getCloneDir', () => {

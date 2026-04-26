@@ -151,9 +151,19 @@ export const parseRepoNameFromUrl = (url: string | null | undefined): string | n
   if (!trimmed) return null;
   // Strip `.git` suffix (case-insensitive) and any trailing slashes.
   const withoutSuffix = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
-  // Last path segment, splitting on either `/` or `:` (covers SSH form).
-  const m = withoutSuffix.match(/[/:]([^/:]+)$/);
-  const candidate = m ? m[1] : withoutSuffix;
+  
+  // Last path segment, handling colons for SSH URLs.
+  // For HTTPS URLs, the only colon should be in the protocol.
+  let candidate: string;
+  if (withoutSuffix.includes('@') && withoutSuffix.includes(':') && !withoutSuffix.startsWith('http')) {
+    // Likely an SSH URL
+    const m = withoutSuffix.match(/[/:]([^/:]+)$/);
+    candidate = m ? m[1] : withoutSuffix;
+  } else {
+    // Likely an HTTPS URL or local path
+    candidate = withoutSuffix.split('/').pop() || withoutSuffix;
+  }
+  
   return candidate || null;
 };
 
