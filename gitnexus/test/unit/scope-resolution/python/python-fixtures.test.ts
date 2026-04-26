@@ -75,6 +75,13 @@ describe('Python scopes — module / class / function', () => {
     expect(scopesByKind(f, 'Function')).toHaveLength(1600);
   });
 
+  it('case 01c: UTF-8-heavy cache-miss files use byte-sized parser buffers', () => {
+    const padding = '漢'.repeat(190_000);
+    const f = parse(`# ${padding}\ndef f():\n    return 1\n`);
+    expect(scopesByKind(f, 'Module')).toHaveLength(1);
+    expect(scopesByKind(f, 'Function')).toHaveLength(1);
+  });
+
   it('case 02: module-level assignment produces a Variable declaration in Module scope', () => {
     const f = parse('x = 1\n');
     expect(scopesByKind(f, 'Module')).toHaveLength(1);

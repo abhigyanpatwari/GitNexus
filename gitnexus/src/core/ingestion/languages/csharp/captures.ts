@@ -54,7 +54,7 @@ export function emitCsharpScopeCaptures(
   let tree = cachedTree as ReturnType<ReturnType<typeof getCsharpParser>['parse']> | undefined;
   if (tree === undefined) {
     tree = getCsharpParser().parse(sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText.length),
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   } else {

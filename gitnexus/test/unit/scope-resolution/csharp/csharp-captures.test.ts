@@ -33,6 +33,13 @@ describe('emitCsharpScopeCaptures — scopes', () => {
     expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(1500);
   });
 
+  it('parses UTF-8-heavy cache-miss files with a byte-sized buffer', () => {
+    const padding = '漢'.repeat(190_000);
+    const all = tagsFor(`namespace Large;\n// ${padding}\nclass Big { public void M() { } }`);
+    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
+    expect(all.some((t) => t.includes('@declaration.method'))).toBe(true);
+  });
+
   it('captures block-scoped namespaces as @scope.namespace', () => {
     const all = tagsFor('namespace Foo.Bar { class A { } }');
     expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);

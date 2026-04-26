@@ -38,7 +38,7 @@ export function emitPythonScopeCaptures(
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
     tree = getPythonParser().parse(sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText.length),
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   } else {

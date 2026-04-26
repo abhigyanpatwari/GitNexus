@@ -127,7 +127,7 @@ export function emitTsScopeCaptures(
   }
   if (tree === undefined) {
     tree = getTsParser(filePath).parse(sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText.length),
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   } else {

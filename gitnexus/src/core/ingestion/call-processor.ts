@@ -770,7 +770,7 @@ export const processCalls = async (
     if (!tree) {
       try {
         tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content.length),
+          bufferSize: getTreeSitterBufferSize(file.content),
         });
       } catch (parseError) {
         continue;
@@ -3257,7 +3257,7 @@ export const extractFetchCallsFromFiles = async (
     if (!tree) {
       try {
         tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content.length),
+          bufferSize: getTreeSitterBufferSize(file.content),
         });
       } catch {
         continue;

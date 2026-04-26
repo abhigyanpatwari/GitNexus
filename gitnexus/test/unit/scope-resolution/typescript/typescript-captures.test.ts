@@ -44,6 +44,13 @@ describe('emitTsScopeCaptures — scopes', () => {
     expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(2500);
   });
 
+  it('parses UTF-8-heavy cache-miss files with a byte-sized buffer', () => {
+    const padding = '漢'.repeat(190_000);
+    const all = tagsFor(`// ${padding}\nclass Big { m(): void {} }`);
+    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
+    expect(all.some((t) => t.includes('@declaration.method'))).toBe(true);
+  });
+
   it('captures internal_module as @scope.namespace', () => {
     const all = tagsFor('namespace Foo { class A { } }');
     expect(all.some((t) => t.includes('@scope.namespace'))).toBe(true);

@@ -216,7 +216,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       typeBindings: new Map(),
     }) as unknown as Scope;
 
-  it('writes namespace siblings to the augmentation channel without touching frozen finalized bindings', () => {
+  it('writes namespace siblings to augmentations after UTF-8-heavy cache-miss parsing', () => {
     // Verifies the post-finalize binding-augmentation contract for the
     // C# namespace-siblings hook (per ScopeResolver I8 + the
     // `bindingAugmentations` doc on `ScopeResolutionIndexes`):
@@ -261,14 +261,15 @@ describe('populateCsharpNamespaceSiblings', () => {
       [moduleA.id, new Map<string, readonly BindingRef[]>([['B', frozenBucket]])],
     ]);
     const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const padding = '漢'.repeat(190_000);
 
     populateCsharpNamespaceSiblings(
       parsedFiles,
       { bindings, bindingAugmentations } as unknown as ScopeResolutionIndexes,
       {
         fileContents: new Map([
-          ['a.cs', 'namespace Demo;\nclass A { }\n'],
-          ['b.cs', 'namespace Demo;\nclass B { }\n'],
+          ['a.cs', `namespace Demo;\n// ${padding}\nclass A { }\n`],
+          ['b.cs', `namespace Demo;\n// ${padding}\nclass B { }\n`],
         ]),
       },
     );

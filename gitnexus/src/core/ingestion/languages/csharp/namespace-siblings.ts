@@ -56,7 +56,7 @@ function extractFileStructure(content: string, cachedTree: unknown): CsharpFileS
   const tree =
     (cachedTree as CsharpTree | undefined) ??
     getCsharpParser().parse(content, undefined, {
-      bufferSize: getTreeSitterBufferSize(content.length),
+      bufferSize: getTreeSitterBufferSize(content),
     });
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
