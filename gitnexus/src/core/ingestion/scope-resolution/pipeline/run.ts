@@ -198,11 +198,12 @@ export function runScopeResolution(
   }
   const tPropagate = PROF ? process.hrtime.bigint() : 0n;
 
-  // Dev-mode I8 invariant guard. Runs once after all post-finalize
-  // hooks (`populateNamespaceSiblings`, `propagateImportedReturnTypes`)
-  // have had a chance to drift, so a single sweep covers the full
-  // post-finalize surface visible to `resolveReferenceSites`. No-op
-  // in production.
+  // Opt-in I8 invariant guard. Runs once after all post-finalize hooks
+  // (`populateNamespaceSiblings`, `propagateImportedReturnTypes`) have
+  // had a chance to drift, so a single sweep covers the full
+  // post-finalize surface visible to `resolveReferenceSites`. No-op in
+  // default CLI runs; enabled by NODE_ENV=development or
+  // VALIDATE_SEMANTIC_MODEL=1.
   validateBindingsImmutability(indexes, onWarn);
 
   // ── Phase 3: resolve references via Registry.lookup ────────────────────

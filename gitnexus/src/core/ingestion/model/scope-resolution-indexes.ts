@@ -73,8 +73,9 @@ export interface ScopeResolutionIndexes {
    *  bindings synthesized after finalize (e.g. C# same-namespace
    *  visibility, `using static` member exposure). Inner arrays are
    *  NOT frozen — hooks `push()` directly. Walkers must consult both
-   *  this map and `bindings` via `lookupBindingsAt`; augmentations
-   *  layer above finalized bindings, deduped by `def.nodeId`. See I8. */
+   *  this map and `bindings` via `lookupBindingsAt`; finalized refs
+   *  are returned first and win duplicate `def.nodeId` metadata, with
+   *  unique augmentations appended after. See I8. */
   readonly bindingAugmentations: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];

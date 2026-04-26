@@ -2,13 +2,13 @@
  * Unit tests for the dev-mode I8 binding-immutability validator.
  *
  * Mirrors `validateOwnershipParity` (#909) — happy path + drift
- * detection + production no-op gating. Pinning these so a
+ * detection + opt-in runtime gating. Pinning these so a
  * future contributor can't silently re-introduce the issue #1066
  * shape (a hook mutating `indexes.bindings` instead of
  * `indexes.bindingAugmentations`) without tripping the validator.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { BindingRef, ScopeId } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { validateBindingsImmutability } from '../../../src/core/ingestion/scope-resolution/pipeline/validate-bindings-immutability.js';
@@ -29,6 +29,11 @@ const mkIndexes = (
   }) as unknown as ScopeResolutionIndexes;
 
 describe('validateBindingsImmutability', () => {
+  beforeEach(() => {
+    // Insulate against an ambient VALIDATE_SEMANTIC_MODEL in a developer's
+    // shell. Per-test env tweaks override this baseline as needed.
+    vi.stubEnv('VALIDATE_SEMANTIC_MODEL', undefined);
+  });
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -124,6 +129,35 @@ describe('validateBindingsImmutability', () => {
 
     expect(violations).toBe(0);
     expect(onWarn).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op in default CLI env when NODE_ENV is unset', () => {
+    vi.stubEnv('NODE_ENV', undefined);
+    const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
+      ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
+    ]);
+    const augmentations = new Map<ScopeId, Map<string, BindingRef[]>>();
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(mkIndexes(bindings, augmentations), onWarn);
+
+    expect(violations).toBe(0);
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+
+  it('runs when VALIDATE_SEMANTIC_MODEL=1 even if NODE_ENV is unset', () => {
+    vi.stubEnv('NODE_ENV', undefined);
+    vi.stubEnv('VALIDATE_SEMANTIC_MODEL', '1');
+    const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>([
+      ['scope:a:module', new Map([['Foo', [mkRef('def:Foo')] as readonly BindingRef[]]])],
+    ]);
+    const augmentations = new Map<ScopeId, Map<string, BindingRef[]>>();
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(mkIndexes(bindings, augmentations), onWarn);
+
+    expect(violations).toBe(1);
+    expect(onWarn).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op when VALIDATE_SEMANTIC_MODEL=0', () => {

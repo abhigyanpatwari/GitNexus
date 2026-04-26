@@ -73,19 +73,29 @@ export function lookupBindingsAt(
   return out;
 }
 
+const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
+
 /**
  * Return the union of bound names at `scopeId` across both the
  * finalized and augmented channels. Companion to `lookupBindingsAt`
  * for callers that need to iterate every name at a scope (e.g.
  * `propagateImportedReturnTypes`). Order is not guaranteed; callers
  * that need stable iteration should sort externally.
+ *
+ * Fast paths (zero allocation) when at most one channel is populated:
+ * returns the underlying `Map.keys()` iterator directly. Only when both
+ * channels carry names do we materialize a `Set` for deduplication.
  */
-export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Set<string> {
-  const out = new Set<string>();
+export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Iterable<string> {
   const finalized = scopes.bindings.get(scopeId);
-  if (finalized !== undefined) for (const name of finalized.keys()) out.add(name);
   const augmented = scopes.bindingAugmentations.get(scopeId);
-  if (augmented !== undefined) for (const name of augmented.keys()) out.add(name);
+  const fSize = finalized?.size ?? 0;
+  const aSize = augmented?.size ?? 0;
+  if (fSize === 0 && aSize === 0) return EMPTY_NAMES;
+  if (aSize === 0) return finalized!.keys();
+  if (fSize === 0) return augmented!.keys();
+  const out = new Set<string>(finalized!.keys());
+  for (const name of augmented!.keys()) out.add(name);
   return out;
 }
 

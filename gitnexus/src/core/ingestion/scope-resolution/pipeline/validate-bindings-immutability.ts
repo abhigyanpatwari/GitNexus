@@ -32,18 +32,18 @@
  *      arrays. Self-documenting; mostly a sanity net.
  *
  * Mirrors `validateOwnershipParity` (#909): warns via `onWarn`,
- * never throws, no-op in production. Gated on
- *   `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+ * never throws, and is opt-in outside development. Gated by
+ * `isSemanticModelValidatorEnabled()` (`utils/env.ts`).
  */
 
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { isSemanticModelValidatorEnabled } from '../../utils/env.js';
 
 export function validateBindingsImmutability(
   indexes: ScopeResolutionIndexes,
   onWarn: (message: string) => void,
 ): number {
-  if (process.env.NODE_ENV === 'production') return 0;
-  if (process.env.VALIDATE_SEMANTIC_MODEL === '0') return 0;
+  if (!isSemanticModelValidatorEnabled()) return 0;
 
   let violations = 0;
 

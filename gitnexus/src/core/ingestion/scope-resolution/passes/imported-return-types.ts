@@ -138,10 +138,12 @@ export function propagateImportedReturnTypes(
       const importerModule = moduleScopeByFile.get(filePath);
       if (importerModule === undefined) continue;
 
-      // Iterate the union of finalized + augmented binding names at
-      // this scope so post-finalize hooks (e.g. `using static`
-      // augmentations from `populateCsharpNamespaceSiblings`) are
-      // visible to the import-derived typeBinding mirror. See I8.
+      // Iterate finalized + augmented binding names at this scope so
+      // post-finalize hooks (e.g. `using static` augmentations from
+      // `populateCsharpNamespaceSiblings`) are visible to the
+      // import-derived typeBinding mirror. Both helpers fast-path when
+      // no augmentations exist for the scope, so the common case is
+      // allocation-free. See I8.
       for (const localName of namesAtScope(importerModule.id, indexes)) {
         // Skip if importer already has a typeBinding for this name —
         // an explicit local annotation must win over import-derived.

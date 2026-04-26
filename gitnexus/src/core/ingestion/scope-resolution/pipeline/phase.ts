@@ -36,7 +36,7 @@ import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
-import { isDev } from '../../utils/env.js';
+import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 
 export interface ScopeResolutionOutput {
   /** True when at least one language ran. */
@@ -143,7 +143,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           treeCache: scopeTreeCache,
           resolutionConfig,
           onWarn: (msg) => {
-            if (isDev) console.warn(`[scope-resolution:${lang}] ${msg}`);
+            if (isSemanticModelValidatorEnabled()) {
+              console.warn(`[scope-resolution:${lang}] ${msg}`);
+            }
           },
         },
         provider,

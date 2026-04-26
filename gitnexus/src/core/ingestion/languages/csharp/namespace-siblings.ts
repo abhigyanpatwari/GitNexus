@@ -11,17 +11,18 @@
  * field-chain resolution fails at `findClassBindingInScope('User')`
  * in the Service.cs scope chain.
  *
- * Implementation: after the finalize pass populates `indexes.bindings`
- * (from explicit `using` directives), walk each file's tree-sitter
- * AST for `namespace_declaration` / `file_scoped_namespace_declaration`
- * and `using_directive` nodes. The orchestrator hands us its
- * `treeCache` so files already parsed by `extractParsedFile` are
- * re-used instead of re-parsed — `ParsedFile`'s underlying tree is
- * the single source of truth. Group classes by namespace, and inject
- * cross-file sibling classes into each Namespace scope's finalized
- * bindings with `origin: 'namespace'` — a tier below `local` so a
- * local declaration still shadows a cross-file sibling with the same
- * name.
+ * Implementation: after the finalize pass populates immutable
+ * `indexes.bindings` (from explicit `using` directives), walk each
+ * file's tree-sitter AST for `namespace_declaration` /
+ * `file_scoped_namespace_declaration` and `using_directive` nodes.
+ * The orchestrator hands us its `treeCache` so files already parsed
+ * by `extractParsedFile` are re-used instead of re-parsed —
+ * `ParsedFile`'s underlying tree is the single source of truth.
+ * Group classes by namespace, and append cross-file sibling classes
+ * into each Namespace scope's `bindingAugmentations` bucket with
+ * `origin: 'namespace'`. Finalized bindings remain first in
+ * `lookupBindingsAt`, and local lexical `Scope.bindings` remains the
+ * first-tier shadowing channel.
  *
  * The tree-sitter walk is authoritative: it sees `global using static`,
  * aliased `using static X = Y.Z;`, attributed namespace declarations,
@@ -111,8 +112,8 @@ export interface CsharpSiblingInputs {
 }
 
 /**
- * Mutate `indexes.bindings` in-place, adding cross-file sibling class
- * defs to each Namespace scope. Class-like defs (Class / Interface /
+ * Append cross-file sibling class defs to each Namespace scope's
+ * `bindingAugmentations` bucket. Class-like defs (Class / Interface /
  * Struct / Record / Enum) are visible cross-file; method / field
  * members are not.
  */

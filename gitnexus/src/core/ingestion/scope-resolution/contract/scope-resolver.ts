@@ -151,11 +151,12 @@
  *     here are NEVER frozen — hooks `push()` directly. Any consumer
  *     that reads post-finalize workspace bindings MUST query both
  *     index channels via `lookupBindingsAt`
- *     (`scope-resolution/scope/walkers.ts`); the helper merges the
- *     two layers and dedupes by `def.nodeId` with augmentations
- *     layered above finalized buckets. Per-`Scope.bindings` local
- *     declarations are the lexical extraction channel and remain a
- *     separate first-tier lookup for local shadowing.
+ *     (`scope-resolution/scope/walkers.ts`); the helper returns
+ *     finalized refs first, appends unique augmentation refs after,
+ *     and dedupes by `def.nodeId` so finalized metadata wins on
+ *     duplicate defs. Per-`Scope.bindings` local declarations are the
+ *     lexical extraction channel and remain a separate first-tier
+ *     lookup for local shadowing.
  *
  *     `Scope.typeBindings` remains mutable post-finalize per I6 (it
  *     is intentionally not frozen at any point).
@@ -171,8 +172,9 @@
  *     `scope-resolution/validate-bindings-immutability.ts`) surfaces
  *     any drift — i.e. a hook writing to `indexes.bindings` instead
  *     of `bindingAugmentations`, or producing a non-frozen finalized
- *     bucket — via `onWarn` when
- *     `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+ *     bucket — via `onWarn` when explicitly enabled by
+ *     `NODE_ENV === 'development' || VALIDATE_SEMANTIC_MODEL === '1'`
+ *     (`VALIDATE_SEMANTIC_MODEL=0` is an explicit off switch).
  *
  *   - **I9 — `SemanticModel` is the single authoritative symbol store.**
  *     Every symbol-indexed lookup (key = `nodeId | simpleName |

@@ -2429,10 +2429,11 @@ describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch
 //   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
 //      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
 //      fails to reparse with "Invalid argument" and CreateUser is dropped.
-//   2. populateCsharpNamespaceSiblings must clone frozen finalize-produced
-//      BindingRef[] arrays before pushing, otherwise the cross-namespace
-//      inject loop throws "Cannot add property N, object is not extensible"
-//      when the importer also declares the same simple name locally.
+//   2. populateCsharpNamespaceSiblings must append to bindingAugmentations
+//      instead of mutating frozen finalize-produced BindingRef[] arrays;
+//      otherwise the cross-namespace inject loop throws "Cannot add property
+//      N, object is not extensible" when the importer also declares the same
+//      simple name locally.
 // ---------------------------------------------------------------------------
 
 describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
