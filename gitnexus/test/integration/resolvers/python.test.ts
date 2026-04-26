@@ -1,8 +1,10 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -13,6 +15,14 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+function writeFixtureRepo(root: string, files: Record<string, string>): void {
+  for (const [relPath, content] of Object.entries(files)) {
+    const fullPath = path.join(root, relPath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content, 'utf8');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Heritage: relative imports + class inheritance
@@ -2483,5 +2493,63 @@ describe('Python class-body namespace import feeds method receiver-bound call', 
     const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
     expect(callEdge).toBeDefined();
     expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 sibling regression for Python: force worker-mode extraction so
+// scope-resolution reparses on cache miss, then assert large ASCII and
+// UTF-8-heavy source files still produce trailing call edges.
+// ---------------------------------------------------------------------------
+
+describe('Python large-file cache-miss parser buffer regression', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-large-cache-'));
+    writeFixtureRepo(repoDir, {
+      'models.py': `
+class User:
+    def save(self):
+        return True
+`,
+      'ascii_app.py': `from models import User
+
+# ${'x'.repeat(120 * 1024)}
+def create_ascii_user():
+    user = User()
+    user.save()
+`,
+      'utf8_app.py': `from models import User
+
+# ${'漢'.repeat(120_000)}
+def create_utf8_user():
+    user = User()
+    user.save()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {
+      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
+    });
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('extracts trailing functions after large ASCII and UTF-8 padding', () => {
+    expect(getNodesByLabel(result, 'Function')).toEqual(
+      expect.arrayContaining(['create_ascii_user', 'create_utf8_user', 'save']),
+    );
+  });
+
+  it('resolves calls from both padded files to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['create_ascii_user', 'create_utf8_user']) {
+      const save = calls.find((c) => c.source === source && c.target === 'save');
+      expect(save).toBeDefined();
+      expect(save!.targetFilePath).toBe('models.py');
+    }
   });
 });

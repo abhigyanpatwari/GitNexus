@@ -1,8 +1,10 @@
 /**
  * TypeScript: heritage resolution + ambiguous symbol disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   getRelationships,
@@ -12,6 +14,14 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+function writeFixtureRepo(root: string, files: Record<string, string>): void {
+  for (const [relPath, content] of Object.entries(files)) {
+    const fullPath = path.join(root, relPath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content, 'utf8');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
@@ -2813,5 +2823,78 @@ describe('TypeScript namespace re-export barrel (registry-primary)', () => {
       .map((e) => e.targetFilePath);
     expect(fromApp).toContain('src/barrel.ts');
     expect(fromBarrel).toContain('src/base.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 sibling regression for TypeScript: force worker-mode extraction
+// so scope-resolution reparses on cache miss, then assert large ASCII and
+// UTF-8-heavy source files still produce trailing call edges.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript large-file cache-miss parser buffer regression', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-large-cache-'));
+    writeFixtureRepo(repoDir, {
+      'src/models.ts': `
+export class User {
+  save(): boolean {
+    return true;
+  }
+}
+`,
+      'src/ascii-app.ts': `import { User } from './models';
+
+// ${'x'.repeat(120 * 1024)}
+export function createAsciiUser(): void {
+  const user = new User();
+  user.save();
+}
+`,
+      'src/utf8-app.ts': `import { User } from './models';
+
+// ${'漢'.repeat(120_000)}
+export function createUtf8User(): void {
+  const user = new User();
+  user.save();
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {
+      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
+    });
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('extracts trailing functions after large ASCII and UTF-8 padding', () => {
+    expect(getNodesByLabel(result, 'Function')).toEqual(
+      expect.arrayContaining(['createAsciiUser', 'createUtf8User']),
+    );
+  });
+
+  it('resolves constructor calls from both padded files to User', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['createAsciiUser', 'createUtf8User']) {
+      const ctor = calls.find(
+        (c) => c.source === source && c.target === 'User' && c.targetLabel === 'Class',
+      );
+      expect(ctor).toBeDefined();
+      expect(ctor!.targetFilePath).toBe('src/models.ts');
+    }
+  });
+
+  it('resolves member calls from both padded files to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['createAsciiUser', 'createUtf8User']) {
+      const save = calls.find((c) => c.source === source && c.target === 'save');
+      expect(save).toBeDefined();
+      expect(save!.targetFilePath).toBe('src/models.ts');
+    }
   });
 });
