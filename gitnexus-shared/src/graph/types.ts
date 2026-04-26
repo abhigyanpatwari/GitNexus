@@ -306,4 +306,18 @@ export interface GraphRelationship {
     readonly weight: number;
     readonly note?: string;
   }[];
+  /**
+   * When `true`, the edge originates inside a code branch known at
+   * index time to be unreachable in production — e.g. a Zig
+   * `if (CONST_FALSE)` block where the condition reduces to a
+   * comptime-known `false`.  Consumers of impact / context queries
+   * can filter these edges out to suppress paper-tiger callers
+   * caused by feature-flag-gated dead code paths.
+   *
+   * Optional and additive: edges from languages that don't compute
+   * static gating leave this `undefined`, which existing readers
+   * treat identically to "live".  Currently set only by the Zig
+   * call-extractor.
+   */
+  staticGated?: boolean;
 }
