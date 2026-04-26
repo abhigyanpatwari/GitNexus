@@ -1,13 +1,14 @@
 /**
  * Scope-chain lookup primitives shared across language providers.
  *
- * Four functions:
+ * Five functions:
  *   - `findReceiverTypeBinding` — walk scope.typeBindings up the chain
  *     for a receiver name.
- *   - `findClassBindingInScope` — walk scope.bindings + indexes.bindings
- *     (pre-finalize + post-finalize) for a class-kind binding. Dual-
- *     source is required because the cross-file finalize pass produces
- *     a separate bindings map that is not merged back into scope.bindings.
+ *   - `lookupBindingsAt` — read finalized + augmented binding refs at
+ *     one scope, deduped by `def.nodeId`. The dual-source-aware
+ *     primitive every other binding lookup composes with.
+ *   - `findClassBindingInScope` — walk scope.bindings + the indexes via
+ *     `lookupBindingsAt` for a class-kind binding.
  *   - `findOwnedMember` — find a method/field owned by a class def
  *     across all parsed files by (ownerId, simpleName).
  *   - `findExportedDef` — find a file-level exported def (top-of-module
@@ -19,10 +20,58 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import type { ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+
+const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
+
+/**
+ * Look up binding refs at `scopeId` for `name`, consulting both the
+ * finalize-owned `bindings` channel and the post-finalize
+ * `bindingAugmentations` channel (see invariant I8 in
+ * `contract/scope-resolver.ts`). Finalized refs come first; augmented
+ * refs append, deduped by `def.nodeId` so a sibling that's also
+ * explicitly imported doesn't double-emit.
+ *
+ * Returns a shared frozen empty array when neither channel has the
+ * name — callers can compare against `=== EMPTY_BINDINGS` if they
+ * want a fast-path miss check. The bucket arrays are returned by
+ * reference when only one channel populates them; the merged path
+ * allocates a fresh array.
+ *
+ * Walker primitives (`findClassBindingInScope`,
+ * `findCallableBindingInScope`, `findExportedDefByName`) and
+ * post-finalize passes that read finalized bindings (e.g.
+ * `propagateImportedReturnTypes`, `namespace-targets`) MUST go
+ * through this helper instead of `scopes.bindings.get(...)` directly,
+ * so the augmentation channel is always visible.
+ */
+export function lookupBindingsAt(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] {
+  const finalized = scopes.bindings.get(scopeId)?.get(name);
+  const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
+  const fLen = finalized?.length ?? 0;
+  const aLen = augmented?.length ?? 0;
+  if (fLen === 0 && aLen === 0) return EMPTY_BINDINGS;
+  if (aLen === 0) return finalized!;
+  if (fLen === 0) return augmented!;
+  const seen = new Set<string>();
+  const out: BindingRef[] = [];
+  for (const r of finalized!) {
+    seen.add(r.def.nodeId);
+    out.push(r);
+  }
+  for (const r of augmented!) {
+    if (seen.has(r.def.nodeId)) continue;
+    out.push(r);
+  }
+  return out;
+}
 
 /**
  * True when a def's `type` names a class-like declaration — every kind
