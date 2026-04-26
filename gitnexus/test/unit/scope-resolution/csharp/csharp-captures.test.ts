@@ -27,17 +27,23 @@ describe('emitCsharpScopeCaptures — scopes', () => {
   });
 
   it('parses large cache-miss files with the adaptive tree-sitter buffer', () => {
-    const methods = Array.from({ length: 1500 }, (_, i) => `public void M${i}() { }`).join('\n');
-    const all = tagsFor(`namespace Large;\nclass Big {\n${methods}\n}`);
-    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
-    expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(1500);
+    const padding = 'x'.repeat(600 * 1024);
+    const match = findMatch(
+      `namespace Large;\n// ${padding}\nclass Big { public void AfterPadding() { } }`,
+      (t) => t.includes('@declaration.method'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@declaration.name'].text).toBe('AfterPadding');
   });
 
   it('parses UTF-8-heavy cache-miss files with a byte-sized buffer', () => {
     const padding = '漢'.repeat(190_000);
-    const all = tagsFor(`namespace Large;\n// ${padding}\nclass Big { public void M() { } }`);
-    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
-    expect(all.some((t) => t.includes('@declaration.method'))).toBe(true);
+    const match = findMatch(
+      `namespace Large;\n// ${padding}\nclass Big { public void AfterPadding() { } }`,
+      (t) => t.includes('@declaration.method'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@declaration.name'].text).toBe('AfterPadding');
   });
 
   it('captures block-scoped namespaces as @scope.namespace', () => {

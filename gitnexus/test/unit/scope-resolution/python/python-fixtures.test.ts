@@ -66,20 +66,17 @@ describe('Python scopes — module / class / function', () => {
   });
 
   it('case 01b: large cache-miss files use the adaptive tree-sitter buffer', () => {
-    const functions = Array.from(
-      { length: 1600 },
-      (_, i) => `def f_${i}():\n    return ${i}\n`,
-    ).join('\n');
-    const f = parse(functions);
+    const padding = 'x'.repeat(600 * 1024);
+    const f = parse(`# ${padding}\ndef after_padding():\n    return 1\n`);
     expect(scopesByKind(f, 'Module')).toHaveLength(1);
-    expect(scopesByKind(f, 'Function')).toHaveLength(1600);
+    expect(findDef(f, 'after_padding')?.type).toBe('Function');
   });
 
   it('case 01c: UTF-8-heavy cache-miss files use byte-sized parser buffers', () => {
     const padding = '漢'.repeat(190_000);
-    const f = parse(`# ${padding}\ndef f():\n    return 1\n`);
+    const f = parse(`# ${padding}\ndef after_padding():\n    return 1\n`);
     expect(scopesByKind(f, 'Module')).toHaveLength(1);
-    expect(scopesByKind(f, 'Function')).toHaveLength(1);
+    expect(findDef(f, 'after_padding')?.type).toBe('Function');
   });
 
   it('case 02: module-level assignment produces a Variable declaration in Module scope', () => {

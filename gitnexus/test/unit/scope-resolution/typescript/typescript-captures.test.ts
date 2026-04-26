@@ -38,17 +38,21 @@ describe('emitTsScopeCaptures — scopes', () => {
   });
 
   it('parses large cache-miss files with the adaptive tree-sitter buffer', () => {
-    const methods = Array.from({ length: 2500 }, (_, i) => `  m${i}(): void {}`).join('\n');
-    const all = tagsFor(`class Big {\n${methods}\n}`);
-    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
-    expect(all.filter((t) => t.includes('@declaration.method')).length).toBe(2500);
+    const padding = 'x'.repeat(600 * 1024);
+    const match = findMatch(`// ${padding}\nclass Big { afterPadding(): void {} }`, (t) =>
+      t.includes('@declaration.method'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@declaration.name'].text).toBe('afterPadding');
   });
 
   it('parses UTF-8-heavy cache-miss files with a byte-sized buffer', () => {
     const padding = '漢'.repeat(190_000);
-    const all = tagsFor(`// ${padding}\nclass Big { m(): void {} }`);
-    expect(all.some((t) => t.includes('@scope.module'))).toBe(true);
-    expect(all.some((t) => t.includes('@declaration.method'))).toBe(true);
+    const match = findMatch(`// ${padding}\nclass Big { afterPadding(): void {} }`, (t) =>
+      t.includes('@declaration.method'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@declaration.name'].text).toBe('afterPadding');
   });
 
   it('captures internal_module as @scope.namespace', () => {
