@@ -21,6 +21,7 @@ import {
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import { formatCoverageGapWarning } from '../core/coverage-gaps.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
@@ -332,6 +333,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
     );
     console.log(`  ${repoPath}`);
+
+    // Coverage-gap warning — surface silent indexing gaps where a meaningful
+    // number of source files belong to a language with no LanguageProvider
+    // (e.g., a Clojure-majority repo where `analyze` "succeeded" but extracted
+    // zero symbols from .cljs/.clj/.cljc). Reporting-only — does not fail the
+    // run.
+    const gapWarning = formatCoverageGapWarning(result.pipelineResult?.coverageGaps ?? []);
+    if (gapWarning) {
+      console.log('');
+      console.log(gapWarning);
+    }
 
     try {
       await fs.access(getGlobalRegistryPath());

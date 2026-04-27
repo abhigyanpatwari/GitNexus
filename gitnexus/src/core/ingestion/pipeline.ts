@@ -18,10 +18,12 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
+import { detectCoverageGaps } from '../coverage-gaps.js';
 import {
   runPipeline,
   getPhaseOutput,
   scanPhase,
+  type ScanOutput,
   structurePhase,
   markdownPhase,
   cobolPhase,
@@ -117,6 +119,13 @@ export const runPipelineFromRepo = async (
     usedWorkerPool: boolean;
   }>(results, 'parse');
 
+  // Coverage-gap detection runs against the scan output: it tallies file
+  // extensions in the repo against the LanguageProvider registry to surface
+  // languages with N+ source files but no provider (silent indexing gaps).
+  // Pure tally on already-collected paths — no extra I/O.
+  const { allPaths } = getPhaseOutput<ScanOutput>(results, 'scan');
+  const coverageGaps = detectCoverageGaps(allPaths);
+
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
 
@@ -146,5 +155,6 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     usedWorkerPool,
+    coverageGaps,
   };
 };
