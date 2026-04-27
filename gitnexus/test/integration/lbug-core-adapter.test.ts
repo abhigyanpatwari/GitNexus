@@ -70,6 +70,20 @@ withTestLbugDB(
         }
       });
 
+      it('initLbug loads FTS so reopened HTTP-style sessions can query existing indexes', async () => {
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        const indexName = 'function_fts_init_probe';
+
+        await adapter.createFTSIndex('Function', indexName, ['name', 'content']);
+        await adapter.closeLbug();
+
+        await adapter.initLbug(handle.dbPath);
+
+        await expect(adapter.queryFTS('Function', indexName, 'main', 5)).resolves.toEqual(
+          expect.arrayContaining([expect.objectContaining({ filePath: 'src/index.ts' })]),
+        );
+      });
+
       it('getLbugStats: returns correct node and edge counts for seeded data', async () => {
         const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 

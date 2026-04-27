@@ -330,7 +330,8 @@ const doInitLbug = async (dbPath: string) => {
     }
   }
 
-  // Load VECTOR extension for semantic search support
+  // Load query extensions once per core adapter session.
+  await loadFTSExtension();
   await loadVectorExtension();
 
   currentDbPath = dbPath;
