@@ -109,7 +109,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.workerTimeout) {
     const workerTimeoutSeconds = Number(options.workerTimeout);
     if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
-      console.log('  --worker-timeout must be at least 1 second.\n');
+      console.error('  --worker-timeout must be at least 1 second.\n');
       process.exitCode = 1;
       return;
     }

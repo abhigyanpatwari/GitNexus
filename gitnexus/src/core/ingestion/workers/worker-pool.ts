@@ -41,6 +41,7 @@ interface WorkerJob<TInput> {
   items: TInput[];
   estimatedBytes: number;
   attempt: number;
+  splitDepth: number;
   timeoutMs: number;
 }
 
@@ -74,7 +75,9 @@ function nonNegativeInteger(value: unknown): number | undefined {
     : undefined;
 }
 
-function resolveWorkerPoolOptions(options: WorkerPoolOptions = {}): Required<WorkerPoolOptions> {
+export function resolveWorkerPoolOptions(
+  options: WorkerPoolOptions = {},
+): Required<WorkerPoolOptions> {
   return {
     subBatchSize: positiveInteger(options.subBatchSize) ?? SUB_BATCH_SIZE,
     subBatchMaxBytes:
@@ -116,7 +119,14 @@ function createJobs<TInput>(
 
   const flush = () => {
     if (batch.length === 0) return;
-    jobs.push({ startIndex, items: batch, estimatedBytes: batchBytes, attempt: 0, timeoutMs });
+    jobs.push({
+      startIndex,
+      items: batch,
+      estimatedBytes: batchBytes,
+      attempt: 0,
+      splitDepth: 0,
+      timeoutMs,
+    });
     startIndex += batch.length;
     batch = [];
     batchBytes = 0;
@@ -226,14 +236,16 @@ export const createWorkerPool = (
             startIndex: job.startIndex,
             items: firstItems,
             estimatedBytes: firstItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
-            attempt: job.attempt + 1,
+            attempt: job.attempt,
+            splitDepth: job.splitDepth + 1,
             timeoutMs: nextTimeout,
           };
           const second: WorkerJob<TInput> = {
             startIndex: job.startIndex + midpoint,
             items: secondItems,
             estimatedBytes: secondItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
-            attempt: job.attempt + 1,
+            attempt: job.attempt,
+            splitDepth: job.splitDepth + 1,
             timeoutMs: nextTimeout,
           };
           console.warn(

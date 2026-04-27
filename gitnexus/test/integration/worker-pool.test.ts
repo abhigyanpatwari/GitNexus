@@ -244,7 +244,7 @@ describe('worker pool integration', () => {
               clearInterval(timer);
               parentPort.postMessage({ type: 'sub-batch-done' });
             }
-          }, 30);
+          }, 60);
           return;
         }
         if (msg && msg.type === 'flush') {
@@ -255,7 +255,7 @@ describe('worker pool integration', () => {
     );
 
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 70,
+      subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 0,
     });
 
@@ -300,7 +300,7 @@ describe('worker pool integration', () => {
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 50,
+      subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 4,
     });
@@ -308,7 +308,7 @@ describe('worker pool integration', () => {
     try {
       const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
       expect(results).toEqual([{ fileCount: 1, recovered: true }]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.2s timeout'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.6s timeout'));
     } finally {
       warnSpy.mockRestore();
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -347,7 +347,7 @@ describe('worker pool integration', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
       subBatchSize: 2,
-      subBatchIdleTimeoutMs: 30,
+      subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 0,
       timeoutBackoffFactor: 3,
     });
@@ -391,7 +391,7 @@ describe('worker pool integration', () => {
     );
 
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 15,
+      subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 0,
     });
 
@@ -427,7 +427,7 @@ describe('worker pool integration', () => {
             return;
           }
           if (current.includes('tail-a.ts')) {
-            setTimeout(finish, 45);
+            setTimeout(finish, 180);
             return;
           }
           finish();
@@ -443,7 +443,7 @@ describe('worker pool integration', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
       subBatchSize: 2,
-      subBatchIdleTimeoutMs: 20,
+      subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 0,
       timeoutBackoffFactor: 3,
     });
