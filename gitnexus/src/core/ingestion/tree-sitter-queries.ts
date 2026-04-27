@@ -1334,6 +1334,106 @@ export const DART_QUERIES = `
 
 import { SupportedLanguages } from 'gitnexus-shared';
 
+// Lua queries - works with @tree-sitter-grammars/tree-sitter-lua
+// Lua has no formal module system; a chunk (file) is a module.
+// Tables assigned to globals/locals are the idiomatic way to namespace code.
+export const LUA_QUERIES = `
+; ── Scopes ────────────────────────────────────────────────────────────────────
+; The top-level chunk maps 1-to-1 to a module scope.
+(chunk) @scope.module
+
+; Each function body introduces a new scope.
+(function_definition) @scope.function
+
+; ── Functions: top-level / global ────────────────────────────────────────────
+; function foo(...) ... end
+(function_definition_statement
+  name: (identifier) @name) @definition.function
+
+; ── Functions: method-style (Foo:bar, Foo.bar) ───────────────────────────────
+; function Foo.bar(...) ... end
+(function_definition_statement
+  name: (dot_index_expression
+    field: (identifier) @name)) @definition.method
+
+; function Foo:bar(...) ... end
+(function_definition_statement
+  name: (method_index_expression
+    method: (identifier) @name)) @definition.method
+
+; ── Local functions ───────────────────────────────────────────────────────────
+; local function bar(...) ... end
+(local_function_definition_statement
+  name: (identifier) @name) @definition.function
+
+; ── Tables as modules / namespaces ───────────────────────────────────────────
+; Foo = {}
+(assignment_statement
+  (variable_list
+    name: (identifier) @name)
+  (expression_list
+    (table_constructor))) @definition.module
+
+; local Foo = {}
+(local_variable_declaration
+  (attribute_list
+    name: (identifier) @name)
+  (expression_list
+    (table_constructor))) @definition.module
+
+; ── Variables (local and global) ─────────────────────────────────────────────
+; local x = ...
+(local_variable_declaration
+  (attribute_list
+    name: (identifier) @name)) @definition.variable
+
+; x = ... (bare assignment, top-level)
+(assignment_statement
+  (variable_list
+    name: (identifier) @name)) @definition.variable
+
+; ── Imports (require / dofile / loadfile) ────────────────────────────────────
+; local M = require("foo.bar")
+(local_variable_declaration
+  (expression_list
+    (function_call_expression
+      name: (identifier) @_req
+      (argument_list
+        (string) @import.source))
+    (#eq? @_req "require"))) @import
+
+; require("foo.bar")  (bare call)
+(function_call_expression
+  name: (identifier) @_req
+  (argument_list
+    (string) @import.source)
+  (#eq? @_req "require")) @import
+
+; ── Function calls ────────────────────────────────────────────────────────────
+; foo()
+(function_call_expression
+  name: (identifier) @call.name) @call
+
+; obj:method()  /  obj.method()
+(method_call_expression
+  method: (identifier) @call.name) @call
+
+; ── Heritage (table extension patterns) ─────────────────────────────────────
+; setmetatable(Foo, {__index = Bar})
+(function_call_expression
+  name: (identifier) @_sm
+  (argument_list
+    (identifier) @heritage.class
+    (table_constructor
+      (field
+        name: (identifier) @_idx
+        value: (identifier) @heritage.extends)))
+  (#eq? @_sm "setmetatable")
+  (#eq? @_idx "__index")) @heritage
+`;
+
+
+
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
   [SupportedLanguages.JavaScript]: JAVASCRIPT_QUERIES,
@@ -1351,4 +1451,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Lua]: LUA_QUERIES,
 };

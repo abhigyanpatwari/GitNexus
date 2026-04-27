@@ -80,6 +80,7 @@
     "tree-sitter-javascript": "^0.23.0",
     "tree-sitter-php": "^0.23.0",
     "tree-sitter-python": "0.23.4",
+    "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
