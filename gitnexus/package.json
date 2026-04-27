@@ -47,7 +47,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
@@ -88,7 +88,7 @@
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
     "node-gyp-build": "^4.8.0",
-    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
+    "tree-sitter-dart": "file:./vendor/tree-sitter-dart",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
     "tree-sitter-swift": "^0.6.0"

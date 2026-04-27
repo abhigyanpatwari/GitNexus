@@ -41,6 +41,15 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('optional parser dependencies', () => {
+    it('uses vendored source for tree-sitter-dart instead of a remote dependency', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      expect(pkg.default.optionalDependencies['tree-sitter-dart']).toBe(
+        'file:./vendor/tree-sitter-dart',
+      );
+    });
+  });
+
   describe('analyzeCommand', () => {
     it('is a function', async () => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
