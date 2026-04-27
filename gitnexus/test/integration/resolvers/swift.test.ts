@@ -3,8 +3,8 @@
  * Verifies that `let user = User(name: "alice"); user.save()` resolves to User.save
  * without explicit type annotations, using SymbolTable verification.
  *
- * NOTE: tree-sitter-swift has build issues on Node 22 — these tests skip gracefully
- * when the Swift parser is not available.
+ * NOTE: Swift is installed as an optional dependency. These tests skip gracefully
+ * if a consumer installs without optional dependencies.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';

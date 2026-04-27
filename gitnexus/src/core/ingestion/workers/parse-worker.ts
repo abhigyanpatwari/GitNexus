@@ -2078,10 +2078,13 @@ const processFileGroup = (
         }
       }
 
-      // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
-      // Functions are not suffixed — they don't overload by name in the same scope.
+      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
+      // Top-level Function IDs stay stable; functions inside an owner may overload.
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
-      const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      const needsAritySuffix =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        (nodeLabel === 'Function' && enclosingClassId !== null);
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
       if (arityTag && defMethodMap && defMethodInfo) {
         const groups = buildCollisionGroups(defMethodMap);

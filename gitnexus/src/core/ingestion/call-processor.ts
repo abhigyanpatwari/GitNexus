@@ -1617,19 +1617,27 @@ const disambiguateByOverloadOrArgTypes = (
  * kinds, or `length <= 1`). Callers should fall through to their own null
  * return when this helper returns `null`.
  *
- * Used by `resolveFreeCall`. Having a single source of truth prevents
- * duplication if the heuristic is ever tuned.
+ * Used by free-call, constructor, and member-call paths. Having a single
+ * source of truth prevents duplication if the heuristic is ever tuned.
  */
 const dedupSwiftExtensionCandidates = (
   candidates: readonly SymbolDefinition[],
   tier: ResolutionTier,
 ): ResolveResult | null => {
+  const sorted = orderSwiftExtensionCandidates(candidates);
+  return sorted ? toResolveResult(sorted[0], tier) : null;
+};
+
+const orderSwiftExtensionCandidates = (
+  candidates: readonly SymbolDefinition[],
+): SymbolDefinition[] | null => {
   if (candidates.length <= 1) return null;
   const allSameType = candidates.every((c) => c.type === candidates[0].type);
   if (!allSameType) return null;
   if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;
-  const sorted = [...candidates].sort((a, b) => a.filePath.length - b.filePath.length);
-  return toResolveResult(sorted[0], tier);
+  return [...candidates].sort(
+    (a, b) => a.filePath.length - b.filePath.length || a.filePath.localeCompare(b.filePath),
+  );
 };
 
 /**
@@ -2223,6 +2231,33 @@ const resolveMethodByOwner = (
     }
   }
 
+  if (!firstDef && !ambiguous) {
+    const extensionCandidates = orderSwiftExtensionCandidates(
+      ctx.model.types.lookupClassByName(receiverTypeName),
+    );
+    if (extensionCandidates) {
+      for (const candidate of extensionCandidates) {
+        const def = canWalkMRO
+          ? lookupMethodByOwnerWithMRO(
+              candidate.nodeId,
+              methodName,
+              heritageMap,
+              ctx.model,
+              mroStrategy,
+              argCount,
+            )
+          : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+        if (!def) continue;
+        if (!firstDef) {
+          firstDef = def;
+        } else if (def.nodeId !== firstDef.nodeId) {
+          ambiguous = true;
+          break;
+        }
+      }
+    }
+  }
+
   if (!firstDef || ambiguous) return undefined;
   return { def: firstDef, tier: typeResolved.tier };
 };
@@ -2563,6 +2598,8 @@ export const resolveStaticCall = (
   //     homonym classes across files with no import narrowing). Fall through
   //     to `return null` so the caller null-routes rather than guess.
   if (instantiableCandidates.length === 1) {
+    const primary = orderSwiftExtensionCandidates(allClasses);
+    if (primary) return toResolveResult(primary[0], typeResolved.tier);
     return toResolveResult(instantiableCandidates[0], typeResolved.tier);
   }
 

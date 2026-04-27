@@ -19,11 +19,8 @@ describe('isLanguageAvailable', () => {
     expect(isLanguageAvailable('haskell' as SupportedLanguages)).toBe(false);
   });
 
-  it('handles Swift based on optional dependency availability', () => {
-    // Swift is optional — result depends on whether tree-sitter-swift is installed
-    const result = isLanguageAvailable(SupportedLanguages.Swift);
-    expect(typeof result).toBe('boolean');
-    // Either way, it should not throw
+  it('returns true for Swift in the default install', () => {
+    expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(true);
   });
 
   it('handles Kotlin based on optional dependency availability', () => {
