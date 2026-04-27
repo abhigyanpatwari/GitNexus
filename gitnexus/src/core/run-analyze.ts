@@ -21,6 +21,7 @@ import {
   closeLbug,
   loadCachedEmbeddings,
 } from './lbug/lbug-adapter.js';
+import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
   getStoragePaths,
   saveMeta,
@@ -280,12 +281,9 @@ export async function runFullAnalysis(
     });
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-    // FTS indexes are created lazily on first `query`/`context` call instead
-    // of eagerly here. On small repos / CI runners the LadybugDB
-    // CREATE_FTS_INDEX cost is ~440 ms × 5 (≈2 s) regardless of table size,
-    // which dominated `analyze` runtime and pushed Windows CI past its
-    // 30 s test budget. Lazy creation is implemented in
-    // `core/search/bm25-index.ts` via `ensureFTSIndex`.
+    progress('fts', 85, 'Creating search indexes...');
+    await createSearchFTSIndexes();
+    progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     if (cachedEmbeddings.length > 0) {

@@ -146,11 +146,9 @@ let vectorExtensionLoaded = false;
 
 /**
  * In-process cache of FTS indexes that have been ensured against the current
- * connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips inside a
- * single CLI/MCP session — the first call to `ensureFTSIndex` for a given
- * `(tableName, indexName)` pays the LadybugDB cost (~440 ms even when the
- * index already exists on disk), subsequent calls are a Set lookup. Cleared
- * by `closeLbug` so a re-init starts fresh.
+ * writable connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips
+ * for callers that explicitly opt into `ensureFTSIndex`. Cleared by
+ * `closeLbug` so a re-init starts fresh.
  *
  * Key format: `${tableName}:${indexName}`.
  */
@@ -1252,10 +1250,9 @@ export const createFTSIndex = async (
 /**
  * Lazy-create an FTS index, caching the fact in-process.
  *
- * Used by `queryFTS` so that `analyze` doesn't pay the ~440 ms × 5 fixed
- * LadybugDB cost up-front (it dominates analyze on small repos). Instead,
- * the cost is moved to the first `query`/`context` call in a session,
- * where it's amortised across many lookups.
+ * Kept for writable maintenance paths that need to lazily materialize an
+ * index. Read-only query paths must not call this; production analysis owns
+ * creating the configured search indexes before the database is served.
  *
  * Safe to call repeatedly — the in-process Set guarantees only the first
  * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.

@@ -96,15 +96,10 @@ withTestLbugDB(
       it('query tool returns results for keyword search', async () => {
         const result = await backend.callTool('query', { query: 'login' });
         expect(result).not.toHaveProperty('error');
-        // Should have some combination of processes, process_symbols, or definitions
         expect(result).toHaveProperty('processes');
         expect(result).toHaveProperty('definitions');
-        // The search should find something (FTS or graph-based)
-        const totalResults =
-          (result.processes?.length || 0) +
-          (result.process_symbols?.length || 0) +
-          (result.definitions?.length || 0);
-        expect(totalResults).toBeGreaterThanOrEqual(1);
+        expect(result.processes.map((p: any) => p.id)).toContain('proc:login-flow');
+        expect(result.process_symbols.map((s: any) => s.id)).toContain('func:login');
 
         // #553: query response carries per-phase timing metadata.
         expect(result.timing).toBeDefined();

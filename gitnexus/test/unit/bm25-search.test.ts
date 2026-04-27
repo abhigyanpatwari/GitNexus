@@ -1,35 +1,46 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  searchFTSFromLbug,
-  invalidateEnsuredFTSForRepo,
-  type BM25SearchResult,
-} from '../../src/core/search/bm25-index.js';
+import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
   return {
     ...actual,
     queryFTS: vi.fn().mockResolvedValue([]),
+    createFTSIndex: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 // Pool adapter is dynamically imported by the MCP-pool path of
-// `searchFTSFromLbug`. We mock it so we can drive the executor and the
-// pool-close listener without spinning up a real LadybugDB pool.
-const poolCloseListeners: Array<(repoId: string) => void> = [];
+// `searchFTSFromLbug`. We mock it so we can drive the executor without
+// spinning up a real LadybugDB pool.
 const mockExecuteQuery = vi.fn();
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
   executeQuery: (repoId: string, cypher: string) => mockExecuteQuery(repoId, cypher),
-  addPoolCloseListener: (listener: (repoId: string) => void) => {
-    poolCloseListeners.push(listener);
-    return () => {
-      const idx = poolCloseListeners.indexOf(listener);
-      if (idx !== -1) poolCloseListeners.splice(idx, 1);
-    };
-  },
+  addPoolCloseListener: vi.fn(),
 }));
 
 describe('BM25 search', () => {
+  describe('createSearchFTSIndexes', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('creates the configured indexes on the writable analysis path', async () => {
+      const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
+      const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      await createSearchFTSIndexes();
+
+      expect(vi.mocked(createFTSIndex).mock.calls).toEqual([
+        ['File', 'file_fts', ['name', 'content']],
+        ['Function', 'function_fts', ['name', 'content']],
+        ['Class', 'class_fts', ['name', 'content']],
+        ['Method', 'method_fts', ['name', 'content']],
+        ['Interface', 'interface_fts', ['name', 'content']],
+      ]);
+    });
+  });
+
   describe('searchFTSFromLbug', () => {
     it('returns empty array when LadybugDB is not initialized', async () => {
       // Without LadybugDB init, search should return empty (not crash)
@@ -190,125 +201,50 @@ describe('BM25 search', () => {
     });
   });
 
-  describe('ensureFTS cache (MCP pool path)', () => {
-    const REPO = 'test-repo-fts-cache';
+  describe('MCP pool path', () => {
+    const REPO = 'test-repo-readonly-fts';
 
     beforeEach(() => {
-      // Clean state so cases don't bleed into each other.
       mockExecuteQuery.mockReset();
-      invalidateEnsuredFTSForRepo(REPO);
-      // Suppress the surfaced warn so test output stays readable.
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
     });
 
-    it('does NOT cache a transient CREATE_FTS_INDEX failure — second call retries', async () => {
-      // First call: every CREATE_FTS_INDEX fails transiently; QUERY_FTS_INDEX returns nothing.
+    it('queries existing FTS indexes without issuing CREATE_FTS_INDEX', async () => {
       mockExecuteQuery.mockImplementation(async (_repo: string, cypher: string) => {
         if (cypher.includes('CREATE_FTS_INDEX')) {
-          throw new Error('transient lock error: Could not set lock');
+          throw new Error('query path must stay read-only');
+        }
+
+        if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+          return [{ node: { filePath: 'src/auth.ts', id: 'func:login' }, score: 8 }];
         }
         return [];
       });
 
-      const r1 = await searchFTSFromLbug('anything', 5, REPO);
-      expect(Array.isArray(r1)).toBe(true);
+      const results = await searchFTSFromLbug('login', 5, REPO);
 
-      const createCallsAfterFirst = mockExecuteQuery.mock.calls.filter((c) =>
-        String(c[1]).includes('CREATE_FTS_INDEX'),
-      ).length;
-      // 5 FTS index tables — all five attempted on first call.
-      expect(createCallsAfterFirst).toBe(5);
-
-      // Second call: CREATE succeeds this time. The bug being fixed: if the
-      // first failure was cached, we'd see ZERO additional CREATE calls.
-      mockExecuteQuery.mockReset();
-      mockExecuteQuery.mockResolvedValue([]);
-
-      await searchFTSFromLbug('anything', 5, REPO);
-
-      const createCallsOnRetry = mockExecuteQuery.mock.calls.filter((c) =>
-        String(c[1]).includes('CREATE_FTS_INDEX'),
-      ).length;
-      expect(createCallsOnRetry).toBe(5);
-    });
-
-    it("treats 'already exists' as success and caches it (no retry on second call)", async () => {
-      mockExecuteQuery.mockImplementation(async (_repo: string, cypher: string) => {
-        if (cypher.includes('CREATE_FTS_INDEX')) {
-          throw new Error("Catalog exception: index 'file_fts' already exists");
-        }
-        return [];
-      });
-
-      await searchFTSFromLbug('anything', 5, REPO);
-      mockExecuteQuery.mockReset();
-      mockExecuteQuery.mockResolvedValue([]);
-
-      await searchFTSFromLbug('anything', 5, REPO);
-
-      const createCallsOnSecond = mockExecuteQuery.mock.calls.filter((c) =>
-        String(c[1]).includes('CREATE_FTS_INDEX'),
-      ).length;
-      expect(createCallsOnSecond).toBe(0);
-    });
-
-    it('invalidateEnsuredFTSForRepo drops cached entries so next call re-issues CREATE', async () => {
-      // Prime the cache with successful creates.
-      mockExecuteQuery.mockResolvedValue([]);
-      await searchFTSFromLbug('anything', 5, REPO);
-
-      mockExecuteQuery.mockReset();
-      mockExecuteQuery.mockResolvedValue([]);
-
-      // Without invalidation: no re-CREATE.
-      await searchFTSFromLbug('anything', 5, REPO);
+      expect(results).toEqual([
+        { filePath: 'src/auth.ts', score: 8, rank: 1, nodeIds: ['func:login'] },
+      ]);
       expect(
-        mockExecuteQuery.mock.calls.filter((c) => String(c[1]).includes('CREATE_FTS_INDEX')).length,
-      ).toBe(0);
-
-      // After invalidation: next call re-issues CREATE for all 5 tables.
-      invalidateEnsuredFTSForRepo(REPO);
-      mockExecuteQuery.mockReset();
-      mockExecuteQuery.mockResolvedValue([]);
-      await searchFTSFromLbug('anything', 5, REPO);
-      expect(
-        mockExecuteQuery.mock.calls.filter((c) => String(c[1]).includes('CREATE_FTS_INDEX')).length,
-      ).toBe(5);
+        mockExecuteQuery.mock.calls.some((c) => String(c[1]).includes('CREATE_FTS_INDEX')),
+      ).toBe(false);
     });
 
-    it('a pool-close listener fired by the pool adapter invalidates this repo only', async () => {
-      const OTHER = 'other-repo';
-
-      mockExecuteQuery.mockResolvedValue([]);
-      // Prime both repos.
-      await searchFTSFromLbug('anything', 5, REPO);
-      await searchFTSFromLbug('anything', 5, OTHER);
-
-      // Confirm at least one listener was registered by the search module.
-      expect(poolCloseListeners.length).toBeGreaterThanOrEqual(1);
-
-      // Simulate the pool adapter closing REPO.
-      for (const l of poolCloseListeners) l(REPO);
-
-      mockExecuteQuery.mockReset();
+    it('uses the configured FTS query set on every call', async () => {
       mockExecuteQuery.mockResolvedValue([]);
 
       await searchFTSFromLbug('anything', 5, REPO);
-      const createForRepo = mockExecuteQuery.mock.calls.filter(
-        (c) => c[0] === REPO && String(c[1]).includes('CREATE_FTS_INDEX'),
-      ).length;
-      expect(createForRepo).toBe(5);
 
-      // OTHER repo's cache must remain intact — no re-CREATE for it.
-      mockExecuteQuery.mockReset();
-      mockExecuteQuery.mockResolvedValue([]);
-      await searchFTSFromLbug('anything', 5, OTHER);
-      const createForOther = mockExecuteQuery.mock.calls.filter(
-        (c) => c[0] === OTHER && String(c[1]).includes('CREATE_FTS_INDEX'),
-      ).length;
-      expect(createForOther).toBe(0);
-
-      invalidateEnsuredFTSForRepo(OTHER);
+      const queryCalls = mockExecuteQuery.mock.calls.filter((c) =>
+        String(c[1]).includes('QUERY_FTS_INDEX'),
+      );
+      expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual([
+        'File',
+        'Function',
+        'Class',
+        'Method',
+        'Interface',
+      ]);
     });
   });
 });
