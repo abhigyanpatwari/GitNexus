@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { createMCPServer } from '../../src/mcp/server.js';
+import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -51,6 +52,22 @@ describe('createMCPServer', () => {
     const server = createMCPServer(backend);
     // The server has registered handlers — verify it was created without errors
     expect(server).toBeTruthy();
+  });
+
+  it('tools/list response includes tool annotations', async () => {
+    const backend = createMockBackend();
+    const server = createMCPServer(backend);
+    const handler = (server as any)._requestHandlers.get('tools/list');
+
+    expect(typeof handler).toBe('function');
+
+    const response = await handler({ method: 'tools/list', params: {} }, {});
+    expect(response.tools).toHaveLength(GITNEXUS_TOOLS.length);
+
+    for (const tool of response.tools) {
+      const definition = GITNEXUS_TOOLS.find((t) => t.name === tool.name)!;
+      expect(tool.annotations).toEqual(definition.annotations);
+    }
   });
 });
 
