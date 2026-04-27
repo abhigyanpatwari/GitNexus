@@ -197,6 +197,7 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
+gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -217,6 +218,8 @@ gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
 gitnexus group query <name> <q>  # Search execution flows across all repos in a group
 gitnexus group status <name>     # Check staleness of repos in a group
 ```
+
+If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
 
 ### What Your AI Agent Gets
 

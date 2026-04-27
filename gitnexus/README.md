@@ -156,6 +156,7 @@ gitnexus analyze --embeddings    # Enable embedding generation (slower, better s
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
+gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
@@ -322,6 +323,21 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+### Analyze reports a worker timeout
+
+Worker parse timeouts are recoverable. GitNexus retries stalled worker jobs with backoff, splits large jobs to isolate slow files, and falls back to the sequential parser when needed. If a large repository needs more time per worker job, use either:
+
+```bash
+# CLI flag, in seconds
+npx gitnexus analyze --worker-timeout 60
+
+# Environment variable, in milliseconds
+export GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000
+npx gitnexus analyze
+```
+
+For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget. The default is **8388608 bytes (8 MB)**.
 
 ## Privacy
 
