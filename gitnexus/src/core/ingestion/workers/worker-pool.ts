@@ -162,6 +162,8 @@ export const createWorkerPool = (
   const size = poolSize ?? Math.min(8, Math.max(1, os.cpus().length - 1));
   const poolOptions = resolveWorkerPoolOptions(options);
   const workers: Worker[] = [];
+  let poolBroken = false;
+  let poolFailure: Error | undefined;
 
   for (let i = 0; i < size; i++) {
     workers.push(new Worker(workerUrl));
@@ -171,6 +173,12 @@ export const createWorkerPool = (
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
   ): Promise<TResult[]> => {
+    if (poolBroken) {
+      const reason = poolFailure ? `: ${poolFailure.message}` : '';
+      return Promise.reject(
+        new Error(`Worker pool is unavailable after a previous failure${reason}`),
+      );
+    }
     if (items.length === 0) return Promise.resolve([]);
     if (workers.length === 0) return Promise.reject(new Error('Worker pool has no active workers'));
 
@@ -205,6 +213,8 @@ export const createWorkerPool = (
       };
 
       const fail = async (err: Error) => {
+        poolBroken = true;
+        poolFailure = err;
         if (stopped) return;
         stopped = true;
         await Promise.all(workers.map((worker) => worker.terminate().catch(() => undefined)));

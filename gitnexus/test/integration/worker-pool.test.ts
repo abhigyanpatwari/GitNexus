@@ -494,6 +494,9 @@ describe('worker pool integration', () => {
       await expect(pool.dispatch<any, any>([{ path: 'bad.ts', content: '' }])).rejects.toThrow(
         /protocol error/,
       );
+      await expect(pool.dispatch<any, any>([{ path: 'after.ts', content: '' }])).rejects.toThrow(
+        /previous failure.*protocol error/,
+      );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
