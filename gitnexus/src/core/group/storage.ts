@@ -103,6 +103,8 @@ matching:
   bm25_threshold: 0.7
   embedding_threshold: 0.65
   max_candidates_per_step: 3
+  # exclude_links_paths: [/ping, /health, /healthcheck]
+  # exclude_links_param_only_paths: false
 `;
   await fsp.writeFile(path.join(groupDir, 'group.yaml'), template, 'utf-8');
   return groupDir;

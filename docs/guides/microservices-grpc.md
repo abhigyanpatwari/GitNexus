@@ -82,6 +82,9 @@ matching:
   bm25_threshold: 0.7
   embedding_threshold: 0.65
   max_candidates_per_step: 3
+  # Exclude noisy paths from cross-link matching (contracts are still extracted)
+  exclude_links_paths: [/ping, /health, /healthcheck]
+  exclude_links_param_only_paths: true
 ```
 
 Field notes (schema in [`types.ts`](../../gitnexus/src/core/group/types.ts)):
@@ -91,7 +94,9 @@ Field notes (schema in [`types.ts`](../../gitnexus/src/core/group/types.ts)):
 - `repos` — a mapping from **group path** (a logical name you choose; can be a hierarchy like `backend/orders`) to **registry name** (the name shown by `npx gitnexus list`). Both sides appear throughout the tooling: contract rows use the group path; `@<group>/<groupPath>` routes tools to a single member.
 - `links` — optional manifest escape hatch, one entry per explicit cross-repo contract. Validated by the parser: `from` and `to` must be known repo paths, `type` must be one of `http | grpc | topic | lib | custom`, and `role` must be `provider | consumer`.
 - `detect` — toggles per extractor family. Defaults (set in `config-parser.ts`) turn `http`, `grpc`, `topics`, and `shared_libs` on; disable the ones you don't use to speed up sync.
-- `matching` — thresholds for the matching cascade. The exact match is always run; other strategies depend on indexer state.
+- `matching` — thresholds for the matching cascade. The exact match is always run; other strategies depend on indexer state. Two optional fields reduce false-positive cross-links in large groups:
+  - `exclude_links_paths` — list of HTTP paths to exclude from cross-link matching (default `[]`). Contracts at these paths are still extracted and visible in the registry, but they don't produce cross-repo links. Useful for health-check endpoints (`/ping`, `/health`) that every service exposes. Trailing slashes are normalized.
+  - `exclude_links_param_only_paths` — when `true`, exclude routes where every segment is `{param}` (e.g. `/{param}`, `/{param}/{param}`) from cross-link matching (default `false`). Mixed routes like `/users/{param}` are not affected.
 
 ### 3. Sync the group
 
