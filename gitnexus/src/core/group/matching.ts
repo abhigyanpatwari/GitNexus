@@ -33,7 +33,7 @@ function buildNoisyContractFilter(
   matchingConfig?: MatchingConfig,
 ): (contractId: string) => boolean {
   const excludePaths = matchingConfig?.exclude_links_paths?.length
-    ? new Set(matchingConfig.exclude_links_paths)
+    ? new Set(matchingConfig.exclude_links_paths.map((p) => p.replace(/\/+$/, '')))
     : new Set<string>();
   const excludeParamOnly = matchingConfig?.exclude_links_param_only_paths === true;
 

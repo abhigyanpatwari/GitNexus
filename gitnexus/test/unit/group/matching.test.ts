@@ -563,6 +563,30 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
     expect(unmatched).toHaveLength(0);
   });
 
+  it('root path exclusion ["/"] suppresses http::GET::/ contracts', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/', 'provider', 'backend'),
+      makeContract('http::GET::/', 'consumer', 'frontend'),
+      makeContract('http::GET::/api/users', 'provider', 'backend'),
+      makeContract('http::GET::/api/users', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].contractId).toBe('http::GET::/api/users');
+    expect(unmatched).toHaveLength(0);
+  });
+
   it('non-HTTP contracts are never filtered', () => {
     const matchingConfig: MatchingConfig = {
       bm25_threshold: 0.7,
