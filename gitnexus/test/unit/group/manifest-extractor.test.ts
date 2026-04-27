@@ -578,6 +578,33 @@ describe('ManifestExtractor', () => {
     expect(lowerContractId).toBe(upperContractId);
   });
 
+  it('builds thrift manifest contracts with synthetic uids when unresolved', async () => {
+    const extractor = new ManifestExtractor();
+    const result = await extractor.extractFromManifest([
+      {
+        from: 'gateway',
+        to: 'orders',
+        type: 'thrift',
+        contract: 'billing.v1.OrderService/PlaceOrder',
+        role: 'consumer',
+      },
+    ]);
+
+    expect(result.contracts).toHaveLength(2);
+    expect(result.contracts.map((c) => c.contractId)).toEqual([
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'thrift::billing.v1.OrderService/PlaceOrder',
+    ]);
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].type).toBe('thrift');
+    expect(result.crossLinks[0].from.symbolUid).toBe(
+      'manifest::gateway::thrift::billing.v1.OrderService/PlaceOrder',
+    );
+    expect(result.crossLinks[0].to.symbolUid).toBe(
+      'manifest::orders::thrift::billing.v1.OrderService/PlaceOrder',
+    );
+  });
+
   it('returns empty for no links', async () => {
     const result = await extractor.extractFromManifest([]);
     expect(result.contracts).toHaveLength(0);

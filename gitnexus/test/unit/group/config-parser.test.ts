@@ -62,6 +62,36 @@ repos:
     expect(config.matching.bm25_threshold).toBe(0.7);
   });
 
+  it('defaults thrift detection to true', () => {
+    const minimal = `
+version: 1
+name: test
+repos:
+  app: my-app
+`;
+    const config = parseGroupConfig(minimal);
+    expect(config.detect.thrift).toBe(true);
+  });
+
+  it('parses thrift manifest links', () => {
+    const yaml = `
+version: 1
+name: test
+repos:
+  gateway: gateway-repo
+  orders: orders-repo
+links:
+  - from: gateway
+    to: orders
+    type: thrift
+    contract: billing.v1.OrderService/PlaceOrder
+    role: consumer
+`;
+    const config = parseGroupConfig(yaml);
+    expect(config.links[0].type).toBe('thrift');
+    expect(config.links[0].contract).toBe('billing.v1.OrderService/PlaceOrder');
+  });
+
   it('throws on missing required fields', () => {
     expect(() => parseGroupConfig('version: 1')).toThrow(/name.*required/i);
     expect(() => parseGroupConfig('name: test')).toThrow(/version.*required/i);
