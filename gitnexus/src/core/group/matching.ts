@@ -29,7 +29,9 @@ function isGrpcWildcard(cid: string): boolean {
  * Both are configurable via matching.exclude_links_paths and
  * matching.exclude_links_param_only_paths in group.yaml.
  */
-function buildNoisyContractFilter(matchingConfig?: MatchingConfig): (contractId: string) => boolean {
+function buildNoisyContractFilter(
+  matchingConfig?: MatchingConfig,
+): (contractId: string) => boolean {
   const excludePaths = matchingConfig?.exclude_links_paths?.length
     ? new Set(matchingConfig.exclude_links_paths)
     : new Set<string>();
@@ -39,7 +41,7 @@ function buildNoisyContractFilter(matchingConfig?: MatchingConfig): (contractId:
     if (!contractId.startsWith('http::')) return false;
     const parts = contractId.split('::');
     if (parts.length < 3) return false;
-    const pathPart = parts.slice(2).join('::');
+    const pathPart = parts.slice(2).join('::').replace(/\/+$/, '');
     if (excludePaths.has(pathPart)) return true;
     if (excludeParamOnly) {
       const segments = pathPart.split('/').filter(Boolean);
@@ -197,6 +199,7 @@ export function runExactMatch(
   // normalUnmatched: contracts that weren't matched in exact pass
   const normalUnmatched = contracts.filter((c) => {
     if (isGrpcWildcard(c.contractId)) return false; // excluded from exact, handled separately
+    if (isNoisy(c.contractId)) return false; // excluded from matching — don't surface as unmatched
     const id = `${c.repo}::${c.contractId}`;
     return c.role === 'provider' ? !matchedProviderIds.has(id) : !matchedConsumerIds.has(id);
   });

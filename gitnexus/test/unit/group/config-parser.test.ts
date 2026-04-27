@@ -60,6 +60,8 @@ repos:
     expect(config.packages).toEqual({});
     expect(config.detect.http).toBe(true);
     expect(config.matching.bm25_threshold).toBe(0.7);
+    expect(config.matching.exclude_links_paths).toEqual([]);
+    expect(config.matching.exclude_links_param_only_paths).toBe(false);
   });
 
   it('throws on missing required fields', () => {
