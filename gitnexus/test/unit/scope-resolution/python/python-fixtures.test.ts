@@ -56,13 +56,21 @@ function findDef(file: ParsedFile, name: string) {
 
 describe('Python scopes — module / class / function', () => {
   it('case 01: minimal module produces a single Module scope', () => {
-    // Empty source produces a zero-range module node; the central
-    // extractor treats zero-range scopes as malformed (and rightly so —
-    // they collide with sibling-overlap detection on subsequent reparses).
-    // Real Python files always have at least a newline.
     const f = parse('pass\n');
     expect(f.scopes).toHaveLength(1);
     expect(f.scopes[0]!.kind).toBe('Module');
+  });
+
+  it('case 01a: empty and whitespace-only files are skipped without warnings', () => {
+    for (const src of ['', ' \n\t']) {
+      const warnings: string[] = [];
+      const parsed = extractParsedFile(pythonProvider, src, 'pkg/__init__.py', (msg) => {
+        warnings.push(msg);
+      });
+
+      expect(parsed).toBeUndefined();
+      expect(warnings).toEqual([]);
+    }
   });
 
   it('case 01b: large cache-miss files use the adaptive tree-sitter buffer', () => {

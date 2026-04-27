@@ -67,6 +67,27 @@ describe('extractParsedFile', () => {
   });
 
   describe('provider HAS migrated', () => {
+    it('returns undefined without warning for whitespace-only source', () => {
+      const warnings: string[] = [];
+      let called = false;
+      const provider = fakeProvider({
+        emitScopeCaptures: () => {
+          called = true;
+          throw new Error('should not inspect empty source');
+        },
+      });
+
+      for (const src of ['', ' \n\t']) {
+        const result = extractParsedFile(provider, src, 'pkg/__init__.py', (msg) => {
+          warnings.push(msg);
+        });
+        expect(result).toBeUndefined();
+      }
+
+      expect(called).toBe(false);
+      expect(warnings).toEqual([]);
+    });
+
     it('threads emitScopeCaptures output through ScopeExtractor', () => {
       const provider = fakeProvider({
         emitScopeCaptures: () => [moduleScopeMatch()],
