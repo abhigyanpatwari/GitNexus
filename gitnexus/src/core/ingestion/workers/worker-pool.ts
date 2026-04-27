@@ -264,7 +264,8 @@ export const createWorkerPool = (
               `Splitting into ${first.items.length}/${second.items.length} item jobs with ` +
               `${nextTimeout / 1000}s timeout.`,
           );
-          jobs.unshift(second, first);
+          // Preserve intuitive retry order; final result order is still enforced by startIndex sort.
+          jobs.unshift(first, second);
           return true;
         }
 

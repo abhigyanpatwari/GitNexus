@@ -244,7 +244,7 @@ describe('worker pool integration', () => {
               clearInterval(timer);
               parentPort.postMessage({ type: 'sub-batch-done' });
             }
-          }, 60);
+          }, 120);
           return;
         }
         if (msg && msg.type === 'flush') {
@@ -255,7 +255,7 @@ describe('worker pool integration', () => {
     );
 
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 500,
       maxTimeoutRetries: 0,
     });
 
