@@ -5,6 +5,11 @@
  * and standard export/import resolution. PHP files can use a variety of
  * extensions from legacy versions through modern PHP 8.
  */
+import {
+  emitPhpScopeCaptures,
+  interpretPhpImport,
+  phpScopeResolver,
+} from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -27,6 +32,8 @@ import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+
+
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -237,6 +244,7 @@ function isPhpRouteFile(filePath: string): boolean {
 }
 
 export const phpProvider = defineLanguage({
+  
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
   treeSitterQueries: PHP_QUERIES,
@@ -253,4 +261,21 @@ export const phpProvider = defineLanguage({
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,
+   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
+  emitScopeCaptures: emitPhpScopeCaptures,
+  interpretImport: interpretPhpImport,
+
+  // Adapter: LanguageProvider uses (def, callsite), ScopeResolver uses (callsite, def)
+  arityCompatibility: (def, callsite) => phpScopeResolver.arityCompatibility(callsite, def),
+  
+  // Adapter: Extracts the hidden Context variables to pass to the core resolver
+  resolveImportTarget: (parsedImport, workspaceIndex) => {
+    const ctx = workspaceIndex as unknown as { fromFile?: string; allFilePaths?: Set<string> };
+    if (!ctx.fromFile || !ctx.allFilePaths || !parsedImport.targetRaw) return null;
+    return phpScopeResolver.resolveImportTarget(parsedImport.targetRaw, ctx.fromFile, ctx.allFilePaths);
+  },
+
+  mergeBindings: (scope, bindings) => phpScopeResolver.mergeBindings([], bindings, scope.id),
 });
+
+
