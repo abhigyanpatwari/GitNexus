@@ -110,6 +110,17 @@ withTestLbugDB(
         expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
       });
 
+      it('tool_map returns per-tool flows without cross-attributing same-file tools', async () => {
+        const result = await backend.callTool('tool_map', {});
+        expect(result).not.toHaveProperty('error');
+
+        const tools = new Map(result.tools.map((tool: any) => [tool.name, tool]));
+        expect(tools.get('alpha')?.description).toBe('Calls chain A.');
+        expect(tools.get('beta')?.description).toBe('Calls chain B.');
+        expect(tools.get('alpha')?.flows).toEqual(['AlphaFlow']);
+        expect(tools.get('beta')?.flows).toEqual(['BetaFlow']);
+      });
+
       it('unknown tool throws', async () => {
         await expect(backend.callTool('nonexistent_tool', {})).rejects.toThrow(/unknown tool/i);
       });
