@@ -169,6 +169,90 @@ describe('ManifestExtractor', () => {
     expect(provider?.symbolUid).toBe('uid-correct-login');
   });
 
+  it('resolves grpc package-qualified service-only manifest by full service name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'platform/orders',
+        to: 'platform/auth',
+        type: 'grpc',
+        contract: 'auth.AuthService',
+        role: 'consumer',
+      },
+    ];
+
+    let seenServiceName: string | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'platform/auth',
+        async (_cypher, params) => {
+          seenServiceName = params?.serviceName as string;
+          if (params?.serviceName === 'auth.AuthService') {
+            return [
+              {
+                uid: 'uid-auth-service',
+                name: 'auth.AuthService',
+                filePath: 'src/auth.proto',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      ['platform/orders', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(seenServiceName).toBe('auth.AuthService');
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-auth-service');
+  });
+
+  it('resolves thrift package-qualified service-only manifest by simple service name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'gateway',
+        to: 'orders',
+        type: 'thrift',
+        contract: 'billing.v1.OrderService',
+        role: 'consumer',
+      },
+    ];
+
+    let seenServiceName: string | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'orders',
+        async (_cypher, params) => {
+          seenServiceName = params?.serviceName as string;
+          if (params?.serviceName === 'OrderService') {
+            return [
+              {
+                uid: 'uid-order-service',
+                name: 'OrderService',
+                filePath: 'idl/order.thrift',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      ['gateway', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(seenServiceName).toBe('OrderService');
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-order-service');
+  });
+
   it('resolves lib manifest links by exact name only', async () => {
     const links: GroupManifestLink[] = [
       {

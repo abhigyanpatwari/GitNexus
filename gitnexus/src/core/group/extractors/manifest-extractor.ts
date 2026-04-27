@@ -234,7 +234,9 @@ export class ManifestExtractor {
         // → Class|Interface (no label match = no silent wrong hits on
         // File/Variable nodes that happen to share the name).
         const parts = link.contract.split('/');
-        const serviceName = parts[0]?.trim().split('.').pop() ?? '';
+        const rawServiceName = parts[0]?.trim() ?? '';
+        const serviceName =
+          link.type === 'thrift' ? (rawServiceName.split('.').pop() ?? '') : rawServiceName;
         const methodName = parts[1]?.trim() ?? '';
         if (methodName) {
           rows = await executor(
