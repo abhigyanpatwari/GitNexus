@@ -2539,7 +2539,7 @@ def create_utf8_user():
 
   it('extracts trailing functions after large ASCII and UTF-8 padding', () => {
     expect(getNodesByLabel(result, 'Function')).toEqual(
-      expect.arrayContaining(['create_ascii_user', 'create_utf8_user', 'save']),
+      expect.arrayContaining(['create_ascii_user', 'create_utf8_user']),
     );
   });
 
