@@ -21,3 +21,8 @@ def get_weather(city: str) -> str:
 def search_docs(query: str) -> list:
     """Search documentation."""
     return _lookup_docs(query)
+
+@mcp.tool("Explicit description")
+def explicit_tool() -> str:
+    """Docstring that should not be used."""
+    return "explicit"

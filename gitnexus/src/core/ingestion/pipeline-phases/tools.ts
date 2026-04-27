@@ -43,11 +43,13 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
     for (const td of allToolDefs) {
       if (seenToolNames.has(td.toolName)) continue;
       seenToolNames.add(td.toolName);
+      const handlerNodeId =
+        td.handlerNodeId && ctx.graph.getNode(td.handlerNodeId) ? td.handlerNodeId : undefined;
       toolDefs.push({
         name: td.toolName,
         filePath: td.filePath,
         description: td.description,
-        handlerNodeId: td.handlerNodeId,
+        ...(handlerNodeId !== undefined ? { handlerNodeId } : {}),
       });
     }
 
@@ -90,10 +92,7 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
           properties: { name: td.name, filePath: td.filePath, description: td.description },
         });
 
-        const handlerId =
-          td.handlerNodeId && ctx.graph.getNode(td.handlerNodeId)
-            ? td.handlerNodeId
-            : generateId('File', td.filePath);
+        const handlerId = td.handlerNodeId ?? generateId('File', td.filePath);
         ctx.graph.addRelationship({
           id: generateId('HANDLES_TOOL', `${handlerId}->${toolNodeId}`),
           sourceId: handlerId,

@@ -20,6 +20,7 @@ describe('Python @mcp.tool() detection', () => {
     const tools = getNodesByLabel(result, 'Tool');
     expect(tools).toContain('get_weather');
     expect(tools).toContain('search_docs');
+    expect(tools).toContain('explicit_tool');
   });
 
   it('uses handler functions for HANDLES_TOOL edges', () => {
@@ -37,9 +38,9 @@ describe('Python @mcp.tool() detection', () => {
     expect(searchEdge!.sourceLabel).toBe('Function');
   });
 
-  it('detects exactly 2 tools from the fixture', () => {
+  it('detects exactly 3 tools from the fixture', () => {
     const tools = getNodesByLabel(result, 'Tool');
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
   });
 
   it('uses Python handler docstrings as tool descriptions', () => {
@@ -48,6 +49,7 @@ describe('Python @mcp.tool() detection', () => {
 
     expect(descriptions.get('get_weather')).toBe('Get weather for a city.');
     expect(descriptions.get('search_docs')).toBe('Search documentation.');
+    expect(descriptions.get('explicit_tool')).toBe('Explicit description');
   });
 
   it('links each tool only to flows rooted at its handler', () => {

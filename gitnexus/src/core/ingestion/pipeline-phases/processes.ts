@@ -150,10 +150,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         }
         const exactToolNames = toolsByHandlerId.get(proc.entryPointId);
         const fallbackToolNames = toolsWithoutHandlerByFile.get(entryFile);
-        const toolNames =
-          exactToolNames && fallbackToolNames
-            ? [...exactToolNames, ...fallbackToolNames]
-            : (exactToolNames ?? fallbackToolNames);
+        const toolNames = exactToolNames ?? fallbackToolNames;
         if (toolNames) {
           for (const toolName of toolNames) {
             const toolNodeId = generateId('Tool', toolName);
