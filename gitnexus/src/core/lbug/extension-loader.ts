@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { fileURLToPath } from 'node:url';
 
 const DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS = 15_000;
 const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -59,6 +60,11 @@ export const getExtensionInstallTimeoutMs = (): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS;
 };
 
+export const getExtensionInstallChildProcessArgs = (extensionName: string): string[] => {
+  const childScript = new URL('../../../scripts/install-duckdb-extension.mjs', import.meta.url);
+  return [fileURLToPath(childScript), extensionName];
+};
+
 /**
  * Run `INSTALL <extension>` in a short-lived child Node process so the parent
  * event loop is never blocked by DuckDB's synchronous network call.
@@ -75,37 +81,11 @@ export const installDuckDbExtensionOutOfProcess = async (
     throw new Error(`Invalid DuckDB extension name: ${extensionName}`);
   }
 
-  const childCode = `
-    import fs from 'node:fs/promises';
-    import os from 'node:os';
-    import path from 'node:path';
-    import { createRequire } from 'node:module';
-
-    const extensionName = process.env.GITNEXUS_LBUG_EXTENSION_NAME;
-    const require = createRequire(process.env.GITNEXUS_LBUG_RESOLVE_FROM);
-    const lbugModule = require('@ladybugdb/core');
-    const lbug = lbugModule.default ?? lbugModule;
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-ext-install-'));
-    const dbPath = path.join(tmpDir, 'install.lbug');
-    let db;
-    let conn;
-    try {
-      db = new lbug.Database(dbPath);
-      conn = new lbug.Connection(db);
-      await conn.query(\`INSTALL \${extensionName}\`);
-    } finally {
-      if (conn) await conn.close().catch(() => {});
-      if (db) await db.close().catch(() => {});
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
-  `;
-
   return await new Promise<ExtensionInstallResult>((resolve) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', childCode], {
+    const child = spawn(process.execPath, getExtensionInstallChildProcessArgs(extensionName), {
       env: {
         ...process.env,
         GITNEXUS_LBUG_EXTENSION_NAME: extensionName,
-        GITNEXUS_LBUG_RESOLVE_FROM: import.meta.url,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,

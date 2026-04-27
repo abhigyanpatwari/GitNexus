@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ExtensionManager,
+  getExtensionInstallChildProcessArgs,
   getExtensionInstallTimeoutMs,
   type ExtensionInstallResult,
 } from '../../src/core/lbug/extension-loader.js';
@@ -201,6 +202,18 @@ describe('ExtensionManager — input validation', () => {
 
     await expect(manager.ensure(query, 'fts; DROP TABLE x', 'FTS')).rejects.toThrow(/Invalid/);
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe('installDuckDbExtensionOutOfProcess child process', () => {
+  it('spawns the stable packaged installer script instead of inline -e code', () => {
+    const args = getExtensionInstallChildProcessArgs('fts');
+
+    expect(args).not.toContain('-e');
+    expect(args).not.toContain('--input-type=module');
+    expect(args[0]).toContain('scripts');
+    expect(args[0]).toContain('install-duckdb-extension.mjs');
+    expect(args.at(-1)).toBe('fts');
   });
 });
 
