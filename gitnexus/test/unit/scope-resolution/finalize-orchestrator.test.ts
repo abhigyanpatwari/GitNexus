@@ -108,6 +108,28 @@ describe('finalizeScopeModel: single file', () => {
     expect(out.referenceSites).toHaveLength(1);
     expect(out.referenceSites[0]!.name).toBe('save');
   });
+
+  it('aggregates large referenceSites without variadic push stack overflow', () => {
+    const referenceSites: ParsedFile['referenceSites'] = Array.from(
+      { length: 200_000 },
+      (_, i) => ({
+        name: `ref${i}`,
+        atRange: { startLine: i + 1, startCol: 0, endLine: i + 1, endCol: 1 },
+        inScope: 'scope:large.ts#module',
+        kind: 'call' as const,
+      }),
+    );
+
+    const file = mkFile('large.ts', { referenceSites });
+    const out = finalizeScopeModel([file]);
+
+    expect(out.referenceSites).toHaveLength(referenceSites.length);
+    expect(out.referenceSites[0]).toBe(referenceSites[0]);
+    expect(out.referenceSites[referenceSites.length - 1]).toBe(
+      referenceSites[referenceSites.length - 1],
+    );
+    expect(Object.isFrozen(out.referenceSites)).toBe(true);
+  });
 });
 
 // ─── Multi-file with cross-file imports ────────────────────────────────────
