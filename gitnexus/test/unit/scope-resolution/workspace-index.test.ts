@@ -194,7 +194,7 @@ class User:
     expect(classDef).toBeDefined();
 
     const found = findOwnedMember(classDef!.nodeId, 'save', model);
-    expect(found?.type).toBe('Function');
+    expect(found?.type).toBe('Method');
     expect(found?.qualifiedName).toBe('User.save');
   });
 });

@@ -166,6 +166,21 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   companion_object: 'Class',
 };
 
+/** Return the first matching ancestor unless a boundary ancestor is reached first. */
+export function findAncestorBeforeBoundary(
+  node: SyntaxNode,
+  targetTypes: ReadonlySet<string>,
+  boundaryTypes: ReadonlySet<string>,
+): SyntaxNode | null {
+  let current = node.parent;
+  while (current !== null) {
+    if (boundaryTypes.has(current.type)) return null;
+    if (targetTypes.has(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
 /**
  * Determine the graph node label from a tree-sitter capture map.
  * Handles language-specific reclassification via the provider's labelOverride hook

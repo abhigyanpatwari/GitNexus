@@ -24,6 +24,7 @@ import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 
 export function emitPythonScopeCaptures(
   sourceText: string,
@@ -98,6 +99,10 @@ export function emitPythonScopeCaptures(
       const anchorCap = grouped['@declaration.function']!;
       const fnNode = findNodeAtRange(tree.rootNode, anchorCap.range, 'function_definition');
       if (fnNode !== null) {
+        if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
+          delete grouped['@declaration.function'];
+          grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
+        }
         const arity = computePythonArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(

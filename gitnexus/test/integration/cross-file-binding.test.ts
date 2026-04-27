@@ -338,9 +338,7 @@ describe('Phase 9 — Cross-File Call-Result Binding: Python', () => {
 
   it('detects User class with save and get_name methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+    expect(getNodesByLabel(result, 'Method')).toEqual(expect.arrayContaining(['save', 'get_name']));
   });
 
   it('detects get_user function and run function', () => {
@@ -702,10 +700,9 @@ describe('Consumer-Before-Provider: Python', () => {
     );
   }, 60000);
 
-  it('detects User class and save function', () => {
+  it('detects User class and save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 
   it('resolves u.save() in main() to User#save', () => {

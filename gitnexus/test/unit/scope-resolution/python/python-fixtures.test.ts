@@ -116,15 +116,18 @@ describe('Python scopes — module / class / function', () => {
     const fn = scopesByKind(f, 'Function')[0]!;
     expect(cls.parent).toBe(mod.id);
     expect(fn.parent).toBe(cls.id);
+    expect(findDef(f, 'm')?.type).toBe('Method');
   });
 
-  it('case 06: nested function nests Function under Function', () => {
-    const f = parse('def outer():\n    def inner():\n        pass\n');
+  it('case 06: nested function remains Function when declared inside a method body', () => {
+    const f = parse('class A:\n    def m(self):\n        def inner():\n            pass\n');
     const fns = scopesByKind(f, 'Function');
     expect(fns).toHaveLength(2);
-    const outer = fns.find((s) => s.range.startLine === 1)!;
-    const inner = fns.find((s) => s.range.startLine === 2)!;
+    const outer = fns.find((s) => s.range.startLine === 2)!;
+    const inner = fns.find((s) => s.range.startLine === 3)!;
     expect(inner.parent).toBe(outer.id);
+    expect(findDef(f, 'm')?.type).toBe('Method');
+    expect(findDef(f, 'inner')?.type).toBe('Function');
   });
 });
 

@@ -31,6 +31,7 @@ import { pythonCallConfig } from '../call-extractors/configs/python.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitPythonScopeCaptures,
+  pythonFunctionDefinitionLabel,
   interpretPythonImport,
   interpretPythonTypeBinding,
   pythonArityCompatibility,
@@ -88,6 +89,7 @@ export const pythonProvider = defineLanguage({
   classExtractor: createClassExtractor(pythonClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   builtInNames: BUILT_INS,
+  labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // Python is the first migration. See ./python/index.ts for the
