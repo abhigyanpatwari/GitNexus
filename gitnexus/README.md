@@ -296,6 +296,25 @@ If `npm install -g gitnexus` fails on native modules:
 npm install -g gitnexus
 ```
 
+### Analyze warns about unavailable FTS or VECTOR extensions
+
+GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions — they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
+
+Configure the behavior with two environment variables:
+
+| Variable | Values | Default | Effect |
+|----------|--------|---------|--------|
+| `GITNEXUS_LBUG_EXTENSION_INSTALL` | `auto`, `load-only`, `never` | `auto` | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely. |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer | `15000` | Wall-clock budget for the out-of-process `INSTALL` child before it is killed. |
+
+```bash
+# Offline/airgapped: never reach the network for extensions
+GITNEXUS_LBUG_EXTENSION_INSTALL=load-only npx gitnexus analyze
+
+# Slow network: give extension downloads more time
+GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS=30000 npx gitnexus analyze
+```
+
 ### Analysis runs out of memory
 
 For very large repositories:

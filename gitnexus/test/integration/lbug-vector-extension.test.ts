@@ -16,14 +16,14 @@ withTestLbugDB('vector-extension', (handle) => {
       const { loadVectorExtension } = await import('../../src/core/lbug/lbug-adapter.js');
 
       // Should resolve without throwing -- idempotent if already loaded by doInitLbug
-      await expect(loadVectorExtension()).resolves.toBeUndefined();
+      await expect(loadVectorExtension()).resolves.toBe(true);
     });
 
     it('is idempotent -- calling twice does not throw', async () => {
       const { loadVectorExtension } = await import('../../src/core/lbug/lbug-adapter.js');
 
       await loadVectorExtension();
-      await expect(loadVectorExtension()).resolves.toBeUndefined();
+      await expect(loadVectorExtension()).resolves.toBe(true);
     });
   });
 
@@ -43,7 +43,7 @@ withTestLbugDB('vector-extension', (handle) => {
       expect(adapter.isLbugReady()).toBe(true);
 
       // loadVectorExtension should succeed (not skip due to stale flag)
-      await expect(adapter.loadVectorExtension()).resolves.toBeUndefined();
+      await expect(adapter.loadVectorExtension()).resolves.toBe(true);
     });
   });
 
@@ -69,7 +69,7 @@ withTestLbugDB('vector-extension', (handle) => {
 
       // After recovery, vector extension should still be loadable
       // (the flag was reset and re-loaded during re-init)
-      await expect(adapter.loadVectorExtension()).resolves.toBeUndefined();
+      await expect(adapter.loadVectorExtension()).resolves.toBe(true);
     });
   });
 });

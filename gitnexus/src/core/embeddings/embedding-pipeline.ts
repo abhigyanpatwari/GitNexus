@@ -193,8 +193,11 @@ export const batchInsertEmbeddings = async (
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>,
 ): Promise<void> => {
-  // Delegate to the adapter which tracks loaded state and handles DB reconnect resets
-  await loadVectorExtension();
+  // Delegate to the adapter which tracks loaded state and handles DB reconnect resets.
+  // If the optional VECTOR extension cannot be loaded, semantic search degrades gracefully.
+  if (!(await loadVectorExtension())) {
+    return;
+  }
 
   try {
     await executeQuery(CREATE_VECTOR_INDEX_QUERY);

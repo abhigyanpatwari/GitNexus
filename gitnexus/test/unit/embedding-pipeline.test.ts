@@ -167,7 +167,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
 
     // Mock loadVectorExtension (avoids needing the native lbug module)
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
   };
 
@@ -296,7 +296,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const executeQuery = vi.fn().mockImplementation(async (cypher: string) => {
@@ -465,7 +465,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({
@@ -519,7 +519,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({

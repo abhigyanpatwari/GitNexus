@@ -16,6 +16,7 @@ import {
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
+import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -330,7 +331,8 @@ const doInitLbug = async (dbPath: string) => {
     }
   }
 
-  // Load query extensions once per core adapter session.
+  // Load query extensions once per core adapter session. Missing optional
+  // extensions degrade search features but must not block analyze completion.
   await loadFTSExtension();
   await loadVectorExtension();
 
@@ -1142,18 +1144,21 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 // ============================================================================
 
 /**
- * Load the FTS extension (required before using FTS functions).
+ * Load the FTS extension on the supplied connection (or the singleton
+ * writable connection when none is given).
  *
- * Safe to call multiple times — when invoked without arguments, tracks loaded
- * state via module-level `ftsLoaded`. When invoked with an explicit
- * connection, loads on that connection and returns whether the load
- * succeeded — letting callers (e.g. the pool adapter) track their own state.
- *
- * Tries `LOAD EXTENSION fts` first so previously-cached installs skip the
- * network entirely; falls back to `INSTALL` + `LOAD` only when the extension
- * hasn't been cached yet.
+ * Delegates to the shared `ExtensionManager` so install policy (auto /
+ * load-only / never), out-of-process bounded INSTALL, and capability
+ * caching are owned in one place. The module-level `ftsLoaded` flag is
+ * kept purely as a per-call short-circuit on the singleton writable
+ * connection so repeated callers (e.g. createFTSIndex) avoid an extra
+ * `LOAD` round-trip per invocation. Pool adapter callers pass
+ * `{ policy: 'load-only' }` so query paths never block on a network install.
  */
-export const loadFTSExtension = async (targetConn?: lbug.Connection): Promise<boolean> => {
+export const loadFTSExtension = async (
+  targetConn?: lbug.Connection,
+  opts: ExtensionEnsureOptions = {},
+): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && ftsLoaded) return true;
 
@@ -1162,60 +1167,31 @@ export const loadFTSExtension = async (targetConn?: lbug.Connection): Promise<bo
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  const markLoaded = (): true => {
-    if (useModuleState) ftsLoaded = true;
-    return true;
-  };
-
-  try {
-    // Try loading locally first (no network required)
-    await c.query('LOAD EXTENSION fts');
-    return markLoaded();
-  } catch {
-    // Fall back to install + load (requires network)
-    try {
-      await c.query('INSTALL fts');
-      await c.query('LOAD EXTENSION fts');
-      return markLoaded();
-    } catch (err: any) {
-      const msg = err?.message || '';
-      if (
-        msg.includes('already loaded') ||
-        msg.includes('already installed') ||
-        msg.includes('already exists')
-      ) {
-        return markLoaded();
-      }
-      console.error('GitNexus: FTS extension load failed:', msg);
-      return false;
-    }
-  }
+  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'fts', 'FTS', opts);
+  if (loaded && useModuleState) ftsLoaded = true;
+  return loaded;
 };
+
 /**
- * Load the VECTOR extension (required before using QUERY_VECTOR_INDEX).
- * Safe to call multiple times -- tracks loaded state via module-level vectorExtensionLoaded.
+ * Load the VECTOR extension on the supplied connection (or the singleton
+ * writable connection when none is given). See `loadFTSExtension` for the
+ * policy / capability contract — the same `ExtensionManager` owns both.
  */
-export const loadVectorExtension = async (): Promise<void> => {
-  if (vectorExtensionLoaded) return;
-  if (!conn) {
+export const loadVectorExtension = async (
+  targetConn?: lbug.Connection,
+  opts: ExtensionEnsureOptions = {},
+): Promise<boolean> => {
+  const useModuleState = targetConn === undefined;
+  if (useModuleState && vectorExtensionLoaded) return true;
+
+  const c: lbug.Connection | null = targetConn ?? conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  try {
-    await conn.query('INSTALL VECTOR');
-    await conn.query('LOAD EXTENSION VECTOR');
-    vectorExtensionLoaded = true;
-  } catch (err: any) {
-    const msg = err?.message || '';
-    if (
-      msg.includes('already loaded') ||
-      msg.includes('already installed') ||
-      msg.includes('already exists')
-    ) {
-      vectorExtensionLoaded = true;
-    } else {
-      console.error('GitNexus: VECTOR extension load failed:', msg);
-    }
-  }
+
+  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'VECTOR', 'VECTOR', opts);
+  if (loaded && useModuleState) vectorExtensionLoaded = true;
+  return loaded;
 };
 /**
  * Create a full-text search index on a table
@@ -1234,7 +1210,9 @@ export const createFTSIndex = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  await loadFTSExtension();
+  if (!(await loadFTSExtension())) {
+    return;
+  }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
