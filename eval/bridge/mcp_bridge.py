@@ -158,6 +158,7 @@ class MCPBridge:
         try:
             result = subprocess.run(
                 ["npx", "gitnexus", "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=MCP_FIND_GITNEXUS_TIMEOUT_SECONDS,
@@ -172,6 +173,7 @@ class MCPBridge:
         try:
             result = subprocess.run(
                 ["gitnexus", "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=MCP_FIND_GITNEXUS_FALLBACK_TIMEOUT_SECONDS,
