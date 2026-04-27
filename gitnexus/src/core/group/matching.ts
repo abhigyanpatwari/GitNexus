@@ -10,8 +10,8 @@ export interface WildcardMatchResult {
   remaining: StoredContract[];
 }
 
-function isGrpcWildcard(cid: string): boolean {
-  return cid.startsWith('grpc::') && cid.endsWith('/*');
+function isServiceWildcard(cid: string): boolean {
+  return (cid.startsWith('grpc::') || cid.startsWith('thrift::')) && cid.endsWith('/*');
 }
 
 export function normalizeContractId(id: string): string {
@@ -32,8 +32,9 @@ export function normalizeContractId(id: string): string {
       }
       return id;
     }
-    case 'grpc': {
-      // Canonical form: `grpc::<lowercased-package-or-service>[/<method>]`.
+    case 'grpc':
+    case 'thrift': {
+      // Canonical form: `<type>::<lowercased-package-or-service>[/<method>]`.
       //
       // The package/service segment is lowercased because gRPC package
       // names are effectively case-insensitive across language bindings
@@ -47,22 +48,23 @@ export function normalizeContractId(id: string): string {
       // as DISTINCT canonical forms: `grpc::userservice` does not match
       // `grpc::userservice/Login`. That's by design — callers that want
       // service-level manifest matching against method-level providers
-      // should use the gRPC wildcard form `grpc::UserService/*` which is
+      // should use the service wildcard form `grpc::UserService/*` or
+      // `thrift::UserService/*` which is
       // handled by runWildcardMatch below.
       const slashIdx = rest.indexOf('/');
       if (slashIdx > 0) {
         const pkg = rest.substring(0, slashIdx).toLowerCase();
         const method = rest.substring(slashIdx);
-        return `grpc::${pkg}${method}`;
+        return `${type}::${pkg}${method}`;
       }
       if (slashIdx === 0) {
         // Malformed "/method" with leading slash — keep as-is so two
         // equally malformed ids can still match each other.
-        return `grpc::${rest}`;
+        return `${type}::${rest}`;
       }
       // No slash: package/service only. Lowercase to match the package
       // segment produced by the pkg/method branch above.
-      return `grpc::${rest.toLowerCase()}`;
+      return `${type}::${rest.toLowerCase()}`;
     }
     case 'topic':
       return `topic::${rest.trim().toLowerCase()}`;
@@ -109,8 +111,10 @@ export function runExactMatch(
 ): MatchResult {
   const index = providerIndex ?? buildProviderIndex(contracts);
 
-  // Skip gRPC wildcard consumers — they go to wildcard pass only
-  const consumers = contracts.filter((c) => c.role === 'consumer' && !isGrpcWildcard(c.contractId));
+  // Skip service wildcard consumers — they go to wildcard pass only
+  const consumers = contracts.filter(
+    (c) => c.role === 'consumer' && !isServiceWildcard(c.contractId),
+  );
 
   const matched: CrossLink[] = [];
   const matchedConsumerIds = new Set<string>();
@@ -154,14 +158,14 @@ export function runExactMatch(
 
   // normalUnmatched: contracts that weren't matched in exact pass
   const normalUnmatched = contracts.filter((c) => {
-    if (isGrpcWildcard(c.contractId)) return false; // excluded from exact, handled separately
+    if (isServiceWildcard(c.contractId)) return false; // excluded from exact, handled separately
     const id = `${c.repo}::${c.contractId}`;
     return c.role === 'provider' ? !matchedProviderIds.has(id) : !matchedConsumerIds.has(id);
   });
 
-  // Re-add gRPC wildcard contracts — they were never in exact matching
-  const grpcWildcards = contracts.filter((c) => isGrpcWildcard(c.contractId));
-  const unmatched = [...normalUnmatched, ...grpcWildcards];
+  // Re-add service wildcard contracts — they were never in exact matching
+  const serviceWildcards = contracts.filter((c) => isServiceWildcard(c.contractId));
+  const unmatched = [...normalUnmatched, ...serviceWildcards];
 
   return { matched, unmatched };
 }
@@ -171,21 +175,26 @@ export function runWildcardMatch(
   providerIndex: Map<string, StoredContract[]>,
 ): WildcardMatchResult {
   const wildcardConsumers = unmatched.filter(
-    (c) => c.role === 'consumer' && isGrpcWildcard(c.contractId),
+    (c) => c.role === 'consumer' && isServiceWildcard(c.contractId),
   );
   const matched: CrossLink[] = [];
   const matchedConsumerIds = new Set<string>();
 
   for (const consumer of wildcardConsumers) {
     const normalized = normalizeContractId(consumer.contractId);
+    const typeEnd = normalized.indexOf('::');
+    const consumerType = normalized.slice(0, typeEnd);
     // "grpc::com.example.userservice/*" → "com.example.userservice"
-    // "grpc::userservice/*" → "userservice"
-    const fqService = normalized.slice(normalized.indexOf('::') + 2, -2); // strip "grpc::" and "/*"
+    // "thrift::userservice/*" → "userservice"
+    const fqService = normalized.slice(typeEnd + 2, -2); // strip "<type>::" and "/*"
 
     for (const [key, providers] of providerIndex) {
-      // Only match against non-wildcard gRPC providers (method-level IDs)
-      if (!key.startsWith('grpc::') || key.endsWith('/*')) continue;
-      const afterPrefix = key.slice(6); // strip "grpc::"
+      // Only match against non-wildcard same-type providers (method-level IDs).
+      const keyTypeEnd = key.indexOf('::');
+      if (keyTypeEnd < 0 || key.endsWith('/*')) continue;
+      const providerType = key.slice(0, keyTypeEnd);
+      if (providerType !== consumerType) continue;
+      const afterPrefix = key.slice(keyTypeEnd + 2); // strip "<type>::"
       const slashIdx = afterPrefix.indexOf('/');
       if (slashIdx < 0) continue;
       const providerFqService = afterPrefix.slice(0, slashIdx);
@@ -229,7 +238,7 @@ export function runWildcardMatch(
   }
 
   const remaining = unmatched.filter((c) => {
-    if (c.role !== 'consumer' || !isGrpcWildcard(c.contractId)) return true;
+    if (c.role !== 'consumer' || !isServiceWildcard(c.contractId)) return true;
     return !matchedConsumerIds.has(`${c.repo}::${c.contractId}`);
   });
 

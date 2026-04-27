@@ -263,6 +263,82 @@ describe('syncGroup', () => {
     expect(result.crossLinks).toHaveLength(1);
   });
 
+  it('runs thrift wildcard matching after exact matching and returns wildcard remaining', async () => {
+    const config = makeConfig({ 'app/provider': 'provider-repo', 'app/consumer': 'consumer-repo' });
+    const provider: StoredContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-provider-place-order',
+      symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.9,
+      meta: {},
+      repo: 'app/provider',
+    };
+    const consumer: StoredContract = {
+      contractId: 'thrift::OrderService/*',
+      type: 'thrift',
+      role: 'consumer',
+      symbolUid: 'uid-consumer-order-service',
+      symbolRef: { filePath: 'src/consumer.ts', name: 'OrderClient' },
+      symbolName: 'OrderClient',
+      confidence: 0.8,
+      meta: {},
+      repo: 'app/consumer',
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [provider, consumer],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('wildcard');
+    expect(result.crossLinks[0].contractId).toBe('thrift::OrderService/*');
+    expect(result.crossLinks[0].from.repo).toBe('app/consumer');
+    expect(result.crossLinks[0].to.repo).toBe('app/provider');
+    expect(result.unmatched).toEqual([provider]);
+  });
+
+  it('dedupes duplicate wildcard cross-links during sync', async () => {
+    const config = makeConfig({ 'app/provider': 'provider-repo', 'app/consumer': 'consumer-repo' });
+    const provider: StoredContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-provider-place-order',
+      symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.9,
+      meta: {},
+      repo: 'app/provider',
+    };
+    const duplicateProvider: StoredContract = {
+      ...provider,
+      confidence: 0.7,
+    };
+    const consumer: StoredContract = {
+      contractId: 'thrift::OrderService/*',
+      type: 'thrift',
+      role: 'consumer',
+      symbolUid: 'uid-consumer-order-service',
+      symbolRef: { filePath: 'src/consumer.ts', name: 'OrderClient' },
+      symbolName: 'OrderClient',
+      confidence: 0.8,
+      meta: {},
+      repo: 'app/consumer',
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [provider, duplicateProvider, consumer],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('wildcard');
+  });
+
   it('manifest links referencing unknown repos still produce cross-links via synthetic UIDs', async () => {
     const links: GroupManifestLink[] = [
       {
