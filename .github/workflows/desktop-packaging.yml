@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: gitnexus-desktop/package-lock.json
 
@@ -78,7 +78,7 @@ jobs:
 
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: |
             gitnexus-shared/package-lock.json
@@ -111,6 +111,29 @@ jobs:
         working-directory: gitnexus-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Inspect rebuilt native modules (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $releaseDir = Get-ChildItem gitnexus-desktop/release -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+          if (-not $releaseDir) {
+            Write-Host "No release directory found."
+            exit 0
+          }
+
+          $runtimeNodeModules = Join-Path $releaseDir.FullName 'win-unpacked\resources\gitnexus\node_modules'
+          Write-Host "Inspecting native modules under $runtimeNodeModules"
+
+          if (-not (Test-Path $runtimeNodeModules)) {
+            Write-Host "Runtime node_modules directory not found."
+            exit 0
+          }
+
+          Get-ChildItem $runtimeNodeModules -Recurse -Filter '*.node' |
+            Select-Object FullName, LastWriteTime |
+            Format-Table -AutoSize
 
       - name: Start Xvfb
         if: matrix.os == 'ubuntu-latest'

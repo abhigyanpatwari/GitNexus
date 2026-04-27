@@ -28,8 +28,19 @@ const electronVersion =
   desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
 const electronBuilderVersion =
   desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
-// electron-rebuild v4 requires Node 22+, but desktop packaging currently runs on Node 20.
-const electronRebuildVersion = '3.7.2';
+const [nodeMajorVersion = 0, nodeMinorVersion = 0] = process.versions.node
+  .split('.')
+  .map((segment) => Number.parseInt(segment, 10));
+const supportsElectronRebuildV4 =
+  nodeMajorVersion > 22 || (nodeMajorVersion === 22 && nodeMinorVersion >= 12);
+// electron-rebuild v4 requires Node >= 22.12. Keep a v3 fallback for local Node 20 usage.
+const electronRebuildVersion = supportsElectronRebuildV4 ? '4.0.3' : '3.7.2';
+
+if (!supportsElectronRebuildV4) {
+  console.warn(
+    `[build] Node ${process.versions.node} detected; using electron-rebuild@${electronRebuildVersion}. Node 22.12+ is recommended for Electron ${electronVersion}.`,
+  );
+}
 const electronBuilderCliPath = path.join(packageRoot, 'node_modules', 'electron-builder', 'cli.js');
 const builderUtilRequire = createRequire(
   path.join(packageRoot, 'node_modules', 'builder-util', 'out', 'util.js'),

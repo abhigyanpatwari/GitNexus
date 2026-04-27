@@ -160,6 +160,7 @@ const gitnexusDesktopRuntimeDependencyNames = [
   'graphology-utils',
   'ignore',
   'js-yaml',
+  'jsonc-parser',
   'lru-cache',
   'mnemonist',
   'pandemonium',
