@@ -763,7 +763,7 @@ const processBatch = (
 
   let totalProcessed = 0;
   let lastReported = 0;
-  const PROGRESS_INTERVAL = 100; // report every 100 files
+  const PROGRESS_INTERVAL = Math.max(1, Math.min(100, Math.ceil(files.length / 10)));
 
   const onFileProcessed = onProgress
     ? () => {
@@ -827,6 +827,10 @@ const processBatch = (
           (result.skippedLanguages[language] || 0) + tsxFiles.length;
       }
     }
+  }
+
+  if (onProgress && totalProcessed !== lastReported) {
+    onProgress(totalProcessed);
   }
 
   return result;

@@ -251,7 +251,8 @@ export async function runFullAnalysis(
   const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
     const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
     const scaled = Math.round(p.percent * 0.6);
-    progress(p.phase, scaled, phaseLabel);
+    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
+    progress(p.phase, scaled, message);
   });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────

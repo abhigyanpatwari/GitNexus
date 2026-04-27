@@ -48,11 +48,17 @@ program
     '--max-file-size <kb>',
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
   )
+  .option(
+    '--worker-timeout <seconds>',
+    'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
+  )
   .addHelpText(
     'after',
     '\nEnvironment variables:\n' +
       '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
+      '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
+      '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
       '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )

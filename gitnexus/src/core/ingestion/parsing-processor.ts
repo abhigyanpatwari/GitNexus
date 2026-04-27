@@ -725,6 +725,14 @@ export const processParsing = async (
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
 ): Promise<WorkerExtractedData | null> => {
+  let lastProgress = 0;
+  const reportProgress: FileProgressCallback | undefined = onFileProgress
+    ? (current, total, detail) => {
+        lastProgress = Math.max(lastProgress, current);
+        onFileProgress(lastProgress, total, detail);
+      }
+    : undefined;
+
   if (workerPool) {
     if (scopeTreeCache !== undefined && process.env.PROF_SCOPE_RESOLUTION === '1') {
       // Trees can't cross MessageChannels, so worker-parsed files land
@@ -742,12 +750,15 @@ export const processParsing = async (
         symbolTable,
         astCache,
         workerPool,
-        onFileProgress,
+        reportProgress,
       );
     } catch (err) {
-      console.warn(
-        'Worker pool parsing failed, falling back to sequential:',
-        err instanceof Error ? err.message : err,
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('Worker pool parsing stopped; continuing with sequential parser:', message);
+      reportProgress?.(
+        lastProgress,
+        files.length,
+        `Sequential fallback after worker issue: ${message}`,
       );
     }
   }
@@ -759,7 +770,7 @@ export const processParsing = async (
     symbolTable,
     astCache,
     scopeTreeCache,
-    onFileProgress,
+    reportProgress,
   );
   return null;
 };

@@ -91,6 +91,8 @@ export interface AnalyzeOptions {
    * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
    */
   maxFileSize?: string;
+  /** Override worker sub-batch idle timeout in seconds. */
+  workerTimeout?: string;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -102,6 +104,18 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.maxFileSize) {
     process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
+  }
+
+  if (options?.workerTimeout) {
+    const workerTimeoutSeconds = Number(options.workerTimeout);
+    if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
+      console.log('  --worker-timeout must be at least 1 second.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
+      Math.round(workerTimeoutSeconds * 1000),
+    );
   }
 
   console.log('\n  GitNexus Analyzer\n');
