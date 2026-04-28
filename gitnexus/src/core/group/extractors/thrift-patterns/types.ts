@@ -10,6 +10,7 @@ export interface ThriftDetection {
   source: string;
   confidenceWithIdl: number;
   confidenceWithoutIdl: number;
+  usesGeneratedServiceMember?: boolean;
 }
 
 export interface ThriftLanguagePlugin {

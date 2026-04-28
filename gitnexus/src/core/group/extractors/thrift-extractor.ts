@@ -330,7 +330,13 @@ export class ThriftExtractor implements ContractExtractor {
       );
     }
 
-    if (detection.role !== 'consumer' || !detection.methodName) return null;
+    if (
+      detection.role !== 'consumer' ||
+      !detection.methodName ||
+      !detection.usesGeneratedServiceMember
+    ) {
+      return null;
+    }
     return makeContract(
       thriftMethodContractId('', detection.serviceName, detection.methodName),
       detection.role,

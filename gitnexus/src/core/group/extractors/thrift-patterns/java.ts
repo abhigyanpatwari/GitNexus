@@ -13,10 +13,16 @@ const SERVICE_TYPE_RE = /^[A-Z][A-Za-z0-9]*(?:Service|Management)$/;
 interface VariableBinding {
   name: string;
   serviceName: string;
+  usesGeneratedServiceMember: boolean;
   scopeStart: number;
   scopeEnd: number;
   declarationEnd: number;
   scopeSize: number;
+}
+
+interface ServiceTypeMatch {
+  serviceName: string;
+  usesGeneratedServiceMember: boolean;
 }
 
 const VARIABLE_PATTERNS = compilePatterns({
@@ -130,11 +136,18 @@ const PROVIDER_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<{ scoped: boolean }>);
 
-function serviceFromType(serviceText: string, memberText: string | undefined): string | null {
+function serviceFromType(
+  serviceText: string,
+  memberText: string | undefined,
+): ServiceTypeMatch | null {
   if (memberText !== undefined) {
-    return GENERATED_MEMBER_TYPES.has(memberText) ? serviceText : null;
+    return GENERATED_MEMBER_TYPES.has(memberText)
+      ? { serviceName: serviceText, usesGeneratedServiceMember: true }
+      : null;
   }
-  return SERVICE_TYPE_RE.test(serviceText) ? serviceText : null;
+  return SERVICE_TYPE_RE.test(serviceText)
+    ? { serviceName: serviceText, usesGeneratedServiceMember: false }
+    : null;
 }
 
 function methodNamesInClassBody(body: Parser.SyntaxNode): string[] {
@@ -191,7 +204,7 @@ function resolveServiceForReceiver(
   bindings: VariableBinding[],
   receiver: string,
   callNode: Parser.SyntaxNode,
-): string | null {
+): VariableBinding | null {
   const callStart = callNode.startIndex;
   const candidates = bindings.filter(
     (binding) =>
@@ -204,7 +217,7 @@ function resolveServiceForReceiver(
     if (a.scopeSize !== b.scopeSize) return a.scopeSize - b.scopeSize;
     return b.declarationEnd - a.declarationEnd;
   });
-  return candidates[0]?.serviceName ?? null;
+  return candidates[0] ?? null;
 }
 
 export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
@@ -219,13 +232,14 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
       const varNode = match.captures.var;
       if (!serviceNode || !varNode) continue;
       const memberNode = match.meta.scoped ? match.captures.member : undefined;
-      const serviceName = serviceFromType(serviceNode.text, memberNode?.text);
-      if (!serviceName) continue;
+      const service = serviceFromType(serviceNode.text, memberNode?.text);
+      if (!service) continue;
       const scope = bindingScope(varNode);
       if (!scope) continue;
       bindings.push({
         name: varNode.text,
-        serviceName,
+        serviceName: service.serviceName,
+        usesGeneratedServiceMember: service.usesGeneratedServiceMember,
         scopeStart: scope.scope.startIndex,
         scopeEnd: scope.scope.endIndex,
         declarationEnd: scope.declarationEnd,
@@ -239,16 +253,17 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
       const callNode = match.captures.receiver?.parent;
       if (!receiver || !methodName) continue;
       if (!callNode) continue;
-      const serviceName = resolveServiceForReceiver(bindings, receiver, callNode);
-      if (!serviceName) continue;
+      const binding = resolveServiceForReceiver(bindings, receiver, callNode);
+      if (!binding) continue;
       out.push({
         role: 'consumer',
-        serviceName,
+        serviceName: binding.serviceName,
         methodName,
         symbolName: `${receiver}.${methodName}`,
         source: 'java_thrift_consumer',
         confidenceWithIdl: 0.75,
         confidenceWithoutIdl: 0.45,
+        usesGeneratedServiceMember: binding.usesGeneratedServiceMember,
       });
     }
 
@@ -258,18 +273,18 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
       const bodyNode = match.captures.body;
       if (!serviceNode || !bodyNode) continue;
       const memberNode = match.meta.scoped ? match.captures.member : undefined;
-      const serviceName = serviceFromType(serviceNode.text, memberNode?.text);
-      if (!serviceName) continue;
+      const service = serviceFromType(serviceNode.text, memberNode?.text);
+      if (!service) continue;
 
       for (const methodName of methodNamesInClassBody(bodyNode)) {
-        const key = `${serviceName}.${methodName}`;
+        const key = `${service.serviceName}.${methodName}`;
         if (emittedProviders.has(key)) continue;
         emittedProviders.add(key);
         out.push({
           role: 'provider',
-          serviceName,
+          serviceName: service.serviceName,
           methodName,
-          symbolName: `${serviceName}.${methodName}`,
+          symbolName: `${service.serviceName}.${methodName}`,
           source: 'java_thrift_provider',
           confidenceWithIdl: 0.8,
           confidenceWithoutIdl: 0,

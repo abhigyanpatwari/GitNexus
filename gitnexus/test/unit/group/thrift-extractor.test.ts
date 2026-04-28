@@ -406,6 +406,25 @@ class BillingWorkflow {
     });
     expect(contracts[0].symbolRef.filePath).toBe('src/main/java/example/BillingWorkflow.java');
   });
+
+  it('test_extract_java_thrift_direct_service_consumer_without_idl_returns_empty', async () => {
+    writeFile(
+      'src/main/java/example/PaymentWorkflow.java',
+      `package example;
+
+class PaymentWorkflow {
+  private PaymentService paymentService;
+
+  void submit() {
+    paymentService.charge();
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+    expect(contracts).toEqual([]);
+  });
 });
 
 describe('buildThriftContext', () => {

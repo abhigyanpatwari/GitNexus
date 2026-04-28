@@ -110,7 +110,8 @@ function findMatchingKeys(contractId: string, index: Map<string, StoredContract[
             matches.push(key);
           }
         }
-        return matches;
+        matches.sort();
+        return matches.length === 1 ? matches : [];
       }
     }
   }
