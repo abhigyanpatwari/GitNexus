@@ -498,6 +498,15 @@ interface LanguageProviderConfig {
 
   // ── Resolution phase (RFC §4v2) ────────────────────────────────────
 
+  /** Order same-name type candidates when a language can index multiple
+   * definitions for one logical type. Return null to keep shared ambiguity
+   * handling. */
+  readonly orderSameNameTypeCandidates?: (params: {
+    readonly typeName: string;
+    readonly callSiteFilePath: string;
+    readonly candidates: readonly SymbolDefinition[];
+  }) => readonly SymbolDefinition[] | null;
+
   /**
    * Is this callable definition compatible with the given call-site arity?
    * Language-specific rules: Python `*args`/`**kwargs`/defaults, JS default
