@@ -136,12 +136,33 @@ export function extract(
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
 
-  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
+  // Synthesize an empty Module scope when the provider emitted no scopes
+  // at all — this is the normal shape for an empty file (e.g. a 0-byte
+  // Python `__init__.py` package marker). A truly malformed provider that
+  // emits non-Module scopes without a Module is still rejected.
+  let moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
   if (moduleScope === undefined) {
-    throw new Error(
-      `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-        `Provider must emit at least one @scope.module capture per file.`,
-    );
+    if (scopeDrafts.length === 0) {
+      const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
+      const synthetic: ScopeDraft = {
+        id: makeScopeId({ filePath, range, kind: 'Module' }),
+        parent: null,
+        kind: 'Module',
+        range,
+        filePath,
+        bindings: new Map(),
+        ownedDefs: [],
+        imports: [],
+        typeBindings: new Map(),
+      };
+      scopeDrafts.push(synthetic);
+      moduleScope = synthetic;
+    } else {
+      throw new Error(
+        `ScopeExtractor: no Module scope found for '${filePath}'. ` +
+          `Provider must emit at least one @scope.module capture per file.`,
+      );
+    }
   }
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
