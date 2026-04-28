@@ -69,7 +69,6 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
-  vectorLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
 }
@@ -175,7 +174,6 @@ function closeOne(repoId: string): void {
         // for the same dbPath reuse it instead of hitting a file lock.
         shared.refCount = 0;
         shared.ftsLoaded = false;
-        shared.vectorLoaded = false;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
@@ -314,7 +312,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           true, // readOnly
         );
         restoreStdout();
-        shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
+        shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
@@ -361,10 +359,6 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
 
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
-  }
-
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
@@ -408,7 +402,7 @@ export async function initLbugWithDb(
   // closeOne() respects the external flag and skips db.close().
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    shared = { db: existingDb, refCount: 0, ftsLoaded: false, vectorLoaded: false, external: true };
+    shared = { db: existingDb, refCount: 0, ftsLoaded: false, external: true };
     dbCache.set(dbPath, shared);
   }
   shared.refCount++;
@@ -428,10 +422,6 @@ export async function initLbugWithDb(
   // must not block on a network install during query execution.
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
-  }
-
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
   }
 
   pool.set(repoId, {

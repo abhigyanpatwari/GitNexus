@@ -22,6 +22,7 @@ import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
+import { resolveEmbeddingConfig } from './config.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -144,13 +145,12 @@ export const initEmbedder = async (
 
   isInitializing = true;
 
-  const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
-  // On Windows, use DirectML for GPU acceleration (via DirectX12)
-  // CUDA is only available on Linux x64 with onnxruntime-node
+  const finalConfig = resolveEmbeddingConfig(config);
+  // CUDA is probe-gated because ONNX Runtime can crash in native code when
+  // provider libraries are missing. DirectML stays opt-in for the same reason.
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
   // if we attempt CUDA without the required shared libraries
-  const isWindows = process.platform === 'win32';
-  const gpuDevice = isWindows ? 'dml' : isCudaAvailable() ? 'cuda' : 'cpu';
+  const gpuDevice = isCudaAvailable() ? 'cuda' : 'cpu';
   const requestedDevice =
     forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
@@ -205,7 +205,12 @@ export const initEmbedder = async (
             device: device,
             dtype: 'fp32',
             progress_callback: progressCallback,
-            session_options: { logSeverityLevel: 3 },
+            session_options: {
+              logSeverityLevel: 3,
+              intraOpNumThreads: finalConfig.threads,
+              interOpNumThreads: 1,
+              executionMode: 'sequential',
+            },
           });
           currentDevice = device;
 

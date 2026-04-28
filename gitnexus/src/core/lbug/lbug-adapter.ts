@@ -17,6 +17,7 @@ import {
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -331,10 +332,9 @@ const doInitLbug = async (dbPath: string) => {
     }
   }
 
-  // Load query extensions once per core adapter session. Missing optional
-  // extensions degrade search features but must not block analyze completion.
+  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
+  // only required for semantic embeddings and is probed lazily there.
   await loadFTSExtension();
-  await loadVectorExtension();
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -848,8 +848,11 @@ export const executeWithReusedStatement = async (
         await conn.execute(stmt, params);
       }
     } catch (e) {
-      // Log the error and continue with next batch
-      console.warn('Batch execution error:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
+      throw new Error(
+        `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
+      );
     }
     // Note: LadybugDB PreparedStatement doesn't require explicit close()
   }
@@ -1174,8 +1177,8 @@ export const loadFTSExtension = async (
 
 /**
  * Load the VECTOR extension on the supplied connection (or the singleton
- * writable connection when none is given). See `loadFTSExtension` for the
- * policy / capability contract — the same `ExtensionManager` owns both.
+ * writable connection when none is given). Returns false when VECTOR is
+ * unavailable so semantic search can fall back to exact scan.
  */
 export const loadVectorExtension = async (
   targetConn?: lbug.Connection,
@@ -1183,6 +1186,7 @@ export const loadVectorExtension = async (
 ): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && vectorExtensionLoaded) return true;
+  if (!isVectorExtensionSupportedByPlatform()) return false;
 
   const c: lbug.Connection | null = targetConn ?? conn;
   if (!c) {

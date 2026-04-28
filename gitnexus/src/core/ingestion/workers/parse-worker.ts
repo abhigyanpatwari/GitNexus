@@ -1441,10 +1441,16 @@ const processFileGroup = (
     // Runs BEFORE legacy extraction and its result is independent: a
     // failure here is caught inside `extractParsedFile` and does NOT
     // affect the legacy DAG path that follows.
-    const parsedFile = extractParsedFile(provider, parseContent, file.path, (message) => {
-      if (parentPort) parentPort.postMessage({ type: 'warning', message });
-      else console.warn(message);
-    });
+    const parsedFile = extractParsedFile(
+      provider,
+      parseContent,
+      file.path,
+      (message) => {
+        if (parentPort) parentPort.postMessage({ type: 'warning', message });
+        else console.warn(message);
+      },
+      tree,
+    );
     if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
 
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
