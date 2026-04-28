@@ -129,12 +129,14 @@ const swiftExtractFunctionName = (
 };
 
 const orderSwiftSameNameTypeCandidates = ({
+  callSiteFilePath,
   candidates,
 }: {
   readonly typeName: string;
   readonly callSiteFilePath: string;
   readonly candidates: readonly SymbolDefinition[];
 }): readonly SymbolDefinition[] | null => {
+  if (!callSiteFilePath.endsWith('.swift')) return null;
   if (candidates.length <= 1) return null;
   if (!candidates.every((c) => c.type === candidates[0].type)) return null;
   if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;

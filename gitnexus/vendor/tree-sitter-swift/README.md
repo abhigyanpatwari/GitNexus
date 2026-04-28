@@ -1,3 +1,15 @@
+## GitNexus vendor notice
+
+This directory is a GitNexus-managed vendored copy of the official
+`tree-sitter-swift@0.7.1` npm runtime package, including its official native
+prebuilds. GitNexus keeps the top-level `tree-sitter` dependency pinned to
+`^0.21.1` until the broader parser runtime upgrade is handled separately.
+
+When updating this vendor package, replace it from an official
+`tree-sitter-swift` npm release, keep the native `prebuilds/` artifacts, update
+the `_vendoredBy` provenance fields in `package.json`, and verify the packed
+GitNexus tarball can load `tree-sitter-swift`.
+
 ![Parse rate badge](https://byob.yarr.is/alex-pinkus/tree-sitter-swift/parse_rate)
 [![Crates.io badge](https://byob.yarr.is/alex-pinkus/tree-sitter-swift/crates_io_version)](https://crates.io/crates/tree-sitter-swift)
 [![NPM badge](https://byob.yarr.is/alex-pinkus/tree-sitter-swift/npm_version)](https://www.npmjs.com/package/tree-sitter-swift)
@@ -87,12 +99,12 @@ module. [see](https://github.com/tree-sitter/tree-sitter/blob/master/lib/binding
 3. Boot tree-sitter wasm like this.
 
 ```js
-const Parser = require("web-tree-sitter");
+const Parser = require('web-tree-sitter');
 async function run() {
   //needs to happen first
   await Parser.init();
   //wait for the load of swift
-  const Swift = await Parser.Language.load("./tree-sitter-swift.wasm");
+  const Swift = await Parser.Language.load('./tree-sitter-swift.wasm');
 
   const parser = new Parser();
   parser.setLanguage(Swift);
