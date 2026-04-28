@@ -70,6 +70,18 @@ function getHeadCommit(): string {
   return (result.stdout || '').trim();
 }
 
+function initGitRepo(dir: string) {
+  spawnSync('git', ['init'], { cwd: dir, stdio: 'pipe' });
+  spawnSync('git', ['config', 'user.email', 'test@test.com'], {
+    cwd: dir,
+    stdio: 'pipe',
+  });
+  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'pipe' });
+  fs.writeFileSync(path.join(dir, 'file.txt'), 'hello');
+  spawnSync('git', ['add', '.'], { cwd: dir, stdio: 'pipe' });
+  spawnSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
+}
+
 // ─── Both hook files should exist ───────────────────────────────────
 
 describe('Hook files exist', () => {
@@ -465,6 +477,66 @@ describe('cwd validation (integration)', () => {
         cwd: 'relative/path',
       });
       expect(result.stdout.trim()).toBe('');
+    });
+  }
+});
+
+// ─── Integration: global registry lookup ────────────────────────────
+
+describe('Global registry lookup', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: PostToolUse stays silent for unindexed repo under global registry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'unindexed');
+      try {
+        fs.mkdirSync(path.join(homeDir, '.gitnexus', 'repos'), { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, '.gitnexus', 'registry.json'),
+          JSON.stringify({ repos: [] }),
+        );
+        fs.mkdirSync(repoDir, { recursive: true });
+        initGitRepo(repoDir);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: repoDir,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: PreToolUse stays silent for unindexed repo under global registry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'unindexed');
+      try {
+        fs.mkdirSync(path.join(homeDir, '.gitnexus', 'repos'), { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, '.gitnexus', 'registry.json'),
+          JSON.stringify({ repos: [] }),
+        );
+        fs.mkdirSync(repoDir, { recursive: true });
+        initGitRepo(repoDir);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Grep',
+          tool_input: { pattern: 'validateUser' },
+          cwd: repoDir,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
     });
   }
 });
