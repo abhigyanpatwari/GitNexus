@@ -154,21 +154,18 @@ npx gitnexus group sync billing-platform
 
 ## Manifest escape hatch
 
-Use manifest links when automatic extraction cannot see a provider or consumer, or when generated code is wrapped behind an abstraction. Keep the `contractId` in the same canonical Thrift format.
+Use manifest links when automatic extraction cannot see a provider or consumer, or when generated code is wrapped behind an abstraction. Write the contract without the `thrift::` prefix; GitNexus canonicalizes it to the full Thrift contract id.
 
 ```yaml
 links:
-  - type: thrift
-    contractId: thrift::billing.v1.OrderService/PlaceOrder
-    from: checkout
+  - from: checkout
     to: billing
+    type: thrift
+    contract: billing.v1.OrderService/PlaceOrder
     role: consumer
-    symbol:
-      filePath: src/main/java/example/checkout/CheckoutWorkflow.java
-      name: CheckoutWorkflow
 ```
 
-The exact manifest shape may evolve with GitNexus group config support, but the important part is explicit ownership of the Thrift contract id and the repositories it connects.
+GitNexus canonicalizes that manifest entry to `thrift::billing.v1.OrderService/PlaceOrder` and uses it to connect the two repositories.
 
 ## Known limitations
 
