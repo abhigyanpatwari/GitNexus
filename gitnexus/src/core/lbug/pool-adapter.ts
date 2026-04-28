@@ -17,7 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
-import { loadFTSExtension, loadVectorExtension } from './lbug-adapter.js';
+import { loadFTSExtension } from './lbug-adapter.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
