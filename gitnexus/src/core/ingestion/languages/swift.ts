@@ -11,7 +11,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
@@ -126,6 +126,24 @@ const swiftExtractFunctionName = (
   if (node.type === 'init_declaration') return { funcName: 'init', label: 'Constructor' };
   if (node.type === 'deinit_declaration') return { funcName: 'deinit', label: 'Constructor' };
   return null; // fall through to generic
+};
+
+const orderSwiftSameNameTypeCandidates = ({
+  callSiteFilePath,
+  candidates,
+}: {
+  readonly typeName: string;
+  readonly callSiteFilePath: string;
+  readonly candidates: readonly SymbolDefinition[];
+}): readonly SymbolDefinition[] | null => {
+  if (!callSiteFilePath.endsWith('.swift')) return null;
+  if (candidates.length <= 1) return null;
+  if (!candidates.every((c) => c.type === candidates[0].type)) return null;
+  if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;
+  if (!candidates.every((c) => c.filePath.endsWith('.swift'))) return null;
+  return [...candidates].sort(
+    (a, b) => a.filePath.length - b.filePath.length || a.filePath.localeCompare(b.filePath),
+  );
 };
 
 const BUILT_INS: ReadonlySet<string> = new Set([
@@ -257,5 +275,6 @@ export const swiftProvider = defineLanguage({
   classExtractor: createClassExtractor(swiftClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Swift),
   implicitImportWirer: wireSwiftImplicitImports,
+  orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
 });

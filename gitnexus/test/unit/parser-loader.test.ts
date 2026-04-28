@@ -81,15 +81,14 @@ describe('parser-loader', () => {
   });
 
   describe('Swift optional dependency', () => {
-    it('handles Swift loading gracefully', async () => {
-      // Swift is optional — it either loads successfully or throws an error about unsupported language
-      try {
-        await loadLanguage(SupportedLanguages.Swift);
-        // If it succeeds, tree-sitter-swift is installed
-      } catch (e: any) {
-        // If it fails, it should be because tree-sitter-swift is not installed
-        expect(e.message).toContain('Unsupported language');
-      }
+    it('loads Swift from the default optional dependency and parses source', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.Swift);
+
+      const tree = parser.parse('class Foo { func bar() {} }');
+
+      expect(tree.rootNode.type).toBe('source_file');
+      expect(tree.rootNode.namedChildCount).toBe(1);
     });
   });
 });

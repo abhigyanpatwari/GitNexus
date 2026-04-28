@@ -1,5 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/swift.ts
-// Verified against tree-sitter-swift 0.6.0
+// Verified against tree-sitter-swift 0.7.x
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -110,7 +110,7 @@ function extractSwiftReturnType(node: SyntaxNode): string | undefined {
 function extractSwiftParameters(node: SyntaxNode): ParameterInfo[] {
   const params: ParameterInfo[] = [];
 
-  // In tree-sitter-swift 0.6.0, parameters are direct children of function_declaration.
+  // In tree-sitter-swift, parameters are direct children of function_declaration.
   // Default value tokens ('=', literal) are siblings of the parameter node at the
   // function_declaration level, not children of the parameter node.
   for (let i = 0; i < node.childCount; i++) {
@@ -264,8 +264,7 @@ function extractSwiftAnnotations(node: SyntaxNode): string[] {
 export const swiftMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Swift,
 
-  // tree-sitter-swift 0.6.0 may use class_declaration for classes, structs, enums, extensions,
-  // and actors — but this cannot be verified until the grammar installs on Node 22+.
+  // Keep this conservative until Swift type-shape coverage is expanded.
   // TODO: Verify struct_declaration, enum_declaration, extension_declaration, actor_declaration
   // node types once tree-sitter-swift loads on Node 22, and add them here if they are distinct.
   // protocol_declaration is a separate, confirmed node type.
