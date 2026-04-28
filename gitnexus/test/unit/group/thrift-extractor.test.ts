@@ -184,6 +184,184 @@ service OrderService {
 
     expect(contracts).toEqual([]);
   });
+
+  it('test_extract_java_thrift_consumers_from_iface_client_and_service_fields', async () => {
+    writeFile(
+      'idl/order.thrift',
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    writeFile(
+      'src/main/java/example/BillingWorkflow.java',
+      `package example;
+
+class BillingWorkflow {
+  private OrderService.Iface orderService;
+  private OrderService.Client orderClient;
+  private OrderService generatedOrderService;
+
+  void submit(PlaceOrderRequest request) throws Exception {
+    orderService.PlaceOrder(request);
+    orderClient.PlaceOrder(request);
+    generatedOrderService.PlaceOrder(request);
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const consumers = contracts
+      .filter((c) => c.role === 'consumer')
+      .sort((a, b) => a.symbolName.localeCompare(b.symbolName));
+
+    expect(consumers).toHaveLength(3);
+    expect(consumers.map((c) => c.symbolName)).toEqual([
+      'generatedOrderService.PlaceOrder',
+      'orderClient.PlaceOrder',
+      'orderService.PlaceOrder',
+    ]);
+    for (const contract of consumers) {
+      expect(contract).toMatchObject({
+        contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+        type: 'thrift',
+        role: 'consumer',
+        confidence: 0.75,
+        meta: {
+          namespace: 'billing.v1',
+          service: 'OrderService',
+          method: 'PlaceOrder',
+          source: 'java_thrift_consumer',
+        },
+      });
+      expect(contract.symbolRef.filePath).toBe('src/main/java/example/BillingWorkflow.java');
+    }
+  });
+
+  it('test_extract_java_thrift_consumers_from_local_variables', async () => {
+    writeFile(
+      'idl/order.thrift',
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    writeFile(
+      'src/main/java/example/BillingWorker.java',
+      `package example;
+
+class BillingWorker {
+  void submit(OrderService.Iface iface, OrderService.Client client, OrderService service) throws Exception {
+    OrderService.Iface orderService = iface;
+    OrderService.Client orderClient = client;
+    OrderService generatedOrderService = service;
+
+    orderService.PlaceOrder(new PlaceOrderRequest());
+    orderClient.PlaceOrder(new PlaceOrderRequest());
+    generatedOrderService.PlaceOrder(new PlaceOrderRequest());
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const consumers = contracts.filter((c) => c.role === 'consumer');
+
+    expect(consumers.map((c) => c.symbolName).sort()).toEqual([
+      'generatedOrderService.PlaceOrder',
+      'orderClient.PlaceOrder',
+      'orderService.PlaceOrder',
+    ]);
+    expect(new Set(consumers.map((c) => c.contractId))).toEqual(
+      new Set(['thrift::billing.v1.OrderService/PlaceOrder']),
+    );
+  });
+
+  it('test_extract_java_thrift_providers_from_iface_and_service_implements', async () => {
+    writeFile(
+      'idl/order.thrift',
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    writeFile(
+      'src/main/java/example/IfaceOrderHandler.java',
+      `package example;
+
+class IfaceOrderHandler implements OrderService.Iface {
+  public PlaceOrderResponse PlaceOrder(PlaceOrderRequest request) {
+    return new PlaceOrderResponse();
+  }
+}`,
+    );
+    writeFile(
+      'src/main/java/example/GeneratedOrderHandler.java',
+      `package example;
+
+class GeneratedOrderHandler implements OrderService {
+  public PlaceOrderResponse PlaceOrder(PlaceOrderRequest request) {
+    return new PlaceOrderResponse();
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const providers = contracts
+      .filter((c) => c.meta.source === 'java_thrift_provider')
+      .sort((a, b) => a.symbolRef.filePath.localeCompare(b.symbolRef.filePath));
+
+    expect(providers).toHaveLength(2);
+    for (const contract of providers) {
+      expect(contract).toMatchObject({
+        contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+        type: 'thrift',
+        role: 'provider',
+        symbolName: 'OrderService.PlaceOrder',
+        confidence: 0.8,
+        meta: {
+          namespace: 'billing.v1',
+          service: 'OrderService',
+          method: 'PlaceOrder',
+          source: 'java_thrift_provider',
+        },
+      });
+    }
+  });
+
+  it('test_extract_java_thrift_consumer_without_idl_emits_weak_method_contract', async () => {
+    writeFile(
+      'src/main/java/example/BillingWorkflow.java',
+      `package example;
+
+class BillingWorkflow {
+  private OrderService.Iface orderService;
+
+  void submit(PlaceOrderRequest request) throws Exception {
+    orderService.PlaceOrder(request);
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+    expect(contracts).toHaveLength(1);
+    expect(contracts[0]).toMatchObject({
+      contractId: 'thrift::OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'consumer',
+      symbolName: 'orderService.PlaceOrder',
+      confidence: 0.45,
+      meta: {
+        service: 'OrderService',
+        method: 'PlaceOrder',
+        source: 'java_thrift_consumer_weak',
+      },
+    });
+    expect(contracts[0].symbolRef.filePath).toBe('src/main/java/example/BillingWorkflow.java');
+  });
 });
 
 describe('buildThriftContext', () => {

@@ -1,7 +1,13 @@
 import { glob } from 'glob';
+import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
+import {
+  getPluginForFile,
+  THRIFT_SCAN_GLOB,
+  type ThriftDetection,
+} from './thrift-patterns/index.js';
 
 export interface ThriftServiceInfo {
   namespace: string;
@@ -174,18 +180,20 @@ function extractMethods(sanitizedServiceBody: string): string[] {
 
 function makeContract(
   cid: string,
+  role: 'provider' | 'consumer',
   filePath: string,
   symbolName: string,
+  confidence: number,
   meta: Record<string, unknown>,
 ): ExtractedContract {
   return {
     contractId: cid,
     type: 'thrift',
-    role: 'provider',
+    role,
     symbolUid: '',
     symbolRef: { filePath: normalizeThriftPath(filePath), name: symbolName },
     symbolName,
-    confidence: 0.85,
+    confidence,
     meta: { ...meta, extractionStrategy: 'source_scan' },
   };
 }
@@ -248,8 +256,10 @@ export class ThriftExtractor implements ContractExtractor {
           out.push(
             makeContract(
               thriftMethodContractId(info.namespace, info.serviceName, methodName),
+              'provider',
               info.thriftPath,
               symbolName,
+              0.85,
               {
                 namespace: info.namespace,
                 service: info.serviceName,
@@ -262,7 +272,77 @@ export class ThriftExtractor implements ContractExtractor {
       }
     }
 
+    const sourceFiles = await glob(THRIFT_SCAN_GLOB, {
+      cwd: repoPath,
+      absolute: false,
+      nodir: true,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
+    });
+
+    const parser = new Parser();
+    for (const rel of sourceFiles) {
+      const plugin = getPluginForFile(rel);
+      if (!plugin) continue;
+      const content = readSafe(repoPath, rel);
+      if (!content) continue;
+
+      let detections: ThriftDetection[] = [];
+      try {
+        parser.setLanguage(plugin.language);
+        const tree = parser.parse(content);
+        detections = plugin.scan(tree);
+      } catch {
+        continue;
+      }
+
+      for (const detection of detections) {
+        const contract = this.detectionToContract(detection, rel, context);
+        if (contract) out.push(contract);
+      }
+    }
+
     return this.dedupe(out);
+  }
+
+  private detectionToContract(
+    detection: ThriftDetection,
+    filePath: string,
+    context: ThriftContext,
+  ): ExtractedContract | null {
+    const candidates = context.servicesByName.get(detection.serviceName) ?? [];
+    if (candidates.length > 1) return null;
+
+    const info = candidates[0];
+    if (info) {
+      if (!info.methods.includes(detection.methodName)) return null;
+      return makeContract(
+        thriftMethodContractId(info.namespace, info.serviceName, detection.methodName),
+        detection.role,
+        filePath,
+        detection.symbolName,
+        detection.confidenceWithIdl,
+        {
+          namespace: info.namespace,
+          service: info.serviceName,
+          method: detection.methodName,
+          source: detection.source,
+        },
+      );
+    }
+
+    if (detection.role !== 'consumer' || !detection.methodName) return null;
+    return makeContract(
+      thriftMethodContractId('', detection.serviceName, detection.methodName),
+      detection.role,
+      filePath,
+      detection.symbolName,
+      detection.confidenceWithoutIdl,
+      {
+        service: detection.serviceName,
+        method: detection.methodName,
+        source: 'java_thrift_consumer_weak',
+      },
+    );
   }
 
   private dedupe(items: ExtractedContract[]): ExtractedContract[] {
