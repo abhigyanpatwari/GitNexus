@@ -6,6 +6,7 @@ import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js'
 import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
+import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
@@ -93,6 +94,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
     const httpEx = new HttpRouteExtractor();
     const grpcEx = new GrpcExtractor();
+    const thriftEx = new ThriftExtractor();
     const topicEx = new TopicExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
@@ -131,6 +133,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.grpc) {
             const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.thrift) {
+            const extracted = await thriftEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
                 ...c,

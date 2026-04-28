@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -22,6 +22,7 @@ describe('syncGroup', () => {
     detect: {
       http: true,
       grpc: false,
+      thrift: false,
       topics: false,
       shared_libs: false,
       embedding_fallback: false,
@@ -228,6 +229,7 @@ describe('syncGroup', () => {
       detect: {
         http: true,
         grpc: false,
+        thrift: false,
         topics: false,
         shared_libs: false,
         embedding_fallback: false,
@@ -337,6 +339,109 @@ describe('syncGroup', () => {
     expect(result.crossLinks[0].from.repo).toBe('app/consumer');
     expect(result.crossLinks[0].to.repo).toBe('app/provider');
     expect(result.unmatched).toHaveLength(0);
+  });
+
+  it('extracts thrift contracts during real sync when thrift detection is enabled', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-'));
+    const storageDir = path.join(tmpDir, '.gitnexus');
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'idl'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'src'), { recursive: true });
+    fs.mkdirSync(storageDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'services', 'billing', 'package.json'), '{}');
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'src', 'BillingWorkflow.java'),
+      'package example; class BillingWorkflow {}',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+
+    const config = makeConfig({ 'services/billing': 'billing-repo' });
+    config.detect.http = false;
+    config.detect.thrift = true;
+
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'billing-repo',
+          path: groupPath,
+          repoPath: tmpDir,
+          storagePath: storageDir,
+        }),
+        skipWrite: true,
+      });
+
+      expect(result.missingRepos).toHaveLength(0);
+      expect(result.contracts).toHaveLength(1);
+      expect(result.contracts[0]).toMatchObject({
+        contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+        type: 'thrift',
+        role: 'provider',
+        repo: 'services/billing',
+        service: 'services/billing',
+        symbolRef: {
+          filePath: 'services/billing/idl/order.thrift',
+          name: 'OrderService.PlaceOrder',
+        },
+      });
+      expect(initSpy).toHaveBeenCalledWith('billing-repo', path.join(storageDir, 'lbug'));
+      expect(closeSpy).toHaveBeenCalledWith('billing-repo');
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not extract thrift contracts during real sync when thrift detection is disabled', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-off-'));
+    const storageDir = path.join(tmpDir, '.gitnexus');
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'idl'), { recursive: true });
+    fs.mkdirSync(storageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+
+    const config = makeConfig({ 'services/billing': 'billing-repo' });
+    config.detect.http = false;
+    config.detect.thrift = false;
+
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'billing-repo',
+          path: groupPath,
+          repoPath: tmpDir,
+          storagePath: storageDir,
+        }),
+        skipWrite: true,
+      });
+
+      expect(result.missingRepos).toHaveLength(0);
+      expect(result.contracts).toHaveLength(0);
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('dedupes duplicate wildcard cross-links during sync', async () => {
