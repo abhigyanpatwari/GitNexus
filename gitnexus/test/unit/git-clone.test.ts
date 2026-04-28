@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { extractRepoName, getCloneDir, validateGitUrl } from '../../src/server/git-clone.js';
+import {
+  extractRepoName,
+  extractRepoSlug,
+  getCloneDir,
+  validateGitUrl,
+} from '../../src/server/git-clone.js';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -24,12 +29,41 @@ describe('git-clone', () => {
     });
   });
 
+  describe('extractRepoSlug', () => {
+    it('keeps the owner path so same-named repositories do not collide', () => {
+      expect(extractRepoSlug('https://github.com/owner-a/my-repo.git')).toBe(
+        'github.com/owner-a/my-repo',
+      );
+      expect(extractRepoSlug('https://github.com/owner-b/my-repo.git')).toBe(
+        'github.com/owner-b/my-repo',
+      );
+    });
+
+    it('keeps nested group paths for non-GitHub hosts', () => {
+      expect(extractRepoSlug('https://gitlab.com/group/subgroup/repo.git')).toBe(
+        'gitlab.com/group/subgroup/repo',
+      );
+    });
+  });
+
   describe('getCloneDir', () => {
     it('returns path under ~/.gitnexus/repos/', () => {
       const dir = getCloneDir('my-repo');
       expect(dir).toContain('.gitnexus');
       expect(dir).toMatch(/repos/);
       expect(dir).toContain('my-repo');
+    });
+
+    it('returns distinct paths for owner-qualified clone slugs', () => {
+      const first = getCloneDir(
+        extractRepoSlug('https://github.com/owner-a/shared.git'),
+      );
+      const second = getCloneDir(
+        extractRepoSlug('https://github.com/owner-b/shared.git'),
+      );
+      expect(first).not.toBe(second);
+      expect(first).toContain('owner-a');
+      expect(second).toContain('owner-b');
     });
   });
 
