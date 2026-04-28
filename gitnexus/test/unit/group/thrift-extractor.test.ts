@@ -278,6 +278,50 @@ class BillingWorker {
     );
   });
 
+  it('test_extract_java_thrift_consumers_resolve_receiver_by_nearest_scope', async () => {
+    writeFile(
+      'idl/order.thrift',
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}
+
+service InvoiceService {
+  Invoice CreateInvoice(1: string orderId)
+}`,
+    );
+    writeFile(
+      'src/main/java/example/BillingWorker.java',
+      `package example;
+
+class BillingWorker {
+  void submitOrder(OrderService.Iface client, PlaceOrderRequest request) throws Exception {
+    client.PlaceOrder(request);
+  }
+
+  void submitInvoice() throws Exception {
+    InvoiceService.Client client = new InvoiceService.Client(null);
+    client.CreateInvoice("order-1");
+  }
+}`,
+    );
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const consumers = contracts
+      .filter((c) => c.role === 'consumer')
+      .sort((a, b) => a.contractId.localeCompare(b.contractId));
+
+    expect(consumers.map((c) => c.contractId)).toEqual([
+      'thrift::billing.v1.InvoiceService/CreateInvoice',
+      'thrift::billing.v1.OrderService/PlaceOrder',
+    ]);
+    expect(consumers.map((c) => c.symbolName).sort()).toEqual([
+      'client.CreateInvoice',
+      'client.PlaceOrder',
+    ]);
+  });
+
   it('test_extract_java_thrift_providers_from_iface_and_service_implements', async () => {
     writeFile(
       'idl/order.thrift',

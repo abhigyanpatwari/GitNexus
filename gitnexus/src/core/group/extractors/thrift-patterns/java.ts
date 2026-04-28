@@ -10,6 +10,15 @@ import type { ThriftDetection, ThriftLanguagePlugin } from './types.js';
 const GENERATED_MEMBER_TYPES = new Set(['Iface', 'Client']);
 const SERVICE_TYPE_RE = /^[A-Z][A-Za-z0-9]*(?:Service|Management)$/;
 
+interface VariableBinding {
+  name: string;
+  serviceName: string;
+  scopeStart: number;
+  scopeEnd: number;
+  declarationEnd: number;
+  scopeSize: number;
+}
+
 const VARIABLE_PATTERNS = compilePatterns({
   name: 'java-thrift-variables',
   language: Java,
@@ -139,12 +148,71 @@ function methodNamesInClassBody(body: Parser.SyntaxNode): string[] {
   return names;
 }
 
+function nearestAncestor(node: Parser.SyntaxNode, types: Set<string>): Parser.SyntaxNode | null {
+  let current: Parser.SyntaxNode | null = node;
+  while (current) {
+    if (types.has(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+function bindingScope(varNode: Parser.SyntaxNode): {
+  scope: Parser.SyntaxNode;
+  declarationEnd: number;
+} | null {
+  const declaration = nearestAncestor(
+    varNode,
+    new Set(['field_declaration', 'local_variable_declaration', 'formal_parameter']),
+  );
+  if (!declaration) return null;
+
+  if (declaration.type === 'field_declaration') {
+    const classBody = nearestAncestor(declaration, new Set(['class_body']));
+    if (!classBody) return null;
+    return { scope: classBody, declarationEnd: 0 };
+  }
+
+  if (declaration.type === 'formal_parameter') {
+    const callable = nearestAncestor(
+      declaration,
+      new Set(['method_declaration', 'constructor_declaration']),
+    );
+    if (!callable) return null;
+    return { scope: callable, declarationEnd: 0 };
+  }
+
+  const block = nearestAncestor(declaration, new Set(['block']));
+  if (!block) return null;
+  return { scope: block, declarationEnd: declaration.endIndex };
+}
+
+function resolveServiceForReceiver(
+  bindings: VariableBinding[],
+  receiver: string,
+  callNode: Parser.SyntaxNode,
+): string | null {
+  const callStart = callNode.startIndex;
+  const candidates = bindings.filter(
+    (binding) =>
+      binding.name === receiver &&
+      binding.scopeStart <= callStart &&
+      callStart <= binding.scopeEnd &&
+      binding.declarationEnd <= callStart,
+  );
+  candidates.sort((a, b) => {
+    if (a.scopeSize !== b.scopeSize) return a.scopeSize - b.scopeSize;
+    return b.declarationEnd - a.declarationEnd;
+  });
+  return candidates[0]?.serviceName ?? null;
+}
+
 export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
   name: 'java-thrift',
   language: Java,
   scan(tree) {
     const out: ThriftDetection[] = [];
-    const variables = new Map<string, string>();
+    const bindings: VariableBinding[] = [];
 
     for (const match of runCompiledPatterns(VARIABLE_PATTERNS, tree)) {
       const serviceNode = match.captures.service;
@@ -153,14 +221,25 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
       const memberNode = match.meta.scoped ? match.captures.member : undefined;
       const serviceName = serviceFromType(serviceNode.text, memberNode?.text);
       if (!serviceName) continue;
-      variables.set(varNode.text, serviceName);
+      const scope = bindingScope(varNode);
+      if (!scope) continue;
+      bindings.push({
+        name: varNode.text,
+        serviceName,
+        scopeStart: scope.scope.startIndex,
+        scopeEnd: scope.scope.endIndex,
+        declarationEnd: scope.declarationEnd,
+        scopeSize: scope.scope.endIndex - scope.scope.startIndex,
+      });
     }
 
     for (const match of runCompiledPatterns(CALL_PATTERNS, tree)) {
       const receiver = match.captures.receiver?.text;
       const methodName = match.captures.method?.text;
+      const callNode = match.captures.receiver?.parent;
       if (!receiver || !methodName) continue;
-      const serviceName = variables.get(receiver);
+      if (!callNode) continue;
+      const serviceName = resolveServiceForReceiver(bindings, receiver, callNode);
       if (!serviceName) continue;
       out.push({
         role: 'consumer',

@@ -90,6 +90,31 @@ function findMatchingKeys(contractId: string, index: Map<string, StoredContract[
     return matches;
   }
 
+  if (normalized.startsWith('thrift::')) {
+    const rest = normalized.substring('thrift::'.length);
+    const slashIdx = rest.indexOf('/');
+    if (slashIdx > 0) {
+      const service = rest.substring(0, slashIdx);
+      const method = rest.substring(slashIdx + 1);
+      if (!service.includes('.') && method && method !== '*') {
+        const matches: string[] = [];
+        for (const key of index.keys()) {
+          if (!key.startsWith('thrift::') || key.endsWith('/*')) continue;
+          const providerRest = key.substring('thrift::'.length);
+          const providerSlashIdx = providerRest.indexOf('/');
+          if (providerSlashIdx < 0) continue;
+          const providerService = providerRest.substring(0, providerSlashIdx);
+          const providerMethod = providerRest.substring(providerSlashIdx + 1);
+          if (providerMethod !== method) continue;
+          if (providerService === service || providerService.endsWith('.' + service)) {
+            matches.push(key);
+          }
+        }
+        return matches;
+      }
+    }
+  }
+
   return [];
 }
 
