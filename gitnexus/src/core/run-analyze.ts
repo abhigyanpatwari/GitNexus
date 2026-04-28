@@ -179,6 +179,7 @@ export async function runFullAnalysis(
 
   let incrementalDeletedNodes = 0;
   let incrementalDeletedFiles = 0;
+  let fileHashesForMeta = pipelineResult.fileHashes;
 
   if (isIncremental) {
     // Incremental path: open existing DB, delete stale nodes, append new ones
@@ -203,8 +204,7 @@ export async function runFullAnalysis(
     for (const [file, hash] of Object.entries(pipelineResult.fileHashes ?? {})) {
       mergedHashes[file] = hash;
     }
-    // Overwrite pipeline fileHashes with merged so saveMeta stores the full set
-    (pipelineResult as any).fileHashes = mergedHashes;
+    fileHashesForMeta = mergedHashes;
   } else {
     // Full rebuild path: wipe and recreate LadybugDB
     await closeLbug();
@@ -340,7 +340,7 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
-      fileHashes: pipelineResult.fileHashes,
+      fileHashes: fileHashesForMeta,
     };
     await saveMeta(storagePath, meta);
     await registerRepo(repoPath, meta);
