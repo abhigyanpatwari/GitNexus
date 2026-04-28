@@ -15,7 +15,12 @@
 import { Sparkles, ArrowRight, GitBranch, FileCode, Layers, FolderOpen } from '@/lib/lucide-icons';
 import { useState, useEffect } from 'react';
 import { RepoAnalyzer } from './RepoAnalyzer';
-import { fetchGroups, fetchGroupStatus, type BackendRepo, type GroupStatus } from '../services/backend-client';
+import {
+  fetchGroups,
+  fetchGroupStatus,
+  type BackendRepo,
+  type GroupStatus,
+} from '../services/backend-client';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -113,13 +118,9 @@ function GroupCard({
             </h3>
           </div>
           <div className="mt-1 flex items-center gap-3 pl-6">
-            {repoCount > 0 && (
-              <span className="text-xs text-text-muted">{repoCount} repos</span>
-            )}
+            {repoCount > 0 && <span className="text-xs text-text-muted">{repoCount} repos</span>}
             {lastSync && (
-              <span className="text-xs text-text-muted">
-                synced {formatRelativeTime(lastSync)}
-              </span>
+              <span className="text-xs text-text-muted">synced {formatRelativeTime(lastSync)}</span>
             )}
           </div>
         </div>
@@ -172,7 +173,7 @@ export const RepoLanding = ({
   }, [activeTab, groups, groupStatuses]);
 
   return (
-    <div className="relative max-h-[80vh] animate-fade-in overflow-y-auto rounded-3xl bg-surface p-7 shadow-2xl shadow-black/60 ring-1 ring-border-subtle">
+    <div className="relative max-h-[80vh] animate-fade-in overflow-y-auto rounded-3xl bg-surface p-7 shadow-2xl ring-1 shadow-black/60 ring-border-subtle">
       {/* Ambient glows */}
       <div className="pointer-events-none absolute -top-28 -right-28 h-72 w-72 rounded-full bg-accent/6 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-24 -left-24 h-56 w-56 rounded-full bg-node-function/6 blur-3xl" />
@@ -255,7 +256,9 @@ export const RepoLanding = ({
               <FolderOpen className="mx-auto mb-3 h-8 w-8 text-text-muted/50" />
               <p className="text-sm text-text-muted">No groups configured yet.</p>
               <p className="mt-1 text-xs text-text-muted/70">
-                Run <code className="rounded bg-void px-1.5 py-0.5">gitnexus group auto-discover</code> to create one.
+                Run{' '}
+                <code className="rounded bg-void px-1.5 py-0.5">gitnexus group auto-discover</code>{' '}
+                to create one.
               </p>
             </div>
           ) : (

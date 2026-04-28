@@ -11,10 +11,7 @@ import {
   getRepoColor,
   type EdgeType,
 } from '../../src/lib/constants';
-import {
-  knowledgeGraphToGraphology,
-  type SigmaNodeAttributes,
-} from '../../src/lib/graph-adapter';
+import { knowledgeGraphToGraphology, type SigmaNodeAttributes } from '../../src/lib/graph-adapter';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../src/core/graph/types';
 
@@ -65,7 +62,12 @@ describe('getRepoColor', () => {
 
 // ── Graph adapter tests ────────────────────────────────────────────────────
 
-function makeNode(id: string, label: string, name: string, props?: Record<string, unknown>): GraphNode {
+function makeNode(
+  id: string,
+  label: string,
+  name: string,
+  props?: Record<string, unknown>,
+): GraphNode {
   return {
     id,
     label: label as GraphNode['label'],
@@ -92,8 +94,12 @@ function makeGraph(nodes: GraphNode[], relationships: GraphRelationship[]): Know
   return {
     nodes,
     relationships,
-    get nodeCount() { return nodes.length; },
-    get relationshipCount() { return relationships.length; },
+    get nodeCount() {
+      return nodes.length;
+    },
+    get relationshipCount() {
+      return relationships.length;
+    },
     addNode: () => {},
     addRelationship: () => {},
   };
@@ -144,9 +150,7 @@ describe('knowledgeGraphToGraphology - multi-repo support', () => {
       makeNode('repoA::fn1', 'Function', 'funcA', { _repo: 'repoA' }),
       makeNode('repoB::fn1', 'Function', 'funcB', { _repo: 'repoB' }),
     ];
-    const rels = [
-      makeRel('repoB::fn1', 'repoA::fn1', 'CROSS_REPO_IMPORT'),
-    ];
+    const rels = [makeRel('repoB::fn1', 'repoA::fn1', 'CROSS_REPO_IMPORT')];
     const graph = knowledgeGraphToGraphology(makeGraph(nodes, rels));
 
     // Edge should exist
@@ -173,10 +177,7 @@ describe('knowledgeGraphToGraphology - multi-repo support', () => {
   });
 
   it('works correctly in single-repo mode (no repoName assigned)', () => {
-    const nodes = [
-      makeNode('fn1', 'Function', 'funcA'),
-      makeNode('fn2', 'Function', 'funcB'),
-    ];
+    const nodes = [makeNode('fn1', 'Function', 'funcA'), makeNode('fn2', 'Function', 'funcB')];
     const graph = knowledgeGraphToGraphology(makeGraph(nodes, []));
 
     const attr = graph.getNodeAttributes('fn1') as SigmaNodeAttributes;
@@ -195,9 +196,7 @@ describe('knowledgeGraphToGraphology - multi-repo support', () => {
     const posB = graph.getNodeAttributes('repoB::folder1') as SigmaNodeAttributes;
 
     // Different repos should be positioned in different regions
-    const distance = Math.sqrt(
-      Math.pow(posA.x - posB.x, 2) + Math.pow(posA.y - posB.y, 2),
-    );
+    const distance = Math.sqrt(Math.pow(posA.x - posB.x, 2) + Math.pow(posA.y - posB.y, 2));
     expect(distance).toBeGreaterThan(0);
   });
 });

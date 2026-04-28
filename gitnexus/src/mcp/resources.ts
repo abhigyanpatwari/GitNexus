@@ -238,10 +238,7 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
   }
 
   if (parsed.kind === 'group') {
-    if (parsed.resourceType === 'contracts') {
-      return backend.readGroupContractsResource(parsed.groupName, parsed.contractsFilter);
-    }
-    return backend.readGroupStatusResource(parsed.groupName);
+    return 'error: group resources are not supported in this build; use repo "@<groupName>" syntax instead';
   }
 
   const repoName = parsed.repoName;

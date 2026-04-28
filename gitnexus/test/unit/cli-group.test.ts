@@ -82,9 +82,7 @@ describe('group CLI', () => {
       await runCommand(['group', 'create', 'team-a']);
 
       expect(mockCreateGroupDir).toHaveBeenCalledWith('/home/.gitnexus', 'team-a', undefined);
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Created group "team-a"'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Created group "team-a"'));
     });
 
     it('forwards --force to createGroupDir', async () => {
@@ -125,20 +123,24 @@ describe('group CLI', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Discovering indexed repos'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Repos (2)'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('shared-utils (@test/shared)'));
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('5 contracts, 3 cross-links'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('5 contracts, 3 cross-links'));
       expect(mockBackend.dispose).toHaveBeenCalled();
     });
 
     it('prints JSON when --json is set', async () => {
-      const payload = { group: 'workspace', groupDir: '/g', repoCount: 0, repos: [], packageMappings: {} };
+      const payload = {
+        group: 'workspace',
+        groupDir: '/g',
+        repoCount: 0,
+        repos: [],
+        packageMappings: {},
+      };
       mockGroupService.groupDiscover.mockResolvedValueOnce(payload);
 
       await runCommand(['group', 'auto-discover', '/repos', '--json']);
 
-      const jsonCall = logSpy.mock.calls.find((c) =>
-        typeof c[0] === 'string' && c[0].trim().startsWith('{'),
+      const jsonCall = logSpy.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].trim().startsWith('{'),
       );
       expect(jsonCall).toBeDefined();
       expect(JSON.parse(jsonCall![0] as string)).toEqual(payload);
@@ -189,7 +191,13 @@ describe('group CLI', () => {
         repos: {},
         links: [],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
 
@@ -214,7 +222,13 @@ describe('group CLI', () => {
         repos: { 'apps/web': 'web-app', 'libs/shared': 'shared-utils' },
         links: [],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
 
@@ -234,15 +248,19 @@ describe('group CLI', () => {
         repos: { 'libs/shared': 'shared-utils' },
         links: [],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
 
       await runCommand(['group', 'remove', 'team-a', 'apps/web']);
 
-      expect(errSpy).toHaveBeenCalledWith(
-        expect.stringContaining('not found in group "team-a"'),
-      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('not found in group "team-a"'));
       expect(process.exitCode).toBe(1);
       expect(mockFsWriteFile).not.toHaveBeenCalled();
     });
@@ -264,9 +282,7 @@ describe('group CLI', () => {
 
       await runCommand(['group', 'list']);
 
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('No groups configured'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('No groups configured'));
     });
 
     it('with name: prints repos and manifest links', async () => {
@@ -276,10 +292,22 @@ describe('group CLI', () => {
         description: 'A team group',
         repos: { 'apps/web': 'web-app' },
         links: [
-          { from: 'apps/web', to: 'services/api', type: 'http', contract: 'GET::/x', role: 'consumer' },
+          {
+            from: 'apps/web',
+            to: 'services/api',
+            type: 'http',
+            contract: 'GET::/x',
+            role: 'consumer',
+          },
         ],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
 
@@ -306,8 +334,18 @@ describe('group CLI', () => {
       });
       mockGroupService.groupStatus.mockResolvedValueOnce({
         repos: {
-          'apps/web': { indexStale: false, contractsStale: false, missing: false, commitsBehind: 0 },
-          'libs/shared': { indexStale: true, contractsStale: true, missing: false, commitsBehind: 3 },
+          'apps/web': {
+            indexStale: false,
+            contractsStale: false,
+            missing: false,
+            commitsBehind: 0,
+          },
+          'libs/shared': {
+            indexStale: true,
+            contractsStale: true,
+            missing: false,
+            commitsBehind: 3,
+          },
           'legacy/old': { indexStale: false, contractsStale: false, missing: true },
         },
         missingRepos: ['legacy/old'],
@@ -345,16 +383,18 @@ describe('group CLI', () => {
         repos: { 'apps/web': 'web-app' },
         links: [],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
       mockSyncGroup.mockResolvedValueOnce({
         contracts: [{ id: 1 }, { id: 2 }],
-        crossLinks: [
-          { matchType: 'exact' },
-          { matchType: 'exact' },
-          { matchType: 'manifest' },
-        ],
+        crossLinks: [{ matchType: 'exact' }, { matchType: 'exact' }, { matchType: 'manifest' }],
         unmatched: [{ id: 3 }],
         missingRepos: [],
         repoSnapshots: {},
@@ -381,7 +421,13 @@ describe('group CLI', () => {
         repos: {},
         links: [],
         packages: {},
-        detect: { http: false, grpc: false, topics: false, shared_libs: false, embedding_fallback: false },
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+        },
         matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
       });
       const result = {
@@ -395,8 +441,8 @@ describe('group CLI', () => {
 
       await runCommand(['group', 'sync', 'team-a', '--json']);
 
-      const jsonCall = logSpy.mock.calls.find((c) =>
-        typeof c[0] === 'string' && c[0].trim().startsWith('{'),
+      const jsonCall = logSpy.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].trim().startsWith('{'),
       );
       expect(jsonCall).toBeDefined();
     });
@@ -427,10 +473,16 @@ describe('group CLI', () => {
       });
 
       await runCommand([
-        'group', 'graph', 'team-a', 'mySymbol',
-        '--repo', 'web-app',
-        '--depth', '2',
-        '--direction', 'both',
+        'group',
+        'graph',
+        'team-a',
+        'mySymbol',
+        '--repo',
+        'web-app',
+        '--depth',
+        '2',
+        '--direction',
+        'both',
       ]);
 
       expect(mockGroupService.groupGraph).toHaveBeenCalledWith({
@@ -493,7 +545,10 @@ describe('group CLI', () => {
           { summary: 'flow A', _repo: 'apps/web', _rrf_score: 0.0164 },
           { name: 'flow B', _repo: 'libs/shared', _rrf_score: 0.0161 },
         ],
-        per_repo: [{ repo: 'apps/web', count: 1 }, { repo: 'libs/shared', count: 1 }],
+        per_repo: [
+          { repo: 'apps/web', count: 1 },
+          { repo: 'libs/shared', count: 1 },
+        ],
       });
 
       await runCommand(['group', 'query', 'team-a', 'auth', '--limit', '10', '--subgroup', 'apps']);
@@ -513,9 +568,7 @@ describe('group CLI', () => {
 
       await runCommand(['group', 'query', 'team-a', 'nothing']);
 
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('No matching execution flows'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('No matching execution flows'));
     });
   });
 
@@ -563,9 +616,12 @@ describe('group CLI', () => {
       mockGroupService.groupContracts.mockResolvedValueOnce({ contracts: [], crossLinks: [] });
 
       await runCommand([
-        'group', 'contracts', 'team-a',
+        'group',
+        'contracts',
+        'team-a',
         '--unmatched',
-        '--repo', 'apps/web',
+        '--repo',
+        'apps/web',
         '--json',
       ]);
 

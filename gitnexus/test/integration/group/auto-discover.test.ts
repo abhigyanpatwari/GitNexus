@@ -8,7 +8,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { GroupService, type GroupToolPort, type GroupRepoHandle } from '../../../src/core/group/service.js';
+import {
+  GroupService,
+  type GroupToolPort,
+  type GroupRepoHandle,
+} from '../../../src/core/group/service.js';
 import { listGroups } from '../../../src/core/group/storage.js';
 
 describe('Group auto-discover integration', () => {
@@ -97,7 +101,10 @@ console.log(formatDate(new Date()));`,
         }
         // Try matching by path
         for (const handle of Object.values(repoHandles)) {
-          if (nameOrPath && (handle.repoPath === nameOrPath || handle.repoPath.includes(nameOrPath))) {
+          if (
+            nameOrPath &&
+            (handle.repoPath === nameOrPath || handle.repoPath.includes(nameOrPath))
+          ) {
             return handle;
           }
         }
@@ -180,7 +187,10 @@ console.log(formatDate(new Date()));`,
     // Add a non-indexed directory
     const nonIndexed = path.join(tmpDir, 'repos', 'not-indexed');
     fs.mkdirSync(nonIndexed, { recursive: true });
-    fs.writeFileSync(path.join(nonIndexed, 'package.json'), JSON.stringify({ name: 'not-indexed' }));
+    fs.writeFileSync(
+      path.join(nonIndexed, 'package.json'),
+      JSON.stringify({ name: 'not-indexed' }),
+    );
     // No .gitnexus/meta.json
 
     const service = new GroupService(makeMockPort());
@@ -225,10 +235,7 @@ console.log(formatDate(new Date()));`,
     it('returns an error when one of the explicit repoPaths is not indexed', async () => {
       const unindexed = path.join(tmpDir, 'repos', 'unindexed');
       fs.mkdirSync(unindexed, { recursive: true });
-      fs.writeFileSync(
-        path.join(unindexed, 'package.json'),
-        JSON.stringify({ name: 'unindexed' }),
-      );
+      fs.writeFileSync(path.join(unindexed, 'package.json'), JSON.stringify({ name: 'unindexed' }));
 
       const service = new GroupService(makeMockPort());
       const result = (await service.groupDiscover({

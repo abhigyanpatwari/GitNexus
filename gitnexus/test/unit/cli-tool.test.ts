@@ -79,9 +79,7 @@ describe('CLI tool commands', () => {
     it('errors when both name and uid are empty', async () => {
       const { contextCommand } = await import('../../src/cli/tool.js');
       await expect(contextCommand('')).rejects.toThrow('__exit__');
-      expect(errSpy).toHaveBeenCalledWith(
-        expect.stringContaining('gitnexus context'),
-      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('gitnexus context'));
     });
 
     it('accepts uid without a name', async () => {
@@ -117,9 +115,7 @@ describe('CLI tool commands', () => {
     it('errors when target is empty', async () => {
       const { impactCommand } = await import('../../src/cli/tool.js');
       await expect(impactCommand('')).rejects.toThrow('__exit__');
-      expect(errSpy).toHaveBeenCalledWith(
-        expect.stringContaining('gitnexus impact'),
-      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('gitnexus impact'));
     });
 
     it('defaults direction to upstream and passes depth as integer', async () => {
@@ -168,9 +164,7 @@ describe('CLI tool commands', () => {
     it('errors when query is empty', async () => {
       const { cypherCommand } = await import('../../src/cli/tool.js');
       await expect(cypherCommand('')).rejects.toThrow('__exit__');
-      expect(errSpy).toHaveBeenCalledWith(
-        expect.stringContaining('gitnexus cypher'),
-      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('gitnexus cypher'));
     });
 
     it('forwards --repo option', async () => {
@@ -192,9 +186,7 @@ describe('CLI tool commands', () => {
       const { queryCommand } = await import('../../src/cli/tool.js');
 
       await expect(queryCommand('x')).rejects.toThrow('__exit__');
-      expect(errSpy).toHaveBeenCalledWith(
-        expect.stringContaining('No indexed repositories found'),
-      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('No indexed repositories found'));
     });
 
     it('reuses the same backend across calls', async () => {

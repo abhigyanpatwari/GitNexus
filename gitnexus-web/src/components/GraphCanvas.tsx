@@ -103,7 +103,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       }
       const node = nodeById.get(nodeId);
       setHoveredNodeName(node ? node.properties.name : null);
-      const repo = node ? (node.properties as Record<string, unknown>)._repo as string | undefined : undefined;
+      const repo = node
+        ? ((node.properties as Record<string, unknown>)._repo as string | undefined)
+        : undefined;
       setHoveredNodeRepo(repo ?? null);
     },
     [graph, nodeById],

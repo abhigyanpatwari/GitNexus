@@ -157,7 +157,9 @@ const TreeItem = ({
         )}
 
         {/* Name */}
-        <span className={`truncate font-mono text-xs ${node.path.startsWith('repo::') ? 'font-semibold' : ''}`}>
+        <span
+          className={`truncate font-mono text-xs ${node.path.startsWith('repo::') ? 'font-semibold' : ''}`}
+        >
           {node.name}
         </span>
       </button>

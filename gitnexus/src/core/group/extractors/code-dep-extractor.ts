@@ -47,9 +47,7 @@ export class CodeDepExtractor implements ContractExtractor {
   /**
    * Extract provider contracts: exported symbols from this repo that other repos can import.
    */
-  private async extractProviders(
-    dbExecutor: CypherExecutor | null,
-  ): Promise<ExtractedContract[]> {
+  private async extractProviders(dbExecutor: CypherExecutor | null): Promise<ExtractedContract[]> {
     if (!this.ownPackageName || !dbExecutor) return [];
 
     let rows: Record<string, unknown>[];

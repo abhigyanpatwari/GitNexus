@@ -185,9 +185,7 @@ export function getVersion() { return VERSION; }`,
     }
 
     // Verify from/to directions
-    const formatDateLink = result.crossLinks.find((l) =>
-      l.contractId.includes('formatDate'),
-    );
+    const formatDateLink = result.crossLinks.find((l) => l.contractId.includes('formatDate'));
     expect(formatDateLink).toBeDefined();
     expect(formatDateLink!.from.repo).toBe('apps/web'); // consumer
     expect(formatDateLink!.to.repo).toBe('libs/shared'); // provider

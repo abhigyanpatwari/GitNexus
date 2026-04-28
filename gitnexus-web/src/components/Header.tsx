@@ -228,7 +228,9 @@ export const Header = ({
                         {g}
                       </span>
                       {g === projectName && (
-                        <span className="shrink-0 font-mono text-[10px] text-amber-400">active</span>
+                        <span className="shrink-0 font-mono text-[10px] text-amber-400">
+                          active
+                        </span>
                       )}
                     </button>
                   ))

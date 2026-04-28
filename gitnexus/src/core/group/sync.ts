@@ -100,7 +100,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const openPoolIds: string[] = [];
 
     // Build package map for code-dep extraction (auto-discover when config.packages is empty)
-    let packageMap = new Map<string, string>();
+    const packageMap = new Map<string, string>();
     if (config.detect.shared_libs) {
       const hasExplicitPackages =
         Object.keys(config.packages).length > 0 &&

@@ -51,6 +51,7 @@ export interface GroupToolPort {
       include_content?: boolean;
     },
   ): Promise<unknown>;
+  impact(repo: GroupRepoHandle, params: Record<string, unknown>): Promise<unknown>;
   impactByUid(
     repoId: string,
     uid: string,
@@ -519,8 +520,7 @@ export class GroupService {
     const symbol = String(params.symbol ?? '').trim();
     const repoParam = typeof params.repo === 'string' ? params.repo.trim() : undefined;
     const depth = typeof params.depth === 'number' ? Math.min(params.depth, 2) : 1;
-    const direction =
-      typeof params.direction === 'string' ? params.direction : 'both';
+    const direction = typeof params.direction === 'string' ? params.direction : 'both';
 
     if (!name || !symbol) return { error: 'name and symbol are required' };
 
@@ -579,23 +579,22 @@ export class GroupService {
     // Find cross-repo connections via CrossLinks
     const crossConnections: Array<{
       direction: 'outgoing' | 'incoming';
-      link: typeof registry.crossLinks[0];
+      link: (typeof registry.crossLinks)[0];
       remoteRepo: string;
       remoteContext: unknown;
     }> = [];
 
     const visited = new Set<string>([sourceRepo.name]);
 
-    const findConnections = async (
-      repoName: string,
-      currentDepth: number,
-    ): Promise<void> => {
+    const findConnections = async (repoName: string, currentDepth: number): Promise<void> => {
       if (currentDepth > depth) return;
 
       for (const link of registry.crossLinks) {
-        const isFrom = link.from.repo === repoName ||
+        const isFrom =
+          link.from.repo === repoName ||
           Object.entries(config.repos).some(([gp, rn]) => gp === link.from.repo && rn === repoName);
-        const isTo = link.to.repo === repoName ||
+        const isTo =
+          link.to.repo === repoName ||
           Object.entries(config.repos).some(([gp, rn]) => gp === link.to.repo && rn === repoName);
 
         let remoteRepoGroupPath: string | null = null;
@@ -646,8 +645,9 @@ export class GroupService {
     };
 
     // Find connections from source repo
-    const sourceGroupPath = Object.entries(config.repos)
-      .find(([, rn]) => rn === sourceRepo!.name)?.[0] || sourceRepo.name;
+    const sourceGroupPath =
+      Object.entries(config.repos).find(([, rn]) => rn === sourceRepo!.name)?.[0] ||
+      sourceRepo.name;
     await findConnections(sourceGroupPath, 1);
 
     return {
@@ -680,7 +680,8 @@ export class GroupService {
     const force = Boolean(params.force);
     const skipSync = Boolean(params.skipSync);
 
-    if (!directory && repoPaths.length === 0) return { error: 'directory or repoPaths is required' };
+    if (!directory && repoPaths.length === 0)
+      return { error: 'directory or repoPaths is required' };
 
     const repos: Record<string, string> = {};
     const packages: Record<string, Record<string, string>> = {};
@@ -704,7 +705,9 @@ export class GroupService {
           // Not indexed
         }
         if (!metaExists) {
-          return { error: `Repo at ${resolvedPath} is not indexed. Run 'gitnexus analyze' there first.` };
+          return {
+            error: `Repo at ${resolvedPath} is not indexed. Run 'gitnexus analyze' there first.`,
+          };
         }
 
         const dirName = path.basename(resolvedPath);

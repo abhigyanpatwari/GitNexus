@@ -211,7 +211,14 @@ const AppContent = () => {
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
       });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos, connectToGroup]);
+  }, [
+    handleServerConnect,
+    setProgress,
+    setViewMode,
+    setServerBaseUrl,
+    setAvailableRepos,
+    connectToGroup,
+  ]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);

@@ -220,10 +220,7 @@ import { Logger } from '@acme/shared/logging';
 
       const results = await scanRepoForImports(tmpDir, targets);
       expect(results).toHaveLength(2);
-      expect(results.map((r) => r.filePath).sort()).toEqual([
-        'src/app.ts',
-        'src/utils/helper.ts',
-      ]);
+      expect(results.map((r) => r.filePath).sort()).toEqual(['src/app.ts', 'src/utils/helper.ts']);
     });
 
     it('ignores node_modules', async () => {

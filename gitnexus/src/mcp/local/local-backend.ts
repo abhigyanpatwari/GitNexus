@@ -28,7 +28,6 @@ import {
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
-import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import {
   rankExactEmbeddingRows,
@@ -231,6 +230,7 @@ export class LocalBackend {
       const port: GroupToolPort = {
         resolveRepo: (p) => this.resolveRepo(p),
         query: (r, p) => this.query(r as RepoHandle, p),
+        impact: (r, p) => this.impact(r as RepoHandle, p as Parameters<LocalBackend['impact']>[1]),
         impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
         context: (r, p) => this.context(r as RepoHandle, p),
       };
@@ -637,15 +637,6 @@ export class LocalBackend {
 
     if (method.startsWith('group_')) {
       return this.handleGroupTool(method, params || {});
-    }
-
-    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
-    if (
-      (method === 'impact' || method === 'query' || method === 'context') &&
-      typeof p.repo === 'string' &&
-      p.repo.startsWith('@')
-    ) {
-      return this.callToolAtGroupRepo(method, p);
     }
 
     // Resolve repo from optional param (re-reads registry on miss)
@@ -3061,14 +3052,9 @@ export class LocalBackend {
     return this.getGroupService().groupQuery(params);
   }
 
-  private static formatGroupResourcePayload(raw: unknown): string {
-    if (raw && typeof raw === 'object' && 'error' in raw) {
-      const err = (raw as { error?: unknown }).error;
-      if (typeof err === 'string' && err.length > 0) {
-        return `error: ${err}`;
-      }
-    }
-    return JSON.stringify(raw, null, 2);
+  private async groupStatus(params: Record<string, unknown>): Promise<unknown> {
+    await this.refreshRepos();
+    return this.getGroupService().groupStatus(params);
   }
 
   private async groupGraph(params: Record<string, unknown>): Promise<unknown> {

@@ -58,9 +58,7 @@ export function registerGroupCommands(program: Command): void {
         }
       }
       if (result.synced) {
-        console.log(
-          `\nSync: ${result.contracts} contracts, ${result.crossLinks} cross-links`,
-        );
+        console.log(`\nSync: ${result.contracts} contracts, ${result.crossLinks} cross-links`);
       }
     }
   }

@@ -306,9 +306,11 @@ export const DropZone = ({ onServerConnect, onGroupSelect }: DropZoneProps) => {
               <RepoLanding
                 repos={detectedRepos}
                 onSelectRepo={connectToRepo}
-                onSelectGroup={onGroupSelect
-                  ? (groupName) => onGroupSelect(groupName, detectedBackendUrl ?? undefined)
-                  : undefined}
+                onSelectGroup={
+                  onGroupSelect
+                    ? (groupName) => onGroupSelect(groupName, detectedBackendUrl ?? undefined)
+                    : undefined
+                }
                 onAnalyzeComplete={connectToRepo}
               />
             )}

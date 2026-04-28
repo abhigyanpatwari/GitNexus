@@ -47,9 +47,7 @@ describe('statusCommand', () => {
     const { statusCommand } = await import('../../src/cli/status.js');
     await statusCommand();
 
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('stale KuzuDB index'),
-    );
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('stale KuzuDB index'));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('rebuilds the index'));
   });
 

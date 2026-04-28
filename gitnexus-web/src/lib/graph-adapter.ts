@@ -184,7 +184,7 @@ export const knowledgeGraphToGraphology = (
   const nodePositions = new Map<string, { x: number; y: number }>();
 
   // Helper to get repo name from a node
-  const getNodeRepo = (node: typeof knowledgeGraph.nodes[0]): string | undefined => {
+  const getNodeRepo = (node: (typeof knowledgeGraph.nodes)[0]): string | undefined => {
     const repo = (node.properties as Record<string, unknown>)._repo as string | undefined;
     if (repo) return repo;
     const sep = node.id.indexOf('::');
@@ -217,9 +217,8 @@ export const knowledgeGraphToGraphology = (
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
 
     // In multi-repo mode, color File/Folder nodes by repo for visual distinction
-    const structColor = isMultiRepo && repoCenter
-      ? repoCenter.color
-      : NODE_COLORS[node.label] || '#9ca3af';
+    const structColor =
+      isMultiRepo && repoCenter ? repoCenter.color : NODE_COLORS[node.label] || '#9ca3af';
 
     graph.addNode(node.id, {
       x,

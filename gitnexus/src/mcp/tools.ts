@@ -563,7 +563,10 @@ WHEN TO USE: After group_sync, to explore how a symbol in one repo connects to s
       properties: {
         name: { type: 'string', description: 'Group name' },
         symbol: { type: 'string', description: 'Symbol name to search for' },
-        repo: { type: 'string', description: 'Repo containing the symbol (optional, searches all if omitted)' },
+        repo: {
+          type: 'string',
+          description: 'Repo containing the symbol (optional, searches all if omitted)',
+        },
         depth: { type: 'number', description: 'Cross-repo traversal depth (default: 1, max: 2)' },
         direction: {
           type: 'string',
@@ -582,7 +585,10 @@ WHEN TO USE: When a user wants to see a combined knowledge graph from multiple i
     inputSchema: {
       type: 'object',
       properties: {
-        directory: { type: 'string', description: 'Parent directory containing repos (alternative to repoPaths)' },
+        directory: {
+          type: 'string',
+          description: 'Parent directory containing repos (alternative to repoPaths)',
+        },
         repoPaths: {
           type: 'array',
           items: { type: 'string' },

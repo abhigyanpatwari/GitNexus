@@ -133,7 +133,13 @@ describe('Group graph traversal integration', () => {
       repos: { 'libs/shared': 'shared-utils', 'apps/web': 'web-app' },
       links: [],
       packages: {},
-      detect: { http: false, grpc: false, topics: false, shared_libs: true, embedding_fallback: false },
+      detect: {
+        http: false,
+        grpc: false,
+        topics: false,
+        shared_libs: true,
+        embedding_fallback: false,
+      },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
     fs.writeFileSync(path.join(groupDir, 'group.yaml'), yaml.dump(config), 'utf-8');
@@ -154,19 +160,27 @@ describe('Group graph traversal integration', () => {
     return {
       resolveRepo: async (nameOrPath?: string): Promise<GroupRepoHandle> => {
         if (nameOrPath === 'shared-utils') {
-          return { id: 'shared-utils', name: 'shared-utils', repoPath: '/mock/shared', storagePath: '/mock/shared/.gitnexus' };
+          return {
+            id: 'shared-utils',
+            name: 'shared-utils',
+            repoPath: '/mock/shared',
+            storagePath: '/mock/shared/.gitnexus',
+          };
         }
         if (nameOrPath === 'web-app') {
-          return { id: 'web-app', name: 'web-app', repoPath: '/mock/web', storagePath: '/mock/web/.gitnexus' };
+          return {
+            id: 'web-app',
+            name: 'web-app',
+            repoPath: '/mock/web',
+            storagePath: '/mock/web/.gitnexus',
+          };
         }
         throw new Error(`Repo not found: ${nameOrPath}`);
       },
       query: async (_repo, params) => {
         const queryText = (params as { query: string }).query;
         return {
-          processes: [
-            { name: `process-${queryText}`, summary: `Mock process for ${queryText}` },
-          ],
+          processes: [{ name: `process-${queryText}`, summary: `Mock process for ${queryText}` }],
         };
       },
     };
@@ -195,9 +209,7 @@ describe('Group graph traversal integration', () => {
 
     // shared-utils is the provider; apps/web is the consumer
     // Direction from shared-utils perspective: incoming (apps/web imports from us)
-    const conn = result.crossConnections.find((c) =>
-      c.contractId.includes('formatDate'),
-    );
+    const conn = result.crossConnections.find((c) => c.contractId.includes('formatDate'));
     expect(conn).toBeDefined();
     expect(conn!.contractType).toBe('lib');
     expect(conn!.confidence).toBe(1.0);
@@ -269,10 +281,7 @@ describe('Group graph traversal integration', () => {
   });
 
   describe('depth traversal', () => {
-    async function writeFixture(
-      repos: Record<string, string>,
-      registry: ContractRegistry,
-    ) {
+    async function writeFixture(repos: Record<string, string>, registry: ContractRegistry) {
       const { createRequire } = await import('node:module');
       const _require = createRequire(import.meta.url);
       const yaml = _require('js-yaml') as typeof import('js-yaml');
@@ -303,9 +312,7 @@ describe('Group graph traversal integration', () => {
           return handles[name];
         },
         query: async (_repo, params) => ({
-          processes: [
-            { name: `proc-${(params as { query: string }).query}`, summary: 'mock' },
-          ],
+          processes: [{ name: `proc-${(params as { query: string }).query}`, summary: 'mock' }],
         }),
       };
     }
@@ -364,9 +371,24 @@ describe('Group graph traversal integration', () => {
       };
 
       const chainHandles: Record<string, GroupRepoHandle> = {
-        'web-app': { id: 'web-app', name: 'web-app', repoPath: '/mock/web', storagePath: '/mock/web/.gitnexus' },
-        'shared-utils': { id: 'shared-utils', name: 'shared-utils', repoPath: '/mock/shared', storagePath: '/mock/shared/.gitnexus' },
-        'deep-lib': { id: 'deep-lib', name: 'deep-lib', repoPath: '/mock/deep', storagePath: '/mock/deep/.gitnexus' },
+        'web-app': {
+          id: 'web-app',
+          name: 'web-app',
+          repoPath: '/mock/web',
+          storagePath: '/mock/web/.gitnexus',
+        },
+        'shared-utils': {
+          id: 'shared-utils',
+          name: 'shared-utils',
+          repoPath: '/mock/shared',
+          storagePath: '/mock/shared/.gitnexus',
+        },
+        'deep-lib': {
+          id: 'deep-lib',
+          name: 'deep-lib',
+          repoPath: '/mock/deep',
+          storagePath: '/mock/deep/.gitnexus',
+        },
       };
 
       beforeEach(async () => {
@@ -431,7 +453,11 @@ describe('Group graph traversal integration', () => {
         contracts: [],
         crossLinks: [
           {
-            from: { repo: 'apps/a', symbolUid: 'uid-a', symbolRef: { filePath: 'a.ts', name: 'a' } },
+            from: {
+              repo: 'apps/a',
+              symbolUid: 'uid-a',
+              symbolRef: { filePath: 'a.ts', name: 'a' },
+            },
             to: { repo: 'apps/b', symbolUid: 'uid-b', symbolRef: { filePath: 'b.ts', name: 'b' } },
             type: 'lib',
             contractId: 'lib::a-to-b',
@@ -439,7 +465,11 @@ describe('Group graph traversal integration', () => {
             confidence: 1.0,
           },
           {
-            from: { repo: 'apps/b', symbolUid: 'uid-b', symbolRef: { filePath: 'b.ts', name: 'b' } },
+            from: {
+              repo: 'apps/b',
+              symbolUid: 'uid-b',
+              symbolRef: { filePath: 'b.ts', name: 'b' },
+            },
             to: { repo: 'apps/a', symbolUid: 'uid-a', symbolRef: { filePath: 'a.ts', name: 'a' } },
             type: 'lib',
             contractId: 'lib::b-to-a',
@@ -452,8 +482,18 @@ describe('Group graph traversal integration', () => {
       await writeFixture({ 'apps/a': 'repo-a', 'apps/b': 'repo-b' }, cycleRegistry);
 
       const cyclePort = makeHandlePort({
-        'repo-a': { id: 'repo-a', name: 'repo-a', repoPath: '/mock/a', storagePath: '/mock/a/.gitnexus' },
-        'repo-b': { id: 'repo-b', name: 'repo-b', repoPath: '/mock/b', storagePath: '/mock/b/.gitnexus' },
+        'repo-a': {
+          id: 'repo-a',
+          name: 'repo-a',
+          repoPath: '/mock/a',
+          storagePath: '/mock/a/.gitnexus',
+        },
+        'repo-b': {
+          id: 'repo-b',
+          name: 'repo-b',
+          repoPath: '/mock/b',
+          storagePath: '/mock/b/.gitnexus',
+        },
       });
 
       const service = new GroupService(cyclePort);

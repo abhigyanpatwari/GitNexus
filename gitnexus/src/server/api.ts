@@ -746,7 +746,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       const allNodes: GraphNode[] = [];
       const allRelationships: GraphRelationship[] = [];
-      const repoSummaries: Array<{ name: string; groupPath: string; nodeCount: number; edgeCount: number }> = [];
+      const repoSummaries: Array<{
+        name: string;
+        groupPath: string;
+        nodeCount: number;
+        edgeCount: number;
+      }> = [];
 
       // Load graph from each repo and namespace node IDs
       for (const [groupPath, registryName] of Object.entries(config.repos)) {
@@ -794,10 +799,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Add cross-repo edges from contracts.json
       if (registry) {
         for (const link of registry.crossLinks) {
-          const fromRepoName =
-            config.repos[link.from.repo] || link.from.repo;
-          const toRepoName =
-            config.repos[link.to.repo] || link.to.repo;
+          const fromRepoName = config.repos[link.from.repo] || link.from.repo;
+          const toRepoName = config.repos[link.to.repo] || link.to.repo;
 
           allRelationships.push({
             id: `cross::${link.contractId}::${fromRepoName}::${toRepoName}`,
