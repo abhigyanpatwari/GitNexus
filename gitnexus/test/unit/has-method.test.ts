@@ -319,8 +319,10 @@ impl MyTrait for MyStruct {
       expect(nameNode).not.toBeNull();
 
       const result = findEnclosingClassId(nameNode!, 'test/my_struct.rs');
-      // Should resolve to MyStruct (the implementing type), NOT MyTrait
-      expect(result).toBe('Impl:test/my_struct.rs:MyStruct');
+      // Should resolve to MyStruct (the implementing type), NOT MyTrait.
+      // Uses Struct label because trait impls don't create Impl nodes in the graph
+      // (the definition.impl query uses !trait filter).
+      expect(result).toBe('Struct:test/my_struct.rs:MyStruct');
     });
 
     it('still picks struct name for plain impl Struct (no trait)', () => {

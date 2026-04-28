@@ -201,7 +201,7 @@ interface OnboardingGuideProps {
 }
 
 export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
-  const primary = isDev ? 'cd gitnexus && npm run serve' : 'npx gitnexus@latest serve';
+  const primary = isDev ? 'npm run --prefix gitnexus serve' : 'npx gitnexus@latest serve';
   const termLabel = isDev ? 'Start backend' : 'Terminal';
 
   // Step states: step 1 = copy command, step 2 = run/wait, step 3 = auto-connect
@@ -277,7 +277,9 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
           state={step2State}
           number={2}
           title={isPolling ? 'Waiting for server to start' : 'Paste and run in your terminal'}
-          description={isPolling ? undefined : 'Open a new terminal window, paste, and hit Enter.'}
+          description={
+            isPolling ? undefined : 'Open a terminal at the project root, paste, and hit Enter.'
+          }
         >
           {isPolling && <PollingBar />}
         </StepRow>

@@ -222,7 +222,7 @@ export function normalizeServerUrl(input: string): string {
 
 // ── Internal Helpers ───────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 2_000;
 
 const fetchWithTimeout = async (
@@ -264,11 +264,13 @@ const fetchWithTimeout = async (
 const assertOk = async (response: Response): Promise<void> => {
   if (response.ok) return;
 
-  let message = `Backend returned ${response.status} ${response.statusText}`;
+  let message = response.statusText;
   try {
     const body = await response.json();
     if (body && typeof body.error === 'string') {
       message = body.error;
+    } else if (body && typeof body.message === 'string') {
+      message = body.message;
     }
   } catch {
     // Response body was not JSON
@@ -302,16 +304,26 @@ export const fetchServerInfo = async (): Promise<ServerInfo> => {
 };
 
 /**
- * Connect an SSE heartbeat to the backend. Fires `onDisconnect` when the
- * server goes down (after one retry to avoid false positives from transient
- * network hiccups). Returns a cleanup function.
+ * Connect an SSE heartbeat to the backend. Retries indefinitely with capped
+ * exponential backoff so transient hiccups don't reset the UI.
+ *
+ * - `onConnect` fires on every successful (re)connection.
+ * - `onReconnecting` fires on the first retry after a drop — use it to show
+ *   a "reconnecting" banner while keeping the current view intact.
+ *
+ * Returns a cleanup function that tears down the EventSource and timers.
  */
-export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void): (() => void) => {
+export const connectHeartbeat = (
+  onConnect: () => void,
+  onReconnecting: () => void,
+): (() => void) => {
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let es: EventSource | null = null;
   let attempt = 0;
-  const MAX_RETRIES = 3;
+  /** Whether we've already fired onReconnecting for the current drop. */
+  let notifiedReconnecting = false;
+  const MAX_BACKOFF_MS = 15_000;
 
   const connect = () => {
     if (closed) return;
@@ -319,6 +331,7 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
     es.onopen = () => {
       if (!closed) {
         attempt = 0;
+        notifiedReconnecting = false;
         onConnect();
       }
     };
@@ -326,13 +339,15 @@ export const connectHeartbeat = (onConnect: () => void, onDisconnect: () => void
       es?.close();
       es = null;
       if (closed) return;
-      if (attempt < MAX_RETRIES) {
-        const delay = 1_000 * Math.pow(2, attempt);
-        attempt++;
-        retryTimer = setTimeout(connect, delay);
-      } else {
-        onDisconnect();
+
+      if (!notifiedReconnecting) {
+        notifiedReconnecting = true;
+        onReconnecting();
       }
+
+      const delay = Math.min(1_000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+      attempt++;
+      retryTimer = setTimeout(connect, delay);
     };
   };
 
@@ -373,10 +388,22 @@ export const fetchRepos = async (): Promise<BackendRepo[]> => {
   return response.json() as Promise<BackendRepo[]>;
 };
 
-/** Fetch repo metadata. */
-export const fetchRepoInfo = async (repo?: string): Promise<BackendRepo> => {
+/** Fetch repo metadata.
+ * Pass `awaitAnalysis: true` when connecting to a repo that may still be cloning/analyzing —
+ * this enables the backend's hold-queue and uses a 5-minute timeout to match.
+ * Normal calls (e.g. repo switching between already-indexed repos) use the default 10s timeout.
+ *
+ * Must stay in sync with HOLD_QUEUE_TIMEOUT_SECS in gitnexus/src/server/api.ts.
+ */
+const HOLD_QUEUE_TIMEOUT_MS = 300_000; // 5 minutes — matches backend HOLD_QUEUE_TIMEOUT_SECS
+
+export const fetchRepoInfo = async (
+  repo?: string,
+  opts?: { awaitAnalysis?: boolean },
+): Promise<BackendRepo> => {
   const url = `${_backendUrl}/api/repo${repo ? `?${repoParam(repo)}` : ''}`;
-  const response = await fetchWithTimeout(url);
+  const timeout = opts?.awaitAnalysis ? HOLD_QUEUE_TIMEOUT_MS : undefined;
+  const response = await fetchWithTimeout(url, {}, timeout);
   await assertOk(response);
   const data = await response.json();
   return { ...data, repoPath: data.repoPath ?? data.path };
@@ -391,12 +418,18 @@ export const fetchGraph = async (
     onProgress?: (downloaded: number, total: number | null) => void;
   },
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
-  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '']
+  const params = [repoParam(repo), opts?.includeContent ? 'includeContent=true' : '', 'stream=true']
     .filter(Boolean)
     .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
-  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 60_000);
+  // Large repos can take a while to serialize the graph — use an elevated timeout
+  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 120_000);
   await assertOk(response);
+
+  const contentType = response.headers.get('Content-Type') || '';
+  if (contentType.includes('application/x-ndjson')) {
+    return parseNdjsonGraphResponse(response, opts?.onProgress);
+  }
 
   if (!opts?.onProgress || !response.body) {
     return response.json() as Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }>;
@@ -424,6 +457,66 @@ export const fetchGraph = async (
     offset += chunk.length;
   }
   return JSON.parse(new TextDecoder().decode(combined));
+};
+
+const parseNdjsonGraphResponse = async (
+  response: Response,
+  onProgress?: (downloaded: number, total: number | null) => void,
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+  if (!response.body) {
+    throw new BackendError('No response body', response.status, 'server');
+  }
+
+  const contentLength = response.headers.get('Content-Length');
+  const total = contentLength ? parseInt(contentLength, 10) : null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const nodes: GraphNode[] = [];
+  const relationships: GraphRelationship[] = [];
+  let buffer = '';
+  let downloaded = 0;
+
+  const parseLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const record = JSON.parse(trimmed) as
+      | { type: 'node'; data: GraphNode }
+      | { type: 'relationship'; data: GraphRelationship }
+      | { type: 'error'; error: string };
+
+    if (record.type === 'node') {
+      nodes.push(record.data);
+      return;
+    }
+    if (record.type === 'relationship') {
+      relationships.push(record.data);
+      return;
+    }
+    if (record.type === 'error') {
+      throw new BackendError(record.error, response.status || 500, 'server');
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    downloaded += value.length;
+    onProgress?.(downloaded, total);
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      parseLine(line);
+    }
+  }
+
+  buffer += decoder.decode();
+  parseLine(buffer);
+
+  return { nodes, relationships };
 };
 
 /** Execute a Cypher query. Returns rows. */
@@ -657,18 +750,21 @@ export interface ConnectResult {
 /**
  * Connect to a server: validate, fetch repo info, download graph.
  * Content is NOT included (use readFile/grep for file access).
+ * Pass `awaitAnalysis: true` when the repo may still be cloning/analyzing —
+ * this enables the backend hold-queue and a 5-minute fetch timeout.
  */
 export async function connectToServer(
   url: string,
   onProgress?: (phase: string, downloaded: number, total: number | null) => void,
   signal?: AbortSignal,
   repoName?: string,
+  opts?: { awaitAnalysis?: boolean },
 ): Promise<ConnectResult> {
   const baseUrl = normalizeServerUrl(url);
   setBackendUrl(baseUrl);
 
   onProgress?.('validating', 0, null);
-  const repoInfo = await fetchRepoInfo(repoName);
+  const repoInfo = await fetchRepoInfo(repoName, { awaitAnalysis: opts?.awaitAnalysis });
 
   onProgress?.('downloading', 0, null);
   const { nodes, relationships } = await fetchGraph(repoName, {

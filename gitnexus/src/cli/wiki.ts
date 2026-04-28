@@ -232,65 +232,28 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
         llmConfig = { ...llmConfig, provider: 'cursor', model, apiKey: '', baseUrl: '' };
       } else if (choice === '3') {
-        // Azure OpenAI guided setup
-        console.log('\n  Azure OpenAI setup.');
-        console.log(
-          '  You need: your resource name, deployment name, and API key from the Azure portal.\n',
-        );
+        // Azure OpenAI guided setup — minimal prompts
+        console.log('\n  Azure OpenAI setup.\n');
 
-        const resourceName = (
-          await prompt('  Azure resource name (e.g. my-openai-resource): ')
-        ).trim();
-        if (!resourceName) {
-          console.log('\n  No resource name provided. Aborting.\n');
+        const endpoint = (
+          await prompt('  Endpoint URL (e.g. https://my-resource.openai.azure.com): ')
+        )
+          .trim()
+          .replace(/\/+$/, '');
+        if (!endpoint) {
+          console.log('\n  No endpoint provided. Aborting.\n');
           process.exitCode = 1;
           return;
         }
 
-        const deploymentName = (
-          await prompt('  Deployment name (the name you gave your model deployment): ')
-        ).trim();
+        const deploymentName = (await prompt('  Deployment name: ')).trim();
         if (!deploymentName) {
           console.log('\n  No deployment name provided. Aborting.\n');
           process.exitCode = 1;
           return;
         }
 
-        // Offer v1 or legacy URL
-        console.log('\n  API format:');
-        console.log('  [1] v1 API — recommended (no api-version needed)');
-        console.log('  [2] Legacy — uses api-version query param\n');
-        const apiFormat = await prompt('  Select format (1/2, default: 1): ');
-
-        let azureApiVersion: string | undefined;
-        let azureBaseUrl: string;
-        if (apiFormat === '2') {
-          const versionInput = await prompt('  api-version (default: 2024-10-21): ');
-          azureApiVersion = versionInput || '2024-10-21';
-          azureBaseUrl = `https://${resourceName}.openai.azure.com/openai/deployments/${deploymentName}`;
-        } else {
-          azureBaseUrl = `https://${resourceName}.openai.azure.com/openai/v1`;
-          azureApiVersion = undefined;
-        }
-
-        defaultModel = deploymentName;
-
-        // Ask if this is a reasoning model deployment
-        const reasoningAnswer = await prompt(
-          '  Is this a reasoning model (o1, o3, o4-mini)? (y/N): ',
-        );
-        const isReasoningModelDeployment = ['y', 'yes'].includes(reasoningAnswer.toLowerCase());
-
-        if (isReasoningModelDeployment) {
-          console.log(
-            '  Note: temperature and max_tokens will be omitted for this deployment (Azure reasoning model requirement).\n',
-          );
-        }
-
-        const modelInput = await prompt(`  Model / deployment name (default: ${defaultModel}): `);
-        const model = modelInput || defaultModel;
-
-        // API key
+        // API key — use env var if available
         const envKey = process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
         let azureKey: string;
         if (envKey) {
@@ -311,26 +274,23 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
           return;
         }
 
-        // Save Azure config including optional apiVersion and isReasoningModel
-        const azureConfig: Parameters<typeof saveCLIConfig>[0] = {
+        // Always use v1 API format — no need for api-version
+        const azureBaseUrl = `${endpoint}/openai/v1`;
+
+        await saveCLIConfig({
           apiKey: azureKey,
           baseUrl: azureBaseUrl,
-          model,
+          model: deploymentName,
           provider: 'azure',
-          isReasoningModel: isReasoningModelDeployment,
-        };
-        if (azureApiVersion) azureConfig.apiVersion = azureApiVersion;
-        await saveCLIConfig(azureConfig);
+        });
         console.log('  Config saved to ~/.gitnexus/config.json\n');
 
         llmConfig = {
           ...llmConfig,
           apiKey: azureKey,
           baseUrl: azureBaseUrl,
-          model,
+          model: deploymentName,
           provider: 'azure',
-          apiVersion: azureApiVersion,
-          isReasoningModel: isReasoningModelDeployment,
         };
       } else {
         // OpenAI-compatible provider (OpenAI, OpenRouter, Custom)

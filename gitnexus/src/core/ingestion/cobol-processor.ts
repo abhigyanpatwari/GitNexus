@@ -92,7 +92,7 @@ function isCopybook(filePath: string): boolean {
 export const processCobol = (
   graph: KnowledgeGraph,
   files: CobolFile[],
-  allPathSet: Set<string>,
+  allPathSet: ReadonlySet<string>,
 ): CobolProcessResult => {
   const result: CobolProcessResult = {
     programs: 0,

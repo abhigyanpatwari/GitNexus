@@ -15,17 +15,24 @@ import {
   closeLbug,
   isLbugReady,
   isWriteQuery,
-} from '../core/lbug-adapter.js';
+} from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
+import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
+import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
+import { collectBestChunks } from '../../core/embeddings/types.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
+import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -95,7 +102,9 @@ export const VALID_RELATION_TYPES = new Set([
   'IMPLEMENTS',
   'HAS_METHOD',
   'HAS_PROPERTY',
-  'OVERRIDES',
+  'METHOD_OVERRIDES',
+  'OVERRIDES', // Legacy alias — dual-read for pre-rename indexes
+  'METHOD_IMPLEMENTS',
   'ACCESSES',
   'HANDLES_ROUTE',
   'FETCHES',
@@ -116,7 +125,8 @@ export const VALID_RELATION_TYPES = new Set([
  *   CALLS / IMPORTS  – direct, strongly-typed references → 0.9
  *   EXTENDS          – class hierarchy, statically verifiable → 0.85
  *   IMPLEMENTS       – interface contract, statically verifiable → 0.85
- *   OVERRIDES        – method override, statically verifiable → 0.85
+ *   METHOD_OVERRIDES  – method override, statically verifiable → 0.85
+ *   METHOD_IMPLEMENTS – interface method implementation, statically verifiable → 0.85
  *   HAS_METHOD       – structural containment → 0.95
  *   HAS_PROPERTY     – structural containment → 0.95
  *   ACCESSES         – field read/write, may be indirect → 0.8
@@ -128,7 +138,8 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
   IMPORTS: 0.9,
   EXTENDS: 0.85,
   IMPLEMENTS: 0.85,
-  OVERRIDES: 0.85,
+  METHOD_OVERRIDES: 0.85,
+  METHOD_IMPLEMENTS: 0.85,
   HAS_METHOD: 0.95,
   HAS_PROPERTY: 0.95,
   ACCESSES: 0.8,
@@ -146,6 +157,28 @@ const confidenceForRelType = (relType: string | undefined): number =>
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`GitNexus [${context}]: ${msg}`);
+}
+
+/**
+ * Structured per-query latency log for production aggregation (#553).
+ *
+ * Emitted on stderr — NOT stdout — because the MCP stdio transport uses
+ * stdout exclusively for JSON-RPC responses (#324), and the CLI e2e test
+ * `tool output goes to stdout via fd 1` asserts that stdout parses cleanly
+ * as JSON. Any `console.log` from inside a tool handler would corrupt the
+ * protocol. Matches the existing `logQueryError` convention above, which
+ * uses stderr for the same reason.
+ *
+ * The `GitNexus [query:timing] …` prefix keeps lines greppable; the
+ * `phases` payload is JSON so log-scraping pipelines can parse it
+ * without custom format knowledge.
+ */
+function logQueryTiming(query: string, phases: Record<string, number>): void {
+  const totalMs = phases.wall ?? Object.values(phases).reduce((a, b) => a + b, 0);
+  const truncated = query.length > 80 ? `${query.slice(0, 80)}…` : query;
+  console.error(
+    `GitNexus [query:timing] query=${JSON.stringify(truncated)} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
+  );
 }
 
 export interface CodebaseContext {
@@ -166,6 +199,7 @@ interface RepoHandle {
   lbugPath: string;
   indexedAt: string;
   lastCommit: string;
+  remoteUrl?: string;
   stats?: RegistryEntry['stats'];
 }
 
@@ -175,6 +209,36 @@ export class LocalBackend {
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  private groupToolSvc: GroupService | null = null;
+  /**
+   * One-shot stderr warnings for sibling-clone drift, keyed by
+   * `${repoId}|${cwdGitRoot}`. Without this guard every tool call
+   * from inside a sibling clone would print the same warning,
+   * making MCP stderr unreadable.
+   */
+  private warnedSiblingDrift: Set<string> = new Set();
+
+  /**
+   * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
+   */
+  getGroupService(): GroupService {
+    if (!this.groupToolSvc) {
+      const port: GroupToolPort = {
+        resolveRepo: (p) => this.resolveRepo(p),
+        impact: (r, p) => this.impact(r as RepoHandle, p),
+        query: (r, p) => this.query(r as RepoHandle, p),
+        impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
+        context: (r, p) => this.context(r as RepoHandle, p),
+      };
+      this.groupToolSvc = new GroupService(port);
+    }
+    return this.groupToolSvc;
+  }
+
+  /** Close all pooled LadybugDB connections (CLI one-shot; optional for long-lived MCP). */
+  async dispose(): Promise<void> {
+    await closeLbug();
+  }
 
   // ─── Initialization ──────────────────────────────────────────────
 
@@ -220,6 +284,7 @@ export class LocalBackend {
         lbugPath,
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
+        remoteUrl: entry.remoteUrl,
         stats: entry.stats,
       };
 
@@ -278,24 +343,50 @@ export class LocalBackend {
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
     const result = this.resolveRepoFromCache(repoParam);
-    if (result) return result;
+    if (result) {
+      // Issue: silent graph drift across sibling clones.
+      // If the caller's cwd lives in a *different* on-disk clone of
+      // the same repo (matched by `remoteUrl`), warn once per
+      // (repo, cwd) pair on stderr. We do not fail or refuse to
+      // serve — the index is still the best answer we have — but
+      // the operator/agent has to know the answer may be stale.
+      this.maybeWarnSiblingDrift(result).catch(() => {
+        /* best-effort; never throw from resolveRepo */
+      });
+      return result;
+    }
 
     // Miss — refresh registry and try once more
     await this.refreshRepos();
     const retried = this.resolveRepoFromCache(repoParam);
-    if (retried) return retried;
+    if (retried) {
+      this.maybeWarnSiblingDrift(retried).catch(() => {});
+      return retried;
+    }
 
     // Still no match — throw with helpful message
     if (this.repos.size === 0) {
       throw new Error('No indexed repositories. Run: gitnexus analyze');
     }
-    if (repoParam) {
-      const names = [...this.repos.values()].map((h) => h.name);
-      throw new Error(`Repository "${repoParam}" not found. Available: ${names.join(', ')}`);
+
+    // Build a disambiguated "Available: …" list (#829). When two handles
+    // share a name, annotate each colliding label with its path so the
+    // caller can actually pick the right one. Single-name entries render
+    // identically to pre-#829 output.
+    const nameCounts = new Map<string, number>();
+    for (const h of this.repos.values()) {
+      const key = h.name.toLowerCase();
+      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
     }
-    const names = [...this.repos.values()].map((h) => h.name);
+    const labels = [...this.repos.values()].map((h) =>
+      (nameCounts.get(h.name.toLowerCase()) ?? 0) > 1 ? `${h.name} (${h.repoPath})` : h.name,
+    );
+
+    if (repoParam) {
+      throw new Error(`Repository "${repoParam}" not found. Available: ${labels.join(', ')}`);
+    }
     throw new Error(
-      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${names.join(', ')}`,
+      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${labels.join(', ')}`,
     );
   }
 
@@ -409,18 +500,128 @@ export class LocalBackend {
    * List all registered repos with their metadata.
    * Re-reads the global registry so newly indexed repos are discovered
    * without restarting the MCP server.
+   *
+   * Each entry includes:
+   *   - `staleness`: if the indexed clone's own HEAD has moved past
+   *     the recorded `lastCommit` (option D in the issue's fix list).
+   *   - `siblings`: other registered entries sharing the same
+   *     `remoteUrl` (option B's payoff: callers can see at a glance
+   *     that another clone of the same logical repo is registered).
+   *   - `remoteUrl`: the canonical origin URL recorded at index time.
    */
   async listRepos(): Promise<
-    Array<{ name: string; path: string; indexedAt: string; lastCommit: string; stats?: any }>
+    Array<{
+      name: string;
+      path: string;
+      indexedAt: string;
+      lastCommit: string;
+      remoteUrl?: string;
+      stats?: any;
+      staleness?: { commitsBehind: number; hint?: string };
+      siblings?: Array<{ name: string; path: string; lastCommit: string }>;
+    }>
   > {
     await this.refreshRepos();
-    return [...this.repos.values()].map((h) => ({
-      name: h.name,
-      path: h.repoPath,
-      indexedAt: h.indexedAt,
-      lastCommit: h.lastCommit,
-      stats: h.stats,
-    }));
+    const handles = [...this.repos.values()];
+
+    // Pre-group registered handles by `remoteUrl` so the sibling
+    // lookup is O(1) per handle. We reuse the in-memory `this.repos`
+    // (already populated by `refreshRepos`) instead of doing a fresh
+    // `readRegistry()` per entry — that would be N file reads for N
+    // registered repos.
+    const isWin = process.platform === 'win32';
+    const norm = (p: string) => (isWin ? path.resolve(p).toLowerCase() : path.resolve(p));
+    const byRemote = new Map<string, RepoHandle[]>();
+    for (const h of handles) {
+      if (!h.remoteUrl) continue;
+      const list = byRemote.get(h.remoteUrl) ?? [];
+      list.push(h);
+      byRemote.set(h.remoteUrl, list);
+    }
+
+    return handles.map((h) => {
+      const stale = checkStaleness(h.repoPath, h.lastCommit);
+      const selfNorm = norm(h.repoPath);
+      const siblings = h.remoteUrl
+        ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
+        : [];
+      return {
+        name: h.name,
+        path: h.repoPath,
+        indexedAt: h.indexedAt,
+        lastCommit: h.lastCommit,
+        remoteUrl: h.remoteUrl,
+        stats: h.stats,
+        staleness: stale.isStale
+          ? { commitsBehind: stale.commitsBehind, hint: stale.hint }
+          : undefined,
+        siblings:
+          siblings.length > 0
+            ? siblings.map((s) => ({
+                name: s.name,
+                path: s.repoPath,
+                lastCommit: s.lastCommit,
+              }))
+            : undefined,
+      };
+    });
+  }
+
+  /**
+   * Best-effort sibling-clone drift warning.
+   *
+   * When the resolved index has a `remoteUrl` recorded and the caller's
+   * `process.cwd()` is inside a *different* clone of the same repo, emit
+   * one stderr line per (repo, cwd) pair so the operator knows the
+   * graph may be stale relative to what's actually on disk under their
+   * cwd. Silent on path matches and on repos without a remote URL.
+   *
+   * Limitation: in MCP stdio server mode `process.cwd()` is the
+   * server's CWD at start time, *not* the agent client's CWD. The
+   * warning therefore only fires when the MCP server itself was
+   * launched from inside a sibling clone (typical for `npx gitnexus
+   * serve` from a polecat workspace). Surfacing the client's CWD
+   * would require a per-tool-call `cwd` parameter — out of scope for
+   * the current MCP contract.
+   *
+   * Pure side-effect (stderr); never affects the returned handle.
+   * After the first computation for a given (repo, cwd) pair the
+   * result is cached so subsequent `resolveRepo()` calls don't
+   * re-shell-out to git.
+   */
+  private async maybeWarnSiblingDrift(handle: RepoHandle): Promise<void> {
+    if (!handle.remoteUrl) return;
+    let cwd: string;
+    try {
+      cwd = process.cwd();
+    } catch {
+      return;
+    }
+    // Early-exit cache: keyed on (repo, cwd) BEFORE any git shellout.
+    // After the first call for a given cwd, this short-circuits the
+    // up-to-four `execSync`/`execFileSync` calls inside `checkCwdMatch`
+    // — important for MCP-server mode where `process.cwd()` is constant
+    // and `resolveRepo` runs on every tool call.
+    const cacheKey = `${handle.id}|${cwd}`;
+    if (this.warnedSiblingDrift.has(cacheKey)) return;
+
+    const match = await checkCwdMatch(cwd);
+    if (
+      match.match !== 'sibling-by-remote' ||
+      !match.entry ||
+      !match.cwdGitRoot ||
+      match.entry.path !== handle.repoPath ||
+      !match.hint
+    ) {
+      // Cache "nothing to warn about" outcomes too — `checkCwdMatch`
+      // is deterministic for a fixed (registry, cwd) pair, so re-running
+      // it yields nothing new.
+      this.warnedSiblingDrift.add(cacheKey);
+      return;
+    }
+
+    this.warnedSiblingDrift.add(cacheKey);
+    console.error(`GitNexus: ${match.hint}`);
   }
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
@@ -430,8 +631,21 @@ export class LocalBackend {
       return this.listRepos();
     }
 
+    if (method.startsWith('group_')) {
+      return this.handleGroupTool(method, params || {});
+    }
+
+    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+    if (
+      (method === 'impact' || method === 'query' || method === 'context') &&
+      typeof p.repo === 'string' &&
+      p.repo.startsWith('@')
+    ) {
+      return this.callToolAtGroupRepo(method, p);
+    }
+
     // Resolve repo from optional param (re-reads registry on miss)
-    const repo = await this.resolveRepo(params?.repo);
+    const repo = await this.resolveRepo((params as { repo?: string } | undefined)?.repo);
 
     switch (method) {
       case 'query':
@@ -500,17 +714,29 @@ export class LocalBackend {
     const includeContent = params.include_content ?? false;
     const searchQuery = params.query.trim();
 
-    // Step 1: Run hybrid search to get matching symbols
+    // Per-phase timing instrumentation (#553). Records wall time for each
+    // observable sub-step of the search pipeline so production latency can
+    // be aggregated offline for Pareto analysis and bottleneck detection.
+    // Overhead is <0.1 ms per phase; the timer is passive and never alters
+    // query behaviour.
+    const timer = new PhaseTimer();
+    const wallStart = performance.now();
+
+    // Step 1: Run hybrid search to get matching symbols. BM25 and vector
+    // search run concurrently via Promise.all — use `timer.time()` for
+    // each so both get independent wall-time records without fighting
+    // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const [bm25SearchResult, semanticResults] = await Promise.all([
-      this.bm25Search(repo, searchQuery, searchLimit),
-      this.semanticSearch(repo, searchQuery, searchLimit),
+      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit)),
+      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
     ]);
 
     const bm25Results = bm25SearchResult.results;
     const ftsUsed = bm25SearchResult.ftsUsed;
 
     // Merge via reciprocal rank fusion
+    timer.start('merge');
     const scoreMap = new Map<string, { score: number; data: any }>();
 
     for (let i = 0; i < bm25Results.length; i++) {
@@ -540,8 +766,10 @@ export class LocalBackend {
     const merged = Array.from(scoreMap.entries())
       .sort((a, b) => b[1].score - a[1].score)
       .slice(0, searchLimit);
+    timer.stop(); // merge
 
     // Step 2: For each match with a nodeId, trace to process(es)
+    timer.start('symbol_lookup');
     const processMap = new Map<
       string,
       {
@@ -674,7 +902,10 @@ export class LocalBackend {
       }
     }
 
+    timer.stop(); // symbol_lookup
+
     // Step 3: Rank processes by aggregate score + internal cohesion boost
+    timer.start('ranking');
     const rankedProcesses = Array.from(processMap.values())
       .map((p) => ({
         ...p,
@@ -682,8 +913,10 @@ export class LocalBackend {
       }))
       .sort((a, b) => b.priority - a.priority)
       .slice(0, processLimit);
+    timer.stop(); // ranking
 
     // Step 4: Build response
+    timer.start('formatting');
     const processes = rankedProcesses.map((p) => ({
       id: p.id,
       summary: p.heuristicLabel || p.label,
@@ -707,11 +940,20 @@ export class LocalBackend {
       seen.add(s.id);
       return true;
     });
+    timer.stop(); // formatting
+
+    // End-to-end wall time — deliberately a separate mark so callers can
+    // compare sum(phases) vs wall to see how much Promise.all concurrency
+    // saved. Must come before summary() so it's included.
+    timer.mark('wall', performance.now() - wallStart);
+    const timing = timer.summary();
+    logQueryTiming(searchQuery, timing);
 
     return {
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
+      timing,
       ...(!ftsUsed && {
         warning:
           'FTS extension unavailable - keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
@@ -743,16 +985,30 @@ export class LocalBackend {
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
       try {
-        const symbols = await executeParameterized(
-          repo.id,
-          `
-          MATCH (n)
-          WHERE n.filePath = $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-          LIMIT 3
-        `,
-          { filePath: fullPath },
-        );
+        // Prefer direct nodeId lookup (exact FTS-matched nodes) over filePath fallback.
+        // Without this, LIMIT 3 on filePath returns arbitrary symbols rather than
+        // the nodes that actually scored highest in the BM25 index.
+        const nodeIds = bm25Result.nodeIds?.length ? bm25Result.nodeIds : null;
+        const symbols = nodeIds
+          ? await executeParameterized(
+              repo.id,
+              `
+              MATCH (n)
+              WHERE n.id IN $nodeIds
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+            `,
+              { nodeIds },
+            )
+          : await executeParameterized(
+              repo.id,
+              `
+              MATCH (n)
+              WHERE n.filePath = $filePath
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              LIMIT 3
+            `,
+              { filePath: fullPath },
+            );
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
@@ -797,7 +1053,7 @@ export class LocalBackend {
       // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
       const tableCheck = await executeQuery(
         repo.id,
-        `MATCH (e:CodeEmbedding) RETURN COUNT(*) AS cnt LIMIT 1`,
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) return [];
 
@@ -806,26 +1062,33 @@ export class LocalBackend {
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
 
-      const vectorQuery = `
-        CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 
-          CAST(${queryVecStr} AS FLOAT[${dims}]), ${limit})
-        YIELD node AS emb, distance
-        WITH emb, distance
-        WHERE distance < 0.6
-        RETURN emb.nodeId AS nodeId, distance
-        ORDER BY distance
-      `;
+      const bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+        const vectorQuery = `
+          CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
+            CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
+          YIELD node AS emb, distance
+          WITH emb, distance
+          WHERE distance < 0.6
+          RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
+                 emb.startLine AS startLine, emb.endLine AS endLine, distance
+          ORDER BY distance
+        `;
 
-      const embResults = await executeQuery(repo.id, vectorQuery);
+        const embResults = await executeQuery(repo.id, vectorQuery);
+        return embResults.map((row) => ({
+          nodeId: row.nodeId ?? row[0],
+          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+          startLine: row.startLine ?? row[2] ?? 0,
+          endLine: row.endLine ?? row[3] ?? 0,
+          distance: row.distance ?? row[4],
+        }));
+      });
 
-      if (embResults.length === 0) return [];
+      if (bestChunks.size === 0) return [];
 
       const results: any[] = [];
 
-      for (const embRow of embResults) {
-        const nodeId = embRow.nodeId ?? embRow[0];
-        const distance = embRow.distance ?? embRow[1];
-
+      for (const [nodeId, chunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
@@ -836,7 +1099,7 @@ export class LocalBackend {
           const nodeQuery =
             label === 'File'
               ? `MATCH (n:File {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`
-              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+              : `MATCH (n:\`${label}\` {id: $nodeId}) RETURN n.name AS name, n.filePath AS filePath`;
 
           const nodeRows = await executeParameterized(repo.id, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
@@ -846,9 +1109,9 @@ export class LocalBackend {
               name: nodeRow.name ?? nodeRow[0] ?? '',
               type: label,
               filePath: nodeRow.filePath ?? nodeRow[1] ?? '',
-              distance,
-              startLine: label !== 'File' ? (nodeRow.startLine ?? nodeRow[2]) : undefined,
-              endLine: label !== 'File' ? (nodeRow.endLine ?? nodeRow[3]) : undefined,
+              distance: chunk.distance,
+              startLine: chunk.startLine,
+              endLine: chunk.endLine,
             });
           }
         } catch {}
@@ -1039,8 +1302,295 @@ export class LocalBackend {
   }
 
   /**
+   * Patch the `type` field on candidates whose `labels(n)[0]` projection
+   * came back empty — a known LadybugDB behaviour for several node types.
+   *
+   * Uses one scoped UNION query across the five priority labels rather
+   * than per-candidate round-trips, so cost is a single DB call regardless
+   * of how many candidates need enrichment. No-op when every candidate
+   * already has a non-empty type.
+   *
+   * Failures are swallowed: label enrichment is an optimisation for
+   * downstream scoring and #480 Class/Interface BFS seeding; if it fails
+   * the symbol still resolves, just without the kind-priority bonus.
+   */
+  private async enrichCandidateLabels(
+    repo: RepoHandle,
+    candidates: Array<{ id: string; type: string }>,
+  ): Promise<void> {
+    const ids = candidates.filter((c) => c.type === '' && c.id).map((c) => c.id);
+    if (ids.length === 0) return;
+    try {
+      const rows = await executeParameterized(
+        repo.id,
+        `
+        MATCH (n:\`Class\`) WHERE n.id IN $ids RETURN n.id AS id, 'Class' AS label
+        UNION ALL
+        MATCH (n:\`Interface\`) WHERE n.id IN $ids RETURN n.id AS id, 'Interface' AS label
+        UNION ALL
+        MATCH (n:\`Function\`) WHERE n.id IN $ids RETURN n.id AS id, 'Function' AS label
+        UNION ALL
+        MATCH (n:\`Method\`) WHERE n.id IN $ids RETURN n.id AS id, 'Method' AS label
+        UNION ALL
+        MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
+        `,
+        { ids },
+      );
+      const labelById = new Map<string, string>();
+      for (const r of rows as any[]) {
+        const id = (r.id ?? r[0]) as string;
+        const label = (r.label ?? r[1]) as string;
+        if (id && label && !labelById.has(id)) labelById.set(id, label);
+      }
+      for (const c of candidates) {
+        if (c.type === '' && labelById.has(c.id)) c.type = labelById.get(c.id) as string;
+      }
+    } catch {
+      /* best-effort — downstream resolvers still work without the label */
+    }
+  }
+
+  /**
+   * Score a symbol candidate for disambiguation ranking.
+   *
+   * Deterministic, no DB round-trip:
+   *   - base 0.50
+   *   - +0.40 when file_path hint matches (substring, case-insensitive)
+   *   - +0.20 when kind hint exactly matches the candidate's kind
+   *   - when no kind hint, a small priority bonus (Class > Interface >
+   *     Function > Method > Constructor) to preserve the intuition that
+   *     class-level names are usually what the user wanted.
+   *
+   * Capped at 1.0. Intentionally simple and inspectable — a future v2 can
+   * plug in BM25/embedding signals here without changing the surrounding
+   * resolver shape.
+   */
+  private scoreCandidate(
+    c: { kind: string; filePath: string },
+    hints: { file_path?: string; kind?: string },
+  ): number {
+    let s = 0.5;
+    if (hints.file_path && c.filePath && typeof c.filePath === 'string') {
+      if (c.filePath.toLowerCase().includes(hints.file_path.toLowerCase())) {
+        s += 0.4;
+      }
+    }
+    if (hints.kind && c.kind === hints.kind) {
+      s += 0.2;
+    }
+    if (!hints.kind) {
+      const priority: Record<string, number> = {
+        Class: 5,
+        Interface: 4,
+        Function: 3,
+        Method: 2,
+        Constructor: 1,
+      };
+      s += (priority[c.kind] ?? 0) * 0.02;
+    }
+    return Math.min(1.0, s);
+  }
+
+  /**
+   * Shared symbol resolver used by `context` and `impact`.
+   *
+   * Returns one of:
+   *   - `{ kind: 'ok', symbol, resolvedLabel }` — single confident match
+   *     (either direct UID, only one candidate after filtering, Class/
+   *     Constructor collapse, or a top-scoring candidate with a clear gap
+   *     to the runner-up).
+   *   - `{ kind: 'ambiguous', candidates }` — multiple viable matches,
+   *     sorted by score desc. Each candidate carries a relevance score.
+   *   - `{ kind: 'not_found' }` — no matches at all.
+   *
+   * Preserves the #480 Class/Constructor preference: when the only
+   * ambiguity is between a Class and its own Constructor (same name,
+   * same filePath), the Class wins silently.
+   */
+  private async resolveSymbolCandidates(
+    repo: RepoHandle,
+    query: { uid?: string; name?: string; include_content?: boolean },
+    hints: { file_path?: string; kind?: string },
+  ): Promise<
+    | {
+        kind: 'ok';
+        symbol: {
+          id: string;
+          name: string;
+          type: string;
+          filePath: string;
+          startLine: number;
+          endLine: number;
+          content?: string;
+        };
+        resolvedLabel: string;
+      }
+    | {
+        kind: 'ambiguous';
+        candidates: Array<{
+          id: string;
+          name: string;
+          type: string;
+          filePath: string;
+          startLine: number;
+          endLine: number;
+          score: number;
+        }>;
+      }
+    | { kind: 'not_found' }
+  > {
+    const { uid, name, include_content } = query;
+    const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
+
+    // Direct UID — zero-ambiguity path.
+    if (uid) {
+      const rows = await executeParameterized(
+        repo.id,
+        `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`,
+        { uid },
+      );
+      if (rows.length === 0) return { kind: 'not_found' };
+      const r = rows[0] as any;
+      const symbol = {
+        id: (r.id ?? r[0]) as string,
+        name: (r.name ?? r[1]) as string,
+        type: (r.type ?? r[2] ?? '') as string,
+        filePath: (r.filePath ?? r[3]) as string,
+        startLine: (r.startLine ?? r[4]) as number,
+        endLine: (r.endLine ?? r[5]) as number,
+        ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
+      };
+      // Same LadybugDB label-enrichment as the name-based path: a UID
+      // pointing at a Class must still surface `type: 'Class'` so impact's
+      // Class/Interface BFS seed fires. No-op when type is already set.
+      await this.enrichCandidateLabels(repo, [symbol]);
+      return { kind: 'ok', symbol, resolvedLabel: symbol.type };
+    }
+
+    if (!name) return { kind: 'not_found' };
+
+    const isQualified = name.includes('/') || name.includes(':');
+    let whereClause: string;
+    const queryParams: Record<string, any> = { symName: name };
+    if (hints.file_path) {
+      whereClause = `WHERE n.name = $symName AND n.filePath CONTAINS $filePath`;
+      queryParams.filePath = hints.file_path;
+    } else if (isQualified) {
+      whereClause = `WHERE n.id = $symName OR n.name = $symName`;
+    } else {
+      whereClause = `WHERE n.name = $symName`;
+    }
+
+    // LIMIT 20 (was 10) — scoring is the point now, so give the ranker
+    // headroom instead of arbitrary truncation.
+    const rows = await executeParameterized(
+      repo.id,
+      `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`,
+      queryParams,
+    );
+
+    if (rows.length === 0) return { kind: 'not_found' };
+
+    // Normalise row shape across object / tuple returns from LadybugDB.
+    const normalized = rows.map((r: any) => ({
+      id: (r.id ?? r[0]) as string,
+      name: (r.name ?? r[1]) as string,
+      type: (r.type ?? r[2] ?? '') as string,
+      filePath: (r.filePath ?? r[3]) as string,
+      startLine: (r.startLine ?? r[4]) as number,
+      endLine: (r.endLine ?? r[5]) as number,
+      ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
+    }));
+
+    // Enrich labels for any candidates where `labels(n)[0]` came back empty.
+    // LadybugDB returns an empty string for that projection on certain node
+    // types (notably Class), which left downstream consumers (impact's
+    // Class/Interface BFS seed, the kind-priority scoring bonus) unable to
+    // distinguish a Class target from "unknown kind". One scoped UNION
+    // across the five priority labels patches the type in-place without
+    // per-candidate round-trips.
+    await this.enrichCandidateLabels(repo, normalized);
+
+    // Preserve #480 Class/Constructor collapse: if we have exactly one
+    // Class (or Interface) candidate and one Constructor sharing name +
+    // filePath, fold into the Class. This used to require a follow-up
+    // label query because LadybugDB sometimes returns an empty labels()[0]
+    // for Class nodes — enrichment above handles the empty-type case, but
+    // the `type === 'Constructor'` gate still correctly triggers when a
+    // Class and its Constructor share the name.
+    if (!hints.kind && normalized.length > 1) {
+      const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
+      if (ambiguousType) {
+        const candidateIds = normalized.map((s) => s.id).filter(Boolean);
+        for (const label of ['Class', 'Interface']) {
+          const labelRows = await executeParameterized(
+            repo.id,
+            `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`,
+            { candidateIds },
+          ).catch(() => []);
+          if (labelRows.length > 0) {
+            const preferredId = (labelRows[0] as any).id ?? (labelRows[0] as any)[0];
+            const preferred = normalized.find((s) => s.id === preferredId);
+            if (preferred) {
+              return {
+                kind: 'ok',
+                symbol: preferred,
+                resolvedLabel: label,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (normalized.length === 1) {
+      return {
+        kind: 'ok',
+        symbol: normalized[0],
+        resolvedLabel: '',
+      };
+    }
+
+    // Score, sort desc, stable tiebreak on shorter filePath then lex uid.
+    const scored = normalized.map((s) => ({
+      ...s,
+      score: this.scoreCandidate({ kind: s.type, filePath: s.filePath || '' }, hints),
+    }));
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const fpA = (a.filePath || '').length;
+      const fpB = (b.filePath || '').length;
+      if (fpA !== fpB) return fpA - fpB;
+      return String(a.id).localeCompare(String(b.id));
+    });
+
+    // Confident single-result: top score ≥ 0.95 AND beats runner-up by a
+    // clear margin. This lets a very strong file_path/kind hint resolve
+    // cleanly instead of forcing the caller through a disambiguation
+    // round-trip.
+    //
+    // The gap threshold uses `> 0.09` rather than `>= 0.10` on purpose:
+    // IEEE754 addition of the scoring terms (0.50 + 0.40 + 0.20 - 0.90
+    // yields 0.09999999999999998, not exactly 0.10) would otherwise break
+    // the comparison for legitimate "top is 1.00, runner is 0.90" cases.
+    // The intent is a clearly-dominant winner; 0.09 is a large enough
+    // margin to mean that unambiguously.
+    //
+    // The `scored.length >= 2` guard is defensive. The `normalized.length === 1`
+    // early return above already handles the single-candidate path, so in
+    // practice `scored` always has at least two elements by the time we get
+    // here — keeping the guard means changes to the upstream early-return
+    // logic cannot accidentally index out of bounds at `scored[1]`.
+    if (scored.length >= 2 && scored[0].score >= 0.95 && scored[0].score - scored[1].score > 0.09) {
+      return { kind: 'ok', symbol: scored[0], resolvedLabel: scored[0].type };
+    }
+
+    return { kind: 'ambiguous', candidates: scored };
+  }
+
+  /**
    * Context tool — 360-degree symbol view with categorized refs.
-   * Disambiguation when multiple symbols share a name.
+   * Disambiguation (ranked) when multiple symbols share a name.
    * UID-based direct lookup. No cluster in output.
    */
   private async context(
@@ -1049,131 +1599,54 @@ export class LocalBackend {
       name?: string;
       uid?: string;
       file_path?: string;
+      kind?: string;
       include_content?: boolean;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
-    const { name, uid, file_path, include_content } = params;
+    const { name, uid, file_path, kind, include_content } = params;
 
     if (!name && !uid) {
       return { error: 'Either "name" or "uid" parameter is required.' };
     }
 
-    // Step 1: Find the symbol
-    let symbols: any[];
+    const outcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid, name, include_content },
+      { file_path, kind },
+    );
 
-    if (uid) {
-      symbols = await executeParameterized(
-        repo.id,
-        `
-        MATCH (n {id: $uid})
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
-        LIMIT 1
-      `,
-        { uid },
-      );
-    } else {
-      const isQualified = name!.includes('/') || name!.includes(':');
-
-      let whereClause: string;
-      let queryParams: Record<string, any>;
-      if (file_path) {
-        whereClause = `WHERE n.name = $symName AND n.filePath CONTAINS $filePath`;
-        queryParams = { symName: name!, filePath: file_path };
-      } else if (isQualified) {
-        whereClause = `WHERE n.id = $symName OR n.name = $symName`;
-        queryParams = { symName: name! };
-      } else {
-        whereClause = `WHERE n.name = $symName`;
-        queryParams = { symName: name! };
-      }
-
-      symbols = await executeParameterized(
-        repo.id,
-        `
-        MATCH (n) ${whereClause}
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}
-        LIMIT 10
-      `,
-        queryParams,
-      );
-    }
-
-    if (symbols.length === 0) {
+    if (outcome.kind === 'not_found') {
       return { error: `Symbol '${name || uid}' not found` };
     }
 
-    // Step 2: Disambiguation
-    // When multiple nodes share the same name (e.g. a Java Class and its
-    // Constructor both named 'SessionTracker'), prefer the Class node so
-    // context() returns the semantically meaningful result rather than
-    // triggering ambiguous disambiguation (#480).
-    // labels(n)[0] returns empty string in LadybugDB, so we resolve the
-    // preferred node by re-querying with explicit label filters, scoped to
-    // the candidate IDs already in symbols.
-    //
-    // Guard: only attempt Class-preference when at least one candidate has an
-    // empty/unknown type (LadybugDB limitation) or is a Constructor — meaning
-    // the ambiguity may be a Class/Constructor name collision rather than two
-    // genuinely distinct symbols (e.g. two Functions in different files).
-    //
-    // resolvedLabel is set here and threaded to Step 3 to avoid a redundant
-    // classCheck round-trip later.
-    let resolvedLabel = '';
-    if (symbols.length > 1 && !uid) {
-      const hasAmbiguousType = symbols.some((s: any) => {
-        const t = s.type || s[2] || '';
-        return t === '' || t === 'Constructor';
-      });
-      if (hasAmbiguousType) {
-        const candidateIds = symbols.map((s: any) => s.id || s[0]).filter(Boolean);
-        const PREFER_LABELS = ['Class', 'Interface'];
-        let preferred: any = null;
-        for (const label of PREFER_LABELS) {
-          const match = await executeParameterized(
-            repo.id,
-            `
-            MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1
-          `,
-            { candidateIds },
-          ).catch(() => []);
-          if (match.length > 0) {
-            preferred = symbols.find((s: any) => (s.id || s[0]) === (match[0].id || match[0][0]));
-            if (preferred) {
-              resolvedLabel = label;
-              break;
-            }
-          }
-        }
-        if (preferred) symbols = [preferred];
-      }
-    }
-
-    if (symbols.length > 1 && !uid) {
+    if (outcome.kind === 'ambiguous') {
       return {
         status: 'ambiguous',
-        message: `Found ${symbols.length} symbols matching '${name}'. Use uid or file_path to disambiguate.`,
-        candidates: symbols.map((s: any) => ({
-          uid: s.id || s[0],
-          name: s.name || s[1],
-          kind: s.type || s[2],
-          filePath: s.filePath || s[3],
-          line: s.startLine || s[4],
+        message: `Found ${outcome.candidates.length} symbols matching '${name}'. Use uid, file_path, or kind to disambiguate.`,
+        candidates: outcome.candidates.map((c) => ({
+          uid: c.id,
+          name: c.name,
+          kind: c.type,
+          filePath: c.filePath,
+          line: c.startLine,
+          score: Number(c.score.toFixed(2)),
         })),
       };
     }
 
     // Step 3: Build full context
-    const sym = symbols[0];
-    const symId = sym.id || sym[0];
+    const sym = outcome.symbol;
+    const resolvedLabel = outcome.resolvedLabel;
+    const symId = sym.id;
 
     // Categorized incoming refs
     const incomingRows = await executeParameterized(
       repo.id,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
@@ -1263,7 +1736,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,
@@ -1302,16 +1775,53 @@ export class LocalBackend {
       return cats;
     };
 
+    // Method/Function/Constructor enrichment: fetch method-specific properties
+    const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2];
+    const isMethodLike =
+      symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
+    let methodMetadata: Record<string, unknown> | undefined;
+    if (isMethodLike) {
+      try {
+        const metaRows = await executeParameterized(
+          repo.id,
+          `
+          MATCH (n {id: $symId})
+          RETURN n.visibility AS visibility, n.isStatic AS isStatic, n.isAbstract AS isAbstract,
+                 n.isFinal AS isFinal, n.isVirtual AS isVirtual, n.isOverride AS isOverride,
+                 n.isAsync AS isAsync, n.isPartial AS isPartial, n.returnType AS returnType,
+                 n.parameterCount AS parameterCount, n.isVariadic AS isVariadic,
+                 n.requiredParameterCount AS requiredParameterCount,
+                 n.parameterTypes AS parameterTypes, n.annotations AS annotations
+          LIMIT 1
+        `,
+          { symId },
+        );
+        if (metaRows.length > 0) {
+          const row = metaRows[0];
+          const meta: Record<string, unknown> = {};
+          // Only include defined properties to distinguish "not applicable" from "not enriched"
+          for (const key of Object.keys(row)) {
+            const val = row[key];
+            if (val !== null && val !== undefined) meta[key] = val;
+          }
+          if (Object.keys(meta).length > 0) methodMetadata = meta;
+        }
+      } catch {
+        /* method metadata unavailable — omit silently */
+      }
+    }
+
     return {
       status: 'found',
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
-        kind: isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2],
+        kind: symKind,
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
+        ...(methodMetadata ? { methodMetadata } : {}),
       },
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
@@ -1460,33 +1970,38 @@ export class LocalBackend {
     let diffArgs: string[];
     switch (scope) {
       case 'staged':
-        diffArgs = ['diff', '--staged', '--name-only'];
+        diffArgs = ['diff', '--staged', '-U0'];
         break;
       case 'all':
-        diffArgs = ['diff', 'HEAD', '--name-only'];
+        diffArgs = ['diff', 'HEAD', '-U0'];
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '--name-only'];
+        diffArgs = ['diff', params.base_ref, '-U0'];
         break;
       case 'unstaged':
       default:
-        diffArgs = ['diff', '--name-only'];
+        diffArgs = ['diff', '-U0'];
         break;
     }
 
-    let changedFiles: string[];
+    let diffOutput: string;
     try {
-      const output = execFileSync('git', diffArgs, { cwd: repo.repoPath, encoding: 'utf-8' });
-      changedFiles = output
-        .trim()
-        .split('\n')
-        .filter((f) => f.length > 0);
+      // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
+      // repos with large unstaged/untracked diffs (e.g. unignored build folders).
+      // See issue: spawnSync git ENOBUFS in detect_changes(scope="unstaged").
+      diffOutput = execFileSync('git', diffArgs, {
+        cwd: repo.repoPath,
+        encoding: 'utf-8',
+        maxBuffer: 256 * 1024 * 1024,
+      });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    if (changedFiles.length === 0) {
+    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+
+    if (fileDiffs.length === 0) {
       return {
         summary: {
           changed_count: 0,
@@ -1499,27 +2014,39 @@ export class LocalBackend {
       };
     }
 
-    // Map changed files to indexed symbols
+    // Map diff hunks to indexed symbols via range overlap
     const changedSymbols: any[] = [];
-    for (const file of changedFiles) {
-      const normalizedFile = file.replace(/\\/g, '/');
+    for (const fileDiff of fileDiffs) {
+      if (fileDiff.hunks.length === 0) continue;
+
+      // Build range overlap conditions for all hunks in this file
+      const overlapConditions = fileDiff.hunks
+        .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
+        .join(' OR ');
+
+      const queryParams: Record<string, any> = { filePath: fileDiff.filePath };
+      fileDiff.hunks.forEach((hunk, i) => {
+        queryParams[`hunkStart${i}`] = hunk.startLine;
+        queryParams[`hunkEnd${i}`] = hunk.endLine;
+      });
+
+      const symbolQuery = `
+        MATCH (n) WHERE n.filePath ENDS WITH $filePath
+          AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
+          AND (${overlapConditions})
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+               n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      `;
+
       try {
-        const symbols = await executeParameterized(
-          repo.id,
-          `
-          MATCH (n) WHERE n.filePath CONTAINS $filePath
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-          LIMIT 20
-        `,
-          { filePath: normalizedFile },
-        );
-        for (const sym of symbols) {
+        const rows = await executeParameterized(repo.id, symbolQuery, queryParams);
+        for (const sym of rows) {
           changedSymbols.push({
             id: sym.id || sym[0],
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
-            change_type: 'Modified',
+            change_type: 'touched',
           });
         }
       } catch (e) {
@@ -1527,32 +2054,37 @@ export class LocalBackend {
       }
     }
 
-    // Find affected processes
+    // Find affected processes -- single batched query instead of N+1
     const affectedProcesses = new Map<string, any>();
-    for (const sym of changedSymbols) {
+    if (changedSymbols.length > 0) {
+      const symIds = changedSymbols.map((s) => s.id);
+      const symNameById = new Map(changedSymbols.map((s) => [s.id, s.name]));
       try {
         const procs = await executeParameterized(
           repo.id,
           `
-          MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.id AS pid, p.heuristicLabel AS label, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+          MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          WHERE n.id IN $ids
+          RETURN n.id AS nodeId, p.id AS pid, p.heuristicLabel AS label,
+                 p.processType AS processType, p.stepCount AS stepCount, r.step AS step
         `,
-          { nodeId: sym.id },
+          { ids: symIds },
         );
         for (const proc of procs) {
-          const pid = proc.pid || proc[0];
+          const nodeId = proc.nodeId || proc[0];
+          const pid = proc.pid || proc[1];
           if (!affectedProcesses.has(pid)) {
             affectedProcesses.set(pid, {
               id: pid,
-              name: proc.label || proc[1],
-              process_type: proc.processType || proc[2],
-              step_count: proc.stepCount || proc[3],
+              name: proc.label || proc[2],
+              process_type: proc.processType || proc[3],
+              step_count: proc.stepCount || proc[4],
               changed_steps: [],
             });
           }
           affectedProcesses.get(pid)!.changed_steps.push({
-            symbol: sym.name,
-            step: proc.step || proc[4],
+            symbol: symNameById.get(nodeId) ?? nodeId,
+            step: proc.step || proc[5],
           });
         }
       } catch (e) {
@@ -1574,7 +2106,7 @@ export class LocalBackend {
       summary: {
         changed_count: changedSymbols.length,
         affected_count: processCount,
-        changed_files: changedFiles.length,
+        changed_files: fileDiffs.length,
         risk_level: risk,
       },
       changed_symbols: changedSymbols,
@@ -1736,6 +2268,8 @@ export class LocalBackend {
         cwd: repo.repoPath,
         encoding: 'utf-8',
         timeout: 5000,
+        // Avoid ENOBUFS on large repos: rg -l can list many files.
+        maxBuffer: 256 * 1024 * 1024,
       });
       const files = output
         .trim()
@@ -1808,6 +2342,9 @@ export class LocalBackend {
     repo: RepoHandle,
     params: {
       target: string;
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -1834,6 +2371,9 @@ export class LocalBackend {
     repo: RepoHandle,
     params: {
       target: string;
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -1845,77 +2385,115 @@ export class LocalBackend {
 
     const { target, direction } = params;
     const maxDepth = params.maxDepth || 3;
+    // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
+    const mappedRelTypes = params.relationTypes?.flatMap((t: string) =>
+      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
+    );
     const rawRelTypes =
-      params.relationTypes && params.relationTypes.length > 0
-        ? params.relationTypes.filter((t) => VALID_RELATION_TYPES.has(t))
-        : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+      mappedRelTypes && mappedRelTypes.length > 0
+        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
+        : [
+            'CALLS',
+            'IMPORTS',
+            'EXTENDS',
+            'IMPLEMENTS',
+            'METHOD_OVERRIDES',
+            'OVERRIDES',
+            'METHOD_IMPLEMENTS',
+          ];
     const relationTypes =
-      rawRelTypes.length > 0 ? rawRelTypes : ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS'];
+      rawRelTypes.length > 0
+        ? rawRelTypes
+        : [
+            'CALLS',
+            'IMPORTS',
+            'EXTENDS',
+            'IMPLEMENTS',
+            'METHOD_OVERRIDES',
+            'OVERRIDES',
+            'METHOD_IMPLEMENTS',
+          ];
     const includeTests = params.includeTests ?? false;
     const minConfidence = params.minConfidence ?? 0;
 
+    // Resolve target via the shared symbol resolver. When the caller passes
+    // target_uid we skip the name lookup entirely (zero-ambiguity). Otherwise
+    // we rank candidates (#470) and either proceed with a confident single
+    // match, or return a structured ambiguous response instead of silently
+    // picking the wrong symbol.
+    //
+    // The resolver preserves the #480 Class/Constructor preference heuristic:
+    // when a Class and its Constructor share name + filePath, the Class is
+    // selected silently.
+    const outcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: params.target_uid, name: target },
+      { file_path: params.file_path, kind: params.kind },
+    );
+
+    if (outcome.kind === 'not_found') {
+      const missing = params.target_uid ?? target;
+      return {
+        error: `Target '${missing}' not found`,
+        target: { name: target },
+        direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+
+    if (outcome.kind === 'ambiguous') {
+      return {
+        status: 'ambiguous',
+        message: `Found ${outcome.candidates.length} symbols matching '${target}'. Use target_uid, file_path, or kind to disambiguate.`,
+        target: { name: target },
+        direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        candidates: outcome.candidates.map((c) => ({
+          uid: c.id,
+          name: c.name,
+          kind: c.type,
+          filePath: c.filePath,
+          line: c.startLine,
+          score: Number(c.score.toFixed(2)),
+        })),
+      };
+    }
+
+    const sym = {
+      id: outcome.symbol.id,
+      name: outcome.symbol.name,
+      filePath: outcome.symbol.filePath,
+    };
+    const symType = outcome.resolvedLabel || outcome.symbol.type || '';
+
+    return this._runImpactBFS(repo, sym, symType, direction, {
+      maxDepth,
+      relationTypes,
+      includeTests,
+      minConfidence,
+    });
+  }
+
+  /**
+   * Shared BFS traversal for impact analysis (name-resolved or UID-resolved symbol).
+   */
+  private async _runImpactBFS(
+    repo: RepoHandle,
+    sym: any,
+    symType: string,
+    direction: 'upstream' | 'downstream',
+    opts: {
+      maxDepth: number;
+      relationTypes: string[];
+      includeTests: boolean;
+      minConfidence: number;
+    },
+  ): Promise<any> {
+    const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
     const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
-
-    // Resolve target by name, preferring Class/Interface over Constructor
-    // (fix #480: Java class and constructor share the same name).
-    // labels(n)[0] returns empty string in LadybugDB, so we use explicit
-    // label-typed sub-queries in a single UNION ordered by priority to avoid
-    // up to 6 serial round-trips for non-Class targets.
-    let sym: any = null;
-    let symType = '';
-
-    try {
-      const rows = await executeParameterized(
-        repo.id,
-        `
-        MATCH (n:\`Class\`) WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 0 AS priority LIMIT 1
-        UNION ALL
-        MATCH (n:\`Interface\`) WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 1 AS priority LIMIT 1
-        UNION ALL
-        MATCH (n:\`Function\`) WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 2 AS priority LIMIT 1
-        UNION ALL
-        MATCH (n:\`Method\`) WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 3 AS priority LIMIT 1
-        UNION ALL
-        MATCH (n:\`Constructor\`) WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath, 4 AS priority LIMIT 1
-      `,
-        { targetName: target },
-      ).catch(() => []);
-
-      if (rows.length > 0) {
-        // Pick the row with the lowest priority value (Class wins over Constructor)
-        const best = rows.reduce((a: any, b: any) =>
-          (a.priority ?? a[3] ?? 99) <= (b.priority ?? b[3] ?? 99) ? a : b,
-        );
-        sym = best;
-        const priorityToLabel = ['Class', 'Interface', 'Function', 'Method', 'Constructor'];
-        symType = priorityToLabel[best.priority ?? best[3]] ?? '';
-      }
-    } catch {
-      /* fall through to unlabeled match */
-    }
-
-    // Fall back to unlabeled match for any other node type
-    if (!sym) {
-      const rows = await executeParameterized(
-        repo.id,
-        `
-        MATCH (n)
-        WHERE n.name = $targetName
-        RETURN n.id AS id, n.name AS name, n.filePath AS filePath
-        LIMIT 1
-      `,
-        { targetName: target },
-      );
-      if (rows.length > 0) sym = rows[0];
-    }
-
-    if (!sym) return { error: `Target '${target}' not found` };
 
     const symId = sym.id || sym[0];
 
@@ -2321,6 +2899,245 @@ export class LocalBackend {
       affected_modules: affectedModules,
       byDepth: grouped,
     };
+  }
+
+  /**
+   * UID-based impact for cross-repo fan-out. Same result shape as `impact`.
+   * Returns null if the repo is unknown, the UID is missing, or analysis fails.
+   */
+  async impactByUid(
+    repoId: string,
+    uid: string,
+    direction: string,
+    opts: {
+      maxDepth: number;
+      relationTypes: string[];
+      minConfidence: number;
+      includeTests: boolean;
+    },
+  ): Promise<any | null> {
+    try {
+      await this.refreshRepos();
+      await this.ensureInitialized(repoId);
+    } catch {
+      return null;
+    }
+
+    const repo = this.repos.get(repoId);
+    if (!repo) return null;
+
+    const dir: 'upstream' | 'downstream' = direction === 'downstream' ? 'downstream' : 'upstream';
+
+    let rows: any[];
+    try {
+      rows = await executeParameterized(
+        repoId,
+        `MATCH (n) WHERE n.id = $uid
+         RETURN n.id AS id, n.name AS name, n.filePath AS filePath, labels(n)[0] AS type
+         LIMIT 1`,
+        { uid },
+      );
+    } catch {
+      return null;
+    }
+    if (!rows?.length) return null;
+
+    const sym = rows[0];
+    const labelRaw = sym.type ?? sym[3];
+    const symType =
+      typeof labelRaw === 'string' && labelRaw.trim().length > 0 ? labelRaw.trim() : '';
+
+    // Map legacy relation type names (backward compat for OVERRIDES → METHOD_OVERRIDES)
+    const mappedRelTypes = opts.relationTypes?.flatMap((t: string) =>
+      t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
+    );
+    const rawRelTypes =
+      mappedRelTypes && mappedRelTypes.length > 0
+        ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
+        : [
+            'CALLS',
+            'IMPORTS',
+            'EXTENDS',
+            'IMPLEMENTS',
+            'METHOD_OVERRIDES',
+            'OVERRIDES',
+            'METHOD_IMPLEMENTS',
+          ];
+    const relationTypes =
+      rawRelTypes.length > 0
+        ? rawRelTypes
+        : [
+            'CALLS',
+            'IMPORTS',
+            'EXTENDS',
+            'IMPLEMENTS',
+            'METHOD_OVERRIDES',
+            'OVERRIDES',
+            'METHOD_IMPLEMENTS',
+          ];
+
+    try {
+      return await this._runImpactBFS(repo, sym, symType, dir, {
+        maxDepth: opts.maxDepth,
+        relationTypes,
+        includeTests: opts.includeTests,
+        minConfidence: opts.minConfidence,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private handleGroupTool(method: string, params: Record<string, unknown>): Promise<unknown> {
+    switch (method) {
+      case 'group_list':
+        return this.groupList(params);
+      case 'group_sync':
+        return this.groupSync(params);
+      default:
+        throw new Error(
+          `Unknown group tool: ${method}. Removed tools: use repo "@<groupName>" on impact, query, or context (optional "/<memberPath>"), or MCP resources.`,
+        );
+    }
+  }
+
+  /**
+   * Dispatch impact/query/context when `repo` is `@groupName` or `@groupName/memberPath`
+   * (group mode — not the global indexed-repo `repo` parameter).
+   */
+  private async callToolAtGroupRepo(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.refreshRepos();
+
+    if (
+      params.service !== undefined &&
+      params.service !== null &&
+      String(params.service).trim() === ''
+    ) {
+      return { error: 'service must not be an empty string' };
+    }
+
+    const raw = String(params.repo).slice(1);
+    const slash = raw.indexOf('/');
+    const groupName = (slash === -1 ? raw : raw.slice(0, slash)).trim();
+    const memberRest = slash === -1 ? undefined : raw.slice(slash + 1).trim() || undefined;
+
+    const resolved = await resolveAtGroupMemberRepoPath(groupName, memberRest);
+    if (resolved.ok === false) return { error: resolved.error };
+
+    const svc = this.getGroupService();
+    if (method === 'impact') {
+      const impactArgs: Record<string, unknown> = {
+        name: groupName,
+        repo: resolved.repoPath,
+        target: params.target,
+        direction: params.direction,
+      };
+      if (params.maxDepth !== undefined) impactArgs.maxDepth = params.maxDepth;
+      if (params.crossDepth !== undefined) impactArgs.crossDepth = params.crossDepth;
+      if (params.relationTypes !== undefined) impactArgs.relationTypes = params.relationTypes;
+      if (params.includeTests !== undefined) impactArgs.includeTests = params.includeTests;
+      if (params.minConfidence !== undefined) impactArgs.minConfidence = params.minConfidence;
+      if (params.service !== undefined && params.service !== null)
+        impactArgs.service = params.service;
+      if (typeof params.subgroup === 'string') impactArgs.subgroup = params.subgroup;
+      if (params.timeoutMs !== undefined) impactArgs.timeoutMs = params.timeoutMs;
+      if (params.timeout !== undefined) impactArgs.timeout = params.timeout;
+      return svc.groupImpact(impactArgs);
+    }
+    if (method === 'query') {
+      const queryArgs: Record<string, unknown> = {
+        name: groupName,
+        query: params.query,
+      };
+      if (typeof params.task_context === 'string') queryArgs.task_context = params.task_context;
+      if (typeof params.goal === 'string') queryArgs.goal = params.goal;
+      if (typeof params.limit === 'number') queryArgs.limit = params.limit;
+      if (typeof params.max_symbols === 'number') queryArgs.max_symbols = params.max_symbols;
+      if (params.include_content !== undefined) queryArgs.include_content = params.include_content;
+      if (params.service !== undefined && params.service !== null)
+        queryArgs.service = params.service;
+      if (memberRest !== undefined) {
+        queryArgs.subgroup = memberRest;
+        queryArgs.subgroupExact = true;
+      }
+      return svc.groupQuery(queryArgs);
+    }
+    if (method === 'context') {
+      const targetSym =
+        typeof params.target === 'string' && params.target.trim() !== ''
+          ? params.target.trim()
+          : typeof params.name === 'string' && params.name.trim() !== ''
+            ? params.name.trim()
+            : undefined;
+      const contextArgs: Record<string, unknown> = {
+        name: groupName,
+        target: targetSym,
+      };
+      if (typeof params.uid === 'string') contextArgs.uid = params.uid;
+      if (typeof params.file_path === 'string') contextArgs.file_path = params.file_path;
+      if (params.include_content !== undefined)
+        contextArgs.include_content = params.include_content;
+      if (params.service !== undefined && params.service !== null)
+        contextArgs.service = params.service;
+      if (memberRest !== undefined) {
+        contextArgs.subgroup = memberRest;
+        contextArgs.subgroupExact = true;
+      }
+      return svc.groupContext(contextArgs);
+    }
+    throw new Error(`Internal: unsupported group-repo tool ${method}`);
+  }
+
+  private async groupList(params: Record<string, unknown>): Promise<unknown> {
+    return this.getGroupService().groupList(params);
+  }
+
+  private async groupSync(params: Record<string, unknown>): Promise<unknown> {
+    return this.getGroupService().groupSync(params);
+  }
+
+  /**
+   * MCP resource body for `gitnexus://group/{name}/contracts` (Issue #794).
+   */
+  async readGroupContractsResource(
+    groupName: string,
+    filter: { type?: string; repo?: string; unmatchedOnly?: boolean },
+  ): Promise<string> {
+    try {
+      const params: Record<string, unknown> = { name: groupName };
+      if (filter.type !== undefined) params.type = filter.type;
+      if (filter.repo !== undefined) params.repo = filter.repo;
+      if (filter.unmatchedOnly === true) params.unmatchedOnly = true;
+      const raw = await this.getGroupService().groupContracts(params);
+      return LocalBackend.formatGroupResourcePayload(raw);
+    } catch (e) {
+      return `error: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  /**
+   * MCP resource body for `gitnexus://group/{name}/status` (Issue #794).
+   */
+  async readGroupStatusResource(groupName: string): Promise<string> {
+    try {
+      const raw = await this.getGroupService().groupStatus({ name: groupName });
+      return LocalBackend.formatGroupResourcePayload(raw);
+    } catch (e) {
+      return `error: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
+  private static formatGroupResourcePayload(raw: unknown): string {
+    if (raw && typeof raw === 'object' && 'error' in raw) {
+      const err = (raw as { error?: unknown }).error;
+      if (typeof err === 'string' && err.length > 0) {
+        return `error: ${err}`;
+      }
+    }
+    return JSON.stringify(raw, null, 2);
   }
 
   /**

@@ -15,12 +15,17 @@ import type { FieldVisibility } from '../../field-types.js';
 
 /**
  * Check whether any child of `node` (named or unnamed) has .text matching
- * one of the given `keywords`.
+ * the given `keyword`.
+ *
+ * Skips the `name` field child to avoid false positives when a method is
+ * named after a contextual keyword (e.g. `abstract()` in TypeScript).
  */
 export function hasKeyword(node: SyntaxNode, keyword: string): boolean {
+  const nameNode = node.childForFieldName('name');
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    if (child && child.text.trim() === keyword) return true;
+    if (!child || child === nameNode) continue;
+    if (child.text.trim() === keyword) return true;
   }
   return false;
 }
@@ -46,6 +51,7 @@ export function hasModifier(node: SyntaxNode, modifierType: string, keyword: str
 /**
  * Return the first matching visibility keyword found either as a direct keyword
  * child or inside a modifier wrapper node.
+ * Skips the `name` field child (same rationale as hasKeyword).
  */
 export function findVisibility(
   node: SyntaxNode,
@@ -53,10 +59,12 @@ export function findVisibility(
   defaultVis: FieldVisibility,
   modifierNodeType?: string,
 ): FieldVisibility {
+  const nameNode = node.childForFieldName('name');
   // Direct keyword children
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
-    const text = child?.text.trim() as FieldVisibility | undefined;
+    if (!child || child === nameNode) continue;
+    const text = child.text.trim() as FieldVisibility | undefined;
     if (text && (keywords as ReadonlySet<string>).has(text)) return text;
   }
   // Modifier wrapper

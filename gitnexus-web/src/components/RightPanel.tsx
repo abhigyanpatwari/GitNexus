@@ -8,8 +8,10 @@ import {
   Loader2,
   AlertTriangle,
   GitBranch,
+  ArrowDown,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -35,14 +37,11 @@ export const RightPanel = () => {
   const [chatInput, setChatInput] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll to bottom when messages update or while streaming
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chatMessages, isChatLoading]);
+  // Keep streamed replies pinned unless the user intentionally scrolls away from the bottom.
+  const { scrollContainerRef, messagesContainerRef, isAtBottom, scrollToBottom } = useAutoScroll(
+    chatMessages,
+    isChatLoading,
+  );
 
   const resolveFilePathForUI = useCallback((_requestedPath: string): string | null => {
     return null;
@@ -265,7 +264,7 @@ export const RightPanel = () => {
 
       {/* Chat Content - only show when chat tab is active */}
       {activeTab === 'chat' && (
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="relative flex flex-1 flex-col overflow-hidden">
           {/* Status bar */}
           <div className="flex items-center gap-2.5 border-b border-border-subtle bg-elevated/50 px-4 py-3">
             <div className="ml-auto flex items-center gap-2">
@@ -291,7 +290,7 @@ export const RightPanel = () => {
           )}
 
           {/* Messages */}
-          <div className="scrollbar-thin flex-1 overflow-y-auto p-4">
+          <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
             {chatMessages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 text-center">
                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
@@ -315,7 +314,7 @@ export const RightPanel = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-6">
+              <div ref={messagesContainerRef} className="flex flex-col gap-6">
                 {chatMessages.map((message) => (
                   <div key={message.id} className="animate-fade-in">
                     {/* User message - compact label style */}
@@ -391,9 +390,21 @@ export const RightPanel = () => {
                 ))}
               </div>
             )}
-            {/* Scroll anchor for auto-scroll */}
-            <div ref={messagesEndRef} />
           </div>
+
+          {/* Scroll to bottom */}
+          <button
+            aria-label="Scroll to bottom"
+            onClick={() => scrollToBottom()}
+            className={`absolute bottom-20 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary shadow-lg transition-all duration-200 hover:border-accent hover:text-accent ${
+              !isAtBottom && chatMessages.length > 0
+                ? 'translate-y-0 opacity-100'
+                : 'pointer-events-none translate-y-2 opacity-0'
+            }`}
+          >
+            <ArrowDown className="mr-1 inline h-3.5 w-3.5" />
+            Scroll to bottom
+          </button>
 
           {/* Input */}
           <div className="border-t border-border-subtle bg-surface p-3">

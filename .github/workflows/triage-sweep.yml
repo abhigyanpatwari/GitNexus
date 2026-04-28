@@ -47,8 +47,10 @@ permissions:
   issues: write
   pull-requests: write
 
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Single global slot — newest manual dispatch supersedes any in-flight run.
 concurrency:
-  group: triage-sweep
+  group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
@@ -74,7 +76,7 @@ jobs:
         run: pip install -r .github/scripts/triage/requirements.txt
 
       - name: Cache FastEmbed model weights
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ${{ github.workspace }}/.fastembed_cache
           key: fastembed-bge-small-en-v1.5

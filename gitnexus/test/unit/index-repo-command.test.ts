@@ -25,6 +25,11 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 vi.mock('../../src/storage/git.js', () => ({
   getGitRoot: mockGetGitRoot,
   isGitRepo: mockIsGitRepo,
+  // `index-repo.ts` calls `getRemoteUrl` to backfill `remoteUrl` on
+  // older `.gitnexus/meta.json` files. The unit tests don't care
+  // about the remote URL, so a static `undefined` keeps behaviour
+  // identical to the pre-feature path.
+  getRemoteUrl: vi.fn().mockReturnValue(undefined),
 }));
 
 describe('indexCommand', () => {

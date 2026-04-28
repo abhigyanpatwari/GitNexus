@@ -17,6 +17,7 @@ import {
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+  findSiblingClones: vi.fn().mockResolvedValue([]),
 }));
 
 // ─── Block 2: callTool dispatch tests ────────────────────────────────
@@ -95,15 +96,29 @@ withTestLbugDB(
       it('query tool returns results for keyword search', async () => {
         const result = await backend.callTool('query', { query: 'login' });
         expect(result).not.toHaveProperty('error');
-        // Should have some combination of processes, process_symbols, or definitions
         expect(result).toHaveProperty('processes');
         expect(result).toHaveProperty('definitions');
-        // The search should find something (FTS or graph-based)
-        const totalResults =
-          (result.processes?.length || 0) +
-          (result.process_symbols?.length || 0) +
-          (result.definitions?.length || 0);
-        expect(totalResults).toBeGreaterThanOrEqual(1);
+        expect(result.processes.map((p: any) => p.id)).toContain('proc:login-flow');
+        expect(result.process_symbols.map((s: any) => s.id)).toContain('func:login');
+
+        // #553: query response carries per-phase timing metadata.
+        expect(result.timing).toBeDefined();
+        expect(typeof result.timing.wall).toBe('number');
+        expect(result.timing.wall).toBeGreaterThanOrEqual(0);
+        // At least one of the search phases must have fired for any
+        // non-error response — bm25 and/or vector always runs.
+        expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
+      });
+
+      it('tool_map returns per-tool flows without cross-attributing same-file tools', async () => {
+        const result = await backend.callTool('tool_map', {});
+        expect(result).not.toHaveProperty('error');
+
+        const tools = new Map(result.tools.map((tool: any) => [tool.name, tool]));
+        expect(tools.get('alpha')?.description).toBe('Calls chain A.');
+        expect(tools.get('beta')?.description).toBe('Calls chain B.');
+        expect(tools.get('alpha')?.flows).toEqual(['AlphaFlow']);
+        expect(tools.get('beta')?.flows).toEqual(['BetaFlow']);
       });
 
       it('unknown tool throws', async () => {
@@ -141,13 +156,40 @@ withTestLbugDB(
       });
 
       it('filters by OVERRIDES only', async () => {
+        // The seed has two Method nodes named 'authenticate' (AuthService's
+        // override and BaseService's base). Per #470, `impact` now returns
+        // a ranked-ambiguous response when the target name hits multiple
+        // symbols, so we must disambiguate with file_path to get the
+        // AuthService override (the one with the outgoing METHOD_OVERRIDES
+        // edge we want to follow downstream).
         const result = await backend.callTool('impact', {
           target: 'authenticate',
+          file_path: 'src/auth.ts',
+          direction: 'downstream',
+          relationTypes: ['METHOD_OVERRIDES'],
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).not.toBe('ambiguous');
+        // AuthService.authenticate overrides BaseService.authenticate
+        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
+        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        const names = d1.map((d: any) => d.name);
+        expect(names).toContain('authenticate');
+      });
+
+      it('expands legacy OVERRIDES to include METHOD_OVERRIDES (dual-read)', async () => {
+        // Pass the LEGACY alias 'OVERRIDES' — impactByUid should flatMap-expand
+        // it to ['OVERRIDES', 'METHOD_OVERRIDES'] so the METHOD_OVERRIDES edge
+        // between BaseService.authenticate and AuthService.authenticate is found.
+        // file_path hint disambiguates the two 'authenticate' methods per #470.
+        const result = await backend.callTool('impact', {
+          target: 'authenticate',
+          file_path: 'src/auth.ts',
           direction: 'downstream',
           relationTypes: ['OVERRIDES'],
         });
         expect(result).not.toHaveProperty('error');
-        // AuthService.authenticate overrides BaseService.authenticate
+        expect(result.status).not.toBe('ambiguous');
         expect(result.impactedCount).toBeGreaterThanOrEqual(1);
         const d1 = result.byDepth[1] || result.byDepth['1'] || [];
         const names = d1.map((d: any) => d.name);

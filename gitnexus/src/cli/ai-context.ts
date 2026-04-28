@@ -26,10 +26,38 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
+  noStats?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+
+/**
+ * Find the index of a section marker that occupies its own line.
+ * Unlike `indexOf`, this rejects inline prose references like
+ * `` See the `<!-- gitnexus:start -->` block `` that appear
+ * mid-sentence (#1041). A marker counts as section-position only when:
+ *   - preceded by newline or start-of-file, AND
+ *   - followed by newline, `\r` (CRLF files), or end-of-file.
+ * The generator always emits each marker alone on its line, so this
+ * matches every legitimate section and none of the inline mentions.
+ *
+ * `startFrom` lets the end-marker lookup start after the already-found
+ * start marker, avoiding a scan from 0 and guaranteeing we never pick
+ * up an end marker that appears earlier in the file than the start.
+ */
+function findSectionMarkerIndex(content: string, marker: string, startFrom = 0): number {
+  let idx = content.indexOf(marker, startFrom);
+  while (idx !== -1) {
+    const atLineStart = idx === 0 || content[idx - 1] === '\n';
+    const endPos = idx + marker.length;
+    const atLineEnd =
+      endPos === content.length || content[endPos] === '\n' || content[endPos] === '\r';
+    if (atLineStart && atLineEnd) return idx;
+    idx = content.indexOf(marker, idx + 1);
+  }
+  return -1;
+}
 
 /**
  * Generate the full GitNexus context content.
@@ -42,10 +70,29 @@ const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
  * - Exact tool commands with parameters — vague directives get ignored
  * - Self-review checklist — forces model to verify its own work
  */
+async function findGroupsContainingRegistryName(registryName: string): Promise<string[]> {
+  const { listGroups, getDefaultGitnexusDir, getGroupDir } =
+    await import('../core/group/storage.js');
+  const { loadGroupConfig } = await import('../core/group/config-parser.js');
+  const names = await listGroups();
+  const hits: string[] = [];
+  for (const g of names) {
+    try {
+      const config = await loadGroupConfig(getGroupDir(getDefaultGitnexusDir(), g));
+      if (Object.values(config.repos).some((r) => r === registryName)) hits.push(config.name);
+    } catch {
+      // skip invalid or unreadable groups
+    }
+  }
+  return hits;
+}
+
 function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
+  groupNames?: string[],
+  noStats?: boolean,
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -69,7 +116,7 @@ function generateGitNexusContent(
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
 
@@ -81,44 +128,12 @@ This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} s
 - When exploring unfamiliar code, use \`gitnexus_query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`gitnexus_context({name: "symbolName"})\`.
 
-## When Debugging
-
-1. \`gitnexus_query({query: "<error or symptom>"})\` — find execution flows related to the issue
-2. \`gitnexus_context({name: "<suspect function>"})\` — see all callers, callees, and process participation
-3. \`READ gitnexus://repo/${projectName}/process/{processName}\` — trace the full execution flow step by step
-4. For regressions: \`gitnexus_detect_changes({scope: "compare", base_ref: "main"})\` — see what your branch changed
-
-## When Refactoring
-
-- **Renaming**: MUST use \`gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})\` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with \`dry_run: false\`.
-- **Extracting/Splitting**: MUST run \`gitnexus_context({name: "target"})\` to see all incoming/outgoing refs, then \`gitnexus_impact({target: "target", direction: "upstream"})\` to find all external callers before moving code.
-- After any refactor: run \`gitnexus_detect_changes({scope: "all"})\` to verify only expected files changed.
-
 ## Never Do
 
 - NEVER edit a function, class, or method without first running \`gitnexus_impact\` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use \`gitnexus_rename\` which understands the call graph.
 - NEVER commit changes without running \`gitnexus_detect_changes()\` to check affected scope.
-
-## Tools Quick Reference
-
-| Tool | When to use | Command |
-|------|-------------|---------|
-| \`query\` | Find code by concept | \`gitnexus_query({query: "auth validation"})\` |
-| \`context\` | 360-degree view of one symbol | \`gitnexus_context({name: "validateUser"})\` |
-| \`impact\` | Blast radius before editing | \`gitnexus_impact({target: "X", direction: "upstream"})\` |
-| \`detect_changes\` | Pre-commit scope check | \`gitnexus_detect_changes({scope: "staged"})\` |
-| \`rename\` | Safe multi-file rename | \`gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})\` |
-| \`cypher\` | Custom graph queries | \`gitnexus_cypher({query: "MATCH ..."})\` |
-
-## Impact Risk Levels
-
-| Depth | Meaning | Action |
-|-------|---------|--------|
-| d=1 | WILL BREAK — direct callers/importers | MUST update these |
-| d=2 | LIKELY AFFECTED — indirect deps | Should test |
-| d=3 | MAY NEED TESTING — transitive | Test if critical path |
 
 ## Resources
 
@@ -129,33 +144,15 @@ This project is indexed by GitNexus as **${projectName}** (${stats.nodes || 0} s
 | \`gitnexus://repo/${projectName}/processes\` | All execution flows |
 | \`gitnexus://repo/${projectName}/process/{name}\` | Step-by-step execution trace |
 
-## Self-Check Before Finishing
+${
+  groupNames && groupNames.length > 0
+    ? `## Cross-Repo Groups
 
-Before completing any code modification task, verify:
-1. \`gitnexus_impact\` was run for all modified symbols
-2. No HIGH/CRITICAL risk warnings were ignored
-3. \`gitnexus_detect_changes()\` confirms changes match expected scope
-4. All d=1 (WILL BREAK) dependents were updated
+This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the terminal: \`npx gitnexus group list\`, \`npx gitnexus group sync <name>\`, \`npx gitnexus group impact <name> --target <symbol> --repo <group-path>\`.
 
-## Keeping the Index Fresh
-
-After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
-
-\`\`\`bash
-npx gitnexus analyze
-\`\`\`
-
-If the index previously included embeddings, preserve them by adding \`--embeddings\`:
-
-\`\`\`bash
-npx gitnexus analyze --embeddings
-\`\`\`
-
-To check whether embeddings exist, inspect \`.gitnexus/meta.json\` — the \`stats.embeddings\` field shows the count (0 means no embeddings). **Running analyze without \`--embeddings\` will delete any previously generated embeddings.**
-
-> Claude Code users: A PostToolUse hook handles this automatically after \`git commit\` and \`git merge\`.
-
-## CLI
+`
+    : ''
+}## CLI
 
 ${skillsTable}
 
@@ -193,9 +190,18 @@ async function upsertGitNexusSection(
 
   const existingContent = await fs.readFile(filePath, 'utf-8');
 
-  // Check if GitNexus section already exists
-  const startIdx = existingContent.indexOf(GITNEXUS_START_MARKER);
-  const endIdx = existingContent.indexOf(GITNEXUS_END_MARKER);
+  // Check if GitNexus section already exists. Matching is restricted
+  // to markers that occupy their own line so that inline prose
+  // references (e.g. `` See the `<!-- gitnexus:start -->` block `` in
+  // the shipped CLAUDE.md) are NOT treated as section delimiters
+  // (#1041). The end-marker scan starts after the start-marker so it
+  // can never pick up an earlier end in the file.
+  const startIdx = findSectionMarkerIndex(existingContent, GITNEXUS_START_MARKER);
+  const endIdx = findSectionMarkerIndex(
+    existingContent,
+    GITNEXUS_END_MARKER,
+    startIdx === -1 ? 0 : startIdx,
+  );
 
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
     // Replace existing section
@@ -305,7 +311,14 @@ export async function generateAIContextFiles(
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
-  const content = generateGitNexusContent(projectName, stats, generatedSkills);
+  const groupNames = await findGroupsContainingRegistryName(projectName);
+  const content = generateGitNexusContent(
+    projectName,
+    stats,
+    generatedSkills,
+    groupNames,
+    options?.noStats,
+  );
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {

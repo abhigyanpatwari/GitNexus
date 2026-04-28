@@ -4,7 +4,7 @@ import {
   extractReceiverName,
 } from '../../src/core/ingestion/utils/call-analysis.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
-import { createSymbolTable } from '../../src/core/ingestion/symbol-table.js';
+import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
@@ -452,13 +452,17 @@ describe('ownerId on SymbolDefinition', () => {
     expect(def!.ownerId).toBeUndefined();
   });
 
-  it('propagates ownerId through lookupFuzzy', () => {
+  it('propagates ownerId through a free Function registration', () => {
+    // Post-A4 Unit 4, Method is no longer in FREE_CALLABLE_TYPES so this test
+    // exercises ownerId propagation through the free-callable index using
+    // a Function label. Method-with-ownerId propagation is covered via
+    // methodsByName in method-registry.test.ts.
     const st = createSymbolTable();
-    st.add('src/foo.ts', 'save', 'Method:src/foo.ts:save', 'Method', {
+    st.add('src/foo.ts', 'save', 'Function:src/foo.ts:save', 'Function', {
       ownerId: 'Class:src/foo.ts:User',
     });
 
-    const defs = st.lookupFuzzy('save');
+    const defs = st.lookupCallableByName('save');
     expect(defs).toHaveLength(1);
     expect(defs[0].ownerId).toBe('Class:src/foo.ts:User');
   });

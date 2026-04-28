@@ -6,7 +6,6 @@ import type {
   InitializerExtractor,
   ClassNameLookup,
   ConstructorBindingScanner,
-  ReturnTypeExtractor,
   PendingAssignmentExtractor,
   PendingAssignment,
   ForLoopExtractor,
@@ -196,44 +195,6 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   const calleeName = extractCalleeName(value);
   if (!calleeName) return undefined;
   return { varName: nameNode.text, calleeName };
-};
-
-/** Regex to extract @returns or @return from JSDoc comments: `@returns {Type}` */
-const JSDOC_RETURN_RE = /@returns?\s*\{([^}]+)\}/;
-
-/**
- * Minimal sanitization for JSDoc return types — preserves generic wrappers
- * (e.g. `Promise<User>`) so that extractReturnTypeName in call-processor
- * can apply WRAPPER_GENERICS unwrapping. Unlike normalizeJsDocType (which
- * strips generics), this only strips JSDoc-specific syntax markers.
- */
-const sanitizeReturnType = (raw: string): string | undefined => {
-  let type = raw.trim();
-  // Strip JSDoc nullable/non-nullable prefixes: ?User → User, !User → User
-  if (type.startsWith('?') || type.startsWith('!')) type = type.slice(1);
-  // Strip module: prefix — module:models.User → models.User
-  if (type.startsWith('module:')) type = type.slice(7);
-  // Reject unions (ambiguous)
-  if (type.includes('|')) return undefined;
-  if (!type) return undefined;
-  return type;
-};
-
-/**
- * Extract return type from JSDoc `@returns {Type}` or `@return {Type}` annotation
- * preceding a function/method definition. Walks backwards through preceding siblings
- * looking for comment nodes containing the annotation.
- */
-const extractReturnType: ReturnTypeExtractor = (node) => {
-  let sibling = node.previousSibling;
-  while (sibling) {
-    if (sibling.type === 'comment') {
-      const match = JSDOC_RETURN_RE.exec(sibling.text);
-      if (match) return sanitizeReturnType(match[1]);
-    } else if (sibling.isNamed && sibling.type !== 'decorator') break;
-    sibling = sibling.previousSibling;
-  }
-  return undefined;
 };
 
 const FOR_LOOP_NODE_TYPES: ReadonlySet<string> = new Set(['for_in_statement']);
@@ -480,8 +441,40 @@ const extractForLoopBinding: ForLoopExtractor = (
   if (loopVarName) scopeEnv.set(loopVarName, elementType);
 };
 
+/** Collect fieldAccess items from an object_pattern's destructured properties. */
+const collectDestructuredFields = (
+  nameNode: SyntaxNode,
+  receiver: string,
+  scopeEnv: ReadonlyMap<string, string>,
+): PendingAssignment[] => {
+  const items: PendingAssignment[] = [];
+  for (let j = 0; j < nameNode.namedChildCount; j++) {
+    const prop = nameNode.namedChild(j);
+    if (!prop) continue;
+    if (prop.type === 'shorthand_property_identifier_pattern') {
+      // `const { name } = obj` → shorthand: varName = fieldName
+      const varName = prop.text;
+      if (!scopeEnv.has(varName)) {
+        items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: varName });
+      }
+    } else if (prop.type === 'pair_pattern') {
+      // `const { address: addr } = obj` → pair_pattern: key=field, value=varName
+      const keyNode = prop.childForFieldName('key');
+      const valNode = prop.childForFieldName('value');
+      if (keyNode && valNode) {
+        const fieldName = keyNode.text;
+        const varName = valNode.text;
+        if (!scopeEnv.has(varName)) {
+          items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: fieldName });
+        }
+      }
+    }
+  }
+  return items;
+};
+
 /** TS/JS: const alias = u → variable_declarator with name/value fields.
- *  Also handles destructuring: `const { a, b } = obj` → N fieldAccess items. */
+ *  Also handles destructuring: `const { a, b } = obj` and `const { a } = fn()` → N fieldAccess items. */
 const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) => {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
@@ -490,34 +483,50 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     const valueNode = child.childForFieldName('value');
     if (!nameNode || !valueNode) continue;
 
-    // Object destructuring: `const { address, name } = user`
-    // Emits N fieldAccess items — one per destructured binding.
+    // Object destructuring from identifier: `const { address, name } = user`
     if (nameNode.type === 'object_pattern' && valueNode.type === 'identifier') {
-      const receiver = valueNode.text;
-      const items: PendingAssignment[] = [];
-      for (let j = 0; j < nameNode.namedChildCount; j++) {
-        const prop = nameNode.namedChild(j);
-        if (!prop) continue;
-        if (prop.type === 'shorthand_property_identifier_pattern') {
-          // `const { name } = user` → shorthand: varName = fieldName
-          const varName = prop.text;
-          if (!scopeEnv.has(varName)) {
-            items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: varName });
-          }
-        } else if (prop.type === 'pair_pattern') {
-          // `const { address: addr } = user` → pair_pattern: key=field, value=varName
-          const keyNode = prop.childForFieldName('key');
-          const valNode = prop.childForFieldName('value');
-          if (keyNode && valNode) {
-            const fieldName = keyNode.text;
-            const varName = valNode.text;
-            if (!scopeEnv.has(varName)) {
-              items.push({ kind: 'fieldAccess', lhs: varName, receiver, field: fieldName });
+      const items = collectDestructuredFields(nameNode, valueNode.text, scopeEnv);
+      if (items.length > 0) return items;
+      continue;
+    }
+
+    // Object destructuring from call/await: `const { x } = fn()` or `const { x } = await fn()`
+    // Emits a synthetic callResult + N fieldAccess items resolved via fixpoint iteration.
+    if (nameNode.type === 'object_pattern') {
+      const callNode = unwrapAwait(valueNode);
+      if (callNode?.type === 'call_expression') {
+        const funcNode = callNode.childForFieldName('function');
+        if (funcNode) {
+          let syntheticVar: string | undefined;
+          let leadItem: PendingAssignment | undefined;
+
+          if (funcNode.type === 'identifier') {
+            syntheticVar = `__destr_${funcNode.text}_${callNode.startIndex}`;
+            leadItem = { kind: 'callResult', lhs: syntheticVar, callee: funcNode.text };
+          } else if (funcNode.type === 'member_expression') {
+            const obj = funcNode.childForFieldName('object');
+            const prop = funcNode.childForFieldName('property');
+            if (
+              obj &&
+              prop?.type === 'property_identifier' &&
+              (obj.type === 'identifier' || obj.type === 'this')
+            ) {
+              syntheticVar = `__destr_${prop.text}_${callNode.startIndex}`;
+              leadItem = {
+                kind: 'methodCallResult',
+                lhs: syntheticVar,
+                receiver: obj.text,
+                method: prop.text,
+              };
             }
+          }
+
+          if (syntheticVar && leadItem) {
+            const fieldItems = collectDestructuredFields(nameNode, syntheticVar, scopeEnv);
+            if (fieldItems.length > 0) return [leadItem, ...fieldItems];
           }
         }
       }
-      if (items.length > 0) return items;
       continue;
     }
 
@@ -694,7 +703,6 @@ export const typeConfig: LanguageTypeConfig = {
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
-  extractReturnType,
   extractForLoopBinding,
   extractPendingAssignment,
   extractPatternBinding,

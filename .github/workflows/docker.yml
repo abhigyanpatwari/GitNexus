@@ -1,0 +1,259 @@
+name: Docker Build & Push
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+  # workflow_dispatch is allowed for dry-run testing only. Publishing is still
+  # exclusively tag-driven so that every signed image corresponds 1:1 to a
+  # published `gitnexus@X.Y.Z` on npm. dry_run:true (the default) skips all
+  # push, sign, and attestation steps — the build runs but nothing is published.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only — skip push, signing, and attestations'
+        required: false
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        description: >-
+          The full v-prefixed tag to build (e.g. v1.2.3-rc.1).
+          The tag must already exist in the repo and its tree must contain
+          a gitnexus/package.json whose version matches the tag.
+        required: true
+        type: string
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Tag refs are unique per release, so distinct tags run in parallel.
+# Re-pushes of the same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+# Hardcoded `docker-build-push-` prefix (not `${{ github.workflow }}`) when invoked as a reusable
+# workflow: in called-workflow context `github.workflow` is ambiguous and could resolve to the
+# caller's name, sharing a concurrency group with the caller → deadlock.
+# Direct tag-push invocations use `docker-build-push-<ref>`; workflow_call invocations get a
+# per-run-unique group (they are already serialized by the caller's own concurrency group).
+concurrency:
+  group: ${{ (github.event_name == 'push') && format('docker-build-push-{0}', github.ref) || format('docker-build-push-nested-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    name: Build & Push ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      # Required for Cosign keyless signing via the OIDC token exchange,
+      # and for build provenance / SBOM attestations.
+      id-token: write
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          # Static UI bundle. Small, fast image. Drop-in replacement for the
+          # legacy single-image setup at the same `gitnexus` repository slug
+          # is intentionally avoided — the UI now lives at `gitnexus-web` and
+          # the CLI/server takes the canonical `gitnexus` slug below.
+          - name: gitnexus-web
+            dockerfile: Dockerfile.web
+            slug: gitnexus-web
+          # CLI / `gitnexus serve` backend. Heavy native deps (tree-sitter,
+          # onnxruntime-node) live only in this image.
+          - name: gitnexus
+            dockerfile: Dockerfile.cli
+            slug: gitnexus
+
+    steps:
+      # Only the workflow_call path requires a non-empty `inputs.tag` — callers
+      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
+      # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
+      # empty and validating it here would break every real release (#1064).
+      # The downstream "Verify tag matches gitnexus/package.json version" step
+      # handles both event types by falling back to GITHUB_REF.
+      - name: Validate tag input
+        if: github.event_name == 'workflow_call'
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if [ -z "${TAG_INPUT}" ]; then
+            echo "::error::No tag provided to docker.yml — refusing to build/push."
+            exit 1
+          fi
+
+      # When triggered by workflow_call the caller passes the RC tag as an input;
+      # we check out that tag so the Dockerfile and package.json match the built image.
+      # For tag-push events github.ref is already the tag ref — no override needed.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # ── Lock the docker image version to the npm package version ──────────
+      # Mirrors the check in publish.yml: refuse to build unless the git tag
+      # exactly matches `gitnexus/package.json`'s version. This guarantees
+      # `ghcr.io/<owner>/gitnexus:X.Y.Z` always corresponds to the same
+      # `gitnexus@X.Y.Z` published to npm — no drift, no surprises.
+      - name: Verify tag matches gitnexus/package.json version
+        id: version
+        if: github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          # For workflow_call the tag comes from the caller input; for push events
+          # it is derived from GITHUB_REF (set to empty so the else-branch fires).
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_VERSION="${INPUT_TAG#v}"
+          else
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+            exit 1
+          fi
+          PKG_VERSION=$(node -p "require('./gitnexus/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (v$TAG_VERSION) does not match gitnexus/package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version verified: $PKG_VERSION"
+
+      # Required for multi-platform (linux/arm64) emulation.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docker Hub is a mirror of GHCR: same tags, same digests, same Cosign
+      # signatures. GHCR remains authoritative (it is the registry the
+      # ClusterImagePolicy globs against by default), but Docker Hub is the
+      # registry most users reach for first, so we publish there too.
+      # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a scoped
+      # access token, NOT the account password) with write access to the
+      # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
+      - name: Log in to Docker Hub
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Computes image tags and labels from the verified semver tag:
+      #   v1.2.3        → :1.2.3, :1.2, :1, :latest (auto, only for non-prerelease)
+      #   v1.2.3-rc.1   → :1.2.3-rc.1 only (prereleases never become :latest)
+      # `:latest` is only emitted for tag pushes thanks to `flavor: latest=auto`,
+      # ensuring it always points at a real npm-published version.
+      #
+      # For workflow_call invocations github.ref is the caller's branch ref, so
+      # the type=semver patterns would not match. In that case we add an explicit
+      # type=raw tag using the version already verified above, so the same
+      # image-naming rules apply regardless of how the workflow was triggered.
+      # NOTE: We check `inputs.tag` rather than `github.event_name` because in a
+      # reusable workflow the github context is inherited from the caller —
+      # `github.event_name` would still be "push", not "workflow_call".
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          # Dual-registry publish. metadata-action expands the same tag set
+          # against every image ref listed here, and build-push-action pushes
+          # one build to all of them, so the GHCR and Docker Hub images share
+          # a digest and are byte-identical. The Docker Hub namespace
+          # (`akonlabs`) is hardcoded because it differs from the GitHub org
+          # (`abhigyanpatwari`) — `github.repository_owner` would produce the
+          # wrong ref.
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+            docker.io/akonlabs/${{ matrix.image.slug }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ inputs.tag != '' }}
+
+      # Transient 502s from GHCR / Docker Hub / GHA cache during multi-platform
+      # exports are retried inside `.github/actions/docker-build-push-retry`
+      # (see docker/build-push-action#1422 — retry policy stays out of the
+      # upstream action). `ignore-error=true` on cache-to avoids cache export
+      # flakes failing an otherwise successful push.
+      - name: Build and push
+        id: build
+        uses: ./.github/actions/docker-build-push-retry
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.slug }},ignore-error=true
+
+      # Cosign keyless signing. Each pushed tag is signed by the workflow's
+      # OIDC identity, so consumers can verify the image with the strict,
+      # fully-anchored identity regex (kept in sync with README.md and
+      # deploy/kubernetes/cluster-image-policy.yaml — update all three together).
+      # NOTE: `${...}` expression syntax is NOT evaluated inside YAML comments, so
+      # the example below uses literal `<owner>/<repo>` placeholders that consumers
+      # substitute themselves; the canonical, fully-rendered command lives in README.md.
+      #   cosign verify ghcr.io/<owner>/<slug>:<tag> \
+      #     --certificate-identity-regexp '^https://github\.com/<owner>/<repo>/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      # Do NOT relax to `@.*` — that accepts signatures from any ref, including
+      # unprotected branches and PRs, and defeats the supply-chain guarantee.
+      - name: Sign image with Cosign (keyless)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        env:
+          # Cosign v2 (installed by sigstore/cosign-installer above) makes
+          # keyless the default. COSIGN_EXPERIMENTAL is a v1-only opt-in flag
+          # that is now deprecated/no-op, so it is intentionally omitted.
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign every tag at the same digest so consumers can verify by tag or by digest.
+          # Use `while read` instead of `for $TAGS` to be robust against tags that
+          # could ever contain whitespace (the metadata-action output is newline-
+          # separated, not space-separated).
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      # Attach the SBOM produced by buildx as a verifiable attestation on the
+      # digest. Attestations are pushed as OCI referrers to the registry named
+      # in `subject-name`, so we call the action once per registry. The digest
+      # is identical across registries (same build, same push), so consumers
+      # pulling from either GHCR or Docker Hub see the same provenance.
+      - name: Generate build provenance attestation (GHCR)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate build provenance attestation (Docker Hub)
+        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: docker.io/akonlabs/${{ matrix.image.slug }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

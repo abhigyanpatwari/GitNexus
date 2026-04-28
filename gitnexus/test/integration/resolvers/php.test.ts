@@ -128,7 +128,7 @@ describe('PHP heritage & import resolution', () => {
   // --- Property OVERRIDES exclusion ---
 
   it('does not emit OVERRIDES for property name collisions ($status in both traits)', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     // OVERRIDES should only target Method nodes, never Property nodes
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
@@ -140,7 +140,7 @@ describe('PHP heritage & import resolution', () => {
   // --- MRO: OVERRIDES edge ---
 
   it('emits OVERRIDES edge for User overriding log (inherited from BaseModel)', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     expect(overrides.length).toBe(1);
     const logOverride = overrides.find((e) => e.source === 'User' && e.target === 'log');
     expect(logOverride).toBeDefined();
@@ -1533,5 +1533,277 @@ describe('PHP use function / use const filtering', () => {
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User'),
     );
     expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 16: Method enrichment (isAbstract, isFinal, parameterTypes, static/member calls)
+// Animal (abstract): abstract speak(), static classify(), final breathe()
+// Dog extends Animal: overrides speak()
+// app.php: $dog->speak(), Dog::classify("dog")
+// ---------------------------------------------------------------------------
+
+describe('PHP method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const speak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath?.includes('Animal'),
+    );
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks breathe as isFinal (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isFinal !== undefined) {
+      expect(breathe.properties.isFinal).toBe(true);
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('string');
+    }
+  });
+
+  it('resolves $dog->speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find((c) => c.target === 'speak' && c.sourceFilePath?.includes('app'));
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Dog::classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath?.includes('app'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 17: Overload dispatch (PHP functions with distinct names)
+// format_text(string), format_text_padded(string, int)
+// app.php: calls both via use function imports
+// ---------------------------------------------------------------------------
+
+describe('PHP overload dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects all functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('format_text');
+    expect(fns).toContain('format_text_padded');
+    expect(fns).toContain('run');
+  });
+
+  it('resolves format_text("  hi  ") CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const textCall = calls.find(
+      (c) => c.target === 'format_text' && c.sourceFilePath?.includes('app'),
+    );
+    expect(textCall).toBeDefined();
+  });
+
+  it('resolves format_text_padded("hi", 20) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const paddedCall = calls.find(
+      (c) => c.target === 'format_text_padded' && c.sourceFilePath?.includes('app'),
+    );
+    expect(paddedCall).toBeDefined();
+  });
+
+  it('populates parameterTypes for format_text_padded (conditional)', () => {
+    const fns = getNodesByLabelFull(result, 'Function');
+    const ftp = fns.find((n) => n.name === 'format_text_padded');
+    if (ftp?.properties.parameterTypes !== undefined) {
+      const params = ftp.properties.parameterTypes;
+      expect(params).toContain('string');
+      expect(params).toContain('int');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 18: Abstract dispatch (interface + concrete implementation)
+// Repository interface: find(int), save(array)
+// SqlRepository implements Repository
+// app.php: $repo = new SqlRepository(); $repo->find(42); $repo->save($user)
+// ---------------------------------------------------------------------------
+
+describe('PHP abstract dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-abstract-dispatch'), () => {});
+  }, 60000);
+
+  it('detects Repository interface and SqlRepository class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('Repository');
+    expect(getNodesByLabel(result, 'Class')).toContain('SqlRepository');
+  });
+
+  it('emits IMPLEMENTS edge SqlRepository -> Repository', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'SqlRepository' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for Repository.find and Repository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const repoFind = hasMethod.find((e) => e.source === 'Repository' && e.target === 'find');
+    const repoSave = hasMethod.find((e) => e.source === 'Repository' && e.target === 'save');
+    expect(repoFind).toBeDefined();
+    expect(repoSave).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for SqlRepository.find and SqlRepository.save', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sqlFind = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'find');
+    const sqlSave = hasMethod.find((e) => e.source === 'SqlRepository' && e.target === 'save');
+    expect(sqlFind).toBeDefined();
+    expect(sqlSave).toBeDefined();
+  });
+
+  it('marks interface Repository.find as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const baseFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath?.includes('Contracts/Repository'),
+    );
+    if (baseFind?.properties.isAbstract !== undefined) {
+      expect(baseFind.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks interface Repository.save as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const baseSave = methods.find(
+      (n) => n.name === 'save' && n.properties.filePath?.includes('Contracts/Repository'),
+    );
+    if (baseSave?.properties.isAbstract !== undefined) {
+      expect(baseSave.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks concrete SqlRepository.find as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sqlFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath?.includes('SqlRepository'),
+    );
+    if (sqlFind?.properties.isAbstract !== undefined) {
+      expect(sqlFind.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('resolves $repo->find(42) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findCall = calls.find((c) => c.target === 'find' && c.sourceFilePath?.includes('app'));
+    expect(findCall).toBeDefined();
+  });
+
+  it('resolves $repo->save($user) CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.target === 'save' && c.sourceFilePath?.includes('app'));
+    expect(saveCall).toBeDefined();
+  });
+
+  it('populates parameterTypes for Repository.find (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const baseFind = methods.find(
+      (n) => n.name === 'find' && n.properties.filePath?.includes('Repository'),
+    );
+    if (baseFind?.properties.parameterTypes !== undefined) {
+      const params = baseFind.properties.parameterTypes;
+      expect(params).toContain('int');
+    }
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepository methods → Repository interface methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) => e.sourceFilePath.includes('SqlRepository') && e.targetFilePath.includes('Repository'),
+    );
+    expect(edges.length).toBe(2);
+    const names = edges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — PHP first-wins
+// ---------------------------------------------------------------------------
+
+describe('PHP Child extends ParentClass — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects ParentClass and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('ParentClass');
+    expect(classes).toContain('Child');
+  });
+
+  it('resolves $c->parentMethod() to ParentClass::parentMethod via first-wins MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.php'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
   });
 });

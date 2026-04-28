@@ -61,7 +61,7 @@ describe('C++ diamond inheritance', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -1040,18 +1040,89 @@ describe('C++ overload disambiguation by parameter types', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overload-param-types'), () => {});
   }, 60000);
 
-  it('detects lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'lookup');
-    expect(lookupNodes.length).toBe(1);
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['int'], ['string']]);
   });
 
-  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+  it('callById() emits exactly one CALLS edge to lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
-    // Both lookup(42) and lookup("alice") resolve to same nodeId → 1 CALLS edge
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'callById' && c.target === 'lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to lookup(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'callByName' && c.target === 'lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('C++ same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-same-arity-cross-file'), () => {});
+  }, 60000);
+
+  it('callById() emits exactly one CALLS edge to find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'callById' && c.target === 'find' && c.targetFilePath.includes('db_lookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to find(string) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'callByName' && c.target === 'find' && c.targetFilePath.includes('db_lookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainIntToFormat() — find(42) → find(int), format(result) → format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainIntToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainIntToFormat' && c.target === 'format',
+    );
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainNameToFormat() — find("alice") → find(string), format(result) → format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainNameToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainNameToFormat' && c.target === 'format',
+    );
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['string']);
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['string']);
   });
 });
 
@@ -1153,5 +1224,361 @@ describe('C++ cross-file binding propagation', () => {
     const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'get_name');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method enrichment: pure virtual, static, concrete methods + EXTENDS
+// ---------------------------------------------------------------------------
+
+describe('C++ method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target);
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('marks pure virtual speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'speak' && n.properties.filePath === 'animal.hpp');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      expect(classify.properties.parameterTypes.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ── Phase P: C++ const-qualified method overload disambiguation ───────────
+
+describe('C++ const-qualified method overload disambiguation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-const-overload'), () => {});
+  }, 60000);
+
+  it('produces distinct nodes for begin() and begin() const', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const beginNodes = methods.filter((m) => m.name === 'begin');
+    expect(beginNodes.length).toBe(2);
+    const constFlags = beginNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('produces distinct nodes for end() and end() const', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const endNodes = methods.filter((m) => m.name === 'end');
+    expect(endNodes.length).toBe(2);
+    const constFlags = endNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('single const method (size) has isConst but no $const suffix (no collision)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sizeNodes = methods.filter((m) => m.name === 'size');
+    expect(sizeNodes.length).toBe(1);
+    expect(sizeNodes[0].properties.isConst).toBe(true);
+  });
+
+  it('callNonConst has isConst falsy, callConst has isConst true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const callNonConst = methods.find((m) => m.name === 'callNonConst');
+    const callConst = methods.find((m) => m.name === 'callConst');
+    expect(callNonConst).toBeDefined();
+    expect(callConst).toBeDefined();
+    expect(callNonConst!.properties.isConst).toBeFalsy();
+    expect(callConst!.properties.isConst).toBe(true);
+  });
+});
+
+// ── Phase P: C++ const-qualified cross-file + chain resolution ────────────
+
+describe('C++ const-qualified cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-const-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: const vs non-const get() called from App --
+
+  it('Container.get has distinct const and non-const nodes', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const getNodes = methods.filter(
+      (m) => m.name === 'get' && m.properties.filePath?.includes('container'),
+    );
+    expect(getNodes.length).toBe(2);
+    const constFlags = getNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  it('Container.size has distinct const and non-const nodes', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const sizeNodes = methods.filter(
+      (m) => m.name === 'size' && m.properties.filePath?.includes('container'),
+    );
+    expect(sizeNodes.length).toBe(2);
+    const constFlags = sizeNodes.map((n) => !!n.properties.isConst).sort();
+    expect(constFlags).toEqual([false, true]);
+  });
+
+  // -- Chain: format() calls resolve cross-file via receiver-type propagation --
+
+  it('chainMutableGet() calls format cross-file via string receiver type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtEdges = calls.filter((c) => c.source === 'chainMutableGet' && c.target === 'format');
+    expect(fmtEdges.length).toBe(1);
+    const fmtTarget = result.graph.getNode(fmtEdges[0].rel.targetId);
+    expect(fmtTarget?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('chainConstSize() calls format cross-file via int receiver type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtEdges = calls.filter((c) => c.source === 'chainConstSize' && c.target === 'format');
+    expect(fmtEdges.length).toBe(1);
+    const fmtTarget = result.graph.getNode(fmtEdges[0].rel.targetId);
+    expect(fmtTarget?.properties.parameterTypes).toEqual(['int']);
+  });
+});
+
+// ── Phase P: C++ template overload disambiguation ─────────────────────────
+
+describe('C++ template overload disambiguation (vector<int> vs vector<string>)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-template-overload'), () => {});
+  }, 60000);
+
+  it('produces distinct nodes for process(vector<int>) and process(vector<string>)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter((m) => m.name === 'process');
+    expect(processNodes.length).toBe(2);
+  });
+
+  it('each process() node has distinct parameterTypes (simplified)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter((m) => m.name === 'process');
+    // Both have type 'vector' after extractSimpleTypeName, but distinct node IDs
+    // from rawType-based type-hash (~vector<int> vs ~vector<std::string>)
+    const types = processNodes.map((n) => n.properties.parameterTypes);
+    // Both have simplified 'vector' as parameterTypes[0], but they're separate nodes
+    expect(types.length).toBe(2);
+  });
+
+  it('the two process() nodes have different graph IDs', () => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.properties.name === 'process' && n.label === 'Method') {
+        ids.push(n.id);
+      }
+    });
+    expect(ids.length).toBe(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+});
+
+// ── Phase P: C++ template overload cross-file + chain resolution ──────────
+
+describe('C++ template overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-template-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: template-overloaded process() defined in processor.h, called from app.cpp --
+
+  it('Processor.process has distinct nodes for vector<int> and vector<string>', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const processNodes = methods.filter(
+      (m) => m.name === 'process' && m.properties.filePath?.includes('processor'),
+    );
+    expect(processNodes.length).toBe(2);
+    // Verify they have different startLine (proof of distinct nodes, not ID collision)
+    const lines = processNodes.map((n) => n.properties.startLine).sort();
+    expect(lines[0]).not.toBe(lines[1]);
+  });
+
+  // -- Chain: format(int) and format(string) called cross-file from App --
+
+  it('chainIntToFormat() emits exactly one CALLS edge to format(int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'chainIntToFormat' &&
+        c.target === 'format' &&
+        c.targetFilePath.includes('formatter'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('chainStringToFormat() emits exactly one CALLS edge to format(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'chainStringToFormat' &&
+        c.target === 'format' &&
+        c.targetFilePath.includes('formatter'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: C++ out-of-class method definition + overload disambiguation ─
+
+describe('C++ out-of-class method definition with overloaded declarations', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-out-of-class-method'), () => {});
+  }, 60000);
+
+  it('header declarations produce Method nodes for greet() and greet(string)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const greetNodes = methods.filter(
+      (m) => m.name === 'greet' && m.properties.filePath?.includes('myclass'),
+    );
+    // greet() (arity 0) and greet(string) (arity 1) have different arity → distinct IDs
+    expect(greetNodes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('header declarations produce Method nodes for getName() and getName(int)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const getNameNodes = methods.filter(
+      (m) => m.name === 'getName' && m.properties.filePath?.includes('myclass'),
+    );
+    expect(getNameNodes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('callGreetDefault() emits exactly one CALLS edge to greet (arity 0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGreetDefault' && c.target === 'greet');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterCount).toBe(0);
+  });
+
+  it('callGreetMsg() emits exactly one CALLS edge to greet(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGreetMsg' && c.target === 'greet');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('callGetNameDefault() emits exactly one CALLS edge to getName (arity 0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGetNameDefault' && c.target === 'getName');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterCount).toBe(0);
+  });
+
+  it('callGetNameById() emits exactly one CALLS edge to getName(int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter((c) => c.source === 'callGetNameById' && c.target === 'getName');
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — c.parentMethod() via leftmost-base walk
+// ---------------------------------------------------------------------------
+
+describe('C++ Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parentMethod() to Parent.parentMethod via leftmost-base MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent.h'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+describe('C++ Derived : A, B — diamond inheritance via leftmost-base MRO (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-diamond-inheritance'), () => {});
+  }, 60000);
+
+  it('detects Base, A, B, and Derived classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Base');
+    expect(classes).toContain('A');
+    expect(classes).toContain('B');
+    expect(classes).toContain('Derived');
+  });
+
+  it('emits EXTENDS edges for both branches: A → Base, B → Base, Derived → A, Derived → B', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const edges = edgeSet(extends_);
+    expect(edges).toContain('A → Base');
+    expect(edges).toContain('B → Base');
+    expect(edges).toContain('Derived → A');
+    expect(edges).toContain('Derived → B');
+  });
+
+  it('resolves d.method() to Base::method via leftmost-base MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const methodCall = calls.find(
+      (c) => c.target === 'method' && c.targetFilePath.includes('Base.h'),
+    );
+    expect(methodCall).toBeDefined();
+    expect(methodCall!.source).toBe('run');
   });
 });

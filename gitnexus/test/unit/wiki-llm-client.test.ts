@@ -207,7 +207,7 @@ describe('callLLM — reasoning model params', () => {
     expect(body.temperature).toBeUndefined();
   });
 
-  it('uses max_tokens and temperature for non-reasoning models', async () => {
+  it('uses max_completion_tokens and temperature for non-reasoning models', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ choices: [{ message: { content: 'answer' } }], usage: {} }), {
         status: 200,
@@ -230,8 +230,8 @@ describe('callLLM — reasoning model params', () => {
       RequestInit & { headers: Record<string, string> },
     ];
     const body = JSON.parse(init.body as string);
-    expect(body.max_tokens).toBe(500);
-    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.max_completion_tokens).toBe(500);
+    expect(body.max_tokens).toBeUndefined();
     expect(body.temperature).toBe(0.5);
   });
 });

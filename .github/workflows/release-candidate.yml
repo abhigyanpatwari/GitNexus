@@ -1,0 +1,392 @@
+name: Release Candidate
+
+on:
+  # Publish a release-candidate build whenever a merge/commit lands on main.
+  # Docs/README-only changes are filtered out so prose updates don't
+  # cut a release.
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: >-
+          Cycle policy. 'auto' (default) continues the active rc cycle on
+          this branch if there is one, otherwise bumps patch from latest.
+          Choose 'patch' / 'minor' / 'major' to explicitly start or reset
+          an rc cycle.
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      force:
+        description: 'Publish even when HEAD already has an rc marker'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# No workflow-level permissions — scoped per job below.
+permissions: {}
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Serialize all runs on the same ref (push + workflow_dispatch) to prevent two publishes
+# racing on the rc counter. cancel-in-progress: false — the earlier merge publishes first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Skip when HEAD already has an rc marker (retry / duplicate dispatch) ──
+  # The marker is a lightweight tag `rc/<HEAD_SHA>` pushed *before* `npm
+  # publish`, so a failed publish leaves the marker in place and the guard
+  # refuses to re-publish. Recovery path after a partial failure:
+  #   git push --delete origin rc/<HEAD_SHA> v<RC_VERSION>
+  # then redispatch with force=true.
+  guard:
+    name: Check if release candidate should run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      head_sha: ${{ steps.decide.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          FORCE: ${{ inputs.force }}
+          BUMP_INPUT: ${{ inputs.bump }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force flag set — running regardless of marker tag."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # An explicit cycle reset on dispatch (bump != auto) also bypasses
+          # the dedup guard — the maintainer is deliberately asking for a
+          # new rc from the same commit.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
+             && [ -n "${BUMP_INPUT:-}" ] \
+             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+            echo "Explicit bump=$BUMP_INPUT — bypassing marker dedup."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Dedup: is there already an rc/<HEAD_SHA> marker pointing at HEAD?
+          MARKER="rc/${HEAD_SHA}"
+          if git rev-parse "refs/tags/$MARKER" >/dev/null 2>&1; then
+            echo "HEAD already has marker $MARKER — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No marker on HEAD — proceeding."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Reuse the stable CI workflow ─────────────────────────────────────
+  ci:
+    needs: guard
+    if: needs.guard.outputs.should_run == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
+  # ── Publish the rc build to npm + create GitHub prerelease ───────────
+  publish:
+    name: Publish release candidate to npm
+    needs: [guard, ci]
+    if: needs.guard.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # push rc tag + marker
+      id-token: write # npm provenance
+    outputs:
+      vtag: ${{ steps.reltag.outputs.vtag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: gitnexus/package-lock.json
+
+      - name: Build gitnexus-shared
+        run: npm install && npm run build
+        working-directory: gitnexus-shared
+
+      - name: Install gitnexus dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      - name: Resolve rc version
+        id: version
+        shell: bash
+        working-directory: gitnexus
+        env:
+          BUMP_INPUT: ${{ inputs.bump }}
+          EVENT_NAME: ${{ github.event_name }}
+          PKG_NAME: gitnexus
+        run: |
+          set -euo pipefail
+
+          # 1. Current published `latest` — the floor for any new rc base.
+          #    Only E404 ("never published") falls back to package.json; any
+          #    other error (network, auth, malformed response) fails fast.
+          NPM_STDERR_LATEST="$(mktemp)"
+          if CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>"$NPM_STDERR_LATEST")"; then
+            :
+          else
+            if grep -q 'E404' "$NPM_STDERR_LATEST"; then
+              CURRENT_LATEST="$(node -p "require('./package.json').version")"
+              echo "Package not on registry (E404) — seeding from package.json: $CURRENT_LATEST"
+            else
+              echo "::error::npm registry unreachable for 'view version':" >&2
+              cat "$NPM_STDERR_LATEST" >&2
+              rm -f "$NPM_STDERR_LATEST"
+              exit 1
+            fi
+          fi
+          rm -f "$NPM_STDERR_LATEST"
+          CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
+
+          # 2. Full version list — needed for the counter and for active-cycle
+          #    inference. Same E404-only fallback.
+          NPM_STDERR_VERSIONS="$(mktemp)"
+          if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
+            :
+          else
+            if grep -q 'E404' "$NPM_STDERR_VERSIONS"; then
+              VERSIONS_JSON='[]'
+              echo "No published versions for $PKG_NAME yet (E404)."
+            else
+              echo "::error::npm registry unreachable for 'view versions':" >&2
+              cat "$NPM_STDERR_VERSIONS" >&2
+              rm -f "$NPM_STDERR_VERSIONS"
+              exit 1
+            fi
+          fi
+          rm -f "$NPM_STDERR_VERSIONS"
+
+          # 3. Base selection.
+          #    - workflow_dispatch + bump ∈ {patch,minor,major} → explicit cycle
+          #      reset from latest.
+          #    - Everything else (push, or dispatch with bump=auto) → continue
+          #      the highest active rc base > latest if one exists; else
+          #      default to patch from latest.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
+             && [ -n "${BUMP_INPUT:-}" ] \
+             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+            BASE="$(npx --yes -p semver@7 semver -i "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
+            echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
+          else
+            cat > /tmp/active_base.mjs <<'NODESCRIPT'
+          const latest = process.env.LATEST;
+          let v;
+          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
+          if (!Array.isArray(v)) v = [v];
+          const parse = s => s.split(".").map(n => parseInt(n, 10));
+          const gt = (a, b) => {
+            const [A, B] = [parse(a), parse(b)];
+            for (let i = 0; i < 3; i++) if (A[i] !== B[i]) return A[i] > B[i];
+            return false;
+          };
+          const bases = new Set();
+          for (const s of v) {
+            const m = /^(\d+\.\d+\.\d+)-rc\.\d+$/.exec(s);
+            if (m && gt(m[1], latest)) bases.add(m[1]);
+          }
+          if (!bases.size) { process.stdout.write(""); process.exit(0); }
+          const sorted = [...bases].sort((a, b) => gt(a, b) ? 1 : -1);
+          process.stdout.write(sorted[sorted.length - 1]);
+          NODESCRIPT
+            ACTIVE_BASE="$(LATEST="$CURRENT_LATEST_CLEAN" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/active_base.mjs)"
+            if [ -n "$ACTIVE_BASE" ]; then
+              BASE="$ACTIVE_BASE"
+              echo "Continuing active rc cycle → BASE=$BASE"
+            else
+              BASE="$(npx --yes -p semver@7 semver -i patch "$CURRENT_LATEST_CLEAN")"
+              echo "No active rc cycle → patch bump from latest → BASE=$BASE"
+            fi
+          fi
+
+          # 4. Counter: 1 + max existing N for `${BASE}-rc.*`, else 1.
+          cat > /tmp/next_rc.mjs <<'NODESCRIPT'
+          const base = process.env.BASE;
+          const prefix = base + "-rc.";
+          let v;
+          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
+          if (!Array.isArray(v)) v = [v];
+          const ns = v
+            .filter(s => typeof s === "string" && s.startsWith(prefix))
+            .map(s => parseInt(s.slice(prefix.length), 10))
+            .filter(n => Number.isInteger(n) && n >= 0);
+          process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
+          NODESCRIPT
+          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
+          RC_VERSION="${BASE}-rc.${NEXT_N}"
+          echo "Computed rc: $RC_VERSION"
+
+          # 5. Defensive: if the exact version already exists on the registry
+          #    (e.g., race with another run), abort before re-publishing.
+          #    Same E404-only pattern used above — a transient network
+          #    failure must fail loudly, not pretend the version is missing.
+          NPM_STDERR_EXISTS="$(mktemp)"
+          if npm view "$PKG_NAME@$RC_VERSION" version 2>"$NPM_STDERR_EXISTS" >/dev/null; then
+            rm -f "$NPM_STDERR_EXISTS"
+            echo "::error::Version $RC_VERSION already exists on npm — aborting."
+            exit 1
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR_EXISTS"; then
+              rm -f "$NPM_STDERR_EXISTS"
+              # Version doesn't exist — safe to proceed.
+            else
+              echo "::error::npm registry unreachable for existence check:" >&2
+              cat "$NPM_STDERR_EXISTS" >&2
+              rm -f "$NPM_STDERR_EXISTS"
+              exit 1
+            fi
+          fi
+
+          echo "base=$BASE"             >> "$GITHUB_OUTPUT"
+          echo "rc_n=$NEXT_N"           >> "$GITHUB_OUTPUT"
+          echo "rc_version=$RC_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Apply rc version in-CI
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.version.outputs.rc_version }}" \
+            --no-git-tag-version --allow-same-version
+
+      - name: Build gitnexus
+        run: npm run build
+        working-directory: gitnexus
+
+      - name: Dry-run publish
+        run: npm publish --dry-run --tag rc
+        working-directory: gitnexus
+
+      # ── Acquire the "rc lock" BEFORE publishing (fixes idempotency) ─────
+      # We create two tags and push them atomically:
+      #   v<RC_VERSION>      → annotated tag on a detached release commit
+      #                        whose tree contains the rewritten package.json
+      #                        (so the tag's source matches the npm tarball)
+      #   rc/<HEAD_SHA>      → lightweight tag on HEAD; the guard's dedup key
+      # If this push fails, nothing is published — safe.
+      # If this push succeeds but npm publish fails, the marker stays on
+      # the remote and blocks retries until an operator manually cleans up.
+      - name: Create and push rc tags
+        id: reltag
+        shell: bash
+        working-directory: gitnexus
+        env:
+          RC_VERSION: ${{ steps.version.outputs.rc_version }}
+          HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          VTAG="v${RC_VERSION}"
+          MARKER="rc/${HEAD_SHA}"
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Detached release commit with the version bump — keeps `main`
+          # pristine but gives the v-tag a tree that matches the published
+          # package contents exactly (fixes release-integrity gap).
+          git add package.json package-lock.json 2>/dev/null || git add package.json
+          git commit -m "release: ${VTAG}" --allow-empty
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          echo "Detached release commit: $RELEASE_SHA"
+
+          # Annotated release tag on the release commit.
+          git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
+          # Lightweight marker on the user-visible HEAD for the guard.
+          git tag "$MARKER" "$HEAD_SHA"
+
+          # Atomic push of both refs. If either would clobber an existing
+          # remote ref, the push fails and we stop before npm publish.
+          git push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
+
+          echo "vtag=$VTAG"     >> "$GITHUB_OUTPUT"
+          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm (rc dist-tag)
+        run: npm publish --provenance --access public --tag rc
+        working-directory: gitnexus
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        with:
+          tag_name: ${{ steps.reltag.outputs.vtag }}
+          name: Release Candidate ${{ steps.reltag.outputs.vtag }}
+          prerelease: true
+          make_latest: 'false'
+          generate_release_notes: true
+          body: |
+            Automated release candidate build from `main`.
+
+            **npm:** `npm install gitnexus@rc`
+            **Version:** `${{ steps.version.outputs.rc_version }}`
+            **Target base:** `${{ steps.version.outputs.base }}` (rc #${{ steps.version.outputs.rc_n }})
+            **Source commit (main):** ${{ needs.guard.outputs.head_sha }}
+            **Release commit (versioned tree):** ${{ steps.reltag.outputs.release_sha }}
+
+            Release candidates are pre-stable builds intended for early testing.
+            Stable releases remain on the `latest` dist-tag.
+
+  # ── Build & push RC Docker images ────────────────────────────────────
+  # Calls docker.yml as a reusable workflow so that the build, signing, and
+  # attestation logic stays in one place. The publish job exposes `vtag`
+  # (e.g. `v1.2.3-rc.1`) as an output so we can pass it as the tag input.
+  # RC images are signed with Cosign keyless signing; the OIDC identity
+  # will be `docker.yml@refs/heads/main` (the caller's ref) rather than a
+  # tag ref — see README.md § Docker for the correct verify command for RCs.
+  docker:
+    name: Build & Push RC Docker images
+    needs: [guard, publish]
+    if: needs.guard.outputs.should_run == 'true' && needs.publish.outputs.vtag != ''
+    uses: ./.github/workflows/docker.yml
+    # Reusable workflows do not receive caller secrets unless inherited; without
+    # this, DOCKERHUB_* / GITHUB_TOKEN are empty in docker.yml → "Username and
+    # password required" on Docker Hub login (see same pattern on `ci:` above).
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      tag: ${{ needs.publish.outputs.vtag }}

@@ -251,197 +251,29 @@ describe('routeRubyCall — require / require_relative', () => {
 });
 
 // ── include / extend / prepend ───────────────────────────────────────────────
+// Heritage routing (include/extend/prepend) is now handled by
+// heritageExtractor.extractFromCall before the call router runs.
+// routeRubyCall returns 'skip' so these calls don't fall through
+// to normal call processing.
 
-describe('routeRubyCall — include / extend / prepend', () => {
-  it('include with a single constant arg inside a class returns heritage', () => {
+describe('routeRubyCall — include / extend / prepend (now delegated to heritageExtractor)', () => {
+  it('include returns skip (heritage handled by heritageExtractor)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Serializable')], 'class', 'User');
-    const result = routeRubyCall('include', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [{ enclosingClass: 'User', mixinName: 'Serializable', heritageKind: 'include' }],
-    });
+    expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
   });
 
-  it('extend with a scope_resolution arg (Foo::Bar) returns heritage', () => {
+  it('extend returns skip (heritage handled by heritageExtractor)', () => {
     const node = makeHeritageCallNode(
       [makeScopeResolutionArg('ActiveSupport::Concern')],
       'class',
       'Post',
     );
-    const result = routeRubyCall('extend', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [
-        { enclosingClass: 'Post', mixinName: 'ActiveSupport::Concern', heritageKind: 'extend' },
-      ],
-    });
+    expect(routeRubyCall('extend', node)).toEqual({ kind: 'skip' });
   });
 
-  it('prepend records heritageKind as "prepend"', () => {
+  it('prepend returns skip (heritage handled by heritageExtractor)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Instrumented')], 'class', 'Service');
-    const result = routeRubyCall('prepend', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [{ enclosingClass: 'Service', mixinName: 'Instrumented', heritageKind: 'prepend' }],
-    });
-  });
-
-  it('include inside a module (not a class) still resolves enclosing name', () => {
-    const node = makeHeritageCallNode([makeConstantArg('Helpers')], 'module', 'ApplicationHelper');
-    const result = routeRubyCall('include', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [
-        { enclosingClass: 'ApplicationHelper', mixinName: 'Helpers', heritageKind: 'include' },
-      ],
-    });
-  });
-
-  it('include with multiple constant args produces one item per arg', () => {
-    const args = [makeConstantArg('Mod1'), makeConstantArg('Mod2'), makeConstantArg('Mod3')];
-    const node = makeHeritageCallNode(args, 'class', 'MyClass');
-    const result = routeRubyCall('include', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [
-        { enclosingClass: 'MyClass', mixinName: 'Mod1', heritageKind: 'include' },
-        { enclosingClass: 'MyClass', mixinName: 'Mod2', heritageKind: 'include' },
-        { enclosingClass: 'MyClass', mixinName: 'Mod3', heritageKind: 'include' },
-      ],
-    });
-  });
-
-  it('returns skip when no enclosing class or module is found in parent chain', () => {
-    const node = makeHeritageCallNode([makeConstantArg('Mod')], null, null);
-    expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
-  });
-
-  it('returns skip when enclosing class node has no name child', () => {
-    // nameNode is undefined — childForFieldName('name') returns undefined
-    const argList: MockNode = {
-      type: 'argument_list',
-      text: '',
-      children: [makeConstantArg('Mod')],
-    };
-    const classNode: MockNode = {
-      type: 'class',
-      text: '',
-      parent: null,
-      childForFieldName: (_name: string) => undefined,
-    };
-    const bodyNode: MockNode = { type: 'body', text: '', parent: classNode };
-    const callNode: MockNode = {
-      type: 'call',
-      text: '',
-      parent: bodyNode,
-      childForFieldName: (name: string) => (name === 'arguments' ? argList : undefined),
-    };
-    expect(routeRubyCall('include', callNode)).toEqual({ kind: 'skip' });
-  });
-
-  it('returns skip when arg list contains only non-constant/non-scope_resolution args', () => {
-    const node = makeHeritageCallNode([makeIdentifierArg('some_var')], 'class', 'Foo');
-    expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
-  });
-
-  it('returns skip when arg list is empty', () => {
-    const node = makeHeritageCallNode([], 'class', 'Foo');
-    expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
-  });
-
-  it('walks nested scopes to find the nearest enclosing class', () => {
-    // callNode is 5 levels deep inside a class body
-    const node = makeHeritageCallNode([makeConstantArg('DeepMixin')], 'class', 'DeepClass', 5);
-    const result = routeRubyCall('include', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [{ enclosingClass: 'DeepClass', mixinName: 'DeepMixin', heritageKind: 'include' }],
-    });
-  });
-
-  it('returns skip when parent depth exceeds MAX_PARENT_DEPTH (50)', () => {
-    // Build a chain of 51 intermediate nodes with no class/module in it
-    const argList: MockNode = {
-      type: 'argument_list',
-      text: '',
-      children: [makeConstantArg('Mod')],
-    };
-    const callNode: MockNode = {
-      type: 'call',
-      text: '',
-      parent: null,
-      childForFieldName: (name: string) => (name === 'arguments' ? argList : undefined),
-    };
-
-    let current: MockNode = callNode;
-    // Create 51 parents — all plain body nodes, never a class/module
-    for (let i = 0; i < 51; i++) {
-      const parent: MockNode = { type: 'body_statement', text: '', parent: null };
-      current.parent = parent;
-      current = parent;
-    }
-
-    expect(routeRubyCall('include', callNode)).toEqual({ kind: 'skip' });
-  });
-
-  it('finds class at exactly depth 50 (boundary — must succeed)', () => {
-    // 49 plain wrappers, then the class at depth 50
-    const argList: MockNode = {
-      type: 'argument_list',
-      text: '',
-      children: [makeConstantArg('BoundaryMixin')],
-    };
-    const callNode: MockNode = {
-      type: 'call',
-      text: '',
-      parent: null,
-      childForFieldName: (name: string) => (name === 'arguments' ? argList : undefined),
-    };
-
-    let leaf: MockNode = callNode;
-    for (let i = 0; i < 49; i++) {
-      const wrapper: MockNode = { type: 'body_statement', text: '', parent: null };
-      leaf.parent = wrapper;
-      leaf = wrapper;
-    }
-
-    const nameNode: MockNode = { type: 'constant', text: 'BoundaryClass' };
-    const classNode: MockNode = {
-      type: 'class',
-      text: '',
-      parent: null,
-      childForFieldName: (name: string) => (name === 'name' ? nameNode : undefined),
-    };
-    leaf.parent = classNode;
-
-    const result = routeRubyCall('include', callNode);
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [
-        { enclosingClass: 'BoundaryClass', mixinName: 'BoundaryMixin', heritageKind: 'include' },
-      ],
-    });
-  });
-
-  it('skips non-constant args mixed with constant args, collecting only constants', () => {
-    const args = [
-      makeIdentifierArg('local_var'),
-      makeConstantArg('ValidMixin'),
-      makeIdentifierArg('another_var'),
-    ];
-    const node = makeHeritageCallNode(args, 'class', 'Foo');
-    const result = routeRubyCall('include', node);
-
-    expect(result).toEqual({
-      kind: 'heritage',
-      items: [{ enclosingClass: 'Foo', mixinName: 'ValidMixin', heritageKind: 'include' }],
-    });
+    expect(routeRubyCall('prepend', node)).toEqual({ kind: 'skip' });
   });
 });
 

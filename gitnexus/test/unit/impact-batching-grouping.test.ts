@@ -5,7 +5,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const executeQueryMock = vi.fn();
 const executeParameterizedMock = vi.fn();
 
-// Use the exact import specifier including .js to match runtime imports
+// Mock both the canonical source (core/lbug/pool-adapter.js — what local-backend.ts
+// imports) and the re-export shim (mcp/core/lbug-adapter.js) so the mocks intercept
+// regardless of import path.
+vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    initLbug: vi.fn(),
+    executeQuery: (...args: any[]) => executeQueryMock(...args),
+    executeParameterized: (...args: any[]) => executeParameterizedMock(...args),
+    closeLbug: vi.fn(),
+    isLbugReady: vi.fn().mockReturnValue(true),
+  };
+});
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {

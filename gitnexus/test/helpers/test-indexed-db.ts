@@ -51,7 +51,7 @@ export interface WithTestLbugDBOptions {
   poolAdapter?: boolean;
   /** Run after all lifecycle phases complete (mocks, dynamic imports, etc). */
   afterSetup?: (handle: IndexedDBHandle) => Promise<void>;
-  /** Timeout for beforeAll in ms (default: 30000). */
+  /** Timeout for beforeAll in ms (default: 120000). */
   timeout?: number;
 }
 
@@ -72,7 +72,9 @@ export function withTestLbugDB(
   options?: WithTestLbugDBOptions,
 ): void {
   const ref: { handle: IndexedDBHandle | undefined } = { handle: undefined };
-  const timeout = options?.timeout ?? 30000;
+  // Default must match vitest.config hookTimeout (120s). KuzuDB pool-adapter
+  // init on Windows CI regularly exceeds 30s due to native resource setup.
+  const timeout = options?.timeout ?? 120_000;
 
   const setup = async () => {
     // Get shared DB path from globalSetup (created once with full schema)
@@ -85,10 +87,7 @@ export function withTestLbugDB(
     //    already open for this dbPath (no new native objects created).
     await adapter.initLbug(dbPath);
 
-    // 2. Load FTS extension (idempotent — skips if already loaded)
-    await adapter.loadFTSExtension();
-
-    // 3. Drop stale FTS indexes from previous test file
+    // 2. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         try {
@@ -99,27 +98,27 @@ export function withTestLbugDB(
       }
     }
 
-    // 4. Clear all data via adapter (DETACH DELETE cascades to relationships)
+    // 3. Clear all data via adapter (DETACH DELETE cascades to relationships)
     for (const table of NODE_TABLES) {
       await adapter.executeQuery(`MATCH (n:\`${table}\`) DETACH DELETE n`);
     }
     await adapter.executeQuery(`MATCH (n:${EMBEDDING_TABLE_NAME}) DELETE n`);
 
-    // 5. Seed new data via adapter
+    // 4. Seed new data via adapter
     if (options?.seed?.length) {
       for (const q of options.seed) {
         await adapter.executeQuery(q);
       }
     }
 
-    // 6. Create FTS indexes on fresh data
+    // 5. Create FTS indexes on fresh data
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
       }
     }
 
-    // 7. Open pool adapter by injecting the core adapter's writable Database.
+    // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API
     //    destructor issues.  Reusing the writable Database avoids both problems.
@@ -128,13 +127,13 @@ export function withTestLbugDB(
     if (options?.poolAdapter) {
       const coreDb = adapter.getDatabase();
       if (!coreDb) throw new Error('withTestLbugDB: core adapter has no open Database');
-      const { initLbugWithDb } = await import('../../src/mcp/core/lbug-adapter.js');
+      const { initLbugWithDb } = await import('../../src/core/lbug/pool-adapter.js');
       await initLbugWithDb(repoId, coreDb, dbPath);
     }
 
     const cleanup = async () => {
       if (options?.poolAdapter) {
-        const poolAdapter = await import('../../src/mcp/core/lbug-adapter.js');
+        const poolAdapter = await import('../../src/core/lbug/pool-adapter.js');
         await poolAdapter.closeLbug(repoId);
       }
       await adapter.closeLbug();
@@ -146,7 +145,7 @@ export function withTestLbugDB(
     const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
     ref.handle = { dbPath, repoId, tmpHandle, cleanup };
 
-    // 8. User's final setup (mocks, dynamic imports, etc.)
+    // 7. User's final setup (mocks, dynamic imports, etc.)
     if (options?.afterSetup) {
       await options.afterSetup(ref.handle);
     }

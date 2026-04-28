@@ -54,6 +54,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     clearCodeReferences,
     setSelectedNode,
     codeReferenceFocus,
+    projectName,
   } = useAppState();
 
   const nodeById = useMemo(() => {
@@ -174,7 +175,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     return () => {
       rafIds.forEach((id) => cancelAnimationFrame(id));
     };
-  }, [codeReferenceFocus?.ts, aiReferences]);
+  }, [codeReferenceFocus, aiReferences]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
@@ -223,13 +224,14 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     const isWholeFile = selectedIsFile || startLine === undefined;
 
     const options = isWholeFile
-      ? undefined
+      ? { repo: projectName }
       : {
           startLine: Math.max(0, startLine - CONTEXT_LINES),
           endLine: (endLine ?? startLine) + CONTEXT_LINES,
+          repo: projectName,
         };
 
-    readFile(selectedFilePath, options)
+    readFile(selectedFilePath, { ...options, repo: projectName || undefined })
       .then((result) => {
         if (!cancelled) {
           setFileResult(result);
@@ -251,6 +253,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     selectedNode?.properties?.startLine,
     selectedNode?.properties?.endLine,
     selectedIsFile,
+    projectName,
   ]);
 
   // Scroll to the selected node's startLine after content loads

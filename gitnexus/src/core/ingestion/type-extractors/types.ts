@@ -6,6 +6,11 @@ export type TypeBindingExtractor = (node: SyntaxNode, env: Map<string, string>) 
 /** Extracts type bindings from a parameter node into the env map */
 export type ParameterExtractor = (node: SyntaxNode, env: Map<string, string>) => void;
 
+/** Optionally locates the type-annotation AST node for a declaration node.
+ * Used by buildTypeEnv to populate declarationTypeNodes and constructorTypeMap.
+ * If absent, buildTypeEnv falls back to generic heuristics (childForFieldName('type'), etc). */
+export type DeclarationTypeNodeLocator = (node: SyntaxNode) => SyntaxNode | null;
+
 /** Minimal interface for checking whether a name is a known class/struct.
  *  Narrower than ReadonlySet — only `.has()` is used by extractors. */
 export type ClassNameLookup = { has(name: string): boolean };
@@ -24,11 +29,6 @@ export type InitializerExtractor = (
 export type ConstructorBindingScanner = (
   node: SyntaxNode,
 ) => { varName: string; calleeName: string; receiverClassName?: string } | undefined;
-
-/** Extracts a return type string from a method/function definition node.
- *  Used for languages where return types are expressed in comments (e.g. YARD @return [Type])
- *  rather than in AST fields. Returns undefined if no return type can be determined. */
-export type ReturnTypeExtractor = (node: SyntaxNode) => string | undefined;
 
 /** Infer the type name of a literal AST node for overload disambiguation.
  *  Returns the canonical type name (e.g. 'int', 'String', 'boolean') or undefined
@@ -54,7 +54,7 @@ export type DeclaredTypeUnwrapper = (
 ) => string | undefined;
 
 /** Narrow lookup interface for resolving a callee name → return type name.
- *  Backed by SymbolTable.lookupFuzzyCallable; passed via ForLoopExtractorContext.
+ *  Backed by SymbolTable.lookupCallableByName; passed via ForLoopExtractorContext.
  *  Conservative: returns undefined when the callee is ambiguous (0 or 2+ matches). */
 export interface ReturnTypeLookup {
   /** Processed type name after stripping wrappers (e.g., 'User' from 'Promise<User>').
@@ -142,6 +142,9 @@ export interface LanguageTypeConfig {
   readonly allowPatternBindingOverwrite?: boolean;
   /** Node types that represent typed declarations for this language */
   declarationNodeTypes: ReadonlySet<string>;
+  /** Optional: language-specific way to find a declaration's type-annotation node.
+   * Prefer providing this for grammars where the type is wrapped (e.g., C#, Kotlin, Swift). */
+  getDeclarationTypeNode?: DeclarationTypeNodeLocator;
   /** AST node types for for-each/for-in statements with explicit element types. */
   forLoopNodeTypes?: ReadonlySet<string>;
   /** Optional allowlist of AST node types on which extractPatternBinding should run.
@@ -162,9 +165,6 @@ export interface LanguageTypeConfig {
    *  Called on every AST node during buildTypeEnv walk; returns undefined for non-matches.
    *  The callee binding is unverified — the caller must confirm against the SymbolTable. */
   scanConstructorBinding?: ConstructorBindingScanner;
-  /** Extract return type from comment-based annotations (e.g. YARD @return [Type]).
-   *  Called as fallback when extractMethodSignature finds no AST-based return type. */
-  extractReturnType?: ReturnTypeExtractor;
   /** Extract loop variable → type binding from a for-each AST node. */
   extractForLoopBinding?: ForLoopExtractor;
   /** Extract pending assignment for Tier 2 propagation.

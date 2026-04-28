@@ -51,19 +51,22 @@ describe('Rust trait implementation resolution', () => {
     expect(imports[0].target).toBe('button.rs');
   });
 
-  it('detects 2 modules and 4 functions', () => {
+  it('detects 2 modules and functions (trait signatures + impls)', () => {
     expect(getNodesByLabel(result, 'Module')).toEqual(['impls', 'traits']);
-    expect(getNodesByLabel(result, 'Function')).toEqual([
-      'draw',
-      'is_enabled',
-      'main',
-      'on_click',
-      'resize',
-    ]);
+    const fns = getNodesByLabel(result, 'Function');
+    // With function_signature_item captured, trait abstract methods AND their
+    // concrete impls both appear (distinct qualified IDs, same name)
+    expect(fns).toContain('main');
+    expect(fns).toContain('draw');
+    expect(fns).toContain('is_enabled');
+    expect(fns).toContain('on_click');
+    expect(fns).toContain('resize');
+    // draw/is_enabled/on_click/resize appear twice (trait + impl)
+    expect(fns.filter((n) => n === 'draw')).toHaveLength(2);
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -1604,5 +1607,316 @@ describe('Rust cross-file binding propagation', () => {
     const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'get_name');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method enrichment: trait vs inherent impl, isAbstract, isStatic, annotations
+// ---------------------------------------------------------------------------
+
+describe('Rust method enrichment (trait + inherent impl)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Dog struct and Animal trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('Dog');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Animal');
+  });
+
+  it('emits IMPLEMENTS edge from Dog to Animal', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edges for all Dog methods (trait + inherent)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogMethods = hasMethod
+      .filter((e) => e.source === 'Dog')
+      .map((e) => e.target)
+      .sort();
+    expect(dogMethods).toContain('speak');
+    expect(dogMethods).toContain('fetch');
+    expect(dogMethods).toContain('new');
+    expect(dogMethods).toContain('wag');
+  });
+
+  it('emits HAS_METHOD edges for Animal trait methods (abstract + default)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(traitMethods).toContain('breathe');
+    // With function_signature_item query, abstract speak is also captured
+    expect(traitMethods).toContain('speak');
+  });
+
+  // With the function_signature_item query, abstract trait speak IS captured.
+  // Due to ID collision (both trait and impl speak share Function:src/lib.rs:speak),
+  // only the first-processed node survives — the abstract one from the trait.
+  // TODO: Phase 2 (qualified IDs) will disambiguate both nodes.
+  it('captures abstract trait speak via function_signature_item query', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const traitSpeak = methods.find(
+      (m) => m.name === 'speak' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(traitSpeak).toBeDefined();
+    expect(traitSpeak!.properties.isAbstract).toBe(true);
+  });
+
+  it('marks trait default method breathe as isAbstract=false', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find(
+      (m) => m.name === 'breathe' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(breathe).toBeDefined();
+    expect(breathe!.properties.isAbstract).toBe(false);
+  });
+
+  it('marks Dog::new() as isStatic=true (no self parameter)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const newFn = methods.find(
+      (m) => m.name === 'new' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(newFn).toBeDefined();
+    expect(newFn!.properties.isStatic).toBe(true);
+  });
+
+  it('records parameterTypes for fetch(&self, item: &str)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const fetchFn = methods.find(
+      (m) => m.name === 'fetch' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(fetchFn).toBeDefined();
+    expect(fetchFn!.properties.parameterTypes).toContain('str');
+  });
+
+  it('records #[inline] annotation on wag()', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const wagFn = methods.find(
+      (m) => m.name === 'wag' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(wagFn).toBeDefined();
+    expect(wagFn!.properties.annotations).toContain('#[inline]');
+  });
+
+  it('uses Impl source label for HAS_METHOD edges from inherent impl', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // Dog inherent impl (plain `impl Dog {}`) → Impl label
+    const dogImplEdges = hasMethod.filter(
+      (e) =>
+        e.source === 'Dog' && (e.target === 'new' || e.target === 'wag' || e.target === 'fetch'),
+    );
+    for (const edge of dogImplEdges) {
+      expect(edge.sourceLabel).toBe('Impl');
+    }
+  });
+
+  it('resolves main.rs calls: Dog::new(), dog.speak(), dog.fetch()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const mainCalls = calls.filter((c) => c.source === 'main');
+
+    const newCall = mainCalls.find((c) => c.target === 'new');
+    const speakCall = mainCalls.find((c) => c.target === 'speak');
+    const fetchCall = mainCalls.find((c) => c.target === 'fetch');
+
+    expect(newCall).toBeDefined();
+    expect(speakCall).toBeDefined();
+    expect(fetchCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Abstract dispatch: trait required vs default methods, IMPLEMENTS + HAS_METHOD
+// ---------------------------------------------------------------------------
+
+describe('Rust abstract dispatch (Repository trait)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-abstract-dispatch'), () => {});
+  }, 60000);
+
+  it('detects SqlRepo struct and Repository trait', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('SqlRepo');
+    expect(getNodesByLabel(result, 'Trait')).toContain('Repository');
+  });
+
+  it('emits IMPLEMENTS edge from SqlRepo to Repository', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const edge = implements_.find((e) => e.source === 'SqlRepo' && e.target === 'Repository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits HAS_METHOD edge for Repository default method count', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitMethods = hasMethod
+      .filter((e) => e.source === 'Repository')
+      .map((e) => e.target)
+      .sort();
+    // Only default (non-abstract) methods get HAS_METHOD on the trait itself
+    expect(traitMethods).toContain('count');
+  });
+
+  it('emits HAS_METHOD edges linking find and save to SqlRepo (not Repository)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sqlRepoMethods = hasMethod
+      .filter((e) => e.source === 'SqlRepo')
+      .map((e) => e.target)
+      .sort();
+    // impl Repository for SqlRepo methods should be owned by SqlRepo (concrete type)
+    expect(sqlRepoMethods).toContain('find');
+    expect(sqlRepoMethods).toContain('save');
+  });
+
+  it('uses Struct source label for HAS_METHOD edges from trait impl (impl Trait for Struct)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    // impl Repository for SqlRepo → Struct label (no Impl node for trait impls)
+    const sqlRepoEdges = hasMethod.filter(
+      (e) => e.source === 'SqlRepo' && (e.target === 'find' || e.target === 'save'),
+    );
+    for (const edge of sqlRepoEdges) {
+      expect(edge.sourceLabel).toBe('Struct');
+    }
+  });
+
+  it('uses Trait source label for HAS_METHOD edge on Repository default method', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const traitCount = hasMethod.find((e) => e.source === 'Repository' && e.target === 'count');
+    expect(traitCount).toBeDefined();
+    expect(traitCount!.sourceLabel).toBe('Trait');
+  });
+
+  it('marks trait find/save as isAbstract=true and impl find/save as isAbstract=false', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    // With qualified IDs, both abstract (trait) and concrete (impl) find/save exist
+    const abstractFind = methods.find((m) => m.name === 'find' && m.properties.isAbstract === true);
+    const concreteFind = methods.find(
+      (m) => m.name === 'find' && m.properties.isAbstract === false,
+    );
+    const abstractSave = methods.find((m) => m.name === 'save' && m.properties.isAbstract === true);
+    const concreteSave = methods.find(
+      (m) => m.name === 'save' && m.properties.isAbstract === false,
+    );
+    expect(abstractFind).toBeDefined();
+    expect(concreteFind).toBeDefined();
+    expect(abstractSave).toBeDefined();
+    expect(concreteSave).toBeDefined();
+  });
+
+  it('marks default trait method count as isAbstract=false', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const countFn = methods.find(
+      (m) => m.name === 'count' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(countFn).toBeDefined();
+    expect(countFn!.properties.isAbstract).toBe(false);
+  });
+
+  it('records parameterTypes for find(&self, id: i32)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const findFn = methods.find(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(findFn).toBeDefined();
+    expect(findFn!.properties.parameterTypes).toContain('i32');
+  });
+
+  it('records parameterTypes for save(&self, entity: &str)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const saveFn = methods.find(
+      (m) => m.name === 'save' && m.properties.filePath?.includes('lib.rs'),
+    );
+    expect(saveFn).toBeDefined();
+    expect(saveFn!.properties.parameterTypes).toContain('str');
+  });
+
+  it('resolves process() calls: repo.find(), repo.save(), repo.count()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'process');
+
+    const findCall = processCalls.find((c) => c.target === 'find');
+    const saveCall = processCalls.find((c) => c.target === 'save');
+    const countCall = processCalls.find((c) => c.target === 'count');
+
+    expect(findCall).toBeDefined();
+    expect(saveCall).toBeDefined();
+    expect(countCall).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepo impl methods → Repository trait methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    // find and save are required trait methods; count has a default impl so no METHOD_IMPLEMENTS
+    const libEdges = mi.filter((e) => e.sourceFilePath.includes('lib.rs'));
+    expect(libEdges.length).toBe(2);
+    const names = libEdges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-11: Rust Child extends Parent — qualified-syntax MRO
+//
+// Companion integration test for the unit-level Rust qualified-syntax tests
+// in symbol-table.test.ts. Validates end-to-end that:
+//
+//   1. Direct `impl` methods on a struct resolve through the D0 owner-scoped
+//      path (`resolveMemberCall`) — the positive control.
+//
+//   2. Trait-inherited default methods are NOT reachable via direct
+//      `obj.trait_method()` syntax. Rust requires the trait to be in scope
+//      and uses qualified syntax for trait dispatch; the resolver correctly
+//      treats direct member calls as opaque to trait ancestry.
+//
+//      Previously this case emitted a false-positive CALLS edge via the
+//      permissive tail-return in resolveCallTarget — Codex review finding
+//      R3 (PR #744). The tail-return is now null-routed when D1-D4 receiver
+//      filtering produces zero matches on both file and owner dimensions.
+// ---------------------------------------------------------------------------
+
+describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Child struct and Parent trait', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Child');
+    const traits = getNodesByLabel(result, 'Trait');
+    expect(traits).toContain('Parent');
+  });
+
+  it('resolves c.own_method() to Child::own_method via D0 owner-scoped path', () => {
+    // Direct impl method — D0 short-circuits to lookupMethodByOwner which
+    // returns Child::own_method without falling through to D1-D4 fuzzy.
+    const calls = getRelationships(result, 'CALLS');
+    const ownCall = calls.find(
+      (c) =>
+        c.target === 'own_method' && c.source === 'run' && c.targetFilePath.includes('child.rs'),
+    );
+    expect(ownCall).toBeDefined();
+  });
+
+  it('does NOT resolve c.trait_only() to Parent::trait_only via direct member call', () => {
+    // Qualified-syntax MRO: direct member calls on structs do not walk trait
+    // ancestry. `c.trait_only()` must null-route because `trait_only` is
+    // defined on the trait, not on the Child struct.
+    //
+    // The resolveCallTarget tail-return tightening (R3) is what makes this
+    // assertion testable: before the fix, resolveCallTarget would fall
+    // through D1-D4 (zero file matches, zero owner matches) and silently
+    // pick the single fuzzy candidate as a false-positive edge.
+    const calls = getRelationships(result, 'CALLS');
+    const traitCall = calls.find(
+      (c) =>
+        c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
+    );
+    expect(traitCall).toBeUndefined();
   });
 });

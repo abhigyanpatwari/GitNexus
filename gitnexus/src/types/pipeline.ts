@@ -13,4 +13,10 @@ export interface PipelineResult {
   processResult?: ProcessDetectionResult;
   /** Per-file SHA-256 hashes computed during this run (for incremental scanning) */
   fileHashes?: Record<string, string>;
+  /**
+   * True if the parse phase spawned a worker pool for this run. False means
+   * the sequential fallback handled every chunk. Primarily a test affordance
+   * so regression suites can prove which path executed.
+   */
+  usedWorkerPool: boolean;
 }

@@ -5,7 +5,7 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug, touchRepo } from '../../mcp/core/lbug-adapter.js';
+import { initLbug, executeQuery, closeLbug, touchRepo } from '../lbug/pool-adapter.js';
 
 const REPO_ID = '__wiki__';
 

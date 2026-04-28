@@ -19,7 +19,9 @@ const INTERFACE_OWNER_TYPES = new Set(['interface_declaration', 'annotation_type
 function extractReturnTypeFromField(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('type');
   if (!typeNode) return undefined;
-  return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+  // Use .text to preserve full generic types (e.g. List<User>, Stream<T>)
+  // needed by the call resolver for return-type inference.
+  return typeNode.text?.trim();
 }
 
 function extractAnnotations(node: SyntaxNode, modifierType: string): string[] {
@@ -68,6 +70,7 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
         params.push({
           name: nameNode.text,
           type: typeNode ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim()) : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: false,
         });
@@ -76,6 +79,7 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
       // Varargs: type_identifier + "..." + variable_declarator
       let paramName: string | undefined;
       let paramType: string | null = null;
+      let paramRawType: string | null = null;
       for (let j = 0; j < param.namedChildCount; j++) {
         const c = param.namedChild(j);
         if (!c) continue;
@@ -90,13 +94,15 @@ function extractJavaParameters(node: SyntaxNode): ParameterInfo[] {
           c.type === 'floating_point_type' ||
           c.type === 'boolean_type'
         ) {
-          paramType = extractSimpleTypeName(c) ?? c.text?.trim();
+          paramRawType = c.text?.trim() ?? null;
+          paramType = extractSimpleTypeName(c) ?? paramRawType;
         }
       }
       if (paramName) {
         params.push({
           name: paramName,
           type: paramType,
+          rawType: paramRawType,
           isOptional: false,
           isVariadic: true,
         });
@@ -192,6 +198,7 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
 
         let paramName: string | undefined;
         let paramType: string | null = null;
+        let paramRawType: string | null = null;
         let hasDefault = false;
         const isVariadic = nextIsVariadic;
         nextIsVariadic = false;
@@ -206,7 +213,8 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
             part.type === 'nullable_type' ||
             part.type === 'function_type'
           ) {
-            paramType = extractSimpleTypeName(part) ?? part.text?.trim();
+            paramRawType = part.text?.trim() ?? null;
+            paramType = extractSimpleTypeName(part) ?? paramRawType;
           }
         }
 
@@ -223,6 +231,7 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
           params.push({
             name: paramName,
             type: paramType,
+            rawType: paramRawType,
             isOptional: hasDefault,
             isVariadic: isVariadic,
           });
@@ -252,7 +261,7 @@ function extractKotlinReturnType(node: SyntaxNode): string | undefined {
         child.type === 'nullable_type' ||
         child.type === 'function_type')
     ) {
-      return extractSimpleTypeName(child) ?? child.text?.trim();
+      return child.text?.trim();
     }
     if (child.type === 'function_body') break;
   }
@@ -264,6 +273,7 @@ export const kotlinMethodConfig: MethodExtractionConfig = {
   typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],
   methodNodeTypes: ['function_declaration'],
   bodyNodeTypes: ['class_body'],
+  staticOwnerTypes: new Set(['companion_object', 'object_declaration']),
   extractName(node) {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);

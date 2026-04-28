@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
-import { checkStaleness } from '../../src/mcp/staleness.js';
+import { checkStaleness } from '../../src/core/git-staleness.js';
 
 // We test checkStaleness with a real git repo (the project itself)
 // since mocking execFileSync across ESM modules is complex.

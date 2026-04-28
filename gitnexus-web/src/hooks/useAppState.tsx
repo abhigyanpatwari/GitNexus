@@ -145,6 +145,7 @@ interface AppState {
   availableRepos: BackendRepo[];
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
+  setCurrentRepo: (repoName: string) => void;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -456,6 +457,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Backend client — direct HTTP calls (no Worker/Comlink)
   const repoRef = useRef<string | undefined>(undefined);
 
+  const setCurrentRepo = useCallback((repoName: string) => {
+    repoRef.current = repoName;
+  }, []);
+
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
     return backendRunQuery(cypher, repoRef.current);
   }, []);
@@ -574,6 +579,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       try {
         const effectiveProjectName = overrideProjectName || projectName || 'project';
+
+        // Sync repoRef so all agent backend calls target the correct repo.
+        // initializeAgent can be called from App.tsx (handleServerConnect) which
+        // never sets repoRef.current directly — without this, queries default to repo[0].
+        if (overrideProjectName) {
+          repoRef.current = overrideProjectName;
+        }
         const repo = repoRef.current;
 
         // Build backend interface for Graph RAG tools
@@ -605,7 +617,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setIsAgentInitializing(false);
       }
     },
-    [projectName],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [], // repoRef is a stable ref — we sync it explicitly on entry; no state deps needed
   );
 
   const sendChatMessage = useCallback(
@@ -1037,6 +1050,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodePanelOpen(false);
       setCodeReferenceFocus(null);
 
+      let connectedRepo: BackendRepo | undefined;
+      let pNameStr = repoName || 'server-project';
+
       try {
         const result: ConnectResult = await connectToServer(
           serverBaseUrl,
@@ -1068,39 +1084,28 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           },
           undefined,
           repoName,
+          { awaitAnalysis: true }, // enable backend hold-queue for repos still being analyzed
         );
 
         // Build graph for visualization
         const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
+        // Prefer the registry name, then normalize Windows \ and Unix / paths
         const pName =
-          repoName || result.repoInfo.name || repoPath?.split('/').pop() || 'server-project';
+          repoName ||
+          result.repoInfo.name ||
+          (repoPath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
+          'server-project';
         setProjectName(pName);
         repoRef.current = pName;
+
+        connectedRepo = result.repoInfo;
+        pNameStr = pName;
 
         const newGraph = createKnowledgeGraph();
         for (const node of result.nodes) newGraph.addNode(node);
         for (const rel of result.relationships) newGraph.addRelationship(rel);
         setGraph(newGraph);
-
-        // No fileContents needed — grep/read tools use backend HTTP
-
-        // Initialize agent with backend queries, then start embeddings
-        try {
-          if (getActiveProviderConfig()) {
-            await initializeAgent(pName);
-          }
-          setViewMode('exploring');
-          startEmbeddingsWithFallback();
-          setProgress(null);
-        } catch (err) {
-          console.warn('Failed to initialize agent:', err);
-          setIsAgentReady(false);
-          agentRef.current = null;
-          setAgentError('Failed to initialize agent');
-          setViewMode('exploring');
-          setProgress(null);
-        }
-      } catch (err) {
+      } catch (err: unknown) {
         console.error('Repo switch failed:', err);
         setProgress({
           phase: 'error',
@@ -1114,6 +1119,36 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           setViewMode('exploring');
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
+        return; // Abort the whole switchRepo process
+      }
+
+      if (pNameStr) {
+        // Persist the selected project in the URL so a refresh re-opens it
+        const urlObj = new URL(window.location.href);
+        urlObj.searchParams.set('project', pNameStr);
+        window.history.replaceState(null, '', urlObj.toString());
+      }
+
+      // Reset the agent and clear chat history so the AI starts fresh for the new repo
+      agentRef.current = null;
+      setIsAgentReady(false);
+      setChatMessages([]);
+
+      // Re-initialize agent with the new repo's graph context
+      try {
+        if (getActiveProviderConfig()) {
+          await initializeAgent(pNameStr);
+        }
+        setViewMode('exploring');
+        startEmbeddingsWithFallback();
+        setProgress(null);
+      } catch (err) {
+        console.warn('Failed to initialize agent:', err);
+        setIsAgentReady(false);
+        agentRef.current = null;
+        setAgentError('Failed to initialize agent');
+        setViewMode('exploring');
+        setProgress(null);
       }
     },
     [
@@ -1133,6 +1168,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodeReferences,
       setCodePanelOpen,
       setCodeReferenceFocus,
+      setChatMessages,
     ],
   );
 
@@ -1219,6 +1255,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     availableRepos,
     setAvailableRepos,
     switchRepo,
+    setCurrentRepo,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

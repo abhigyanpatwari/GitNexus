@@ -10,8 +10,15 @@ const execFileMock = vi.fn((...args: any[]) => {
   }
 });
 
+// By default, execFileSync throws (simulating `which gitnexus` not found)
+// so getMcpEntry() falls back to the npx path.
+const execFileSyncMock = vi.fn(() => {
+  throw new Error('not found');
+});
+
 vi.mock('child_process', () => ({
   execFile: execFileMock,
+  execFileSync: execFileSyncMock,
 }));
 
 describe('setupClaudeCode', () => {
@@ -134,20 +141,48 @@ describe('setupClaudeCode', () => {
   it('handles corrupt JSON gracefully', async () => {
     setPlatform('linux');
 
-    await fs.writeFile(
-      path.join(tempHome, '.claude.json'),
-      '{ this is not valid json !!!',
-      'utf-8',
-    );
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(path.join(tempHome, '.claude.json'), corrupt, 'utf-8');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    // readJsonFile returns null on invalid JSON, so mergeMcpConfig
-    // creates a fresh config — the file should now be valid.
+    // mergeJsoncFile leaves corrupt files untouched (safer than overwriting)
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    expect(raw).toBe(corrupt);
+  });
+
+  it('uses global binary path when gitnexus is on PATH', async () => {
+    setPlatform('darwin');
+    execFileSyncMock.mockReturnValueOnce('/usr/local/bin/gitnexus\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
     const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
     const config = JSON.parse(raw);
 
-    expect(config.mcpServers.gitnexus).toBeDefined();
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: '/usr/local/bin/gitnexus',
+      args: ['mcp'],
+    });
+  });
+
+  it('falls back to npx when gitnexus is not on PATH', async () => {
+    setPlatform('darwin');
+    execFileSyncMock.mockImplementationOnce(() => {
+      throw new Error('not found');
+    });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'npx',
+      args: ['-y', 'gitnexus@latest', 'mcp'],
+    });
   });
 });

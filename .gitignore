@@ -23,6 +23,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+docker/.env
 
 # Logs
 *.log
@@ -81,6 +82,11 @@ GitNexus.sln
 # Git worktrees
 .worktrees/
 
+# Vendored tree-sitter grammar build artifacts (created at install time,
+# never committed). See docs/plans/2026-04-15-002-fix-tree-sitter-proto-vendor-deps-plan.md
+gitnexus/vendor/**/build/
+gitnexus/vendor/**/node_modules/
+
 /github/scripts/triage/__pycache__/
 
 .claude-flow/
@@ -96,3 +102,8 @@ GitNexus.sln
 .swarm/
 
 local_docs/
+
+# Local agent scratch / review prompts (never commit)
+.tmp/
+.agents/
+.context/

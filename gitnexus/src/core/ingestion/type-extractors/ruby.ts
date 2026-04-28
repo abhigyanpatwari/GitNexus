@@ -4,7 +4,6 @@ import type {
   TypeBindingExtractor,
   InitializerExtractor,
   ConstructorBindingScanner,
-  ReturnTypeExtractor,
   PendingAssignmentExtractor,
   ForLoopExtractor,
 } from './types.js';
@@ -42,9 +41,6 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 const YARD_PARAM_RE = /@param\s+(\w+)\s+\[([^\]]+)\]/g;
 /** Alternate YARD order: `@param [Type] name` */
 const YARD_PARAM_ALT_RE = /@param\s+\[([^\]]+)\]\s+(\w+)/g;
-
-/** Regex to extract @return annotations: `@return [Type]` */
-const YARD_RETURN_RE = /@return\s+\[([^\]]+)\]/;
 
 /**
  * Extract the simple type name from a YARD type string.
@@ -227,35 +223,6 @@ const extractInitializer: InitializerExtractor = (node, env, classNames): void =
   if (classNames.has(result.calleeName)) {
     env.set(result.varName, result.calleeName);
   }
-};
-
-/**
- * Extract return type from YARD `@return [Type]` annotation preceding a method.
- * Reuses the same comment-walking strategy as collectYardParams: try direct
- * siblings first, fall back to parent (body_statement) siblings for class methods.
- */
-const extractReturnType: ReturnTypeExtractor = (node) => {
-  const search = (startNode: SyntaxNode): string | undefined => {
-    let sibling = startNode.previousSibling;
-    while (sibling) {
-      if (sibling.type === 'comment') {
-        const match = YARD_RETURN_RE.exec(sibling.text);
-        if (match) return extractYardTypeName(match[1]);
-      } else if (sibling.isNamed) {
-        break;
-      }
-      sibling = sibling.previousSibling;
-    }
-    return undefined;
-  };
-
-  const result = search(node);
-  if (result) return result;
-
-  if (node.parent?.type === 'body_statement') {
-    return search(node.parent);
-  }
-  return undefined;
 };
 
 /**
@@ -452,7 +419,6 @@ export const typeConfig: LanguageTypeConfig = {
   extractParameter,
   extractInitializer,
   scanConstructorBinding,
-  extractReturnType,
   extractForLoopBinding,
   extractPendingAssignment,
 };

@@ -1,11 +1,12 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('csharp');
 
 // ---------------------------------------------------------------------------
 // Heritage: class + interface resolution via base_list
@@ -86,7 +89,7 @@ describe('C# heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -124,11 +127,28 @@ describe('C# ambiguous symbol resolution', () => {
 
     // The key invariant: no edge points to Other/
     if (extends_[0].targetFilePath) {
-      expect(extends_[0].targetFilePath).not.toMatch(/Other\//);
+      expect(extends_[0].targetFilePath).not.toContain('Other/');
     }
     if (implements_[0].targetFilePath) {
-      expect(implements_[0].targetFilePath).not.toMatch(/Other\//);
+      expect(implements_[0].targetFilePath).not.toContain('Other/');
     }
+  });
+});
+
+describe('C# qualified class names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-qualified-types'), () => {});
+  }, 60000);
+
+  it('stores distinct qualified names for same-named classes across namespaces', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
+    expect(users).toHaveLength(2);
+    expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
+      'Data.Auth.User',
+      'Services.Auth.User',
+    ]);
   });
 });
 
@@ -177,6 +197,100 @@ describe('C# member-call resolution', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'Save');
     expect(edge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Collection-accessor unwrap (Unit 6c): data.Values on Dictionary<K,V>
+// resolves to the value type's class.
+// ---------------------------------------------------------------------------
+
+describe('C# collection-accessor unwrap', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-collection-accessor'), () => {});
+  }, 60000);
+
+  it('resolves RenderAll → Render through Dictionary<string, Widget>.Values', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const renderCall = calls.find((c) => c.source === 'RenderAll' && c.target === 'Render');
+    expect(renderCall).toBeDefined();
+    expect(renderCall!.targetFilePath).toBe('Models/Widget.cs');
+    expect(['import-resolved', 'global']).toContain(renderCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// using-static member injection (Unit 6d): `using static X.Y;` exposes Y's
+// static methods as free-callables in the consumer.
+// ---------------------------------------------------------------------------
+
+describe('C# using static member injection', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-using-static'), () => {});
+  }, 60000);
+
+  it('resolves Compute → Square via `using static Helpers.MathUtils;`', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sqCall = calls.find((c) => c.source === 'Compute' && c.target === 'Square');
+    expect(sqCall).toBeDefined();
+    expect(sqCall!.targetFilePath).toBe('Helpers/MathUtils.cs');
+    expect(['import-resolved', 'global']).toContain(sqCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overload disambiguation + interface dispatch (Unit 6e).
+// ---------------------------------------------------------------------------
+
+describe('C# overload disambiguation and interface dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-overload-interface'), () => {});
+  }, 60000);
+
+  it('Run → Log resolves to the 2-arg overload (arity narrowing)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Log');
+    // With collapse-by-caller-target enabled and arity narrowing, Run
+    // should bind to the 2-arg overload only — not the 1-arg sibling.
+    expect(logCalls.length).toBe(1);
+    // Verify targetId points to the 2-arg overload by checking the
+    // target Method node's parameterTypes length.
+    const target = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(target).toBeDefined();
+    const parameterTypes = (target!.properties as { parameterTypes?: string[] }).parameterTypes;
+    expect(parameterTypes).toBeDefined();
+    expect(parameterTypes!.length).toBe(2);
+  });
+
+  it('Run → Greet emits primary edge to IGreeter.Greet plus interface-dispatch siblings', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Greet');
+    // One primary edge (IGreeter.Greet) + two interface-dispatch edges
+    // (EnGreeter.Greet, FrGreeter.Greet).
+    expect(greetCalls.length).toBe(3);
+
+    const primaries = greetCalls.filter((c) => c.rel.reason !== 'interface-dispatch');
+    expect(primaries.length).toBe(1);
+    expect(primaries[0].targetFilePath).toBe('Greeting/IGreeter.cs');
+
+    const fanout = greetCalls.filter((c) => c.rel.reason === 'interface-dispatch');
+    expect(fanout.length).toBe(2);
+    const fanoutPaths = fanout.map((c) => c.targetFilePath).sort();
+    expect(fanoutPaths).toEqual(['Greeting/EnGreeter.cs', 'Greeting/FrGreeter.cs']);
+  });
+
+  it('interface-dispatch fan-out excludes the primary target (no self-edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = calls.filter((c) => c.source === 'Run' && c.rel.reason === 'interface-dispatch');
+    for (const edge of fanout) {
+      expect(edge.targetFilePath).not.toBe('Greeting/IGreeter.cs');
+    }
   });
 });
 
@@ -505,6 +619,14 @@ describe('C# base resolution', () => {
         c.targetFilePath === 'src/Models/BaseModel.cs',
     );
     expect(baseSave).toBeDefined();
+    // Pin the canonical edge-reason for super/base calls. The super-branch
+    // of receiver-bound-calls resolves through the MRO chain (not through
+    // imports), which the legacy DAG's tier classifier places in the
+    // `'global'` bucket (see `toResolveResult` in `call-processor.ts`).
+    // Emitting `'global'` unconditionally keeps the same-graph parity
+    // guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline) and matches
+    // the legacy path under `REGISTRY_PRIMARY_CSHARP=0`.
+    expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
     );
@@ -539,6 +661,7 @@ describe('C# generic parent base resolution', () => {
         c.targetFilePath === 'src/Models/BaseModel.cs',
     );
     expect(baseSave).toBeDefined();
+    expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
     );
@@ -1480,18 +1603,101 @@ describe('C# overload disambiguation by parameter types', () => {
     );
   }, 60000);
 
-  it('detects Lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'Lookup');
-    expect(lookupNodes.length).toBe(1);
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['int'], ['string']]);
   });
 
-  it('emits CALLS edge from Run() → Lookup() via overload disambiguation', () => {
+  it('CallById() emits exactly one CALLS edge to Lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'Run' && c.target === 'Lookup');
-    // Both Lookup(42) and Lookup("alice") resolve to same nodeId → 1 CALLS edge
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'CallById' && c.target === 'Lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('CallByName() emits exactly one CALLS edge to Lookup(string)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'CallByName' && c.target === 'Lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('C# same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-same-arity-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('CrossFileById() emits exactly one CALLS edge to Find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'CrossFileById' &&
+        c.target === 'Find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('CrossFileByName() emits exactly one CALLS edge to Find(string) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'CrossFileByName' &&
+        c.target === 'Find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['string']);
+  });
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.Find → ILookup.Find with matching types', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+
+  it('ChainIntToFormat() resolves find(42) → Find(int) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'ChainIntToFormat' && c.target === 'Find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('ChainNameToFormat() resolves find("alice") → Find(string) cross-file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'ChainNameToFormat' && c.target === 'Find');
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['string']);
   });
 });
 
@@ -1612,5 +1818,767 @@ describe('C# import resolution without .csproj (suffix fallback)', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toContain('User');
     expect(classes).toContain('UserService');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method enrichment: abstract, static, override, parameterTypes, annotations
+// ---------------------------------------------------------------------------
+
+describe('C# method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod
+      .filter((e) => e.source === 'Animal')
+      .map((e) => e.target)
+      .sort();
+    expect(animalMethods).toContain('Speak');
+    expect(animalMethods).toContain('Classify');
+    expect(animalMethods).toContain('Breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.Speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'Speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract Speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find((n) => n.name === 'Speak' && n.properties.filePath === 'Animal.cs');
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks Breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'Breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks Classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks Breathe as NOT isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'Breathe');
+    if (breathe?.properties.isStatic !== undefined) {
+      expect(breathe.properties.isStatic).toBe(false);
+    }
+  });
+
+  it('captures override annotation on Dog.Speak (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const dogSpeak = methods.find(
+      (n) => n.name === 'Speak' && n.properties.filePath !== 'Animal.cs',
+    );
+    if (dogSpeak?.properties.annotations !== undefined) {
+      expect(dogSpeak.properties.annotations).toContain('override');
+    }
+  });
+
+  it('populates parameterTypes for Classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      const params = classify.properties.parameterTypes;
+      expect(params).toContain('string');
+    }
+  });
+
+  it('resolves dog.Speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'Speak' && c.sourceFilePath.includes('App.cs'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Animal.Classify("dog") static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'Classify' && c.sourceFilePath.includes('App.cs'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interface dispatch: METHOD_IMPLEMENTS edges
+// ---------------------------------------------------------------------------
+
+describe('C# interface dispatch (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-dispatch'), () => {});
+  }, 60000);
+
+  it('detects IRepository interface and SqlRepository class', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    const ifaces = getNodesByLabel(result, 'Interface');
+    expect(classes).toContain('SqlRepository');
+    expect(ifaces).toContain('IRepository');
+  });
+
+  it('emits IMPLEMENTS edge SqlRepository → IRepository', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const edge = impl.find((e) => e.source === 'SqlRepository' && e.target === 'IRepository');
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for Find and Save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdge = mi.find(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'Save' &&
+        e.target === 'Save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(findEdge).toBeDefined();
+    expect(saveEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Overloaded method disambiguation: METHOD_IMPLEMENTS with overloads
+// IRepository declares Find(int), Find(string), Save(string).
+// SqlRepository implements all three.
+// Overloaded methods (same name, different params) collapse into a single
+// graph node (generateId drops startLine), so Find appears once per file.
+// METHOD_IMPLEMENTS still emits one edge per unique (source, target) pair.
+// ---------------------------------------------------------------------------
+
+describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects 2 distinct Find Method nodes on SqlRepository (different arities)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findOnSql = methods.filter(
+      (m) => m.name === 'Find' && m.properties.filePath?.includes('SqlRepository'),
+    );
+    expect(findOnSql.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS edges for both Find overloads', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdges = mi.filter(
+      (e) =>
+        e.source === 'Find' &&
+        e.target === 'Find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(findEdges.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS for Save -> IRepository.Save', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const saveEdge = mi.find(
+      (e) =>
+        e.source === 'Save' &&
+        e.target === 'Save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('IRepository'),
+    );
+    expect(saveEdge).toBeDefined();
+  });
+
+  it('emits exactly 3 METHOD_IMPLEMENTS edges', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    expect(mi.length).toBe(3);
+  });
+
+  it('detects SqlRepository class and IRepository interface', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    const ifaces = getNodesByLabel(result, 'Interface');
+    expect(classes).toContain('SqlRepository');
+    expect(ifaces).toContain('IRepository');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — c.ParentMethod() via implements-split walk
+// ---------------------------------------------------------------------------
+
+describe('C# Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-child-extends-parent'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.ParentMethod() to Parent.ParentMethod via implements-split MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'ParentMethod' && c.targetFilePath.includes('Parent.cs'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('Run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-11: C# User : IValidator — interface default method via implements-split
+// ---------------------------------------------------------------------------
+
+describe('C# User implements IValidator — interface default method (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-interface-default-method'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects IValidator interface and User class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('IValidator');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits IMPLEMENTS edge: User → IValidator', () => {
+    const impls = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(impls)).toContain('User → IValidator');
+  });
+
+  it('resolves user.Validate() to IValidator.Validate via implements-split MRO', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(
+      (c) => c.target === 'Validate' && c.targetFilePath.includes('Validator.cs'),
+    );
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('Run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interface-to-interface heritage (single + multi base interface)
+// ---------------------------------------------------------------------------
+
+describe('C# interface-to-interface heritage', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-interface-heritage'), () => {});
+  }, 60000);
+
+  it('detects 1 class and 4 interfaces', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['MyService']);
+    expect(getNodesByLabel(result, 'Interface')).toEqual([
+      'IAuditableService',
+      'IBarService',
+      'IBaseInterface',
+      'IFooService',
+    ]);
+  });
+
+  it('emits no EXTENDS edges (fixture has no class inheritance)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(0);
+  });
+
+  it('emits IMPLEMENTS edge: IFooService → IBaseInterface (single base interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IFooService → IBaseInterface');
+  });
+
+  it('emits IMPLEMENTS edges: IAuditableService → IFooService, IBarService (multi base interfaces)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('IAuditableService → IFooService');
+    expect(targets).toContain('IAuditableService → IBarService');
+  });
+
+  it('emits IMPLEMENTS edge: MyService → IAuditableService (class implements derived interface)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    const targets = edgeSet(implements_);
+    expect(targets).toContain('MyService → IAuditableService');
+  });
+
+  it('emits exactly 4 IMPLEMENTS edges total', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# parse completeness regression (#903)
+// ---------------------------------------------------------------------------
+
+describe('C# parse completeness (#903 regression)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-hello'), () => {});
+  }, 60000);
+
+  it('parse phase completes without error (no crash)', () => {
+    expect(result).toBeDefined();
+    expect(result.graph).toBeDefined();
+  });
+
+  it('emits Class node for Greeter', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Greeter');
+  });
+
+  it('emits Interface node for IFoo', () => {
+    const interfaces = getNodesByLabel(result, 'Interface');
+    expect(interfaces).toContain('IFoo');
+  });
+
+  it('emits Method nodes for Greet, Main, and Bar', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Greet');
+    expect(methods).toContain('Main');
+    expect(methods).toContain('Bar');
+  });
+
+  it('Greet has parameterCount=1 and returnType=string', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const greet = methods.find((m) => m.name === 'Greet');
+    expect(greet).toBeDefined();
+    expect(greet!.properties.parameterCount).toBe(1);
+    expect(greet!.properties.returnType).toBe('string');
+    expect(greet!.properties.visibility).toBe('public');
+  });
+
+  it('Main has parameterCount=1 and isStatic=true', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const main = methods.find((m) => m.name === 'Main');
+    expect(main).toBeDefined();
+    expect(main!.properties.parameterCount).toBe(1);
+    expect(main!.properties.isStatic).toBe(true);
+    expect(main!.properties.visibility).toBe('public');
+  });
+
+  it('Bar is abstract with parameterCount=0 and returnType=void', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const bar = methods.find((m) => m.name === 'Bar');
+    expect(bar).toBeDefined();
+    expect(bar!.properties.parameterCount).toBe(0);
+    expect(bar!.properties.isAbstract).toBe(true);
+    expect(bar!.properties.returnType).toBe('void');
+  });
+
+  it('emits HAS_METHOD edges linking Greeter to its methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const targets = edgeSet(hasMethod);
+    expect(targets).toContain('Greeter → Greet');
+    expect(targets).toContain('Greeter → Main');
+  });
+
+  it('emits HAS_METHOD edge linking IFoo to Bar', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const targets = edgeSet(hasMethod);
+    expect(targets).toContain('IFoo → Bar');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 1: record inheritance + base.Save() resolves via isClassLike widening
+// ---------------------------------------------------------------------------
+
+describe('C# record base resolution (record inheritance + base.Save)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-record-base'), () => {});
+  }, 60000);
+
+  it('detects BaseEntity and UserRecord', () => {
+    // Records project as label 'Record' (class-like) in the graph.
+    const records = getNodesByLabel(result, 'Record');
+    const classes = getNodesByLabel(result, 'Class');
+    const all = [...records, ...classes];
+    expect(all).toContain('BaseEntity');
+    expect(all).toContain('UserRecord');
+  });
+
+  it('does not emit a spurious self-EXTENDS (record heritage not emitted by C# heritage queries)', () => {
+    // NOTE: C# tree-sitter heritage queries cover class/interface
+    // declarations but not `record_declaration`, so records don't
+    // emit an EXTENDS edge today. The record-base linkage is still
+    // visible via `base.Save()` resolution (next test). This
+    // assertion pins the negative invariant so a future heritage
+    // extension for records can flip both tests at once.
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
+    expect(selfExtend).toBeUndefined();
+  });
+
+  it('resolves base.Save() inside UserRecord.Save to BaseEntity.Save (not self)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseSave = calls.find(
+      (c) =>
+        c.source === 'Save' &&
+        c.target === 'Save' &&
+        c.targetFilePath === 'src/Models/BaseEntity.cs',
+    );
+    expect(baseSave).toBeDefined();
+    // NOTE: no `rel.reason` assertion here. Records don't emit EXTENDS
+    // edges today (see the negative-invariant test above), so the
+    // super-branch MRO lookup returns no ancestor and the edge is
+    // produced by the downstream reference-index fallback instead of
+    // the canonical super path. The `csharp-super-resolution` and
+    // `csharp-generic-parent` suites pin the super-branch reason on
+    // paths that do go through MRO.
+    const selfSave = calls.find(
+      (c) =>
+        c.source === 'Save' &&
+        c.target === 'Save' &&
+        c.targetFilePath === 'src/Models/UserRecord.cs',
+    );
+    expect(selfSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 4: struct overload dispatch exercises the extracted
+// narrowOverloadCandidates utility via implicit-this free calls.
+// ---------------------------------------------------------------------------
+
+describe('C# struct overload dispatch (implicit-this narrowing)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-struct-overloads'), () => {});
+  }, 60000);
+
+  it('detects Calc struct', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    const classes = getNodesByLabel(result, 'Class');
+    const all = [...structs, ...classes];
+    expect(all).toContain('Calc');
+  });
+
+  it('detects two Add overloads with distinct parameterCount', () => {
+    const methods = getNodesByLabelFull(result, 'Method').filter((m) => m.name === 'Add');
+    expect(methods.length).toBe(2);
+    const arities = methods.map((m) => m.properties.parameterCount as number).sort();
+    expect(arities).toEqual([1, 2]);
+  });
+
+  it('Run() -> Add emits CALLS edges to distinct Add overloads (implicit-this narrowing)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runToAdd = calls.filter((c) => c.source === 'Run' && c.target === 'Add');
+    // The registry-primary pipeline exercises `pickImplicitThisOverload`
+    // + `narrowOverloadCandidates` and MUST resolve both Add(int) and
+    // Add(int, int) to distinct targets. A silent regression in either
+    // helper would drop an edge or merge both onto one target — pin
+    // exact counts so either failure mode surfaces immediately.
+    // The legacy DAG path (REGISTRY_PRIMARY_CSHARP=0) does not
+    // implement implicit-`this` struct overload narrowing, so we
+    // accept any count there; the registry-primary path remains the
+    // authoritative guarantee.
+    if (process.env['REGISTRY_PRIMARY_CSHARP'] !== '0') {
+      expect(runToAdd.length).toBe(2);
+      const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+      expect(targetIds.size).toBe(2);
+    } else {
+      expect(runToAdd.length).toBeLessThanOrEqual(2);
+      if (runToAdd.length >= 2) {
+        const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+        expect(targetIds.size).toBe(runToAdd.length);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5: merged Case 2 covers Interface static-style invocation
+// (`ILogger.Warn(...)` from a class method).
+// ---------------------------------------------------------------------------
+
+describe('C# interface receiver static invocation (merged Case 2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-interface-receiver-static'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects ILogger interface and Runner class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('ILogger');
+    expect(getNodesByLabel(result, 'Class')).toContain('Runner');
+  });
+
+  it('Go() -> ILogger.Warn CALLS edge points at src/ILogger.cs with import-resolved or global reason', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const warnCall = calls.find((c) => c.source === 'Go' && c.target === 'Warn');
+    expect(warnCall).toBeDefined();
+    expect(warnCall!.targetFilePath).toBe('src/ILogger.cs');
+    expect(['import-resolved', 'global']).toContain(warnCall!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 5 (continued): merged Case 2 kind-aware branch for class-name
+// receiver on WRITE ACCESSES. `Counters.Hits = 42` resolves receiver via
+// `findClassBindingInScope` (no typeBinding on `Counters`), which is the
+// exact path lifted from the deleted Case 5. Verifies `reason === 'write'`
+// and `confidence === 1.0` — the semantic upgrade over the pre-merge
+// Case 2, which emitted `import-resolved`/`global` at 0.85 for the same
+// sites. Also pins per-site dedup (two distinct writes → two edges).
+// C# tree-sitter queries emit only `write.member` captures today, so a
+// read-side counterpart would have no reference site and is intentionally
+// not asserted.
+// ---------------------------------------------------------------------------
+
+describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-class-static-field-access'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Counters and Runner classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['Counters', 'Runner']),
+    );
+  });
+
+  it('Touch() -> Hits and Touch() -> Misses each emit ACCESSES write with confidence 1.0', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const writesFromTouch = accesses.filter(
+      (e) => e.source === 'Touch' && e.rel.reason === 'write',
+    );
+    // Per-site dedup key is (caller, target, line, col) — two writes on
+    // distinct lines must produce two distinct edges.
+    expect(writesFromTouch.length).toBe(2);
+    for (const edge of writesFromTouch) {
+      expect(edge.rel.confidence).toBe(1.0);
+      expect(edge.targetFilePath).toBe('src/Counters.cs');
+    }
+    expect(writesFromTouch.map((e) => e.target).sort()).toEqual(['Hits', 'Misses']);
+  });
+
+  it('does not emit any CALLS edges for the static field writes', () => {
+    // `Counters.Hits = 42` is a field write, not a call. A regression
+    // that misclassifies the site would surface as a spurious CALLS
+    // edge here.
+    const calls = getRelationships(result, 'CALLS');
+    const stray = calls.filter(
+      (c) => c.source === 'Touch' && (c.target === 'Hits' || c.target === 'Misses'),
+    );
+    expect(stray).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 regression: large source files (>32 KB) combined with a
+// cross-namespace `using` and a colliding local class. Pins both fixes in
+// the resolver dataset:
+//
+//   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
+//      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
+//      fails to reparse with "Invalid argument" and CreateUser is dropped.
+//   2. populateCsharpNamespaceSiblings must append to bindingAugmentations
+//      instead of mutating frozen finalize-produced BindingRef[] arrays;
+//      otherwise the cross-namespace inject loop throws "Cannot add property
+//      N, object is not extensible" when the importer also declares the same
+//      simple name locally.
+// ---------------------------------------------------------------------------
+
+describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    // Force the worker pool path with low thresholds so the scope-resolution
+    // cache-miss reparse actually fires (workers can't share Tree instances
+    // across MessageChannels). This is what reproduces the >32 KB
+    // "Invalid argument" failure end-to-end through the pipeline.
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-large-cache-miss-resolution'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 120000);
+
+  it('extracts UserService.CreateUser despite the >32 KB source size', () => {
+    // Without the adaptive-buffer fix, UserService.cs would fail to reparse
+    // on cache miss and CreateUser would not be extracted at all.
+    expect(getNodesByLabel(result, 'Method')).toEqual(
+      expect.arrayContaining(['CreateUser', 'Save']),
+    );
+  });
+
+  it('detects all three classes (User, Helper, UserService)', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['User', 'Helper', 'UserService']),
+    );
+  });
+
+  it('resolves CreateUser -> User constructor across same namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find(
+      (c) => c.source === 'CreateUser' && c.target === 'User' && c.targetLabel === 'Class',
+    );
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetFilePath).toBe('Models/User.cs');
+  });
+
+  it('resolves CreateUser -> Save through namespace siblings', () => {
+    // Without the freeze fix, populateCsharpNamespaceSiblings throws on
+    // the colliding `Helper` bucket, aborting the whole scopeResolution
+    // phase, so no CALLS edges from CreateUser would be emitted at all.
+    const calls = getRelationships(result, 'CALLS');
+    const save = calls.find((c) => c.source === 'CreateUser' && c.target === 'Save');
+    expect(save).toBeDefined();
+    expect(save!.targetFilePath).toBe('Models/User.cs');
+    expect(['import-resolved', 'global']).toContain(save!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 companion regression: small-file trigger for the same
+// frozen-bucket failure. Where csharp-large-cache-miss-resolution exercises
+// the path through tree-sitter cache-miss reparse on >32 KB files, this
+// fixture trips the same `Object.freeze` contract on the populator's
+// namespace-import loop in a single small file pair: the importer locally
+// declares a class with the same simple name as a sibling reachable through
+// `using`, so the extractor pre-populates (and freezes) `User` in the
+// importer's Module bindings before populateNamespaceSiblings tries to
+// append the cross-file `Collision.Models.User`. Pre-#1082 the populator
+// pushed onto the frozen array → "Cannot add property N, object is not
+// extensible" → whole scopeResolution phase aborted. Post-#1082 the
+// augmentation channel keeps both bindings visible to readers, with the
+// local `Collision.App.User` taking precedence per origin ordering.
+// ---------------------------------------------------------------------------
+
+describe('C# frozen-binding collision via using-import (issue #1066 companion)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-frozen-binding-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('completes scopeResolution without throwing on the colliding bucket', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['User', 'Program']));
+  });
+
+  it('detects both User declarations across the two namespaces', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((n) => n.name === 'User');
+    expect(users.length).toBe(2);
+    const paths = users.map((u) => u.properties.filePath).sort();
+    expect(paths).toEqual(['App/Program.cs', 'Models/User.cs']);
+  });
+
+  it('resolves Program.Run -> local Collision.App.User constructor (origin:local shadows namespace)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find(
+      (c) => c.source === 'Run' && c.target === 'User' && c.targetLabel === 'Class',
+    );
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetFilePath).toBe('App/Program.cs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1086 regression: when a C# file consists of a single top-level
+// namespace_declaration that ends exactly at EOF (no trailing newline,
+// no leading content outside the namespace block), tree-sitter-c-sharp
+// reports identical ranges for `compilation_unit` and `namespace_declaration`.
+// Pre-fix, scope-extractor's parent-finder relied on strict containment, so
+// the Module was popped off the stack and the Namespace ended up with
+// parent=null → ScopeTreeInvariantError → scopeResolution silently aborted
+// for the file (extractParsedFile swallows). Post-fix, `canParentScope`
+// allows a same-range Module to keep parenthood, so extraction completes
+// and the file's symbols stay reachable to the cross-file resolver.
+//
+// Hit on real PersistentWindows .Designer.cs files. The fixture mirrors
+// that shape minimally — both files end on the closing `}` with no
+// trailing newline.
+// ---------------------------------------------------------------------------
+
+describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-namespace-as-root-no-trailing-newline'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 60000);
+
+  it('completes scope extraction for both files (no Namespace-as-root abort)', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['User', 'Program']));
+  });
+
+  it('emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path', () => {
+    // The `csharp-scope: using` reason on the IMPORTS edge is the signal
+    // that scope-resolution drove the resolution (not the legacy DAG
+    // fallback). Pre-fix, Models/User.cs aborted in scope-extractor and
+    // the only IMPORTS edge available — if any — would have come from a
+    // path with a different reason tag, or be missing entirely.
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(
+      (e) => e.sourceFilePath === 'App/Program.cs' && e.targetFilePath === 'Models/User.cs',
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('csharp-scope: using');
   });
 });

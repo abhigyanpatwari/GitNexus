@@ -6,11 +6,13 @@
  */
 
 import { queryFTS } from '../lbug/lbug-adapter.js';
+import { FTS_INDEXES } from './fts-schema.js';
 
 export interface BM25SearchResult {
   filePath: string;
   score: number;
   rank: number;
+  nodeIds?: string[];
 }
 
 /**
@@ -23,7 +25,7 @@ async function queryFTSViaExecutor(
   indexName: string,
   query: string,
   limit: number,
-): Promise<Array<{ filePath: string; score: number }>> {
+): Promise<Array<{ filePath: string; score: number; nodeId: string }>> {
   // Escape single quotes and backslashes to prevent Cypher injection
   const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const cypher = `
@@ -40,6 +42,7 @@ async function queryFTSViaExecutor(
       return {
         filePath: node.filePath || '',
         score: typeof score === 'number' ? score : parseFloat(score) || 0,
+        nodeId: node.nodeId || node.id || '',
       };
     });
   } catch {
@@ -63,61 +66,50 @@ export const searchFTSFromLbug = async (
   limit: number = 20,
   repoId?: string,
 ): Promise<BM25SearchResult[]> => {
-  let fileResults: any[],
-    functionResults: any[],
-    classResults: any[],
-    methodResults: any[],
-    interfaceResults: any[];
+  const resultsByIndex: any[][] = [];
 
   if (repoId) {
     // Use MCP connection pool via dynamic import
     // IMPORTANT: FTS queries run sequentially to avoid connection contention.
     // The MCP pool supports multiple connections, but FTS is best run serially.
-    const { executeQuery } = await import('../../mcp/core/lbug-adapter.js');
+    const poolMod = await import('../lbug/pool-adapter.js');
+    const { executeQuery } = poolMod;
     const executor = (cypher: string) => executeQuery(repoId, cypher);
-    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
-    functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
-    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
-    methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit);
-    interfaceResults = await queryFTSViaExecutor(
-      executor,
-      'Interface',
-      'interface_fts',
-      query,
-      limit,
-    );
+
+    for (const { table, indexName } of FTS_INDEXES) {
+      resultsByIndex.push(await queryFTSViaExecutor(executor, table, indexName, query, limit));
+    }
   } else {
-    // Use core lbug adapter (CLI / pipeline context) — also sequential for safety
-    fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
-    functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(
-      () => [],
-    );
-    classResults = await queryFTS('Class', 'class_fts', query, limit, false).catch(() => []);
-    methodResults = await queryFTS('Method', 'method_fts', query, limit, false).catch(() => []);
-    interfaceResults = await queryFTS('Interface', 'interface_fts', query, limit, false).catch(
-      () => [],
-    );
+    // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
+    for (const { table, indexName } of FTS_INDEXES) {
+      resultsByIndex.push(await queryFTS(table, indexName, query, limit, false).catch(() => []));
+    }
   }
 
-  // Merge results by filePath, summing scores for same file
-  const merged = new Map<string, { filePath: string; score: number }>();
+  // Collect all node scores per filePath to track which nodes actually matched
+  const fileNodeScores = new Map<string, Array<{ score: number; nodeId: string }>>();
 
   const addResults = (results: any[]) => {
     for (const r of results) {
-      const existing = merged.get(r.filePath);
-      if (existing) {
-        existing.score += r.score;
-      } else {
-        merged.set(r.filePath, { filePath: r.filePath, score: r.score });
-      }
+      if (!fileNodeScores.has(r.filePath)) fileNodeScores.set(r.filePath, []);
+      fileNodeScores.get(r.filePath)!.push({ score: r.score, nodeId: r.nodeId });
     }
   };
 
-  addResults(fileResults);
-  addResults(functionResults);
-  addResults(classResults);
-  addResults(methodResults);
-  addResults(interfaceResults);
+  for (const results of resultsByIndex) addResults(results);
+
+  // Sum the top-3 highest-scoring nodes per file and collect their nodeIds.
+  // Summing all nodes naively inflates scores for files with many mediocre
+  // matches (e.g. test files) over files with a single highly-relevant symbol.
+  const merged = new Map<string, { filePath: string; score: number; nodeIds: string[] }>();
+  for (const [filePath, entries] of fileNodeScores) {
+    const top3 = [...entries].sort((a, b) => b.score - a.score).slice(0, 3);
+    merged.set(filePath, {
+      filePath,
+      score: top3.reduce((acc, e) => acc + e.score, 0),
+      nodeIds: top3.map((e) => e.nodeId).filter((id) => id),
+    });
+  }
 
   // Sort by score descending and add rank
   const sorted = Array.from(merged.values())
@@ -128,5 +120,6 @@ export const searchFTSFromLbug = async (
     filePath: r.filePath,
     score: r.score,
     rank: index + 1,
+    nodeIds: r.nodeIds,
   }));
 };

@@ -1,4 +1,5 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/csharp.ts
+// Verified against tree-sitter-c-sharp 0.23.1
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type {
@@ -85,6 +86,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
           type: typeNode
             ? (extractSimpleTypeName(typeNode) ?? typeNode.text?.trim() ?? null)
             : null,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional: false,
           isVariadic: true,
         });
@@ -126,6 +128,7 @@ function extractParametersFromList(paramList: SyntaxNode): ParameterInfo[] {
         params.push({
           name: nameNode.text,
           type: typeName,
+          rawType: typeNode?.text?.trim() ?? null,
           isOptional,
           isVariadic: false,
         });
@@ -186,6 +189,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     'destructor_declaration',
     'operator_declaration',
     'conversion_operator_declaration',
+    'local_function_statement',
   ],
   bodyNodeTypes: ['declaration_list'],
 
@@ -221,7 +225,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     // Constructors and destructors have no return type
     // operator_declaration and conversion_operator_declaration use 'type' field, not 'returns'
     const returnsNode = node.childForFieldName('returns');
-    if (returnsNode) return extractSimpleTypeName(returnsNode) ?? returnsNode.text?.trim();
+    if (returnsNode) return returnsNode.text?.trim();
     // Fallback for operator/conversion declarations that use 'type' as return type field
     if (node.type === 'operator_declaration' || node.type === 'conversion_operator_declaration') {
       const typeNode = node.childForFieldName('type');

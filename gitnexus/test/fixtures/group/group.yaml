@@ -1,0 +1,24 @@
+# Test group for integration / fixture-driven tests
+version: 1
+name: test-group
+description: "Test group for integration tests"
+
+repos:
+  app/backend: test-backend
+  app/frontend: test-frontend
+
+links: []
+
+packages: {}
+
+detect:
+  http: true
+  grpc: false
+  topics: false
+  shared_libs: false
+  embedding_fallback: false
+
+matching:
+  bm25_threshold: 0.7
+  embedding_threshold: 0.65
+  max_candidates_per_step: 3

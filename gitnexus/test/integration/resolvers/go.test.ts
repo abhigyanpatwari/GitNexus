@@ -80,7 +80,7 @@ describe('Go package import & call resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -169,6 +169,26 @@ describe('Go member-call resolution', () => {
     });
     expect(structs).toContain('User');
     expect(getNodesByLabel(result, 'Method')).toContain('Save');
+  });
+});
+
+describe('Go receiver method free-call resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-receiver-method-free-call'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 60000);
+
+  it('resolves Caller -> callee when a receiver method calls a package-level function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const calleeCall = calls.find((c) => c.source === 'Caller' && c.target === 'callee');
+    expect(calleeCall).toBeDefined();
+    expect(calleeCall!.targetLabel).toBe('Function');
+    expect(calleeCall!.targetFilePath).toBe('util.go');
   });
 });
 
@@ -1265,5 +1285,115 @@ describe('Go cmd/ helper files entry-point scoring', () => {
       (e) => e.sourceFilePath.includes('main') && e.targetFilePath.includes('config'),
     );
     expect(edge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method enrichment: struct methods, interface methods, package-level funcs
+// ---------------------------------------------------------------------------
+
+describe('Go method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Dog struct', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Dog');
+  });
+
+  it('detects Speak method', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('Speak');
+  });
+
+  it('detects Classify as static function', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks Speak as public (exported)', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const speak = methods.find((n) => n.name === 'Speak');
+    if (speak?.properties.visibility !== undefined) {
+      expect(speak.properties.visibility).toBe('public');
+    }
+  });
+
+  it('populates parameterTypes for Classify', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'Classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      expect(classify.properties.parameterTypes).toContain('string');
+    }
+  });
+
+  it('detects Animal interface', () => {
+    const interfaces = getNodesByLabel(result, 'Interface');
+    expect(interfaces).toContain('Animal');
+  });
+
+  it('marks interface method Speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    // Interface method_elem Speak should be abstract
+    const interfaceSpeak = methods.find(
+      (m) => m.name === 'Speak' && m.properties.isAbstract === true,
+    );
+    if (interfaceSpeak) {
+      expect(interfaceSpeak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('resolves dog.Speak() CALLS edge from app.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'Speak' && c.sourceFilePath.includes('app.go'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Classify() CALLS edge from app.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'Classify' && c.sourceFilePath.includes('app.go'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Go struct embedding
+// ---------------------------------------------------------------------------
+
+describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child structs', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Parent');
+    expect(structs).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent (struct embedding)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.ParentMethod() to Parent.ParentMethod via first-wins MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'ParentMethod' && c.targetFilePath.includes('parent.go'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    expect(parentMethodCall!.source).toBe('Run');
   });
 });

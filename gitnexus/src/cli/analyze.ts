@@ -13,15 +13,23 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { getStoragePaths, getGlobalRegistryPath } from '../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  getGlobalRegistryPath,
+  RegistryNameCollisionError,
+} from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
+/** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
+const STACK_KB = 4096;
+const STACK_FLAG = `--stack-size=${STACK_KB}`;
 
-/** Re-exec the process with an 8GB heap if we're currently below that. */
+/** Re-exec the process with an 8GB heap and larger stack if we're currently below that. */
 function ensureHeap(): boolean {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -29,8 +37,13 @@ function ensureHeap(): boolean {
   const v8Heap = v8.getHeapStatistics().heap_size_limit;
   if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
 
+  // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+,
+  // so pass it only as a direct CLI argument, not via the environment.
+  const cliFlags = [HEAP_FLAG];
+  if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
+
   try {
-    execFileSync(process.execPath, [HEAP_FLAG, ...process.argv.slice(1)], {
+    execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
       stdio: 'inherit',
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
@@ -44,12 +57,43 @@ export interface AnalyzeOptions {
   force?: boolean;
   incremental?: boolean;
   embeddings?: boolean;
+  /**
+   * Explicitly drop existing embeddings on rebuild instead of preserving
+   * them. Without this flag, a routine `analyze` keeps any embeddings
+   * already present in the index even when `--embeddings` is omitted.
+   */
+  dropEmbeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
+  /**
+   * Override the default basename-derived registry `name` with a
+   * user-supplied alias (#829). Disambiguates repos whose paths share a
+   * basename. Persisted — subsequent re-analyses of the same path without
+   * `--name` preserve the alias.
+   */
+  name?: string;
+  /**
+   * Allow registration even when another path already uses the same
+   * `--name` alias (#829). Intentionally a distinct flag from `--force`
+   * because the user may want to coexist under the same name WITHOUT
+   * paying the cost of a pipeline re-index. Maps to registerRepo's
+   * `allowDuplicateName` option end-to-end.
+   */
+  allowDuplicateName?: boolean;
+  /**
+   * Override the walker's large-file skip threshold (#991). Value in KB;
+   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
+   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
+   */
+  maxFileSize?: string;
+  /** Override worker sub-batch idle timeout in seconds. */
+  workerTimeout?: string;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -57,6 +101,22 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
+  }
+
+  if (options?.maxFileSize) {
+    process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
+  }
+
+  if (options?.workerTimeout) {
+    const workerTimeoutSeconds = Number(options.workerTimeout);
+    if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
+      console.error('  --worker-timeout must be at least 1 second.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
+      Math.round(workerTimeoutSeconds * 1000),
+    );
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -104,6 +164,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
   }
 
+  const maxFileSizeBanner = getMaxFileSizeBannerMessage();
+  if (maxFileSizeBanner) {
+    console.log(`${maxFileSizeBanner}\n`);
+  }
+
   // ── CLI progress bar setup ─────────────────────────────────────────
   const bar = new cliProgress.SingleBar(
     {
@@ -138,9 +203,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
+  let barCurrentValue = 0;
   const barLog = (...args: any[]) => {
     process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
+    bar.update(barCurrentValue);
   };
   console.log = barLog;
   console.warn = barLog;
@@ -151,6 +218,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let phaseStart = Date.now();
 
   const updateBar = (value: number, phaseLabel: string) => {
+    barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
       lastPhaseLabel = phaseLabel;
       phaseStart = Date.now();
@@ -174,11 +242,22 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     const result = await runFullAnalysis(
       repoPath,
       {
+        // Pipeline re-index — OR'd with --skills because skill generation
+        // needs a fresh pipelineResult. Has no bearing on the registry
+        // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
         incremental: options?.incremental,
         embeddings: options?.embeddings,
+        dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
+        noStats: options?.noStats,
+        registryName: options?.name,
+        // Registry-collision bypass — its own CLI flag, intentionally NOT
+        // overloading --force. A user who hits the collision guard should
+        // be able to accept the duplicate name without also paying the
+        // cost of a full pipeline re-index. See #829 review round 2.
+        allowDuplicateName: options?.allowDuplicateName,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -242,7 +321,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd },
+            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
           );
         }
       } catch {
@@ -284,7 +363,67 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.warn = origWarn;
     console.error = origError;
     bar.stop();
-    console.error(`\n  Analysis failed: ${err.message}\n`);
+
+    const msg = err.message || String(err);
+
+    // Registry name-collision from --name (#829) — surface as an
+    // actionable error rather than a generic stack-trace.
+    if (err instanceof RegistryNameCollisionError) {
+      console.error(`\n  Registry name collision:\n`);
+      console.error(`    "${err.registryName}" is already used by "${err.existingPath}".\n`);
+      console.error(`  Options:`);
+      console.error(`    • Pick a different alias:  gitnexus analyze --name <alias>`);
+      console.error(
+        `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)`,
+      );
+      console.error('');
+      process.exitCode = 1;
+      return;
+    }
+
+    console.error(`\n  Analysis failed: ${msg}\n`);
+
+    // Provide helpful guidance for known failure modes
+    if (
+      msg.includes('Maximum call stack size exceeded') ||
+      msg.includes('call stack') ||
+      msg.includes('Map maximum size') ||
+      msg.includes('Invalid array length') ||
+      msg.includes('Invalid string length') ||
+      msg.includes('allocation failed') ||
+      msg.includes('heap out of memory') ||
+      msg.includes('JavaScript heap')
+    ) {
+      console.error('  This error typically occurs on very large repositories.');
+      console.error('  Suggestions:');
+      console.error('    1. Add large vendored/generated directories to .gitnexusignore');
+      console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
+      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
+      console.error('');
+    } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
+      // Note: the original arborist "Cannot destructure property 'package' of
+      // 'node.target'" crash happens inside npm *before* gitnexus code runs,
+      // so it can't be caught here.  This branch handles dependency-resolution
+      // errors that surface at runtime (e.g. dynamic require failures).
+      console.error('  This looks like an npm dependency resolution issue.');
+      console.error('  Suggestions:');
+      console.error('    1. Clear the npm cache:    npm cache clean --force');
+      console.error('    2. Update npm:             npm install -g npm@latest');
+      console.error('    3. Reinstall gitnexus:     npm install -g gitnexus@latest');
+      console.error('    4. Or try npx directly:    npx gitnexus@latest analyze');
+      console.error('');
+    } else if (
+      msg.includes('MODULE_NOT_FOUND') ||
+      msg.includes('Cannot find module') ||
+      msg.includes('ERR_MODULE_NOT_FOUND')
+    ) {
+      console.error('  A required module could not be loaded. The installation may be corrupt.');
+      console.error('  Suggestions:');
+      console.error('    1. Reinstall:   npm install -g gitnexus@latest');
+      console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
+      console.error('');
+    }
+
     process.exitCode = 1;
     return;
   }

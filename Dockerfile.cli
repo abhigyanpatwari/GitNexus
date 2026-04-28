@@ -1,0 +1,58 @@
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
+# ── Builder ────────────────────────────────────────────────────────────
+# Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
+# tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
+FROM node:22-trixie-slim AS builder
+
+WORKDIR /app
+
+# Toolchain for node-gyp / native builds.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ git && rm -rf /var/lib/apt/lists/*
+
+# Build gitnexus-shared first — gitnexus depends on it as a workspace.
+COPY gitnexus-shared/package.json gitnexus-shared/package-lock.json ./gitnexus-shared/
+RUN npm ci --prefix gitnexus-shared
+COPY gitnexus-shared ./gitnexus-shared
+RUN rm -f gitnexus-shared/tsconfig.tsbuildinfo
+RUN npm run build --prefix gitnexus-shared
+
+# Copy the full gitnexus package before installing — `npm ci` triggers
+# `postinstall` (patches tree-sitter-swift, builds the vendored
+# tree-sitter-proto) and `prepare` (compiles TypeScript via scripts/build.js),
+# both of which need the source tree.
+COPY gitnexus ./gitnexus
+RUN npm ci --prefix gitnexus
+
+# Drop dev dependencies for a smaller runtime layer.
+RUN npm prune --omit=dev --prefix gitnexus
+
+# ── Runtime ────────────────────────────────────────────────────────────
+FROM node:22-trixie-slim AS runtime
+
+# curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Pre-create the data directory and hand it to the unprivileged `node` user
+# so the bind-mounted volume is writable without root.
+RUN mkdir -p /data/gitnexus && chown -R node:node /data
+
+COPY --from=builder --chown=node:node /app/gitnexus/dist ./gitnexus/dist
+COPY --from=builder --chown=node:node /app/gitnexus/node_modules ./gitnexus/node_modules
+COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/package.json
+COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
+
+USER node
+
+# The web UI defaults to http://localhost:4747 — keep that contract.
+ENV GITNEXUS_HOME=/data/gitnexus \
+    NODE_ENV=production \
+    PORT=4747
+
+EXPOSE 4747
+
+# Bind to 0.0.0.0 so the server is reachable from the host's mapped port.
+CMD ["node", "gitnexus/dist/cli/index.js", "serve", "--host", "0.0.0.0", "--port", "4747"]

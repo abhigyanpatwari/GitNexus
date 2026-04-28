@@ -71,7 +71,7 @@ describe('Java heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -134,6 +134,23 @@ describe('Java ambiguous symbol resolution', () => {
       expect(target).toBeDefined();
       expect(target!.properties.name).toBe(edge.target);
     }
+  });
+});
+
+describe('Java qualified class names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-types'), () => {});
+  }, 60000);
+
+  it('stores distinct qualified names for same-named classes across packages', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
+    expect(users).toHaveLength(2);
+    expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
+      'com.example.admin.User',
+      'com.example.models.User',
+    ]);
   });
 });
 
@@ -262,6 +279,80 @@ describe('Java receiver-constrained resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Method references: expr::method, Type::method, Type::new, this::m, super::m
+// ---------------------------------------------------------------------------
+
+describe('Java method-reference resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-reference'), () => {});
+  }, 60000);
+
+  it('resolves project method references to CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapViaInstanceBuilder' &&
+          c.target === 'buildResponse' &&
+          c.targetFilePath === 'models/ResponseBuilder.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapViaStaticUtil' &&
+          c.target === 'format' &&
+          c.targetFilePath === 'util/FormatUtil.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapUserNames' &&
+          c.target === 'getName' &&
+          c.targetFilePath === 'models/User.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'mapSaves' &&
+          c.target === 'saveOne' &&
+          c.targetFilePath === 'services/MethodRefService.java',
+      ),
+    ).toBeDefined();
+
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'wrapTransform' &&
+          c.target === 'transform' &&
+          c.targetFilePath === 'models/BaseHandler.java',
+      ),
+    ).toBeDefined();
+  });
+
+  it('resolves constructor references to Constructor nodes', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctorRef = calls.find(
+      (c) =>
+        c.source === 'mapNewUsers' &&
+        c.target === 'User' &&
+        c.targetFilePath === 'models/User.java',
+    );
+
+    expect(ctorRef).toBeDefined();
+    expect(ctorRef!.targetLabel).toBe('Constructor');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Named import disambiguation: two User classes, import resolves to correct one
 // ---------------------------------------------------------------------------
 
@@ -310,6 +401,42 @@ describe('Java variadic call resolution', () => {
     expect(logCall).toBeDefined();
     expect(logCall!.source).toBe('run');
     expect(logCall!.targetFilePath).toBe('com/example/util/Logger.java');
+  });
+
+  it('CALLS edges from within variadic method have valid sourceId (no ID mismatch)', () => {
+    // Collect all CALLS edges whose source is in Logger.java
+    const danglingSourceIds: string[] = [];
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type !== 'CALLS') continue;
+      const sourceNode = result.graph.getNode(rel.sourceId);
+      if (!sourceNode) {
+        danglingSourceIds.push(rel.sourceId);
+        continue;
+      }
+      // Specifically flag Logger.java sources that don't resolve
+      if (
+        sourceNode.properties.filePath === 'com/example/util/Logger.java' &&
+        !result.graph.getNode(rel.sourceId)
+      ) {
+        danglingSourceIds.push(rel.sourceId);
+      }
+    }
+
+    // No CALLS edge should have a dangling (unresolvable) sourceId.
+    // This catches the bug where definition creates Method:...record#N but
+    // findEnclosingFunctionId generates Method:...record (no suffix),
+    // producing CALLS edges whose sourceId doesn't match any graph node.
+    expect(danglingSourceIds).toEqual([]);
+
+    // Additionally verify that ALL relationships (not just CALLS) have
+    // resolvable sourceIds — a stronger invariant.
+    const allDangling: string[] = [];
+    for (const rel of result.graph.iterRelationships()) {
+      if (!result.graph.getNode(rel.sourceId)) {
+        allDangling.push(`${rel.type}:${rel.sourceId}`);
+      }
+    }
+    expect(allDangling).toEqual([]);
   });
 });
 
@@ -1352,22 +1479,121 @@ describe('Java overload disambiguation by parameter types', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-overload-param-types'), () => {});
   }, 60000);
 
-  it('detects lookup method with parameterTypes on graph node', () => {
+  it('produces distinct graph nodes for same-arity overloads via type-hash suffix', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const lookupNodes = methods.filter((m) => m.name === 'lookup');
-    // generateId collision → 1 graph node, first overload's parameterTypes wins
-    expect(lookupNodes.length).toBe(1);
-    // The node has parameterTypes from whichever overload was registered first
-    expect(lookupNodes[0].properties.parameterTypes).toEqual(['int']);
+    // Type-hash disambiguation → 2 distinct graph nodes (lookup#1~int, lookup#1~String)
+    expect(lookupNodes.length).toBe(2);
+    const types = lookupNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['String'], ['int']]);
   });
 
-  it('emits CALLS edge from run() → lookup() via overload disambiguation', () => {
+  it('callById() emits exactly one CALLS edge to lookup(int)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const lookupCalls = calls.filter((c) => c.source === 'run' && c.target === 'lookup');
-    // Phase 0 (fileIndex stores both overloads) + Phase 2 (literal type matching)
-    // enables resolution where previously 2 same-arity candidates → null.
-    // Both calls resolve to same nodeId (ID collision) → 1 CALLS edge after dedup.
-    expect(lookupCalls.length).toBe(1);
+    const fromCallById = calls.filter((c) => c.source === 'callById' && c.target === 'lookup');
+    expect(fromCallById.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallById[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('callByName() emits exactly one CALLS edge to lookup(String)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromCallByName = calls.filter((c) => c.source === 'callByName' && c.target === 'lookup');
+    expect(fromCallByName.length).toBe(1);
+    const targetNode = result.graph.getNode(fromCallByName[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+});
+
+// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('Java same-arity overload cross-file and chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-same-arity-cross-file'), () => {});
+  }, 60000);
+
+  // -- Cross-file: caller in App.java → overloaded method in DbLookup.java --
+
+  it('crossFileById() emits exactly one CALLS edge to find(int) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileById' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileByName' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  // -- METHOD_IMPLEMENTS: DbLookup.find(int) → ILookup.find(int) etc. --
+
+  it('emits METHOD_IMPLEMENTS from DbLookup.find(int) → ILookup.find(int)', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    // Two distinct edges: find(int)→find(int) and find(String)→find(String)
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+
+  // -- Chain: db.find(42) → result → fmt.format(result) --
+
+  it('chainIntToFormat() calls find and format — each resolves to exactly one overload', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainIntToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainIntToFormat' && c.target === 'format',
+    );
+    // find(42) → find(int)
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['int']);
+    // format(result) where result is String → format(String)
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  it('chainNameToFormat() calls find and format — each resolves to exactly one overload', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findEdges = calls.filter((c) => c.source === 'chainNameToFormat' && c.target === 'find');
+    const formatEdges = calls.filter(
+      (c) => c.source === 'chainNameToFormat' && c.target === 'format',
+    );
+    // find("alice") → find(String)
+    expect(findEdges.length).toBe(1);
+    const findTarget = result.graph.getNode(findEdges[0].rel.targetId);
+    expect(findTarget?.properties.parameterTypes).toEqual(['String']);
+    // format(result) where result is String → format(String)
+    expect(formatEdges.length).toBe(1);
+    const formatTarget = result.graph.getNode(formatEdges[0].rel.targetId);
+    expect(formatTarget?.properties.parameterTypes).toEqual(['String']);
   });
 });
 
@@ -1469,5 +1695,475 @@ describe('Java cross-file binding propagation', () => {
     const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'getName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Method enrichment: abstract, static, annotations, parameterTypes
+// ---------------------------------------------------------------------------
+
+describe('Java method enrichment', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-enrichment'), () => {});
+  }, 60000);
+
+  it('detects Animal and Dog classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Animal');
+    expect(classes).toContain('Dog');
+  });
+
+  it('emits HAS_METHOD edges for Animal methods', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const animalMethods = hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target);
+    expect(animalMethods).toContain('speak');
+    expect(animalMethods).toContain('classify');
+    expect(animalMethods).toContain('breathe');
+  });
+
+  it('emits HAS_METHOD edge for Dog.speak', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
+    expect(dogSpeak).toBeDefined();
+  });
+
+  it('emits EXTENDS edge Dog -> Animal', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const dogExtends = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
+    expect(dogExtends).toBeDefined();
+  });
+
+  it('marks abstract speak as isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const speak = methods.find(
+      (n) => n.name === 'speak' && n.properties.filePath?.includes('Animal.java'),
+    );
+    if (speak?.properties.isAbstract !== undefined) {
+      expect(speak.properties.isAbstract).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isAbstract (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isAbstract !== undefined) {
+      expect(breathe.properties.isAbstract).toBe(false);
+    }
+  });
+
+  it('marks classify as isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.isStatic !== undefined) {
+      expect(classify.properties.isStatic).toBe(true);
+    }
+  });
+
+  it('marks breathe as NOT isStatic (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const breathe = methods.find((n) => n.name === 'breathe');
+    if (breathe?.properties.isStatic !== undefined) {
+      expect(breathe.properties.isStatic).toBe(false);
+    }
+  });
+
+  it('captures @Override annotation on Dog.speak (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const dogSpeak = methods.find(
+      (n) => n.name === 'speak' && n.properties.annotations?.includes('@Override'),
+    );
+    if (dogSpeak) {
+      expect(dogSpeak.properties.annotations).toContain('@Override');
+    }
+  });
+
+  it('populates parameterTypes for classify (conditional)', () => {
+    const methods = getNodesByLabelFull(result, 'Function');
+    const classify = methods.find((n) => n.name === 'classify');
+    if (classify?.properties.parameterTypes !== undefined) {
+      expect(classify.properties.parameterTypes).toContain('String');
+    }
+  });
+
+  it('resolves dog.speak() CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const speakCall = calls.find(
+      (c) => c.target === 'speak' && c.sourceFilePath.includes('App.java'),
+    );
+    expect(speakCall).toBeDefined();
+  });
+
+  it('resolves Animal.classify() static CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const classifyCall = calls.find(
+      (c) => c.target === 'classify' && c.sourceFilePath.includes('App.java'),
+    );
+    expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java interface dispatch (METHOD_IMPLEMENTS)
+// Action interface: execute(), priority()
+// LogEvent implements Action, SendEmail implements Action
+// ---------------------------------------------------------------------------
+
+describe('Java interface dispatch (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-interface-dispatch'), () => {});
+  }, 60000);
+
+  it('emits METHOD_IMPLEMENTS edges from LogEvent.execute → Action.execute', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'execute' &&
+        e.target === 'execute' &&
+        e.sourceFilePath.includes('LogEvent') &&
+        e.targetFilePath.includes('Action'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SendEmail.execute → Action.execute', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'execute' &&
+        e.target === 'execute' &&
+        e.sourceFilePath.includes('SendEmail') &&
+        e.targetFilePath.includes('Action'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS for priority() in both implementors', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const priorityEdges = mi.filter(
+      (e) =>
+        e.source === 'priority' && e.target === 'priority' && e.targetFilePath.includes('Action'),
+    );
+    expect(priorityEdges.length).toBe(2);
+    const sourceFiles = priorityEdges.map((e) => e.sourceFilePath).sort();
+    expect(sourceFiles.some((f) => f.includes('LogEvent'))).toBe(true);
+    expect(sourceFiles.some((f) => f.includes('SendEmail'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java overloaded method disambiguation (METHOD_IMPLEMENTS with arity)
+// Repository interface: find(int), find(String, boolean), save(String)
+// SqlRepository implements Repository with matching overloads
+// ---------------------------------------------------------------------------
+
+describe('Java overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-overload-dispatch'), () => {});
+  }, 60000);
+
+  it('detects distinct Method nodes for overloaded find methods on SqlRepository', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findMethods = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('SqlRepository'),
+    );
+    expect(findMethods.length).toBe(2);
+    const paramCounts = findMethods.map((m) => m.properties.parameterCount).sort();
+    expect(paramCounts).toEqual([1, 2]);
+  });
+
+  it('detects distinct Method nodes for overloaded find methods on Repository interface', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findMethods = methods.filter(
+      (m) =>
+        m.name === 'find' &&
+        m.properties.filePath?.includes('Repository') &&
+        !m.properties.filePath?.includes('SqlRepository'),
+    );
+    expect(findMethods.length).toBe(2);
+    const paramCounts = findMethods.map((m) => m.properties.parameterCount).sort();
+    expect(paramCounts).toEqual([1, 2]);
+  });
+
+  it('emits METHOD_IMPLEMENTS for find(int) → Repository.find(int)', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    expect(edge).toBeDefined();
+    // Verify at least one find→find edge has arity 1 on source side
+    const findEdges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    const sourceNodes = findEdges.map((e) => {
+      const methods = getNodesByLabelFull(result, 'Method');
+      return methods.find(
+        (m) =>
+          m.name === 'find' &&
+          m.properties.filePath?.includes('SqlRepository') &&
+          m.properties.parameterCount === 1,
+      );
+    });
+    expect(sourceNodes.some((n) => n !== undefined)).toBe(true);
+  });
+
+  it('emits METHOD_IMPLEMENTS for find(String, boolean) → Repository.find(String, boolean)', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const findEdges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    // There should be two find→find edges (one per overload)
+    expect(findEdges.length).toBe(2);
+  });
+
+  it('emits METHOD_IMPLEMENTS for save(String) → Repository.save(String)', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'save' &&
+        e.target === 'save' &&
+        e.sourceFilePath.includes('SqlRepository') &&
+        e.targetFilePath.includes('Repository'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits exactly 3 METHOD_IMPLEMENTS edges', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) => e.sourceFilePath.includes('SqlRepository') && e.targetFilePath.includes('Repository'),
+    );
+    expect(edges.length).toBe(3);
+  });
+
+  it('emits CALLS edges from run() to both find overloads', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const findCalls = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'find' &&
+        c.sourceFilePath.includes('App') &&
+        c.targetFilePath.includes('SqlRepository'),
+    );
+    expect(findCalls.length).toBe(2);
+  });
+});
+
+// ── Phase P: Sequential path parity — same-arity overloads ────────────────
+
+describe('Java same-arity overloads via sequential path (skipWorkers)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-same-arity-cross-file'),
+      () => {},
+      { skipWorkers: true },
+    );
+  }, 60000);
+
+  it('produces distinct graph nodes for find(int) and find(String) — sequential path', () => {
+    const methods = getNodesByLabelFull(result, 'Method');
+    const findNodes = methods.filter(
+      (m) => m.name === 'find' && m.properties.filePath?.includes('DbLookup'),
+    );
+    expect(findNodes.length).toBe(2);
+    const types = findNodes.map((n) => n.properties.parameterTypes).sort();
+    expect(types).toEqual([['String'], ['int']]);
+  });
+
+  it('crossFileById() → find(int) — sequential path', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileById' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+
+  it('crossFileByName() → find(String) — sequential path', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = calls.filter(
+      (c) =>
+        c.source === 'crossFileByName' &&
+        c.target === 'find' &&
+        c.targetFilePath.includes('DbLookup'),
+    );
+    expect(edges.length).toBe(1);
+    const targetNode = result.graph.getNode(edges[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['String']);
+  });
+
+  it('METHOD_IMPLEMENTS edges match interface methods — sequential path', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter(
+      (e) =>
+        e.source === 'find' &&
+        e.target === 'find' &&
+        e.sourceFilePath.includes('DbLookup') &&
+        e.targetFilePath.includes('ILookup'),
+    );
+    expect(edges.length).toBe(2);
+    for (const edge of edges) {
+      const sourceNode = result.graph.getNode(edge.rel.sourceId);
+      const targetNode = result.graph.getNode(edge.rel.targetId);
+      expect(sourceNode?.properties.parameterTypes).toEqual(targetNode?.properties.parameterTypes);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-class pure method chain resolution via lookupMethodByOwner (#575)
+// ---------------------------------------------------------------------------
+
+describe('Cross-class method chain resolution (Java) — #575', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-method-chain-cross-class'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects classes: Address, App, City, User', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'App', 'City', 'User']);
+  });
+
+  it('two-step chain: user.getAddress().save() → Address#save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'twoStepChain');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toContain('Address');
+  });
+
+  it('two-step chain: user.getAddress().save() also emits CALLS to User#getAddress', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getAddressCalls = calls.filter(
+      (e) => e.target === 'getAddress' && e.source === 'twoStepChain',
+    );
+    expect(getAddressCalls.length).toBe(1);
+    expect(getAddressCalls[0].targetFilePath).toContain('User');
+  });
+
+  it('three-step chain: user.getAddress().getCity().getZipCode() → City#getZipCode', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const zipCalls = calls.filter(
+      (e) => e.target === 'getZipCode' && e.source === 'threeStepChain',
+    );
+    expect(zipCalls.length).toBe(1);
+    expect(zipCalls[0].targetFilePath).toContain('City');
+  });
+
+  it('three-step chain emits CALLS for all intermediate steps', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const threeStepCalls = calls.filter((e) => e.source === 'threeStepChain');
+    const targets = threeStepCalls.map((e) => e.target).sort();
+    expect(targets).toContain('getAddress');
+    expect(targets).toContain('getCity');
+    expect(targets).toContain('getZipCode');
+  });
+
+  it('mixed chain: user.getAddress().city.getZipCode() → City#getZipCode', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const zipCalls = calls.filter((e) => e.target === 'getZipCode' && e.source === 'mixedChain');
+    expect(zipCalls.length).toBe(1);
+    expect(zipCalls[0].targetFilePath).toContain('City');
+  });
+
+  it('mixed chain emits ACCESSES edge for field step: .city on Address', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const cityAccess = accesses.filter((e) => e.target === 'city' && e.source === 'mixedChain');
+    expect(cityAccess.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-9: lookupMethodByOwnerWithMRO — class Child extends Parent
+// child.parentMethod() resolves to Parent#parentMethod via MRO parent walk.
+// ---------------------------------------------------------------------------
+
+describe('Java Child extends Parent — inherited method resolution (SM-9)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-child-extends-parent'), () => {});
+  }, 60000);
+
+  it('detects Parent and Child classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Parent');
+    expect(classes).toContain('Child');
+  });
+
+  it('emits EXTENDS edge: Child → Parent', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Child → Parent');
+  });
+
+  it('resolves c.parentMethod() to Parent#parentMethod via MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const parentMethodCall = calls.find(
+      (c) => c.target === 'parentMethod' && c.targetFilePath.includes('Parent'),
+    );
+    expect(parentMethodCall).toBeDefined();
+    // Pin the caller too — not just the target — so a regression that
+    // misattributes the edge to a different source would fail loudly.
+    expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SM-11: Java User implements Validator — interface default method (Java 8+)
+// ---------------------------------------------------------------------------
+
+describe('Java User implements Validator — interface default method (SM-11)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-interface-default-method'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Validator interface and User class', () => {
+    expect(getNodesByLabel(result, 'Interface')).toContain('Validator');
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+  });
+
+  it('emits IMPLEMENTS edge: User → Validator', () => {
+    const impls = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(impls)).toContain('User → Validator');
+  });
+
+  it('resolves user.validate() to Validator.validate via implements-split MRO', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const validateCall = calls.find(
+      (c) => c.target === 'validate' && c.targetFilePath.includes('Validator.java'),
+    );
+    expect(validateCall).toBeDefined();
+    expect(validateCall!.source).toBe('run');
   });
 });

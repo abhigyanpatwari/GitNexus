@@ -1,13 +1,13 @@
 /**
- * JVM import resolution (Java + Kotlin).
- * Handles wildcard imports, member/static imports, and Kotlin-specific patterns.
+ * JVM import resolution — internal helpers (Java + Kotlin).
+ *
+ * Strategies live in configs/jvm.ts.
+ * This file contains shared helpers for wildcard/member resolution
+ * and the Kotlin wildcard preprocessor.
  */
 
 import type { SuffixIndex } from './utils.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { ImportResult, ResolveCtx } from './types.js';
-import { resolveStandard } from './standard.js';
 
 /** Kotlin file extensions for JVM resolver reuse */
 export const KOTLIN_EXTENSIONS: readonly string[] = ['.kt', '.kts'];
@@ -124,109 +124,4 @@ export function resolveJvmMemberImport(
   }
 
   return null;
-}
-
-/** Java: JVM wildcard -> member import -> standard fallthrough */
-export function resolveJavaImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  if (rawImportPath.endsWith('.*')) {
-    const matchedFiles = resolveJvmWildcard(
-      rawImportPath,
-      ctx.normalizedFileList,
-      ctx.allFileList,
-      ['.java'],
-      ctx.index,
-    );
-    if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
-  } else {
-    const memberResolved = resolveJvmMemberImport(
-      rawImportPath,
-      ctx.normalizedFileList,
-      ctx.allFileList,
-      ['.java'],
-      ctx.index,
-    );
-    if (memberResolved) return { kind: 'files', files: [memberResolved] };
-  }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Java);
-}
-
-/**
- * Kotlin: JVM wildcard/member with Java-interop fallback -> top-level function imports -> standard.
- * Kotlin can import from .kt/.kts files OR from .java files (Java interop).
- */
-export function resolveKotlinImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  if (rawImportPath.endsWith('.*')) {
-    const matchedFiles = resolveJvmWildcard(
-      rawImportPath,
-      ctx.normalizedFileList,
-      ctx.allFileList,
-      KOTLIN_EXTENSIONS,
-      ctx.index,
-    );
-    if (matchedFiles.length === 0) {
-      const javaMatches = resolveJvmWildcard(
-        rawImportPath,
-        ctx.normalizedFileList,
-        ctx.allFileList,
-        ['.java'],
-        ctx.index,
-      );
-      if (javaMatches.length > 0) return { kind: 'files', files: javaMatches };
-    }
-    if (matchedFiles.length > 0) return { kind: 'files', files: matchedFiles };
-  } else {
-    let memberResolved = resolveJvmMemberImport(
-      rawImportPath,
-      ctx.normalizedFileList,
-      ctx.allFileList,
-      KOTLIN_EXTENSIONS,
-      ctx.index,
-    );
-    if (!memberResolved) {
-      memberResolved = resolveJvmMemberImport(
-        rawImportPath,
-        ctx.normalizedFileList,
-        ctx.allFileList,
-        ['.java'],
-        ctx.index,
-      );
-    }
-    if (memberResolved) return { kind: 'files', files: [memberResolved] };
-
-    // Kotlin: top-level function imports (e.g. import models.getUser) have only 2 segments,
-    // which resolveJvmMemberImport skips (requires >=3). Fall back to package-directory scan
-    // for lowercase last segments (function/property imports). Uppercase last segments
-    // (class imports like models.User) fall through to standard suffix resolution.
-    const segments = rawImportPath.split('.');
-    const lastSeg = segments[segments.length - 1];
-    if (segments.length >= 2 && lastSeg[0] && lastSeg[0] === lastSeg[0].toLowerCase()) {
-      const pkgWildcard = segments.slice(0, -1).join('.') + '.*';
-      let dirFiles = resolveJvmWildcard(
-        pkgWildcard,
-        ctx.normalizedFileList,
-        ctx.allFileList,
-        KOTLIN_EXTENSIONS,
-        ctx.index,
-      );
-      if (dirFiles.length === 0) {
-        dirFiles = resolveJvmWildcard(
-          pkgWildcard,
-          ctx.normalizedFileList,
-          ctx.allFileList,
-          ['.java'],
-          ctx.index,
-        );
-      }
-      if (dirFiles.length > 0) return { kind: 'files', files: dirFiles };
-    }
-  }
-  return resolveStandard(rawImportPath, filePath, ctx, SupportedLanguages.Kotlin);
 }

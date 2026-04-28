@@ -1,5 +1,5 @@
 # GitNexus
-⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
+**⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
 
@@ -9,7 +9,7 @@
 
   <h2>Join the official Discord to discuss ideas, issues etc!</h2>
 
-  <a href="https://discord.gg/AAsRVT6fGb">
+  <a href="https://discord.gg/MgJrmsqr62">
     <img src="https://img.shields.io/discord/1477255801545429032?color=5865F2&logo=discord&logoColor=white" alt="Discord"/>
   </a>
   <a href="https://www.npmjs.com/package/gitnexus">
@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 > *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
 
-**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with goliath models.
+**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
 ---
 
@@ -52,7 +52,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 | **What**    | Index repos locally, connect AI agents via MCP                 | Visual graph explorer + AI chat in browser                   |
 | **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                   |
 | **Scale**   | Full repos, any size                                           | Limited by browser memory (~5k files), or unlimited via backend mode |
-| **Install** | `npm install -g gitnexus`                                    | No install —[gitnexus.vercel.app](https://gitnexus.vercel.app) |
+| **Install** | `npm install -g gitnexus`                                    | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app) |
 | **Storage** | LadybugDB native (fast, persistent)                               | LadybugDB WASM (in-memory, per session)                         |
 | **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
 | **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
@@ -119,9 +119,8 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
-| **Codex**       | Yes | —     | —                   | MCP            |
 
-> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that auto-reindex after commits.
+> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
 
 ## Community Integrations
 
@@ -195,8 +194,10 @@ gitnexus analyze --force         # Force full re-index
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
+gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -206,11 +207,23 @@ gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate repository wiki from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
 gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
+
+# Repository groups (multi-repo / monorepo service tracking)
+gitnexus group create <name>                                   # Create a repository group
+gitnexus group add <group> <groupPath> <registryName>          # Add a repo to a group. <groupPath> is a hierarchy path (e.g. hr/hiring/backend); <registryName> is the repo's name from the registry (see `gitnexus list`)
+gitnexus group remove <group> <groupPath>                      # Remove a repo from a group by its hierarchy path
+gitnexus group list [name]                                     # List groups, or show one group's config
+gitnexus group sync <name>                                     # Extract contracts and match across repos/services
+gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
+gitnexus group query <name> <q>  # Search execution flows across all repos in a group
+gitnexus group status <name>     # Check staleness of repos in a group
 ```
+
+If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
 
 ### What Your AI Agent Gets
 
-**7 tools** exposed via MCP:
+**16 tools** exposed via MCP (11 per-repo + 5 group):
 
 | Tool               | What It Does                                                      | `repo` Param |
 | ------------------ | ----------------------------------------------------------------- | -------------- |
@@ -221,6 +234,11 @@ gitnexus wiki --base-url <url>   # Wiki with custom LLM API base URL
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
 | `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
 | `cypher`         | Raw Cypher graph queries                                          | Optional       |
+| `group_list`     | List configured repository groups                                 | —             |
+| `group_sync`     | Extract contracts and match across repos/services                 | —             |
+| `group_contracts`| Inspect extracted contracts and cross-links                       | —             |
+| `group_query`    | Search execution flows across all repos in a group                | —             |
+| `group_status`   | Check staleness of repos in a group                               | —             |
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
 
@@ -320,6 +338,165 @@ cd gitnexus/gitnexus-shared && npm install && npm run build
 cd ../gitnexus-web && npm install
 npm run dev
 ```
+
+## Docker
+
+The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`. Each image is published to both **GitHub Container Registry** (GHCR) and **Docker Hub** — same build, same digest, same Cosign signature — so pick whichever registry you prefer:
+
+| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror                           |
+| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
+| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`                  |
+| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest`              |
+
+> **Heads-up — image rename.** Earlier releases published the web UI under
+> `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
+> bundled backend, that slug now hosts the CLI/server image and the UI moved
+> to `ghcr.io/abhigyanpatwari/gitnexus-web`. The previous tags remain
+> available for pulling, but new versions are only published under the new
+> slugs. Update your `docker run` / compose files accordingly (or just adopt
+> the bundled compose).
+
+### One-command setup
+
+```bash
+docker compose up -d
+```
+
+This starts the server on `http://localhost:4747` and the web UI on
+`http://localhost:4173`. The UI auto-detects the server because the browser
+runs on the host and reaches the container via the mapped port.
+
+A named volume (`gitnexus-data`) persists the global registry, indexes, and
+cloned repos at `/data/gitnexus` inside the server container. To make repos on
+your host machine indexable, set `WORKSPACE_DIR` before bringing the stack up:
+
+```bash
+WORKSPACE_DIR=$HOME/code docker compose up -d
+# Inside the server container the directory is mounted read-only at /workspace.
+docker compose exec gitnexus-server gitnexus index /workspace/my-repo
+```
+
+### Direct `docker run`
+
+```bash
+# Server
+docker run --rm -d \
+  --name gitnexus-server \
+  -p 4747:4747 \
+  -v gitnexus-data:/data/gitnexus \
+  ghcr.io/abhigyanpatwari/gitnexus:latest
+
+# Web UI
+docker run --rm -d \
+  --name gitnexus-web \
+  -p 4173:4173 \
+  ghcr.io/abhigyanpatwari/gitnexus-web:latest
+```
+
+Optional env file (override image tags, container names, ports, workspace dir):
+
+```bash
+cp .env.example .env
+docker compose --env-file .env up -d
+```
+
+### Versioning & supply-chain protection
+
+The Docker images are version-locked to the npm package:
+
+- Stable images are **only published from `vX.Y.Z` git tags** (via `docker.yml`
+  triggered directly by the tag push), and the workflow refuses to build unless
+  the tag exactly matches `gitnexus/package.json`'s version. So
+  `ghcr.io/abhigyanpatwari/gitnexus:1.6.2` (and its Docker Hub mirror
+  `akonlabs/gitnexus:1.6.2`) is byte-for-byte the same release as
+  `npm install gitnexus@1.6.2` — no drift, no floating builds from `main`.
+  Both registries receive the same digest from a single build step, so you can
+  pull from either and the signature verifies identically.
+- Release-candidate images (e.g. `:1.7.0-rc.1`) are published alongside each
+  RC npm release. They are built by `release-candidate.yml` calling `docker.yml`
+  as a reusable workflow after the RC tag is created and pushed.
+- `:latest` is auto-promoted only from non-prerelease tags by the Docker
+  metadata action, so it always points at a real, npm-published version.
+
+Both images are signed with [Cosign keyless signing][cosign-keyless] using the
+workflow's GitHub OIDC identity, and shipped with build provenance and SBOM
+attestations. **This is your protection against supply-chain attacks**: even if
+an attacker republishes a same-named image elsewhere (or somehow pushes to a
+typo-squatted registry), they cannot forge a Cosign signature tied to
+`abhigyanpatwari/GitNexus`'s `docker.yml`. Always verify before pulling into
+sensitive environments:
+
+**Stable releases** — signed from the `v*` tag ref:
+
+```bash
+cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
+  --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Same signature verifies the Docker Hub mirror (identical digest):
+cosign verify docker.io/akonlabs/gitnexus:1.6.2 \
+  --certificate-identity-regexp '^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The regex pins the certificate identity to this repo's `docker.yml` workflow
+**run from a `v*` tag** — rejecting unsigned images, images signed by other
+workflows, and images signed from unprotected refs. It is identical for both
+registries because both sets of tags were signed at the same digest in one
+workflow run.
+
+**Release candidates** — signed from `refs/heads/main` (the caller's ref when
+`release-candidate.yml` invokes `docker.yml` as a reusable workflow):
+
+```bash
+cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1 \
+  --certificate-identity 'https://github.com/abhigyanpatwari/GitNexus/.github/workflows/docker.yml@refs/heads/main' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+You can also inspect the build provenance and SBOM:
+
+```bash
+cosign download attestation ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
+  --predicate-type https://slsa.dev/provenance/v1
+```
+
+#### Kubernetes: enforce signatures at admission
+
+For Kubernetes deployments, ship the bundled
+[`ClusterImagePolicy`](deploy/kubernetes/cluster-image-policy.yaml) so the
+[Sigstore policy-controller][policy-controller] rejects any GitNexus pod whose
+image is not signed by this repo's `docker.yml` running from a `vX.Y.Z` tag —
+the same identity the `cosign verify` snippet above pins.
+
+```bash
+# 1. Install the controller (one-time, cluster-wide)
+helm repo add sigstore https://sigstore.github.io/helm-charts && helm repo update
+helm install policy-controller -n cosign-system --create-namespace \
+  sigstore/policy-controller
+
+# 2. Opt your namespace in
+kubectl label namespace <your-ns> policy.sigstore.dev/include=true
+
+# 3. Apply the policy
+kubectl apply -f deploy/kubernetes/cluster-image-policy.yaml
+```
+
+After this, attempting to deploy an unsigned image — or one signed by anything
+other than `abhigyanpatwari/GitNexus`'s `docker.yml` at a `v*` tag — fails the
+admission webhook before a pod is ever created. This turns the verifiable
+signature into an enforced policy, which is the supply-chain control most
+clusters actually need.
+
+[cosign-keyless]: https://docs.sigstore.dev/cosign/signing/overview/
+[policy-controller]: https://docs.sigstore.dev/policy-controller/overview/
+
+### Files
+
+- [Dockerfile.web](Dockerfile.web) — builds `gitnexus-shared` and `gitnexus-web`, then serves the production frontend.
+- [Dockerfile.cli](Dockerfile.cli) — builds the CLI/server (with its native deps) and runs `gitnexus serve --host 0.0.0.0`.
+- [docker-compose.yaml](docker-compose.yaml) — starts both signed images side by side.
+- [.env.example](.env.example) — overrides for image names, container names, ports, and the workspace mount.
 
 The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAssembly (Tree-sitter WASM, LadybugDB WASM, in-browser embeddings). It's great for quick exploration but limited by browser memory for larger repos.
 

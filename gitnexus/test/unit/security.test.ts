@@ -106,7 +106,7 @@ describe('isWriteQuery', () => {
 
 describe('VALID_RELATION_TYPES', () => {
   it('contains all expected relation types', () => {
-    expect(VALID_RELATION_TYPES.size).toBe(13);
+    expect(VALID_RELATION_TYPES.size).toBe(15);
     for (const t of [
       'CALLS',
       'IMPORTS',
@@ -114,7 +114,9 @@ describe('VALID_RELATION_TYPES', () => {
       'IMPLEMENTS',
       'HAS_METHOD',
       'HAS_PROPERTY',
+      'METHOD_OVERRIDES',
       'OVERRIDES',
+      'METHOD_IMPLEMENTS',
       'ACCESSES',
       'HANDLES_ROUTE',
       'FETCHES',

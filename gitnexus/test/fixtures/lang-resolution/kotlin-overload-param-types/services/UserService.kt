@@ -11,8 +11,11 @@ class UserService {
         return null
     }
 
-    fun run() {
-        lookup(42)        // literal Int → should disambiguate to lookup(Int)
-        lookup("alice")   // literal String → should disambiguate to lookup(String)
+    fun callById() {
+        lookup(42)        // literal Int → must resolve to lookup(Int) only
+    }
+
+    fun callByName() {
+        lookup("alice")   // literal String → must resolve to lookup(String) only
     }
 }

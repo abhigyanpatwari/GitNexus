@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { execSync } from 'child_process';
 
 // ─── hasGitDir ────────────────────────────────────────────────────────────
 //
@@ -108,6 +109,74 @@ describe('getGitRoot', () => {
       expect(getGitRoot(tmpDir)).toBeNull();
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── getRemoteUrl ─────────────────────────────────────────────────────────
+
+describe('getRemoteUrl', () => {
+  const setupRepoWithRemote = (remoteUrl: string): string => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-remote-'));
+    // Use real fs paths and shellouts — the helper itself shells out to
+    // `git config`, so we need a real git repo for the assertion to be
+    // meaningful.
+    execSync('git init -q', { cwd: tmpDir });
+    execSync(`git remote add origin ${remoteUrl}`, { cwd: tmpDir });
+    return tmpDir;
+  };
+
+  it('returns undefined for a non-git directory', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    try {
+      expect(getRemoteUrl(tmpDir)).toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined for a git repo with no origin remote', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    try {
+      execSync('git init -q', { cwd: tmpDir });
+      expect(getRemoteUrl(tmpDir)).toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips trailing .git and lowercases host for HTTPS remotes', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote('https://GitHub.COM/Foo/Bar.git');
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('https://github.com/Foo/Bar');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lowercases host for SCP-style SSH remotes and strips .git', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote('git@GitHub.com:Foo/Bar.git');
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('git@github.com:Foo/Bar');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the same fingerprint for two clones of the same repo', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const a = setupRepoWithRemote('https://example.com/foo/bar.git');
+    const b = setupRepoWithRemote('https://example.com/foo/bar');
+    try {
+      expect(getRemoteUrl(a)).toBe(getRemoteUrl(b));
+      expect(getRemoteUrl(a)).toBeTruthy();
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+      fs.rmSync(b, { recursive: true, force: true });
     }
   });
 });

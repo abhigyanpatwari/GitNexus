@@ -93,7 +93,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     if (!repo) return '';
 
     // Lazy-load lbug adapter (skip unnecessary init)
-    const { initLbug, executeQuery, isLbugReady } = await import('../../mcp/core/lbug-adapter.js');
+    const { initLbug, executeQuery, isLbugReady } = await import('../lbug/pool-adapter.js');
     const { searchFTSFromLbug } = await import('../search/bm25-index.js');
 
     const repoId = repo.name.toLowerCase();

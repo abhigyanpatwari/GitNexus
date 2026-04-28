@@ -7,16 +7,26 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { createClassExtractor } from '../class-extractors/generic.js';
+import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
-import { resolvePhpImport } from '../import-resolvers/php.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { phpImportConfig } from '../import-resolvers/configs/php.js';
 import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { phpMethodConfig } from '../method-extractors/configs/php.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { phpVariableConfig } from '../variable-extractors/configs/php.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { phpCallConfig } from '../call-extractors/configs/php.js';
+import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -157,18 +167,22 @@ function extractPhpPropertyDescription(propName: string, propDeclNode: SyntaxNod
  * Returns description like "hasMany(Post)" or null.
  */
 function extractEloquentRelationDescription(methodNode: SyntaxNode): string | null {
-  function findRelationCall(node: SyntaxNode): SyntaxNode | null {
-    if (node.type === 'member_call_expression') {
+  function findRelationCall(root: SyntaxNode): SyntaxNode | null {
+    const stack: SyntaxNode[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (node.type === 'member_call_expression') {
+        const children = node.children ?? [];
+        const objectNode = children.find(
+          (c: SyntaxNode) => c.type === 'variable_name' && c.text === '$this',
+        );
+        const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
+        if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
+      }
       const children = node.children ?? [];
-      const objectNode = children.find(
-        (c: SyntaxNode) => c.type === 'variable_name' && c.text === '$this',
-      );
-      const nameNode = children.find((c: SyntaxNode) => c.type === 'name');
-      if (objectNode && nameNode && ELOQUENT_RELATIONS.has(nameNode.text)) return node;
-    }
-    for (const child of node.children ?? []) {
-      const found = findRelationCall(child);
-      if (found) return found;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push(children[i]);
+      }
     }
     return null;
   }
@@ -228,9 +242,14 @@ export const phpProvider = defineLanguage({
   treeSitterQueries: PHP_QUERIES,
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
-  importResolver: resolvePhpImport,
+  importResolver: createImportResolver(phpImportConfig),
   namedBindingExtractor: extractPhpNamedBindings,
+  callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
+  methodExtractor: createMethodExtractor(phpMethodConfig),
+  variableExtractor: createVariableExtractor(phpVariableConfig),
+  classExtractor: createClassExtractor(phpClassConfig),
+  heritageExtractor: createHeritageExtractor(SupportedLanguages.PHP),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,

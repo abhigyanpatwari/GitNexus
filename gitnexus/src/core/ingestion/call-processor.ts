@@ -1,20 +1,54 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import { ASTCache } from './ast-cache.js';
-import type { SymbolDefinition, SymbolTable } from './symbol-table.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
+import type { SymbolTableReader, HeritageMap, ExtractedHeritage } from './model/index.js';
+import { CLASS_TYPES, CALL_TARGET_TYPES, lookupMethodByOwnerWithMRO } from './model/index.js';
+import type { DispatchDecision, ReceiverEnriched } from './call-types.js';
+
+/** Shorthand for the receiver-source discriminant shared across the DAG. */
+type ReceiverSource = ReceiverEnriched['receiverSource'];
+
+/**
+ * DAG stage 4 fallback: used when `selectDispatch` is absent or returns null.
+ * Preserves pre-DAG dispatch semantics:
+ *   - 'constructor'         → constructor branch
+ *   - 'free'                → free branch (admits Swift/Kotlin class-target fast path)
+ *   - 'member' or undefined → owner-scoped branch
+ *
+ * `undefined` callForm MUST route through owner-scoped (not free) so bare
+ * identifiers without a classified shape do NOT trigger `resolveFreeCall`'s
+ * class-target fast path. Without a `receiverTypeName`, the owner-scoped
+ * branch falls through to `resolveModuleAliasedCall` + `singleCandidate`,
+ * matching legacy behavior where non-callable symbols (Class, Interface)
+ * null-route instead of producing spurious Constructor edges.
+ */
+const defaultDispatchDecision = (
+  callForm: 'free' | 'member' | 'constructor' | undefined,
+): DispatchDecision => {
+  if (callForm === 'constructor') return { primary: 'constructor' };
+  if (callForm === 'free') return { primary: 'free' };
+  return { primary: 'owner-scoped' };
+};
 import Parser from 'tree-sitter';
-import type { ResolutionContext } from './resolution-context.js';
-import { TIER_CONFIDENCE, type ResolutionTier } from './resolution-context.js';
+import type { ResolutionContext } from './model/resolution-context.js';
+import { TIER_CONFIDENCE, type ResolutionTier } from './model/resolution-context.js';
+import type { TieredCandidates } from './model/resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
+import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   FUNCTION_NODE_TYPES,
-  extractFunctionName,
   findEnclosingClassId,
+  findEnclosingClassInfo,
+  genericFuncName,
+  inferFunctionLabel,
 } from './utils/ast-helpers.js';
+import { typeTagForId, constTagForId, buildCollisionGroups } from './utils/method-props.js';
+import type { MethodInfo } from './method-types.js';
 import {
   countCallArguments,
   inferCallForm,
@@ -26,17 +60,17 @@ import {
 } from './utils/call-analysis.js';
 import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
-import { resolveExtendsType } from './heritage-processor.js';
+import type { BindingAccumulator } from './binding-accumulator.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
   ExtractedAssignment,
-  ExtractedHeritage,
   ExtractedRoute,
   ExtractedFetchCall,
   FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
+import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -45,11 +79,63 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
 
+/**
+ * Type labels treated as class-like **method-dispatch receivers** by the call
+ * resolver — the set walked by the MRO / heritage path for member and static
+ * method calls.
+ *
+ * Derived from `CLASS_TYPES` (the heritage-index set in symbol-table) plus
+ * `Impl` — Rust `impl` blocks are the definition site of methods for a struct
+ * and must be walkable as receiver-type candidates even though they are not
+ * indexed by `lookupClassByName` (which keys off struct/trait names). Keeping
+ * this set a strict superset of `CLASS_TYPES` guarantees that anything
+ * reachable via `lookupClassByName` also passes this filter, so the two call
+ * paths cannot diverge silently.
+ *
+ * `Interface` is included even though interfaces cannot be directly
+ * instantiated in Java/C#/TypeScript: the resolver still needs to reach
+ * interface nodes for static-method dispatch (`Interface.staticMethod()`) and
+ * default-method resolution via the MRO walker.
+ *
+ * **Do not reuse this set for constructor-fallback filtering.** Constructors
+ * can only instantiate a narrower subset — see `INSTANTIABLE_CLASS_TYPES`
+ * below. `resolveStaticCall`'s step-5 class-node fallback uses the narrower
+ * set to prevent false `CALLS` edges from constructor-shaped calls to
+ * `Interface`, `Trait`, or `Impl` nodes.
+ */
+const CLASS_LIKE_TYPES = new Set<string>([...CLASS_TYPES, 'Impl']);
+
+/**
+ * Type labels that can be the target of a constructor-shaped call when no
+ * explicit `Constructor` symbol is indexed — the "return the type itself as
+ * the call target" fallback set.
+ *
+ * Strict subset of both `CLASS_LIKE_TYPES` and `CONSTRUCTOR_TARGET_TYPES`.
+ * Excludes:
+ *   - `Interface` / `Trait` — not instantiable by definition in any
+ *     supported language.
+ *   - `Impl` — Rust `impl` blocks are method-definition containers, not
+ *     the type itself; the owning `Struct` is the correct target.
+ *   - `Enum` — excluded pending language-specific support with motivating
+ *     test fixtures (matches `CONSTRUCTOR_TARGET_TYPES`).
+ *
+ * Used exclusively by `resolveStaticCall`'s step-5 class-node fallback.
+ * Keep in sync with `CONSTRUCTOR_TARGET_TYPES` (which additionally contains
+ * `'Constructor'` for explicit-constructor-node filtering) when extending.
+ */
+const INSTANTIABLE_CLASS_TYPES = new Set<string>(['Class', 'Struct', 'Record']);
+
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
 
 /** Build a map of imported callee names → return types for cross-file call-result binding.
- *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle). */
+ *  Consulted ONLY when SymbolTable has no unambiguous local match (local-first principle).
+ *
+ *  Overlapping mechanism (1 of 3): this is the SymbolTable-backed path.
+ *  See also:
+ *    2. collectExportedBindings (~line 168) / enrichExportedTypeMap — TypeEnv + graph isExported
+ *    3. Phase 9 fallback in verifyConstructorBindings (~line 563) — namedImportMap + BindingAccumulator
+ *  A future cleanup should merge these into a single resolution pass. */
 export function buildImportedReturnTypes(
   filePath: string,
   namedImportMap: ReadonlyMap<
@@ -100,7 +186,20 @@ export function buildImportedRawReturnTypes(
 }
 
 /** Collect resolved type bindings for exported file-scope symbols.
- *  Uses graph node isExported flag — does NOT require isExported on SymbolDefinition. */
+ *  Uses graph node isExported flag — does NOT require isExported on SymbolDefinition.
+ *
+ *  **Counterpart**: the worker path populates `exportedTypeMap` via the
+ *  accumulator enrichment loop in `pipeline.ts` (search for "Worker path
+ *  quality enrichment"). Both sites populate the same map with subtly
+ *  different export-check semantics — this site uses SymbolTable +
+ *  graph lookup, the worker loop uses three-candidate-ID graph lookup.
+ *  They must stay in sync until unified. If you edit one, check the other.
+ *
+ *  Overlapping mechanism (2 of 3): this is the TypeEnv + graph isExported path.
+ *  See also:
+ *    1. buildImportedReturnTypes (~line 109) — namedImportMap + SymbolTable
+ *    3. Phase 9 fallback in verifyConstructorBindings (~line 563) — namedImportMap + BindingAccumulator
+ *  A future cleanup should merge these into a single resolution pass. */
 function collectExportedBindings(
   typeEnv: { fileScope(): ReadonlyMap<string, string> },
   filePath: string,
@@ -129,7 +228,7 @@ function collectExportedBindings(
  *  exported symbols that have callables with known return types. */
 export function buildExportedTypeMapFromGraph(
   graph: KnowledgeGraph,
-  symbolTable: SymbolTable,
+  symbolTable: SymbolTableReader,
 ): ExportedTypeMap {
   const result: ExportedTypeMap = new Map();
   graph.forEachNode((node) => {
@@ -138,8 +237,10 @@ export function buildExportedTypeMapFromGraph(
     const filePath = node.properties.filePath as string;
     const name = node.properties.name as string;
     if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
-    // For callable symbols, use returnType; for properties/variables, use declaredType
-    const def = symbolTable.lookupExactFull(filePath, name);
+    // For callable symbols, use returnType; for properties/variables, use declaredType.
+    // Use lookupExactAll + nodeId match to handle same-name methods in different classes.
+    const defs = symbolTable.lookupExactAll(filePath, name);
+    const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
     if (!def) return;
     const typeName = def.returnType ?? def.declaredType;
     if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;
@@ -215,6 +316,14 @@ const TYPE_PRESERVING_METHODS = new Set([
   'orElseThrow', // Java Optional
 ]);
 
+/** Cache for method extraction results in findEnclosingFunction fallback path.
+ *  Keyed by classNode.id to avoid re-extracting the same class body per call site.
+ *  Cleared between files at line ~611 in the processCalls file loop. */
+const enclosingFnExtractCache = new Map<
+  number,
+  import('./method-types.js').ExtractedMethods | null
+>();
+
 /**
  * Walk up the AST from a node to find the enclosing function/method.
  * Returns null if the call is at module/file level (top-level code).
@@ -229,21 +338,99 @@ const findEnclosingFunction = (
 
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const { funcName, label } = extractFunctionName(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const funcName = efnResult?.funcName ?? genericFuncName(current);
+      const label = efnResult?.label ?? inferFunctionLabel(current.type);
 
       if (funcName) {
         const resolved = ctx.resolve(funcName, filePath);
         if (resolved?.tier === 'same-file' && resolved.candidates.length > 0) {
-          return resolved.candidates[0].nodeId;
+          // Disambiguate by enclosing class when multiple candidates
+          if (resolved.candidates.length === 1) {
+            return resolved.candidates[0].nodeId;
+          }
+          const classInfo = findEnclosingClassInfo(current, filePath);
+          if (classInfo) {
+            const classMatches = resolved.candidates.filter((c) => c.ownerId === classInfo.classId);
+            // Unique class match — return it (no same-arity ambiguity)
+            if (classMatches.length === 1) return classMatches[0].nodeId;
+            // Multiple same-class candidates (same-arity overloads) — fall through
+            // to the fallback path which computes the exact ID with type-hash.
+            if (classMatches.length > 1) {
+              /* fall through to manual ID construction below */
+            } else {
+              // No class match — return first candidate as before
+              return resolved.candidates[0].nodeId;
+            }
+          } else {
+            return resolved.candidates[0].nodeId;
+          }
         }
 
-        // Apply labelOverride so label matches the definition phase (single source of truth).
+        // Fallback: qualify the generated ID to match definition-phase node IDs
         let finalLabel = label;
         if (provider.labelOverride) {
           const override = provider.labelOverride(current, label);
           if (override !== null) finalLabel = override;
         }
-        return generateId(finalLabel, `${filePath}:${funcName}`);
+        const classInfo2 = findEnclosingClassInfo(current, filePath);
+        const qualifiedName = classInfo2 ? `${classInfo2.className}.${funcName}` : funcName;
+        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
+        const language = getLanguageFromFilename(filePath);
+        let arity: number | undefined;
+        let encTypeTag = '';
+        if (
+          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          provider.methodExtractor &&
+          language
+        ) {
+          // Get class method map (cached per classNode.id) and look up current method
+          // by funcName:line. This avoids per-call-site extractFromNode AST walks.
+          let classNode = current.parent;
+          while (classNode && !provider.methodExtractor.isTypeDeclaration(classNode)) {
+            classNode = classNode.parent;
+          }
+          let info: MethodInfo | undefined;
+          if (classNode) {
+            let extracted = enclosingFnExtractCache.get(classNode.id);
+            if (extracted === undefined) {
+              extracted =
+                provider.methodExtractor.extract(classNode, { filePath, language }) ?? null;
+              enclosingFnExtractCache.set(classNode.id, extracted);
+            }
+            if (extracted?.methods?.length) {
+              const defLine = current.startPosition.row + 1;
+              info = extracted.methods.find((m) => m.name === funcName && m.line === defLine);
+              if (info) {
+                arity = info.parameters.some((p) => p.isVariadic)
+                  ? undefined
+                  : info.parameters.length;
+              }
+              if (arity !== undefined && info) {
+                const methodMap = new Map<string, MethodInfo>();
+                for (const m of extracted.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                const groups = buildCollisionGroups(methodMap);
+                encTypeTag =
+                  typeTagForId(methodMap, funcName, arity, info, language, groups) +
+                  constTagForId(methodMap, funcName, arity, info, groups);
+              }
+            }
+          }
+          // Fallback: extractFromNode for top-level methods without a class
+          if (!info && provider.methodExtractor.extractFromNode) {
+            const nodeInfo = provider.methodExtractor.extractFromNode(current, {
+              filePath,
+              language,
+            });
+            if (nodeInfo) {
+              arity = nodeInfo.parameters.some((p) => p.isVariadic)
+                ? undefined
+                : nodeInfo.parameters.length;
+            }
+          }
+        }
+        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
+        return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
       }
     }
 
@@ -252,17 +439,96 @@ const findEnclosingFunction = (
     if (provider.enclosingFunctionFinder) {
       const customResult = provider.enclosingFunctionFinder(current);
       if (customResult) {
-        // Try SymbolTable first (same pattern as the FUNCTION_NODE_TYPES branch above).
         const resolved = ctx.resolve(customResult.funcName, filePath);
         if (resolved?.tier === 'same-file' && resolved.candidates.length > 0) {
-          return resolved.candidates[0].nodeId;
+          if (resolved.candidates.length === 1) {
+            return resolved.candidates[0].nodeId;
+          }
+          const classInfo = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
+          if (classInfo) {
+            const classMatches = resolved.candidates.filter((c) => c.ownerId === classInfo.classId);
+            if (classMatches.length === 1) return classMatches[0].nodeId;
+            if (classMatches.length > 1) {
+              /* fall through to manual ID construction below */
+            } else {
+              return resolved.candidates[0].nodeId;
+            }
+          } else {
+            return resolved.candidates[0].nodeId;
+          }
         }
         let finalLabel = customResult.label;
         if (provider.labelOverride) {
           const override = provider.labelOverride(current.previousSibling!, finalLabel);
           if (override !== null) finalLabel = override;
         }
-        return generateId(finalLabel, `${filePath}:${customResult.funcName}`);
+        const classInfo2 = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
+        const qualifiedName = classInfo2
+          ? `${classInfo2.className}.${customResult.funcName}`
+          : customResult.funcName;
+        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
+        const sigNode = current.previousSibling ?? current;
+        const language2 = getLanguageFromFilename(filePath);
+        let arity2: number | undefined;
+        let encTypeTag2 = '';
+        if (
+          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          provider.methodExtractor &&
+          language2
+        ) {
+          let classNode2 = (current.previousSibling ?? current).parent;
+          while (classNode2 && !provider.methodExtractor.isTypeDeclaration(classNode2)) {
+            classNode2 = classNode2.parent;
+          }
+          let info2: MethodInfo | undefined;
+          if (classNode2) {
+            let extracted2 = enclosingFnExtractCache.get(classNode2.id);
+            if (extracted2 === undefined) {
+              extracted2 =
+                provider.methodExtractor.extract(classNode2, { filePath, language: language2 }) ??
+                null;
+              enclosingFnExtractCache.set(classNode2.id, extracted2);
+            }
+            if (extracted2?.methods?.length) {
+              const defLine2 = sigNode.startPosition.row + 1;
+              info2 = extracted2.methods.find(
+                (m) => m.name === customResult.funcName && m.line === defLine2,
+              );
+              if (info2) {
+                arity2 = info2.parameters.some((p) => p.isVariadic)
+                  ? undefined
+                  : info2.parameters.length;
+              }
+              if (arity2 !== undefined && info2) {
+                const methodMap = new Map<string, MethodInfo>();
+                for (const m of extracted2.methods) methodMap.set(`${m.name}:${m.line}`, m);
+                const groups2 = buildCollisionGroups(methodMap);
+                encTypeTag2 =
+                  typeTagForId(
+                    methodMap,
+                    customResult.funcName,
+                    arity2,
+                    info2,
+                    language2,
+                    groups2,
+                  ) + constTagForId(methodMap, customResult.funcName, arity2, info2, groups2);
+              }
+            }
+          }
+          if (!info2 && provider.methodExtractor.extractFromNode) {
+            const nodeInfo = provider.methodExtractor.extractFromNode(sigNode, {
+              filePath,
+              language: language2,
+            });
+            if (nodeInfo) {
+              arity2 = nodeInfo.parameters.some((p) => p.isVariadic)
+                ? undefined
+                : nodeInfo.parameters.length;
+            }
+          }
+        }
+        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
+        return generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
       }
     }
 
@@ -281,6 +547,7 @@ const verifyConstructorBindings = (
   filePath: string,
   ctx: ResolutionContext,
   graph?: KnowledgeGraph,
+  bindingAccumulator?: BindingAccumulator,
 ): Map<string, string> => {
   const verified = new Map<string, string>();
 
@@ -317,11 +584,59 @@ const verifyConstructorBindings = (
         }
       }
 
+      let typeName: string | undefined;
       if (callableDefs && callableDefs.length === 1 && callableDefs[0].returnType) {
-        const typeName = extractReturnTypeName(callableDefs[0].returnType);
-        if (typeName) {
-          verified.set(receiverKey(scope, varName), typeName);
+        typeName = extractReturnTypeName(callableDefs[0].returnType);
+      }
+
+      // Phase 9: BindingAccumulator fallback for cross-file return types.
+      // Used when the SymbolTable has no return type for a cross-file callee
+      // (e.g., a return type that TypeEnv resolved via fixpoint in the source
+      // file but was not stored as a SymbolTable returnType annotation).
+      // namedImportMap tells us which source file exported the callee so we
+      // can look up its file-scope binding via the O(1) fileScopeGet method.
+      //
+      // Tier gating: only fall back to the accumulator when resolution is
+      // unambiguously import-scoped or global. When tiered.tier is 'same-file',
+      // the local definition is authoritative even without a return type
+      // annotation — using the accumulator here would let an imported callee
+      // with the same name shadow the local one, producing false CALLS edges.
+      // When multiple callable candidates exist, the accumulator would pick
+      // arbitrarily — skip to avoid fabricated edges.
+      //
+      // Quality note: worker-path accumulator entries are Tier 0/1 only
+      // (annotation-declared + same-file constructor inference) — see the
+      // BindingAccumulator class JSDoc. For large repos where the worker
+      // path dominates, Phase 9 binding accuracy is structurally lower
+      // than for sequential-path repos where Tier 2 cross-file propagation
+      // is available.
+      //
+      // Overlapping mechanism note: this is one of three cross-file
+      // return-type resolution paths in the codebase:
+      //   1. buildImportedReturnTypes (~line 109) — namedImportMap +
+      //      SymbolTable.lookupExactFull (structure-processor captured)
+      //   2. collectExportedBindings (~line 168) / enrichExportedTypeMap
+      //      — TypeEnv + graph isExported flag
+      //   3. This fallback — namedImportMap + BindingAccumulator
+      // A future cleanup should merge these into a single resolution pass.
+      const shouldFallback =
+        tiered?.tier !== 'same-file' && (!callableDefs || callableDefs.length <= 1);
+      if (!typeName && bindingAccumulator && shouldFallback) {
+        const namedImports = ctx.namedImportMap.get(filePath);
+        const importBinding = namedImports?.get(calleeName);
+        if (importBinding) {
+          const rawType = bindingAccumulator.fileScopeGet(
+            importBinding.sourcePath,
+            importBinding.exportedName,
+          );
+          if (rawType) {
+            typeName = extractReturnTypeName(rawType);
+          }
         }
+      }
+
+      if (typeName) {
+        verified.set(receiverKey(scope, varName), typeName);
       }
     }
   }
@@ -339,65 +654,6 @@ interface ResolveResult {
   returnType?: string;
 }
 
-/** Maps interface/abstract-class name → set of file paths of direct implementors. */
-export type ImplementorMap = ReadonlyMap<string, ReadonlySet<string>>;
-
-/**
- * Build an ImplementorMap from extracted heritage data.
- * Only direct `implements` relationships are tracked (transitive not needed for
- * the common Java/Kotlin/C# interface dispatch pattern).
- * `extends` is ignored — dispatch keyed on abstract class bases is not modeled here.
- */
-/**
- * Maps interface name → file paths of classes that implement it (direct only).
- * When `ctx` is set, `kind: 'extends'` rows are classified like heritage-processor
- * (C#/Java base_list: class vs interface parents share one capture name).
- */
-export const buildImplementorMap = (
-  heritage: readonly ExtractedHeritage[],
-  ctx?: ResolutionContext,
-): Map<string, Set<string>> => {
-  const map = new Map<string, Set<string>>();
-  for (const h of heritage) {
-    let record = false;
-    if (h.kind === 'implements') {
-      record = true;
-    } else if (h.kind === 'extends' && ctx) {
-      const lang = getLanguageFromFilename(h.filePath);
-      if (lang) {
-        const { type } = resolveExtendsType(h.parentName, h.filePath, ctx, lang);
-        record = type === 'IMPLEMENTS';
-      }
-    }
-    if (record) {
-      let files = map.get(h.parentName);
-      if (!files) {
-        files = new Set();
-        map.set(h.parentName, files);
-      }
-      files.add(h.filePath);
-    }
-  }
-  return map;
-};
-
-/**
- * Merge a chunk's implementor map into the global accumulator.
- */
-export const mergeImplementorMaps = (
-  target: Map<string, Set<string>>,
-  source: ReadonlyMap<string, ReadonlySet<string>>,
-): void => {
-  for (const [name, files] of source) {
-    let existing = target.get(name);
-    if (!existing) {
-      existing = new Set();
-      target.set(name, existing);
-    }
-    for (const f of files) existing.add(f);
-  }
-};
-
 /**
  * After resolving a call to an interface method, find additional targets
  * in classes implementing that interface. Returns implementation method
@@ -408,11 +664,11 @@ function findInterfaceDispatchTargets(
   receiverTypeName: string,
   currentFile: string,
   ctx: ResolutionContext,
-  implementorMap: ImplementorMap,
+  heritageMap: HeritageMap,
   primaryNodeId: string,
 ): ResolveResult[] {
-  const implFiles = implementorMap.get(receiverTypeName);
-  if (!implFiles || implFiles.size === 0) return [];
+  const implFiles = heritageMap.getImplementorFiles(receiverTypeName);
+  if (implFiles.size === 0) return [];
 
   const typeResolved = ctx.resolve(receiverTypeName, currentFile);
   if (!typeResolved) return [];
@@ -420,7 +676,7 @@ function findInterfaceDispatchTargets(
 
   const results: ResolveResult[] = [];
   for (const implFile of implFiles) {
-    const methods = ctx.symbols.lookupExactAll(implFile, calledName);
+    const methods = ctx.model.symbols.lookupExactAll(implFile, calledName);
     for (const method of methods) {
       if (method.nodeId !== primaryNodeId) {
         results.push({
@@ -448,7 +704,8 @@ export const processCalls = async (
   importedReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
-  implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
+  bindingAccumulator?: BindingAccumulator,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -467,13 +724,35 @@ export const processCalls = async (
   const logSkipped = isVerboseIngestionEnabled();
   const skippedByLang = logSkipped ? new Map<string, number>() : null;
 
+  // ── Prepare-then-resolve: single preparation loop, deferred resolution ──
+  // All files are prepared (parse → query → heritage → TypeEnv) in one loop,
+  // then resolved (verifyConstructorBindings → call edges) in a second loop.
+  // This ensures:
+  //   1. When bindingAccumulator is present, ALL files flush their TypeEnv
+  //      bindings before ANY verifyConstructorBindings reads — fixing the
+  //      consumer-before-provider ordering bug on the sequential path.
+  //   2. globalParentMap is fully populated before resolution, improving
+  //      cross-file isSubclassOf accuracy regardless of file order.
+  // For the sequential path (<15 files), buffering per-file state is negligible.
+  interface PreparedFile {
+    file: { path: string; content: string };
+    language: SupportedLanguages;
+    provider: ReturnType<typeof getProvider>;
+    tree: ReturnType<typeof parser.parse>;
+    matches: ReturnType<Parser.Query['matches']>;
+    parentMap: ReadonlyMap<string, readonly string[]>;
+    typeEnv: ReturnType<typeof buildTypeEnv>;
+  }
+  const prepared: PreparedFile[] = [];
+
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    onProgress?.(i + 1, files.length);
     if (i % 20 === 0) await yieldToEventLoop();
 
     const language = getLanguageFromFilename(file.path);
     if (!language) continue;
+    // Registry-primary gate: scope-based phase owns CALLS for this lang.
+    if (isRegistryPrimary(language)) continue;
     if (!isLanguageAvailable(language)) {
       if (skippedByLang) {
         skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
@@ -491,7 +770,7 @@ export const processCalls = async (
     if (!tree) {
       try {
         tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content.length),
+          bufferSize: getTreeSitterBufferSize(file.content),
         });
       } catch (parseError) {
         continue;
@@ -499,41 +778,43 @@ export const processCalls = async (
       astCache.set(file.path, tree);
     }
 
-    let query;
     let matches;
     try {
-      const language = parser.getLanguage();
-      query = new Parser.Query(language, queryStr);
+      const lang = parser.getLanguage();
+      const query = new Parser.Query(lang, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);
       continue;
     }
 
-    // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
+    // Extract heritage from query matches to build parentMap for buildTypeEnv.
     // Heritage-processor runs in PARALLEL, so graph edges don't exist when buildTypeEnv runs.
     const fileParentMap = new Map<string, string[]>();
-    for (const match of matches) {
-      const captureMap: Record<string, any> = {};
-      match.captures.forEach((c) => (captureMap[c.name] = c.node));
-      if (captureMap['heritage.class'] && captureMap['heritage.extends']) {
-        const className: string = captureMap['heritage.class'].text;
-        const parentName: string = captureMap['heritage.extends'].text;
-        const extendsNode = captureMap['heritage.extends'];
-        const fieldDecl = extendsNode.parent;
-        if (fieldDecl?.type === 'field_declaration' && fieldDecl.childForFieldName('name'))
-          continue;
-        let parents = fileParentMap.get(className);
-        if (!parents) {
-          parents = [];
-          fileParentMap.set(className, parents);
+    if (provider.heritageExtractor) {
+      for (const match of matches) {
+        const captureMap: Record<string, any> = {};
+        match.captures.forEach((c) => (captureMap[c.name] = c.node));
+        if (captureMap['heritage.class']) {
+          const heritageItems = provider.heritageExtractor.extract(captureMap, {
+            filePath: file.path,
+            language,
+          });
+          for (const item of heritageItems) {
+            if (item.kind === 'extends') {
+              let parents = fileParentMap.get(item.className);
+              if (!parents) {
+                parents = [];
+                fileParentMap.set(item.className, parents);
+              }
+              if (!parents.includes(item.parentName)) parents.push(item.parentName);
+            }
+          }
         }
-        if (!parents.includes(parentName)) parents.push(parentName);
       }
     }
     const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
     // Merge per-file heritage into globalParentMap for cross-file isSubclassOf lookups.
-    // Uses a parallel Set (globalParentSeen) for O(1) deduplication instead of O(n) includes().
     for (const [cls, parents] of fileParentMap) {
       let global = globalParentMap.get(cls);
       let seen = globalParentSeen.get(cls);
@@ -557,22 +838,47 @@ export const processCalls = async (
     const importedReturnTypes = importedReturnTypesMap?.get(file.path);
     const importedRawReturnTypes = importedRawReturnTypesMap?.get(file.path);
     const typeEnv = buildTypeEnv(tree, language, {
-      symbolTable: ctx.symbols,
+      model: ctx.model,
       parentMap,
       importedBindings,
       importedReturnTypes,
       importedRawReturnTypes,
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
+      extractFunctionName: provider?.methodExtractor?.extractFunctionName,
     });
     if (typeEnv && exportedTypeMap) {
-      const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
+      const fileExports = collectExportedBindings(typeEnv, file.path, ctx.model.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
     }
+    if (bindingAccumulator) {
+      typeEnv.flush(file.path, bindingAccumulator);
+    }
+
+    prepared.push({ file, language, provider, tree, matches, parentMap, typeEnv });
+  }
+
+  // ── Resolution loop: verify constructor bindings and resolve calls ──
+  // The accumulator (if present) is now fully populated from the preparation
+  // loop above, so verifyConstructorBindings sees all provider bindings
+  // regardless of file processing order.
+  for (let i = 0; i < prepared.length; i++) {
+    const { file, language, provider, tree, matches, parentMap, typeEnv } = prepared[i];
+
+    enclosingFnExtractCache.clear();
+    onProgress?.(i + 1, files.length);
+    if (i % 20 === 0) await yieldToEventLoop();
+
     const callRouter = provider.callRouter;
 
     const verifiedReceivers =
       typeEnv.constructorBindings.length > 0
-        ? verifyConstructorBindings(typeEnv.constructorBindings, file.path, ctx)
+        ? verifyConstructorBindings(
+            typeEnv.constructorBindings,
+            file.path,
+            ctx,
+            undefined, // graph not available on the sequential path here
+            bindingAccumulator, // Phase 9 fallback — same as worker path (R3 parity)
+          )
         : new Map<string, string>();
     const receiverIndex = buildReceiverTypeIndex(verifiedReceivers);
 
@@ -609,17 +915,7 @@ export const processCalls = async (
         }
         if (!receiverTypeName && receiverText) {
           const resolved = ctx.resolve(receiverText, file.path);
-          if (
-            resolved?.candidates.some(
-              (d) =>
-                d.type === 'Class' ||
-                d.type === 'Struct' ||
-                d.type === 'Interface' ||
-                d.type === 'Enum' ||
-                d.type === 'Record' ||
-                d.type === 'Impl',
-            )
-          ) {
+          if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
             receiverTypeName = receiverText;
           }
         }
@@ -643,27 +939,114 @@ export const processCalls = async (
 
       if (!captureMap['call']) return;
 
+      const callNode = captureMap['call'];
+      const callExtractor = provider.callExtractor;
+
+      // ── Language-specific call site (e.g. Java :: method references) ──
+      if (callExtractor) {
+        const langCallSite = callExtractor.extract(callNode, undefined);
+        if (langCallSite) {
+          if (provider.isBuiltInName(langCallSite.calledName)) return;
+
+          const sourceId =
+            findEnclosingFunction(callNode, file.path, ctx, provider) ||
+            generateId('File', file.path);
+          const receiverName =
+            langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
+          let receiverTypeName =
+            receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+
+          if (
+            langCallSite.typeAsReceiverHeuristic &&
+            receiverName !== undefined &&
+            receiverTypeName === undefined &&
+            langCallSite.callForm === 'member'
+          ) {
+            const c0 = receiverName.charCodeAt(0);
+            if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
+          }
+
+          const resolved = resolveCallTarget(
+            {
+              calledName: langCallSite.calledName,
+              callForm: langCallSite.callForm,
+              ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+              ...(receiverName !== undefined ? { receiverName } : {}),
+            },
+            file.path,
+            ctx,
+            undefined,
+            widenCache,
+            undefined,
+            heritageMap,
+          );
+
+          if (!resolved) return;
+          graph.addRelationship({
+            id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`),
+            sourceId,
+            targetId: resolved.nodeId,
+            type: 'CALLS',
+            confidence: resolved.confidence,
+            reason: resolved.reason,
+          });
+
+          if (heritageMap && langCallSite.callForm === 'member' && receiverTypeName) {
+            const implTargets = findInterfaceDispatchTargets(
+              langCallSite.calledName,
+              receiverTypeName,
+              file.path,
+              ctx,
+              heritageMap,
+              resolved.nodeId,
+            );
+            for (const impl of implTargets) {
+              graph.addRelationship({
+                id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${impl.nodeId}`),
+                sourceId,
+                targetId: impl.nodeId,
+                type: 'CALLS',
+                confidence: impl.confidence,
+                reason: impl.reason,
+              });
+            }
+          }
+          return;
+        }
+      }
+
       const nameNode = captureMap['call.name'];
       if (!nameNode) return;
 
       const calledName = nameNode.text;
 
+      // Check heritage extractor for call-based heritage (e.g., Ruby include/extend/prepend)
+      if (provider.heritageExtractor?.extractFromCall) {
+        const heritageItems = provider.heritageExtractor.extractFromCall(
+          calledName,
+          captureMap['call'],
+          { filePath: file.path, language },
+        );
+        if (heritageItems !== null) {
+          for (const item of heritageItems) {
+            collectedHeritage.push({
+              filePath: file.path,
+              className: item.className,
+              parentName: item.parentName,
+              kind: item.kind,
+            });
+          }
+          return;
+        }
+      }
+
+      // Dispatch: route language-specific calls (properties, imports)
+      // Heritage routing is handled by heritageExtractor.extractFromCall above.
       const routed = callRouter?.(calledName, captureMap['call']);
       if (routed) {
         switch (routed.kind) {
           case 'skip':
           case 'import':
-            return;
-
-          case 'heritage':
-            for (const item of routed.items) {
-              collectedHeritage.push({
-                filePath: file.path,
-                className: item.enclosingClass,
-                parentName: item.mixinName,
-                kind: item.heritageKind,
-              });
-            }
             return;
 
           case 'properties': {
@@ -684,7 +1067,7 @@ export const processCalls = async (
                   description: item.accessorType,
                 },
               });
-              ctx.symbols.add(file.path, item.propName, nodeId, 'Property', {
+              ctx.model.symbols.add(file.path, item.propName, nodeId, 'Property', {
                 ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
                 ...(item.declaredType ? { declaredType: item.declaredType } : {}),
               });
@@ -718,11 +1101,17 @@ export const processCalls = async (
 
       if (provider.isBuiltInName(calledName)) return;
 
-      const callNode = captureMap['call'];
-      const callForm = inferCallForm(callNode, nameNode);
-      const receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
+      // --- DAG stage 2-3: classify-form + infer-receiver (shared defaults) ---
+      // These stages run the shared inference chain. Language providers can
+      // customize infer-receiver (stage 3) via the inferImplicitReceiver hook
+      // which runs AFTER this default chain (typed-binding → constructor-map →
+      // module-alias → class-as-receiver → mixed-chain), and selectDispatch
+      // (stage 4) which picks the resolver branch.
+      let callForm = inferCallForm(callNode, nameNode);
+      let receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName =
         receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+      let receiverSource: ReceiverSource = receiverTypeName ? 'typed-binding' : 'none';
       // Phase P: virtual dispatch override — when the declared type is a base class but
       // the constructor created a known subclass, prefer the more specific type.
       // Checks per-file parentMap first, then falls back to globalParentMap for
@@ -735,7 +1124,8 @@ export const processCalls = async (
         let p = callNode.parent;
         while (p) {
           if (FUNCTION_NODE_TYPES.has(p.type)) {
-            const { funcName } = extractFunctionName(p);
+            const funcName =
+              provider.methodExtractor?.extractFunctionName?.(p)?.funcName ?? genericFuncName(p);
             if (funcName) {
               scope = `${funcName}@${p.startIndex}`;
               break;
@@ -756,14 +1146,11 @@ export const processCalls = async (
           if (
             isSubclassOf(ctorType, receiverTypeName, parentMap) ||
             isSubclassOf(ctorType, receiverTypeName, globalParentMap) ||
-            (ctx.symbols
-              .lookupFuzzy(ctorType)
-              .some((d) => d.type === 'Class' || d.type === 'Struct') &&
-              ctx.symbols
-                .lookupFuzzy(receiverTypeName)
-                .some((d) => d.type === 'Class' || d.type === 'Struct' || d.type === 'Interface'))
+            (ctx.model.types.lookupClassByName(ctorType).length > 0 &&
+              ctx.model.types.lookupClassByName(receiverTypeName).length > 0)
           ) {
             receiverTypeName = ctorType;
+            receiverSource = 'constructor-map';
           }
         }
       }
@@ -772,10 +1159,14 @@ export const processCalls = async (
         const enclosingFunc = findEnclosingFunction(callNode, file.path, ctx, provider);
         const funcName = enclosingFunc ? extractFuncNameFromSourceId(enclosingFunc) : '';
         receiverTypeName = lookupReceiverType(receiverIndex, funcName, receiverName);
+        if (receiverTypeName) receiverSource = 'constructor-map';
       }
-      // Fall back to class-as-receiver for static method calls (e.g. UserService.find_user()).
-      // When the receiver name is not a variable in TypeEnv but resolves to a Class/Struct/Interface
-      // through the standard tiered resolution, use it directly as the receiver type.
+      // Fall back to class-as-receiver for static method calls (e.g. UserService.find_user(),
+      // Greetable.format()). When the receiver name is not a variable in TypeEnv but
+      // resolves to a class-like symbol (Class / Interface / Struct / Enum / Trait) via
+      // tiered resolution, use it directly as the receiver type. `Trait` is included so
+      // Ruby module class-method calls flow through the class-as-receiver path and reach
+      // the `selectDispatch` hook's singleton branch.
       if (!receiverTypeName && receiverName && callForm === 'member') {
         const typeResolved = ctx.resolve(receiverName, file.path);
         if (
@@ -785,10 +1176,12 @@ export const processCalls = async (
               d.type === 'Class' ||
               d.type === 'Interface' ||
               d.type === 'Struct' ||
-              d.type === 'Enum',
+              d.type === 'Enum' ||
+              d.type === 'Trait',
           )
         ) {
           receiverTypeName = receiverName;
+          receiverSource = 'class-as-receiver';
         }
       }
       // Hoist sourceId so it's available for ACCESSES edge emission during chain walk.
@@ -832,11 +1225,52 @@ export const processCalls = async (
                 file.path,
                 ctx,
                 makeAccessEmitter(graph, sourceId),
+                heritageMap,
               );
+              if (receiverTypeName) receiverSource = 'mixed-chain';
             }
           }
         }
       }
+
+      // --- DAG stage 3: infer-receiver (provider hook) ---
+      // Synthesize implicit receivers for languages that omit them (e.g., Ruby bare-call).
+      // This hook runs AFTER the shared inference chain so explicit receivers /
+      // typed bindings always take precedence. Output (if non-null) overlays onto
+      // the ReceiverEnriched for the next stage.
+      let dispatchHint: string | undefined;
+      if (provider.inferImplicitReceiver) {
+        const override = provider.inferImplicitReceiver({
+          calledName,
+          callForm,
+          receiverName,
+          receiverTypeName,
+          callNode,
+          filePath: file.path,
+        });
+        if (override) {
+          callForm = override.callForm;
+          receiverName = override.receiverName;
+          receiverTypeName = override.receiverTypeName;
+          receiverSource = override.receiverSource;
+          dispatchHint = override.hint;
+        }
+      }
+
+      // --- DAG stage 4: select-dispatch (provider hook + default fallback) ---
+      // Decide which resolver path to try first (primary) and fallback strategy.
+      // Language providers can customize dispatch via selectDispatch hook; all
+      // others use the shared defaultDispatchDecision. Always non-null after this
+      // block so downstream resolvers are table-driven.
+      const dispatchDecision: DispatchDecision =
+        provider.selectDispatch?.({
+          calledName,
+          callForm,
+          receiverName,
+          receiverTypeName,
+          receiverSource,
+          hint: dispatchHint,
+        }) ?? defaultDispatchDecision(callForm);
 
       // Build overload hints for languages with inferLiteralType (Java/Kotlin/C#/C++).
       // Only used when multiple candidates survive arity filtering — ~1-3% of calls.
@@ -857,6 +1291,9 @@ export const processCalls = async (
         ctx,
         hints,
         widenCache,
+        undefined,
+        heritageMap,
+        dispatchDecision,
       );
 
       if (!resolved) return;
@@ -871,13 +1308,13 @@ export const processCalls = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && callForm === 'member' && receiverTypeName) {
+      if (heritageMap && callForm === 'member' && receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           calledName,
           receiverTypeName,
           file.path,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {
@@ -892,6 +1329,41 @@ export const processCalls = async (
         }
       }
     });
+
+    // Vue: emit CALLS edges for PascalCase components used in <template>.
+    // Template components are default-imported (not named), so we match the
+    // component name against imported .vue file basenames via the import map.
+    if (language === SupportedLanguages.Vue) {
+      const templateComponents = extractTemplateComponents(file.content);
+      if (templateComponents.length > 0) {
+        const fileId = generateId('File', file.path);
+        const importedFiles = ctx.importMap.get(file.path);
+        if (importedFiles) {
+          for (const componentName of templateComponents) {
+            for (const importedPath of importedFiles) {
+              if (!importedPath.endsWith('.vue')) continue;
+              const basename = importedPath.slice(
+                importedPath.lastIndexOf('/') + 1,
+                importedPath.lastIndexOf('.'),
+              );
+              if (basename !== componentName) continue;
+              const targetFileId = generateId('File', importedPath);
+              if (graph.getNode(targetFileId)) {
+                graph.addRelationship({
+                  id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
+                  sourceId: fileId,
+                  targetId: targetFileId,
+                  type: 'CALLS',
+                  confidence: 0.9,
+                  reason: 'vue-template-component',
+                });
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
 
     ctx.clearCache();
   }
@@ -928,9 +1400,12 @@ export const processCalls = async (
   return collectedHeritage;
 };
 
-const CALLABLE_SYMBOL_TYPES = new Set(['Function', 'Method', 'Constructor', 'Macro', 'Delegate']);
+// FREE_CALLABLE_TYPES imported from symbol-table.ts — single source of truth.
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
+
+/** Per-file cache for module-alias widening. Cleared between files. */
+type WidenCache = Map<string, readonly SymbolDefinition[]>;
 
 const filterCallableCandidates = (
   candidates: readonly SymbolDefinition[],
@@ -946,10 +1421,14 @@ const filterCallableCandidates = (
     } else {
       const types = candidates.filter((c) => CONSTRUCTOR_TARGET_TYPES.has(c.type));
       kindFiltered =
-        types.length > 0 ? types : candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
+        types.length > 0 ? types : candidates.filter((c) => CALL_TARGET_TYPES.has(c.type));
     }
   } else {
-    kindFiltered = candidates.filter((c) => CALLABLE_SYMBOL_TYPES.has(c.type));
+    // CALL_TARGET_TYPES (not FREE_CALLABLE_TYPES) — the post-A4 filter must
+    // also admit Method and Constructor candidates, which are now unioned
+    // into the pool from `model.methods.lookupMethodByName` rather than
+    // `symbols.lookupCallableByName`.
+    kindFiltered = candidates.filter((c) => CALL_TARGET_TYPES.has(c.type));
   }
 
   if (kindFiltered.length === 0) return [];
@@ -968,6 +1447,40 @@ const filterCallableCandidates = (
   );
 };
 
+/**
+ * Count callable candidates matching the kind + arity filter without
+ * allocating an intermediate array. Short-circuits once count exceeds
+ * `threshold` (default 1) — used by the dispatcher's `skipMember` check
+ * where we only need to know "more than one survivor".
+ */
+const countCallableCandidates = (
+  candidates: readonly SymbolDefinition[],
+  argCount?: number,
+  callForm?: 'free' | 'member' | 'constructor',
+  threshold = 1,
+): number => {
+  let count = 0;
+  for (const c of candidates) {
+    // Kind filter (mirrors filterCallableCandidates)
+    const typeOk =
+      callForm === 'constructor'
+        ? CONSTRUCTOR_TARGET_TYPES.has(c.type)
+        : CALL_TARGET_TYPES.has(c.type);
+    if (!typeOk) continue;
+    // Arity filter
+    if (
+      argCount !== undefined &&
+      c.parameterCount !== undefined &&
+      (argCount < (c.requiredParameterCount ?? c.parameterCount) || argCount > c.parameterCount)
+    ) {
+      continue;
+    }
+    count++;
+    if (count > threshold) return count; // early exit
+  }
+  return count;
+};
+
 const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): ResolveResult => ({
   nodeId: definition.nodeId,
   confidence: TIER_CONFIDENCE[tier],
@@ -976,9 +1489,15 @@ const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): Re
   returnType: definition.returnType,
 });
 
-/** Optional hints for overload disambiguation via argument literal types.
- *  Only available on the sequential path (has AST); worker path passes undefined. */
-interface OverloadHints {
+/**
+ * Optional hints for overload disambiguation via argument literal types.
+ * Only available on the sequential path (has AST); worker path passes undefined.
+ *
+ * @internal Exported so tests can exercise the D0 skip-condition path without
+ *           constructing a real SyntaxNode. Do not use outside `call-processor.ts`
+ *           and its unit tests.
+ */
+export interface OverloadHints {
   callNode: SyntaxNode;
   inferLiteralType: LiteralTypeInferrer;
   typeEnv?: TypeEnvironment;
@@ -1052,17 +1571,255 @@ const tryOverloadDisambiguation = (
 };
 
 /**
- * Resolve a function call to its target node ID using priority strategy:
- * A. Narrow candidates by scope tier via ctx.resolve()
- * B. Filter to callable symbol kinds (constructor-aware when callForm is set)
- * C. Apply arity filtering when parameter metadata is available
- * D. Apply receiver-type filtering for member calls with typed receivers
- * E. Apply overload disambiguation via argument literal types (when available)
+ * Apply overload-hint or arg-type disambiguation to a pre-filtered candidate
+ * pool. Returns the unique survivor, or null when neither signal is present,
+ * neither can disambiguate, or the pool remains ambiguous.
  *
- * If filtering still leaves multiple candidates, refuse to emit a CALLS edge.
+ * Precedence rule: `overloadHints` wins over `preComputedArgTypes` when both
+ * are supplied. The AST-based disambiguator has access to live type inference
+ * hooks, whereas `preComputedArgTypes` is a worker-path pre-computation that
+ * may be coarser-grained.
+ *
+ * Single source of truth for the narrowing-signal precedence used by member
+ * and constructor resolution paths. Add a new narrowing signal here once, not
+ * at each call site.
  */
-/** Per-file cache for the widen path's lookupFuzzy calls. Cleared between files. */
-type WidenCache = Map<string, readonly SymbolDefinition[]>;
+const disambiguateByOverloadOrArgTypes = (
+  pool: SymbolDefinition[],
+  overloadHints: OverloadHints | undefined,
+  preComputedArgTypes: (string | undefined)[] | undefined,
+): SymbolDefinition | null => {
+  if (!overloadHints && !preComputedArgTypes) return null;
+  if (overloadHints) return tryOverloadDisambiguation(pool, overloadHints);
+  if (preComputedArgTypes) return matchCandidatesByArgTypes(pool, preComputedArgTypes);
+  return null;
+};
+
+/**
+ * Collapse Swift-extension duplicate Class/Struct candidates to the primary
+ * definition, preferring the shortest file path.
+ *
+ * Swift extensions (`extension User { ... }` in a separate file) create
+ * multiple `Class` nodes sharing the same symbol name — one for the primary
+ * declaration and one per extension file. When overload disambiguation and
+ * receiver narrowing both fail to converge on a single candidate, this
+ * heuristic picks the primary definition based on the assumption that it
+ * lives at the shortest file path (e.g. `User.swift` over `UserExtensions.swift`).
+ *
+ * Intentionally narrower than {@link INSTANTIABLE_CLASS_TYPES}: only `Class`
+ * and `Struct` are considered, not `Record`. Swift extensions only produce
+ * `Class` duplicates in practice, and C#/Kotlin records do not exhibit the
+ * same multi-file-definition pattern, so widening this set risks accidental
+ * dedup of legitimately distinct record types.
+ *
+ * Returns a `ResolveResult` when the heuristic fires, `null` when the
+ * candidate pool does not match the shape (mixed types, non-Class/Struct
+ * kinds, or `length <= 1`). Callers should fall through to their own null
+ * return when this helper returns `null`.
+ *
+ * Used by `resolveFreeCall`. Having a single source of truth prevents
+ * duplication if the heuristic is ever tuned.
+ */
+const dedupSwiftExtensionCandidates = (
+  candidates: readonly SymbolDefinition[],
+  tier: ResolutionTier,
+): ResolveResult | null => {
+  if (candidates.length <= 1) return null;
+  const allSameType = candidates.every((c) => c.type === candidates[0].type);
+  if (!allSameType) return null;
+  if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;
+  const sorted = [...candidates].sort((a, b) => a.filePath.length - b.filePath.length);
+  return toResolveResult(sorted[0], tier);
+};
+
+/**
+ * Thin dispatcher that routes a call to the appropriate specialized resolver.
+ *
+ * - `free`        → {@link resolveFreeCall}
+ * - `constructor` → {@link resolveStaticCall}  (with pre-resolved tiered pool)
+ * - `member` with a known receiver type → {@link resolveMemberCall}, with
+ *   file-based fallback for traits/interfaces
+ * - `member` without receiver type → module-alias check, then tiered lookup
+ *
+ * Replaces the former 200+ line function (SM-19: fuzzy-free call resolution).
+ */
+/**
+ * Module-alias resolution for member calls without a receiver type.
+ *
+ * Handles Python/Ruby `import mod; mod.Symbol()` patterns where the receiver
+ * is a module name, not a typed variable. Uses `moduleAliasMap` to scope
+ * candidates to the correct module file.
+ */
+const resolveModuleAliasedCall = (
+  call: Pick<ExtractedCall, 'calledName' | 'argCount' | 'callForm' | 'receiverName'>,
+  currentFile: string,
+  ctx: ResolutionContext,
+  widenCache?: WidenCache,
+  tieredOverride?: TieredCandidates,
+): ResolveResult | null => {
+  if (!call.receiverName) return null;
+  const aliasMap = ctx.moduleAliasMap?.get(currentFile);
+  if (!aliasMap) return null;
+  const moduleFile = aliasMap.get(call.receiverName);
+  if (!moduleFile) return null;
+
+  // Reuse the caller's pre-computed tiered result when available —
+  // the dispatcher already called ctx.resolve(call.calledName, currentFile).
+  const tiered = tieredOverride ?? ctx.resolve(call.calledName, currentFile);
+  if (!tiered) return null;
+
+  // Try member-form, then constructor-form (for `module.ClassName()` patterns)
+  let filtered = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm).filter(
+    (c) => c.filePath === moduleFile,
+  );
+  if (filtered.length === 0) {
+    filtered = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor').filter(
+      (c) => c.filePath === moduleFile,
+    );
+  }
+  if (filtered.length === 0) {
+    // Widen to global callable+method indexes scoped to the aliased module
+    // file. Function+ownerId (Python/Rust/Kotlin) is still routed to both
+    // indexes until Unit 5 unblocks, so dedup by nodeId.
+    const cacheKey = `${call.calledName}\0${moduleFile}`;
+    let defs = widenCache?.get(cacheKey);
+    if (!defs) {
+      const rawCallable = ctx.model.symbols.lookupCallableByName(call.calledName);
+      const rawMethods = ctx.model.methods.lookupMethodByName(call.calledName);
+      const widenCombined: SymbolDefinition[] = [];
+      const widenSeen = new Set<string>();
+      for (const d of rawCallable) {
+        if (widenSeen.has(d.nodeId)) continue;
+        widenSeen.add(d.nodeId);
+        widenCombined.push(d);
+      }
+      for (const d of rawMethods) {
+        if (widenSeen.has(d.nodeId)) continue;
+        widenSeen.add(d.nodeId);
+        widenCombined.push(d);
+      }
+      defs = widenCombined;
+      widenCache?.set(cacheKey, defs);
+    }
+    filtered = filterCallableCandidates(defs, call.argCount, call.callForm).filter(
+      (c) => c.filePath === moduleFile,
+    );
+    if (filtered.length === 0) {
+      filtered = filterCallableCandidates(defs, call.argCount, 'constructor').filter(
+        (c) => c.filePath === moduleFile,
+      );
+    }
+  }
+  return filtered.length === 1 ? toResolveResult(filtered[0], tiered.tier) : null;
+};
+
+/**
+ * File-based fallback for member calls where owner-scoped resolution fails.
+ *
+ * Resolves the receiver type via `ctx.resolve()` and narrows all callable
+ * symbols with the method name to the receiver type's defining file(s),
+ * then applies ownerId filtering and overload disambiguation.
+ *
+ * Handles Rust trait dispatch (`repo.find()` where `find` is on a trait impl),
+ * cross-file overloaded methods, and similar patterns where ownerId
+ * relationships may not be established on all candidates.
+ */
+const resolveMemberCallByFile = (
+  calledName: string,
+  receiverTypeName: string,
+  currentFile: string,
+  ctx: ResolutionContext,
+  argCount?: number,
+  callForm?: 'free' | 'member' | 'constructor',
+  overloadHints?: OverloadHints,
+  preComputedArgTypes?: (string | undefined)[],
+): ResolveResult | null => {
+  const typeResolved = ctx.resolve(receiverTypeName, currentFile);
+  if (!typeResolved || typeResolved.candidates.length === 0) return null;
+  const typeNodeIds = new Set(typeResolved.candidates.map((d) => d.nodeId));
+  const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
+
+  // A4 (plan 006, Unit 4): consult both indexes. Strictly-labeled
+  // Method/Constructor are disjoint, but Function+ownerId (Python/Rust/
+  // Kotlin) is routed into BOTH indexes by `wrappedAdd` until Unit 5
+  // unblocks — dedup by nodeId so overload disambiguation doesn't see
+  // phantom duplicates.
+  const rawCallablePool = ctx.model.symbols.lookupCallableByName(calledName);
+  const rawMethodPool = ctx.model.methods.lookupMethodByName(calledName);
+  const combinedPool: SymbolDefinition[] = [];
+  const combinedSeen = new Set<string>();
+  for (const def of rawCallablePool) {
+    if (combinedSeen.has(def.nodeId)) continue;
+    combinedSeen.add(def.nodeId);
+    combinedPool.push(def);
+  }
+  for (const def of rawMethodPool) {
+    if (combinedSeen.has(def.nodeId)) continue;
+    combinedSeen.add(def.nodeId);
+    combinedPool.push(def);
+  }
+  const methodPool = filterCallableCandidates(combinedPool, argCount, callForm);
+  const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
+  if (fileFiltered.length === 1) {
+    return toResolveResult(fileFiltered[0], typeResolved.tier);
+  }
+
+  // ownerId fallback: narrow by ownerId matching the type's nodeId
+  const pool = fileFiltered.length > 0 ? fileFiltered : methodPool;
+  const ownerFiltered = pool.filter((c) => c.ownerId && typeNodeIds.has(c.ownerId));
+  if (ownerFiltered.length === 1) return toResolveResult(ownerFiltered[0], typeResolved.tier);
+
+  // Overload disambiguation on the narrowed pool
+  if (fileFiltered.length > 1 || ownerFiltered.length > 1) {
+    const overloadPool = ownerFiltered.length > 1 ? ownerFiltered : fileFiltered;
+    const disambiguated = disambiguateByOverloadOrArgTypes(
+      overloadPool,
+      overloadHints,
+      preComputedArgTypes,
+    );
+    if (disambiguated) return toResolveResult(disambiguated, typeResolved.tier);
+  }
+
+  // Zero-match null-route: receiver type resolved but no candidate matched
+  // after file-based and owner-based narrowing. Refuse to emit a CALLS edge
+  // rather than guess — matches the SM-10 R3 null-route contract.
+  return null;
+};
+
+/** Return the sole survivor from a tiered pool after callable + arity filtering, or null. */
+const singleCandidate = (
+  tiered: TieredCandidates,
+  argCount?: number,
+  callForm?: 'free' | 'member' | 'constructor',
+): ResolveResult | null => {
+  const filtered = filterCallableCandidates(tiered.candidates, argCount, callForm);
+  return filtered.length === 1 ? toResolveResult(filtered[0], tiered.tier) : null;
+};
+
+/** @internal Exported for unit tests. Do not use outside tests. */
+export const _resolveCallTargetForTesting = (
+  call: Pick<
+    ExtractedCall,
+    'calledName' | 'argCount' | 'callForm' | 'receiverTypeName' | 'receiverName'
+  >,
+  currentFile: string,
+  ctx: ResolutionContext,
+  opts?: {
+    overloadHints?: OverloadHints;
+    widenCache?: WidenCache;
+    preComputedArgTypes?: (string | undefined)[];
+    heritageMap?: HeritageMap;
+  },
+): ResolveResult | null =>
+  resolveCallTarget(
+    call,
+    currentFile,
+    ctx,
+    opts?.overloadHints,
+    opts?.widenCache,
+    opts?.preComputedArgTypes,
+    opts?.heritageMap,
+  );
 
 const resolveCallTarget = (
   call: Pick<
@@ -1074,158 +1831,152 @@ const resolveCallTarget = (
   overloadHints?: OverloadHints,
   widenCache?: WidenCache,
   preComputedArgTypes?: (string | undefined)[],
+  heritageMap?: HeritageMap,
+  dispatchDecision?: DispatchDecision,
 ): ResolveResult | null => {
   const tiered = ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
-  let filteredCandidates = filterCallableCandidates(
-    tiered.candidates,
-    call.argCount,
-    call.callForm,
-  );
+  // DAG dispatch: use decision.primary to pick the resolver branch.
+  // Callers that own the DAG (processCalls + crossFile deferred paths)
+  // pass a decision; other callers use the shared default ladder.
+  // Language-specific primary / fallback / ancestryView overrides come from
+  // the provider's `selectDispatch` hook.
+  const decision = dispatchDecision ?? defaultDispatchDecision(call.callForm);
+  const primary = decision.primary;
 
-  // Swift/Kotlin: constructor calls look like free function calls (no `new` keyword).
-  // If free-form filtering found no callable candidates but the symbol resolves to a
-  // Class/Struct, retry with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
-  if (filteredCandidates.length === 0 && call.callForm === 'free') {
-    const hasTypeTarget = tiered.candidates.some(
-      (c) => c.type === 'Class' || c.type === 'Struct' || c.type === 'Enum',
+  if (primary === 'free') {
+    return resolveFreeCall(
+      call.calledName,
+      currentFile,
+      ctx,
+      call.argCount,
+      tiered,
+      overloadHints,
+      preComputedArgTypes,
     );
-    if (hasTypeTarget) {
-      filteredCandidates = filterCallableCandidates(
-        tiered.candidates,
+  }
+  if (primary === 'constructor') {
+    return (
+      resolveStaticCall(
+        call.calledName,
+        currentFile,
+        ctx,
         call.argCount,
-        'constructor',
-      );
-    }
+        tiered,
+        overloadHints,
+        preComputedArgTypes,
+      ) ?? singleCandidate(tiered, call.argCount, 'constructor')
+    );
   }
+  // primary === 'owner-scoped'
+  if (call.receiverTypeName) {
+    // Skip the owner-scoped MRO path when the tiered pool has genuine
+    // overload ambiguity that needs D1-D4+E handling, not D0.
+    const skipMember =
+      (!!overloadHints || !!preComputedArgTypes) &&
+      countCallableCandidates(tiered.candidates, call.argCount, call.callForm) > 1;
+    // Try owner-scoped (resolveMemberCall) then file-scoped (resolveMemberCallByFile).
+    // DAG: dispatchDecision.ancestryView selects instance vs singleton ancestry
+    // for kind-aware MRO strategies. Ruby `Account.log` flows via 'singleton'.
+    //
+    // Singleton-ancestry miss MUST NOT degrade to the file-scoped fallback:
+    // resolveMemberCallByFile matches by ownerId and would happily pick an
+    // instance method defined on the same class, leaking instance dispatch
+    // onto what was declared a class-method call. For singleton dispatch,
+    // a miss either null-routes or falls through to `decision.fallback`.
+    const singletonDispatch = decision.ancestryView === 'singleton';
+    const memberResult =
+      (!skipMember
+        ? resolveMemberCall(
+            call.receiverTypeName,
+            call.calledName,
+            currentFile,
+            ctx,
+            heritageMap,
+            call.argCount,
+            decision.ancestryView,
+          )
+        : null) ??
+      (singletonDispatch
+        ? null
+        : resolveMemberCallByFile(
+            call.calledName,
+            call.receiverTypeName,
+            currentFile,
+            ctx,
+            call.argCount,
+            call.callForm,
+            overloadHints,
+            preComputedArgTypes,
+          ));
+    if (memberResult) return memberResult;
 
-  // Module-qualified constructor pattern: e.g. Python `import models; models.User()`.
-  // The attribute access gives callForm='member', but the callee may be a Class — a valid
-  // constructor target. Re-try with constructor-form filtering so that `module.ClassName()`
-  // emits a CALLS edge to the class node.
-  if (filteredCandidates.length === 0 && call.callForm === 'member') {
-    filteredCandidates = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor');
-  }
-
-  // Module-alias disambiguation: Python `import auth; auth.User()` — receiverName='auth'
-  // selects auth.py via moduleAliasMap. Runs for ALL member calls with a known module alias,
-  // not just ambiguous ones — same-file tier may shadow the correct cross-module target when
-  // the caller defines a function with the same name as the callee (Issue #417).
-  if (call.callForm === 'member' && call.receiverName) {
+    // Module-alias narrowing runs as a FALLBACK, after owner/file-scoped
+    // resolvers have returned null. This ordering is load-bearing: placing
+    // alias narrowing first would short-circuit unique owner-scoped answers
+    // when a local variable coincidentally matches an alias name, leaking
+    // unrelated homonyms from the aliased file onto the wrong receiver type.
+    //
+    // The type-file verification guard is load-bearing for SM-10 R3: an
+    // alias is only a VALID narrowing signal when the alias target file is
+    // among the receiver type's defining files. If the alias points at a
+    // file that does not hold `receiverTypeName`, any candidate we would
+    // pick from there would belong to an unrelated class — a cross-type
+    // false positive. ctx.resolve is cached per (name, file), so resolving
+    // the receiver type a second time here is free.
+    const typeResolves = ctx.resolve(call.receiverTypeName, currentFile);
     const aliasMap = ctx.moduleAliasMap?.get(currentFile);
-    if (aliasMap) {
-      const moduleFile = aliasMap.get(call.receiverName);
-      if (moduleFile) {
-        const aliasFiltered = filteredCandidates.filter((c) => c.filePath === moduleFile);
-        if (aliasFiltered.length > 0) {
-          filteredCandidates = aliasFiltered;
-        } else {
-          // Same-file tier returned a local match, but the alias points elsewhere.
-          // Widen to global candidates and filter to the aliased module's file.
-          // Use per-file widenCache to avoid repeated lookupFuzzy for the same
-          // calledName+moduleFile from multiple call sites in the same file.
-          const cacheKey = `${call.calledName}\0${moduleFile}`;
-          let fuzzyDefs = widenCache?.get(cacheKey);
-          if (!fuzzyDefs) {
-            fuzzyDefs = ctx.symbols.lookupFuzzy(call.calledName);
-            widenCache?.set(cacheKey, fuzzyDefs);
-          }
-          const widened = filterCallableCandidates(fuzzyDefs, call.argCount, call.callForm).filter(
-            (c) => c.filePath === moduleFile,
-          );
-          if (widened.length > 0) filteredCandidates = widened;
-        }
-      }
+    const aliasTargetFile =
+      call.receiverName && aliasMap ? aliasMap.get(call.receiverName) : undefined;
+    if (
+      aliasTargetFile &&
+      typeResolves &&
+      typeResolves.candidates.some((c) => c.filePath === aliasTargetFile)
+    ) {
+      const aliasResult = resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered);
+      if (aliasResult) return aliasResult;
     }
-  }
 
-  // D. Receiver-type filtering: for member calls with a known receiver type,
-  // resolve the type through the same tiered import infrastructure, then
-  // filter method candidates to the type's defining file. Fall back to
-  // fuzzy ownerId matching only when file-based narrowing is inconclusive.
-  //
-  // Applied regardless of candidate count — the sole same-file candidate may
-  // belong to the wrong class (e.g. super.save() should hit the parent's save,
-  // not the child's own save method in the same file).
-  if (call.callForm === 'member' && call.receiverTypeName) {
-    // D1. Resolve the receiver type
-    const typeResolved = ctx.resolve(call.receiverTypeName, currentFile);
-    if (typeResolved && typeResolved.candidates.length > 0) {
-      const typeNodeIds = new Set(typeResolved.candidates.map((d) => d.nodeId));
-      const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
-
-      // D2. Widen candidates: same-file tier may miss the parent's method when
-      //     it lives in another file. Query the symbol table directly for all
-      //     global methods with this name, then apply arity/kind filtering.
-      const methodPool =
-        filteredCandidates.length <= 1
-          ? filterCallableCandidates(
-              ctx.symbols.lookupFuzzy(call.calledName),
-              call.argCount,
-              call.callForm,
-            )
-          : filteredCandidates;
-
-      // D3. File-based: prefer candidates whose filePath matches the resolved type's file
-      const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
-      if (fileFiltered.length === 1) {
-        return toResolveResult(fileFiltered[0], tiered.tier);
-      }
-
-      // D4. ownerId fallback: narrow by ownerId matching the type's nodeId
-      const pool = fileFiltered.length > 0 ? fileFiltered : methodPool;
-      const ownerFiltered = pool.filter((c) => c.ownerId && typeNodeIds.has(c.ownerId));
-      if (ownerFiltered.length === 1) {
-        return toResolveResult(ownerFiltered[0], tiered.tier);
-      }
-      // E. Try overload disambiguation on the narrowed pool
-      if (fileFiltered.length > 1 || ownerFiltered.length > 1) {
-        const overloadPool = ownerFiltered.length > 1 ? ownerFiltered : fileFiltered;
-        const disambiguated = overloadHints
-          ? tryOverloadDisambiguation(overloadPool, overloadHints)
-          : preComputedArgTypes
-            ? matchCandidatesByArgTypes(overloadPool, preComputedArgTypes)
-            : null;
-        if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
-        return null;
-      }
-    }
-  }
-
-  // E. Overload disambiguation: when multiple candidates survive arity + receiver filtering,
-  // try matching argument types against parameter types (Phase P).
-  // Sequential path uses AST-based hints; worker path uses pre-computed argTypes.
-  if (filteredCandidates.length > 1) {
-    const disambiguated = overloadHints
-      ? tryOverloadDisambiguation(filteredCandidates, overloadHints)
-      : preComputedArgTypes
-        ? matchCandidatesByArgTypes(filteredCandidates, preComputedArgTypes)
-        : null;
-    if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
-  }
-
-  if (filteredCandidates.length !== 1) {
-    // Deduplicate: Swift extensions create multiple Class nodes with the same name.
-    // When all candidates share the same type and differ only by file (extension vs
-    // primary definition), they represent the same symbol. Prefer the primary
-    // definition (shortest file path: Product.swift over ProductExtension.swift).
-    if (filteredCandidates.length > 1) {
-      const allSameType = filteredCandidates.every((c) => c.type === filteredCandidates[0].type);
-      if (
-        allSameType &&
-        (filteredCandidates[0].type === 'Class' || filteredCandidates[0].type === 'Struct')
-      ) {
-        const sorted = [...filteredCandidates].sort(
-          (a, b) => a.filePath.length - b.filePath.length,
+    // SM-10 R3 null-route: when the receiver type resolves to indexed types
+    // but no scoped resolver (nor the guarded alias fallback) produced a
+    // match, that's a genuine miss — refuse to emit a CALLS edge rather
+    // than guess via an unscoped singleCandidate that ignores the class
+    // hierarchy. When the type is NOT in the index (PHP `mixed`, dynamic
+    // types, unresolvable aliases), the scoped resolvers had nothing to
+    // work with and singleCandidate is the correct last resort.
+    //
+    // DAG fallback override: when `select-dispatch` returned
+    // `fallback: 'free-arity-narrowed'` (today: Ruby implicit-self bare
+    // calls whose enclosing class doesn't define the method), fall through
+    // to free-call resolution instead of null-routing. This preserves
+    // existing free-call arity-narrowing heuristics for bare calls that
+    // happen to target methods on unrelated classes.
+    if (typeResolves && typeResolves.candidates.length > 0) {
+      if (decision.fallback === 'free-arity-narrowed') {
+        const free = resolveFreeCall(
+          call.calledName,
+          currentFile,
+          ctx,
+          call.argCount,
+          tiered,
+          overloadHints,
+          preComputedArgTypes,
         );
-        return toResolveResult(sorted[0], tiered.tier);
+        if (free) return free;
       }
+      return null; // null-route: type resolved, no candidate matched
     }
-    return null;
+    return singleCandidate(tiered, call.argCount, call.callForm);
   }
-
-  return toResolveResult(filteredCandidates[0], tiered.tier);
+  // Member call with no inferred receiver type — e.g. Python `mod.fn()`
+  // where `mod` is a module alias. Module-alias narrowing is the primary
+  // disambiguation signal here. Also consulted from the typed-member
+  // branch above as a guarded fallback after owner/file-scoped resolvers.
+  return (
+    resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
+    singleCandidate(tiered, call.argCount, call.callForm)
+  );
 };
 
 // ── Scope key helpers ────────────────────────────────────────────────────
@@ -1239,13 +1990,18 @@ const resolveCallTarget = (
 // classes (e.g. User.save@100 and Repo.save@200 are distinct keys).
 // Lookup uses a secondary funcName-only index built in lookupReceiverType.
 
-/** Extract the function name from a scope key ("funcName@startIndex" → "funcName"). */
-const extractFuncNameFromScope = (scope: string): string => scope.slice(0, scope.indexOf('@'));
-
-/** Extract the trailing function name from a sourceId ("Function:filepath:funcName" → "funcName"). */
+/** Extract the bare function name from a sourceId.
+ *  Handles both unqualified ("Function:filepath:funcName" → "funcName")
+ *  and qualified ("Function:filepath:ClassName.funcName" → "funcName").
+ *  Strips any trailing #<arity> suffix from Method/Constructor IDs. */
 const extractFuncNameFromSourceId = (sourceId: string): string => {
   const lastColon = sourceId.lastIndexOf(':');
-  return lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+  const segment = lastColon >= 0 ? sourceId.slice(lastColon + 1) : '';
+  const dotIdx = segment.lastIndexOf('.');
+  const raw = dotIdx >= 0 ? segment.slice(dotIdx + 1) : segment;
+  // Strip #<arity> suffix (e.g. "save#2" → "save")
+  const hashIdx = raw.indexOf('#');
+  return hashIdx >= 0 ? raw.slice(0, hashIdx) : raw;
 };
 
 /**
@@ -1269,6 +2025,12 @@ type ReceiverTypeIndex = Map<string, Map<string, ReceiverTypeEntry>>;
  * The verified map is keyed by `scope\0varName` where scope is either
  * "funcName@startIndex" (inside a function) or "" (file level).
  * Index structure: Map<funcName, Map<varName, ReceiverTypeEntry>>
+ *
+ * Known limitation: the index collapses scope keys to bare funcName,
+ * so two same-arity overloads with the same local variable name but
+ * different types will mark that variable as ambiguous. A future
+ * enhancement should key by full scope (funcName@startIndex) and carry
+ * scope keys through findEnclosingFunction's return type.
  */
 const buildReceiverTypeIndex = (map: Map<string, string>): ReceiverTypeIndex => {
   const index: ReceiverTypeIndex = new Map();
@@ -1363,18 +2125,448 @@ const resolveFieldOwnership = (
 ): { nodeId: string; declaredType?: string } | undefined => {
   const typeResolved = ctx.resolve(receiverName, filePath);
   if (!typeResolved) return undefined;
-  const classDef = typeResolved.candidates.find(
-    (d) =>
-      d.type === 'Class' ||
-      d.type === 'Struct' ||
-      d.type === 'Interface' ||
-      d.type === 'Enum' ||
-      d.type === 'Record' ||
-      d.type === 'Impl',
-  );
+  const classDef = typeResolved.candidates.find((d) => CLASS_LIKE_TYPES.has(d.type));
   if (!classDef) return undefined;
 
-  return ctx.symbols.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
+  return ctx.model.fields.lookupFieldByOwner(classDef.nodeId, fieldName) ?? undefined;
+};
+
+/**
+ * Resolve a method by owner type name using the eagerly-populated methodByOwner index.
+ * Returns `{ def, tier }` when an unambiguous method is found, `undefined` otherwise.
+ *
+ * **Multi-candidate iteration (homonym disambiguation):** when `ctx.resolve(ownerType)`
+ * returns multiple class-like candidates (e.g. two classes named `User` in different
+ * files reachable from the call site), each is probed with `lookupMethodByOwnerWithMRO`.
+ * Results are deduplicated by `nodeId` so that:
+ *
+ *   - homonym classes that both walk up to the SAME ancestor's method collapse to 1 hit
+ *   - aliased re-exports that produce two candidates pointing at the same def collapse too
+ *
+ * After deduplication:
+ *
+ *   - 0 unique matches → `undefined` (owner-scoped path has no answer)
+ *   - 1 unique match   → return it
+ *   - ≥2 unique matches → `undefined` (genuine homonym ambiguity; don't silently pick one)
+ *
+ * The returned `tier` reflects how the owner TYPE was resolved (not the method name).
+ * Threaded out here so callers don't need a second `ctx.resolve(ownerType, ...)` call —
+ * this decouples callers from `ctx.resolve`'s per-file caching contract.
+ */
+const resolveMethodByOwner = (
+  receiverTypeName: string,
+  methodName: string,
+  filePath: string,
+  ctx: ResolutionContext,
+  heritageMap?: HeritageMap,
+  argCount?: number,
+  /**
+   * DAG-sourced ancestry selector. `'singleton'` routes through
+   * `heritageMap.getSingletonAncestry(owner)` for class-method dispatch
+   * (Ruby `Account.log` via `extend LoggerMixin`). Default / undefined
+   * uses the walker's instance-dispatch behavior.
+   */
+  ancestryView?: 'instance' | 'singleton',
+): { def: SymbolDefinition; tier: ResolutionTier } | undefined => {
+  const typeResolved = ctx.resolve(receiverTypeName, filePath);
+  if (!typeResolved) return undefined;
+
+  // MRO walking needs a language hint so we can derive the per-language
+  // strategy; compute it once and reuse for every candidate. Unknown
+  // extension → fall back to plain direct lookup (D1-D4 still runs on miss).
+  const language = heritageMap ? getLanguageFromFilename(filePath) : null;
+  const mroStrategy = language != null ? getProvider(language).mroStrategy : null;
+  const canWalkMRO = heritageMap != null && mroStrategy != null;
+
+  // Iterate all class-like candidates tracking the first unambiguous hit.
+  // Zero-allocation fast path: the common case is exactly one class candidate,
+  // so we avoid building a Map. A second hit with a different `nodeId` flips
+  // `ambiguous` and short-circuits the loop. Diamond MRO convergence on the
+  // same inherited method collapses to one hit because `nodeId` matches.
+  //
+  //   firstDef === undefined → owner-scoped resolution found nothing
+  //   firstDef && !ambiguous → unambiguous answer
+  //   ambiguous              → genuine homonym ambiguity — refuse to pick
+  //
+  // argCount is threaded through so arity-differing overloads
+  // (e.g. C++ `greet()` vs `greet(string)`) are disambiguated inside the
+  // owner-scoped lookup rather than collapsing to an arbitrary first pick.
+  let firstDef: SymbolDefinition | undefined;
+  let ambiguous = false;
+  for (const candidate of typeResolved.candidates) {
+    if (!CLASS_LIKE_TYPES.has(candidate.type)) continue;
+    // Singleton dispatch: when the DAG decision requested the singleton
+    // ancestry view, pass `heritageMap.getSingletonAncestry` as the walker's
+    // ancestry override. Kind-aware strategies (e.g. MroStrategy 'ruby-mixin')
+    // honor the override by scanning it linearly in place of their default walk.
+    const singletonOverride =
+      ancestryView === 'singleton' && canWalkMRO && heritageMap
+        ? heritageMap.getSingletonAncestry(candidate.nodeId).map((e) => e.parentId)
+        : undefined;
+    const def = canWalkMRO
+      ? lookupMethodByOwnerWithMRO(
+          candidate.nodeId,
+          methodName,
+          heritageMap,
+          ctx.model,
+          mroStrategy,
+          argCount,
+          singletonOverride,
+        )
+      : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+    if (!def) continue;
+    if (!firstDef) {
+      firstDef = def;
+    } else if (def.nodeId !== firstDef.nodeId) {
+      ambiguous = true;
+      break;
+    }
+  }
+
+  if (!firstDef || ambiguous) return undefined;
+  return { def: firstDef, tier: typeResolved.tier };
+};
+
+// ---------------------------------------------------------------------------
+// SM-11: Owner-scoped + MRO member-call resolution (no fuzzy lookup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a member call using owner-scoped + MRO resolution only (no fuzzy lookup).
+ * Used for `obj.method()` calls where the receiver type is known.
+ *
+ * Delegates to {@link resolveMethodByOwner} which performs an O(1) owner-scoped
+ * method lookup and, when a {@link HeritageMap} is provided, walks the MRO chain
+ * via {@link lookupMethodByOwnerWithMRO}.
+ *
+ * {@link resolveCallTarget} delegates here for member calls.
+ *
+ * **SEMANTIC CHANGE (2026-04-09):** The confidence tier reflects how the
+ * owner TYPE was resolved, not how the method NAME was resolved globally.
+ * more accurate for owner-scoped resolution (the discriminant IS the class,
+ * not the method name). Downstream consumers that filter CALLS edges by
+ * confidence threshold may see shifted values on otherwise-unchanged code.
+ * See the "returns result with correct confidence tier" tests below for the
+ * locked-in behavior.
+ *
+ * **Performance:** Callers that only need the return type (e.g. `walkMixedChain`)
+ * should call {@link resolveMethodByOwner} directly and use the `.def.returnType`
+ * field instead, to avoid building a throwaway `ResolveResult`.
+ *
+ * @param ownerType   - The receiver's type name (e.g. 'User')
+ * @param methodName  - The method being called (e.g. 'save')
+ * @param currentFile - File path of the call site
+ * @param ctx         - Resolution context
+ * @param heritageMap - Optional heritage map for MRO-aware ancestor walking
+ */
+export const resolveMemberCall = (
+  ownerType: string,
+  methodName: string,
+  currentFile: string,
+  ctx: ResolutionContext,
+  heritageMap?: HeritageMap,
+  argCount?: number,
+  ancestryView?: 'instance' | 'singleton',
+): ResolveResult | null => {
+  const resolved = resolveMethodByOwner(
+    ownerType,
+    methodName,
+    currentFile,
+    ctx,
+    heritageMap,
+    argCount,
+    ancestryView,
+  );
+  if (!resolved) return null;
+  return toResolveResult(resolved.def, resolved.tier);
+};
+
+// ---------------------------------------------------------------------------
+// SM-13: Free-function call resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a free-function call using `lookupExact` (same-file) + import-scoped
+ * resolution via `ctx.resolve()`.
+ *
+ * Used for `foo()`, `doStuff()` — unqualified calls with no receiver.
+ * Also handles Swift/Kotlin implicit constructors (`User()` without `new`)
+ * by delegating to {@link resolveStaticCall} when the tiered pool contains
+ * class-like targets.
+ *
+ * {@link resolveCallTarget} delegates here for `callForm === 'free'`.
+ *
+ * `resolveFreeCall` does not take a `widenCache` parameter. Free calls
+ * have no receiver type and rely exclusively on the tiered pool
+ * from `ctx.resolve()`.
+ *
+ * @param calledName  - The called function name (e.g. 'doStuff')
+ * @param filePath    - File path of the call site
+ * @param ctx         - Resolution context
+ * @param argCount    - Optional argument count for arity filtering
+ * @param tieredOverride - Pre-computed tiered candidates from an upstream
+ *                       `ctx.resolve` call. When provided, skips the redundant
+ *                       lookup inside this function.
+ * @param overloadHints  - Optional AST-based overload disambiguation hints
+ * @param preComputedArgTypes - Optional pre-computed argument types (worker path)
+ */
+export const resolveFreeCall = (
+  calledName: string,
+  filePath: string,
+  ctx: ResolutionContext,
+  argCount?: number,
+  tieredOverride?: TieredCandidates,
+  overloadHints?: OverloadHints,
+  preComputedArgTypes?: (string | undefined)[],
+): ResolveResult | null => {
+  const tiered = tieredOverride ?? ctx.resolve(calledName, filePath);
+  if (!tiered) return null;
+
+  let filteredCandidates = filterCallableCandidates(tiered.candidates, argCount, 'free');
+
+  // Class-target fast path: Swift/Kotlin `User()` — free-form call targeting a
+  // class. Delegates to resolveStaticCall for O(1) class + constructor lookup.
+  // The `.some()` trigger must stay aligned with `INSTANTIABLE_CLASS_TYPES` —
+  // any type admitted here that is not in that set will cause resolveStaticCall
+  // to return null, wasting two lookup passes per call. `Enum` is deliberately
+  // excluded; `Record` is included so C# records and Kotlin data classes reach
+  // the fast path.
+  // Align with INSTANTIABLE_CLASS_TYPES by reusing the set directly rather
+  // than enumerating literal strings. This converts an invariant that was
+  // previously enforced by a comment ("keep this list aligned with
+  // INSTANTIABLE_CLASS_TYPES") into one enforced structurally — any future
+  // extension of the set (e.g. Kotlin `object`) propagates here automatically.
+  // The `dedupSwiftExtensionCandidates` helper used in the tail of this
+  // function deliberately uses a narrower literal `'Class' | 'Struct'` check
+  // — Swift extensions only produce Class duplicates in practice, so Record
+  // is excluded there by design. Do not collapse that helper into
+  // INSTANTIABLE_CLASS_TYPES.
+  const hasClassTarget =
+    filteredCandidates.length === 0 &&
+    tiered.candidates.some((c) => INSTANTIABLE_CLASS_TYPES.has(c.type));
+  if (hasClassTarget) {
+    const staticResult = resolveStaticCall(calledName, filePath, ctx, argCount, tiered);
+    if (staticResult) return staticResult;
+    // Retry with constructor form: Swift/Kotlin constructor calls look like
+    // free function calls (no `new` keyword). If resolveStaticCall didn't
+    // match, re-filter with constructor form so CONSTRUCTOR_TARGET_TYPES
+    // applies.
+    //
+    // The retry fires for every null return from `resolveStaticCall`, which
+    // can happen for three distinct reasons — all three are handled below:
+    //
+    //   (a) No explicit `Constructor` node found and zero instantiable
+    //       class candidates (e.g. Interface/Trait/Impl only — the SM-12
+    //       null-route contract). `filterCallableCandidates` with
+    //       `'constructor'` form will also return nothing → we fall
+    //       through to the final null return. Correct.
+    //
+    //   (b) Homonym ambiguity — two or more instantiable class candidates
+    //       share the name (e.g. `User` in two files, same tier). The
+    //       retry repopulates `filteredCandidates` with both Classes and
+    //       they flow into `dedupSwiftExtensionCandidates` below, which
+    //       either picks the shortest-path primary or null-routes.
+    //       Covered by the R7 Swift-extension dedup test.
+    //
+    //   (c) `resolveStaticCall` step 4 bailed because the tiered pool
+    //       contains ownerless `Constructor` nodes (some extractors emit
+    //       constructors without `ownerId`). Those `Constructor` nodes
+    //       survive the constructor-form filter below and reach overload
+    //       disambiguation, giving the existing filter path a chance to
+    //       pick the right one. Correct but currently uncovered by a
+    //       dedicated test — the R5 `preComputedArgTypes` path exercises
+    //       overload disambiguation for Functions, which is structurally
+    //       the same code.
+    filteredCandidates = filterCallableCandidates(tiered.candidates, argCount, 'constructor');
+  }
+
+  // E. Overload disambiguation
+  if (filteredCandidates.length > 1) {
+    const disambiguated = overloadHints
+      ? tryOverloadDisambiguation(filteredCandidates, overloadHints)
+      : preComputedArgTypes
+        ? matchCandidatesByArgTypes(filteredCandidates, preComputedArgTypes)
+        : null;
+    if (disambiguated) return toResolveResult(disambiguated, tiered.tier);
+  }
+
+  if (filteredCandidates.length !== 1) {
+    // See `dedupSwiftExtensionCandidates` — shared helper, single source of
+    // truth for the Swift-extension same-name collision heuristic.
+    const deduped = dedupSwiftExtensionCandidates(filteredCandidates, tiered.tier);
+    if (deduped) return deduped;
+    return null;
+  }
+
+  return toResolveResult(filteredCandidates[0], tiered.tier);
+};
+
+// ---------------------------------------------------------------------------
+// SM-12: Constructor/static call resolution (no fuzzy lookup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a constructor or static call using class-scoped lookup (no fuzzy lookup).
+ * Used for `new User()` / `User()` calls where the calledName targets a class.
+ *
+ * Uses {@link TypeRegistry.lookupClassByName} for O(1) class lookup and
+ * {@link MethodRegistry.lookupMethodByOwner} for constructor resolution.
+ * {@link resolveCallTarget} delegates here for constructor and free-form calls
+ * that target a class.
+ *
+ * Resolution strategy:
+ *   1. `lookupClassByName(className)` — O(1) pre-check; bail early if no class exists.
+ *   2. `ctx.resolve(className, currentFile)` — import-scoped tier for confidence.
+ *   3. Filter to class-like candidates via `CLASS_LIKE_TYPES` and walk each
+ *      with `lookupMethodByOwner(classNodeId, className, argCount)` — O(1)
+ *      constructor lookup. Only accept results with `type === 'Constructor'`.
+ *   4. If step 3 found nothing and the tiered pool contains ownerless
+ *      `Constructor` nodes (common in some extractors), bail out so
+ *      `filterCallableCandidates` downstream handles Constructor-vs-Class
+ *      preference correctly.
+ *   5. Class-node fallback: filter `classCandidates` through
+ *      `INSTANTIABLE_CLASS_TYPES` and return the sole survivor when there is
+ *      exactly one. Null-route on zero survivors (Interface / Trait / Impl
+ *      stripped) or multiple (homonym ambiguity).
+ *
+ * @param className   - The class name (e.g. 'User'). Also used as the method
+ *                       name for the `lookupMethodByOwner` scan, because the
+ *                       only constructor-shaped call we handle today is
+ *                       `ClassName(...)` / `new ClassName(...)`. Named
+ *                       constructors like Dart `User.fromJson()` arrive as
+ *                       member calls and route through `resolveMemberCall`,
+ *                       so this function does not yet need a separate
+ *                       `methodName` parameter. Revisit if a language surfaces
+ *                       a static-method-shaped call with a distinct member
+ *                       name.
+ * @param currentFile - File path of the call site
+ * @param ctx         - Resolution context
+ * @param argCount    - Optional argument count for arity filtering
+ * @param tieredOverride - Pre-computed tiered candidates for `className` from
+ *                       an upstream `ctx.resolve` call. When provided, skips
+ *                       the redundant lookup inside this function. Leave
+ *                       unset for direct callers without a prior resolution.
+ */
+export const resolveStaticCall = (
+  className: string,
+  currentFile: string,
+  ctx: ResolutionContext,
+  argCount?: number,
+  tieredOverride?: TieredCandidates,
+  overloadHints?: OverloadHints,
+  preComputedArgTypes?: (string | undefined)[],
+): ResolveResult | null => {
+  // 1. Pre-check: does a class with this name exist at all? (O(1))
+  //    This guards against the expensive `ctx.resolve` walk when the name
+  //    is clearly not class-like (e.g. plain functions). When `tieredOverride`
+  //    is supplied, the caller has already paid for the tiered lookup, so this
+  //    pre-check still prevents the class-candidate filter + lookupMethodByOwner
+  //    loop from running on obviously non-class targets.
+  const allClasses = ctx.model.types.lookupClassByName(className);
+  if (allClasses.length === 0) return null;
+
+  // 2. Scope via ctx.resolve for import-tier information. Reuse the caller's
+  //    tiered result when provided — it is computed from the same name and
+  //    file context, so re-running the walk would be a pure waste.
+  const typeResolved = tieredOverride ?? ctx.resolve(className, currentFile);
+  if (!typeResolved) return null;
+
+  const classCandidates = typeResolved.candidates.filter((c) => CLASS_LIKE_TYPES.has(c.type));
+  if (classCandidates.length === 0) return null;
+
+  // 3. Try lookupMethodByOwner for explicit Constructor nodes.
+  //    Only accept results with type === 'Constructor' — a Method or Function
+  //    that happens to share the class name (e.g. C++ methods named after
+  //    their class) is not a constructor for resolution purposes.
+  //    Same dedup logic as resolveMethodByOwner: diamond inheritance converging
+  //    on the same constructor collapses to one hit.
+  //
+  //    Same-name assumption: the lookup key is `${candidate.nodeId}\0${className}`,
+  //    so this finds Constructor nodes whose symbol name equals the class name
+  //    (`class User` with a `Constructor` named `User`). Constructors indexed
+  //    under a different name (e.g. Python `__init__`) will not be found here —
+  //    but they also won't appear in the tiered pool for `ctx.resolve(className)`
+  //    for the same reason, so step 4's Constructor-presence check will not
+  //    see them either. The two miss cases are symmetric. If a future extractor
+  //    indexes Constructor nodes under an alternative name while still setting
+  //    `ownerId`, this assumption will need revisiting.
+  let firstDef: SymbolDefinition | undefined;
+  let ambiguous = false;
+  for (const candidate of classCandidates) {
+    const def = ctx.model.methods.lookupMethodByOwner(candidate.nodeId, className, argCount);
+    if (!def || def.type !== 'Constructor') continue;
+    if (!firstDef) {
+      firstDef = def;
+    } else if (def.nodeId !== firstDef.nodeId) {
+      ambiguous = true;
+      break;
+    }
+  }
+
+  if (firstDef && !ambiguous) {
+    return toResolveResult(firstDef, typeResolved.tier);
+  }
+
+  // 4. lookupMethodByOwner found nothing — check whether the tiered pool
+  //    contains Constructor nodes that lack ownerId (common in some extractors).
+  //    If so, bail out so the existing filterCallableCandidates path handles
+  //    Constructor-vs-Class preference correctly.
+  //
+  //    This branch also catches the step-3 ambiguous case (`ambiguous = true`
+  //    with two distinct Constructor nodes across multiple class candidates):
+  //    the same Constructor nodes are indexed under the class name in the
+  //    tiered pool, so `.some(Constructor)` is true here and we defer to
+  //    step 4.5 (overload/arg-type disambiguation) or the caller's fallback.
+  //    Do not remove this check without also handling the ambiguous step-3
+  //    path explicitly.
+  if (typeResolved.candidates.some((c) => c.type === 'Constructor')) {
+    // 4.5. Overload / arg-type disambiguation for ambiguous or ownerless
+    //      Constructor pools. When the caller supplied a narrowing signal
+    //      (AST-based overload hints from the sequential path, or pre-
+    //      computed arg types from the worker path), give disambiguation a
+    //      chance before null-routing. Symmetric with resolveMemberCallByFile's
+    //      disambiguation pass — both resolvers now share the same signal
+    //      precedence via disambiguateByOverloadOrArgTypes. Only fires when
+    //      at least one narrowing signal is present; preserves SM-10 R3 for
+    //      genuinely ambiguous cases with no disambiguating input.
+    if (overloadHints || preComputedArgTypes) {
+      const ctorPool = filterCallableCandidates(typeResolved.candidates, argCount, 'constructor');
+      if (ctorPool.length > 1) {
+        const disambiguated = disambiguateByOverloadOrArgTypes(
+          ctorPool,
+          overloadHints,
+          preComputedArgTypes,
+        );
+        if (disambiguated) return toResolveResult(disambiguated, typeResolved.tier);
+      }
+    }
+    return null;
+  }
+
+  // 5. No constructor nodes at all — fall back to the class node itself, but
+  //    ONLY when it is actually instantiable. Interface / Trait / Impl / Enum
+  //    are deliberately excluded via `INSTANTIABLE_CLASS_TYPES` to prevent
+  //    false `CALLS` edges from constructor-shaped calls to non-instantiable
+  //    nodes. This also disambiguates the Rust same-file shadowing case
+  //    (`struct User` + `impl User` both present at same-file tier): the
+  //    Impl is stripped, leaving the Struct as the sole instantiable target.
+  //    Addresses Codex review finding on PR #754.
+  const instantiableCandidates = classCandidates.filter((c) =>
+    INSTANTIABLE_CLASS_TYPES.has(c.type),
+  );
+  // Three outcomes below, in order of likelihood after the fix:
+  //   length === 0 → all candidates were stripped as non-instantiable (e.g.
+  //     Interface / Trait / Impl). Null-route via the fall-through `return
+  //     null` — this is the dominant Codex-fix case.
+  //   length === 1 → a single instantiable candidate remains, return it.
+  //   length  >  1 → two or more instantiable classes share the name (e.g.
+  //     homonym classes across files with no import narrowing). Fall through
+  //     to `return null` so the caller null-routes rather than guess.
+  if (instantiableCandidates.length === 1) {
+    return toResolveResult(instantiableCandidates[0], typeResolved.tier);
+  }
+
+  return null;
 };
 
 /**
@@ -1415,6 +2607,7 @@ const walkMixedChain = (
   filePath: string,
   ctx: ResolutionContext,
   onFieldResolved?: OnFieldResolved,
+  heritageMap?: HeritageMap,
 ): string | undefined => {
   let currentType: string | undefined = startType;
   for (const step of chain) {
@@ -1437,10 +2630,31 @@ const walkMixedChain = (
         currentType = fieldResolved.typeName;
         continue;
       }
+      // Fast path: O(1) owner-scoped method lookup via methodByOwner index.
+      // Note: CALLS edges for intermediate chain steps are NOT emitted here — walkMixedChain
+      // only threads types. CALLS edges come from the outer per-call-expression loop in processCalls.
+      //
+      // We call `resolveMethodByOwner` directly (NOT `resolveMemberCall`) because this is
+      // a hot path — called per chain step per call expression — and we only need the
+      // return type string. Going through `resolveMemberCall` would allocate a throwaway
+      // `ResolveResult` with confidence/reason that we immediately discard.
+      const owned = resolveMethodByOwner(currentType, step.name, filePath, ctx, heritageMap);
+      if (owned?.def.returnType) {
+        const fastRetType = extractReturnTypeName(owned.def.returnType);
+        if (fastRetType) {
+          currentType = fastRetType;
+          continue;
+        }
+      }
+      // Fallback: resolve via resolveCallTarget dispatcher (delegates to resolveMemberCall)
       const resolved = resolveCallTarget(
         { calledName: step.name, callForm: 'member', receiverTypeName: currentType },
         filePath,
         ctx,
+        undefined,
+        undefined,
+        undefined,
+        heritageMap,
       );
       if (!resolved) {
         // Stdlib passthrough: unwrap(), clone(), etc. preserve the receiver type
@@ -1466,6 +2680,12 @@ const walkMixedChain = (
 /**
  * Fast path: resolve pre-extracted call sites from workers.
  * No AST parsing — workers already extracted calledName + sourceId.
+ *
+ * @param bindingAccumulator  Phase 9: optional accumulator carrying file-scope
+ *   TypeEnv bindings from all worker-processed files. When the SymbolTable has
+ *   no return type for a cross-file callee, `verifyConstructorBindings` falls
+ *   back to the accumulator via `namedImportMap` to bind the variable to the
+ *   callee's resolved type (e.g. `var x = getUser()` → `x: User`).
  */
 export const processCallsFromExtracted = async (
   graph: KnowledgeGraph,
@@ -1473,7 +2693,8 @@ export const processCallsFromExtracted = async (
   ctx: ResolutionContext,
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
-  implementorMap?: ImplementorMap,
+  heritageMap?: HeritageMap,
+  bindingAccumulator?: BindingAccumulator,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
@@ -1481,7 +2702,13 @@ export const processCallsFromExtracted = async (
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      const verified = verifyConstructorBindings(
+        bindings,
+        filePath,
+        ctx,
+        graph,
+        bindingAccumulator,
+      );
       if (verified.size > 0) {
         fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }
@@ -1506,6 +2733,11 @@ export const processCallsFromExtracted = async (
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
     }
+
+    // Registry-primary gate: skip Python (etc.) entirely when the
+    // scope-based phase owns CALLS for this language.
+    const fileLanguage = getLanguageFromFilename(filePath);
+    if (fileLanguage && isRegistryPrimary(fileLanguage)) continue;
 
     ctx.enableCache(filePath);
     const widenCache: WidenCache = new Map();
@@ -1575,6 +2807,7 @@ export const processCallsFromExtracted = async (
             effectiveCall.filePath,
             ctx,
             makeAccessEmitter(graph, effectiveCall.sourceId),
+            heritageMap,
           );
           if (walkedType) {
             effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
@@ -1589,8 +2822,40 @@ export const processCallsFromExtracted = async (
         undefined,
         widenCache,
         effectiveCall.argTypes,
+        heritageMap,
       );
-      if (!resolved) continue;
+      if (!resolved) {
+        // Vue template component fallback: match calledName against imported .vue basenames
+        if (effectiveCall.filePath.endsWith('.vue') && effectiveCall.sourceId.startsWith('File:')) {
+          const importedFiles = ctx.importMap.get(effectiveCall.filePath);
+          if (importedFiles) {
+            for (const importedPath of importedFiles) {
+              if (!importedPath.endsWith('.vue')) continue;
+              const basename = importedPath.slice(
+                importedPath.lastIndexOf('/') + 1,
+                importedPath.lastIndexOf('.'),
+              );
+              if (basename !== effectiveCall.calledName) continue;
+              const targetFileId = generateId('File', importedPath);
+              if (graph.getNode(targetFileId)) {
+                graph.addRelationship({
+                  id: generateId(
+                    'CALLS',
+                    `${effectiveCall.sourceId}:${effectiveCall.calledName}->${targetFileId}`,
+                  ),
+                  sourceId: effectiveCall.sourceId,
+                  targetId: targetFileId,
+                  type: 'CALLS',
+                  confidence: 0.9,
+                  reason: 'vue-template-component',
+                });
+              }
+              break;
+            }
+          }
+        }
+        continue;
+      }
 
       const relId = generateId(
         'CALLS',
@@ -1605,13 +2870,13 @@ export const processCallsFromExtracted = async (
         reason: resolved.reason,
       });
 
-      if (implementorMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
+      if (heritageMap && effectiveCall.callForm === 'member' && effectiveCall.receiverTypeName) {
         const implTargets = findInterfaceDispatchTargets(
           effectiveCall.calledName,
           effectiveCall.receiverTypeName,
           effectiveCall.filePath,
           ctx,
-          implementorMap,
+          heritageMap,
           resolved.nodeId,
         );
         for (const impl of implTargets) {
@@ -1646,12 +2911,19 @@ export const processAssignmentsFromExtracted = (
   assignments: ExtractedAssignment[],
   ctx: ResolutionContext,
   constructorBindings?: FileConstructorBindings[],
+  bindingAccumulator?: BindingAccumulator,
 ): void => {
   // Build per-file receiver type indexes from verified constructor bindings
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      const verified = verifyConstructorBindings(
+        bindings,
+        filePath,
+        ctx,
+        graph,
+        bindingAccumulator,
+      );
       if (verified.size > 0) {
         fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }
@@ -1672,17 +2944,7 @@ export const processAssignmentsFromExtracted = (
     // Tier 3: static class-as-receiver fallback
     if (!receiverTypeName) {
       const resolved = ctx.resolve(asn.receiverText, asn.filePath);
-      if (
-        resolved?.candidates.some(
-          (d) =>
-            d.type === 'Class' ||
-            d.type === 'Struct' ||
-            d.type === 'Interface' ||
-            d.type === 'Enum' ||
-            d.type === 'Record' ||
-            d.type === 'Impl',
-        )
-      ) {
+      if (resolved?.candidates.some((d) => CLASS_LIKE_TYPES.has(d.type))) {
         receiverTypeName = asn.receiverText;
       }
     }
@@ -1995,7 +3257,7 @@ export const extractFetchCallsFromFiles = async (
     if (!tree) {
       try {
         tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content.length),
+          bufferSize: getTreeSitterBufferSize(file.content),
         });
       } catch {
         continue;

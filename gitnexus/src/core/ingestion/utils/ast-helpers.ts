@@ -1,8 +1,7 @@
 import type Parser from 'tree-sitter';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { Capture, NodeLabel, Range } from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 import { generateId } from '../../../lib/utils.js';
-import { extractSimpleTypeName } from '../type-extractors/shared.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
@@ -25,6 +24,7 @@ export const DEFINITION_CAPTURE_KEYS = [
   'definition.type',
   'definition.const',
   'definition.static',
+  'definition.variable',
   'definition.typedef',
   'definition.macro',
   'definition.union',
@@ -48,7 +48,13 @@ export const getDefinitionNodeFromCaptures = (
 
 /**
  * Node types that represent function/method definitions across languages.
- * Used to find the enclosing function for a call site.
+ * Used by parent-walk in call-processor, parse-worker, and type-env to detect
+ * enclosing function scope boundaries.
+ *
+ * INVARIANT: This set MUST be a superset of every language's
+ * MethodExtractionConfig.methodNodeTypes. When adding a new node type to a
+ * MethodExtractor config, add it here too — otherwise enclosing-function
+ * resolution will silently miss that node type during parent-walks.
  */
 export const FUNCTION_NODE_TYPES = new Set([
   // TypeScript/JavaScript
@@ -92,18 +98,13 @@ export const FUNCTION_NODE_TYPES = new Set([
 ]);
 
 /**
- * Node types for standard function declarations that need C/C++ declarator handling.
- * Used by extractFunctionName to determine how to extract the function name.
+ * AST node types that represent a class-like container (for HAS_METHOD edge extraction).
+ *
+ * INVARIANT: When a language config adds a new node type to `typeDeclarationNodes`,
+ * that type must also be added here AND to `CONTAINER_TYPE_TO_LABEL` below,
+ * otherwise `findEnclosingClassNode` won't recognize it and methods may get
+ * orphaned HAS_METHOD edges or incorrect labels.
  */
-export const FUNCTION_DECLARATION_TYPES = new Set([
-  'function_declaration',
-  'function_definition',
-  'async_function_declaration',
-  'generator_function_declaration',
-  'function_item',
-]);
-
-/** AST node types that represent a class-like container (for HAS_METHOD edge extraction) */
 export const CLASS_CONTAINER_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
@@ -118,10 +119,16 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'enum_item',
   'class_definition',
   'trait_declaration',
+  // PHP
+  'enum_declaration',
   'protocol_declaration',
+  // Dart
+  'mixin_declaration',
+  'extension_declaration',
   // Ruby
   'class',
   'module',
+  'singleton_class', // Ruby: class << self
   // Kotlin
   'object_declaration',
   'companion_object',
@@ -140,26 +147,38 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   struct_item: 'Struct',
   enum_item: 'Enum',
   trait_declaration: 'Trait',
+  enum_declaration: 'Enum',
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
+  mixin_declaration: 'Mixin',
+  extension_declaration: 'Extension',
   class: 'Class',
-  module: 'Module',
+  // Ruby `module` declarations map to `Trait` so they participate in the
+  // class-like type registry used by `lookupClassByName` / `buildHeritageMap`.
+  // This lets `include` / `extend` / `prepend` mixin heritage resolve to
+  // the providing module. Safe for non-Ruby languages: the only supported
+  // grammar that uses the bare `module` AST node type as a container is
+  // Ruby (Rust uses `mod_item`). Any new language adding a `module` node
+  // type must explicitly reclassify here.
+  module: 'Trait',
+  singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
 };
 
-/** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
- *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
- *  Returns true when the captured definition node has a class_body ancestor. */
-export function isKotlinClassMethod(
-  captureNode: { parent?: SyntaxNode | null } | null | undefined,
-): boolean {
-  let ancestor = captureNode?.parent;
-  while (ancestor) {
-    if (ancestor.type === 'class_body') return true;
-    ancestor = ancestor.parent;
+/** Return the first matching ancestor unless a boundary ancestor is reached first. */
+export function findAncestorBeforeBoundary(
+  node: SyntaxNode,
+  targetTypes: ReadonlySet<string>,
+  boundaryTypes: ReadonlySet<string>,
+): SyntaxNode | null {
+  let current = node.parent;
+  while (current !== null) {
+    if (boundaryTypes.has(current.type)) return null;
+    if (targetTypes.has(current.type)) return current;
+    current = current.parent;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -188,12 +207,23 @@ export function getLabelFromCaptures(
   if (captureMap['definition.struct']) return 'Struct';
   if (captureMap['definition.enum']) return 'Enum';
   if (captureMap['definition.namespace']) return 'Namespace';
-  if (captureMap['definition.module']) return 'Module';
+  if (captureMap['definition.module']) {
+    // Let providers reclassify module captures (e.g. Ruby remaps `Module`→`Trait`
+    // so mixin heritage resolves through `lookupClassByName`). Returning null
+    // from labelOverride means "skip this symbol"; treat it as a no-op here so
+    // we keep the default label rather than dropping a real definition.
+    if (provider.labelOverride) {
+      const override = provider.labelOverride(captureMap['definition.module'], 'Module');
+      if (override && override !== 'Module') return override;
+    }
+    return 'Module';
+  }
   if (captureMap['definition.trait']) return 'Trait';
   if (captureMap['definition.impl']) return 'Impl';
   if (captureMap['definition.type']) return 'TypeAlias';
   if (captureMap['definition.const']) return 'Const';
   if (captureMap['definition.static']) return 'Static';
+  if (captureMap['definition.variable']) return 'Variable';
   if (captureMap['definition.typedef']) return 'Typedef';
   if (captureMap['definition.macro']) return 'Macro';
   if (captureMap['definition.union']) return 'Union';
@@ -206,33 +236,68 @@ export function getLabelFromCaptures(
   return 'CodeElement';
 }
 
-/** Walk up AST to find enclosing class/struct/interface/impl, return its generateId or null.
- *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct). */
-export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
+/** Enclosing class info: both the generated node ID and the bare class name. */
+export interface EnclosingClassInfo {
+  classId: string; // e.g. "Class:animal.dart:Animal"
+  className: string; // e.g. "Animal"
+}
+
+/** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
+ *  For Go method_declaration nodes, extracts receiver type (e.g. `func (u *User) Save()` → User struct).
+ *
+ *  @param resolveEnclosingOwner  Optional language-specific hook for container remapping.
+ *    When provided and a CLASS_CONTAINER_TYPES node is found, this hook is called:
+ *    - Return a different SyntaxNode to remap the container (e.g., Ruby singleton_class → class).
+ *    - Return `null` to skip this container and keep walking up.
+ *    - Return the input node (identity) to use the container as-is.
+ *    When omitted, the container node is used as-is.
+ *
+ *    INVARIANT: Implementers SHOULD return either `null`, the input node, or
+ *    another CLASS_CONTAINER_TYPES node. Returning a non-container node is
+ *    permitted but discouraged — it will cause the walk to skip the current
+ *    container and continue from the redirected node's parent. The
+ *    `MAX_ENCLOSING_WALK_ITERATIONS` defense-in-depth guard below prevents
+ *    pathological hooks from creating an infinite loop. */
+const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
+
+export const findEnclosingClassInfo = (
+  node: SyntaxNode,
+  filePath: string,
+  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+): EnclosingClassInfo | null => {
   let current = node.parent;
+  let iterations = 0;
+  // Tracks container nodes already visited via the hook so a misbehaving hook
+  // that keeps redirecting back to the same container cannot loop forever.
+  const visitedContainers = new Set<SyntaxNode>();
   while (current) {
+    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) {
+      // Defense-in-depth: a real source tree has nowhere near this many ancestors.
+      // Bail out rather than hang ingestion.
+      return null;
+    }
     // Go: method_declaration has a receiver parameter with the struct type
     if (current.type === 'method_declaration') {
       const receiver = current.childForFieldName?.('receiver');
       if (receiver) {
-        // receiver is a parameter_list: (u *User) or (u User)
         const paramDecl = receiver.namedChildren?.find?.(
           (c: SyntaxNode) => c.type === 'parameter_declaration',
         );
         if (paramDecl) {
           const typeNode = paramDecl.childForFieldName?.('type');
           if (typeNode) {
-            // Unwrap pointer_type (*User → User)
             const inner = typeNode.type === 'pointer_type' ? typeNode.firstNamedChild : typeNode;
             if (inner && (inner.type === 'type_identifier' || inner.type === 'identifier')) {
-              return generateId('Struct', `${filePath}:${inner.text}`);
+              return {
+                classId: generateId('Struct', `${filePath}:${inner.text}`),
+                className: inner.text,
+              };
             }
           }
         }
       }
     }
     // Go: type_declaration wrapping a struct_type (type User struct { ... })
-    // field_declaration → field_declaration_list → struct_type → type_spec → type_declaration
     if (current.type === 'type_declaration') {
       const typeSpec = current.children?.find((c: SyntaxNode) => c.type === 'type_spec');
       if (typeSpec) {
@@ -241,26 +306,69 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
           const nameNode = typeSpec.childForFieldName?.('name');
           if (nameNode) {
             const label = typeBody.type === 'struct_type' ? 'Struct' : 'Interface';
-            return generateId(label, `${filePath}:${nameNode.text}`);
+            return {
+              classId: generateId(label, `${filePath}:${nameNode.text}`),
+              className: nameNode.text,
+            };
           }
         }
       }
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
+      // Delegate language-specific container remapping to the provider hook.
+      if (resolveEnclosingOwner) {
+        if (visitedContainers.has(current)) {
+          // We've already asked the hook about this container once — a loop
+          // would form (e.g., hook redirects to a child node whose parent is
+          // this same container). Skip and walk up.
+          current = current.parent;
+          continue;
+        }
+        visitedContainers.add(current);
+        const resolved = resolveEnclosingOwner(current);
+        if (resolved === null) {
+          // Provider says skip this container — keep walking up.
+          current = current.parent;
+          continue;
+        }
+        if (resolved !== current) {
+          // Provider remapped to a different node — re-evaluate from there.
+          current = resolved;
+          continue;
+        }
+      }
+
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
+      // NOTE: This impl_item ownership logic is duplicated in rust.ts:extractOwnerName.
+      // If modifying this block, update the other location too.
       if (current.type === 'impl_item') {
         const children = current.children ?? [];
         const forIdx = children.findIndex((c: SyntaxNode) => c.text === 'for');
         if (forIdx !== -1) {
           const nameNode = children
             .slice(forIdx + 1)
-            .find((c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'identifier');
+            .find(
+              (c: SyntaxNode) =>
+                c.type === 'type_identifier' ||
+                c.type === 'scoped_type_identifier' ||
+                c.type === 'identifier',
+            );
           if (nameNode) {
-            return generateId('Impl', `${filePath}:${nameNode.text}`);
+            return {
+              classId: generateId('Struct', `${filePath}:${nameNode.text}`),
+              className: nameNode.text,
+            };
           }
         }
-        // Fall through: plain `impl Struct {}` — use first type_identifier below
+        const firstType = children.find((c: SyntaxNode) => c.type === 'type_identifier');
+        if (firstType) {
+          return {
+            classId: generateId('Impl', `${filePath}:${firstType.text}`),
+            className: firstType.text,
+          };
+        }
       }
+
       const nameNode =
         current.childForFieldName?.('name') ??
         current.children?.find(
@@ -271,13 +379,31 @@ export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string
             c.type === 'constant',
         );
       if (nameNode) {
-        const label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
-        return generateId(label, `${filePath}:${nameNode.text}`);
+        let label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
+        // Kotlin: class_declaration with an anonymous "interface" keyword child
+        // is actually an interface, not a class. Refine the label to match the
+        // node ID generated from the tree-sitter query capture (@definition.interface).
+        if (
+          current.type === 'class_declaration' &&
+          label === 'Class' &&
+          current.children?.some((c: SyntaxNode) => c.type === 'interface')
+        ) {
+          label = 'Interface';
+        }
+        return {
+          classId: generateId(label, `${filePath}:${nameNode.text}`),
+          className: nameNode.text,
+        };
       }
     }
     current = current.parent;
   }
   return null;
+};
+
+/** Convenience wrapper: returns just the class ID string (backward compat). */
+export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
+  return findEnclosingClassInfo(node, filePath)?.classId ?? null;
 };
 
 /**
@@ -301,557 +427,64 @@ export const findSiblingChild = (
   return null;
 };
 
-/**
- * Extract function name and label from a function_definition or similar AST node.
- * Handles C/C++ qualified_identifier (ClassName::MethodName) and other language patterns.
- */
-export const extractFunctionName = (
-  node: SyntaxNode,
-): { funcName: string | null; label: NodeLabel } => {
-  let funcName: string | null = null;
-  let label: NodeLabel = 'Function';
-
-  // Swift init/deinit
-  if (node.type === 'init_declaration' || node.type === 'deinit_declaration') {
-    return {
-      funcName: node.type === 'init_declaration' ? 'init' : 'deinit',
-      label: 'Constructor',
-    };
+/** Generic name extraction from a function-like AST node.
+ *  Tries `node.childForFieldName('name')?.text`, then scans children for
+ *  `identifier` / `property_identifier` / `simple_identifier`. */
+export const genericFuncName = (node: SyntaxNode): string | null => {
+  const nameField = node.childForFieldName?.('name');
+  if (nameField) return nameField.text;
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (
+      c?.type === 'identifier' ||
+      c?.type === 'property_identifier' ||
+      c?.type === 'simple_identifier'
+    )
+      return c.text;
   }
-
-  if (FUNCTION_DECLARATION_TYPES.has(node.type)) {
-    // C/C++: function_definition -> [pointer_declarator ->] function_declarator -> qualified_identifier/identifier
-    // Unwrap pointer_declarator / reference_declarator wrappers to reach function_declarator
-    let declarator = node.childForFieldName?.('declarator');
-    if (!declarator) {
-      for (let i = 0; i < node.childCount; i++) {
-        const c = node.child(i);
-        if (c?.type === 'function_declarator') {
-          declarator = c;
-          break;
-        }
-      }
-    }
-    while (
-      declarator &&
-      (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator')
-    ) {
-      let nextDeclarator = declarator.childForFieldName?.('declarator');
-      if (!nextDeclarator) {
-        for (let i = 0; i < declarator.childCount; i++) {
-          const c = declarator.child(i);
-          if (
-            c?.type === 'function_declarator' ||
-            c?.type === 'pointer_declarator' ||
-            c?.type === 'reference_declarator'
-          ) {
-            nextDeclarator = c;
-            break;
-          }
-        }
-      }
-      declarator = nextDeclarator;
-    }
-    if (declarator) {
-      let innerDeclarator = declarator.childForFieldName?.('declarator');
-      if (!innerDeclarator) {
-        for (let i = 0; i < declarator.childCount; i++) {
-          const c = declarator.child(i);
-          if (
-            c?.type === 'qualified_identifier' ||
-            c?.type === 'identifier' ||
-            c?.type === 'field_identifier' ||
-            c?.type === 'parenthesized_declarator'
-          ) {
-            innerDeclarator = c;
-            break;
-          }
-        }
-      }
-
-      if (innerDeclarator?.type === 'qualified_identifier') {
-        let nameNode = innerDeclarator.childForFieldName?.('name');
-        if (!nameNode) {
-          for (let i = 0; i < innerDeclarator.childCount; i++) {
-            const c = innerDeclarator.child(i);
-            if (c?.type === 'identifier') {
-              nameNode = c;
-              break;
-            }
-          }
-        }
-        if (nameNode?.text) {
-          funcName = nameNode.text;
-          label = 'Method';
-        }
-      } else if (
-        innerDeclarator?.type === 'identifier' ||
-        innerDeclarator?.type === 'field_identifier'
-      ) {
-        // field_identifier is used for method names inside C++ class bodies
-        funcName = innerDeclarator.text;
-        if (innerDeclarator.type === 'field_identifier') label = 'Method';
-      } else if (innerDeclarator?.type === 'parenthesized_declarator') {
-        let nestedId: SyntaxNode | null = null;
-        for (let i = 0; i < innerDeclarator.childCount; i++) {
-          const c = innerDeclarator.child(i);
-          if (c?.type === 'qualified_identifier' || c?.type === 'identifier') {
-            nestedId = c;
-            break;
-          }
-        }
-        if (nestedId?.type === 'qualified_identifier') {
-          let nameNode = nestedId.childForFieldName?.('name');
-          if (!nameNode) {
-            for (let i = 0; i < nestedId.childCount; i++) {
-              const c = nestedId.child(i);
-              if (c?.type === 'identifier') {
-                nameNode = c;
-                break;
-              }
-            }
-          }
-          if (nameNode?.text) {
-            funcName = nameNode.text;
-            label = 'Method';
-          }
-        } else if (nestedId?.type === 'identifier') {
-          funcName = nestedId.text;
-        }
-      }
-    }
-
-    // Fallback for other languages (Kotlin uses simple_identifier, Swift uses simple_identifier)
-    if (!funcName) {
-      let nameNode = node.childForFieldName?.('name');
-      if (!nameNode) {
-        for (let i = 0; i < node.childCount; i++) {
-          const c = node.child(i);
-          if (
-            c?.type === 'identifier' ||
-            c?.type === 'property_identifier' ||
-            c?.type === 'simple_identifier'
-          ) {
-            nameNode = c;
-            break;
-          }
-        }
-      }
-      funcName = nameNode?.text;
-    }
-  } else if (node.type === 'impl_item') {
-    let funcItem: SyntaxNode | null = null;
-    for (let i = 0; i < node.childCount; i++) {
-      const c = node.child(i);
-      if (c?.type === 'function_item') {
-        funcItem = c;
-        break;
-      }
-    }
-    if (funcItem) {
-      let nameNode = funcItem.childForFieldName?.('name');
-      if (!nameNode) {
-        for (let i = 0; i < funcItem.childCount; i++) {
-          const c = funcItem.child(i);
-          if (c?.type === 'identifier') {
-            nameNode = c;
-            break;
-          }
-        }
-      }
-      funcName = nameNode?.text;
-      label = 'Method';
-    }
-  } else if (node.type === 'method_definition') {
-    let nameNode = node.childForFieldName?.('name');
-    if (!nameNode) {
-      for (let i = 0; i < node.childCount; i++) {
-        const c = node.child(i);
-        if (c?.type === 'property_identifier') {
-          nameNode = c;
-          break;
-        }
-      }
-    }
-    funcName = nameNode?.text;
-    label = 'Method';
-  } else if (node.type === 'method_declaration' || node.type === 'constructor_declaration') {
-    let nameNode = node.childForFieldName?.('name');
-    if (!nameNode) {
-      for (let i = 0; i < node.childCount; i++) {
-        const c = node.child(i);
-        if (c?.type === 'identifier') {
-          nameNode = c;
-          break;
-        }
-      }
-    }
-    funcName = nameNode?.text;
-    label = 'Method';
-  } else if (node.type === 'arrow_function' || node.type === 'function_expression') {
-    const parent = node.parent;
-    if (parent?.type === 'variable_declarator') {
-      let nameNode = parent.childForFieldName?.('name');
-      if (!nameNode) {
-        for (let i = 0; i < parent.childCount; i++) {
-          const c = parent.child(i);
-          if (c?.type === 'identifier') {
-            nameNode = c;
-            break;
-          }
-        }
-      }
-      funcName = nameNode?.text;
-    }
-  } else if (node.type === 'method' || node.type === 'singleton_method') {
-    let nameNode = node.childForFieldName?.('name');
-    if (!nameNode) {
-      for (let i = 0; i < node.childCount; i++) {
-        const c = node.child(i);
-        if (c?.type === 'identifier') {
-          nameNode = c;
-          break;
-        }
-      }
-    }
-    funcName = nameNode?.text;
-    label = 'Method';
-  } else if (node.type === 'function_signature') {
-    // Dart: top-level function signatures
-    let nameNode = node.childForFieldName?.('name');
-    if (!nameNode) {
-      for (let i = 0; i < node.childCount; i++) {
-        const c = node.child(i);
-        if (c?.type === 'identifier') {
-          nameNode = c;
-          break;
-        }
-      }
-    }
-    funcName = nameNode?.text ?? null;
-  } else if (node.type === 'method_signature') {
-    // Dart: method_signature wraps function_signature
-    let funcSig: SyntaxNode | null = null;
-    for (let i = 0; i < node.childCount; i++) {
-      const c = node.child(i);
-      if (c?.type === 'function_signature') {
-        funcSig = c;
-        break;
-      }
-    }
-    if (funcSig) {
-      let nameNode = funcSig.childForFieldName?.('name');
-      if (!nameNode) {
-        for (let i = 0; i < funcSig.childCount; i++) {
-          const c = funcSig.child(i);
-          if (c?.type === 'identifier') {
-            nameNode = c;
-            break;
-          }
-        }
-      }
-      funcName = nameNode?.text ?? null;
-    }
-    label = 'Method';
-  }
-
-  return { funcName, label };
+  return null;
 };
 
-export interface MethodSignature {
-  parameterCount: number | undefined;
-  /** Number of required (non-optional, non-default) parameters.
-   *  Only set when fewer than parameterCount — enables range-based arity filtering.
-   *  undefined means all parameters are required (or metadata unavailable). */
-  requiredParameterCount: number | undefined;
-  /** Per-parameter type names extracted via extractSimpleTypeName.
-   *  Only populated for languages with method overloading (Java, Kotlin, C#, C++).
-   *  undefined (not []) when no types are extractable — avoids empty array allocations. */
-  parameterTypes: string[] | undefined;
-  returnType: string | undefined;
-}
+/** AST node types that represent a method definition (for `inferFunctionLabel`). */
+export const METHOD_LABEL_NODE_TYPES = new Set([
+  'method_definition',
+  'method_declaration',
+  'method',
+  'singleton_method',
+]);
 
-/** Argument list node types shared between extractMethodSignature and countCallArguments. */
+/** AST node types that represent a constructor definition (for `inferFunctionLabel`). */
+export const CONSTRUCTOR_LABEL_NODE_TYPES = new Set([
+  'constructor_declaration',
+  'compact_constructor_declaration',
+]);
+
+/** Infer node label from AST node type for function-like nodes without a provider hook. */
+export const inferFunctionLabel = (nodeType: string): NodeLabel =>
+  METHOD_LABEL_NODE_TYPES.has(nodeType)
+    ? 'Method'
+    : CONSTRUCTOR_LABEL_NODE_TYPES.has(nodeType)
+      ? 'Constructor'
+      : 'Function';
+
+/** Argument list node types shared between countCallArguments and call-resolution helpers. */
 export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', 'value_arguments']);
-
-/**
- * Extract parameter count and return type text from an AST method/function node.
- * Works across languages by looking for common AST patterns.
- */
-export const extractMethodSignature = (node: SyntaxNode | null | undefined): MethodSignature => {
-  let parameterCount: number | undefined = 0;
-  let requiredCount = 0;
-  let returnType: string | undefined;
-  let isVariadic = false;
-  const paramTypes: string[] = [];
-
-  if (!node)
-    return {
-      parameterCount,
-      requiredParameterCount: undefined,
-      parameterTypes: undefined,
-      returnType,
-    };
-
-  const paramListTypes = new Set([
-    'formal_parameters',
-    'parameters',
-    'parameter_list',
-    'function_parameters',
-    'method_parameters',
-    'function_value_parameters',
-    'formal_parameter_list', // Dart
-  ]);
-
-  // Node types that indicate variadic/rest parameters
-  const VARIADIC_PARAM_TYPES = new Set([
-    'variadic_parameter_declaration', // Go: ...string
-    'variadic_parameter', // Rust: extern "C" fn(...)
-    'spread_parameter', // Java: Object... args
-    'list_splat_pattern', // Python: *args
-    'dictionary_splat_pattern', // Python: **kwargs
-  ]);
-
-  /** AST node types that represent parameters with default values. */
-  const OPTIONAL_PARAM_TYPES = new Set([
-    'optional_parameter', // TypeScript, Ruby: (x?: number), (x: number = 5), def f(x = 5)
-    'default_parameter', // Python: def f(x=5)
-    'typed_default_parameter', // Python: def f(x: int = 5)
-    'optional_parameter_declaration', // C++: void f(int x = 5)
-  ]);
-
-  /** Check if a parameter node has a default value (handles Kotlin, C#, Swift, PHP
-   *  where defaults are expressed as child nodes rather than distinct node types). */
-  const hasDefaultValue = (paramNode: SyntaxNode): boolean => {
-    if (OPTIONAL_PARAM_TYPES.has(paramNode.type)) return true;
-    // C#, Swift, PHP: check for '=' token or equals_value_clause child
-    for (let i = 0; i < paramNode.childCount; i++) {
-      const c = paramNode.child(i);
-      if (!c) continue;
-      if (c.type === '=' || c.type === 'equals_value_clause') return true;
-    }
-    // Kotlin: default values are siblings of the parameter node, not children.
-    // The AST is: parameter, =, <literal>  — all at function_value_parameters level.
-    // Check if the immediately following sibling is '=' (default value separator).
-    const sib = paramNode.nextSibling;
-    if (sib && sib.type === '=') return true;
-    return false;
-  };
-
-  const findParameterList = (current: SyntaxNode): SyntaxNode | null => {
-    for (const child of current.children) {
-      if (paramListTypes.has(child.type)) return child;
-    }
-    for (const child of current.children) {
-      const nested = findParameterList(child);
-      if (nested) return nested;
-    }
-    return null;
-  };
-
-  const parameterList = paramListTypes.has(node.type)
-    ? node // node itself IS the parameter list (e.g. C# primary constructors)
-    : (node.childForFieldName?.('parameters') ?? findParameterList(node));
-
-  if (parameterList && paramListTypes.has(parameterList.type)) {
-    for (const param of parameterList.namedChildren) {
-      if (param.type === 'comment') continue;
-      if (
-        param.text === 'self' ||
-        param.text === '&self' ||
-        param.text === '&mut self' ||
-        param.type === 'self_parameter'
-      ) {
-        continue;
-      }
-      // Kotlin: default values are siblings of the parameter node inside
-      // function_value_parameters, so they appear as named children (e.g.
-      // string_literal, integer_literal, boolean_literal, call_expression).
-      // Skip any named child that isn't a parameter-like or modifier node.
-      if (
-        param.type.endsWith('_literal') ||
-        param.type === 'call_expression' ||
-        param.type === 'navigation_expression' ||
-        param.type === 'prefix_expression' ||
-        param.type === 'parenthesized_expression'
-      ) {
-        continue;
-      }
-      // Check for variadic parameter types
-      if (VARIADIC_PARAM_TYPES.has(param.type)) {
-        isVariadic = true;
-        continue;
-      }
-      // TypeScript/JavaScript: rest parameter — required_parameter containing rest_pattern
-      if (param.type === 'required_parameter' || param.type === 'optional_parameter') {
-        for (const child of param.children) {
-          if (child.type === 'rest_pattern') {
-            isVariadic = true;
-            break;
-          }
-        }
-        if (isVariadic) continue;
-      }
-      // Kotlin: vararg modifier on a regular parameter
-      if (param.type === 'parameter' || param.type === 'formal_parameter') {
-        const prev = param.previousSibling;
-        if (prev?.type === 'parameter_modifiers' && prev.text.includes('vararg')) {
-          isVariadic = true;
-        }
-      }
-      // Extract parameter type name for overload disambiguation.
-      // Works for Java (formal_parameter), Kotlin (parameter), C# (parameter),
-      // C++ (parameter_declaration). Uses childForFieldName('type') which is the
-      // standard tree-sitter field for typed parameters across these languages.
-      // Kotlin uses positional children instead of 'type' field — fall back to
-      // searching for user_type/nullable_type/predefined_type children.
-      const paramTypeNode = param.childForFieldName('type');
-      if (paramTypeNode) {
-        const typeName = extractSimpleTypeName(paramTypeNode);
-        paramTypes.push(typeName ?? 'unknown');
-      } else {
-        // Kotlin: parameter → [simple_identifier, user_type|nullable_type]
-        let found = false;
-        for (const child of param.namedChildren) {
-          if (
-            child.type === 'user_type' ||
-            child.type === 'nullable_type' ||
-            child.type === 'type_identifier' ||
-            child.type === 'predefined_type'
-          ) {
-            const typeName = extractSimpleTypeName(child);
-            paramTypes.push(typeName ?? 'unknown');
-            found = true;
-            break;
-          }
-        }
-        if (!found) paramTypes.push('unknown');
-      }
-      if (!hasDefaultValue(param)) requiredCount++;
-      parameterCount++;
-    }
-    // C/C++: bare `...` token in parameter list (not a named child — check all children)
-    if (!isVariadic) {
-      for (const child of parameterList.children) {
-        if (!child.isNamed && child.text === '...') {
-          isVariadic = true;
-          break;
-        }
-      }
-    }
-  }
-
-  // Swift fallback: tree-sitter-swift places `parameter` nodes as direct children of
-  // function_declaration without a wrapping parameters/function_parameters list node.
-  // When no parameter list was found, count direct `parameter` children on the node.
-  if (!parameterList && parameterCount === 0) {
-    for (const child of node.namedChildren) {
-      if (child.type === 'parameter') {
-        if (!hasDefaultValue(child)) requiredCount++;
-        parameterCount++;
-      }
-    }
-  }
-
-  // Return type extraction — language-specific field names
-  // Go: 'result' field is either a type_identifier or parameter_list (multi-return)
-  const goResult = node.childForFieldName?.('result');
-  if (goResult) {
-    if (goResult.type === 'parameter_list') {
-      // Multi-return: extract first parameter's type only (e.g. (*User, error) → *User)
-      const firstParam = goResult.firstNamedChild;
-      if (firstParam?.type === 'parameter_declaration') {
-        const typeNode = firstParam.childForFieldName('type');
-        if (typeNode) returnType = typeNode.text;
-      } else if (firstParam) {
-        // Unnamed return types: (string, error) — first child is a bare type node
-        returnType = firstParam.text;
-      }
-    } else {
-      returnType = goResult.text;
-    }
-  }
-
-  // Rust: 'return_type' field — the value IS the type node (e.g. primitive_type, type_identifier).
-  // Skip if the node is a type_annotation (TS/Python), which is handled by the generic loop below.
-  if (!returnType) {
-    const rustReturn = node.childForFieldName?.('return_type');
-    if (rustReturn && rustReturn.type !== 'type_annotation') {
-      returnType = rustReturn.text;
-    }
-  }
-
-  // C/C++: 'type' field on function_definition
-  if (!returnType) {
-    const cppType = node.childForFieldName?.('type');
-    if (cppType && cppType.text !== 'void') {
-      returnType = cppType.text;
-    }
-  }
-
-  // C#: 'returns' field on method_declaration
-  if (!returnType) {
-    const csReturn = node.childForFieldName?.('returns');
-    if (csReturn && csReturn.text !== 'void') {
-      returnType = csReturn.text;
-    }
-  }
-
-  // TS/Rust/Python/C#/Kotlin: type_annotation or return_type child
-  if (!returnType) {
-    for (const child of node.children) {
-      if (child.type === 'type_annotation' || child.type === 'return_type') {
-        const typeNode = child.children.find((c) => c.isNamed);
-        if (typeNode) returnType = typeNode.text;
-      }
-    }
-  }
-
-  // Kotlin: fun getUser(): User — return type is a bare user_type child of
-  // function_declaration. The Kotlin grammar does NOT wrap it in type_annotation
-  // or return_type; it appears as a direct child after function_value_parameters.
-  // Note: Kotlin uses function_value_parameters (not a field), so we find it by type.
-  if (!returnType) {
-    let paramsEnd = -1;
-    for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
-      if (!child) continue;
-      if (child.type === 'function_value_parameters' || child.type === 'value_parameters') {
-        paramsEnd = child.endIndex;
-      }
-      if (paramsEnd >= 0 && child.type === 'user_type' && child.startIndex > paramsEnd) {
-        returnType = child.text;
-        break;
-      }
-    }
-  }
-
-  if (isVariadic) parameterCount = undefined;
-
-  // Only include parameterTypes when at least one type was successfully extracted.
-  // Use undefined (not []) to avoid empty array allocations for untyped parameters.
-  const hasTypes = paramTypes.length > 0 && paramTypes.some((t) => t !== 'unknown');
-  // Only set requiredParameterCount when it differs from total — saves memory on the common case.
-  const requiredParameterCount =
-    !isVariadic && requiredCount < (parameterCount ?? 0) ? requiredCount : undefined;
-  return {
-    parameterCount,
-    requiredParameterCount,
-    parameterTypes: hasTypes ? paramTypes : undefined,
-    returnType,
-  };
-};
 
 // ============================================================================
 // Generic AST traversal helpers (shared by parse-worker + php-helpers)
 // ============================================================================
 
 /** Walk an AST node depth-first, returning the first descendant with the given type. */
-export function findDescendant(node: SyntaxNode, type: string): SyntaxNode | null {
-  if (node.type === type) return node;
-  for (const child of node.children ?? []) {
-    const found = findDescendant(child, type);
-    if (found) return found;
+export function findDescendant(root: SyntaxNode, type: string): SyntaxNode | null {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === type) return node;
+    // Push in reverse order so left children are visited first (depth-first)
+    const children = node.children ?? [];
+    for (let i = children.length - 1; i >= 0; i--) {
+      stack.push(children[i]);
+    }
   }
   return null;
 }
@@ -865,23 +498,89 @@ export function extractStringContent(node: SyntaxNode | null | undefined): strin
   return null;
 }
 
-/** Check if a C/C++ function_definition is inside a class or struct body.
- *  Used by the C/C++ labelOverride to skip duplicate function captures
- *  that are already covered by definition.method queries. */
-export function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
-  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
-  while (ancestor) {
-    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
-}
-
 /** Find the first direct named child of a tree-sitter node matching the given type. */
 export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child?.type === type) return child;
+  }
+  return null;
+}
+
+// ============================================================================
+// Capture + range helpers (formerly python/ast-utils.ts — language-agnostic)
+// ============================================================================
+
+/** Convert a tree-sitter node to a `Capture` with 1-based line numbers
+ *  (matching RFC §2.1). The tag includes the leading `@`. */
+export function nodeToCapture(name: string, node: SyntaxNode): Capture {
+  return {
+    name,
+    range: {
+      startLine: node.startPosition.row + 1,
+      startCol: node.startPosition.column,
+      endLine: node.endPosition.row + 1,
+      endCol: node.endPosition.column,
+    },
+    text: node.text,
+  };
+}
+
+/** Build a `Capture` whose range mirrors `atNode` but whose `text` is
+ *  caller-supplied. Used to synthesize markers that don't have a
+ *  corresponding source token. */
+export function syntheticCapture(name: string, atNode: SyntaxNode, text: string): Capture {
+  return {
+    name,
+    range: {
+      startLine: atNode.startPosition.row + 1,
+      startCol: atNode.startPosition.column,
+      endLine: atNode.endPosition.row + 1,
+      endCol: atNode.endPosition.column,
+    },
+    text,
+  };
+}
+
+function rangeMatches(node: SyntaxNode, range: Range): boolean {
+  return (
+    node.startPosition.row + 1 === range.startLine &&
+    node.startPosition.column === range.startCol &&
+    node.endPosition.row + 1 === range.endLine &&
+    node.endPosition.column === range.endCol
+  );
+}
+
+/** Walk a subtree to find a node whose range exactly matches AND whose
+ *  type matches `expectedType` (when given). When multiple nodes share
+ *  the range — e.g., `function_definition` and its inner `block` body
+ *  for a one-liner — the type filter disambiguates.
+ *
+ *  Iterative depth-first-left-to-right via an explicit stack. Children
+ *  are pushed in reverse index order so LIFO pop visits them in source
+ *  order. Prunes branches that can't contain the target range by
+ *  row bounds — same optimization the prior recursive form used, minus
+ *  the early-break since stack-push is cheap. */
+export function findNodeAtRange(
+  root: SyntaxNode,
+  range: Range,
+  expectedType?: string,
+): SyntaxNode | null {
+  const startRow = range.startLine - 1;
+  const endRow = range.endLine - 1;
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (rangeMatches(node, range) && (expectedType === undefined || node.type === expectedType)) {
+      return node;
+    }
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child === null) continue;
+      if (child.endPosition.row < startRow) continue;
+      if (child.startPosition.row > endRow) continue;
+      stack.push(child);
+    }
   }
   return null;
 }
