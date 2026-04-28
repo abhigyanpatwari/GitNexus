@@ -220,7 +220,10 @@ import { Logger } from '@acme/shared/logging';
 
       const results = await scanRepoForImports(tmpDir, targets);
       expect(results).toHaveLength(2);
-      expect(results.map((r) => r.filePath).sort()).toEqual(['src/app.ts', 'src/utils/helper.ts']);
+      expect(results.map((r) => r.filePath.replace(/\\/g, '/')).sort()).toEqual([
+        'src/app.ts',
+        'src/utils/helper.ts',
+      ]);
     });
 
     it('ignores node_modules', async () => {
@@ -229,7 +232,7 @@ import { Logger } from '@acme/shared/logging';
 
       const results = await scanRepoForImports(tmpDir, targets);
       expect(results).toHaveLength(1);
-      expect(results[0].filePath).toBe('src/app.ts');
+      expect(results[0].filePath.replace(/\\/g, '/')).toBe('src/app.ts');
     });
 
     it('returns empty for empty target set', async () => {

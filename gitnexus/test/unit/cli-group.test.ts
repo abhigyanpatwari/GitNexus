@@ -168,17 +168,18 @@ describe('group CLI', () => {
 
       await runCommand(['group', 'repos', '/a', '/b', '--name', 'custom']);
 
-      expect(mockGroupService.groupDiscover).toHaveBeenCalledWith(
-        expect.objectContaining({
-          repoPaths: expect.arrayContaining([
-            expect.stringContaining('/a'),
-            expect.stringContaining('/b'),
-          ]),
-          name: 'custom',
-          force: false,
-          skipSync: false,
-        }),
+      expect(mockGroupService.groupDiscover).toHaveBeenCalledTimes(1);
+      const callArg = mockGroupService.groupDiscover.mock.calls[0][0] as {
+        repoPaths: string[];
+        name: string;
+        force: boolean;
+        skipSync: boolean;
+      };
+      const normalizedPaths = callArg.repoPaths.map((p) => p.replace(/\\/g, '/'));
+      expect(normalizedPaths).toEqual(
+        expect.arrayContaining([expect.stringContaining('/a'), expect.stringContaining('/b')]),
       );
+      expect(callArg).toMatchObject({ name: 'custom', force: false, skipSync: false });
     });
   });
 

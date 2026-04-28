@@ -155,7 +155,7 @@ describe('CodeDepExtractor', () => {
       expect(consumers[0].contractId).toBe('lib::@acme/shared::formatDate');
       expect(consumers[0].type).toBe('lib');
       expect(consumers[0].role).toBe('consumer');
-      expect(consumers[0].symbolRef.filePath).toBe('src/app.ts');
+      expect(consumers[0].symbolRef.filePath.replace(/\\/g, '/')).toBe('src/app.ts');
       expect(consumers[0].confidence).toBe(0.9);
 
       expect(consumers[1].contractId).toBe('lib::@acme/shared::Logger');
