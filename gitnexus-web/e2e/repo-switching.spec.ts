@@ -122,8 +122,12 @@ test.describe('?project= URL persistence', () => {
       timeout: READY_TIMEOUT_MS,
     });
 
-    const url = new URL(page.url());
-    expect(url.searchParams.get('project')).toBeTruthy();
+    // Poll the URL — under parallel CI workers, history.replaceState() can
+    // briefly trail the status-ready render. A single read may observe the
+    // pre-replaceState URL, even though the state update is in flight.
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get('project'), { timeout: 5_000 })
+      .toBeTruthy();
   });
 });
 
@@ -157,8 +161,13 @@ test.describe('Windows path normalization', () => {
   test('project name uses basename when /api/repo returns a Windows-style repoPath', async ({
     page,
   }) => {
-    const repoName = firstRepoName || 'test-repo';
-    const windowsPath = `C:\\Users\\LENOVO\\.gitnexus\\repos\\${repoName}`;
+    // Use the last `/`-separated segment so the path's tail is a single segment
+    // even if the live backend's first repo name happens to contain a `/`. The
+    // production code splits on both `\` and `/`, so a slashed name would otherwise
+    // make `expect(project).toBe(repoName)` compare against a multi-segment name
+    // while the URL only carries the final segment.
+    const baseName = (firstRepoName || 'test-repo').split('/').pop() || 'test-repo';
+    const windowsPath = `C:\\Users\\LENOVO\\.gitnexus\\repos\\${baseName}`;
 
     // Mock /api/repo to return a Windows backslash path while keeping name correct
     await page.route(/\/api\/repo(?!s)(\?.*)?$/, (route) =>
@@ -179,11 +188,13 @@ test.describe('Windows path normalization', () => {
     });
 
     // URL ?project= must be the short basename, NOT the full Windows path
-    const url = new URL(page.url());
-    const project = url.searchParams.get('project');
-    expect(project).toBeTruthy();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get('project'), { timeout: 5_000 })
+      .toBeTruthy();
+
+    const project = new URL(page.url()).searchParams.get('project');
     expect(project).not.toContain('\\');
     expect(project).not.toContain('LENOVO');
-    expect(project).toBe(repoName);
+    expect(project).toBe(baseName);
   });
 });

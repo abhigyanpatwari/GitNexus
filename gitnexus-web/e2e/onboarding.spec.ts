@@ -269,15 +269,18 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
     }
   });
 
+  // The project badge is the only header button containing the pulsing
+  // status-dot span (`bg-node-function` + `animate-pulse`). Selecting by this
+  // distinguishing child is more robust than `.first()` on `header button:has(svg)`,
+  // which silently drifts whenever a new icon-bearing button is added to the header.
+  const PROJECT_BADGE = 'header button:has(span.bg-node-function.animate-pulse)';
+
   test('project badge opens repo dropdown', async ({ page }, testInfo) => {
     await enterExploringView(page);
     await page.screenshot({ path: testInfo.outputPath('exploring-loaded.png') });
 
-    // Click the project badge (has a chevron)
-    const badge = page
-      .locator('header button')
-      .filter({ has: page.locator('svg') })
-      .first();
+    const badge = page.locator(PROJECT_BADGE);
+    await expect(badge).toBeVisible();
     await badge.click();
 
     // Repo dropdown should be visible
@@ -289,11 +292,8 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
   test('analyze option opens inline form', async ({ page }, testInfo) => {
     await enterExploringView(page);
 
-    // Open repo dropdown
-    const badge = page
-      .locator('header button')
-      .filter({ has: page.locator('svg') })
-      .first();
+    const badge = page.locator(PROJECT_BADGE);
+    await expect(badge).toBeVisible();
     await badge.click();
 
     // Click "Analyze a new repository..."
