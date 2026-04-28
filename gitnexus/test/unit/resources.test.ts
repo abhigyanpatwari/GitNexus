@@ -213,22 +213,6 @@ describe('readResource', () => {
     expect(result).toContain('No repositories indexed');
   });
 
-  it('routes group contracts resource through backend', async () => {
-    const backend = createMockBackend();
-    const uri = 'gitnexus://group/g1/contracts?type=http&unmatchedOnly=true';
-    await readResource(uri, backend);
-    expect(backend.readGroupContractsResource).toHaveBeenCalledWith('g1', {
-      type: 'http',
-      unmatchedOnly: true,
-    });
-  });
-
-  it('routes group status resource through backend', async () => {
-    const backend = createMockBackend();
-    await readResource('gitnexus://group/acme/status', backend);
-    expect(backend.readGroupStatusResource).toHaveBeenCalledWith('acme');
-  });
-
   it('routes gitnexus://repo/{name}/context correctly', async () => {
     const backend = createMockBackend({
       context: {

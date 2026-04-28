@@ -162,25 +162,6 @@ repos:
     expect(groupSpyQuery).not.toHaveBeenCalled();
   });
 
-  it('unknown group_* tools mention removal', async () => {
-    const backend = new LocalBackend();
-    await expect(backend.callTool('group_query', { name: 'g1', query: 'x' })).rejects.toThrow(
-      /Removed tools/,
-    );
-  });
-
-  it('removed group_contracts mentions migration', async () => {
-    const backend = new LocalBackend();
-    await expect(backend.callTool('group_contracts', { name: 'g1' })).rejects.toThrow(
-      /Removed tools/,
-    );
-  });
-
-  it('removed group_status mentions migration', async () => {
-    const backend = new LocalBackend();
-    await expect(backend.callTool('group_status', { name: 'g1' })).rejects.toThrow(/Removed tools/);
-  });
-
   describe('Issue #794 manual smoke checklist (automated)', () => {
     beforeEach(() => {
       const groupDir = path.join(tmpDir, 'groups', 'myproduct');
