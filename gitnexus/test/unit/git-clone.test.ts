@@ -96,6 +96,25 @@ describe('git-clone', () => {
       );
     });
 
+    it('blocks IPv4-compatible IPv6 (RFC 4291 deprecated, ::w.x.y.z)', () => {
+      // Node's URL parser collapses ::127.0.0.1 to ::7f00:1 — no ::ffff: marker,
+      // but still routable to 127.0.0.1 on most stacks.
+      expect(() => validateGitUrl('http://[::127.0.0.1]/repo.git')).toThrow('private/internal');
+      expect(() => validateGitUrl('http://[::7f00:1]/repo.git')).toThrow('private/internal');
+      // 169.254.169.254 (cloud metadata) embedded as IPv4-compatible
+      expect(() => validateGitUrl('http://[::a9fe:a9fe]/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks NAT64 well-known prefix (64:ff9b::/96)', () => {
+      // 64:ff9b::7f00:1 → 127.0.0.1 via NAT64 translation
+      expect(() => validateGitUrl('http://[64:ff9b::7f00:1]/repo.git')).toThrow('private/internal');
+      expect(() => validateGitUrl('http://[64:ff9b::a9fe:a9fe]/repo.git')).toThrow(
+        'private/internal',
+      );
+      // RFC 8215 local NAT64 prefix
+      expect(() => validateGitUrl('http://[64:ff9b:1::1]/repo.git')).toThrow('private/internal');
+    });
+
     it('does not block valid public IPs', () => {
       expect(() => validateGitUrl('https://140.82.121.4/repo.git')).not.toThrow();
     });
