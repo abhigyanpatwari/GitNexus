@@ -24,7 +24,7 @@
     "@langchain/google-genai": "^2.1.28",
     "@langchain/langgraph": "^1.2.9",
     "@langchain/ollama": "^1.2.6",
-    "@langchain/openai": "^1.4.4",
+    "@langchain/openai": "^1.4.5",
     "@sigma/edge-curve": "^3.1.0",
     "@tailwindcss/vite": "^4.2.4",
     "axios": "^1.13.2",
