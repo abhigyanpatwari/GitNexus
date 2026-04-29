@@ -30,65 +30,33 @@ const VARIABLE_PATTERNS = compilePatterns({
   language: Java,
   patterns: [
     {
-      meta: { scoped: true },
+      meta: {},
       query: `
         (field_declaration
-          (scoped_type_identifier
-            (type_identifier) @service
-            (type_identifier) @member)
-          (variable_declarator
-            (identifier) @var))
+          type: (_) @type
+          declarator: (variable_declarator
+            name: (identifier) @var))
       `,
     },
     {
-      meta: { scoped: true },
+      meta: {},
       query: `
         (local_variable_declaration
-          (scoped_type_identifier
-            (type_identifier) @service
-            (type_identifier) @member)
-          (variable_declarator
-            (identifier) @var))
+          type: (_) @type
+          declarator: (variable_declarator
+            name: (identifier) @var))
       `,
     },
     {
-      meta: { scoped: true },
+      meta: {},
       query: `
         (formal_parameter
-          (scoped_type_identifier
-            (type_identifier) @service
-            (type_identifier) @member)
-          (identifier) @var)
-      `,
-    },
-    {
-      meta: { scoped: false },
-      query: `
-        (field_declaration
-          (type_identifier) @service
-          (variable_declarator
-            (identifier) @var))
-      `,
-    },
-    {
-      meta: { scoped: false },
-      query: `
-        (local_variable_declaration
-          (type_identifier) @service
-          (variable_declarator
-            (identifier) @var))
-      `,
-    },
-    {
-      meta: { scoped: false },
-      query: `
-        (formal_parameter
-          (type_identifier) @service
-          (identifier) @var)
+          type: (_) @type
+          name: (identifier) @var)
       `,
     },
   ],
-} satisfies LanguagePatterns<{ scoped: boolean }>);
+} satisfies LanguagePatterns<Record<string, never>>);
 
 const CALL_PATTERNS = compilePatterns({
   name: 'java-thrift-method-calls',
@@ -102,6 +70,16 @@ const CALL_PATTERNS = compilePatterns({
           name: (identifier) @method)
       `,
     },
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (field_access
+            object: (this)
+            field: (identifier) @receiver)
+          name: (identifier) @method)
+      `,
+    },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
@@ -110,43 +88,28 @@ const PROVIDER_PATTERNS = compilePatterns({
   language: Java,
   patterns: [
     {
-      meta: { scoped: true },
+      meta: {},
       query: `
         (class_declaration
           name: (identifier) @class_name
           (super_interfaces
             (type_list
-              (scoped_type_identifier
-                (type_identifier) @service
-                (type_identifier) @member)))
-          body: (class_body) @body) @class
-      `,
-    },
-    {
-      meta: { scoped: false },
-      query: `
-        (class_declaration
-          name: (identifier) @class_name
-          (super_interfaces
-            (type_list
-              (type_identifier) @service))
+              (_) @type))
           body: (class_body) @body) @class
       `,
     },
   ],
-} satisfies LanguagePatterns<{ scoped: boolean }>);
+} satisfies LanguagePatterns<Record<string, never>>);
 
-function serviceFromType(
-  serviceText: string,
-  memberText: string | undefined,
-): ServiceTypeMatch | null {
-  if (memberText !== undefined) {
-    return GENERATED_MEMBER_TYPES.has(memberText)
-      ? { serviceName: serviceText, usesGeneratedServiceMember: true }
-      : null;
+function serviceFromType(typeText: string): ServiceTypeMatch | null {
+  const segments = typeText.split('.').filter((segment) => segment.length > 0);
+  const last = segments.at(-1);
+  const service = segments.at(-2);
+  if (last && service && GENERATED_MEMBER_TYPES.has(last)) {
+    return { serviceName: service, usesGeneratedServiceMember: true };
   }
-  return SERVICE_TYPE_RE.test(serviceText)
-    ? { serviceName: serviceText, usesGeneratedServiceMember: false }
+  return last && SERVICE_TYPE_RE.test(last)
+    ? { serviceName: last, usesGeneratedServiceMember: false }
     : null;
 }
 
@@ -228,11 +191,10 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
     const bindings: VariableBinding[] = [];
 
     for (const match of runCompiledPatterns(VARIABLE_PATTERNS, tree)) {
-      const serviceNode = match.captures.service;
+      const typeNode = match.captures.type;
       const varNode = match.captures.var;
-      if (!serviceNode || !varNode) continue;
-      const memberNode = match.meta.scoped ? match.captures.member : undefined;
-      const service = serviceFromType(serviceNode.text, memberNode?.text);
+      if (!typeNode || !varNode) continue;
+      const service = serviceFromType(typeNode.text);
       if (!service) continue;
       const scope = bindingScope(varNode);
       if (!scope) continue;
@@ -269,11 +231,10 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
 
     const emittedProviders = new Set<string>();
     for (const match of runCompiledPatterns(PROVIDER_PATTERNS, tree)) {
-      const serviceNode = match.captures.service;
+      const typeNode = match.captures.type;
       const bodyNode = match.captures.body;
-      if (!serviceNode || !bodyNode) continue;
-      const memberNode = match.meta.scoped ? match.captures.member : undefined;
-      const service = serviceFromType(serviceNode.text, memberNode?.text);
+      if (!typeNode || !bodyNode) continue;
+      const service = serviceFromType(typeNode.text);
       if (!service) continue;
 
       for (const methodName of methodNamesInClassBody(bodyNode)) {

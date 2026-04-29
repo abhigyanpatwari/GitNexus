@@ -9,7 +9,7 @@ This is not a framework integration guide. GitNexus reads portable Thrift IDL an
 ## Mental model
 
 - `.thrift` files define the canonical service contract. A method in an IDL service becomes a stable contract id in the form `thrift::<namespace>.<Service>/<Method>`.
-- When GitNexus can identify a service but not a specific method, it emits a service wildcard in the form `thrift::<namespace>.<Service>/*`.
+- Service wildcard ids in the form `thrift::<namespace>.<Service>/*` are supported as manifest and matching fallback forms when a service-level link is needed.
 - Java generated-code usage points GitNexus toward implementation and call sites. Providers commonly implement generated `Service.Iface`; consumers commonly hold or construct generated service interfaces or clients.
 - Group sync matches provider and consumer contracts with the same id, then cross-repo impact can hop through those links.
 - Framework-specific wiring should be modeled by extractor plugins, manifest links, or downstream integrations rather than hard-coded into core Thrift support.
@@ -47,7 +47,7 @@ The service methods above produce canonical ids:
 
 - `thrift::billing.v1.OrderService/PlaceOrder`
 - `thrift::billing.v1.OrderService/GetOrder`
-- `thrift::billing.v1.OrderService/*` when only the service is known
+- `thrift::billing.v1.OrderService/*` as a service-level manifest or matching fallback form
 
 ## Java provider example
 
