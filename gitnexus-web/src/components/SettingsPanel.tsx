@@ -444,7 +444,7 @@ export const SettingsPanel = ({
             </div>
           </div>
 
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
             API keys are stored in session storage and will be cleared when you close this tab.
           </div>
 

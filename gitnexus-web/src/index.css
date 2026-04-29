@@ -1,5 +1,11 @@
 @import 'tailwindcss';
 
+/* `dark:` modifier follows our explicit theme attribute, not the OS
+   media query. The boot script and `useTheme` hook always write a
+   resolved value (`light` | `dark`) to `<html data-theme>`, so this
+   keeps the variant consistent with the runtime preference. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
 /* ═══════════════════════════════════════════════════════════════
    TAILWIND V4 THEME CONFIGURATION
 ═══════════════════════════════════════════════════════════════ */
