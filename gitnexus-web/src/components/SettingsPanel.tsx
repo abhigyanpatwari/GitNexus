@@ -23,6 +23,7 @@ import {
 import type { LLMSettings, LLMProvider } from '../core/llm/types';
 import { DEFAULT_OLLAMA_BASE_URL } from '../config/ui-constants';
 import { ProviderConfigCard } from './settings/ProviderConfigCard';
+import { ThemeToggle } from './ThemeToggle';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -368,6 +369,12 @@ export const SettingsPanel = ({
 
         {/* Content */}
         <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          {/* Appearance */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-text-secondary">Appearance</label>
+            <ThemeToggle />
+          </div>
+
           {/* Local Server */}
           {backendUrl !== undefined && onBackendUrlChange && (
             <div className="space-y-3">

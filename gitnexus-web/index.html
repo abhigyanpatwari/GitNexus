@@ -10,6 +10,25 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply persisted theme before paint to avoid FOUC.
+      (function () {
+        try {
+          var stored = localStorage.getItem('gitnexus.theme');
+          var preference =
+            stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+          var resolved =
+            preference === 'system'
+              ? window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark'
+              : preference;
+          document.documentElement.dataset.theme = resolved;
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
