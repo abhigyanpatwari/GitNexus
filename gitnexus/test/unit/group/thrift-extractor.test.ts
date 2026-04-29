@@ -455,6 +455,41 @@ class GeneratedOrderHandler implements OrderService {
     }
   });
 
+  it('test_extract_thrift_source_scan_contracts_have_stable_distinct_symbol_uids', async () => {
+    writeFile(
+      'idl/order.thrift',
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    writeFile(
+      'src/main/java/example/IfaceOrderHandler.java',
+      `package example;
+
+class IfaceOrderHandler implements OrderService.Iface {
+  public PlaceOrderResponse PlaceOrder(PlaceOrderRequest request) {
+    return new PlaceOrderResponse();
+  }
+}`,
+    );
+
+    const first = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const second = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+    const providers = first
+      .filter((c) => c.role === 'provider')
+      .sort((a, b) => a.symbolRef.filePath.localeCompare(b.symbolRef.filePath));
+    const repeatedProviders = second
+      .filter((c) => c.role === 'provider')
+      .sort((a, b) => a.symbolRef.filePath.localeCompare(b.symbolRef.filePath));
+
+    expect(providers).toHaveLength(2);
+    expect(providers.map((c) => c.symbolUid)).toEqual(repeatedProviders.map((c) => c.symbolUid));
+    expect(providers.every((c) => c.symbolUid.length > 0)).toBe(true);
+    expect(new Set(providers.map((c) => c.symbolUid)).size).toBe(2);
+  });
+
   it('test_extract_java_thrift_providers_from_fully_qualified_generated_iface', async () => {
     writeFile(
       'idl/order.thrift',

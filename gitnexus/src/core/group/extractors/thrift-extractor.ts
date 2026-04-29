@@ -178,6 +178,17 @@ function extractMethods(sanitizedServiceBody: string): string[] {
   return methods;
 }
 
+function thriftSourceScanSymbolUid(
+  contractId: string,
+  role: 'provider' | 'consumer',
+  filePath: string,
+  symbolName: string,
+): string {
+  return ['source-scan::thrift', role, contractId, normalizeThriftPath(filePath), symbolName].join(
+    '::',
+  );
+}
+
 function makeContract(
   cid: string,
   role: 'provider' | 'consumer',
@@ -190,7 +201,7 @@ function makeContract(
     contractId: cid,
     type: 'thrift',
     role,
-    symbolUid: '',
+    symbolUid: thriftSourceScanSymbolUid(cid, role, filePath, symbolName),
     symbolRef: { filePath: normalizeThriftPath(filePath), name: symbolName },
     symbolName,
     confidence,
