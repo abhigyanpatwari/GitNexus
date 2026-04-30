@@ -218,9 +218,14 @@ describe('CLI end-to-end', () => {
     try {
       const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
 
-      // Accept timeout as valid on slow CI — same tolerance as the
-      // sibling test above.
-      if (result.status === null) return;
+      expect(
+        result.status,
+        [
+          'analyze timed out before asserting finalization artifacts — this test guards #1169 and must not pass silently',
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
 
       expect(
         result.status,
@@ -256,6 +261,48 @@ describe('CLI end-to-end', () => {
         matchesRepo,
         `registry has no entry for ${repo}; entries: ${JSON.stringify(entries.map((e) => e.path))}`,
       ).toBe(true);
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(repoParent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('already-up-to-date analyze fails when registry entry is missing (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-fastpath-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-fastpath-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        first.status,
+        [
+          `initial analyze exited with code ${first.status}`,
+          `stdout: ${first.stdout}`,
+          `stderr: ${first.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(fs.existsSync(metaPath)).toBe(true);
+
+      // Simulate the half-finalized state from the review: meta.json is
+      // present and lastCommit matches, but the repo is not discoverable
+      // because the global registry entry is missing.
+      fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
+
+      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        second.status,
+        [
+          'second analyze timed out before proving alreadyUpToDate finalization',
+          `stdout: ${second.stdout}`,
+          `stderr: ${second.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
+      expect(`${second.stdout}${second.stderr}`).toMatch(/Analysis did not finalize/i);
+      expect(`${second.stdout}${second.stderr}`).toMatch(/registry entry/i);
+      expect(second.status).toBe(1);
     } finally {
       fs.rmSync(gnHome, { recursive: true, force: true });
       fs.rmSync(repoParent, { recursive: true, force: true });

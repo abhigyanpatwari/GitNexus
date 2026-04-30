@@ -361,6 +361,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
 
     if (result.alreadyUpToDate) {
+      // Even the fast path must prove the repo is discoverable. A prior
+      // run can write meta.json and then fail before registerRepo(); in
+      // that half-finalized state, runFullAnalysis returns alreadyUpToDate
+      // on the next invocation unless we check the registry here too.
+      await assertAnalysisFinalized(repoPath);
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
@@ -506,8 +511,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // terminals visually erases the failure message — the canonical
     // shape of the silent-exit symptom in #1169.
     writeFatalToStderr('Analysis failed', err);
-
-    console.error(`\n  Analysis failed: ${msg}\n`);
 
     // Provide helpful guidance for known failure modes
     if (
