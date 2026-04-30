@@ -1,4 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Synthetic `.ts` graphs exercise the legacy call-resolution DAG. With
+// TypeScript in `MIGRATED_LANGUAGES`, `processCalls*` skips `.ts` unless
+// the per-language flag is forced off for this suite.
+let prevRegistryTypeScript: string | undefined;
+beforeEach(() => {
+  prevRegistryTypeScript = process.env['REGISTRY_PRIMARY_TYPESCRIPT'];
+  process.env['REGISTRY_PRIMARY_TYPESCRIPT'] = 'false';
+});
+afterEach(() => {
+  if (prevRegistryTypeScript === undefined) delete process.env['REGISTRY_PRIMARY_TYPESCRIPT'];
+  else process.env['REGISTRY_PRIMARY_TYPESCRIPT'] = prevRegistryTypeScript;
+});
 import {
   processCalls,
   processCallsFromExtracted,

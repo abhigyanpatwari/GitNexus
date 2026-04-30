@@ -25,6 +25,9 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
+import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
+import { validateBindingsImmutability } from './validate-bindings-immutability.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
@@ -40,6 +43,16 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
+  /**
+   * Semantic model populated by the legacy `parse` phase. Scope-
+   * resolution consumes its `TypeRegistry` / `MethodRegistry` /
+   * `SymbolTable` lookups instead of rebuilding parallel indexes from
+   * `ParsedFile[]`. See ARCHITECTURE.md § "Semantic-model source of
+   * truth". Tests that invoke `runScopeResolution` in isolation pass a
+   * freshly-created `MutableSemanticModel` populated from the same
+   * `ParsedFile[]` to mirror the pipeline shape.
+   */
+  readonly model: MutableSemanticModel;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly onWarn?: (message: string) => void;
   /**
@@ -50,6 +63,14 @@ interface RunScopeResolutionInput {
    * is safe — falls back to a fresh parse inside the provider.
    */
   readonly treeCache?: { get(filePath: string): unknown };
+  /**
+   * Opaque per-language import-resolution config (e.g. tsconfig path
+   * aliases for TypeScript). Loaded once by the caller via
+   * `provider.loadResolutionConfig(repoPath)` and threaded into every
+   * `provider.resolveImportTarget` call. `undefined` when the
+   * provider doesn't supply a config loader.
+   */
+  readonly resolutionConfig?: unknown;
 }
 
 interface RunScopeResolutionStats {
@@ -91,6 +112,20 @@ export function runScopeResolution(
     parsedFiles.push(parsed);
   }
 
+  // Reconcile scope-resolution's ownership view into the SemanticModel.
+  // See `reconcile-ownership.ts` for the full rationale (Contract
+  // Invariant I9). Debug-mode validator runs immediately after to
+  // catch drift between `parsed.localDefs` and the registries.
+  //
+  // PHASE BOUNDARY: `input.model` is `MutableSemanticModel` up to this
+  // point (write phase: reconciliation). After this line no further
+  // writes are expected — downstream passes consume `readonlyModel`
+  // (narrowed to `SemanticModel`) so accidental writes would surface
+  // as type errors.
+  reconcileOwnership(parsedFiles, input.model);
+  validateOwnershipParity(parsedFiles, input.model, onWarn);
+  const readonlyModel: SemanticModel = input.model;
+
   if (parsedFiles.length === 0) {
     return {
       filesProcessed: 0,
@@ -109,10 +144,11 @@ export function runScopeResolution(
   const nodeLookup = buildGraphNodeLookup(graph);
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
 
+  const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
       resolveImportTarget: (targetRaw, fromFile) =>
-        provider.resolveImportTarget(targetRaw, fromFile, allFilePaths),
+        provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
     },
@@ -129,19 +165,46 @@ export function runScopeResolution(
     methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId),
   };
 
-  // Build the workspace resolution index ONCE — turns every
-  // findOwnedMember / findExportedDef / classScopeByDefId lookup in
-  // the downstream passes from O(N×D) to O(1). Must run AFTER
-  // populateOwners (so memberByOwner is correct) and AFTER
-  // finalize (so module-scope bindings are available).
+  // Build the workspace resolution index ONCE — scope-valued lookups
+  // (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel`
+  // cannot carry. Must run AFTER `populateOwners` (so owned defs are
+  // attributed correctly) and AFTER finalize (so module-scope
+  // bindings are available).
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles);
 
+  // Cross-file implicit-namespace visibility (C#). Must run before
+  // propagateImportedReturnTypes so the latter pass sees siblings'
+  // class bindings when chasing return-type chains across files.
+  // The hook writes to `bindingAugmentations` only; finalized
+  // `indexes.bindings` remains immutable post-finalize (I8).
+  if (provider.populateNamespaceSiblings !== undefined) {
+    const fileContents = new Map<string, string>();
+    for (const f of files) fileContents.set(f.path, f.content);
+    provider.populateNamespaceSiblings(parsedFiles, indexes, {
+      fileContents,
+      treeCache,
+    });
+  }
+
+  const tFinalize = PROF ? process.hrtime.bigint() : 0n;
+
   // Cross-file return-type propagation (Contract Invariant I3 timing:
-  // after finalize, before resolve).
+  // after finalize, before resolve). Split-timed separately so the
+  // SCC-ordered pass's cost is observable (PR #1050 made this O(files)
+  // with chain-follow per importer; quadratic regressions show up
+  // here, not in finalize).
   if (provider.propagatesReturnTypesAcrossImports !== false) {
     propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
   }
-  const tFinalize = PROF ? process.hrtime.bigint() : 0n;
+  const tPropagate = PROF ? process.hrtime.bigint() : 0n;
+
+  // Opt-in I8 invariant guard. Runs once after all post-finalize hooks
+  // (`populateNamespaceSiblings`, `propagateImportedReturnTypes`) have
+  // had a chance to drift, so a single sweep covers the full
+  // post-finalize surface visible to `resolveReferenceSites`. No-op in
+  // default CLI runs; enabled by NODE_ENV=development or
+  // VALIDATE_SEMANTIC_MODEL=1.
+  validateBindingsImmutability(indexes, onWarn);
 
   // ── Phase 3: resolve references via Registry.lookup ────────────────────
   const registryProviders: RegistryProviders = {
@@ -163,6 +226,7 @@ export function runScopeResolution(
     handledSites,
     provider,
     workspaceIndex,
+    readonlyModel,
   );
   const freeCallExtras = emitFreeCallFallback(
     graph,
@@ -171,6 +235,8 @@ export function runScopeResolution(
     nodeLookup,
     referenceIndex,
     handledSites,
+    readonlyModel,
+    workspaceIndex,
   );
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
@@ -191,8 +257,9 @@ export function runScopeResolution(
     const ns = (a: bigint, b: bigint): number => Number(b - a) / 1_000_000;
     console.warn(
       `[scope-resolution prof] extract=${ns(tStart, tExtract).toFixed(0)}ms` +
-        ` finalize+propagate=${ns(tExtract, tFinalize).toFixed(0)}ms` +
-        ` resolve=${ns(tFinalize, tResolve).toFixed(0)}ms` +
+        ` finalize=${ns(tExtract, tFinalize).toFixed(0)}ms` +
+        ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +
+        ` resolve=${ns(tPropagate, tResolve).toFixed(0)}ms` +
         ` emit=${ns(tResolve, tEnd).toFixed(0)}ms` +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
         ` (${parsedFiles.length} files)`,

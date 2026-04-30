@@ -96,15 +96,10 @@ withTestLbugDB(
       it('query tool returns results for keyword search', async () => {
         const result = await backend.callTool('query', { query: 'login' });
         expect(result).not.toHaveProperty('error');
-        // Should have some combination of processes, process_symbols, or definitions
         expect(result).toHaveProperty('processes');
         expect(result).toHaveProperty('definitions');
-        // The search should find something (FTS or graph-based)
-        const totalResults =
-          (result.processes?.length || 0) +
-          (result.process_symbols?.length || 0) +
-          (result.definitions?.length || 0);
-        expect(totalResults).toBeGreaterThanOrEqual(1);
+        expect(result.processes.map((p: any) => p.id)).toContain('proc:login-flow');
+        expect(result.process_symbols.map((s: any) => s.id)).toContain('func:login');
 
         // #553: query response carries per-phase timing metadata.
         expect(result.timing).toBeDefined();
@@ -113,6 +108,17 @@ withTestLbugDB(
         // At least one of the search phases must have fired for any
         // non-error response — bm25 and/or vector always runs.
         expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
+      });
+
+      it('tool_map returns per-tool flows without cross-attributing same-file tools', async () => {
+        const result = await backend.callTool('tool_map', {});
+        expect(result).not.toHaveProperty('error');
+
+        const tools = new Map(result.tools.map((tool: any) => [tool.name, tool]));
+        expect(tools.get('alpha')?.description).toBe('Calls chain A.');
+        expect(tools.get('beta')?.description).toBe('Calls chain B.');
+        expect(tools.get('alpha')?.flows).toEqual(['AlphaFlow']);
+        expect(tools.get('beta')?.flows).toEqual(['BetaFlow']);
       });
 
       it('unknown tool throws', async () => {

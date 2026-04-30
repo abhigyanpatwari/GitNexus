@@ -119,10 +119,10 @@ export function buildScopeTree(scopes: readonly Scope[]): ScopeTree {
         `Scope '${scope.id}' (${scope.filePath}) has parent '${parent.id}' in a different file (${parent.filePath}). Parent/child scopes must share filePath.`,
       );
     }
-    if (!rangeStrictlyContains(parent.range, scope.range)) {
+    if (!canParentScope(parent.range, scope.range, parent.kind, scope.kind)) {
       throw new ScopeTreeInvariantError(
         'parent-must-contain-child',
-        `Parent scope '${parent.id}' at ${formatRange(parent.range)} does not strictly contain child '${scope.id}' at ${formatRange(scope.range)}.`,
+        `Parent scope '${parent.id}' at ${formatRange(parent.range)} does not contain child '${scope.id}' at ${formatRange(scope.range)} (allowed: strict containment, or equal-range Module-as-parent).`,
       );
     }
 
@@ -228,6 +228,47 @@ function rangeStrictlyContains(outer: Range, inner: Range): boolean {
     outer.endLine > inner.endLine ||
     (outer.endLine === inner.endLine && outer.endCol >= inner.endCol);
   return outerStartsAtOrBefore && outerEndsAtOrAfter;
+}
+
+function rangesEqual(a: Range, b: Range): boolean {
+  return (
+    a.startLine === b.startLine &&
+    a.startCol === b.startCol &&
+    a.endLine === b.endLine &&
+    a.endCol === b.endCol
+  );
+}
+
+/**
+ * Whether `outer` (kind `outerKind`) is a valid parent for `inner` (kind
+ * `innerKind`).
+ *
+ * Strict containment is the general rule. The single carve-out is the
+ * `Module`/non-`Module` pair whose ranges are exactly equal — this happens
+ * naturally when tree-sitter reports identical byte spans for the
+ * `compilation_unit` (or equivalent file-root construct) and the file's
+ * single top-level scope. Common shape: a C# file consisting of nothing
+ * but `namespace X { ... }` with no leading or trailing trivia outside the
+ * namespace's `{}` body — `compilation_unit` and `namespace_declaration`
+ * both span exactly the same byte range. The `Module` is the universal
+ * outer of any file-level scope by language semantics, so coincident
+ * ranges should not break the parent chain.
+ *
+ * The carve-out is direction-asymmetric: only `Module`-as-outer parents a
+ * same-range non-`Module`, never the reverse. This preserves the
+ * acyclicity buildScopeTree relies on, and matches the corresponding
+ * helper in `scope-extractor.ts` so `pass1BuildScopes` and the validator
+ * agree on what a well-formed parent edge looks like.
+ */
+export function canParentScope(
+  outer: Range,
+  inner: Range,
+  outerKind: Scope['kind'],
+  innerKind: Scope['kind'],
+): boolean {
+  if (rangeStrictlyContains(outer, inner)) return true;
+  if (outerKind === 'Module' && innerKind !== 'Module' && rangesEqual(outer, inner)) return true;
+  return false;
 }
 
 /**

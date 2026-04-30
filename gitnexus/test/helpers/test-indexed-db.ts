@@ -87,10 +87,7 @@ export function withTestLbugDB(
     //    already open for this dbPath (no new native objects created).
     await adapter.initLbug(dbPath);
 
-    // 2. Load FTS extension (idempotent — skips if already loaded)
-    await adapter.loadFTSExtension();
-
-    // 3. Drop stale FTS indexes from previous test file
+    // 2. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         try {
@@ -101,27 +98,27 @@ export function withTestLbugDB(
       }
     }
 
-    // 4. Clear all data via adapter (DETACH DELETE cascades to relationships)
+    // 3. Clear all data via adapter (DETACH DELETE cascades to relationships)
     for (const table of NODE_TABLES) {
       await adapter.executeQuery(`MATCH (n:\`${table}\`) DETACH DELETE n`);
     }
     await adapter.executeQuery(`MATCH (n:${EMBEDDING_TABLE_NAME}) DELETE n`);
 
-    // 5. Seed new data via adapter
+    // 4. Seed new data via adapter
     if (options?.seed?.length) {
       for (const q of options.seed) {
         await adapter.executeQuery(q);
       }
     }
 
-    // 6. Create FTS indexes on fresh data
+    // 5. Create FTS indexes on fresh data
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
       }
     }
 
-    // 7. Open pool adapter by injecting the core adapter's writable Database.
+    // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API
     //    destructor issues.  Reusing the writable Database avoids both problems.
@@ -148,7 +145,7 @@ export function withTestLbugDB(
     const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
     ref.handle = { dbPath, repoId, tmpHandle, cleanup };
 
-    // 8. User's final setup (mocks, dynamic imports, etc.)
+    // 7. User's final setup (mocks, dynamic imports, etc.)
     if (options?.afterSetup) {
       await options.afterSetup(ref.handle);
     }

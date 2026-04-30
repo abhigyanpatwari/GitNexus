@@ -47,12 +47,12 @@ beforeAll(() => {
   fs.mkdirSync(gitNexusDir, { recursive: true });
 
   // Initialize a bare git repo so git rev-parse HEAD works
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  runGit(tmpDir, ['init']);
+  runGit(tmpDir, ['config', 'user.email', 'test@test.com']);
+  runGit(tmpDir, ['config', 'user.name', 'Test']);
   fs.writeFileSync(path.join(tmpDir, 'dummy.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'pipe' });
+  runGit(tmpDir, ['add', '.']);
+  runGit(tmpDir, ['commit', '-m', 'init']);
 });
 
 afterAll(() => {
@@ -61,13 +61,42 @@ afterAll(() => {
 
 // ─── Helper to get HEAD commit hash ─────────────────────────────────
 
-function getHeadCommit(): string {
-  const result = spawnSync('git', ['rev-parse', 'HEAD'], {
-    cwd: tmpDir,
+function runGit(dir: string, args: string[]) {
+  const result = spawnSync('git', args, {
+    cwd: dir,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  if (result.status !== 0) {
+    const message = result.stderr || result.stdout || result.error?.message || 'unknown error';
+    throw new Error(`git ${args.join(' ')} failed in ${dir}: ${message}`);
+  }
+  return result;
+}
+
+function getHeadCommit(): string {
+  const result = runGit(tmpDir, ['rev-parse', 'HEAD']);
   return (result.stdout || '').trim();
+}
+
+function initGitRepo(dir: string) {
+  runGit(dir, ['init']);
+  runGit(dir, ['config', 'user.email', 'test@test.com']);
+  runGit(dir, ['config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'file.txt'), 'hello');
+  runGit(dir, ['add', '.']);
+  runGit(dir, ['commit', '-m', 'init']);
+}
+
+function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 'repos' = 'both') {
+  const registryDir = path.join(homeDir, '.gitnexus');
+  fs.mkdirSync(registryDir, { recursive: true });
+  if (marker === 'both' || marker === 'repos') {
+    fs.mkdirSync(path.join(registryDir, 'repos'), { recursive: true });
+  }
+  if (marker === 'both' || marker === 'registry') {
+    fs.writeFileSync(path.join(registryDir, 'registry.json'), JSON.stringify({ repos: [] }));
+  }
 }
 
 // ─── Both hook files should exist ───────────────────────────────────
@@ -466,6 +495,110 @@ describe('cwd validation (integration)', () => {
       });
       expect(result.stdout.trim()).toBe('');
     });
+  }
+});
+
+// ─── Integration: global registry lookup ────────────────────────────
+
+describe('Global registry lookup', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: PostToolUse stays silent for unindexed repo under global registry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'unindexed');
+      try {
+        createGlobalRegistry(homeDir);
+        fs.mkdirSync(repoDir, { recursive: true });
+        initGitRepo(repoDir);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: repoDir,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: PreToolUse stays silent for unindexed repo under global registry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'unindexed');
+      try {
+        createGlobalRegistry(homeDir);
+        fs.mkdirSync(repoDir, { recursive: true });
+        initGitRepo(repoDir);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Grep',
+          tool_input: { pattern: 'validateUser' },
+          cwd: repoDir,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: PostToolUse emits stale for indexed repo under parent global registry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'indexed-repo');
+      try {
+        createGlobalRegistry(homeDir);
+        fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+        initGitRepo(repoDir);
+        fs.writeFileSync(
+          path.join(repoDir, '.gitnexus', 'meta.json'),
+          JSON.stringify({ lastCommit: 'oldcommit', stats: {} }),
+        );
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: repoDir,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('stale');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    for (const marker of ['registry', 'repos'] as const) {
+      it(`${label}: PostToolUse skips global registry with only ${marker} marker`, () => {
+        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+        const repoDir = path.join(homeDir, 'work', `unindexed-${marker}`);
+        try {
+          createGlobalRegistry(homeDir, marker);
+          fs.mkdirSync(repoDir, { recursive: true });
+          initGitRepo(repoDir);
+
+          const result = runHook(hookPath, {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: repoDir,
+          });
+
+          expect(result.stdout.trim()).toBe('');
+        } finally {
+          fs.rmSync(homeDir, { recursive: true, force: true });
+        }
+      });
+    }
   }
 });
 

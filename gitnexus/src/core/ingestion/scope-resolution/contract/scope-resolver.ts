@@ -8,11 +8,19 @@
  *
  *   1. Implement `ScopeResolver` in
  *      `gitnexus/src/core/ingestion/languages/<lang>/scope-resolver.ts`.
- *      Six required fields (language, languageProvider,
+ *      Nine required fields (language, languageProvider,
  *      importEdgeReason, resolveImportTarget, mergeBindings,
  *      arityCompatibility, buildMro, populateOwners, isSuperReceiver)
- *      plus two optional booleans (propagatesReturnTypesAcrossImports,
- *      fieldFallbackOnMethodLookup).
+ *      plus optional toggles / hooks:
+ *        - propagatesReturnTypesAcrossImports (default true)
+ *        - fieldFallbackOnMethodLookup (default true — turn OFF for
+ *          statically-typed languages; the heuristic over-connects)
+ *        - unwrapCollectionAccessor — property-style collection views
+ *        - collapseMemberCallsByCallerTarget — one edge per caller/target
+ *        - populateNamespaceSiblings — cross-file implicit visibility
+ *        - hoistTypeBindingsToModule — enable ONLY when method return
+ *          types are stored on the enclosing Module scope; most
+ *          languages attach them to the class scope and leave this off
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
@@ -59,18 +67,185 @@
  *
  * ## Contract Invariants the orchestrator depends on
  *
- * (See the plan for the full list. Highlights only here.)
+ * These are non-obvious behaviors that the orchestrator and the
+ * existing Python + C# resolvers depend on. Future implementers will
+ * break them silently if not documented.
  *
- *   - **I1 — Phase 4 emission order is load-bearing.** Receiver-bound
- *     pass FIRST, then free-call fallback, then `emitReferencesViaLookup`.
- *   - **I3 — `propagateImportedReturnTypes` runs after finalize and
- *     before `resolveReferenceSites`.** It mutates non-frozen
- *     `Scope.typeBindings`. Do not freeze typeBindings in any
- *     downstream refactor.
+ *   - **I1 — Phase 4 emission order is load-bearing.** `emitReceiverBoundCalls`
+ *     runs FIRST (populates `handledSites`), then `emitFreeCallFallback`,
+ *     then `emitReferencesViaLookup` (consumes `handledSites` as a skip
+ *     set), then `emitImportEdges`. Reordering breaks same-name collision
+ *     resolution: the shared lookup can mis-resolve `app_metrics.get_metrics()`
+ *     to a same-named local function, and only the precise per-receiver
+ *     pass running first prevents the wrong edge.
+ *
+ *   - **I2 — `handledSites` semantics.** A site is added to
+ *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
+ *     Sites a pass touched but couldn't resolve do NOT get marked —
+ *     they still get a chance from the shared resolver. Exception:
+ *     the free-call fallback marks the site unconditionally after
+ *     attempting emission (even on dedup-collapse), because the
+ *     per-(caller, target) collapse semantics require multiple call
+ *     sites in the same caller body not produce multiple edges.
+ *
+ *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
+ *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
+ *     `draftToScope`, NOT frozen). It MUST run AFTER `finalizeScopeModel`
+ *     (so `indexes.bindings` is populated) and BEFORE
+ *     `resolveReferenceSites` (so resolution sees the propagated types).
+ *     The pass also re-runs `followChainPostFinalize` on every scope's
+ *     typeBindings because scope-extractor's pass-4 already ran and
+ *     missed any chain whose terminal lives in a foreign file.
+ *     Within the pass, files are walked in `indexes.sccs` reverse-
+ *     topological order (leaves first) so multi-hop alias chains
+ *     (e.g. `models.User → service.user → app.user`) collapse to the
+ *     terminal class in a single pass — every importer sees its
+ *     source's already-chain-followed typeBindings. Cyclic SCCs reach
+ *     a partial fixpoint within a single pass without iterating to
+ *     convergence; `ts-circular` only asserts pipeline-no-throw.
+ *
+ *   - **I4 — `emitReceiverBoundCalls` case order.** Cases are evaluated
+ *     in this order; the FIRST that emits an edge wins:
+ *       1. super branch (`provider.isSuperReceiver(receiverName)`)
+ *       2. Case 0 compound (`receiverName` has `.` or `(`)
+ *       3. Case 1 namespace-receiver
+ *       4. Case 2 class-name receiver
+ *       5. Case 3 dotted typeBinding for namespace prefix
+ *       6. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *     Reordering or merging cases changes resolution semantics. The
+ *     numbering is part of the contract — keep the comments.
+ *
  *   - **I5 — Pre-seeding `seen` from `referenceIndex` is forbidden.**
- *     The receiver-bound pass relies on this never happening.
+ *     Earlier versions of the receiver-bound pass pre-populated `seen`
+ *     to avoid double-emit. After Phase 4 was reordered, pre-seeding
+ *     became actively harmful: it suppresses correct emissions for
+ *     sites the shared resolver happened to resolve to a wrong target.
+ *     The orchestrator MUST NOT pre-seed.
  *
- * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
+ *   - **I6 — `Scope.typeBindings` is mutable post-finalize.** `draftToScope`
+ *     (in `scope-extractor.ts`) builds `typeBindings` as a plain
+ *     `new Map(...)` — not frozen, intentionally. Passes below rely on
+ *     this. Do NOT freeze `typeBindings` in any downstream refactor.
+ *
+ *   - **I7 — `ScopeResolver` and `LanguageProvider` are distinct contracts.**
+ *     Python and C# pass the SAME function reference through both
+ *     interfaces where they share a hook name — no second copy of the
+ *     logic. Rationale for not collapsing them: lifecycles differ
+ *     (parsing-side runs once per file at extract time, emit-side runs
+ *     once per workspace at resolve time), and merging would create a
+ *     god-interface that complicates future migrations.
+ *
+ *   - **I8 — Two-channel binding lifecycle.**
+ *     `indexes.bindings` is the **finalize-output channel**. After
+ *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
+ *     are deep-frozen by `materializeBindings` and MUST NOT be
+ *     mutated by any post-finalize hook. Treat `indexes.bindings` as
+ *     immutable from the moment `finalizeScopeModel` returns.
+ *
+ *     `indexes.bindingAugmentations` is the **post-finalize
+ *     append-only channel**. Hooks like `populateNamespaceSiblings`
+ *     append cross-file bindings synthesized after finalize (C#
+ *     same-namespace visibility, `using static` member exposure)
+ *     into this channel, NOT into `indexes.bindings`. Inner arrays
+ *     here are NEVER frozen — hooks `push()` directly. Any consumer
+ *     that reads post-finalize workspace bindings MUST query both
+ *     index channels via `lookupBindingsAt`
+ *     (`scope-resolution/scope/walkers.ts`); the helper returns
+ *     finalized refs first, appends unique augmentation refs after,
+ *     and dedupes by `def.nodeId` so finalized metadata wins on
+ *     duplicate defs. Per-`Scope.bindings` local declarations are the
+ *     lexical extraction channel and remain a separate first-tier
+ *     lookup for local shadowing.
+ *
+ *     `Scope.typeBindings` remains mutable post-finalize per I6 (it
+ *     is intentionally not frozen at any point).
+ *
+ *     The `ReadonlyMap<...>` types on `ScopeResolutionIndexes` are
+ *     compile-time read-guidance for consumers; structural mutation
+ *     of `bindingAugmentations` is performed via a deliberate
+ *     `as Map<...>` cast inside the hook implementations and is the
+ *     ONLY sanctioned channel for post-finalize binding fanout.
+ *
+ *     The dev-mode runtime validator
+ *     (`validateBindingsImmutability` in
+ *     `scope-resolution/validate-bindings-immutability.ts`) surfaces
+ *     any drift — i.e. a hook writing to `indexes.bindings` instead
+ *     of `bindingAugmentations`, or producing a non-frozen finalized
+ *     bucket — via `onWarn` when explicitly enabled by
+ *     `NODE_ENV === 'development' || VALIDATE_SEMANTIC_MODEL === '1'`
+ *     (`VALIDATE_SEMANTIC_MODEL=0` is an explicit off switch).
+ *
+ *   - **I9 — `SemanticModel` is the single authoritative symbol store.**
+ *     Every symbol-indexed lookup (key = `nodeId | simpleName |
+ *     qualifiedName | filePath`) resolves through
+ *     `SemanticModel.{symbols,types,methods,fields}`. Scope-resolution
+ *     passes MUST NOT maintain parallel owner-keyed or name-keyed
+ *     symbol indexes — `WorkspaceResolutionIndex` is reserved for
+ *     `Scope`-valued lookups that `SemanticModel` structurally cannot
+ *     carry.
+ *
+ *     The `runScopeResolution` orchestrator guarantees this invariant
+ *     in two steps:
+ *       1. The legacy `parse` phase populates `SemanticModel` via
+ *          `symbolTable.add(...)`. For languages whose extractor
+ *          resolves `enclosingClassId` at parse time, class-body defs
+ *          are correctly owner-keyed there.
+ *       2. The `reconcileOwnership` pass runs after
+ *          `provider.populateOwners(parsed)` and registers any def in
+ *          `parsed.localDefs[i]` with a corrected `ownerId` that the
+ *          legacy pass missed (primarily Python class-body methods).
+ *          Idempotent — duplicates are skipped by `nodeId`.
+ *
+ *     Contract for consumers: `model` is `MutableSemanticModel` only
+ *     during those two write phases. Downstream passes receive a
+ *     narrowed `SemanticModel` (read-only) handle. This is enforced by
+ *     `runScopeResolution`'s type-level narrowing at the phase
+ *     boundary.
+ *
+ *     The dev-mode runtime validator (`validateOwnershipParity`)
+ *     surfaces any drift between `parsed.localDefs` ownership and the
+ *     registries via `onWarn` when
+ *     `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+ *
+ *     This invariant is a **transitional shim**: the architectural
+ *     end state is for every language's parse-time extractor to emit
+ *     the correct `ownerId` directly, removing the need for
+ *     reconciliation. Tracked as a follow-up; see ARCHITECTURE.md §
+ *     "Semantic-model source of truth".
+ *
+ * ## Semantic-model source of truth
+ *
+ * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
+ * is the single semantic model consumed by both the legacy DAG and the
+ * scope-resolution pipeline. Scope-resolution passes MUST NOT build a
+ * parallel parse representation; if a pass needs AST-level facts that
+ * `ParsedFile` doesn't expose, it should reuse the orchestrator's
+ * `treeCache` (see `RunScopeResolutionInput.treeCache`) rather than
+ * re-invoke `parser.parse(...)` on its own.
+ *
+ * ## Same-graph guarantee
+ *
+ * Edges emitted by `runScopeResolution` and edges emitted by the legacy
+ * DAG are indistinguishable to downstream consumers:
+ *   - Node identity: same `generateId(...)` helper, same qualified-name
+ *     keyspace, same File/Folder/Method/Class node labels.
+ *   - Edge vocabulary: `'import-resolved' | 'global' | 'local-call' |
+ *     'same-file' | 'interface-dispatch' | 'read' | 'write'` — both
+ *     paths emit the same reasons (see
+ *     `gitnexus/src/core/ingestion/call-processor.ts` for the legacy
+ *     emitter and `passes/receiver-bound-calls.ts` /
+ *     `passes/free-call-fallback.ts` for the scope-resolution emitters).
+ *   - Overload disambiguation: both paths use
+ *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
+ *     method has overloads — see `graph-bridge/ids.ts`.
+ *
+ * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
+ * runs both paths on every migrated language's fixture corpus and
+ * fails if the graph outputs diverge.
+ *
+ * Plan that introduced most of these invariants:
+ * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
 import type {
@@ -84,6 +259,7 @@ import type {
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { LanguageProvider } from '../../language-provider.js';
+import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -126,12 +302,38 @@ export interface ScopeResolver {
    * resolvers that must distinguish "this module exists in the repo"
    * from "this module is external" (Python's fallback resolver, for
    * example).
+   *
+   * `resolutionConfig` is the opaque value returned by
+   * `loadResolutionConfig` (loaded once per workspace pass by the
+   * orchestrator). TypeScript uses this to thread `tsconfig.json` path
+   * aliases through to the standard resolver. Languages that don't
+   * need any extra config ignore the parameter.
    */
   resolveImportTarget(
     targetRaw: string,
     fromFile: string,
     allFilePaths: ReadonlySet<string>,
+    resolutionConfig?: unknown,
   ): string | null;
+
+  /**
+   * Optional one-shot loader for cross-file import-resolution config
+   * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
+   * composer.json autoload for PHP). The orchestrator calls this once
+   * per workspace pass with the repo root and threads the result into
+   * every subsequent `resolveImportTarget` call as the
+   * `resolutionConfig` parameter.
+   *
+   * Languages that don't need any per-workspace config leave this
+   * undefined; the orchestrator threads `undefined` to
+   * `resolveImportTarget` in that case. Returning `null` is also
+   * supported and equivalent to "no config available".
+   *
+   * May be sync or async — the orchestrator awaits the result. The
+   * shape is opaque to the orchestrator (`unknown`); the per-language
+   * `resolveImportTarget` casts it to the language's expected shape.
+   */
+  loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
 
   /**
    * Per-scope binding-merge precedence. The shared finalize pass
@@ -208,4 +410,79 @@ export interface ScopeResolver {
    * check.
    */
   readonly fieldFallbackOnMethodLookup?: boolean;
+
+  /**
+   * Unwrap a property-style collection accessor on a typed receiver
+   * to its element type. Called by `resolveCompoundReceiverClass`
+   * when walking dotted member-access chains of the form
+   * `receiver.Accessor`. The provider returns the element type's
+   * simple name, or `undefined` when the accessor doesn't unwrap —
+   * in which case the regular field-walk resumes.
+   *
+   * Use this only for languages that expose collection views as
+   * properties rather than method calls; languages whose collection
+   * views are `.values()` / `.keys()` method calls leave this
+   * undefined and let the normal call-expression branch handle them.
+   */
+  readonly unwrapCollectionAccessor?: (
+    receiverType: string,
+    accessor: string,
+  ) => string | undefined;
+
+  /**
+   * Collapse member-call CALLS edges by `(caller, target)` rather
+   * than per-site. Default `false` — scope-resolution's contract
+   * invariant is per-site dedup.
+   *
+   * Enable this when the language's graph convention is one edge per
+   * caller/target pair regardless of how many syntactic sites exist,
+   * e.g. to match a legacy graph's edge count so downstream
+   * consumers don't see a migration-induced inflation.
+   */
+  readonly collapseMemberCallsByCallerTarget?: boolean;
+
+  /**
+   * Optional post-finalize hook to inject cross-file bindings that
+   * aren't modeled via explicit imports. Runs after
+   * `buildWorkspaceResolutionIndex` and before
+   * `propagateImportedReturnTypes`.
+   *
+   * Use this for languages where a compiler-implicit visibility rule
+   * makes names visible across files without a syntactic import —
+   * for example a shared-namespace convention where types declared
+   * in the same namespace see each other without a `using` / `import`
+   * statement. Languages that require explicit imports for cross-file
+   * visibility leave this undefined.
+   */
+  readonly populateNamespaceSiblings?: (
+    parsedFiles: readonly ParsedFile[],
+    indexes: ScopeResolutionIndexes,
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      /** Pre-parsed tree-sitter trees keyed by file path. Same cache
+       *  the orchestrator hands to `extractParsedFile`; passing it
+       *  through here lets per-language hooks read the AST without
+       *  triggering a second parse. Cache miss = the hook re-parses
+       *  itself; the cache is opt-in for hooks that need AST-level
+       *  facts beyond what `ParsedFile` exposes. */
+      readonly treeCache?: { get(filePath: string): unknown };
+    },
+  ) => void;
+
+  /**
+   * Whether the compound-receiver resolver should walk up from a
+   * class scope to ancestor (Module) scopes when looking up a
+   * method's return-type typeBinding. Default `false`.
+   *
+   * Set `true` only when the provider stores method return-type
+   * bindings on the enclosing Module scope rather than on the class
+   * scope. Without this walk-up, chain resolution fails for methods
+   * whose return types were hoisted to module scope.
+   *
+   * Providers that attach return-type bindings directly to the class
+   * scope leave this undefined — enabling the walk-up for them would
+   * add an unnecessary branch and risk picking up unrelated module-
+   * level bindings.
+   */
+  readonly hoistTypeBindingsToModule?: boolean;
 }

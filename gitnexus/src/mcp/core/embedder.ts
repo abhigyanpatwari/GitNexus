@@ -6,11 +6,14 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import os from 'os';
+import { join } from 'path';
 import {
   isHttpMode,
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
+import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
@@ -46,14 +49,15 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       // ./node_modules/.cache inside its own install dir, which is unwritable
       // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).
       // Respect HF_HOME if set, otherwise fall back to ~/.cache/huggingface.
-      env.cacheDir = process.env.HF_HOME ?? `${process.env.HOME}/.cache/huggingface`;
+      env.cacheDir = process.env.HF_HOME ?? join(os.homedir(), '.cache', 'huggingface');
+      const embeddingConfig = resolveEmbeddingConfig();
 
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
-      // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
-      const isWindows = process.platform === 'win32';
-      const gpuDevice = isWindows ? 'dml' : 'cuda';
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
+        embeddingConfig.device === 'dml' || embeddingConfig.device === 'cuda'
+          ? [embeddingConfig.device, 'cpu']
+          : ['cpu'];
 
       for (const device of devicesToTry) {
         try {
@@ -68,6 +72,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
             embedderInstance = await (pipeline as any)('feature-extraction', MODEL_ID, {
               device: device,
               dtype: 'fp32',
+              session_options: {
+                logSeverityLevel: 3,
+                intraOpNumThreads: embeddingConfig.threads,
+                interOpNumThreads: 1,
+                executionMode: 'sequential',
+              },
             });
           } finally {
             restoreStdout();

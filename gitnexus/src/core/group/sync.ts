@@ -221,8 +221,8 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
-  const providerIndex = buildProviderIndex(autoContracts);
-  const { matched, unmatched } = runExactMatch(autoContracts, providerIndex);
+  const providerIndex = buildProviderIndex(autoContracts, config.matching);
+  const { matched, unmatched } = runExactMatch(autoContracts, providerIndex, config.matching);
   const wildcard = runWildcardMatch(unmatched, providerIndex);
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a

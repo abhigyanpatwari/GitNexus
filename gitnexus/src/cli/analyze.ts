@@ -20,6 +20,7 @@ import {
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
@@ -55,6 +56,12 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  /**
+   * Explicitly drop existing embeddings on rebuild instead of preserving
+   * them. Without this flag, a routine `analyze` keeps any embeddings
+   * already present in the index even when `--embeddings` is omitted.
+   */
+  dropEmbeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
@@ -78,6 +85,18 @@ export interface AnalyzeOptions {
    * `allowDuplicateName` option end-to-end.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Override the walker's large-file skip threshold (#991). Value in KB;
+   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
+   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
+   */
+  maxFileSize?: string;
+  /** Override worker sub-batch idle timeout in seconds. */
+  workerTimeout?: string;
+  embeddingThreads?: string;
+  embeddingBatchSize?: string;
+  embeddingSubBatchSize?: string;
+  embeddingDevice?: string;
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -85,6 +104,68 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
+  }
+
+  if (options?.maxFileSize) {
+    process.env.GITNEXUS_MAX_FILE_SIZE = options.maxFileSize;
+  }
+
+  if (options?.workerTimeout) {
+    const workerTimeoutSeconds = Number(options.workerTimeout);
+    if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
+      console.error('  --worker-timeout must be at least 1 second.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
+      Math.round(workerTimeoutSeconds * 1000),
+    );
+  }
+
+  const setPositiveEnv = (
+    optionName: string,
+    envName: string,
+    value: string | undefined,
+  ): boolean => {
+    if (value === undefined) return true;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      console.error(`  ${optionName} must be a positive integer.\n`);
+      process.exitCode = 1;
+      return false;
+    }
+    process.env[envName] = String(parsed);
+    return true;
+  };
+
+  if (
+    !setPositiveEnv(
+      '--embedding-threads',
+      'GITNEXUS_EMBEDDING_THREADS',
+      options?.embeddingThreads,
+    ) ||
+    !setPositiveEnv(
+      '--embedding-batch-size',
+      'GITNEXUS_EMBEDDING_BATCH_SIZE',
+      options?.embeddingBatchSize,
+    ) ||
+    !setPositiveEnv(
+      '--embedding-sub-batch-size',
+      'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
+      options?.embeddingSubBatchSize,
+    )
+  ) {
+    return;
+  }
+
+  if (options?.embeddingDevice) {
+    const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
+    if (!allowed.has(options.embeddingDevice)) {
+      console.error('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -130,6 +211,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log(
       '  GITNEXUS_NO_GITIGNORE is set — skipping .gitignore (still reading .gitnexusignore)\n',
     );
+  }
+
+  const maxFileSizeBanner = getMaxFileSizeBannerMessage();
+  if (maxFileSizeBanner) {
+    console.log(`${maxFileSizeBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
@@ -210,6 +296,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
         embeddings: options?.embeddings,
+        dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
         noStats: options?.noStats,

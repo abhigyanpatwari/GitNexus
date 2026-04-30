@@ -1,0 +1,28 @@
+{
+  "name": "tree-sitter-swift",
+  "version": "0.7.1",
+  "description": "A tree-sitter grammar for the Swift programming language",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alex-pinkus/tree-sitter-swift.git"
+  },
+  "_vendoredBy": "gitnexus - minimal runtime package copied from official tree-sitter-swift@0.7.1 (gitHead 88bfd19a89be9d0481b14566fb6160cccea2fe0a). Keeps upstream prebuilds while allowing GitNexus to stay on tree-sitter@0.21.1 until #858 is resolved.",
+  "scripts": {
+    "install": "node-gyp-build"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp-build": "^4.8.0"
+  },
+  "peerDependencies": {
+    "tree-sitter": "^0.21.1 || ^0.22.1"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

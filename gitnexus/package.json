@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -35,7 +35,8 @@
     "hooks",
     "scripts",
     "skills",
-    "vendor"
+    "vendor",
+    "web"
   ],
   "scripts": {
     "build": "node scripts/build.js",
@@ -46,7 +47,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
@@ -65,6 +66,7 @@
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
     "js-yaml": "^4.1.1",
+    "jsonc-parser": "^3.3.1",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.40.3",
     "onnxruntime-node": "^1.24.0",
@@ -86,10 +88,10 @@
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
     "node-gyp-build": "^4.8.0",
-    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
+    "tree-sitter-dart": "file:./vendor/tree-sitter-dart",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
-    "tree-sitter-swift": "^0.6.0"
+    "tree-sitter-swift": "file:./vendor/tree-sitter-swift"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",

@@ -13,13 +13,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
 // re-exports from the same module, so we mock the canonical source.
 // vi.hoisted runs before vi.mock hoisting, making the fns available to both factories.
-const { lbugMocks } = vi.hoisted(() => ({
+const { lbugMocks, platformMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
+  },
+  platformMocks: {
+    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -47,6 +50,14 @@ vi.mock('../../src/core/git-staleness.js', () => ({
   checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
+
+vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
+  return {
+    ...actual,
+    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
+  };
+});
 
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
@@ -157,6 +168,7 @@ describe('LocalBackend.callTool', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
@@ -179,6 +191,38 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('query', { query: 'auth' });
     expect(result).toHaveProperty('processes');
     expect(result).toHaveProperty('definitions');
+  });
+
+  it('skips vector index query when VECTOR is unsupported by the platform', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);
+    (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      if (cypher.includes('MATCH (e:CodeEmbedding)')) return [];
+      return [];
+    });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    try {
+      await backend.callTool('query', { query: 'auth' });
+
+      const queries = (executeQuery as any).mock.calls.map(
+        ([, cypher]: [string, string]) => cypher,
+      );
+      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(false);
+      expect(
+        queries.some(
+          (cypher: string) =>
+            cypher.includes('RETURN e.nodeId AS nodeId') &&
+            cypher.includes('e.embedding AS embedding'),
+        ),
+      ).toBe(true);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('GitNexus [query:vector]: VECTOR index unavailable'),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('query tool returns error for empty query', async () => {

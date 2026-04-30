@@ -31,11 +31,21 @@ function readInput() {
  * Find the .gitnexus directory by walking up from startDir.
  * Returns the path to .gitnexus/ or null if not found.
  */
+function isGlobalRegistryDir(candidate) {
+  if (fs.existsSync(path.join(candidate, 'meta.json'))) return false;
+  return (
+    fs.existsSync(path.join(candidate, 'registry.json')) ||
+    fs.existsSync(path.join(candidate, 'repos'))
+  );
+}
+
 function findGitNexusDir(startDir) {
   let dir = startDir || process.cwd();
   for (let i = 0; i < 5; i++) {
     const candidate = path.join(dir, '.gitnexus');
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate)) {
+      if (!isGlobalRegistryDir(candidate)) return candidate;
+    }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;

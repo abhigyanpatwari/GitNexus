@@ -13,8 +13,11 @@
  *      `emitScopeCaptures`. Returns `undefined`; zero work done. This is
  *      the state of every language today — `ParsedFile` production stays
  *      dormant until a language migrates.
- *   2. Invokes the hook + feeds its output to `ScopeExtractor.extract`.
- *   3. **Swallows exceptions from either side.** A failure here returns
+ *   2. Short-circuits empty / whitespace-only files. There is no scope
+ *      content to extract, and some tree-sitter queries do not match an
+ *      otherwise valid empty root node.
+ *   3. Invokes the hook + feeds its output to `ScopeExtractor.extract`.
+ *   4. **Swallows exceptions from either side.** A failure here returns
  *      `undefined` and emits a warning via `onWarn`; legacy parsing on
  *      the same file continues unaffected by the scope-extraction miss.
  *      Scope-based resolution is the new path under construction — it
@@ -41,6 +44,7 @@ export function extractParsedFile(
   cachedTree?: unknown,
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
+  if (sourceText.trim().length === 0) return undefined;
   try {
     const captures = provider.emitScopeCaptures(sourceText, filePath, cachedTree);
     return extractScope(captures, filePath, provider);

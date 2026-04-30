@@ -12,7 +12,7 @@
  * the 2 booleans, and register in `scope-resolution/pipeline/registry.ts`.
  */
 
-import type { ParsedFile, Scope, WorkspaceIndex } from 'gitnexus-shared';
+import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -31,30 +31,30 @@ const pythonScopeResolver: ScopeResolver = {
   importEdgeReason: 'python-scope: import',
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    // PythonResolveContext expects a mutable Set; orchestrator hands us
-    // a ReadonlySet — safe to widen since the resolver only reads.
-    const ws: PythonResolveContext = {
-      fromFile,
-      allFilePaths: allFilePaths as Set<string>,
-    };
+    // Copy the orchestrator's `ReadonlySet` into a `Set` because the
+    // legacy Python resolver chain (`resolvePythonImportInternal` →
+    // `resolveAbsoluteFromFiles` / `hasRepoCandidate`) is typed to
+    // receive a mutable `Set<string>`. The copy is O(N) but called
+    // once per import — trivial compared to the parser work.
+    const ws: PythonResolveContext = { fromFile, allFilePaths: new Set(allFilePaths) };
+    // `WorkspaceIndex` is an opaque `unknown` placeholder in the
+    // shared contract, so `ws` passes structurally without a cast.
     return resolvePythonImportTarget(
       { kind: 'named', localName: '_', importedName: '_', targetRaw },
-      ws as unknown as WorkspaceIndex,
+      ws,
     );
   },
 
   // Python LEGB precedence: local > import/namespace/reexport > wildcard.
-  mergeBindings: (existing, incoming, scopeId) => {
-    // pythonMergeBindings(scope, bindings) only consults BindingRef.origin
-    // for tier ordering, not scope.kind. A shape-stub satisfies the type
-    // contract without falsifying behavior. Widen the readonly result
-    // to a mutable BindingRef[] for the orchestrator's hook signature.
-    const fakeScope = { id: scopeId } as unknown as Scope;
-    return [...pythonMergeBindings(fakeScope, [...existing, ...incoming])];
-  },
+  // The per-scope id is unused by pythonMergeBindings (tier ordering
+  // is computed purely from BindingRef.origin), so we don't need to
+  // synthesize a Scope.
+  mergeBindings: (existing, incoming) => [...pythonMergeBindings([...existing, ...incoming])],
 
   // Adapter: pythonArityCompatibility predates RegistryProviders and
-  // uses (def, callsite). Contract is (callsite, def).
+  // uses (def, callsite). ScopeResolver contract is (callsite, def).
+  // Wrapper kept to honor both contracts without altering the legacy
+  // shape that LanguageProvider.arityCompatibility consumes.
   arityCompatibility: (callsite, def) => pythonArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) =>

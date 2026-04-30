@@ -15,6 +15,10 @@ import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
 
 export interface PythonResolveContext {
   readonly fromFile: string;
+  /** Mutable `Set` because the legacy `resolvePythonImportInternal`
+   *  chain downstream is typed to accept `Set<string>`. Callers that
+   *  only hold a `ReadonlySet` should copy via `new Set(...)` at the
+   *  adapter boundary. */
   readonly allFilePaths: Set<string>;
 }
 
@@ -22,6 +26,10 @@ export function resolvePythonImportTarget(
   parsedImport: ParsedImport,
   workspaceIndex: WorkspaceIndex,
 ): string | null {
+  // WorkspaceIndex is `unknown` in the shared contract (Ring 1
+  // placeholder). The scope-resolution orchestrator hands us a
+  // PythonResolveContext-shaped object; narrow structurally rather
+  // than via a cast chain so unexpected shapes return null cleanly.
   const ctx = workspaceIndex as PythonResolveContext | undefined;
   if (
     ctx === undefined ||

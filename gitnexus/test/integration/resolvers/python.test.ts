@@ -1,8 +1,10 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -13,6 +15,14 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+function writeFixtureRepo(root: string, files: Record<string, string>): void {
+  for (const [relPath, content] of Object.entries(files)) {
+    const fullPath = path.join(root, relPath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content, 'utf8');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Heritage: relative imports + class inheritance
@@ -25,12 +35,12 @@ describe('Python relative import & heritage resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'python-pkg'), () => {});
   }, 60000);
 
-  it('detects exactly 3 classes and 5 functions', () => {
+  it('classifies top-level functions separately from class methods', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['AuthService', 'BaseModel', 'User']);
-    expect(getNodesByLabel(result, 'Function')).toEqual([
+    expect(getNodesByLabel(result, 'Function')).toEqual(['process_model']);
+    expect(getNodesByLabel(result, 'Method')).toEqual([
       'authenticate',
       'get_name',
-      'process_model',
       'save',
       'validate',
     ]);
@@ -148,10 +158,13 @@ describe('Python member-call resolution', () => {
     expect(saveCall!.targetFilePath).toBe('user.py');
   });
 
-  it('detects User class and save function (Python methods are Function nodes)', () => {
+  it('classifies regular and dunder class-body functions as Method nodes', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toEqual(
+      expect.arrayContaining(['save', '__getitem__']),
+    );
+    expect(getNodesByLabel(result, 'Function')).not.toContain('save');
+    expect(getNodesByLabel(result, 'Function')).not.toContain('__getitem__');
   });
 });
 
@@ -166,11 +179,10 @@ describe('Python receiver-constrained resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'python-receiver-resolution'), () => {});
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    // Python tree-sitter captures all function_definitions as Function
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -506,7 +518,7 @@ describe('Python constructor-inferred type resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -548,8 +560,7 @@ describe('Python constructor-call resolution', () => {
 
   it('detects User class with __init__ and save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('__init__');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toEqual(expect.arrayContaining(['__init__', 'save']));
     expect(getNodesByLabel(result, 'Function')).toContain('process');
   });
 
@@ -590,9 +601,9 @@ describe('Python self resolution', () => {
     );
   }, 60000);
 
-  it('detects User and Repo classes, each with a save function', () => {
+  it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -655,6 +666,18 @@ describe('Python super resolution', () => {
       (c) => c.source === 'save' && c.target === 'save' && c.targetFilePath === 'models/base.py',
     );
     expect(superSave).toBeDefined();
+    // NOTE: no `rel.reason` assertion here. The legacy DAG classifies
+    // Python `super()` as `'import-resolved'` (the ancestor arrives via
+    // `from base import BaseModel`), while the scope-resolution super-
+    // branch emits the canonical `'global'` (super resolves via MRO,
+    // not through an import directive). That legacy-path asymmetry is
+    // pre-existing (the scope-resolution path previously emitted the
+    // non-standard `'scope-resolution: super-receiver'`) and closing it
+    // requires realigning the legacy tier classifier, which is out of
+    // scope here. The C# `csharp-super-resolution` + `csharp-generic-
+    // parent` suites pin `'global'` because C# legacy also emits
+    // `'global'` for `base` calls, giving us a same-graph guarantee
+    // on at least one migrated language.
     const repoSave = calls.find(
       (c) => c.target === 'save' && c.targetFilePath === 'models/repo.py',
     );
@@ -704,8 +727,7 @@ describe('Python walrus operator type inference', () => {
 
   it('detects User class with save and greet methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+    expect(getNodesByLabel(result, 'Method')).toEqual(expect.arrayContaining(['save', 'greet']));
   });
 
   it('resolves user.save() via walrus operator constructor inference', () => {
@@ -730,7 +752,7 @@ describe('Python class-level annotation resolution', () => {
   it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -877,10 +899,10 @@ describe('Python nullable receiver resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'python-nullable-receiver'), () => {});
   }, 60000);
 
-  it('detects User and Repo classes, both with save functions', () => {
+  it('detects User and Repo classes, both with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -930,7 +952,7 @@ describe('Python assignment chain propagation', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -992,7 +1014,7 @@ describe('Python nullable (User | None) + assignment chain combined', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -1054,10 +1076,10 @@ describe('Python walrus operator (:=) assignment chain', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'python-walrus-chain'), () => {});
   }, 60000);
 
-  it('detects User and Repo classes each with a save function', () => {
+  it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -1121,7 +1143,7 @@ describe('Python match/case as-pattern type binding', () => {
   it('detects User and Repo classes each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveFns = getNodesByLabel(result, 'Function').filter((m) => m === 'save');
+    const saveFns = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveFns.length).toBe(2);
   });
 
@@ -1239,8 +1261,7 @@ describe('Python member access iterable for-loop', () => {
   it('detects User and Repo classes with save methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 
   it('resolves user.save() via self.users to User#save', () => {
@@ -1464,7 +1485,7 @@ describe('Field type disambiguation (Python)', () => {
   }, 60000);
 
   it('detects both User#save and Address#save', () => {
-    const methods = getNodesByLabel(result, 'Function');
+    const methods = getNodesByLabel(result, 'Method');
     const saveMethods = methods.filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
@@ -1629,8 +1650,7 @@ describe('Python cross-file binding propagation', () => {
 
   it('detects User class with save and get_name methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+    expect(getNodesByLabel(result, 'Method')).toEqual(expect.arrayContaining(['save', 'get_name']));
   });
 
   it('detects get_user and run functions', () => {
@@ -1695,12 +1715,12 @@ describe('Python module import CALLS resolution (Issue #337)', () => {
     expect(classes.filter((c) => c === 'Admin').length).toBe(1);
   });
 
-  it('detects exactly 3 Function nodes: save, verify, login', () => {
-    const fns = getNodesByLabel(result, 'Function');
-    expect(fns.length).toBe(3);
-    expect(fns).toContain('save');
-    expect(fns).toContain('verify');
-    expect(fns).toContain('login');
+  it('detects exactly 3 Method nodes: save, verify, login', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods.length).toBe(3);
+    expect(methods).toContain('save');
+    expect(methods).toContain('verify');
+    expect(methods).toContain('login');
   });
 
   // ── IMPORTS edges ───────────────────────────────────────────────────
@@ -2002,13 +2022,14 @@ describe('Python overload dispatch', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('Formatter');
   });
 
-  it('detects all functions including methods', () => {
+  it('classifies overload methods separately from free functions', () => {
     const fns = getNodesByLabel(result, 'Function');
-    expect(fns).toContain('format');
-    expect(fns).toContain('format_with_prefix');
     expect(fns).toContain('format_text');
     expect(fns).toContain('format_text_with_width');
     expect(fns).toContain('run');
+    expect(getNodesByLabel(result, 'Method')).toEqual(
+      expect.arrayContaining(['format', 'format_with_prefix']),
+    );
   });
 
   it('emits HAS_METHOD for Formatter.format and Formatter.format_with_prefix', () => {
@@ -2471,5 +2492,63 @@ describe('Python class-body namespace import feeds method receiver-bound call', 
     const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
     expect(callEdge).toBeDefined();
     expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 sibling regression for Python: force worker-mode extraction so
+// scope-resolution reparses on cache miss, then assert large ASCII and
+// UTF-8-heavy source files still produce trailing call edges.
+// ---------------------------------------------------------------------------
+
+describe('Python large-file cache-miss parser buffer regression', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-large-cache-'));
+    writeFixtureRepo(repoDir, {
+      'models.py': `
+class User:
+    def save(self):
+        return True
+`,
+      'ascii_app.py': `from models import User
+
+# ${'x'.repeat(120 * 1024)}
+def create_ascii_user():
+    user = User()
+    user.save()
+`,
+      'utf8_app.py': `from models import User
+
+# ${'漢'.repeat(120_000)}
+def create_utf8_user():
+    user = User()
+    user.save()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {
+      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
+    });
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('extracts trailing functions after large ASCII and UTF-8 padding', () => {
+    expect(getNodesByLabel(result, 'Function')).toEqual(
+      expect.arrayContaining(['create_ascii_user', 'create_utf8_user']),
+    );
+  });
+
+  it('resolves calls from both padded files to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    for (const source of ['create_ascii_user', 'create_utf8_user']) {
+      const save = calls.find((c) => c.source === source && c.target === 'save');
+      expect(save).toBeDefined();
+      expect(save!.targetFilePath).toBe('models.py');
+    }
   });
 });

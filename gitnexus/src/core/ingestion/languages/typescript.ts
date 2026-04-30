@@ -44,6 +44,17 @@ import {
   javascriptCallConfig,
 } from '../call-extractors/configs/typescript-javascript.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitTsScopeCaptures,
+  interpretTsImport,
+  interpretTsTypeBinding,
+  tsBindingScopeFor,
+  tsImportOwningScope,
+  tsReceiverBinding,
+  typescriptMergeBindings,
+  typescriptArityCompatibility,
+  resolveTsImportTarget,
+} from './typescript/index.js';
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression get their name
@@ -185,6 +196,25 @@ export const typescriptProvider = defineLanguage({
   classExtractor: createClassExtractor(typescriptClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  // TypeScript is the third migration after Python and C#. See
+  // ./typescript/index.ts for the full per-hook rationale and the
+  // canonical capture vocabulary in ./typescript/query.ts
+  // (TYPESCRIPT_SCOPE_QUERY constant).
+  emitScopeCaptures: emitTsScopeCaptures,
+  interpretImport: interpretTsImport,
+  interpretTypeBinding: interpretTsTypeBinding,
+  bindingScopeFor: tsBindingScopeFor,
+  importOwningScope: tsImportOwningScope,
+  // Merge precedence is decided from BindingRef origin + declaration
+  // space only. The central finalizer already calls this per (scope,
+  // name), so the Scope object itself intentionally does not affect
+  // TypeScript declaration merging.
+  mergeBindings: (_scope, bindings) => typescriptMergeBindings(bindings),
+  receiverBinding: tsReceiverBinding,
+  arityCompatibility: typescriptArityCompatibility,
+  resolveImportTarget: resolveTsImportTarget,
 });
 
 export const javascriptProvider = defineLanguage({

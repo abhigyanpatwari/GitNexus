@@ -36,12 +36,24 @@ kind: ClusterImagePolicy
 metadata:
   name: gitnexus-signed-images
 spec:
-  # Apply to both published GitNexus images on GHCR. Image references always
-  # carry a tag or digest at admission time, so these two globs cover every
-  # `gitnexus:<tag>`, `gitnexus@sha256:...`, `gitnexus-web:<tag>`, and
-  # `gitnexus-web@sha256:...` reference.
+  # Apply to both published GitNexus images on both registries. Image
+  # references always carry a tag or digest at admission time, so these globs
+  # cover every `gitnexus:<tag>`, `gitnexus@sha256:...`, `gitnexus-web:<tag>`,
+  # and `gitnexus-web@sha256:...` reference on either GHCR or Docker Hub.
+  # The Docker Hub images are byte-for-byte mirrors of the GHCR images (same
+  # build, same digest, same Cosign signature), so the same keyless identity
+  # authority verifies both.
   images:
     - glob: 'ghcr.io/abhigyanpatwari/gitnexus*'
+    # Docker Hub references can appear in three forms at admission time
+    # (`docker.io/...`, `index.docker.io/...`, and bare `akonlabs/...` with
+    # the default registry implied). List all three so the policy cannot be
+    # sidestepped by the choice of registry prefix. The Docker Hub namespace
+    # is `akonlabs` rather than `abhigyanpatwari` because the Docker Hub org
+    # differs from the GitHub org.
+    - glob: 'docker.io/akonlabs/gitnexus*'
+    - glob: 'index.docker.io/akonlabs/gitnexus*'
+    - glob: 'akonlabs/gitnexus*'
   authorities:
     - name: gitnexus-cosign-keyless
       keyless:

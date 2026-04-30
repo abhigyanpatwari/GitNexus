@@ -106,6 +106,8 @@ function writeCsv(lines: string[]): string {
 // ---------------------------------------------------------------------------
 describe('splitRelCsvByLabelPair', () => {
   const validTables = new Set(['Function', 'Class', 'File', 'Method']);
+  /** Bounded poll for readline + split loop to reach an observable milestone (DoD §2.7). */
+  const pollOpts = { interval: 10, timeout: 10_000 } as const;
 
   it('splits lines into per-pair files with correct row counts', async () => {
     const csvPath = writeCsv([
@@ -197,8 +199,8 @@ describe('splitRelCsvByLabelPair', () => {
       mockFactory(streams, { blocked: true }),
     );
 
-    // Give readline time to buffer and fire lines
-    await new Promise((r) => setTimeout(r, 50));
+    // All rows share Function|Class — one stream, blocked on header or row drain
+    await expect.poll(() => streams.length, pollOpts).toBe(1);
 
     // Unblock all streams so the Promise can resolve
     for (const ws of streams) ws.unblock();
@@ -222,9 +224,7 @@ describe('splitRelCsvByLabelPair', () => {
       mockFactory(streams, { blocked: true }),
     );
 
-    // Wait for readline to process, then error while paused on drain
-    await new Promise((r) => setTimeout(r, 50));
-    expect(streams.length).toBeGreaterThan(0);
+    await expect.poll(() => streams.length, pollOpts).toBe(1);
     streams[0].triggerError(new Error('disk full'));
 
     await expect(promise).rejects.toThrow('disk full');
@@ -247,14 +247,12 @@ describe('splitRelCsvByLabelPair', () => {
       mockFactory(streams, { blocked: true }),
     );
 
-    // The first pair stream is created immediately and blocks on its header
-    // write. Unblock it once so the loop advances and creates the second
-    // pair stream (also blocked). Now both streams exist — trigger the error.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(streams.length).toBe(1);
+    // First pair stream once readline delivered a row; poll avoids Windows CI races.
+    await expect.poll(() => streams.length, pollOpts).toBe(1);
     streams[0].unblock();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(streams.length).toBeGreaterThanOrEqual(2);
+    // Exactly two pair keys before the third CSV row: Function|Class then
+    // File|Method; the loop is blocked on the second stream's header drain.
+    await expect.poll(() => streams.length, pollOpts).toBe(2);
     streams[0].triggerError(new Error('EMFILE'));
 
     await expect(promise).rejects.toThrow('EMFILE');

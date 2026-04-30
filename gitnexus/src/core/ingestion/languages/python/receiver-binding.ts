@@ -4,9 +4,9 @@
  *
  * Tree-sitter can't easily express "the first parameter of a function
  * defined directly inside a class body" via a single static query.
- * Doing this in code keeps the `.scm` file declarative and lets us
- * encode the `@classmethod` / `@staticmethod` decorator awareness that
- * Python's runtime depends on.
+ * Doing this in code keeps the embedded scope query declarative and
+ * lets us encode the `@classmethod` / `@staticmethod` decorator
+ * awareness that Python's runtime depends on.
  */
 
 import type { CaptureMatch } from 'gitnexus-shared';

@@ -16,9 +16,12 @@ let lastEventSource: MockEventSource | null = null;
 
 beforeEach(() => {
   lastEventSource = null;
+  // vitest 4 enforces that mock implementations used with `new` must have a
+  // [[Construct]] slot. Arrow functions don't, so we use a regular function
+  // declaration here. The production code calls `new EventSource(...)`.
   vi.stubGlobal(
     'EventSource',
-    vi.fn().mockImplementation(() => {
+    vi.fn().mockImplementation(function () {
       lastEventSource = new MockEventSource();
       return lastEventSource;
     }),

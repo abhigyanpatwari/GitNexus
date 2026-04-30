@@ -16,6 +16,8 @@ import {
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
+import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
@@ -146,11 +148,9 @@ let vectorExtensionLoaded = false;
 
 /**
  * In-process cache of FTS indexes that have been ensured against the current
- * connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips inside a
- * single CLI/MCP session — the first call to `ensureFTSIndex` for a given
- * `(tableName, indexName)` pays the LadybugDB cost (~440 ms even when the
- * index already exists on disk), subsequent calls are a Set lookup. Cleared
- * by `closeLbug` so a re-init starts fresh.
+ * writable connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips
+ * for callers that explicitly opt into `ensureFTSIndex`. Cleared by
+ * `closeLbug` so a re-init starts fresh.
  *
  * Key format: `${tableName}:${indexName}`.
  */
@@ -332,8 +332,9 @@ const doInitLbug = async (dbPath: string) => {
     }
   }
 
-  // Load VECTOR extension for semantic search support
-  await loadVectorExtension();
+  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
+  // only required for semantic embeddings and is probed lazily there.
+  await loadFTSExtension();
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -847,8 +848,11 @@ export const executeWithReusedStatement = async (
         await conn.execute(stmt, params);
       }
     } catch (e) {
-      // Log the error and continue with next batch
-      console.warn('Batch execution error:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
+      throw new Error(
+        `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
+      );
     }
     // Note: LadybugDB PreparedStatement doesn't require explicit close()
   }
@@ -1143,63 +1147,55 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 // ============================================================================
 
 /**
- * Load the FTS extension (required before using FTS functions).
- * Safe to call multiple times — tracks loaded state via module-level ftsLoaded.
+ * Load the FTS extension on the supplied connection (or the singleton
+ * writable connection when none is given).
+ *
+ * Delegates to the shared `ExtensionManager` so install policy (auto /
+ * load-only / never), out-of-process bounded INSTALL, and capability
+ * caching are owned in one place. The module-level `ftsLoaded` flag is
+ * kept purely as a per-call short-circuit on the singleton writable
+ * connection so repeated callers (e.g. createFTSIndex) avoid an extra
+ * `LOAD` round-trip per invocation. Pool adapter callers pass
+ * `{ policy: 'load-only' }` so query paths never block on a network install.
  */
-export const loadFTSExtension = async (): Promise<void> => {
-  if (ftsLoaded) return;
-  if (!conn) {
+export const loadFTSExtension = async (
+  targetConn?: lbug.Connection,
+  opts: ExtensionEnsureOptions = {},
+): Promise<boolean> => {
+  const useModuleState = targetConn === undefined;
+  if (useModuleState && ftsLoaded) return true;
+
+  const c: lbug.Connection | null = targetConn ?? conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  try {
-    // Try loading locally first (no network required)
-    await conn.query('LOAD EXTENSION fts');
-    ftsLoaded = true;
-  } catch {
-    // Fall back to install + load (requires network)
-    try {
-      await conn.query('INSTALL fts');
-      await conn.query('LOAD EXTENSION fts');
-      ftsLoaded = true;
-    } catch (err: any) {
-      const msg = err?.message || '';
-      if (
-        msg.includes('already loaded') ||
-        msg.includes('already installed') ||
-        msg.includes('already exists')
-      ) {
-        ftsLoaded = true;
-      } else {
-        console.error('GitNexus: FTS extension load failed:', msg);
-      }
-    }
-  }
+
+  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'fts', 'FTS', opts);
+  if (loaded && useModuleState) ftsLoaded = true;
+  return loaded;
 };
+
 /**
- * Load the VECTOR extension (required before using QUERY_VECTOR_INDEX).
- * Safe to call multiple times -- tracks loaded state via module-level vectorExtensionLoaded.
+ * Load the VECTOR extension on the supplied connection (or the singleton
+ * writable connection when none is given). Returns false when VECTOR is
+ * unavailable so semantic search can fall back to exact scan.
  */
-export const loadVectorExtension = async (): Promise<void> => {
-  if (vectorExtensionLoaded) return;
-  if (!conn) {
+export const loadVectorExtension = async (
+  targetConn?: lbug.Connection,
+  opts: ExtensionEnsureOptions = {},
+): Promise<boolean> => {
+  const useModuleState = targetConn === undefined;
+  if (useModuleState && vectorExtensionLoaded) return true;
+  if (!isVectorExtensionSupportedByPlatform()) return false;
+
+  const c: lbug.Connection | null = targetConn ?? conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  try {
-    await conn.query('INSTALL VECTOR');
-    await conn.query('LOAD EXTENSION VECTOR');
-    vectorExtensionLoaded = true;
-  } catch (err: any) {
-    const msg = err?.message || '';
-    if (
-      msg.includes('already loaded') ||
-      msg.includes('already installed') ||
-      msg.includes('already exists')
-    ) {
-      vectorExtensionLoaded = true;
-    } else {
-      console.error('GitNexus: VECTOR extension load failed:', msg);
-    }
-  }
+
+  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'VECTOR', 'VECTOR', opts);
+  if (loaded && useModuleState) vectorExtensionLoaded = true;
+  return loaded;
 };
 /**
  * Create a full-text search index on a table
@@ -1218,7 +1214,9 @@ export const createFTSIndex = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  await loadFTSExtension();
+  if (!(await loadFTSExtension())) {
+    return;
+  }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
@@ -1235,10 +1233,9 @@ export const createFTSIndex = async (
 /**
  * Lazy-create an FTS index, caching the fact in-process.
  *
- * Used by `queryFTS` so that `analyze` doesn't pay the ~440 ms × 5 fixed
- * LadybugDB cost up-front (it dominates analyze on small repos). Instead,
- * the cost is moved to the first `query`/`context` call in a session,
- * where it's amortised across many lookups.
+ * Kept for writable maintenance paths that need to lazily materialize an
+ * index. Read-only query paths must not call this; production analysis owns
+ * creating the configured search indexes before the database is served.
  *
  * Safe to call repeatedly — the in-process Set guarantees only the first
  * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.

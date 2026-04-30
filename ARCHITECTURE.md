@@ -215,9 +215,51 @@ Both hooks are optional on `LanguageProvider`. Ruby is the only current implemen
 The Call-Resolution DAG is the **legacy path**. RFC #909 Ring 3 introduces a parallel **scope-resolution pipeline** (next section) that replaces stages 1–6 with a scope-indexed registry lookup. Both paths ship side-by-side and are gated per-language via `MIGRATED_LANGUAGES` + the `REGISTRY_PRIMARY_<LANG>` env var.
 
 - **Unmigrated language** → Call-Resolution DAG runs; scope-resolution phase is a no-op.
-- **Migrated language** (currently: Python) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
+- **Migrated language** (currently: Python, C#) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
 - `import-processor` still populates `importMap` for migrated languages — heritage's `ctx.resolve` reads it to disambiguate parent classes. Only edge emission is gated.
 - CI runs BOTH paths for every migrated language on every PR (`.github/workflows/ci-scope-parity.yml`); both must pass.
+
+#### Same-graph guarantee
+
+Edges emitted by the scope-resolution pipeline and edges emitted by the legacy DAG are indistinguishable to downstream consumers (MCP tools, HTTP API, embeddings, group bridge):
+
+- **Node identity** — both paths use `generateId(...)` from `lib/utils.ts`, the same qualified-name keyspace, and the same node labels (`File`, `Folder`, `Class`, `Method`, `Function`, …). Overload disambiguation suffixes `parameterTypes` into the id consistently — see `scope-resolution/graph-bridge/ids.ts` and the legacy emitter in `call-processor.ts`.
+- **Edge vocabulary** — both paths emit the same reasons: `'import-resolved' | 'global' | 'local-call' | 'same-file' | 'interface-dispatch' | 'read' | 'write'`. Migrating a language must not change which reasons consumers see for previously-resolved edges.
+- **Confidence tier** — both paths attach a numeric `confidence` to each edge using the same scale.
+
+The CI parity workflow (`.github/workflows/ci-scope-parity.yml`) runs both paths against every migrated language's fixture corpus and fails on any divergence.
+
+#### Semantic-model source of truth
+
+Two independent invariants.
+
+**ParsedFile = the AST-level truth.** `ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact both resolution paths consume. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
+
+**SemanticModel = the symbol-level truth.** `SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). Both paths read from here:
+
+- Legacy Call-Resolution DAG → `call-processor` Tier 1/2/3 via `model.symbols.lookupExactAll`, `model.methods.lookupMethodByName`, `model.types.lookupClassByName`, `lookupMethodByOwnerWithMRO`.
+- Scope-resolution pipeline → `findOwnedMember`, `pickOverload`, `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
+
+The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` for `Scope`-valued lookups (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel` structurally cannot hold. No symbol-indexed duplicates exist outside `SemanticModel`.
+
+**Write / read phase contract.** The model is mutable during three ordered phases and read-only afterward:
+
+```
+ Phase 1: legacy parse     ──► symbolTable.add fans into types/methods/fields
+ Phase 2: scope-resolution ──► reconcileOwnership() registers corrected ownerIds
+ Phase 3: finalize         ──► model.attachScopeIndexes(bundle) — one-shot freeze
+ ─────────────────────────── phase boundary ───────────────────────────
+ Read phase: all resolution passes + MCP + HTTP + embeddings see
+             SemanticModel (read-only handle); writes are type-errors.
+```
+
+`runScopeResolution` narrows `MutableSemanticModel` → `SemanticModel` at the phase boundary so downstream passes physically cannot mutate the model even accidentally.
+
+**Transitional: reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose legacy extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose legacy extractor already carries `ownerId` (C#).
+
+The architectural end state is for every language's parse-time extractor to emit the correct `ownerId` directly, making reconciliation a no-op (tracked as a follow-up refactor). The dev-mode validator `validateOwnershipParity` surfaces any drift via `onWarn` under `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+
+References: `semantic-model.ts` file-head (full write/read contract); `contract/scope-resolver.ts` Contract Invariant I9 (scope-resolution-side rule).
 
 ---
 
@@ -260,6 +302,11 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `arityCompatibility` | Provider consumed by registry during `MethodRegistry.lookup` Step 2 |
 | `importEdgeReason` | Confidence-tier string for IMPORTS edge reason field |
 | `propagatesReturnTypesAcrossImports?` | Opt out of cross-file return-type propagation (default on) |
+| `fieldFallbackOnMethodLookup?` | Statically-typed languages turn this OFF — the heuristic over-connects (default on) |
+| `unwrapCollectionAccessor?` | Property-style collection views (`data.Values` on Dictionary-like receivers) — default off |
+| `collapseMemberCallsByCallerTarget?` | One CALLS edge per (caller, target) instead of per-site — default off |
+| `populateNamespaceSiblings?` | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache` |
+| `hoistTypeBindingsToModule?` | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level |
 
 ### Per-language registration
 
@@ -284,12 +331,16 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 | `registry-primary-flag.ts` | `MIGRATED_LANGUAGES` set + `isRegistryPrimary(lang)` |
 | `languages/python/index.ts` | Python `ScopeResolver` hooks + known-limitation docs |
 | `languages/python/captures.ts` | `emitPythonScopeCaptures` (honors cross-phase Tree cache) |
+| `languages/csharp/index.ts` | C# `ScopeResolver` hooks + known-limitation docs |
+| `languages/csharp/captures.ts` | `emitCsharpScopeCaptures` (honors cross-phase Tree cache) |
+| `languages/csharp/namespace-siblings.ts` | Cross-file implicit-namespace visibility hook (reads `treeCache`) |
 
 ### Performance notes
 
 - **Cross-phase Tree cache**: parse phase writes Trees into `scopeTreeCache` (separate from the chunk-local `astCache`) ONLY for languages with `emitScopeCaptures`. Scope-resolution reads from it to skip the second parse. Cleared at end of the phase. Workers leave the cache empty — Trees can't cross MessageChannels; cache miss = fresh parse. `PROF_SCOPE_RESOLUTION=1` emits hit/miss counters and a worker-engaged warning.
 - **Typed relationship iteration**: heritage + MRO walk only the EXTENDS / IMPLEMENTS / HAS_METHOD edges via `iterRelationshipsByType`, not the full relationship map.
 - **Workspace-resolution-index**: O(1) `findOwnedMember` / `findExportedDef` / `classScopeByDefId` built once per run.
+- **SCC-ordered cross-file return-type propagation** (PR #1050): `propagateImportedReturnTypes` walks `indexes.sccs` in reverse-topological order (leaves first), so multi-hop alias chains like `models.User → service.user → app.user` collapse to the terminal class in a single linear pass. Within each importer, the source module's `typeBindings` is chain-followed BEFORE mirroring (so we mirror terminal types, not intermediate refs), and the importer's own `typeBindings` is chain-followed AFTER mirroring (so local `const x = importedFn()` resolves before downstream importers run). Cyclic SCCs reach a partial fixpoint within a single pass without iterating to convergence — see the `ts-circular` cross-file-binding fixture which only asserts pipeline-no-throw. PROF output (`PROF_SCOPE_RESOLUTION=1`) splits `finalize` from `propagate` so quadratic regressions in the chain-follow surface independently.
 
 ---
 

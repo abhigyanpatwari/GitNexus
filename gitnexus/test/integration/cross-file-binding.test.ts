@@ -77,6 +77,63 @@ describe('Cross-File Binding Propagation: TypeScript simple cross-file', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Deep alias chain: 5 files, type collapses across 4 module boundaries.
+// Regression guard for SCC-ordered propagation (PR #1050) — without
+// reverse-topological ordering, app.ts may be processed before
+// service/util/bridge had their own typeBindings chain-followed,
+// leaving `bridge` unresolvable. With SCC ordering the type collapses
+// to `User` in a single pass.
+//
+//   models.ts: class User; getUser(): User
+//   service.ts: const user = getUser()      // user → User
+//   util.ts: const alias = user              // alias → User
+//   bridge.ts: const bridge = alias          // bridge → User
+//   app.ts: bridge.save(); bridge.getName()  // resolve to User#save / #getName
+// ---------------------------------------------------------------------------
+
+describe('Cross-File Binding Propagation: TypeScript deep alias chain (5 files, SCC-ordered collapse)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'ts-deep-alias-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('resolves bridge.save() in main() to User#save through 4-hop alias chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'main' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves bridge.getName() in main() to User#getName through 4-hop alias chain', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'main' && c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+
+  it('emits IMPORTS edges along the full chain (4 boundaries)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const paths = imports.map((e) => `${e.sourceFilePath} → ${e.targetFilePath}`);
+    expect(paths.some((p) => p.includes('service') && p.includes('models'))).toBe(true);
+    expect(paths.some((p) => p.includes('util') && p.includes('service'))).toBe(true);
+    expect(paths.some((p) => p.includes('bridge') && p.includes('util'))).toBe(true);
+    expect(paths.some((p) => p.includes('app') && p.includes('bridge'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Re-export chain: core → index (barrel) → app
 // core.ts exports getConfig(): Config
 // index.ts re-exports getConfig from core (no new bindings)
@@ -166,8 +223,8 @@ describe('Cross-File Binding Propagation: TypeScript E3 return type propagation'
 // ---------------------------------------------------------------------------
 // Circular imports: a.ts ↔ b.ts
 // a.ts imports getB from b.ts; b.ts imports A from a.ts
-// Conservative expectation: pipeline completes without error.
-// Cross-file binding propagation across cycles is not guaranteed.
+// Regression guard: the pipeline completes and still resolves the
+// imported factory plus the inferred receiver binding for b.doB().
 // ---------------------------------------------------------------------------
 
 describe('Cross-File Binding Propagation: TypeScript circular imports', () => {
@@ -208,6 +265,18 @@ describe('Cross-File Binding Propagation: TypeScript circular imports', () => {
     expect(paths.some((p) => p.includes('a.ts') && p.includes('b.ts'))).toBe(true);
     // b.ts imports from a.ts
     expect(paths.some((p) => p.includes('b.ts') && p.includes('a.ts'))).toBe(true);
+  });
+
+  it('resolves processA through imported getB and inferred B.doB binding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getBCall = calls.find((c) => c.source === 'processA' && c.target === 'getB');
+    expect(getBCall).toBeDefined();
+    expect(getBCall!.targetFilePath).toBe('src/b.ts');
+
+    const doBCall = calls.find((c) => c.source === 'processA' && c.target === 'doB');
+    expect(doBCall).toBeDefined();
+    expect(doBCall!.targetLabel).toBe('Method');
+    expect(doBCall!.targetFilePath).toBe('src/b.ts');
   });
 });
 
@@ -269,9 +338,7 @@ describe('Phase 9 — Cross-File Call-Result Binding: Python', () => {
 
   it('detects User class with save and get_name methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
-    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+    expect(getNodesByLabel(result, 'Method')).toEqual(expect.arrayContaining(['save', 'get_name']));
   });
 
   it('detects get_user function and run function', () => {
@@ -633,10 +700,9 @@ describe('Consumer-Before-Provider: Python', () => {
     );
   }, 60000);
 
-  it('detects User class and save function', () => {
+  it('detects User class and save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
-    // Python tree-sitter captures all function_definitions as Function, including methods
-    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 
   it('resolves u.save() in main() to User#save', () => {

@@ -213,7 +213,7 @@ describe('buildScopeTree', () => {
       expect(() => buildScopeTree([fn])).toThrowError(ScopeTreeInvariantError);
     });
 
-    it('throws when a parent range does not strictly contain a child range', () => {
+    it('throws when a parent range does not contain a child range', () => {
       const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 10, 0) });
       const fn = mkScope({
         id: 'scope:f',
@@ -222,18 +222,64 @@ describe('buildScopeTree', () => {
         range: r(5, 0, 50, 0), // extends beyond the module
       });
       expect(() => buildScopeTree([mod, fn])).toThrowError(ScopeTreeInvariantError);
-      expect(() => buildScopeTree([mod, fn])).toThrowError(/strictly contain/i);
+      expect(() => buildScopeTree([mod, fn])).toThrowError(/contain child/i);
     });
 
-    it('rejects child ranges identical to the parent (not strictly contained)', () => {
+    it('rejects child ranges identical to a non-Module parent', () => {
+      // Same-range parent-child is only legal when the parent is the
+      // file's Module (the universal-outer carve-out — see the
+      // namespace-as-root case below). For non-Module parents (Namespace,
+      // Class, Function, Block, …) the strict-containment rule still holds.
       const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 10, 0) });
-      const fn = mkScope({
-        id: 'scope:f',
+      const ns = mkScope({
+        id: 'scope:ns',
         parent: 'scope:m',
-        kind: 'Function',
-        range: r(1, 0, 10, 0),
+        kind: 'Namespace',
+        range: r(2, 0, 9, 0),
       });
-      expect(() => buildScopeTree([mod, fn])).toThrowError(ScopeTreeInvariantError);
+      const cls = mkScope({
+        id: 'scope:c',
+        parent: 'scope:ns',
+        kind: 'Class',
+        range: r(2, 0, 9, 0), // same as ns
+      });
+      expect(() => buildScopeTree([mod, ns, cls])).toThrowError(ScopeTreeInvariantError);
+      expect(() => buildScopeTree([mod, ns, cls])).toThrowError(/contain child/i);
+    });
+
+    it('accepts a same-range non-Module child whose parent is the Module (issue #1086)', () => {
+      // Triggered by C# files consisting of a single top-level
+      // `namespace_declaration` that ends exactly at EOF (no trailing
+      // newline, no leading content): tree-sitter reports identical byte
+      // ranges for `compilation_unit` and `namespace_declaration`. The
+      // Module is the universal outer of any file-level scope by language
+      // semantics, so equal ranges should not break the parent chain when
+      // the parent is the Module.
+      const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 10, 0) });
+      const ns = mkScope({
+        id: 'scope:ns',
+        parent: 'scope:m',
+        kind: 'Namespace',
+        range: r(1, 0, 10, 0), // exactly equal to the Module
+      });
+      expect(() => buildScopeTree([mod, ns])).not.toThrow();
+      const tree = buildScopeTree([mod, ns]);
+      expect(tree.getParent('scope:ns' as ScopeId)?.id).toBe('scope:m');
+      expect(tree.getChildren('scope:m' as ScopeId)).toEqual(['scope:ns']);
+    });
+
+    it('still rejects same-range Module-as-parent of another Module', () => {
+      // The carve-out is asymmetric: only Module-as-outer parents a
+      // same-range non-Module. Module-Module at equal ranges is rejected
+      // because two Modules would imply two roots / cyclic structure.
+      const m1 = mkScope({ id: 'scope:m1', parent: null, kind: 'Module', range: r(0, 0, 10, 0) });
+      const m2 = mkScope({
+        id: 'scope:m2',
+        parent: 'scope:m1',
+        kind: 'Module',
+        range: r(0, 0, 10, 0),
+      });
+      expect(() => buildScopeTree([m1, m2])).toThrowError(ScopeTreeInvariantError);
     });
 
     it('throws when sibling ranges overlap', () => {

@@ -44,6 +44,45 @@
  * direct `createSymbolTable()` caller (e.g. an isolated unit test) gets
  * the pure, registry-free behavior — no surprises, no hidden side
  * effects.
+ *
+ * ## Single-source-of-truth invariant
+ *
+ * `SemanticModel` is the authoritative symbol store for the whole
+ * ingestion pipeline. Both the legacy Call-Resolution DAG and the
+ * new scope-resolution pipeline read symbol-keyed lookups from here
+ * exclusively — no parallel owner-keyed, name-keyed, or file-keyed
+ * symbol indexes exist outside this module. The scope-resolution
+ * pipeline does carry a small `WorkspaceResolutionIndex` for
+ * `Scope`-valued maps (`classScopeByDefId`, `moduleScopeByFile`) that
+ * `SemanticModel` structurally cannot hold, but nothing else.
+ *
+ * ## Write / read phase contract
+ *
+ * Writes to the model happen in three clearly-ordered phases during a
+ * single ingestion run:
+ *
+ *   1. **Legacy parse phase** (`parsing-processor`) calls
+ *      `symbols.add(...)` per extracted symbol, which fans out via
+ *      the dispatch table into `types` / `methods` / `fields`.
+ *   2. **Scope-resolution reconciliation** (`reconcileOwnership` in
+ *      `scope-resolution/pipeline/reconcile-ownership.ts`) registers
+ *      any `parsed.localDefs[i]` with a scope-resolution-corrected
+ *      `ownerId` that the legacy pass missed (Python class-body
+ *      methods are the canonical case). Idempotent.
+ *   3. **Finalize-orchestrator** calls `attachScopeIndexes(...)` to
+ *      stamp the materialized `ScopeResolutionIndexes` bundle onto
+ *      `model.scopes`. One-shot; throws on a second call.
+ *
+ * After these three phases, the model is effectively frozen:
+ *   - `attachScopeIndexes` applied `Object.freeze` to its bundle.
+ *   - Downstream passes receive the narrowed `SemanticModel` reader
+ *     handle (not `MutableSemanticModel`), so `.register()` /
+ *     `.clear()` / `attachScopeIndexes()` are structurally absent.
+ *
+ * See `scope-resolution/contract/scope-resolver.ts` Contract
+ * Invariant I9 for the scope-resolution-side rule and
+ * `ARCHITECTURE.md` § "Semantic-model source of truth" for the
+ * overall architecture.
  */
 
 import type { NodeLabel } from 'gitnexus-shared';

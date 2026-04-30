@@ -144,48 +144,46 @@ describe('pythonReceiverBinding', () => {
 // ─── mergeBindings ─────────────────────────────────────────────────────────
 
 describe('pythonMergeBindings — LEGB precedence', () => {
-  const scope = fnScope();
-
   it('local shadows imported', () => {
     const local = binding('local', 'L');
     const imp = binding('import', 'I');
-    expect(pythonMergeBindings(scope, [imp, local])).toEqual([local]);
+    expect(pythonMergeBindings([imp, local])).toEqual([local]);
   });
 
   it('explicit import shadows wildcard', () => {
     const imp = binding('import', 'I');
     const wc = binding('wildcard', 'W');
-    expect(pythonMergeBindings(scope, [wc, imp])).toEqual([imp]);
+    expect(pythonMergeBindings([wc, imp])).toEqual([imp]);
   });
 
   it('local shadows BOTH imported and wildcard', () => {
     const local = binding('local', 'L');
     const imp = binding('import', 'I');
     const wc = binding('wildcard', 'W');
-    expect(pythonMergeBindings(scope, [wc, imp, local])).toEqual([local]);
+    expect(pythonMergeBindings([wc, imp, local])).toEqual([local]);
   });
 
   it('keeps multiple bindings within the same tier (overload-like)', () => {
     const a = binding('local', 'A');
     const b = binding('local', 'B');
-    expect(pythonMergeBindings(scope, [a, b])).toEqual([a, b]);
+    expect(pythonMergeBindings([a, b])).toEqual([a, b]);
   });
 
   it('dedupes by DefId — same nodeId collapses', () => {
     const a = binding('local', 'A');
     const a2 = binding('local', 'A');
-    expect(pythonMergeBindings(scope, [a, a2])).toHaveLength(1);
+    expect(pythonMergeBindings([a, a2])).toHaveLength(1);
   });
 
   it('returns empty when given empty', () => {
-    expect(pythonMergeBindings(scope, [])).toEqual([]);
+    expect(pythonMergeBindings([])).toEqual([]);
   });
 
   it('namespace and reexport tie with explicit import (same tier)', () => {
     const ns = binding('namespace', 'N');
     const re = binding('reexport', 'R');
     const imp = binding('import', 'I');
-    expect(pythonMergeBindings(scope, [ns, re, imp])).toHaveLength(3);
+    expect(pythonMergeBindings([ns, re, imp])).toHaveLength(3);
   });
 });
 

@@ -8,12 +8,30 @@
 
 import type {
   CaptureMatch,
+  NodeLabel,
   ParsedImport,
   Scope,
   ScopeId,
   ScopeTree,
   TypeRef,
 } from 'gitnexus-shared';
+import type { SyntaxNode } from 'tree-sitter';
+import { findAncestorBeforeBoundary, FUNCTION_NODE_TYPES } from '../../utils/ast-helpers.js';
+
+const PYTHON_METHOD_CONTAINER_TYPES: ReadonlySet<string> = new Set(['class_definition']);
+
+export function pythonFunctionDefinitionLabel(
+  functionNode: SyntaxNode,
+  defaultLabel: NodeLabel,
+): NodeLabel {
+  if (defaultLabel !== 'Function') return defaultLabel;
+  const ancestor = findAncestorBeforeBoundary(
+    functionNode,
+    PYTHON_METHOD_CONTAINER_TYPES,
+    FUNCTION_NODE_TYPES,
+  );
+  return ancestor === null ? 'Function' : 'Method';
+}
 
 // ─── bindingScopeFor ──────────────────────────────────────────────────────
 

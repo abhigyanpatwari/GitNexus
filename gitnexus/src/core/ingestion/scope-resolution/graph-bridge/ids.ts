@@ -46,12 +46,24 @@ import {
  */
 export function resolveDefGraphId(
   filePath: string,
-  def: { qualifiedName?: string; type?: NodeLabel },
+  def: { qualifiedName?: string; type?: NodeLabel; parameterTypes?: readonly string[] },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // Overload disambiguation: when the def carries parameter types,
+    // try the parameter-typed key first so same-name same-arity
+    // overloads route to their distinct graph nodes.
+    if (
+      def.type === 'Method' &&
+      def.parameterTypes !== undefined &&
+      def.parameterTypes.length > 0
+    ) {
+      const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
+      const pHit = nodeLookup.get(pKey);
+      if (pHit !== undefined) return pHit;
+    }
     const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
     if (qualifiedHit !== undefined) return qualifiedHit;
   }
