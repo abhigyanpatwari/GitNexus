@@ -141,7 +141,7 @@ describe('writeBridge + read', () => {
     await cleanupTempDir(tmpDir);
   });
 
-  itLbugReopen('test_writeBridge_creates_bridge_lbug_file', async () => {
+  it('test_writeBridge_creates_bridge_lbug_file', async () => {
     await writeBridge(tmpDir, {
       contracts: [makeContract()],
       crossLinks: [],

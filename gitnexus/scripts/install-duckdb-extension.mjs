@@ -6,17 +6,23 @@ import { createRequire } from 'node:module';
 
 const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 
-// Mirror of LBUG_MAX_DB_SIZE in src/core/lbug/lbug-config.ts. Keep in sync.
-// Required since @ladybugdb/core 0.16.0: a 0 / undefined `maxDBSize`
-// triggers an 8 TB mmap that fails on most CI runners and laptops.
-const LBUG_MAX_DB_SIZE = (() => {
-  const raw = process.env.GITNEXUS_LBUG_MAX_DB_SIZE;
-  if (raw) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+async function loadLbugMaxDbSize() {
+  const configUrl = new URL('../dist/core/lbug/lbug-config.js', import.meta.url);
+  let mod;
+  try {
+    mod = await import(configUrl.href);
+  } catch (err) {
+    throw new Error(`Unable to load built LadybugDB config from ${configUrl.href}`, {
+      cause: err,
+    });
   }
-  return 16 * 1024 * 1024 * 1024;
-})();
+
+  const value = mod.LBUG_MAX_DB_SIZE;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid LBUG_MAX_DB_SIZE exported from ${configUrl.href}: ${value}`);
+  }
+  return value;
+}
 
 async function installDuckDbExtension(extensionName) {
   if (!extensionName || !EXTENSION_NAME_PATTERN.test(extensionName)) {
@@ -26,6 +32,7 @@ async function installDuckDbExtension(extensionName) {
   const require = createRequire(import.meta.url);
   const lbugModule = require('@ladybugdb/core');
   const lbug = lbugModule.default ?? lbugModule;
+  const lbugMaxDbSize = await loadLbugMaxDbSize();
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-ext-install-'));
   const dbPath = path.join(tmpDir, 'install.lbug');
@@ -33,7 +40,7 @@ async function installDuckDbExtension(extensionName) {
   let conn;
 
   try {
-    db = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
+    db = new lbug.Database(dbPath, 0, false, false, lbugMaxDbSize);
     conn = new lbug.Connection(db);
     await conn.query(`INSTALL ${extensionName}`);
   } finally {

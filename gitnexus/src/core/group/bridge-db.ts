@@ -622,10 +622,11 @@ function isTransientLockError(err: unknown): boolean {
   return LBUG_OPEN_RETRY_PATTERNS.some((p) => msg.includes(p));
 }
 
-export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHandle | null> {
+async function ensureBridgeDbFileAvailable(groupDir: string): Promise<boolean> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
   try {
     await fsp.access(dbPath);
+    return true;
   } catch {
     // Check for .bak recovery. Use `retryRename` (not `fsp.rename`) for the
     // exact same reason the rest of this file does: the scenario that
@@ -644,10 +645,17 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
           /* sidecar absent */
         }
       }
+      return true;
     } catch {
-      return null;
+      return false;
     }
   }
+}
+
+export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHandle | null> {
+  const dbPath = path.join(groupDir, 'bridge.lbug');
+  if (!(await ensureBridgeDbFileAvailable(groupDir))) return null;
+
   // Version gate: check meta.json version compatibility
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
@@ -707,8 +715,7 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
 /* ------------------------------------------------------------------ */
 
 export async function bridgeExists(groupDir: string): Promise<boolean> {
-  const handle = await openBridgeDbReadOnly(groupDir);
-  if (!handle) return false;
-  await closeBridgeDb(handle);
-  return true;
+  if (!(await ensureBridgeDbFileAvailable(groupDir))) return false;
+  const meta = await readBridgeMeta(groupDir);
+  return meta.version === 0 || meta.version === BRIDGE_SCHEMA_VERSION;
 }
