@@ -17,6 +17,7 @@ import {
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 // ---------------------------------------------------------------------------
@@ -317,14 +318,13 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath);
+  db = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
   conn = new lbug.Connection(db);
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
       await conn.query(schemaQuery);
     } catch (err) {
-      // Only ignore "already exists" errors - log everything else
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('already exists')) {
         console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
@@ -664,7 +664,7 @@ export const insertNodeToLbug = async (
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
-      const tempDb = new lbug.Database(targetDbPath);
+      const tempDb = new lbug.Database(targetDbPath, 0, false, false, LBUG_MAX_DB_SIZE);
       const tempConn = new lbug.Connection(tempDb);
       try {
         await tempConn.query(query);
@@ -711,7 +711,7 @@ export const batchInsertNodesToLbug = async (
   };
 
   // Open a single connection for all inserts
-  const tempDb = new lbug.Database(dbPath);
+  const tempDb = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
   const tempConn = new lbug.Connection(tempDb);
 
   let inserted = 0;
@@ -1076,7 +1076,7 @@ export const deleteNodesForFile = async (
   let targetConn: lbug.Connection | null = conn;
 
   if (usePerQuery) {
-    tempDb = new lbug.Database(dbPath);
+    tempDb = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
     tempConn = new lbug.Connection(tempDb);
     targetConn = tempConn;
   } else if (!conn) {

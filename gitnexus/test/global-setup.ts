@@ -16,13 +16,16 @@ import {
   REL_SCHEMA_QUERIES,
   EMBEDDING_SCHEMA,
 } from '../src/core/lbug/schema.js';
+import { LBUG_MAX_DB_SIZE } from '../src/core/lbug/lbug-config.js';
 
 export default async function setup({ provide }: GlobalSetupContext) {
   const tmpHandle = await createTempDir('gitnexus-shared-');
   const dbPath = path.join(tmpHandle.dbPath, 'lbug');
 
-  // Create DB with full schema
-  const db = new lbug.Database(dbPath);
+  // Create DB with full schema. `LBUG_MAX_DB_SIZE` is required since
+  // `@ladybugdb/core` 0.16.0 — the default `maxDBSize` of 0 attempts an
+  // 8 TB mmap that fails on most CI runners and laptops.
+  const db = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
   const conn = new lbug.Connection(db);
 
   for (const q of NODE_SCHEMA_QUERIES) {
