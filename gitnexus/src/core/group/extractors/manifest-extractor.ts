@@ -228,7 +228,10 @@ export class ManifestExtractor {
       } else if (link.type === 'grpc' || link.type === 'thrift') {
         // Contract is "Service/Method" or just "Service" (or package.Service
         // variants). Prefer matching by method name when present, otherwise
-        // by service name. NO IDL path fallback — that's guaranteed to
+        // by service name. Thrift generated Java classes often use
+        // package.Service in manifests while graph Class/Interface names are
+        // stored as bare Service, so strip the package prefix for thrift
+        // service-name lookups. NO IDL path fallback — that's guaranteed to
         // return a wrong symbol in any repo with more than one IDL file.
         // Label filters scope lookups: methods → Function|Method, services
         // → Class|Interface (no label match = no silent wrong hits on

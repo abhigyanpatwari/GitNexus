@@ -184,7 +184,10 @@ function thriftSourceScanSymbolUid(
   filePath: string,
   symbolName: string,
 ): string {
-  return ['source-scan::thrift', role, contractId, normalizeThriftPath(filePath), symbolName].join(
+  const contractKey = contractId.startsWith('thrift::')
+    ? contractId.slice('thrift::'.length)
+    : contractId;
+  return ['source-scan::thrift', role, contractKey, normalizeThriftPath(filePath), symbolName].join(
     '::',
   );
 }

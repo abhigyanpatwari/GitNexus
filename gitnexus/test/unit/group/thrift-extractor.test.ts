@@ -488,6 +488,7 @@ class IfaceOrderHandler implements OrderService.Iface {
     expect(providers.map((c) => c.symbolUid)).toEqual(repeatedProviders.map((c) => c.symbolUid));
     expect(providers.every((c) => c.symbolUid.length > 0)).toBe(true);
     expect(new Set(providers.map((c) => c.symbolUid)).size).toBe(2);
+    expect(providers.every((c) => !c.symbolUid.includes('::thrift::billing.v1'))).toBe(true);
   });
 
   it('test_extract_java_thrift_providers_from_fully_qualified_generated_iface', async () => {

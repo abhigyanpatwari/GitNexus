@@ -448,7 +448,7 @@ class IfaceOrderHandler implements OrderService.Iface {
         symbolUid: [
           'source-scan::thrift',
           'consumer',
-          'thrift::OrderService/PlaceOrder',
+          'OrderService/PlaceOrder',
           'src/BillingWorkflow.java',
           'orderService.PlaceOrder',
         ].join('::'),
