@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { cleanupTempDir } from '../../helpers/test-db.js';
 import {
   writeBridge,
   openBridgeDbReadOnly,
@@ -27,7 +28,7 @@ describe('bridge-db edge cases', () => {
   });
 
   afterEach(async () => {
-    await fsp.rm(tmpDir, { recursive: true, force: true });
+    await cleanupTempDir(tmpDir);
   });
 
   it('test_openBridgeDbReadOnly_version_gate_returns_null_for_incompatible', async () => {

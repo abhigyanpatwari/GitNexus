@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { cleanupTempDir } from '../../helpers/test-db.js';
 import {
   openBridgeDb,
   ensureBridgeSchema,
@@ -47,7 +48,7 @@ describe('bridge-db core', () => {
   });
 
   afterEach(async () => {
-    await fsp.rm(tmpDir, { recursive: true, force: true });
+    await cleanupTempDir(tmpDir);
   });
 
   it('test_openBridgeDb_returns_handle_and_closes', async () => {
@@ -137,7 +138,7 @@ describe('writeBridge + read', () => {
   });
 
   afterEach(async () => {
-    await fsp.rm(tmpDir, { recursive: true, force: true });
+    await cleanupTempDir(tmpDir);
   });
 
   itLbugReopen('test_writeBridge_creates_bridge_lbug_file', async () => {
