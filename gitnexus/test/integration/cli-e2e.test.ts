@@ -200,6 +200,68 @@ describe('CLI end-to-end', () => {
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
   }, 60_000);
 
+  // Regression guard for issue #1169 — analyze must produce BOTH a
+  // meta.json AND a global-registry entry on success. The previous
+  // failure mode on Windows was banner-only output + exit 0 with
+  // neither artifact persisted; the new finalize invariant
+  // (assertAnalysisFinalized) makes that state a hard failure.
+  //
+  // Uses a fresh per-test repo copy (not the shared MINI_REPO) so
+  // an earlier sibling test's analyze cannot push this one onto the
+  // alreadyUpToDate fast path, which would skip the very wiring this
+  // test is here to protect.
+  it('analyze persists meta.json AND a matching registry entry (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+
+      // Accept timeout as valid on slow CI — same tolerance as the
+      // sibling test above.
+      if (result.status === null) return;
+
+      expect(
+        result.status,
+        [
+          `analyze exited with code ${result.status}`,
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(
+        fs.existsSync(metaPath),
+        `meta.json missing at ${metaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+      ).toBe(true);
+
+      const registryPath = path.join(gnHome, 'registry.json');
+      expect(
+        fs.existsSync(registryPath),
+        `registry.json missing at ${registryPath} after analyze exited 0`,
+      ).toBe(true);
+      const entries = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as Array<{
+        name: string;
+        path: string;
+      }>;
+      expect(entries.length).toBeGreaterThanOrEqual(1);
+      const matchesRepo = entries.some((e) => {
+        const a = path.resolve(e.path);
+        const b = path.resolve(repo);
+        return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      });
+      expect(
+        matchesRepo,
+        `registry has no entry for ${repo}; entries: ${JSON.stringify(entries.map((e) => e.path))}`,
+      ).toBe(true);
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(repoParent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //
   // End-to-end regression guard for the name-collision feature:
