@@ -13,6 +13,15 @@ import type Parser from 'tree-sitter';
 
 export type HttpRole = 'provider' | 'consumer';
 
+export interface HttpScanContext {
+  /**
+   * Repo-relative path for the file being scanned. Some frameworks,
+   * notably Next.js App Router, encode route paths in the file path
+   * rather than in a decorator or call expression.
+   */
+  filePath?: string;
+}
+
 /**
  * One raw HTTP detection produced by a plugin's `scan()` function. The
  * orchestrator converts this into a full `ExtractedContract` by running
@@ -61,5 +70,5 @@ export interface HttpLanguagePlugin {
    * must not throw — they should swallow per-match errors so a single
    * malformed construct does not abort the whole file.
    */
-  scan(tree: Parser.Tree): HttpDetection[];
+  scan(tree: Parser.Tree, context?: HttpScanContext): HttpDetection[];
 }

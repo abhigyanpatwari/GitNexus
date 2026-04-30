@@ -18,12 +18,14 @@ import {
   startAnalyze,
   streamAnalyzeProgress,
   type BackendRepo,
+  type GroupStatus,
   type JobProgress,
 } from '../services/backend-client';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { GraphNode } from 'gitnexus-shared';
 import { EmbeddingStatus } from './EmbeddingStatus';
 import { RepoAnalyzer } from './RepoAnalyzer';
+import { GroupStatusNotice } from './GroupStatusNotice';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -41,6 +43,7 @@ const NODE_TYPE_COLORS: Record<string, string> = {
 interface HeaderProps {
   onFocusNode?: (nodeId: string) => void;
   availableRepos?: BackendRepo[];
+  groupStatuses?: GroupStatus[];
   onSwitchRepo?: (repoName: string) => void;
   /** Called when a newly-analyzed repo is ready; triggers connectToServer. */
   onAnalyzeComplete?: (repoName: string) => void;
@@ -51,6 +54,7 @@ interface HeaderProps {
 export const Header = ({
   onFocusNode,
   availableRepos = [],
+  groupStatuses = [],
   onSwitchRepo,
   onAnalyzeComplete,
   onReposChanged,
@@ -164,29 +168,32 @@ export const Header = ({
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent to-node-interface text-sm font-bold text-white shadow-glow">
             ◇
           </div>
-          <span className="text-[15px] font-semibold tracking-tight">GitNexus</span>
+          <span className="text-[15px] font-semibold tracking-tight">NexusForge</span>
         </div>
 
         {/* Project badge + repo dropdown */}
         {projectName && (
           <div className="relative" ref={repoDropdownRef}>
-            <button
-              onClick={() => {
-                setIsRepoDropdownOpen((prev) => !prev);
-                setShowAnalyzer(false);
-              }}
-              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-all ${
-                isRepoDropdownOpen
-                  ? 'border-accent/40 bg-accent/10 text-text-primary'
-                  : 'border-border-subtle bg-surface text-text-secondary hover:border-border-default hover:bg-hover'
-              } `}
-            >
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-node-function" />
-              <span className="max-w-[160px] truncate">{projectName}</span>
-              <ChevronDown
-                className={`h-3 w-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  setIsRepoDropdownOpen((prev) => !prev);
+                  setShowAnalyzer(false);
+                }}
+                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-all ${
+                  isRepoDropdownOpen
+                    ? 'border-accent/40 bg-accent/10 text-text-primary'
+                    : 'border-border-subtle bg-surface text-text-secondary hover:border-border-default hover:bg-hover'
+                } `}
+              >
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-node-function" />
+                <span className="max-w-[160px] truncate">{projectName}</span>
+                <ChevronDown
+                  className={`h-3 w-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <GroupStatusNotice groupStatuses={groupStatuses} variant="badge" />
+            </div>
 
             {isRepoDropdownOpen && (
               <div className="absolute top-full left-0 z-50 mt-1.5 w-80 animate-slide-up overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
@@ -483,7 +490,7 @@ export const Header = ({
           } `}
         >
           <Sparkles className="h-4 w-4" />
-          <span>Nexus AI</span>
+          <span>Forge AI</span>
         </button>
       </div>
     </header>

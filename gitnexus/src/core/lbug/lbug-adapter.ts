@@ -5,6 +5,7 @@ import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -143,6 +144,7 @@ export const splitRelCsvByLabelPair = async (
 let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
+let currentDbReadOnly = false;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -193,6 +195,34 @@ export const isDbBusyError = (err: unknown): boolean => {
   );
 };
 
+const isReadOnlyRecoveryError = (err: unknown): boolean => {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes('read-only mode') && msg.includes('replay shadow pages');
+};
+
+const isStaleShadowFileError = (err: unknown): boolean => {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    (msg.includes('database id for temporary file') &&
+      msg.includes('.shadow') &&
+      msg.includes('does not match')) ||
+    (msg.includes('cannot open file') && msg.includes('.shadow') && msg.includes('error 2'))
+  );
+};
+
+const removeStaleShadowFile = async (dbPath: string): Promise<void> => {
+  const recoveryPaths = [`${dbPath}.shadow`, `${dbPath}.wal`];
+  const resolvedDbParent = path.resolve(path.dirname(dbPath));
+
+  for (const recoveryPath of recoveryPaths) {
+    const resolvedRecoveryPath = path.resolve(recoveryPath);
+    if (path.dirname(resolvedRecoveryPath) !== resolvedDbParent) {
+      throw new Error(`Refusing to remove unexpected LadybugDB recovery file: ${recoveryPath}`);
+    }
+    await fs.rm(resolvedRecoveryPath, { force: true });
+  }
+};
+
 const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   const previous = sessionLock;
   let release: (() => void) | null = null;
@@ -214,6 +244,15 @@ export const initLbug = async (dbPath: string) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
 
+interface LbugSessionOptions {
+  /**
+   * Open an existing index read-only and skip schema/extension setup.
+   * Read-only HTTP/UI paths should use this so graph browsing cannot compete
+   * with analyze/watch for the writer lock.
+   */
+  readOnly?: boolean;
+}
+
 /**
  * Execute multiple queries against one repo DB atomically.
  * While the callback runs, no other request can switch the active DB.
@@ -222,22 +261,46 @@ export const initLbug = async (dbPath: string) => {
  * database is busy (e.g. `gitnexus analyze` holds the write lock).
  * Each retry waits DB_LOCK_RETRY_DELAY_MS * attempt milliseconds.
  */
-export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+export const withLbugDb = async <T>(
+  dbPath: string,
+  operation: () => Promise<T>,
+  options: LbugSessionOptions = {},
+): Promise<T> => {
   let lastError: unknown;
+  let staleShadowRecoveryAttempted = false;
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath);
+        await ensureLbugInitialized(dbPath, options);
         return operation();
       });
     } catch (err) {
       lastError = err;
+      if (isStaleShadowFileError(err) && !staleShadowRecoveryAttempted) {
+        staleShadowRecoveryAttempted = true;
+        await runWithSessionLock(async () => {
+          await closeLbugUnlocked();
+          await removeStaleShadowFile(dbPath);
+        });
+        continue;
+      }
+      if (options.readOnly && isReadOnlyRecoveryError(err)) {
+        return await runWithSessionLock(async () => {
+          await ensureLbugInitialized(dbPath, { readOnly: false });
+          return operation();
+        });
+      }
       if (!isDbBusyError(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
         throw err;
       }
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps
       await runWithSessionLock(async () => {
+        try {
+          if (conn) await conn.query('CHECKPOINT');
+        } catch {
+          /* best-effort */
+        }
         try {
           if (conn) await conn.close();
         } catch {
@@ -251,6 +314,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         conn = null;
         db = null;
         currentDbPath = null;
+        currentDbReadOnly = false;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
       });
@@ -263,17 +327,22 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
-  if (conn && currentDbPath === dbPath) {
+const ensureLbugInitialized = async (dbPath: string, options: LbugSessionOptions = {}) => {
+  const wantsReadOnly = options.readOnly === true;
+  if (conn && currentDbPath === dbPath && (!currentDbReadOnly || wantsReadOnly)) {
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, options);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, options: LbugSessionOptions = {}) => {
+  const readOnly = options.readOnly === true;
   // Different database requested — close the old one first
   if (conn || db) {
+    try {
+      if (conn) await conn.query('CHECKPOINT');
+    } catch {}
     try {
       if (conn) await conn.close();
     } catch {}
@@ -283,6 +352,7 @@ const doInitLbug = async (dbPath: string) => {
     conn = null;
     db = null;
     currentDbPath = null;
+    currentDbReadOnly = false;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
   }
@@ -290,53 +360,67 @@ const doInitLbug = async (dbPath: string) => {
   // LadybugDB stores the database as a single file (not a directory).
   // If the path already exists, it must be a valid LadybugDB database file.
   // Remove stale empty directories or files from older versions.
-  try {
-    const stat = await fs.lstat(dbPath);
-    if (stat.isSymbolicLink()) {
-      // Never follow symlinks — just remove the link itself
-      await fs.unlink(dbPath);
-    } else if (stat.isDirectory()) {
-      // Verify path is within expected storage directory before deleting
-      const realPath = await fs.realpath(dbPath);
-      const parentDir = path.dirname(dbPath);
-      const realParent = await fs.realpath(parentDir);
-      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
-        throw new Error(
-          `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
-        );
+  if (readOnly) {
+    await fs.stat(dbPath);
+  } else {
+    try {
+      const stat = await fs.lstat(dbPath);
+      if (stat.isSymbolicLink()) {
+        // Never follow symlinks — just remove the link itself
+        await fs.unlink(dbPath);
+      } else if (stat.isDirectory()) {
+        // Verify path is within expected storage directory before deleting
+        const realPath = await fs.realpath(dbPath);
+        const parentDir = path.dirname(dbPath);
+        const realParent = await fs.realpath(parentDir);
+        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+          throw new Error(
+            `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
+          );
+        }
+        // Old-style directory database or empty leftover - remove it
+        await fs.rm(dbPath, { recursive: true, force: true });
       }
-      // Old-style directory database or empty leftover - remove it
-      await fs.rm(dbPath, { recursive: true, force: true });
+      // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
+    } catch {
+      // Path doesn't exist, which is what LadybugDB wants for a new database
     }
-    // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch {
-    // Path doesn't exist, which is what LadybugDB wants for a new database
   }
 
   // Ensure parent directory exists
   const parentDir = path.dirname(dbPath);
-  await fs.mkdir(parentDir, { recursive: true });
+  if (!readOnly) await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath);
+  db = readOnly
+    ? new lbug.Database(
+        dbPath,
+        0, // bufferManagerSize (default)
+        false, // enableCompression (default)
+        true, // readOnly
+      )
+    : new lbug.Database(dbPath);
   conn = new lbug.Connection(db);
 
-  for (const schemaQuery of SCHEMA_QUERIES) {
-    try {
-      await conn.query(schemaQuery);
-    } catch (err) {
-      // Only ignore "already exists" errors - log everything else
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('already exists')) {
-        console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+  if (!readOnly) {
+    for (const schemaQuery of SCHEMA_QUERIES) {
+      try {
+        await conn.query(schemaQuery);
+      } catch (err) {
+        // Only ignore "already exists" errors - log everything else
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('already exists')) {
+          console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+        }
       }
     }
+
+    // FTS powers baseline search, so initialize it with the core DB. VECTOR is
+    // only required for semantic embeddings and is probed lazily there.
+    await loadFTSExtension();
   }
 
-  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
-  // only required for semantic embeddings and is probed lazily there.
-  await loadFTSExtension();
-
   currentDbPath = dbPath;
+  currentDbReadOnly = readOnly;
   return { db, conn };
 };
 
@@ -531,6 +615,18 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
+const escapeValue = (v: any): string => {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return String(v);
+  return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
+};
+
+const filePathForGraphNode = (node: GraphNode | undefined): string | undefined => {
+  const filePath = node?.properties?.filePath;
+  return typeof filePath === 'string' && filePath.length > 0 ? filePath : undefined;
+};
+
 /** Fallback: insert relationships one-by-one if COPY fails */
 const fallbackRelationshipInserts = async (
   validRelLines: string[],
@@ -579,8 +675,10 @@ const TABLES_WITH_EXPORTED = new Set<string>([
 
 const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
+  const semanticAnchorColumns =
+    'description, summary, purpose, tags, anchorModel, anchorHash, anchorVersion, anchorGeneratedAt';
   if (table === 'File') {
-    return `COPY ${t}(id, name, filePath, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, content, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
     return `COPY ${t}(id, name, filePath) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -592,23 +690,23 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Section') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Route') {
-    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Tool') {
-    return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, ${semanticAnchorColumns}, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content, ${semanticAnchorColumns}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -699,7 +797,7 @@ export const insertNodeToLbug = async (
  */
 export const batchInsertNodesToLbug = async (
   nodes: Array<{ label: string; properties: Record<string, any> }>,
-  dbPath: string,
+  dbPath?: string,
 ): Promise<{ inserted: number; failed: number }> => {
   if (nodes.length === 0) return { inserted: 0, failed: 0 };
 
@@ -710,9 +808,17 @@ export const batchInsertNodesToLbug = async (
     return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
   };
 
-  // Open a single connection for all inserts
-  const tempDb = new lbug.Database(dbPath);
-  const tempConn = new lbug.Connection(tempDb);
+  let tempDb: lbug.Database | null = null;
+  let tempConn: lbug.Connection | null = null;
+  let targetConn: lbug.Connection | null = conn;
+
+  if (dbPath) {
+    tempDb = new lbug.Database(dbPath);
+    tempConn = new lbug.Connection(tempDb);
+    targetConn = tempConn;
+  } else if (!conn) {
+    throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
+  }
 
   let inserted = 0;
   let failed = 0;
@@ -745,7 +851,7 @@ export const batchInsertNodesToLbug = async (
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         }
 
-        await tempConn.query(query);
+        await targetConn!.query(query);
         inserted++;
       } catch (e: any) {
         // Don't console.error here - it corrupts MCP JSON-RPC on stderr
@@ -754,14 +860,156 @@ export const batchInsertNodesToLbug = async (
     }
   } finally {
     try {
-      await tempConn.close();
+      await tempConn?.close();
     } catch {}
     try {
-      await tempDb.close();
+      await tempDb?.close();
     } catch {}
   }
 
   return { inserted, failed };
+};
+
+export interface BatchInsertRelationshipsResult {
+  inserted: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
+ * Insert relationships for an already-loaded graph slice. Callers are expected
+ * to delete the stale slice first, so CREATE is sufficient here and avoids
+ * relying on relationship-level primary keys that LadybugDB does not expose.
+ */
+export const batchInsertRelationshipsToLbug = async (
+  relationships: GraphRelationship[],
+  graph: KnowledgeGraph,
+  dbPath?: string,
+): Promise<BatchInsertRelationshipsResult> => {
+  if (relationships.length === 0) return { inserted: 0, failed: 0, skipped: 0 };
+
+  let tempDb: lbug.Database | null = null;
+  let tempConn: lbug.Connection | null = null;
+  let targetConn: lbug.Connection | null = conn;
+
+  if (dbPath) {
+    tempDb = new lbug.Database(dbPath);
+    tempConn = new lbug.Connection(tempDb);
+    targetConn = tempConn;
+  } else if (!conn) {
+    throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
+  }
+
+  const validTables = new Set<string>(NODE_TABLES as readonly string[]);
+  let inserted = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  try {
+    for (const relationship of relationships) {
+      const source = graph.getNode(relationship.sourceId);
+      const target = graph.getNode(relationship.targetId);
+      const sourceLabel = source ? String(source.label) : '';
+      const targetLabel = target ? String(target.label) : '';
+      if (!source || !target || !validTables.has(sourceLabel) || !validTables.has(targetLabel)) {
+        skipped++;
+        continue;
+      }
+
+      const confidence = Number.isFinite(relationship.confidence) ? relationship.confidence : 1.0;
+      const step = Number.isFinite(relationship.step) ? Math.trunc(relationship.step ?? 0) : 0;
+      const query = `
+        MATCH (a:${escapeTableName(sourceLabel)} {id: ${escapeValue(relationship.sourceId)}}),
+              (b:${escapeTableName(targetLabel)} {id: ${escapeValue(relationship.targetId)}})
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${escapeValue(relationship.type)}, confidence: ${confidence}, reason: ${escapeValue(relationship.reason ?? '')}, step: ${step}}]->(b)
+      `;
+
+      try {
+        await targetConn!.query(query);
+        inserted++;
+      } catch {
+        failed++;
+      }
+    }
+  } finally {
+    try {
+      await tempConn?.close();
+    } catch {}
+    try {
+      await tempDb?.close();
+    } catch {}
+  }
+
+  return { inserted, failed, skipped };
+};
+
+export interface UpsertGraphSliceResult {
+  deletedNodes: number;
+  insertedNodes: number;
+  failedNodes: number;
+  insertedRelationships: number;
+  failedRelationships: number;
+  skippedRelationships: number;
+}
+
+/**
+ * Replace the LadybugDB rows for a set of source files with the corresponding
+ * nodes and touching relationships from an in-memory graph.
+ */
+export const upsertGraphSliceToLbug = async (
+  graph: KnowledgeGraph,
+  filePaths: string[],
+  dbPath?: string,
+): Promise<UpsertGraphSliceResult> => {
+  const targetFiles = new Set(filePaths.filter((filePath) => filePath.length > 0));
+  if (targetFiles.size === 0) {
+    return {
+      deletedNodes: 0,
+      insertedNodes: 0,
+      failedNodes: 0,
+      insertedRelationships: 0,
+      failedRelationships: 0,
+      skippedRelationships: 0,
+    };
+  }
+
+  let deletedNodes = 0;
+  for (const filePath of [...targetFiles].sort((a, b) => a.localeCompare(b))) {
+    deletedNodes += (await deleteNodesForFile(filePath, dbPath)).deletedNodes;
+  }
+
+  const nodes: Array<{ label: string; properties: Record<string, any> }> = [];
+  for (const node of graph.iterNodes()) {
+    const filePath = filePathForGraphNode(node);
+    if (!filePath || !targetFiles.has(filePath)) continue;
+    nodes.push({
+      label: String(node.label),
+      properties: { id: node.id, ...node.properties },
+    });
+  }
+
+  const nodeResult = await batchInsertNodesToLbug(nodes, dbPath);
+  const relationships: GraphRelationship[] = [];
+  for (const relationship of graph.iterRelationships()) {
+    const sourceFile = filePathForGraphNode(graph.getNode(relationship.sourceId));
+    const targetFile = filePathForGraphNode(graph.getNode(relationship.targetId));
+    if (
+      (sourceFile && targetFiles.has(sourceFile)) ||
+      (targetFile && targetFiles.has(targetFile))
+    ) {
+      relationships.push(relationship);
+    }
+  }
+
+  const relationshipResult = await batchInsertRelationshipsToLbug(relationships, graph, dbPath);
+  return {
+    deletedNodes,
+    insertedNodes: nodeResult.inserted,
+    failedNodes: nodeResult.failed,
+    insertedRelationships: relationshipResult.inserted,
+    failedRelationships: relationshipResult.failed,
+    skippedRelationships: relationshipResult.skipped,
+  };
 };
 
 export const executeQuery = async (cypher: string): Promise<any[]> => {
@@ -773,8 +1021,12 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
   // LadybugDB uses getAll() instead of hasNext()/getNext()
   // Query returns QueryResult for single queries, QueryResult[] for multi-statement
   const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-  const rows = await result.getAll();
-  return rows;
+  try {
+    const rows = await result.getAll();
+    return rows;
+  } finally {
+    await Promise.resolve(result.close?.()).catch(() => {});
+  }
 };
 
 export const streamQuery = async (
@@ -823,7 +1075,11 @@ export const executePrepared = async (
   }
   const queryResult = await conn.execute(stmt, params);
   const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-  return await result.getAll();
+  try {
+    return await result.getAll();
+  } finally {
+    await Promise.resolve(result.close?.()).catch(() => {});
+  }
 };
 
 export const executeWithReusedStatement = async (
@@ -1037,8 +1293,11 @@ export const fetchExistingEmbeddingHashes = async (
   }
 };
 
-export const closeLbug = async (): Promise<void> => {
+const closeLbugUnlocked = async (): Promise<void> => {
   if (conn) {
+    try {
+      await conn.query('CHECKPOINT');
+    } catch {}
     try {
       await conn.close();
     } catch {}
@@ -1051,9 +1310,14 @@ export const closeLbug = async (): Promise<void> => {
     db = null;
   }
   currentDbPath = null;
+  currentDbReadOnly = false;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
   ensuredFTSIndexes.clear();
+};
+
+export const closeLbug = async (): Promise<void> => {
+  await runWithSessionLock(closeLbugUnlocked);
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;

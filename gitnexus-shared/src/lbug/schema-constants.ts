@@ -40,6 +40,11 @@ export const NODE_TABLES = [
   'Module',
   'Route',
   'Tool',
+  'RuntimeService',
+  'RuntimeSpan',
+  'RuntimeRoute',
+  'RuntimeError',
+  'RuntimeLogPattern',
 ] as const;
 
 export type NodeTableName = (typeof NODE_TABLES)[number];
@@ -67,6 +72,9 @@ export const REL_TYPES = [
   'ENTRY_POINT_OF',
   'WRAPS',
   'QUERIES',
+  'RUNTIME_MAPS_TO',
+  'RUNTIME_OBSERVED_IN',
+  'RUNTIME_HAS_SIGNAL',
 ] as const;
 
 export type RelType = (typeof REL_TYPES)[number];

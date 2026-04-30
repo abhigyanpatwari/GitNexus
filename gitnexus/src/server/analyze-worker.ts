@@ -13,6 +13,7 @@
 
 import { runFullAnalysis, type AnalyzeOptions, type AnalyzeResult } from '../core/run-analyze.js';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import type { PipelineProgress } from 'gitnexus-shared';
 
 interface StartMessage {
   type: 'start';
@@ -25,6 +26,8 @@ interface ProgressMessage {
   phase: string;
   percent: number;
   message: string;
+  detail?: string;
+  stats?: PipelineProgress['stats'];
 }
 
 interface CompleteMessage {
@@ -71,8 +74,8 @@ process.on('message', async (msg: StartMessage) => {
 
   try {
     const result = await runFullAnalysis(msg.repoPath, msg.options, {
-      onProgress: (phase, percent, message) => {
-        send({ type: 'progress', phase, percent, message });
+      onProgress: (phase, percent, message, detail) => {
+        send({ type: 'progress', phase, percent, message, detail: detail?.detail, stats: detail?.stats });
       },
       onLog: (message) => {
         send({ type: 'progress', phase: 'log', percent: -1, message });

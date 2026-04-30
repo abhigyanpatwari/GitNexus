@@ -146,6 +146,121 @@ export async function impactCommand(
   }
 }
 
+export async function impactScoreCommand(
+  target: string,
+  options?: {
+    repo?: string;
+    uid?: string;
+    file?: string;
+    kind?: string;
+    includeTests?: boolean;
+    maxExamples?: string;
+  },
+): Promise<void> {
+  if (!target?.trim() && !options?.uid) {
+    console.error('Usage: gitnexus impact-score <symbol_name> [--uid <uid>] [--file <path>]');
+    process.exit(1);
+  }
+
+  const backend = await getBackend();
+  const result = await backend.callTool('get_impact_score', {
+    target: target || undefined,
+    target_uid: options?.uid,
+    file_path: options?.file,
+    kind: options?.kind,
+    includeTests: options?.includeTests ?? false,
+    maxExamples: options?.maxExamples ? parseInt(options.maxExamples, 10) : undefined,
+    repo: options?.repo,
+  });
+  output(result);
+}
+
+export async function exportContextCommand(
+  target: string,
+  options?: {
+    repo?: string;
+    uid?: string;
+    file?: string;
+    kind?: string;
+    degree?: string;
+    direction?: string;
+    format?: string;
+    includeTests?: boolean;
+    maxNodes?: string;
+  },
+): Promise<void> {
+  if (!target?.trim() && !options?.uid) {
+    console.error(
+      'Usage: gitnexus export-context <symbol_name> [--uid <uid>] [--format markdown|jsonl|json]',
+    );
+    process.exit(1);
+  }
+
+  const backend = await getBackend();
+  const result = await backend.callTool('export_context', {
+    target: target || undefined,
+    target_uid: options?.uid,
+    file_path: options?.file,
+    kind: options?.kind,
+    degree: options?.degree ? parseInt(options.degree, 10) : undefined,
+    direction: options?.direction,
+    format: options?.format,
+    includeTests: options?.includeTests ?? false,
+    maxNodes: options?.maxNodes ? parseInt(options.maxNodes, 10) : undefined,
+    repo: options?.repo,
+  });
+  output(result);
+}
+
+export async function runSkillCommand(
+  skill: string,
+  action: string = 'summarize',
+  options?: {
+    repo?: string;
+    target?: string;
+    uid?: string;
+    file?: string;
+    kind?: string;
+    direction?: string;
+    degree?: string;
+    depth?: string;
+    format?: string;
+    includeTests?: boolean;
+    maxNodes?: string;
+  },
+): Promise<void> {
+  if (!skill?.trim()) {
+    console.error('Usage: gitnexus run-skill <skill> [action]');
+    process.exit(1);
+  }
+
+  const args: Record<string, unknown> = {
+    target: options?.target,
+    target_uid: options?.uid,
+    file_path: options?.file,
+    kind: options?.kind,
+    direction: options?.direction,
+    degree: options?.degree ? parseInt(options.degree, 10) : undefined,
+    maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+    format: options?.format,
+    includeTests: options?.includeTests ?? false,
+    maxNodes: options?.maxNodes ? parseInt(options.maxNodes, 10) : undefined,
+  };
+
+  for (const key of Object.keys(args)) {
+    if (args[key] === undefined) delete args[key];
+  }
+
+  const backend = await getBackend();
+  const result = await backend.callTool('run_skill', {
+    skill,
+    action: action || 'summarize',
+    args,
+    repo: options?.repo,
+  });
+  output(result);
+}
+
 export async function cypherCommand(
   query: string,
   options?: {

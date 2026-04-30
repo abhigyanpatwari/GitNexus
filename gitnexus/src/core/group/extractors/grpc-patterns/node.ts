@@ -17,6 +17,7 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  *   - Consumer: NestJS `@GrpcClient(...) readonly x!: XxxServiceClient`
  *   - Consumer: `client.getService<X>('AuthService')`
  *   - Consumer: `new XxxServiceClient(...)` (generated client constructor)
+ *   - Consumer: method calls on generated clients, e.g. `auth.login(...)`
  *   - Consumer: `new foo.bar.Xxx(...)` when the file uses
  *     `loadPackageDefinition` (gRPC dynamic proto loader)
  *
@@ -27,6 +28,15 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
 
 const SERVICE_CLIENT_RE = /^(\w+Service)Client$/;
 const CAPITALIZED_SERVICE_RE = /^[A-Z]\w+$/;
+const CLIENT_HELPER_METHODS = new Set([
+  'close',
+  'waitForReady',
+  'getChannel',
+  'makeUnaryRequest',
+  'makeServerStreamRequest',
+  'makeClientStreamRequest',
+  'makeBidiStreamRequest',
+]);
 
 // @GrpcMethod('Service', 'Method')
 const GRPC_METHOD_SPEC: PatternSpec<Record<string, never>> = {
@@ -82,6 +92,53 @@ const NEW_QUALIFIED_CTOR_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// `const client = new XxxServiceClient(...)`
+const NEW_CLIENT_ASSIGNMENT_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (variable_declarator
+      name: (identifier) @var
+      value: (new_expression
+        constructor: (identifier) @ctor))
+  `,
+};
+
+// `const client = something.getService('XxxService')`
+const GET_SERVICE_ASSIGNMENT_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (variable_declarator
+      name: (identifier) @var
+      value: (call_expression
+        function: (member_expression
+          property: (property_identifier) @get_service (#eq? @get_service "getService"))
+        arguments: (arguments . [(string) (template_string)] @service)))
+  `,
+};
+
+// `client.rpcMethod(...)`
+const CLIENT_METHOD_CALL_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (identifier) @client
+        property: (property_identifier) @rpc_method))
+  `,
+};
+
+// `this.client.rpcMethod(...)` / `obj.client.rpcMethod(...)`
+const CLIENT_FIELD_METHOD_CALL_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (member_expression
+          property: (property_identifier) @client)
+        property: (property_identifier) @rpc_method))
+  `,
+};
+
 // Detect whether the file uses `loadPackageDefinition` (gRPC dynamic
 // proto loader). Matches either a bare call or an `obj.loadPackageDefinition(...)`
 // call. Plugin gates the qualified-constructor consumer on this —
@@ -103,6 +160,10 @@ interface NodeGrpcPatternBundle {
   getService: CompiledPatterns<Record<string, never>>;
   newSimpleCtor: CompiledPatterns<Record<string, never>>;
   newQualifiedCtor: CompiledPatterns<Record<string, never>>;
+  newClientAssignment: CompiledPatterns<Record<string, never>>;
+  getServiceAssignment: CompiledPatterns<Record<string, never>>;
+  clientMethodCall: CompiledPatterns<Record<string, never>>;
+  clientFieldMethodCall: CompiledPatterns<Record<string, never>>;
   loadPackageDefinition: CompiledPatterns<Record<string, never>>;
 }
 
@@ -119,6 +180,10 @@ function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
     getService: mk(GET_SERVICE_SPEC, 'get-service'),
     newSimpleCtor: mk(NEW_SIMPLE_CTOR_SPEC, 'new-simple-ctor'),
     newQualifiedCtor: mk(NEW_QUALIFIED_CTOR_SPEC, 'new-qualified-ctor'),
+    newClientAssignment: mk(NEW_CLIENT_ASSIGNMENT_SPEC, 'new-client-assignment'),
+    getServiceAssignment: mk(GET_SERVICE_ASSIGNMENT_SPEC, 'get-service-assignment'),
+    clientMethodCall: mk(CLIENT_METHOD_CALL_SPEC, 'client-method-call'),
+    clientFieldMethodCall: mk(CLIENT_FIELD_METHOD_CALL_SPEC, 'client-field-method-call'),
     loadPackageDefinition: mk(LOAD_PACKAGE_DEFINITION_SPEC, 'load-package-definition'),
   };
 }
@@ -139,15 +204,23 @@ const TSX_BUNDLE = compileBundle(TypeScript.tsx, 'tsx-grpc');
  *     decorators, but kept for resilience against grammar variants).
  * We walk the parent container and search for a type annotation.
  */
-function resolveGrpcClientFieldType(decoratorNode: Parser.SyntaxNode): string | null {
+interface GrpcClientFieldInfo {
+  fieldName: string | null;
+  typeText: string | null;
+}
+
+function resolveGrpcClientFieldInfo(decoratorNode: Parser.SyntaxNode): GrpcClientFieldInfo {
   const parent = decoratorNode.parent;
-  if (!parent) return null;
+  if (!parent) return { fieldName: null, typeText: null };
 
   // Case 1: decorator is a child of the field definition — search
   // the parent itself (which is the field definition) for a
   // type_annotation child.
   if (parent.type === 'public_field_definition' || parent.type.endsWith('field_definition')) {
-    return findFirstTypeAnnotationText(parent);
+    return {
+      fieldName: findFieldNameText(parent),
+      typeText: findFirstTypeAnnotationText(parent),
+    };
   }
 
   // Case 2: decorator is a sibling of the field in a class_body — walk
@@ -161,11 +234,28 @@ function resolveGrpcClientFieldType(decoratorNode: Parser.SyntaxNode): string | 
         if (!next) continue;
         if (next.type === 'decorator') continue;
         const typeText = findFirstTypeAnnotationText(next);
-        if (typeText) return typeText;
-        return null;
+        if (typeText) {
+          return {
+            fieldName: findFieldNameText(next),
+            typeText,
+          };
+        }
+        return { fieldName: null, typeText: null };
       }
-      return null;
+      return { fieldName: null, typeText: null };
     }
+  }
+  return { fieldName: null, typeText: null };
+}
+
+function findFieldNameText(node: Parser.SyntaxNode): string | null {
+  const nameNode = node.childForFieldName('name');
+  if (nameNode) return nameNode.text;
+
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child) continue;
+    if (child.type === 'property_identifier' || child.type === 'identifier') return child.text;
   }
   return null;
 }
@@ -193,8 +283,15 @@ function findFirstTypeAnnotationText(node: Parser.SyntaxNode): string | null {
   return null;
 }
 
+function rpcMethodNameFromCall(methodText: string): string | null {
+  if (!methodText || methodText.startsWith('_')) return null;
+  if (CLIENT_HELPER_METHODS.has(methodText)) return null;
+  return methodText[0].toUpperCase() + methodText.slice(1);
+}
+
 function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetection[] {
   const out: GrpcDetection[] = [];
+  const clientRefs = new Map<string, string>();
 
   // ─── Provider: @GrpcMethod('Service', 'Method') ──────────────────
   for (const match of runCompiledPatterns(bundle.grpcMethod, tree)) {
@@ -221,11 +318,12 @@ function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetec
   for (const match of runCompiledPatterns(bundle.grpcClient, tree)) {
     const decoratorNode = match.captures.grpc_client_decorator;
     if (!decoratorNode) continue;
-    const typeText = resolveGrpcClientFieldType(decoratorNode);
+    const { fieldName, typeText } = resolveGrpcClientFieldInfo(decoratorNode);
     if (!typeText) continue;
     const svcMatch = SERVICE_CLIENT_RE.exec(typeText);
     if (!svcMatch) continue;
     const serviceName = svcMatch[1];
+    if (fieldName) clientRefs.set(fieldName, serviceName);
     out.push({
       role: 'consumer',
       serviceName,
@@ -252,6 +350,15 @@ function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetec
     });
   }
 
+  for (const match of runCompiledPatterns(bundle.getServiceAssignment, tree)) {
+    const varNode = match.captures.var;
+    const svcNode = match.captures.service;
+    if (!varNode || !svcNode) continue;
+    const svc = unquoteLiteral(svcNode.text);
+    if (!svc) continue;
+    clientRefs.set(varNode.text, svc);
+  }
+
   // ─── Consumer: new XxxServiceClient(...) ─────────────────────────
   for (const match of runCompiledPatterns(bundle.newSimpleCtor, tree)) {
     const ctorNode = match.captures.ctor;
@@ -267,6 +374,15 @@ function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetec
       confidenceWithProto: 0.75,
       confidenceWithoutProto: 0.55,
     });
+  }
+
+  for (const match of runCompiledPatterns(bundle.newClientAssignment, tree)) {
+    const varNode = match.captures.var;
+    const ctorNode = match.captures.ctor;
+    if (!varNode || !ctorNode) continue;
+    const svcMatch = SERVICE_CLIENT_RE.exec(ctorNode.text);
+    if (!svcMatch) continue;
+    clientRefs.set(varNode.text, svcMatch[1]);
   }
 
   // ─── Consumer: loadPackageDefinition dynamic proto loader ────────
@@ -290,6 +406,35 @@ function scanBundle(bundle: NodeGrpcPatternBundle, tree: Parser.Tree): GrpcDetec
         confidenceWithoutProto: 0.55,
       });
     }
+  }
+
+  const emittedClientMethods = new Set<string>();
+  const emitClientMethod = (clientName: string | undefined, methodText: string | undefined) => {
+    if (!clientName || !methodText) return;
+    const serviceName = clientRefs.get(clientName);
+    if (!serviceName) return;
+    const methodName = rpcMethodNameFromCall(methodText);
+    if (!methodName) return;
+    const key = `${serviceName}/${methodName}`;
+    if (emittedClientMethods.has(key)) return;
+    emittedClientMethods.add(key);
+    out.push({
+      role: 'consumer',
+      serviceName,
+      symbolName: `${serviceName}Client.${methodName}`,
+      source: 'ts_generated_client_method',
+      methodName,
+      confidenceWithProto: 0.78,
+      confidenceWithoutProto: 0.5,
+    });
+  };
+
+  for (const match of runCompiledPatterns(bundle.clientMethodCall, tree)) {
+    emitClientMethod(match.captures.client?.text, match.captures.rpc_method?.text);
+  }
+
+  for (const match of runCompiledPatterns(bundle.clientFieldMethodCall, tree)) {
+    emitClientMethod(match.captures.client?.text, match.captures.rpc_method?.text);
   }
 
   return out;

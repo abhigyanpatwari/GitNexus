@@ -7,7 +7,7 @@ import noverlap from 'graphology-layout-noverlap';
 import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
-import type { EdgeType } from '../lib/constants';
+import { GRAPH_HIGHLIGHT_COLORS, GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
 // Helper: Parse hex color to RGB
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -36,7 +36,7 @@ const rgbToHex = (r: number, g: number, b: number): string => {
 // Dim a color by mixing with dark background (keeps color hint)
 const dimColor = (hex: string, amount: number): string => {
   const rgb = hexToRgb(hex);
-  const darkBg = { r: 18, g: 18, b: 28 }; // #12121c - dark background
+  const darkBg = hexToRgb(GRAPH_SURFACE_COLORS.dimMix);
   return rgbToHex(
     darkBg.r + (rgb.r - darkBg.r) * amount,
     darkBg.g + (rgb.g - darkBg.g) * amount,
@@ -67,7 +67,10 @@ interface UseSigmaOptions {
 interface UseSigmaReturn {
   containerRef: React.RefObject<HTMLDivElement>;
   sigmaRef: React.RefObject<Sigma | null>;
-  setGraph: (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => void;
+  setGraph: (
+    graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+    options?: SigmaSetGraphOptions,
+  ) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -80,19 +83,88 @@ interface UseSigmaReturn {
   refreshHighlights: () => void;
 }
 
-// Noverlap for final cleanup - minimal since it starts with good positions
-const NOVERLAP_SETTINGS = {
-  maxIterations: 20, // Reduced - less cleanup needed
-  ratio: 1.1,
-  margin: 10,
-  expansion: 1.05,
+interface SigmaSetGraphOptions {
+  runLayout?: boolean;
+  resetCamera?: boolean;
+  clearSelection?: boolean;
+}
+
+type LayoutBudget = {
+  minDurationMs: number;
+  maxDurationMs: number;
+  sampleIntervalMs: number;
+  movementThreshold: number;
+  maxMovementThreshold: number;
+  stableSamples: number;
 };
 
-// ForceAtlas2 settings - FAST convergence since nodes start near their parents
-const getFA2Settings = (nodeCount: number) => {
+type LayoutSnapshot = Map<string, { x: number; y: number }>;
+
+const snapshotLayout = (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>): LayoutSnapshot => {
+  const positions: LayoutSnapshot = new Map();
+
+  graph.forEachNode((nodeId, attributes) => {
+    positions.set(nodeId, { x: attributes.x, y: attributes.y });
+  });
+
+  return positions;
+};
+
+const measureLayoutMovement = (
+  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  previousPositions: LayoutSnapshot,
+) => {
+  const nextPositions: LayoutSnapshot = new Map();
+  let totalMovement = 0;
+  let maxMovement = 0;
+  let measuredNodes = 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  graph.forEachNode((nodeId, attributes) => {
+    const x = attributes.x;
+    const y = attributes.y;
+    const previous = previousPositions.get(nodeId);
+
+    if (previous) {
+      const movement = Math.hypot(x - previous.x, y - previous.y);
+      totalMovement += movement;
+      maxMovement = Math.max(maxMovement, movement);
+      measuredNodes += 1;
+    }
+
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    nextPositions.set(nodeId, { x, y });
+  });
+
+  const graphDiagonal = Math.max(1, Math.hypot(maxX - minX, maxY - minY));
+  const averageMovement = measuredNodes > 0 ? totalMovement / measuredNodes : 0;
+
+  return {
+    positions: nextPositions,
+    averageMovement: averageMovement / graphDiagonal,
+    maxMovement: maxMovement / graphDiagonal,
+  };
+};
+
+export const getNoverlapSettings = (nodeCount: number) => ({
+  maxIterations: nodeCount > 10000 ? 32 : nodeCount > 5000 ? 42 : nodeCount > 2000 ? 55 : 80,
+  ratio: nodeCount > 5000 ? 1.04 : 1.1,
+  margin: nodeCount > 5000 ? 6 : 10,
+  expansion: 1.05,
+});
+
+// ForceAtlas2 settings - optimized for fast convergence from the seeded hierarchy/community layout.
+export const getFA2Settings = (nodeCount: number) => {
   const isSmall = nodeCount < 500;
   const isMedium = nodeCount >= 500 && nodeCount < 2000;
   const isLarge = nodeCount >= 2000 && nodeCount < 10000;
+  const isHuge = nodeCount >= 10000;
 
   return {
     // Lower gravity allows folders to stay spread out
@@ -102,30 +174,83 @@ const getFA2Settings = (nodeCount: number) => {
     scalingRatio: isSmall ? 15 : isMedium ? 30 : isLarge ? 60 : 100,
 
     // LOW slowDown = FASTER movement (converges quicker)
-    slowDown: isSmall ? 1 : isMedium ? 2 : isLarge ? 3 : 5,
+    slowDown: isSmall ? 0.65 : isMedium ? 1 : isLarge ? 1.55 : 2.2,
 
     // Barnes-Hut for performance - use it even on smaller graphs
-    barnesHutOptimize: nodeCount > 200,
-    barnesHutTheta: isLarge ? 0.8 : 0.6, // Higher = faster but less accurate
+    barnesHutOptimize: nodeCount > 150,
+    barnesHutTheta: isHuge ? 0.95 : isLarge ? 0.85 : 0.7,
 
-    // These help with clustering while keeping spread
+    // Large anti-collision inside FA2 is costly; the final noverlap pass
+    // handles cleanup after the graph has reached a useful shape.
     strongGravityMode: false,
     outboundAttractionDistribution: true,
     linLogMode: false,
-    adjustSizes: true,
+    adjustSizes: nodeCount < 5000,
     edgeWeightInfluence: 1,
   };
 };
 
-// Layout duration - let it run longer for better results
-// Web Worker + WebGL means minimal system impact
-const getLayoutDuration = (nodeCount: number): number => {
-  if (nodeCount > 10000) return 45000; // 45s for huge graphs
-  if (nodeCount > 5000) return 35000; // 35s
-  if (nodeCount > 2000) return 30000; // 30s
-  if (nodeCount > 1000) return 30000; // 30s
-  if (nodeCount > 500) return 25000; // 25s
-  return 20000; // 20s for small graphs
+// Let FA2 run until movement settles enough for navigation, with a safety cap
+// to avoid an accidental infinite worker on pathological graphs.
+export const getLayoutBudget = (nodeCount: number): LayoutBudget => {
+  if (nodeCount > 10000) {
+    return {
+      minDurationMs: 60000,
+      maxDurationMs: 300000,
+      sampleIntervalMs: 1750,
+      movementThreshold: 0.0006,
+      maxMovementThreshold: 0.007,
+      stableSamples: 4,
+    };
+  }
+  if (nodeCount > 5000) {
+    return {
+      minDurationMs: 45000,
+      maxDurationMs: 210000,
+      sampleIntervalMs: 1500,
+      movementThreshold: 0.00065,
+      maxMovementThreshold: 0.0075,
+      stableSamples: 4,
+    };
+  }
+  if (nodeCount > 2000) {
+    return {
+      minDurationMs: 30000,
+      maxDurationMs: 150000,
+      sampleIntervalMs: 1250,
+      movementThreshold: 0.00075,
+      maxMovementThreshold: 0.008,
+      stableSamples: 3,
+    };
+  }
+  if (nodeCount > 1000) {
+    return {
+      minDurationMs: 22000,
+      maxDurationMs: 105000,
+      sampleIntervalMs: 1000,
+      movementThreshold: 0.0009,
+      maxMovementThreshold: 0.009,
+      stableSamples: 3,
+    };
+  }
+  if (nodeCount > 500) {
+    return {
+      minDurationMs: 14000,
+      maxDurationMs: 75000,
+      sampleIntervalMs: 900,
+      movementThreshold: 0.00105,
+      maxMovementThreshold: 0.01,
+      stableSamples: 3,
+    };
+  }
+  return {
+    minDurationMs: 10000,
+    maxDurationMs: 45000,
+    sampleIntervalMs: 800,
+    movementThreshold: 0.0012,
+    maxMovementThreshold: 0.011,
+    stableSamples: 2,
+  };
 };
 
 export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
@@ -138,10 +263,49 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const optionsRef = useRef(options);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const layoutMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const layoutRunIdRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
+
+  useEffect(() => {
+    optionsRef.current = options;
+  });
+
+  const clearLayoutTimers = useCallback(() => {
+    if (layoutTimeoutRef.current) {
+      clearTimeout(layoutTimeoutRef.current);
+      layoutTimeoutRef.current = null;
+    }
+    if (layoutMonitorRef.current) {
+      clearInterval(layoutMonitorRef.current);
+      layoutMonitorRef.current = null;
+    }
+  }, []);
+
+  const finishLayoutRun = useCallback(
+    (runId: number, graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>, runNoverlap = true) => {
+      if (layoutRunIdRef.current !== runId) return;
+
+      clearLayoutTimers();
+
+      if (layoutRef.current) {
+        layoutRef.current.kill();
+        layoutRef.current = null;
+      }
+
+      if (runNoverlap && graph.order > 1) {
+        noverlap.assign(graph, getNoverlapSettings(graph.order));
+        sigmaRef.current?.refresh();
+      }
+
+      setIsLayoutRunning(false);
+    },
+    [clearLayoutTimers],
+  );
 
   useEffect(() => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
@@ -205,6 +369,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     graphRef.current = graph;
 
     const sigma = new Sigma(graph, containerRef.current, {
+      allowInvalidContainer: true,
       renderLabels: true,
       labelFont: 'JetBrains Mono, monospace',
       labelSize: 11,
@@ -214,8 +379,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       labelDensity: 0.1,
       labelGridCellSize: 70,
 
-      defaultNodeColor: '#6b7280',
-      defaultEdgeColor: '#2a2a3a',
+      defaultNodeColor: GRAPH_SURFACE_COLORS.defaultNode,
+      defaultEdgeColor: GRAPH_SURFACE_COLORS.defaultEdge,
 
       defaultEdgeType: 'curved',
       edgeProgramClasses: {
@@ -244,18 +409,18 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const radius = 4;
 
         // Dark background pill
-        context.fillStyle = '#12121c';
+        context.fillStyle = GRAPH_SURFACE_COLORS.tooltipBackground;
         context.beginPath();
         context.roundRect(x - width / 2, y - height / 2, width, height, radius);
         context.fill();
 
         // Border matching node color
-        context.strokeStyle = data.color || '#6366f1';
+        context.strokeStyle = data.color || GRAPH_SURFACE_COLORS.fallbackNode;
         context.lineWidth = 2;
         context.stroke();
 
         // Label text - light color
-        context.fillStyle = '#f5f5f7';
+        context.fillStyle = GRAPH_SURFACE_COLORS.tooltipText;
         context.textAlign = 'center';
         context.textBaseline = 'middle';
         context.fillText(label, x, y);
@@ -263,7 +428,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         // Also draw a subtle glow ring around the node
         context.beginPath();
         context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
-        context.strokeStyle = data.color || '#6366f1';
+        context.strokeStyle = data.color || GRAPH_SURFACE_COLORS.fallbackNode;
         context.lineWidth = 2;
         context.globalAlpha = 0.5;
         context.stroke();
@@ -306,21 +471,26 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             // Cyan pulse for search results
             const sizeMultiplier = 1.5 + phase * 0.8;
             res.size = (data.size || 8) * sizeMultiplier;
-            res.color = phase > 0.5 ? '#06b6d4' : brightenColor('#06b6d4', 1.3);
+            res.color =
+              phase > 0.5
+                ? GRAPH_HIGHLIGHT_COLORS.query
+                : brightenColor(GRAPH_HIGHLIGHT_COLORS.query, 1.3);
             res.zIndex = 5;
             res.highlighted = true;
           } else if (animation.type === 'ripple') {
             // Red ripple for blast radius
             const sizeMultiplier = 1.3 + phase * 1.2;
             res.size = (data.size || 8) * sizeMultiplier;
-            res.color = phase > 0.5 ? '#ef4444' : '#f87171';
+            res.color =
+              phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.blast : GRAPH_HIGHLIGHT_COLORS.blastPulse;
             res.zIndex = 5;
             res.highlighted = true;
           } else if (animation.type === 'glow') {
             // Purple glow for highlight
             const sizeMultiplier = 1.4 + phase * 0.6;
             res.size = (data.size || 8) * sizeMultiplier;
-            res.color = phase > 0.5 ? '#a855f7' : '#c084fc';
+            res.color =
+              phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.change : GRAPH_HIGHLIGHT_COLORS.changePulse;
             res.zIndex = 5;
             res.highlighted = true;
           }
@@ -331,13 +501,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         // Blast radius takes priority (red highlighting)
         if (hasBlastRadius && !currentSelected) {
           if (isBlastRadiusNode) {
-            res.color = '#ef4444'; // Red for blast radius
+            res.color = GRAPH_HIGHLIGHT_COLORS.blast;
             res.size = (data.size || 8) * 1.8;
             res.zIndex = 3;
             res.highlighted = true;
           } else if (isQueryHighlighted) {
             // Regular cyan highlight for non-blast-radius nodes
-            res.color = '#06b6d4';
+            res.color = GRAPH_HIGHLIGHT_COLORS.query;
             res.size = (data.size || 8) * 1.4;
             res.zIndex = 2;
             res.highlighted = true;
@@ -351,7 +521,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
         if (hasHighlights && !currentSelected) {
           if (isQueryHighlighted) {
-            res.color = '#06b6d4';
+            res.color = GRAPH_HIGHLIGHT_COLORS.query;
             res.size = (data.size || 8) * 1.6;
             res.zIndex = 2;
             res.highlighted = true;
@@ -422,14 +592,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             if (bothHighlighted) {
               // If both nodes are in blast radius, use red edge
               if (blastRadius.has(source) && blastRadius.has(target)) {
-                res.color = '#ef4444';
+                res.color = GRAPH_HIGHLIGHT_COLORS.blast;
               } else {
-                res.color = '#06b6d4';
+                res.color = GRAPH_HIGHLIGHT_COLORS.query;
               }
               res.size = Math.max(2, (data.size || 1) * 3);
               res.zIndex = 2;
             } else if (oneHighlighted) {
-              res.color = dimColor('#06b6d4', 0.4);
+              res.color = dimColor(GRAPH_HIGHLIGHT_COLORS.query, 0.4);
               res.size = 1;
               res.zIndex = 1;
             } else {
@@ -467,31 +637,35 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
     sigma.on('clickNode', ({ node }) => {
       setSelectedNode(node);
-      options.onNodeClick?.(node);
+      optionsRef.current.onNodeClick?.(node);
     });
 
     sigma.on('clickStage', () => {
       setSelectedNode(null);
-      options.onStageClick?.();
+      optionsRef.current.onStageClick?.();
     });
 
     sigma.on('enterNode', ({ node }) => {
-      options.onNodeHover?.(node);
+      optionsRef.current.onNodeHover?.(node);
       if (containerRef.current) {
         containerRef.current.style.cursor = 'pointer';
       }
     });
 
     sigma.on('leaveNode', () => {
-      options.onNodeHover?.(null);
+      optionsRef.current.onNodeHover?.(null);
       if (containerRef.current) {
         containerRef.current.style.cursor = 'grab';
       }
     });
 
     return () => {
+      layoutRunIdRef.current += 1;
       if (layoutTimeoutRef.current) {
         clearTimeout(layoutTimeoutRef.current);
+      }
+      if (layoutMonitorRef.current) {
+        clearInterval(layoutMonitorRef.current);
       }
       layoutRef.current?.kill();
       sigma.kill();
@@ -501,69 +675,105 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   }, []);
 
   // Run ForceAtlas2 layout
-  const runLayout = useCallback((graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
-    const nodeCount = graph.order;
-    if (nodeCount === 0) return;
+  const runLayout = useCallback(
+    (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
+      const nodeCount = graph.order;
+      if (nodeCount === 0) return;
 
-    // Kill existing
-    if (layoutRef.current) {
-      layoutRef.current.kill();
-      layoutRef.current = null;
-    }
-    if (layoutTimeoutRef.current) {
-      clearTimeout(layoutTimeoutRef.current);
-      layoutTimeoutRef.current = null;
-    }
-
-    // Get settings
-    const inferredSettings = forceAtlas2.inferSettings(graph);
-    const customSettings = getFA2Settings(nodeCount);
-    const settings = { ...inferredSettings, ...customSettings };
-
-    const layout = new FA2Layout(graph, { settings });
-
-    layoutRef.current = layout;
-    layout.start();
-    setIsLayoutRunning(true);
-
-    const duration = getLayoutDuration(nodeCount);
-
-    layoutTimeoutRef.current = setTimeout(() => {
-      if (layoutRef.current) {
-        layoutRef.current.stop();
-        layoutRef.current = null;
-
-        // Light noverlap cleanup
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
-        sigmaRef.current?.refresh();
-
-        setIsLayoutRunning(false);
-      }
-    }, duration);
-  }, []);
-
-  const setGraph = useCallback(
-    (newGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
-      const sigma = sigmaRef.current;
-      if (!sigma) return;
-
+      // Kill existing
+      layoutRunIdRef.current += 1;
+      clearLayoutTimers();
       if (layoutRef.current) {
         layoutRef.current.kill();
         layoutRef.current = null;
       }
-      if (layoutTimeoutRef.current) {
-        clearTimeout(layoutTimeoutRef.current);
-        layoutTimeoutRef.current = null;
+
+      const runId = layoutRunIdRef.current;
+      const budget = getLayoutBudget(nodeCount);
+      let previousPositions = snapshotLayout(graph);
+      let stableSamples = 0;
+      let movedSamples = 0;
+      const startedAt = Date.now();
+
+      // Get settings
+      const inferredSettings = forceAtlas2.inferSettings(graph);
+      const customSettings = getFA2Settings(nodeCount);
+      const settings = { ...inferredSettings, ...customSettings };
+
+      const layout = new FA2Layout(graph, { settings });
+
+      layoutRef.current = layout;
+      layout.start();
+      setIsLayoutRunning(true);
+
+      layoutMonitorRef.current = setInterval(() => {
+        if (layoutRunIdRef.current !== runId || !layoutRef.current?.isRunning()) return;
+
+        const movement = measureLayoutMovement(graph, previousPositions);
+        previousPositions = movement.positions;
+
+        if (movement.averageMovement > 0) {
+          movedSamples += 1;
+        }
+
+        const elapsedMs = Date.now() - startedAt;
+        const isSettled =
+          elapsedMs >= budget.minDurationMs &&
+          movedSamples >= 2 &&
+          movement.averageMovement > 0 &&
+          movement.averageMovement <= budget.movementThreshold &&
+          movement.maxMovement <= budget.maxMovementThreshold;
+
+        stableSamples = isSettled ? stableSamples + 1 : 0;
+
+        if (stableSamples >= budget.stableSamples) {
+          finishLayoutRun(runId, graph);
+        }
+      }, budget.sampleIntervalMs);
+
+      layoutTimeoutRef.current = setTimeout(() => {
+        finishLayoutRun(runId, graph);
+      }, budget.maxDurationMs);
+    },
+    [clearLayoutTimers, finishLayoutRun],
+  );
+
+  const setGraph = useCallback(
+    (
+      newGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+      options: SigmaSetGraphOptions = {},
+    ) => {
+      const sigma = sigmaRef.current;
+      if (!sigma) return;
+
+      const shouldRunLayout = options.runLayout ?? true;
+      const shouldResetCamera = options.resetCamera ?? true;
+      const shouldClearSelection = options.clearSelection ?? true;
+
+      layoutRunIdRef.current += 1;
+      clearLayoutTimers();
+      if (layoutRef.current) {
+        layoutRef.current.kill();
+        layoutRef.current = null;
       }
+      setIsLayoutRunning(false);
 
       graphRef.current = newGraph;
       sigma.setGraph(newGraph);
-      setSelectedNode(null);
+      if (shouldClearSelection) {
+        setSelectedNode(null);
+      }
 
-      runLayout(newGraph);
-      sigma.getCamera().animatedReset({ duration: 500 });
+      if (shouldRunLayout) {
+        runLayout(newGraph);
+      } else {
+        sigma.refresh();
+      }
+      if (shouldResetCamera) {
+        sigma.getCamera().animatedReset({ duration: 500 });
+      }
     },
-    [runLayout, setSelectedNode],
+    [clearLayoutTimers, runLayout, setSelectedNode],
   );
 
   const focusNode = useCallback((nodeId: string) => {
@@ -607,23 +817,18 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   }, [runLayout]);
 
   const stopLayout = useCallback(() => {
-    if (layoutTimeoutRef.current) {
-      clearTimeout(layoutTimeoutRef.current);
-      layoutTimeoutRef.current = null;
-    }
-    if (layoutRef.current) {
-      layoutRef.current.stop();
-      layoutRef.current = null;
-
-      const graph = graphRef.current;
-      if (graph) {
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
-        sigmaRef.current?.refresh();
+    const graph = graphRef.current;
+    if (graph) {
+      finishLayoutRun(layoutRunIdRef.current, graph);
+    } else {
+      clearLayoutTimers();
+      if (layoutRef.current) {
+        layoutRef.current.kill();
+        layoutRef.current = null;
       }
-
       setIsLayoutRunning(false);
     }
-  }, []);
+  }, [clearLayoutTimers, finishLayoutRun]);
 
   const refreshHighlights = useCallback(() => {
     sigmaRef.current?.refresh();

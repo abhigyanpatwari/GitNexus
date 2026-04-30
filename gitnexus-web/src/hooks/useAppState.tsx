@@ -37,6 +37,7 @@ import {
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
+import { parseNodeMarker } from '../lib/agent-tracking';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
@@ -77,6 +78,30 @@ export interface CodeReferenceFocus {
   ts: number;
 }
 
+const resolveTrackedNodeIds = (rawIds: string[], graph: KnowledgeGraph | null): Set<string> => {
+  if (rawIds.length === 0) return new Set();
+  if (!graph) return new Set(rawIds);
+
+  const matchedIds = new Set<string>();
+  const graphNodeIdSet = new Set(graph.nodes.map((n) => n.id));
+
+  for (const rawId of rawIds) {
+    if (graphNodeIdSet.has(rawId)) {
+      matchedIds.add(rawId);
+      continue;
+    }
+
+    const found = graph.nodes.find(
+      (n) => n.id.endsWith(rawId) || n.id.endsWith(':' + rawId),
+    )?.id;
+    if (found) {
+      matchedIds.add(found);
+    }
+  }
+
+  return matchedIds;
+};
+
 interface AppState {
   // View state
   viewMode: ViewMode;
@@ -104,6 +129,7 @@ interface AppState {
   visibleLabels: NodeLabel[];
   toggleLabelVisibility: (label: NodeLabel) => void;
   visibleEdgeTypes: EdgeType[];
+  setVisibleEdgeTypes: (edgeTypes: EdgeType[]) => void;
   toggleEdgeVisibility: (edgeType: EdgeType) => void;
 
   // Depth filter (N hops from selection)
@@ -214,6 +240,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     visibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
+    setVisibleEdgeTypes,
     toggleEdgeVisibility,
     depthFilter,
     setDepthFilter,
@@ -902,66 +929,32 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
                 // Parse highlight marker from tool results
                 if (tc.result) {
-                  const highlightMatch = tc.result.match(/\[HIGHLIGHT_NODES:([^\]]+)\]/);
-                  if (highlightMatch) {
-                    const rawIds = highlightMatch[1]
-                      .split(',')
-                      .map((id: string) => id.trim())
-                      .filter(Boolean);
-                    if (rawIds.length > 0 && graph) {
-                      const matchedIds = new Set<string>();
-                      const graphNodeIdSet = new Set(graph.nodes.map((n) => n.id));
-
-                      for (const rawId of rawIds) {
-                        if (graphNodeIdSet.has(rawId)) {
-                          matchedIds.add(rawId);
-                        } else {
-                          const found = graph.nodes.find(
-                            (n) => n.id.endsWith(rawId) || n.id.endsWith(':' + rawId),
-                          )?.id;
-                          if (found) {
-                            matchedIds.add(found);
-                          }
-                        }
-                      }
-
-                      if (matchedIds.size > 0) {
-                        setAIToolHighlightedNodeIds(matchedIds);
-                      }
-                    } else if (rawIds.length > 0) {
-                      setAIToolHighlightedNodeIds(new Set(rawIds));
-                    }
+                  const highlightIds = resolveTrackedNodeIds(
+                    parseNodeMarker(tc.result, 'HIGHLIGHT_NODES'),
+                    graph,
+                  );
+                  if (highlightIds.size > 0) {
+                    setAIToolHighlightedNodeIds(highlightIds);
                   }
 
-                  // Parse impact marker from tool results
-                  const impactMatch = tc.result.match(/\[IMPACT:([^\]]+)\]/);
-                  if (impactMatch) {
-                    const rawIds = impactMatch[1]
-                      .split(',')
-                      .map((id: string) => id.trim())
-                      .filter(Boolean);
-                    if (rawIds.length > 0 && graph) {
-                      const matchedIds = new Set<string>();
-                      const graphNodeIdSet = new Set(graph.nodes.map((n) => n.id));
-
-                      for (const rawId of rawIds) {
-                        if (graphNodeIdSet.has(rawId)) {
-                          matchedIds.add(rawId);
-                        } else {
-                          const found = graph.nodes.find(
-                            (n) => n.id.endsWith(rawId) || n.id.endsWith(':' + rawId),
-                          )?.id;
-                          if (found) {
-                            matchedIds.add(found);
-                          }
-                        }
-                      }
-
-                      if (matchedIds.size > 0) {
-                        setBlastRadiusNodeIds(matchedIds);
-                      }
-                    } else if (rawIds.length > 0) {
-                      setBlastRadiusNodeIds(new Set(rawIds));
+                  const impactIds = resolveTrackedNodeIds(
+                    parseNodeMarker(tc.result, 'IMPACT'),
+                    graph,
+                  );
+                  if (impactIds.size > 0) {
+                    setBlastRadiusNodeIds(impactIds);
+                  } else if (tc.name === 'impact') {
+                    const fallbackImpactIds = resolveTrackedNodeIds(
+                      Array.from(tc.result.matchAll(/^\s+[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^%\n]+/gm))
+                        .map((match) => {
+                          const parts = match[0].trim().split('|');
+                          return parts.length >= 2 ? parts[1] : '';
+                        })
+                        .filter(Boolean),
+                      graph,
+                    );
+                    if (fallbackImpactIds.size > 0) {
+                      setBlastRadiusNodeIds(fallbackImpactIds);
                     }
                   }
                 }
@@ -1140,7 +1133,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           await initializeAgent(pNameStr);
         }
         setViewMode('exploring');
-        startEmbeddingsWithFallback();
         setProgress(null);
       } catch (err) {
         console.warn('Failed to initialize agent:', err);
@@ -1158,7 +1150,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setProjectName,
       setGraph,
       initializeAgent,
-      startEmbeddingsWithFallback,
       setHighlightedNodeIds,
       clearAIToolHighlights,
       clearAICitationHighlights,
@@ -1225,6 +1216,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     visibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
+    setVisibleEdgeTypes,
     toggleEdgeVisibility,
     depthFilter,
     setDepthFilter,

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { Component, ReactNode, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send,
   Square,
@@ -16,6 +16,40 @@ import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
+import { normalizePath, resolveFilePath } from '../lib/path-resolution';
+
+class TabErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300">
+          <AlertTriangle className="h-5 w-5" />
+        </div>
+        <div>
+          <h3 className="text-sm font-medium text-text-primary">Panel render failed</h3>
+          <p className="mt-1 max-w-xs text-xs text-text-muted">
+            {this.state.error.message || 'The panel could not be displayed.'}
+          </p>
+        </div>
+        <button
+          onClick={() => this.setState({ error: null })}
+          className="rounded-md border border-border-subtle bg-elevated px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+}
+
 export const RightPanel = () => {
   const {
     isRightPanelOpen,
@@ -43,9 +77,22 @@ export const RightPanel = () => {
     isChatLoading,
   );
 
-  const resolveFilePathForUI = useCallback((_requestedPath: string): string | null => {
-    return null;
-  }, []);
+  const filePathIndex = useMemo(() => {
+    const paths = new Map<string, string>();
+    if (!graph) return paths;
+
+    graph.nodes.forEach((node) => {
+      if (node.label !== 'File' || !node.properties.filePath) return;
+      paths.set(node.properties.filePath, '');
+    });
+
+    return paths;
+  }, [graph]);
+
+  const resolveFilePathForUI = useCallback(
+    (requestedPath: string): string | null => resolveFilePath(filePathIndex, requestedPath),
+    [filePathIndex],
+  );
 
   const findFileNodeIdForUI = useCallback(
     (filePath: string): string | undefined => {
@@ -54,7 +101,8 @@ export const RightPanel = () => {
       const node = graph.nodes.find(
         (n) =>
           n.label === 'File' &&
-          n.properties.filePath.replace(/\\/g, '/').replace(/^\.?\//, '') === target,
+          normalizePath(n.properties.filePath).toLowerCase() ===
+            normalizePath(target).toLowerCase(),
       );
       return node?.id;
     },
@@ -257,205 +305,209 @@ export const RightPanel = () => {
 
       {/* Processes Tab */}
       {activeTab === 'processes' && (
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <ProcessesPanel />
-        </div>
+        <TabErrorBoundary key="processes">
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <ProcessesPanel />
+          </div>
+        </TabErrorBoundary>
       )}
 
       {/* Chat Content - only show when chat tab is active */}
       {activeTab === 'chat' && (
-        <div className="relative flex flex-1 flex-col overflow-hidden">
-          {/* Status bar */}
-          <div className="flex items-center gap-2.5 border-b border-border-subtle bg-elevated/50 px-4 py-3">
-            <div className="ml-auto flex items-center gap-2">
-              {!isAgentReady && (
-                <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-300">
-                  Configure AI
-                </span>
-              )}
-              {isAgentInitializing && (
-                <span className="flex items-center gap-1 rounded-full border border-border-subtle bg-surface px-2 py-1 text-[11px] text-text-muted">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Connecting
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Status / errors */}
-          {agentError && (
-            <div className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-              <AlertTriangle className="h-4 w-4" />
-              <span>{agentError}</span>
-            </div>
-          )}
-
-          {/* Messages */}
-          <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
-            {chatMessages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center px-4 text-center">
-                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
-                  🧠
-                </div>
-                <h3 className="mb-2 text-base font-medium">Ask me anything</h3>
-                <p className="mb-5 text-sm leading-relaxed text-text-secondary">
-                  I can help you understand the architecture, find functions, or explain
-                  connections.
-                </p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {chatSuggestions.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      onClick={() => setChatInput(suggestion)}
-                      className="rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
+        <TabErrorBoundary key="chat">
+          <div className="relative flex flex-1 flex-col overflow-hidden">
+            {/* Status bar */}
+            <div className="flex items-center gap-2.5 border-b border-border-subtle bg-elevated/50 px-4 py-3">
+              <div className="ml-auto flex items-center gap-2">
+                {!isAgentReady && (
+                  <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-300">
+                    Configure AI
+                  </span>
+                )}
+                {isAgentInitializing && (
+                  <span className="flex items-center gap-1 rounded-full border border-border-subtle bg-surface px-2 py-1 text-[11px] text-text-muted">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Connecting
+                  </span>
+                )}
               </div>
-            ) : (
-              <div ref={messagesContainerRef} className="flex flex-col gap-6">
-                {chatMessages.map((message) => (
-                  <div key={message.id} className="animate-fade-in">
-                    {/* User message - compact label style */}
-                    {message.role === 'user' && (
-                      <div className="mb-4">
-                        <div className="mb-2 flex items-center gap-2">
-                          <User className="h-4 w-4 text-text-muted" />
-                          <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
-                            You
-                          </span>
-                        </div>
-                        <div className="pl-6 text-sm text-text-primary">{message.content}</div>
-                      </div>
-                    )}
+            </div>
 
-                    {/* Assistant message - copilot style */}
-                    {message.role === 'assistant' && (
-                      <div>
-                        <div className="mb-3 flex items-center gap-2">
-                          <Sparkles className="h-4 w-4 text-accent" />
-                          <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
-                            Nexus AI
-                          </span>
-                          {isChatLoading && message === chatMessages[chatMessages.length - 1] && (
-                            <Loader2 className="h-3 w-3 animate-spin text-accent" />
-                          )}
+            {/* Status / errors */}
+            {agentError && (
+              <div className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                <AlertTriangle className="h-4 w-4" />
+                <span>{agentError}</span>
+              </div>
+            )}
+
+            {/* Messages */}
+            <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
+              {chatMessages.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
+                    🧠
+                  </div>
+                  <h3 className="mb-2 text-base font-medium">Ask me anything</h3>
+                  <p className="mb-5 text-sm leading-relaxed text-text-secondary">
+                    I can help you understand the architecture, find functions, or explain
+                    connections.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {chatSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => setChatInput(suggestion)}
+                        className="rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div ref={messagesContainerRef} className="flex flex-col gap-6">
+                  {chatMessages.map((message) => (
+                    <div key={message.id} className="animate-fade-in">
+                      {/* User message - compact label style */}
+                      {message.role === 'user' && (
+                        <div className="mb-4">
+                          <div className="mb-2 flex items-center gap-2">
+                            <User className="h-4 w-4 text-text-muted" />
+                            <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
+                              You
+                            </span>
+                          </div>
+                          <div className="pl-6 text-sm text-text-primary">{message.content}</div>
                         </div>
-                        <div className="chat-prose pl-6">
-                          {/* Render steps in order (reasoning, tool calls, content interleaved) */}
-                          {message.steps && message.steps.length > 0 ? (
-                            <div className="space-y-4">
-                              {message.steps.map((step, index) => (
-                                <div key={step.id}>
-                                  {step.type === 'reasoning' && step.content && (
-                                    <div className="mb-3 border-l-2 border-text-muted/30 pl-3 text-sm text-text-secondary italic">
+                      )}
+
+                      {/* Assistant message - copilot style */}
+                      {message.role === 'assistant' && (
+                        <div>
+                          <div className="mb-3 flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-accent" />
+                            <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
+                              Nexus AI
+                            </span>
+                            {isChatLoading && message === chatMessages[chatMessages.length - 1] && (
+                              <Loader2 className="h-3 w-3 animate-spin text-accent" />
+                            )}
+                          </div>
+                          <div className="chat-prose pl-6">
+                            {/* Render steps in order (reasoning, tool calls, content interleaved) */}
+                            {message.steps && message.steps.length > 0 ? (
+                              <div className="space-y-4">
+                                {message.steps.map((step, index) => (
+                                  <div key={step.id}>
+                                    {step.type === 'reasoning' && step.content && (
+                                      <div className="mb-3 border-l-2 border-text-muted/30 pl-3 text-sm text-text-secondary italic">
+                                        <MarkdownRenderer
+                                          content={step.content}
+                                          onLinkClick={handleLinkClick}
+                                        />
+                                      </div>
+                                    )}
+                                    {step.type === 'tool_call' && step.toolCall && (
+                                      <div className="mb-3">
+                                        <ToolCallCard
+                                          toolCall={step.toolCall}
+                                          defaultExpanded={false}
+                                        />
+                                      </div>
+                                    )}
+                                    {step.type === 'content' && step.content && (
                                       <MarkdownRenderer
                                         content={step.content}
                                         onLinkClick={handleLinkClick}
+                                        showCopyButton={index === message.steps!.length - 1}
                                       />
-                                    </div>
-                                  )}
-                                  {step.type === 'tool_call' && step.toolCall && (
-                                    <div className="mb-3">
-                                      <ToolCallCard
-                                        toolCall={step.toolCall}
-                                        defaultExpanded={false}
-                                      />
-                                    </div>
-                                  )}
-                                  {step.type === 'content' && step.content && (
-                                    <MarkdownRenderer
-                                      content={step.content}
-                                      onLinkClick={handleLinkClick}
-                                      showCopyButton={index === message.steps!.length - 1}
-                                    />
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            // Fallback: render content + toolCalls separately (old format)
-                            <MarkdownRenderer
-                              content={message.content}
-                              onLinkClick={handleLinkClick}
-                              toolCalls={message.toolCalls}
-                              showCopyButton={true}
-                            />
-                          )}
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              // Fallback: render content + toolCalls separately (old format)
+                              <MarkdownRenderer
+                                content={message.content}
+                                onLinkClick={handleLinkClick}
+                                toolCalls={message.toolCalls}
+                                showCopyButton={true}
+                              />
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Scroll to bottom */}
-          <button
-            aria-label="Scroll to bottom"
-            onClick={() => scrollToBottom()}
-            className={`absolute bottom-20 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary shadow-lg transition-all duration-200 hover:border-accent hover:text-accent ${
-              !isAtBottom && chatMessages.length > 0
-                ? 'translate-y-0 opacity-100'
-                : 'pointer-events-none translate-y-2 opacity-0'
-            }`}
-          >
-            <ArrowDown className="mr-1 inline h-3.5 w-3.5" />
-            Scroll to bottom
-          </button>
-
-          {/* Input */}
-          <div className="border-t border-border-subtle bg-surface p-3">
-            <div className="flex items-end gap-2 rounded-xl border border-border-subtle bg-elevated px-3 py-2 transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
-              <textarea
-                ref={textareaRef}
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask about the codebase..."
-                rows={1}
-                className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
-                style={{ height: '36px', overflowY: 'hidden' }}
-              />
-              <button
-                onClick={clearChat}
-                className="px-2 py-1 text-xs text-text-muted transition-colors hover:text-text-primary"
-                title="Clear chat"
-              >
-                Clear
-              </button>
-              {isChatLoading ? (
-                <button
-                  onClick={stopChatResponse}
-                  className="flex h-9 w-9 items-center justify-center rounded-md bg-red-500/80 text-white transition-all hover:bg-red-500"
-                  title="Stop response"
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSendMessage}
-                  disabled={!chatInput.trim() || isAgentInitializing}
-                  className="flex h-9 w-9 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Send className="h-3.5 w-3.5" />
-                </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-            {!isAgentReady && !isAgentInitializing && (
-              <div className="mt-2 flex items-center gap-2 text-xs text-amber-200">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                <span>
-                  {isProviderConfigured()
-                    ? 'Initializing AI agent...'
-                    : 'Configure an LLM provider to enable chat.'}
-                </span>
+
+            {/* Scroll to bottom */}
+            <button
+              aria-label="Scroll to bottom"
+              onClick={() => scrollToBottom()}
+              className={`absolute bottom-20 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary shadow-lg transition-all duration-200 hover:border-accent hover:text-accent ${
+                !isAtBottom && chatMessages.length > 0
+                  ? 'translate-y-0 opacity-100'
+                  : 'pointer-events-none translate-y-2 opacity-0'
+              }`}
+            >
+              <ArrowDown className="mr-1 inline h-3.5 w-3.5" />
+              Scroll to bottom
+            </button>
+
+            {/* Input */}
+            <div className="border-t border-border-subtle bg-surface p-3">
+              <div className="flex items-end gap-2 rounded-xl border border-border-subtle bg-elevated px-3 py-2 transition-all focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+                <textarea
+                  ref={textareaRef}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask about the codebase..."
+                  rows={1}
+                  className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
+                  style={{ height: '36px', overflowY: 'hidden' }}
+                />
+                <button
+                  onClick={clearChat}
+                  className="px-2 py-1 text-xs text-text-muted transition-colors hover:text-text-primary"
+                  title="Clear chat"
+                >
+                  Clear
+                </button>
+                {isChatLoading ? (
+                  <button
+                    onClick={stopChatResponse}
+                    className="flex h-9 w-9 items-center justify-center rounded-md bg-red-500/80 text-white transition-all hover:bg-red-500"
+                    title="Stop response"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={!chatInput.trim() || isAgentInitializing}
+                    className="flex h-9 w-9 items-center justify-center rounded-md bg-accent text-white transition-all hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
-            )}
+              {!isAgentReady && !isAgentInitializing && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-amber-200">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span>
+                    {isProviderConfigured()
+                      ? 'Initializing AI agent...'
+                      : 'Configure an LLM provider to enable chat.'}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </TabErrorBoundary>
       )}
     </aside>
   );

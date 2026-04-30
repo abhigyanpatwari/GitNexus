@@ -99,7 +99,7 @@ function ensureIdleTimer(): void {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
-        closeOne(repoId);
+        void closeOne(repoId);
       }
     }
   }, 60_000);
@@ -122,7 +122,7 @@ export const touchRepo = (repoId: string): void => {
 /**
  * Evict the least-recently-used repo if pool is at capacity
  */
-function evictLRU(): void {
+async function evictLRU(): Promise<void> {
   if (pool.size < MAX_POOL_SIZE) return;
 
   let oldestId: string | null = null;
@@ -134,7 +134,7 @@ function evictLRU(): void {
     }
   }
   if (oldestId) {
-    closeOne(oldestId);
+    await closeOne(oldestId);
   }
 }
 
@@ -143,19 +143,16 @@ function evictLRU(): void {
  * shared Database ref.  Only closes the Database when no other repoIds
  * reference it (refCount === 0).
  */
-function closeOne(repoId: string): void {
+async function closeOne(repoId: string): Promise<void> {
   const entry = pool.get(repoId);
   if (!entry) return;
 
   entry.closed = true;
 
   // Close available connections — fire-and-forget with .catch() to prevent
-  // unhandled rejections.  Native close() returns Promise<void> but can crash
-  // the N-API destructor on macOS/Windows; deferring to process exit lets
-  // dangerouslyIgnoreUnhandledErrors absorb the crash.
-  for (const conn of entry.available) {
-    conn.close().catch(() => {});
-  }
+  // release the native LadybugDB file lock can rely on closeLbug() as a
+  // real barrier rather than a best-effort signal.
+  const closeTasks: Promise<unknown>[] = entry.available.map((conn) => conn.close());
   entry.available.length = 0;
 
   // Checked-out connections can't be closed here — they're in-flight.
@@ -175,7 +172,7 @@ function closeOne(repoId: string): void {
         shared.refCount = 0;
         shared.ftsLoaded = false;
       } else {
-        shared.db.close().catch(() => {});
+        closeTasks.push(shared.db.close());
         dbCache.delete(entry.dbPath);
       }
     }
@@ -192,6 +189,8 @@ function closeOne(repoId: string): void {
       // Isolate listener failures — teardown must complete.
     }
   }
+
+  await Promise.allSettled(closeTasks);
 }
 
 /**
@@ -292,7 +291,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     throw new Error(`LadybugDB not found at ${dbPath}. Run: gitnexus analyze`);
   }
 
-  evictLRU();
+  await evictLRU();
 
   // Reuse an existing native Database if another repoId already opened this path.
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
@@ -533,8 +532,12 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
   try {
     const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    return rows;
+    try {
+      const rows = await result.getAll();
+      return rows;
+    } finally {
+      await Promise.resolve(result.close?.()).catch(() => {});
+    }
   } finally {
     activeQueryCount--;
     restoreStdout();
@@ -569,8 +572,12 @@ export const executeParameterized = async (
     }
     const queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    return rows;
+    try {
+      const rows = await result.getAll();
+      return rows;
+    } finally {
+      await Promise.resolve(result.close?.()).catch(() => {});
+    }
   } finally {
     activeQueryCount--;
     restoreStdout();
@@ -585,13 +592,11 @@ export const executeParameterized = async (
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
-    closeOne(repoId);
+    await closeOne(repoId);
     return;
   }
 
-  for (const id of [...pool.keys()]) {
-    closeOne(id);
-  }
+  await Promise.all([...pool.keys()].map((id) => closeOne(id)));
 
   if (idleTimer) {
     clearInterval(idleTimer);

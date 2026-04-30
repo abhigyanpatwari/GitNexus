@@ -466,6 +466,39 @@ export class AuthGateway {
       expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
     });
 
+    it('test_extract_ts_grpc_client_field_method_call_returns_method_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.gateway.ts',
+        `import { GrpcClient } from '@nestjs/microservices';
+import type { AuthServiceClient } from './generated/auth';
+
+export class AuthGateway {
+  @GrpcClient({ package: 'auth.v1', protoPath: 'proto/auth.proto' })
+  private readonly authClient!: AuthServiceClient;
+
+  login() {
+    return this.authClient.login({ username: 'ada' });
+  }
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const methodConsumer = contracts.find(
+        (c) => c.meta.source === 'ts_generated_client_method' && c.contractId.endsWith('/Login'),
+      );
+
+      expect(methodConsumer).toBeDefined();
+      expect(methodConsumer?.contractId).toBe('grpc::auth.v1.AuthService/Login');
+    });
+
     it('test_extract_ts_getService_without_decorator_returns_consumer', async () => {
       writeFile(
         'proto/auth.proto',
@@ -491,6 +524,34 @@ export function createAuthClient(client: ClientGrpc) {
       expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
     });
 
+    it('test_extract_ts_getService_assignment_method_call_returns_method_consumer', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import type { ClientGrpc } from '@nestjs/microservices';
+
+export function createAuthClient(client: ClientGrpc) {
+  const auth = client.getService<AuthService>('AuthService');
+  return auth.login({ username: 'ada' });
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const methodConsumer = contracts.find(
+        (c) => c.meta.source === 'ts_generated_client_method' && c.meta.method === 'Login',
+      );
+
+      expect(methodConsumer).toBeDefined();
+      expect(methodConsumer?.contractId).toBe('grpc::auth.v1.AuthService/Login');
+    });
+
     it('test_extract_ts_generated_client_constructor_returns_consumer', async () => {
       writeFile(
         'proto/auth.proto',
@@ -513,6 +574,43 @@ export const authClient = new AuthServiceClient('localhost:50051', credentials.c
 
       expect(consumers).toHaveLength(1);
       expect(consumers[0].contractId).toBe('grpc::auth.v1.AuthService/*');
+    });
+
+    it('test_extract_ts_generated_client_method_calls_return_method_consumers', async () => {
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth.v1;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+  rpc GetUser (GetUserRequest) returns (GetUserResponse);
+}`,
+      );
+      writeFile(
+        'src/auth.client.ts',
+        `import { credentials } from '@grpc/grpc-js';
+import { AuthServiceClient } from './generated/auth';
+
+const authClient = new AuthServiceClient('localhost:50051', credentials.createInsecure());
+
+export async function run() {
+  await authClient.login({ username: 'ada' });
+  await authClient.getUser({ id: '1' });
+  authClient.close();
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const methodConsumers = contracts.filter(
+        (c) => c.meta.source === 'ts_generated_client_method',
+      );
+
+      expect(methodConsumers.map((c) => c.contractId).sort()).toEqual([
+        'grpc::auth.v1.AuthService/GetUser',
+        'grpc::auth.v1.AuthService/Login',
+      ]);
+      expect(methodConsumers.every((c) => c.role === 'consumer')).toBe(true);
+      expect(methodConsumers.find((c) => c.meta.method === 'close')).toBeUndefined();
     });
 
     it('test_extract_ts_non_service_client_constructor_is_ignored', async () => {

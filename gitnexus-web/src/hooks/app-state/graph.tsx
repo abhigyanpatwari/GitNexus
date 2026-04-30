@@ -11,6 +11,7 @@ interface GraphStateContextValue {
   visibleLabels: NodeLabel[];
   toggleLabelVisibility: (label: NodeLabel) => void;
   visibleEdgeTypes: EdgeType[];
+  setVisibleEdgeTypes: (edgeTypes: EdgeType[]) => void;
   toggleEdgeVisibility: (edgeType: EdgeType) => void;
   depthFilter: number | null;
   setDepthFilter: (depth: number | null) => void;
@@ -49,6 +50,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       visibleLabels,
       toggleLabelVisibility,
       visibleEdgeTypes,
+      setVisibleEdgeTypes,
       toggleEdgeVisibility,
       depthFilter,
       setDepthFilter,

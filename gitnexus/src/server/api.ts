@@ -30,13 +30,244 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
-import { fork } from 'child_process';
+import { fork, spawn } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { JobManager } from './analyze-job.js';
+import { JobManager, type IndexingWarning, type IndexingCounts } from './analyze-job.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+const CHILD_RESULT_MARKER = '__GITNEXUS_HTTP_CHILD_RESULT__';
+
+type BackendResourceMethod =
+  | 'queryProcesses'
+  | 'queryProcessDetail'
+  | 'queryClusters'
+  | 'queryClusterDetail';
+
+function callBackendResourceInChildProcess(
+  method: BackendResourceMethod,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const backendUrl = new URL('../mcp/local/local-backend.js', import.meta.url).href;
+  const encodedArgs = Buffer.from(JSON.stringify(args ?? {}), 'utf8').toString('base64url');
+  const childScript = `
+    import { writeSync } from 'node:fs';
+    const { LocalBackend } = await import(process.env.GITNEXUS_LOCAL_BACKEND_URL);
+    const marker = process.env.GITNEXUS_CHILD_RESULT_MARKER;
+    const method = process.env.GITNEXUS_BACKEND_METHOD;
+    const args = JSON.parse(Buffer.from(process.env.GITNEXUS_BACKEND_ARGS || '', 'base64url').toString('utf8'));
+    try {
+      const backend = new LocalBackend();
+      await backend.init();
+      let result;
+      switch (method) {
+        case 'queryProcesses':
+          result = await backend.queryProcesses(args.repoName, args.limit);
+          break;
+        case 'queryProcessDetail':
+          result = await backend.queryProcessDetail(args.name, args.repoName);
+          break;
+        case 'queryClusters':
+          result = await backend.queryClusters(args.repoName, args.limit);
+          break;
+        case 'queryClusterDetail':
+          result = await backend.queryClusterDetail(args.name, args.repoName);
+          break;
+        default:
+          throw new Error('Unknown backend resource method: ' + method);
+      }
+      const payload = Buffer.from(JSON.stringify(result), 'utf8').toString('base64url');
+      writeSync(1, marker + payload + '\\n');
+    } catch (err) {
+      writeSync(2, (err?.stack || err?.message || String(err)) + '\\n');
+      process.exit(1);
+    }
+  `;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        GITNEXUS_LOCAL_BACKEND_URL: backendUrl,
+        GITNEXUS_BACKEND_METHOD: method,
+        GITNEXUS_BACKEND_ARGS: encodedArgs,
+        GITNEXUS_CHILD_RESULT_MARKER: CHILD_RESULT_MARKER,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: NodeJS.Timeout;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const tryResolveFromStdout = () => {
+      const markerIndex = stdout.lastIndexOf(CHILD_RESULT_MARKER);
+      if (markerIndex === -1) return;
+      const payloadStart = markerIndex + CHILD_RESULT_MARKER.length;
+      const payloadEnd = stdout.indexOf('\n', payloadStart);
+      if (payloadEnd === -1) return;
+
+      const payload = stdout.slice(payloadStart, payloadEnd).trim();
+      try {
+        const result = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        finish(() => resolve(result));
+        child.kill();
+      } catch (err) {
+        finish(() => reject(err));
+        child.kill();
+      }
+    };
+
+    timer = setTimeout(() => {
+      child.kill();
+      finish(() => reject(new Error(`GitNexus backend method "${method}" timed out`)));
+    }, 120_000);
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      tryResolveFromStdout();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', (err) => {
+      finish(() => reject(err));
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      tryResolveFromStdout();
+      if (settled) return;
+      if (code !== 0) {
+        finish(() =>
+          reject(
+            new Error(
+              stderr.trim() ||
+                stdout.trim() ||
+                `GitNexus backend method "${method}" failed with exit code ${code}`,
+            ),
+          ),
+        );
+        return;
+      }
+      finish(() => reject(new Error(`GitNexus backend method "${method}" returned no result`)));
+    });
+  });
+}
+
+function callGraphInChildProcess(
+  lbugPath: string,
+  includeContent: boolean,
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> {
+  const adapterUrl = new URL('../core/lbug/lbug-adapter.js', import.meta.url).href;
+  const apiUrl = new URL('./api.js', import.meta.url).href;
+  const encodedArgs = Buffer.from(JSON.stringify({ lbugPath, includeContent }), 'utf8').toString(
+    'base64url',
+  );
+  const childScript = `
+    import { writeSync } from 'node:fs';
+    const { withLbugDb } = await import(process.env.GITNEXUS_LBUG_ADAPTER_URL);
+    const { buildGraph } = await import(process.env.GITNEXUS_SERVER_API_URL);
+    const marker = process.env.GITNEXUS_CHILD_RESULT_MARKER;
+    const args = JSON.parse(Buffer.from(process.env.GITNEXUS_GRAPH_ARGS || '', 'base64url').toString('utf8'));
+    try {
+      const result = await withLbugDb(
+        args.lbugPath,
+        () => buildGraph(args.includeContent),
+        { readOnly: true },
+      );
+      const payload = Buffer.from(JSON.stringify(result), 'utf8').toString('base64url');
+      writeSync(1, marker + payload + '\\n');
+    } catch (err) {
+      writeSync(2, (err?.stack || err?.message || String(err)) + '\\n');
+      process.exit(1);
+    }
+  `;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        GITNEXUS_KEEP_LBUG_OPEN: '1',
+        GITNEXUS_LBUG_ADAPTER_URL: adapterUrl,
+        GITNEXUS_SERVER_API_URL: apiUrl,
+        GITNEXUS_GRAPH_ARGS: encodedArgs,
+        GITNEXUS_CHILD_RESULT_MARKER: CHILD_RESULT_MARKER,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: NodeJS.Timeout;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const tryResolveFromStdout = () => {
+      const markerIndex = stdout.lastIndexOf(CHILD_RESULT_MARKER);
+      if (markerIndex === -1) return;
+      const payloadStart = markerIndex + CHILD_RESULT_MARKER.length;
+      const payloadEnd = stdout.indexOf('\n', payloadStart);
+      if (payloadEnd === -1) return;
+
+      const payload = stdout.slice(payloadStart, payloadEnd).trim();
+      try {
+        const result = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        finish(() => resolve(result));
+        child.kill();
+      } catch (err) {
+        finish(() => reject(err));
+        child.kill();
+      }
+    };
+
+    timer = setTimeout(() => {
+      child.kill();
+      finish(() => reject(new Error('GitNexus graph worker timed out')));
+    }, 120_000);
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      tryResolveFromStdout();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', (err) => {
+      finish(() => reject(err));
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      tryResolveFromStdout();
+      if (settled) return;
+      finish(() =>
+        reject(
+          new Error(
+            stderr.trim() || stdout.trim() || `GitNexus graph worker failed with exit code ${code}`,
+          ),
+        ),
+      );
+    });
+  });
+}
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -110,6 +341,68 @@ type GraphStreamRecord =
   | { type: 'node'; data: GraphNode }
   | { type: 'relationship'; data: GraphRelationship }
   | { type: 'error'; error: string };
+
+const DEFAULT_SERVER_ANALYZE_WORKER_TIMEOUT_MS = 120_000;
+
+export const resolveServerAnalyzeWorkerTimeoutMs = (rawWorkerTimeout: unknown): number => {
+  if (rawWorkerTimeout !== undefined) {
+    const seconds = Number(rawWorkerTimeout);
+    if (!Number.isFinite(seconds) || seconds < 1) {
+      throw new Error('"workerTimeout" must be a number of seconds >= 1');
+    }
+    return Math.round(seconds * 1000);
+  }
+
+  const envMs = Number(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS);
+  if (Number.isFinite(envMs) && envMs > 0) return Math.floor(envMs);
+
+  return DEFAULT_SERVER_ANALYZE_WORKER_TIMEOUT_MS;
+};
+
+interface ActiveRepoLock {
+  key: string;
+  repoPath: string;
+  repoName?: string;
+  operation: 'analyze' | 'embed' | 'delete';
+  jobId?: string;
+  startedAt: number;
+}
+
+const formatLockConflictMessage = (lock: ActiveRepoLock): string => {
+  const repo = lock.repoName || path.basename(lock.repoPath) || lock.repoPath;
+  return `Repository "${repo}" is locked by an active ${lock.operation} job. Close other GitNexus processes or wait for the active job to finish, then retry.`;
+};
+
+const classifyIndexingLog = (
+  message: string,
+  repoPath?: string,
+  repoName?: string,
+): Omit<IndexingWarning, 'id' | 'timestamp'> | null => {
+  const lower = message.toLowerCase();
+  if (!lower.includes('warning') && !lower.includes('skipping') && !lower.includes('failed')) {
+    return null;
+  }
+
+  const kind = lower.includes('parser')
+    ? 'parser_failure'
+    : lower.includes('skipping') || lower.includes('skipped')
+      ? 'skipped_file'
+      : lower.includes('retry')
+        ? 'retryable_error'
+        : 'indexing_error';
+
+  return {
+    kind,
+    severity: lower.includes('failed') ? 'error' : 'warning',
+    message,
+    repoPath,
+    repoName,
+    action:
+      kind === 'parser_failure'
+        ? 'Rebuild the matching tree-sitter parser or rerun after installing optional dependencies.'
+        : undefined,
+  };
+};
 
 export class ClientDisconnectedError extends Error {
   constructor() {
@@ -297,13 +590,13 @@ export const writeNdjsonRecord = async (
   }
 };
 
-const buildGraph = async (
+export const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
   for (const table of NODE_TABLES) {
     try {
-      const rows = await executeQuery(getNodeQuery(table, includeContent));
+      const rows = await executeNodeQueryWithAnchorFallback(table, includeContent);
       for (const row of rows) {
         nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
@@ -314,47 +607,245 @@ const buildGraph = async (
     }
   }
 
-  const relationships: GraphRelationship[] = [];
+  const relationshipsByKey = new Map<string, GraphRelationship>();
   const relRows = await executeQuery(GRAPH_RELATIONSHIP_QUERY);
   for (const row of relRows) {
-    relationships.push(mapGraphRelationshipRow(row));
+    addGraphRelationship(relationshipsByKey, mapGraphRelationshipRow(row));
   }
 
-  return { nodes, relationships };
+  return { nodes, relationships: [...relationshipsByKey.values()] };
 };
 
 const GRAPH_RELATIONSHIP_QUERY =
   `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, ` +
   `r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
 
+const normalizeGraphRelationshipConfidence = (confidence: unknown): number => {
+  const numeric = typeof confidence === 'number' ? confidence : Number(confidence);
+  return Number.isFinite(numeric) ? numeric : 1;
+};
+
+const normalizeGraphRelationshipStep = (step: unknown): number => {
+  const numeric = typeof step === 'number' ? step : Number(step);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const graphRelationshipMergeReason = (type: GraphRelationship['type'], reason: string): string =>
+  type === 'CALLS' ? '' : reason;
+
+const graphRelationshipIdentity = (relationship: GraphRelationship): string =>
+  [
+    relationship.sourceId,
+    relationship.type,
+    relationship.targetId,
+    normalizeGraphRelationshipStep(relationship.step),
+    graphRelationshipMergeReason(relationship.type, relationship.reason),
+  ].join('\u0000');
+
+const shouldReplaceGraphRelationship = (
+  current: GraphRelationship,
+  next: GraphRelationship,
+): boolean => next.confidence > current.confidence;
+
+const addGraphRelationship = (
+  relationshipsByKey: Map<string, GraphRelationship>,
+  relationship: GraphRelationship,
+): void => {
+  const key = graphRelationshipIdentity(relationship);
+  const current = relationshipsByKey.get(key);
+  if (!current || shouldReplaceGraphRelationship(current, relationship)) {
+    relationshipsByKey.set(key, relationship);
+  }
+};
+
 const quoteNodeTable = (table: string): string => `\`${table.replace(/`/g, '``')}\``;
 
-const getNodeQuery = (table: string, includeContent: boolean): string => {
+const ANCHOR_METADATA_TABLES = new Set<string>([
+  'File',
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+  'Route',
+  'Tool',
+  'Section',
+]);
+
+const LEGACY_DESCRIPTION_TABLES = new Set<string>([
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+  'Tool',
+  'Section',
+]);
+
+const ANCHOR_METADATA_SELECT =
+  'n.description AS description, n.summary AS summary, n.purpose AS purpose, n.tags AS tags, n.anchorModel AS anchorModel, n.anchorHash AS anchorHash, n.anchorVersion AS anchorVersion, n.anchorGeneratedAt AS anchorGeneratedAt';
+
+const RUNTIME_METRIC_SELECT =
+  'n.service AS service, n.environment AS environment, n.callCount AS callCount, n.errorCount AS errorCount, n.errorRate AS errorRate, n.p95LatencyMs AS p95LatencyMs, n.timeWindowStart AS timeWindowStart, n.timeWindowEnd AS timeWindowEnd';
+
+const getAnchorSelect = (table: string, includeAnchorMetadata: boolean): string => {
+  if (includeAnchorMetadata && ANCHOR_METADATA_TABLES.has(table)) {
+    return `, ${ANCHOR_METADATA_SELECT}`;
+  }
+  if (LEGACY_DESCRIPTION_TABLES.has(table)) {
+    return ', n.description AS description';
+  }
+  return '';
+};
+
+const getNodeQuery = (
+  table: string,
+  includeContent: boolean,
+  includeAnchorMetadata = true,
+): string => {
   const tableLabel = quoteNodeTable(table);
+  const anchorSelect = getAnchorSelect(table, includeAnchorMetadata);
 
   if (table === 'File') {
     return includeContent
-      ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
-      : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
+      ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content${anchorSelect}`
+      : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath${anchorSelect}`;
   }
   if (table === 'Folder') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
   }
   if (table === 'Community') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount, n.description AS description`;
   }
   if (table === 'Process') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
   }
   if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware${anchorSelect}`;
   }
   if (table === 'Tool') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath${anchorSelect}`;
+  }
+  if (table === 'RuntimeService') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, '' AS filePath, ${RUNTIME_METRIC_SELECT}`;
+  }
+  if (table === 'RuntimeSpan') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.route AS route, n.method AS method, n.symbolName AS symbolName, ${RUNTIME_METRIC_SELECT}`;
+  }
+  if (table === 'RuntimeRoute') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, '' AS filePath, n.route AS route, n.method AS method, ${RUNTIME_METRIC_SELECT}`;
+  }
+  if (table === 'RuntimeError') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.service AS service, n.environment AS environment, n.route AS route, n.method AS method, n.symbolName AS symbolName, n.message AS message, n.errorType AS errorType, n.count AS count, n.lastSeen AS lastSeen, n.stackHash AS stackHash`;
+  }
+  if (table === 'RuntimeLogPattern') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.service AS service, n.level AS level, n.route AS route, n.method AS method, n.symbolName AS symbolName, n.pattern AS pattern, n.count AS count, n.lastSeen AS lastSeen`;
   }
   return includeContent
-    ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
-    : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
+    ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content${anchorSelect}`
+    : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${anchorSelect}`;
+};
+
+export const isMissingGraphAnchorColumnError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /(description|summary|purpose|tags|anchorModel|anchorHash|anchorVersion|anchorGeneratedAt)/i.test(
+      message,
+    ) &&
+    /(does not exist|not found|cannot find|no property|property.*missing|binder error)/i.test(
+      message,
+    )
+  );
+};
+
+const executeNodeQueryWithAnchorFallback = async (
+  table: string,
+  includeContent: boolean,
+): Promise<any[]> => {
+  try {
+    return await executeQuery(getNodeQuery(table, includeContent, true));
+  } catch (err) {
+    if (!isMissingGraphAnchorColumnError(err)) throw err;
+    return executeQuery(getNodeQuery(table, includeContent, false));
+  }
+};
+
+const streamNodeQueryWithAnchorFallback = async (
+  table: string,
+  includeContent: boolean,
+  onRow: (row: any) => Promise<void>,
+): Promise<void> => {
+  try {
+    await streamQuery(getNodeQuery(table, includeContent, true), onRow);
+  } catch (err) {
+    if (!isMissingGraphAnchorColumnError(err)) throw err;
+    await streamQuery(getNodeQuery(table, includeContent, false), onRow);
+  }
+};
+
+const getGraphNodeDescription = (
+  table: string,
+  row: any,
+  includeContent: boolean,
+): string | undefined => {
+  if (row.description !== undefined) return row.description;
+  if (table === 'Community') return row[5];
+  if (table === 'Tool') return row[3];
+  if (table === 'File' || table === 'Folder' || table === 'Process' || table === 'Route') {
+    return undefined;
+  }
+  return includeContent ? row[6] : row[5];
+};
+
+const normalizeStringArray = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.filter(
+    (item): item is string => typeof item === 'string' && item.trim().length > 0,
+  );
+  return values.length > 0 ? values : undefined;
+};
+
+const normalizeAnchorVersion = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return value;
 };
 
 const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): GraphNode => ({
@@ -369,10 +860,35 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,
     middleware: row.middleware,
+    service: row.service,
+    environment: row.environment,
+    route: row.route,
+    method: row.method,
+    callCount: row.callCount,
+    errorCount: row.errorCount,
+    errorRate: row.errorRate,
+    p95LatencyMs: row.p95LatencyMs,
+    timeWindowStart: row.timeWindowStart,
+    timeWindowEnd: row.timeWindowEnd,
+    symbolName: row.symbolName,
+    message: row.message,
+    errorType: row.errorType,
+    count: row.count,
+    lastSeen: row.lastSeen,
+    stackHash: row.stackHash,
+    level: row.level,
+    pattern: row.pattern,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
-    description: row.description,
+    description: getGraphNodeDescription(table, row, includeContent),
+    summary: row.summary,
+    purpose: row.purpose,
+    tags: normalizeStringArray(row.tags),
+    anchorModel: row.anchorModel,
+    anchorHash: row.anchorHash,
+    anchorVersion: normalizeAnchorVersion(row.anchorVersion),
+    anchorGeneratedAt: row.anchorGeneratedAt,
     processType: row.processType,
     stepCount: row.stepCount,
     communities: row.communities,
@@ -381,15 +897,22 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
   } as GraphNode['properties'],
 });
 
-const mapGraphRelationshipRow = (row: any): GraphRelationship => ({
-  id: `${row.sourceId}_${row.type}_${row.targetId}`,
-  type: row.type,
-  sourceId: row.sourceId,
-  targetId: row.targetId,
-  confidence: row.confidence,
-  reason: row.reason,
-  step: row.step,
-});
+const mapGraphRelationshipRow = (row: any): GraphRelationship => {
+  const type = row.type as GraphRelationship['type'];
+  const reason = row.reason ?? '';
+  const step = normalizeGraphRelationshipStep(row.step);
+  const reasonKey = graphRelationshipMergeReason(type, reason);
+
+  return {
+    id: [row.sourceId, type, row.targetId, step, reasonKey].join('_'),
+    type,
+    sourceId: row.sourceId,
+    targetId: row.targetId,
+    confidence: normalizeGraphRelationshipConfidence(row.confidence),
+    reason,
+    step,
+  };
+};
 
 export const streamGraphNdjson = async (
   res: express.Response,
@@ -398,7 +921,7 @@ export const streamGraphNdjson = async (
 ): Promise<void> => {
   for (const table of NODE_TABLES) {
     try {
-      await streamQuery(getNodeQuery(table, includeContent), async (row) => {
+      await streamNodeQueryWithAnchorFallback(table, includeContent, async (row) => {
         await writeNdjsonRecord(
           res,
           {
@@ -415,16 +938,21 @@ export const streamGraphNdjson = async (
     }
   }
 
+  const relationshipsByKey = new Map<string, GraphRelationship>();
   await streamQuery(GRAPH_RELATIONSHIP_QUERY, async (row) => {
+    addGraphRelationship(relationshipsByKey, mapGraphRelationshipRow(row));
+  });
+
+  for (const relationship of relationshipsByKey.values()) {
     await writeNdjsonRecord(
       res,
       {
         type: 'relationship',
-        data: mapGraphRelationshipRow(row),
+        data: relationship,
       },
       signal,
     );
-  });
+  }
 };
 
 /**
@@ -523,6 +1051,74 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+type GroupStatusApiService = {
+  groupList(params: Record<string, unknown>): Promise<unknown>;
+  groupStatus(params: Record<string, unknown>): Promise<unknown>;
+};
+
+type GroupStatusApiResult = {
+  groups: unknown[];
+  errors: Array<{ group: string; error: string }>;
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const asErrorMessage = (value: unknown): string | null => {
+  if (!isPlainRecord(value)) return null;
+  const err = value.error;
+  return typeof err === 'string' && err.length > 0 ? err : null;
+};
+
+const groupConfigIncludesRepo = (groupConfig: unknown, repoFilter: string): boolean => {
+  if (!repoFilter) return true;
+  if (!isPlainRecord(groupConfig) || !isPlainRecord(groupConfig.repos)) return false;
+
+  const needle = repoFilter.toLowerCase();
+  return Object.entries(groupConfig.repos).some(([groupPath, registryName]) => {
+    const registry = typeof registryName === 'string' ? registryName : '';
+    return groupPath.toLowerCase() === needle || registry.toLowerCase() === needle;
+  });
+};
+
+export async function collectGroupStatusesForApi(
+  groupService: GroupStatusApiService,
+  repoFilter?: string,
+): Promise<GroupStatusApiResult> {
+  const listRaw = await groupService.groupList({});
+  const names = isPlainRecord(listRaw) && Array.isArray(listRaw.groups) ? listRaw.groups : [];
+  const groups: unknown[] = [];
+  const errors: Array<{ group: string; error: string }> = [];
+  const normalizedRepoFilter = repoFilter?.trim() ?? '';
+
+  for (const rawName of names) {
+    if (typeof rawName !== 'string' || rawName.trim().length === 0) continue;
+    const name = rawName.trim();
+
+    try {
+      const config = await groupService.groupList({ name });
+      const configError = asErrorMessage(config);
+      if (configError) {
+        errors.push({ group: name, error: configError });
+        continue;
+      }
+      if (!groupConfigIncludesRepo(config, normalizedRepoFilter)) continue;
+
+      const status = await groupService.groupStatus({ name });
+      const statusError = asErrorMessage(status);
+      if (statusError) {
+        errors.push({ group: name, error: statusError });
+        continue;
+      }
+      groups.push(status);
+    } catch (err) {
+      errors.push({ group: name, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { groups, errors };
+}
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
@@ -562,21 +1158,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
-
+  const embedJobManager = new JobManager();
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
   // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
-  const activeRepoPaths = new Set<string>();
+  const activeRepoLocks = new Map<string, ActiveRepoLock>();
 
-  const acquireRepoLock = (repoPath: string): string | null => {
-    if (activeRepoPaths.has(repoPath)) {
-      return `Another job is already active for this repository`;
+  const acquireRepoLock = (
+    lockKey: string,
+    details: Omit<ActiveRepoLock, 'key' | 'startedAt'>,
+  ): string | null => {
+    const existing = activeRepoLocks.get(lockKey);
+    if (existing) {
+      return formatLockConflictMessage(existing);
     }
-    activeRepoPaths.add(repoPath);
+    activeRepoLocks.set(lockKey, { ...details, key: lockKey, startedAt: Date.now() });
     return null;
   };
 
-  const releaseRepoLock = (repoPath: string): void => {
-    activeRepoPaths.delete(repoPath);
+  const releaseRepoLock = (lockKey: string): void => {
+    activeRepoLocks.delete(lockKey);
   };
 
   /**
@@ -679,6 +1279,98 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     _req.on('close', () => clearInterval(interval));
   });
 
+  // Repo index change events. The server may be updated by `gitnexus watch`
+  // or another analyze process, so this lightweight SSE stream watches the
+  // registry metadata and notifies connected web clients when an index changes.
+  app.get('/api/index-events', async (_req, res) => {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.flushHeaders();
+
+    let closed = false;
+    let lastSignature = '';
+
+    const writeEvent = (event: string, data: unknown) => {
+      if (closed) return;
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const sendSnapshot = async (force = false) => {
+      try {
+        const repos = (await listRegisteredRepos()).map((repo) => ({
+          name: repo.name,
+          path: repo.path,
+          indexedAt: repo.indexedAt,
+          lastCommit: repo.lastCommit,
+          stats: repo.stats,
+        }));
+        const activeJobs = [...jobManager.listJobs(), ...embedJobManager.listJobs()]
+          .filter((job) => job.status !== 'complete' && job.status !== 'failed')
+          .map((job) => ({
+            id: job.id,
+            status: job.status,
+            repoName: job.repoName,
+            repoPath: job.repoPath,
+            startedAt: job.startedAt,
+            progress: job.progress,
+            warnings: job.warnings,
+          }));
+        const recentWarnings = [...jobManager.listJobs(), ...embedJobManager.listJobs()]
+          .flatMap((job) => job.warnings)
+          .filter((warning) => Date.now() - warning.timestamp < 30 * 60 * 1000)
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, 25);
+        const locks = Array.from(activeRepoLocks.values()).map((lock) => ({
+          repoName: lock.repoName,
+          repoPath: lock.repoPath,
+          operation: lock.operation,
+          jobId: lock.jobId,
+          startedAt: lock.startedAt,
+        }));
+        const signature = JSON.stringify(
+          {
+            repos: repos.map((repo) => ({
+              name: repo.name,
+              path: repo.path,
+              indexedAt: repo.indexedAt,
+              lastCommit: repo.lastCommit,
+              stats: repo.stats,
+            })),
+            activeJobs,
+            recentWarnings,
+            locks,
+          },
+        );
+        if (force || signature !== lastSignature) {
+          lastSignature = signature;
+          writeEvent('snapshot', {
+            generatedAt: new Date().toISOString(),
+            repos,
+            activeJobs,
+            warnings: recentWarnings,
+            locks,
+          });
+        }
+      } catch (err) {
+        writeEvent('failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+
+    await sendSnapshot(true);
+    const interval = setInterval(() => void sendSnapshot(), 2_000);
+
+    _req.on('close', () => {
+      closed = true;
+      clearInterval(interval);
+    });
+  });
+
   // Server info: version and launch context (npx / global / local dev)
   app.get('/api/info', (_req, res) => {
     const execPath = process.env.npm_execpath ?? '';
@@ -713,6 +1405,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to list repos' });
+    }
+  });
+
+  // List configured repo-group statuses, optionally filtered to groups containing a repo.
+  app.get('/api/groups', async (req, res) => {
+    try {
+      const repoFilter = typeof req.query.repo === 'string' ? req.query.repo : undefined;
+      res.json(await collectGroupStatusesForApi(backend.getGroupService(), repoFilter));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to list group statuses' });
     }
   });
 
@@ -759,7 +1461,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
       const lockKey = getStoragePath(entry.path);
-      const lockErr = acquireRepoLock(lockKey);
+      const lockErr = acquireRepoLock(lockKey, {
+        repoPath: entry.path,
+        repoName: entry.name,
+        operation: 'delete',
+      });
       if (lockErr) {
         res.status(409).json({ error: lockErr });
         return;
@@ -812,7 +1518,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
-      const stream = req.query.stream === 'true';
+      // NDJSON graph streaming can still destabilize LadybugDB-backed reads on
+      // Windows when large responses are interrupted. Serve the stable JSON
+      // graph path unless explicitly re-enabled for local debugging.
+      const stream =
+        req.query.stream === 'true' && process.env.GITNEXUS_ENABLE_GRAPH_STREAM === '1';
 
       if (stream) {
         const abortController = new AbortController();
@@ -835,9 +1545,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.once('close', abortStreaming);
 
         try {
-          await withLbugDb(lbugPath, async () =>
-            streamGraphNdjson(res, includeContent, abortController.signal),
-          );
+          const graph = await withLbugDb(lbugPath, () => buildGraph(includeContent), {
+            readOnly: true,
+          });
+          for (const node of graph.nodes) {
+            await writeNdjsonRecord(res, { type: 'node', data: node }, abortController.signal);
+          }
+          for (const relationship of graph.relationships) {
+            await writeNdjsonRecord(
+              res,
+              { type: 'relationship', data: relationship },
+              abortController.signal,
+            );
+          }
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
           }
@@ -849,7 +1569,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
+      const graph = await withLbugDb(lbugPath, () => buildGraph(includeContent), {
+        readOnly: true,
+      });
       res.json(graph);
     } catch (err: any) {
       if (err instanceof ClientDisconnectedError) {
@@ -889,7 +1611,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
+      const result = await withLbugDb(lbugPath, () => executeQuery(cypher), { readOnly: true });
       res.json({ result });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
@@ -1139,8 +1861,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const fileRows = await withLbugDb(lbugPath, () =>
-        executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+      const fileRows = await withLbugDb(
+        lbugPath,
+        () =>
+          executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+        { readOnly: true },
       );
 
       // Search files on disk one at a time (constant memory)
@@ -1178,7 +1903,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // List all processes
   app.get('/api/processes', async (req, res) => {
     try {
-      const result = await backend.queryProcesses(requestedRepo(req));
+      const result = await callBackendResourceInChildProcess('queryProcesses', {
+        repoName: requestedRepo(req),
+      });
       res.json(result);
     } catch (err: any) {
       res.status(statusFromError(err)).json({ error: err.message || 'Failed to query processes' });
@@ -1194,7 +1921,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const result = await backend.queryProcessDetail(name, requestedRepo(req));
+      const result: any = await callBackendResourceInChildProcess('queryProcessDetail', {
+        name,
+        repoName: requestedRepo(req),
+      });
       if (result?.error) {
         res.status(404).json({ error: result.error });
         return;
@@ -1210,7 +1940,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // List all clusters
   app.get('/api/clusters', async (req, res) => {
     try {
-      const result = await backend.queryClusters(requestedRepo(req));
+      const result = await callBackendResourceInChildProcess('queryClusters', {
+        repoName: requestedRepo(req),
+      });
       res.json(result);
     } catch (err: any) {
       res.status(statusFromError(err)).json({ error: err.message || 'Failed to query clusters' });
@@ -1226,7 +1958,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const result = await backend.queryClusterDetail(name, requestedRepo(req));
+      const result: any = await callBackendResourceInChildProcess('queryClusterDetail', {
+        name,
+        repoName: requestedRepo(req),
+      });
       if (result?.error) {
         res.status(404).json({ error: result.error });
         return;
@@ -1244,7 +1979,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // POST /api/analyze — start a new analysis job
   app.post('/api/analyze', async (req, res) => {
     try {
-      const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+      const {
+        url: repoUrl,
+        path: repoLocalPath,
+        force,
+        embeddings,
+        dropEmbeddings,
+        workerTimeout,
+      } = req.body;
 
       // Input type validation
       if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1258,6 +2000,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       if (!repoUrl && !repoLocalPath) {
         res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
+        return;
+      }
+
+      let workerTimeoutMs: number;
+      try {
+        workerTimeoutMs = resolveServerAnalyzeWorkerTimeoutMs(workerTimeout);
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || 'Invalid worker timeout' });
         return;
       }
 
@@ -1312,8 +2062,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           // Acquire shared repo lock (keyed on storagePath to match embed handler)
           const analyzeLockKey = getStoragePath(targetPath);
-          const lockErr = acquireRepoLock(analyzeLockKey);
+          const analyzeRepoName =
+            repoUrl && !repoLocalPath ? extractRepoName(repoUrl) : path.basename(targetPath);
+          const lockErr = acquireRepoLock(analyzeLockKey, {
+            repoPath: targetPath,
+            repoName: analyzeRepoName,
+            operation: 'analyze',
+            jobId: job.id,
+          });
           if (lockErr) {
+            jobManager.addWarning(job.id, {
+              kind: 'lock_conflict',
+              severity: 'error',
+              message: lockErr,
+              repoPath: targetPath,
+              repoName: analyzeRepoName,
+              action: 'Close other GitNexus processes that are indexing this repo, then retry.',
+            });
             jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
             return;
           }
@@ -1346,6 +2111,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
             const child = fork(workerPath, [], {
               execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+              env: {
+                ...process.env,
+                GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS: String(workerTimeoutMs),
+              },
               stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
             });
 
@@ -1358,9 +2127,30 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
             child.on('message', (msg: any) => {
               if (msg.type === 'progress') {
+                if (msg.phase === 'log') {
+                  const warning = classifyIndexingLog(msg.message, targetPath, analyzeRepoName);
+                  if (warning) jobManager.addWarning(job.id, warning);
+                  return;
+                }
+                const counts: IndexingCounts | undefined = msg.stats
+                  ? {
+                      filesProcessed: msg.stats.filesProcessed,
+                      totalFiles: msg.stats.totalFiles,
+                      symbolsUpdated: msg.stats.symbolsUpdated ?? msg.stats.nodesCreated,
+                      filesChanged: msg.stats.filesChanged,
+                      warnings: jobManager.getJob(job.id)?.warnings.length ?? 0,
+                    }
+                  : undefined;
                 jobManager.updateJob(job.id, {
                   status: 'analyzing',
-                  progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+                  progress: {
+                    phase: msg.phase,
+                    percent: msg.percent,
+                    message: msg.message,
+                    detail: msg.detail,
+                    counts,
+                    warnings: jobManager.getJob(job.id)?.warnings ?? [],
+                  },
                 });
               } else if (msg.type === 'complete') {
                 releaseRepoLock(analyzeLockKey);
@@ -1383,6 +2173,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   });
               } else if (msg.type === 'error') {
                 releaseRepoLock(analyzeLockKey);
+                jobManager.addWarning(job.id, {
+                  kind: 'indexing_error',
+                  severity: 'error',
+                  message: msg.message || 'Analysis failed',
+                  repoPath: targetPath,
+                  repoName: analyzeRepoName,
+                  action: 'Review skipped files and parser warnings, then rerun the analysis.',
+                });
                 jobManager.updateJob(job.id, {
                   status: 'failed',
                   error: msg.message,
@@ -1407,6 +2205,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 j.retryCount++;
                 const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
                 const lastErr = stderrChunks.trim().split('\n').pop() || '';
+                jobManager.addWarning(job.id, {
+                  kind: 'retryable_error',
+                  severity: 'warning',
+                  message:
+                    `Analyze worker crashed (code ${code}); retry ${j.retryCount}/${MAX_WORKER_RETRIES}` +
+                    (lastErr ? `: ${lastErr}` : ''),
+                  repoPath: targetPath,
+                  repoName: analyzeRepoName,
+                  action: 'GitNexus is retrying automatically. Check server logs if it repeats.',
+                });
                 console.warn(
                   `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
                     (lastErr ? `: ${lastErr}` : ''),
@@ -1424,6 +2232,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               } else {
                 // Exhausted retries — permanent failure
                 releaseRepoLock(analyzeLockKey);
+                jobManager.addWarning(job.id, {
+                  kind: 'indexing_error',
+                  severity: 'error',
+                  message: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${
+                    stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''
+                  }`,
+                  repoPath: targetPath,
+                  repoName: analyzeRepoName,
+                  action: 'Try increasing the worker timeout or closing other indexing processes.',
+                });
                 jobManager.updateJob(job.id, {
                   status: 'failed',
                   error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
@@ -1481,6 +2299,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       repoName: job.repoName,
       progress: job.progress,
       error: job.error,
+      warnings: job.warnings,
       startedAt: job.startedAt,
       completedAt: job.completedAt,
     });
@@ -1506,7 +2325,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // ── Embedding endpoints ────────────────────────────────────────────
 
-  const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
   app.post('/api/embed', async (req, res) => {
@@ -1519,7 +2337,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Check shared repo lock — prevent concurrent analyze + embed on same repo
       const repoLockPath = entry.storagePath;
-      const lockErr = acquireRepoLock(repoLockPath);
+      const lockErr = acquireRepoLock(repoLockPath, {
+        repoPath: entry.path,
+        repoName: entry.name,
+        operation: 'embed',
+      });
       if (lockErr) {
         res.status(409).json({ error: lockErr });
         return;
@@ -1633,6 +2455,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       repoName: job.repoName,
       progress: job.progress,
       error: job.error,
+      warnings: job.warnings,
       startedAt: job.startedAt,
       completedAt: job.completedAt,
     });

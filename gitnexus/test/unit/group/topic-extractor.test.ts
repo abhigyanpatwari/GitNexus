@@ -443,6 +443,124 @@ producer.send('payment.processed', value=msg)`,
     });
   });
 
+  describe('AWS SNS/SQS — Node', () => {
+    it('test_extract_aws_sdk_v3_sns_publish_returns_provider', async () => {
+      writeFile(
+        'src/sns.ts',
+        `import { PublishCommand } from '@aws-sdk/client-sns';
+
+await sns.send(new PublishCommand({
+  TopicArn: 'arn:aws:sns:eu-west-1:123456789012:orders-created',
+  Message: JSON.stringify(order),
+}));`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe(
+        'topic::arn:aws:sns:eu-west-1:123456789012:orders-created',
+      );
+      expect(producers[0].meta.broker).toBe('sns');
+    });
+
+    it('test_extract_aws_sdk_v2_sns_publish_returns_provider', async () => {
+      writeFile(
+        'src/sns-v2.ts',
+        `await sns.publish({
+  TopicArn: 'arn:aws:sns:eu-west-1:123456789012:payments',
+  Message: body,
+}).promise();`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe('topic::arn:aws:sns:eu-west-1:123456789012:payments');
+      expect(producers[0].meta.broker).toBe('sns');
+    });
+
+    it('test_extract_aws_sdk_v3_sqs_send_and_receive_roles', async () => {
+      writeFile(
+        'src/sqs.ts',
+        `import { SendMessageCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
+
+await sqs.send(new SendMessageCommand({
+  QueueUrl: 'https://sqs.eu-west-1.amazonaws.com/123456789012/orders',
+  MessageBody: body,
+}));
+
+await sqs.send(new ReceiveMessageCommand({
+  QueueUrl: 'https://sqs.eu-west-1.amazonaws.com/123456789012/orders',
+}));`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(producers).toHaveLength(1);
+      expect(consumers).toHaveLength(1);
+      expect(producers[0].contractId).toBe(
+        'topic::https://sqs.eu-west-1.amazonaws.com/123456789012/orders',
+      );
+      expect(consumers[0].contractId).toBe(producers[0].contractId);
+      expect(consumers[0].meta.broker).toBe('sqs');
+    });
+  });
+
+  describe('AWS SNS/SQS — Python', () => {
+    it('test_extract_boto3_sns_publish_returns_provider', async () => {
+      writeFile(
+        'app/sns.py',
+        `import boto3
+sns = boto3.client("sns")
+sns.publish(
+    TopicArn="arn:aws:sns:eu-west-1:123456789012:orders-created",
+    Message=payload,
+)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+
+      expect(producers).toHaveLength(1);
+      expect(producers[0].contractId).toBe(
+        'topic::arn:aws:sns:eu-west-1:123456789012:orders-created',
+      );
+      expect(producers[0].meta.broker).toBe('sns');
+    });
+
+    it('test_extract_boto3_sqs_send_and_receive_roles', async () => {
+      writeFile(
+        'app/sqs.py',
+        `import boto3
+sqs = boto3.client("sqs")
+sqs.send_message(
+    QueueUrl="https://sqs.eu-west-1.amazonaws.com/123456789012/orders",
+    MessageBody=payload,
+)
+sqs.receive_message(
+    QueueUrl="https://sqs.eu-west-1.amazonaws.com/123456789012/orders",
+)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const producers = contracts.filter((c) => c.role === 'provider');
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(producers).toHaveLength(1);
+      expect(consumers).toHaveLength(1);
+      expect(producers[0].contractId).toBe(
+        'topic::https://sqs.eu-west-1.amazonaws.com/123456789012/orders',
+      );
+      expect(consumers[0].contractId).toBe(producers[0].contractId);
+      expect(producers[0].meta.broker).toBe('sqs');
+    });
+  });
+
   describe('edge cases', () => {
     it('test_extract_empty_repo_returns_empty', async () => {
       const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));

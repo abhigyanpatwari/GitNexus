@@ -12,6 +12,8 @@ import type { TopicMeta } from './types.js';
  *   - `channel.basic_publish(exchange='xxx', ...)`
  *   - `await nc.subscribe('topic')`
  *   - `await nc.publish('topic', ...)`
+ *   - boto3 SNS `publish(TopicArn='...')`
+ *   - boto3 SQS `send_message(QueueUrl='...')` / `receive_message(QueueUrl='...')`
  *
  * Every query MUST bind `@value` to the topic literal node.
  */
@@ -111,6 +113,57 @@ const PYTHON_TOPIC_SPEC: LanguagePatterns<TopicMeta> = {
             object: (identifier) @obj (#eq? @obj "nc")
             attribute: (identifier) @method (#eq? @method "publish"))
           arguments: (argument_list . (string) @value))
+      `,
+    },
+    {
+      meta: {
+        role: 'provider',
+        broker: 'sns',
+        confidence: 0.72,
+        symbolName: 'sns.publish',
+      },
+      query: `
+        (call
+          function: (attribute
+            attribute: (identifier) @method (#eq? @method "publish"))
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#eq? @kw "TopicArn")
+              value: (string) @value)))
+      `,
+    },
+    {
+      meta: {
+        role: 'provider',
+        broker: 'sqs',
+        confidence: 0.72,
+        symbolName: 'sqs.send_message',
+      },
+      query: `
+        (call
+          function: (attribute
+            attribute: (identifier) @method (#match? @method "^(send_message|send_message_batch)$"))
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#match? @kw "^(QueueUrl|QueueName)$")
+              value: (string) @value)))
+      `,
+    },
+    {
+      meta: {
+        role: 'consumer',
+        broker: 'sqs',
+        confidence: 0.72,
+        symbolName: 'sqs.receive_message',
+      },
+      query: `
+        (call
+          function: (attribute
+            attribute: (identifier) @method (#eq? @method "receive_message"))
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#match? @kw "^(QueueUrl|QueueName)$")
+              value: (string) @value)))
       `,
     },
   ],

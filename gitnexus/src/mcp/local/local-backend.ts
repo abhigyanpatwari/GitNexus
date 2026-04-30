@@ -28,6 +28,13 @@ import {
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import {
+  getDefaultGitnexusDir,
+  getGroupDir,
+  listGroups,
+  readContractRegistry,
+} from '../../core/group/storage.js';
+import type { ContractRegistry, StoredContract } from '../../core/group/types.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import {
@@ -35,10 +42,7 @@ import {
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
-import {
-  getExactScanLimit,
-  isVectorExtensionSupportedByPlatform,
-} from '../../core/platform/capabilities.js';
+import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
 // AI context generation is CLI-only (gitnexus analyze)
@@ -100,6 +104,46 @@ export const VALID_NODE_LABELS = new Set([
   'Module',
   'Route',
   'Tool',
+  'RuntimeService',
+  'RuntimeSpan',
+  'RuntimeRoute',
+  'RuntimeError',
+  'RuntimeLogPattern',
+]);
+
+const DESCRIPTION_NODE_LABELS = new Set([
+  'Function',
+  'Class',
+  'Interface',
+  'Method',
+  'CodeElement',
+  'Community',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+  'Tool',
+  'RuntimeService',
+  'RuntimeSpan',
+  'RuntimeRoute',
+  'RuntimeError',
+  'RuntimeLogPattern',
+  'Section',
 ]);
 
 /** Valid relation types for impact analysis filtering */
@@ -161,6 +205,71 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
+const DEFAULT_IMPACT_SCORE_RELATION_TYPES = [
+  'CALLS',
+  'IMPORTS',
+  'EXTENDS',
+  'IMPLEMENTS',
+  'METHOD_OVERRIDES',
+  'OVERRIDES',
+  'METHOD_IMPLEMENTS',
+  'HAS_METHOD',
+  'HAS_PROPERTY',
+  'ACCESSES',
+  'HANDLES_ROUTE',
+  'FETCHES',
+  'HANDLES_TOOL',
+  'ENTRY_POINT_OF',
+  'WRAPS',
+];
+
+const IMPACT_SCORE_EXPOSURE_RELATIONS = new Set([
+  'HANDLES_ROUTE',
+  'FETCHES',
+  'HANDLES_TOOL',
+  'ENTRY_POINT_OF',
+  'WRAPS',
+]);
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  const n = typeof value === 'bigint' ? Number(value) : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Math.trunc(toFiniteNumber(value, fallback));
+  return Math.min(max, Math.max(min, n));
+}
+
+const stableSortStrings = (values: string[]): string[] =>
+  [...values].sort((a, b) => a.localeCompare(b));
+
+function impactScoreRisk(score: number): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+  if (score >= 80) return 'CRITICAL';
+  if (score >= 60) return 'HIGH';
+  if (score >= 35) return 'MEDIUM';
+  return 'LOW';
+}
+
+function incomingEdgeWeight(count: number): number {
+  if (count >= 100) return 60;
+  if (count >= 30) return 45;
+  if (count >= 10) return 32;
+  if (count >= 4) return 18;
+  if (count >= 1) return 8;
+  return 0;
+}
+
+function normalizeImpactScoreRelationTypes(relationTypes?: string[]): string[] {
+  const mapped = relationTypes?.flatMap((t) =>
+    t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
+  );
+  const valid =
+    mapped && mapped.length > 0 ? mapped.filter((t) => VALID_RELATION_TYPES.has(t)) : [];
+  const picked = valid.length > 0 ? valid : DEFAULT_IMPACT_SCORE_RELATION_TYPES;
+  return Array.from(new Set(picked));
+}
+
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
@@ -211,6 +320,45 @@ interface RepoHandle {
   stats?: RegistryEntry['stats'];
 }
 
+type SkillActionName =
+  | 'summarize'
+  | 'list_entry_points'
+  | 'impact'
+  | 'export_context'
+  | 'validate_change';
+
+interface GeneratedSkillSymbol {
+  uid?: string;
+  name?: string;
+  kind?: string;
+  filePath?: string;
+  startLine?: number;
+  description?: string;
+}
+
+interface GeneratedSkillAction {
+  name?: string;
+  description?: string;
+  args?: Record<string, string>;
+}
+
+interface GeneratedSkillMetadata {
+  schemaVersion?: number;
+  name?: string;
+  label?: string;
+  projectName?: string;
+  generatedAt?: string;
+  symbolCount?: number;
+  fileCount?: number;
+  cohesion?: number;
+  rootDirectories?: string[];
+  keyFiles?: Array<{ relativePath?: string; symbols?: string[] }>;
+  entryPoints?: GeneratedSkillSymbol[];
+  anchors?: GeneratedSkillSymbol[];
+  actions?: GeneratedSkillAction[];
+  validationCommands?: string[];
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -225,14 +373,6 @@ export class LocalBackend {
    * making MCP stderr unreadable.
    */
   private warnedSiblingDrift: Set<string> = new Set();
-
-  /**
-   * One-shot stderr warning for the VECTOR-extension fallback. Without this
-   * guard the diagnostic would fire on every `semanticSearch()` call on
-   * platforms where the extension is unsupported (e.g. Windows), making MCP
-   * stderr noisy per DoD §2.8.
-   */
-  private warnedVectorUnsupported = false;
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -251,9 +391,15 @@ export class LocalBackend {
     return this.groupToolSvc;
   }
 
+  /** Close all pooled LadybugDB connections without discarding repo metadata. */
+  async releaseConnections(): Promise<void> {
+    await closeLbug();
+    this.initializedRepos.clear();
+  }
+
   /** Close all pooled LadybugDB connections (CLI one-shot; optional for long-lived MCP). */
   async dispose(): Promise<void> {
-    await closeLbug();
+    await this.releaseConnections();
   }
 
   // ─── Initialization ──────────────────────────────────────────────
@@ -672,6 +818,14 @@ export class LocalBackend {
       }
       case 'context':
         return this.context(repo, params);
+      case 'get_impact_score':
+        return this.getImpactScore(repo, params);
+      case 'export_context':
+        return this.exportContext(repo, params);
+      case 'runtime_context':
+        return this.runtimeContext(repo, params);
+      case 'run_skill':
+        return this.runSkill(repo, params);
       case 'impact':
         return this.impact(repo, params);
       case 'detect_changes':
@@ -956,6 +1110,8 @@ export class LocalBackend {
       seen.add(s.id);
       return true;
     });
+    const cappedDefinitions = definitions.slice(0, 20);
+    await this.attachNodeDescriptions(repo, [...dedupedSymbols, ...cappedDefinitions]);
     timer.stop(); // formatting
 
     // End-to-end wall time — deliberately a separate mark so callers can
@@ -968,7 +1124,7 @@ export class LocalBackend {
     return {
       processes,
       process_symbols: dedupedSymbols,
-      definitions: definitions.slice(0, 20), // cap standalone definitions
+      definitions: cappedDefinitions,
       timing,
       ...(!ftsUsed && {
         warning:
@@ -1061,6 +1217,104 @@ export class LocalBackend {
     return { results, ftsUsed };
   }
 
+  private descriptionLabel(label: unknown): string | null {
+    if (typeof label !== 'string') return null;
+    const normalized = label.trim();
+    if (
+      !normalized ||
+      !VALID_NODE_LABELS.has(normalized) ||
+      !DESCRIPTION_NODE_LABELS.has(normalized)
+    ) {
+      return null;
+    }
+    return normalized;
+  }
+
+  private descriptionLabelForNode(node: {
+    id?: unknown;
+    uid?: unknown;
+    type?: unknown;
+    kind?: unknown;
+  }): string | null {
+    const direct = this.descriptionLabel(node.type ?? node.kind);
+    if (direct) return direct;
+
+    const id = node.id ?? node.uid;
+    if (typeof id !== 'string') return null;
+    const labelEndIdx = id.indexOf(':');
+    return labelEndIdx > 0 ? this.descriptionLabel(id.substring(0, labelEndIdx)) : null;
+  }
+
+  private async fetchNodeDescriptions(
+    repo: RepoHandle,
+    nodes: Array<{ id?: unknown; uid?: unknown; type?: unknown; kind?: unknown }>,
+  ): Promise<Map<string, string>> {
+    const idsByLabel = new Map<string, Set<string>>();
+
+    for (const node of nodes) {
+      const id = node.id ?? node.uid;
+      if (typeof id !== 'string' || !id.trim()) continue;
+      const label = this.descriptionLabelForNode(node);
+      if (!label) continue;
+      let ids = idsByLabel.get(label);
+      if (!ids) {
+        ids = new Set<string>();
+        idsByLabel.set(label, ids);
+      }
+      ids.add(id);
+    }
+
+    const descriptions = new Map<string, string>();
+    for (const [label, ids] of idsByLabel) {
+      try {
+        const rows = await executeParameterized(
+          repo.id,
+          `
+          MATCH (n:\`${label}\`)
+          WHERE n.id IN $ids
+          RETURN n.id AS id, n.description AS description
+        `,
+          { ids: [...ids] },
+        );
+        for (const row of rows) {
+          const id = row.id ?? row[0];
+          const description = row.description ?? row[1];
+          if (typeof id === 'string' && typeof description === 'string' && description.trim()) {
+            descriptions.set(id, description.trim());
+          }
+        }
+      } catch (e) {
+        logQueryError('semantic-anchor:description-fetch', e);
+      }
+    }
+
+    return descriptions;
+  }
+
+  private async attachNodeDescriptions(
+    repo: RepoHandle,
+    nodes: Array<{
+      id?: unknown;
+      uid?: unknown;
+      type?: unknown;
+      kind?: unknown;
+      description?: unknown;
+    }>,
+  ): Promise<void> {
+    const descriptions = await this.fetchNodeDescriptions(repo, nodes);
+    if (descriptions.size === 0) return;
+
+    for (const node of nodes) {
+      if (typeof node.description === 'string' && node.description.trim()) continue;
+      const id = node.id ?? node.uid;
+      if (typeof id !== 'string') continue;
+      const description = descriptions.get(id);
+      if (description) {
+        node.description = description;
+      }
+    }
+  }
+
   /**
    * Semantic vector search helper
    */
@@ -1082,10 +1336,9 @@ export class LocalBackend {
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      if (isVectorExtensionSupportedByPlatform()) {
-        try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
+      try {
+        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+          const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -1096,28 +1349,17 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.id, vectorQuery);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch {
-          bestChunks = new Map();
-        }
-      } else if (!this.warnedVectorUnsupported) {
-        // Rare diagnostic: surface why we fell back to the exact scan path so
-        // operators can see at a glance that the VECTOR extension is missing on
-        // this runtime (e.g. Windows builds without the optional native
-        // dependency). Emitted once per `LocalBackend` instance lifetime to
-        // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-        this.warnedVectorUnsupported = true;
-        console.error(
-          'GitNexus [query:vector]: VECTOR index unavailable for this runtime; using exact scan fallback',
-        );
+          const embResults = await executeQuery(repo.id, vectorQuery);
+          return embResults.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            distance: row.distance ?? row[4],
+          }));
+        });
+      } catch {
+        bestChunks = new Map();
       }
 
       if (bestChunks.size === 0) {
@@ -1848,6 +2090,21 @@ export class LocalBackend {
     const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type || sym[2];
     const isMethodLike =
       symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
+    let description: string | undefined;
+    if (DESCRIPTION_NODE_LABELS.has(symKind)) {
+      try {
+        const descriptionRows = await executeParameterized(
+          repo.id,
+          `MATCH (n:\`${symKind}\`) WHERE n.id = $symId RETURN n.description AS description LIMIT 1`,
+          { symId },
+        );
+        const row = descriptionRows[0] as any;
+        const value = row?.description ?? row?.[0];
+        if (typeof value === 'string' && value.trim()) description = value;
+      } catch {
+        /* semantic anchor unavailable for this index */
+      }
+    }
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -1889,6 +2146,7 @@ export class LocalBackend {
         filePath: sym.filePath || sym[3],
         startLine: sym.startLine || sym[4],
         endLine: sym.endLine || sym[5],
+        ...(description ? { description } : {}),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
@@ -2405,6 +2663,1761 @@ export class LocalBackend {
       changes: allChanges,
       applied: !dry_run,
     };
+  }
+
+  private async runImpactScoreQuery(
+    repo: RepoHandle,
+    context: string,
+    query: string,
+    params: Record<string, unknown>,
+  ): Promise<any[]> {
+    try {
+      return await executeParameterized(repo.id, query, params);
+    } catch (e) {
+      logQueryError(`impact-score:${context}`, e);
+      return [];
+    }
+  }
+
+  private async getImpactScoreSeedIds(
+    repo: RepoHandle,
+    symbol: { id: string; filePath?: string },
+    symbolType: string,
+  ): Promise<string[]> {
+    const ids = new Set<string>([symbol.id]);
+
+    if (symbolType !== 'Class' && symbolType !== 'Interface') {
+      return Array.from(ids);
+    }
+
+    try {
+      const [ctorRows, fileRows] = await Promise.all([
+        executeParameterized(
+          repo.id,
+          `
+          MATCH (n)-[hm:CodeRelation]->(c:Constructor)
+          WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+          RETURN c.id AS id
+        `,
+          { symId: symbol.id },
+        ),
+        executeParameterized(
+          repo.id,
+          `
+          MATCH (f:File)-[rel:CodeRelation]->(n)
+          WHERE n.id = $symId AND rel.type = 'DEFINES'
+          RETURN f.id AS id
+        `,
+          { symId: symbol.id },
+        ),
+      ]);
+
+      for (const row of [...ctorRows, ...fileRows]) {
+        const id = String(row.id ?? row[0] ?? '');
+        if (id) ids.add(id);
+      }
+    } catch (e) {
+      logQueryError('impact-score:class-node-expansion', e);
+    }
+
+    return Array.from(ids);
+  }
+
+  private relationCountMap(rows: any[]): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const row of rows) {
+      const key = String(row.relationType ?? row[0] ?? '');
+      if (!key) continue;
+      out[key] = toFiniteNumber(row.count ?? row[1]) + (out[key] ?? 0);
+    }
+    return out;
+  }
+
+  private relationCountTotal(counts: Record<string, number>, relationSet?: Set<string>): number {
+    return Object.entries(counts).reduce((sum, [rel, count]) => {
+      if (relationSet && !relationSet.has(rel)) return sum;
+      return sum + count;
+    }, 0);
+  }
+
+  private contractMatchesSymbol(
+    contract: StoredContract,
+    repo: RepoHandle,
+    symbol: any,
+    seedIds: Set<string>,
+  ): boolean {
+    if (contract.repo !== repo.name) return false;
+    if (seedIds.has(contract.symbolUid)) return true;
+
+    const symbolFile = typeof symbol.filePath === 'string' ? symbol.filePath : '';
+    const symbolName = typeof symbol.name === 'string' ? symbol.name : '';
+    if (!symbolFile) return false;
+
+    if (contract.symbolRef?.filePath === symbolFile) {
+      if (!symbolName) return true;
+      return (
+        contract.symbolRef.name === symbolName ||
+        contract.symbolName === symbolName ||
+        contract.contractId === symbolName
+      );
+    }
+
+    return false;
+  }
+
+  private async impactScoreContractExposure(
+    repo: RepoHandle,
+    symbol: any,
+    seedIds: string[],
+  ): Promise<{
+    contractCount: number;
+    crossRepoLinkCount: number;
+    groups: string[];
+    contracts: Array<{
+      group: string;
+      id: string;
+      type: string;
+      role: string;
+      linkedRepos: string[];
+    }>;
+  }> {
+    const seedSet = new Set(seedIds);
+    const groups: string[] = [];
+    const contracts: Array<{
+      group: string;
+      id: string;
+      type: string;
+      role: string;
+      linkedRepos: string[];
+    }> = [];
+    const linkedRepoKeys = new Set<string>();
+
+    let groupNames: string[] = [];
+    try {
+      groupNames = await listGroups();
+    } catch (err) {
+      logQueryError('impact-score:group-list', err);
+      return { contractCount: 0, crossRepoLinkCount: 0, groups, contracts };
+    }
+
+    for (const groupName of groupNames) {
+      let registry: ContractRegistry | null = null;
+      try {
+        registry = await readContractRegistry(getGroupDir(getDefaultGitnexusDir(), groupName));
+      } catch (err) {
+        logQueryError(`impact-score:group-contracts:${groupName}`, err);
+        continue;
+      }
+      if (!registry) continue;
+
+      const matched = registry.contracts.filter((contract) =>
+        this.contractMatchesSymbol(contract, repo, symbol, seedSet),
+      );
+      if (matched.length === 0) continue;
+      groups.push(groupName);
+
+      for (const contract of matched) {
+        const linkedRepos = new Set<string>();
+        for (const link of registry.crossLinks) {
+          const fromMatches =
+            link.from.repo === repo.name &&
+            (seedSet.has(link.from.symbolUid) || link.contractId === contract.contractId);
+          const toMatches =
+            link.to.repo === repo.name &&
+            (seedSet.has(link.to.symbolUid) || link.contractId === contract.contractId);
+          if (!fromMatches && !toMatches) continue;
+
+          const neighbor = fromMatches ? link.to.repo : link.from.repo;
+          if (neighbor && neighbor !== repo.name) {
+            linkedRepos.add(neighbor);
+            linkedRepoKeys.add(`${groupName}\0${contract.contractId}\0${neighbor}`);
+          }
+        }
+
+        contracts.push({
+          group: groupName,
+          id: contract.contractId,
+          type: contract.type,
+          role: contract.role,
+          linkedRepos: stableSortStrings([...linkedRepos]),
+        });
+      }
+    }
+
+    return {
+      contractCount: contracts.length,
+      crossRepoLinkCount: linkedRepoKeys.size,
+      groups: stableSortStrings(Array.from(new Set(groups))),
+      contracts,
+    };
+  }
+
+  private impactScoreExamples(rows: any[], includeTests: boolean, limit: number): any[] {
+    const examples: any[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const id = String(row.id ?? row[0] ?? '');
+      if (!id || seen.has(id)) continue;
+      const filePath = String(row.filePath ?? row[3] ?? '');
+      if (!includeTests && isTestFilePath(filePath)) continue;
+      const relationType = String(row.relationType ?? row[4] ?? '');
+      const storedConfidence = row.confidence ?? row[5];
+      seen.add(id);
+      examples.push({
+        uid: id,
+        name: row.name ?? row[1] ?? '',
+        kind: row.type ?? row[2] ?? '',
+        filePath,
+        relationType,
+        confidence:
+          typeof storedConfidence === 'number' && storedConfidence > 0
+            ? storedConfidence
+            : confidenceForRelType(relationType),
+      });
+      if (examples.length >= limit) break;
+    }
+    return examples;
+  }
+
+  private buildImpactScoreRecommendations(args: {
+    targetName: string;
+    risk: string;
+    hasExposure: boolean;
+    hasCrossRepoExposure: boolean;
+    repoName: string;
+  }): string[] {
+    const preflight = [
+      `Run impact({ target: "${args.targetName}", direction: "upstream", repo: "${args.repoName}" }) before editing.`,
+    ];
+    if (args.risk === 'HIGH' || args.risk === 'CRITICAL') {
+      preflight.push('Inspect d=1 dependants first and prefer narrow, backwards-compatible edits.');
+      preflight.push(
+        'Run detect_changes after edits to compare actual changed symbols with this score.',
+      );
+    }
+    if (args.hasExposure) {
+      preflight.push(
+        'If this is an API route or tool handler, run api_impact or tool_map before changing its contract.',
+      );
+    }
+    if (args.hasCrossRepoExposure) {
+      preflight.push(
+        'Refresh group contracts and run cross-repo impact before changing this boundary.',
+      );
+    }
+    return preflight;
+  }
+
+  private async getImpactScore(
+    repo: RepoHandle,
+    params: {
+      target?: string;
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
+      relationTypes?: string[];
+      includeTests?: boolean;
+      maxExamples?: number;
+    } = {},
+  ): Promise<any> {
+    try {
+      await this.ensureInitialized(repo.id);
+
+      const target = typeof params.target === 'string' ? params.target.trim() : '';
+      const uid = typeof params.target_uid === 'string' ? params.target_uid.trim() : '';
+      if (!target && !uid) {
+        return {
+          error: 'Either target or target_uid is required',
+          score: null,
+          risk: 'UNKNOWN',
+        };
+      }
+
+      const outcome = await this.resolveSymbolCandidates(
+        repo,
+        { uid: uid || undefined, name: target || undefined },
+        { file_path: params.file_path, kind: params.kind },
+      );
+
+      const displayTarget = target || uid;
+      if (outcome.kind === 'not_found') {
+        return {
+          error: `Target '${displayTarget}' not found`,
+          target: { name: displayTarget },
+          score: null,
+          risk: 'UNKNOWN',
+        };
+      }
+
+      if (outcome.kind === 'ambiguous') {
+        return {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${displayTarget}'. Use target_uid, file_path, or kind to disambiguate.`,
+          target: { name: displayTarget },
+          score: null,
+          risk: 'UNKNOWN',
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+
+      const relationTypes = normalizeImpactScoreRelationTypes(params.relationTypes);
+      const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
+      const includeTests = params.includeTests ?? false;
+      const maxExamples = clampInt(params.maxExamples, 1, 50, 10);
+      const fetchLimit = Math.min(200, maxExamples * 6);
+      const symbol = outcome.symbol;
+      const symbolType = outcome.resolvedLabel || symbol.type || '';
+      const seedIds = await this.getImpactScoreSeedIds(repo, symbol, symbolType);
+
+      const [
+        incomingRows,
+        outgoingRows,
+        callerRows,
+        dependencyRows,
+        processRows,
+        communityRows,
+        secondOrderRows,
+        maxDegreeRows,
+        contractExposure,
+      ] = await Promise.all([
+        this.runImpactScoreQuery(
+          repo,
+          'incoming-counts',
+          `
+          MATCH (source)-[r:CodeRelation]->(target)
+          WHERE target.id IN $seedIds AND r.type IN [${relTypeFilter}]
+          RETURN r.type AS relationType, COUNT(DISTINCT source.id) AS count
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'outgoing-counts',
+          `
+          MATCH (source)-[r:CodeRelation]->(target)
+          WHERE source.id IN $seedIds AND r.type IN [${relTypeFilter}]
+          RETURN r.type AS relationType, COUNT(DISTINCT target.id) AS count
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'top-callers',
+          `
+          MATCH (source)-[r:CodeRelation]->(target)
+          WHERE target.id IN $seedIds AND r.type IN [${relTypeFilter}]
+          RETURN source.id AS id, source.name AS name, labels(source)[0] AS type,
+                 source.filePath AS filePath, r.type AS relationType, r.confidence AS confidence
+          LIMIT ${fetchLimit}
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'top-dependencies',
+          `
+          MATCH (source)-[r:CodeRelation]->(target)
+          WHERE source.id IN $seedIds AND r.type IN [${relTypeFilter}]
+          RETURN target.id AS id, target.name AS name, labels(target)[0] AS type,
+                 target.filePath AS filePath, r.type AS relationType, r.confidence AS confidence
+          LIMIT ${fetchLimit}
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'process-count',
+          `
+          MATCH (n)-[r:CodeRelation]->(p:Process)
+          WHERE n.id IN $seedIds AND r.type = 'STEP_IN_PROCESS'
+          RETURN COUNT(DISTINCT p.id) AS count
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'communities',
+          `
+          MATCH (n)-[r:CodeRelation]->(c:Community)
+          WHERE n.id IN $seedIds AND r.type = 'MEMBER_OF'
+          RETURN c.heuristicLabel AS name
+          LIMIT 20
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'second-order-dependants',
+          `
+          MATCH (source)-[r1:CodeRelation]->(target)
+          WHERE target.id IN $seedIds AND r1.type IN [${relTypeFilter}]
+          WITH DISTINCT source LIMIT 200
+          MATCH (second)-[r2:CodeRelation]->(source)
+          WHERE r2.type IN [${relTypeFilter}]
+          RETURN COUNT(DISTINCT second.id) AS count
+        `,
+          { seedIds },
+        ),
+        this.runImpactScoreQuery(
+          repo,
+          'max-degree',
+          `
+          MATCH (n)-[r:CodeRelation]-()
+          WHERE r.type IN [${relTypeFilter}]
+          WITH n, COUNT(r) AS degree
+          RETURN MAX(degree) AS maxDegree
+        `,
+          {},
+        ),
+        this.impactScoreContractExposure(repo, symbol, seedIds),
+      ]);
+
+      const incomingByType = this.relationCountMap(incomingRows);
+      const outgoingByType = this.relationCountMap(outgoingRows);
+      const incomingEdges = this.relationCountTotal(incomingByType);
+      const outgoingEdges = this.relationCountTotal(outgoingByType);
+      const exposureEdges =
+        this.relationCountTotal(incomingByType, IMPACT_SCORE_EXPOSURE_RELATIONS) +
+        this.relationCountTotal(outgoingByType, IMPACT_SCORE_EXPOSURE_RELATIONS);
+      const processCount = toFiniteNumber(processRows[0]?.count ?? processRows[0]?.[0]);
+      const moduleCount = new Set(
+        communityRows.map((row) => String(row.name ?? row[0] ?? '')).filter(Boolean),
+      ).size;
+      const secondOrderDependants = toFiniteNumber(
+        secondOrderRows[0]?.count ?? secondOrderRows[0]?.[0],
+      );
+      const maxDegree = toFiniteNumber(maxDegreeRows[0]?.maxDegree ?? maxDegreeRows[0]?.[0]);
+      const directDegree = incomingEdges + outgoingEdges;
+      const centralityRatio = maxDegree > 0 ? Math.min(1, directDegree / maxDegree) : 0;
+      const crossRepoContractExposure =
+        contractExposure.contractCount + contractExposure.crossRepoLinkCount;
+
+      const reasons: Array<{
+        id: string;
+        label: string;
+        observed: number;
+        weight: number;
+        detail: string;
+      }> = [];
+      let score = 0;
+      const addReason = (
+        id: string,
+        label: string,
+        observed: number,
+        weight: number,
+        detail: string,
+      ) => {
+        if (weight <= 0) return;
+        score += weight;
+        reasons.push({ id, label, observed, weight, detail });
+      };
+
+      addReason(
+        'incoming_edges',
+        'Direct dependants',
+        incomingEdges,
+        incomingEdgeWeight(incomingEdges),
+        'Higher incoming edge counts mean more code may break when this symbol changes.',
+      );
+      addReason(
+        'outgoing_edges',
+        'Dependency fan-out',
+        outgoingEdges,
+        Math.min(8, Math.ceil(outgoingEdges / 3)),
+        'Broad dependency fan-out raises the chance that an edit crosses module boundaries.',
+      );
+      addReason(
+        'process_participation',
+        'Execution flow participation',
+        processCount,
+        Math.min(20, processCount * 5),
+        'Symbols present in many indexed processes deserve extra preflight checks.',
+      );
+      addReason(
+        'api_or_tool_exposure',
+        'API/tool exposure',
+        exposureEdges,
+        Math.min(20, exposureEdges * 7),
+        'Route, tool, fetch, and entry-point edges can imply external contracts.',
+      );
+      addReason(
+        'second_order_dependants',
+        'Second-order dependant pressure',
+        secondOrderDependants,
+        Math.min(10, Math.ceil(secondOrderDependants / 20)),
+        'Dependants that are themselves depended on make regressions easier to propagate.',
+      );
+      addReason(
+        'module_membership',
+        'Module spread',
+        moduleCount,
+        Math.min(8, moduleCount * 3),
+        'Multiple community memberships indicate wider architectural reach.',
+      );
+      addReason(
+        'relative_centrality',
+        'Relative graph centrality',
+        Number(centralityRatio.toFixed(3)),
+        Math.min(12, Math.ceil(centralityRatio * 12)),
+        'A symbol with high relative graph degree is more central than raw edge counts alone show.',
+      );
+      addReason(
+        'cross_repo_contract_exposure',
+        'Cross-repo contract exposure',
+        crossRepoContractExposure,
+        Math.min(18, contractExposure.contractCount * 5 + contractExposure.crossRepoLinkCount * 8),
+        'Matched group contracts and cross-repo links mean edits may affect other repositories.',
+      );
+
+      score = Math.min(100, score);
+      const risk = impactScoreRisk(score);
+      const targetName = symbol.name || displayTarget;
+
+      return {
+        status: 'scored',
+        target: {
+          uid: symbol.id,
+          name: targetName,
+          kind: symbolType,
+          filePath: symbol.filePath,
+          startLine: symbol.startLine,
+          endLine: symbol.endLine,
+          seedIds,
+        },
+        score,
+        risk,
+        metrics: {
+          incoming_edges: incomingEdges,
+          outgoing_edges: outgoingEdges,
+          incoming_by_type: incomingByType,
+          outgoing_by_type: outgoingByType,
+          process_participation: processCount,
+          api_or_tool_edges: exposureEdges,
+          module_memberships: moduleCount,
+          second_order_dependants: secondOrderDependants,
+          relative_centrality: Number(centralityRatio.toFixed(3)),
+          max_graph_degree: maxDegree,
+          cross_repo_contracts: contractExposure.contractCount,
+          cross_repo_contract_links: contractExposure.crossRepoLinkCount,
+        },
+        cross_repo_contract_exposure: contractExposure,
+        reasons: reasons.sort((a, b) => b.weight - a.weight),
+        top_callers: this.impactScoreExamples(callerRows, includeTests, maxExamples),
+        top_dependencies: this.impactScoreExamples(dependencyRows, includeTests, maxExamples),
+        recommended_preflight: this.buildImpactScoreRecommendations({
+          targetName,
+          risk,
+          hasExposure: exposureEdges > 0,
+          hasCrossRepoExposure: crossRepoContractExposure > 0,
+          repoName: repo.name,
+        }),
+      };
+    } catch (err) {
+      return {
+        error: (err instanceof Error ? err.message : String(err)) || 'Impact score failed',
+        target: { name: params.target ?? params.target_uid },
+        score: null,
+        risk: 'UNKNOWN',
+        suggestion: 'Try context or impact as a fallback.',
+      };
+    }
+  }
+
+  private async readRuntimeSignalStore(
+    repo: RepoHandle,
+  ): Promise<{ path: string; data: any | null }> {
+    const signalPath = path.join(repo.storagePath, 'runtime-signals.json');
+    try {
+      const raw = await fs.readFile(signalPath, 'utf-8');
+      return { path: signalPath, data: JSON.parse(raw) };
+    } catch (err: any) {
+      if (err?.code && err.code !== 'ENOENT') {
+        logQueryError('runtime-context:read-signals', err);
+      }
+      return { path: signalPath, data: null };
+    }
+  }
+
+  private runtimeSignalRows(
+    store: any,
+  ): Array<{ section: string; record: Record<string, unknown> }> {
+    const rows: Array<{ section: string; record: Record<string, unknown> }> = [];
+    if (!store || typeof store !== 'object') return rows;
+
+    for (const section of ['services', 'routes', 'spans', 'errors', 'logPatterns', 'logs']) {
+      const value = store[section];
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          rows.push({ section, record: item as Record<string, unknown> });
+        }
+      }
+    }
+    return rows;
+  }
+
+  private runtimeRecordValue(record: Record<string, unknown>, ...keys: string[]): string {
+    for (const key of keys) {
+      const raw = record[key];
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+    }
+    return '';
+  }
+
+  private normalizeRuntimePath(value: unknown): string {
+    if (typeof value !== 'string' || !value.trim()) return '';
+    let normalized = value.trim().replace(/\\/g, '/');
+    normalized = normalized.replace(/^file:\/+/i, '');
+    normalized = normalized.replace(/^[A-Za-z]:/, '');
+    return normalized.replace(/^\/+/, '').toLowerCase();
+  }
+
+  private runtimePathMatches(a: unknown, b: unknown): boolean {
+    const left = this.normalizeRuntimePath(a);
+    const right = this.normalizeRuntimePath(b);
+    if (!left || !right) return false;
+    return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
+  }
+
+  private runtimeNameMatches(staticName: unknown, runtimeName: unknown): boolean {
+    if (typeof staticName !== 'string' || !staticName.trim()) return true;
+    if (typeof runtimeName !== 'string' || !runtimeName.trim()) return false;
+    const left = staticName.trim().toLowerCase();
+    const right = runtimeName.trim().toLowerCase();
+    return (
+      right === left ||
+      right.endsWith(`.${left}`) ||
+      right.endsWith(`#${left}`) ||
+      right.includes(` ${left}`) ||
+      right.includes(`/${left}`) ||
+      right.includes(left)
+    );
+  }
+
+  private runtimeRouteMatches(recordRoute: string, route: string): boolean {
+    const normalize = (value: string) => value.split('?')[0].replace(/\/+$/, '') || '/';
+    const left = normalize(recordRoute);
+    const right = normalize(route);
+    return left === right || left.includes(right) || right.includes(left);
+  }
+
+  private runtimeStackFrames(record: Record<string, unknown>): Array<Record<string, unknown>> {
+    const frames = record.stackFrames;
+    return Array.isArray(frames)
+      ? frames.filter((frame): frame is Record<string, unknown> => {
+          return !!frame && typeof frame === 'object' && !Array.isArray(frame);
+        })
+      : [];
+  }
+
+  private runtimeRecordMatches(args: {
+    record: Record<string, unknown>;
+    symbol?: any;
+    seedIds: Set<string>;
+    route?: string;
+    service?: string;
+  }): boolean {
+    const { record, symbol, seedIds, route, service } = args;
+
+    if (service) {
+      const recordService = this.runtimeRecordValue(record, 'service', 'serviceName', 'name');
+      if (recordService && recordService === service) return true;
+    }
+
+    if (route) {
+      const recordRoute = this.runtimeRecordValue(record, 'route', 'routePath', 'path', 'routeId', 'name');
+      if (recordRoute && this.runtimeRouteMatches(recordRoute, route)) return true;
+    }
+
+    if (!symbol) return false;
+    const symbolUid = this.runtimeRecordValue(record, 'symbolUid', 'uid', 'nodeId', 'id');
+    if (symbolUid && seedIds.has(symbolUid)) return true;
+
+    const symbolFile = typeof symbol.filePath === 'string' ? symbol.filePath : '';
+    const symbolName = typeof symbol.name === 'string' ? symbol.name : '';
+    const recordFile = this.runtimeRecordValue(record, 'filePath', 'file', 'code.filepath');
+    const recordName = this.runtimeRecordValue(
+      record,
+      'symbolName',
+      'functionName',
+      'methodName',
+      'name',
+      'spanName',
+    );
+
+    if (symbolFile && recordFile && this.runtimePathMatches(recordFile, symbolFile)) {
+      return !recordName || this.runtimeNameMatches(symbolName, recordName);
+    }
+
+    for (const frame of this.runtimeStackFrames(record)) {
+      const frameFile = this.runtimeRecordValue(frame, 'filePath', 'file');
+      const frameName = this.runtimeRecordValue(frame, 'symbolName', 'functionName', 'methodName', 'name');
+      if (symbolFile && frameFile && this.runtimePathMatches(frameFile, symbolFile)) {
+        return !frameName || this.runtimeNameMatches(symbolName, frameName);
+      }
+      if (symbolName && frameName && this.runtimeNameMatches(symbolName, frameName)) return true;
+    }
+
+    return !!symbolName && !!recordName && this.runtimeNameMatches(symbolName, recordName);
+  }
+
+  private async runtimeContext(
+    repo: RepoHandle,
+    params: {
+      target?: string;
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
+      route?: string;
+      service?: string;
+    } = {},
+  ): Promise<any> {
+    const { path: signalPath, data } = await this.readRuntimeSignalStore(repo);
+    if (!data) {
+      return {
+        status: 'no_runtime_data',
+        repo: repo.name,
+        expected_path: signalPath,
+        message:
+          'No runtime overlay found. Write OTLP/log-derived runtime-signals.json here to enable runtime_context.',
+      };
+    }
+
+    let symbol: any | undefined;
+    let seedIds: string[] = [];
+    const target = typeof params.target === 'string' ? params.target.trim() : '';
+    const uid = typeof params.target_uid === 'string' ? params.target_uid.trim() : '';
+    if (target || uid) {
+      await this.ensureInitialized(repo.id);
+      const outcome = await this.resolveSymbolCandidates(
+        repo,
+        { uid: uid || undefined, name: target || undefined },
+        { file_path: params.file_path, kind: params.kind },
+      );
+      if (outcome.kind === 'ambiguous') {
+        return {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${target || uid}'. Use target_uid, file_path, or kind to disambiguate.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+          })),
+        };
+      }
+      if (outcome.kind === 'not_found') {
+        return {
+          status: 'not_found',
+          target: target || uid,
+          runtime_store: signalPath,
+          message: 'Runtime data was found, but the requested static symbol was not indexed.',
+        };
+      }
+      symbol = outcome.symbol;
+      seedIds = await this.getImpactScoreSeedIds(
+        repo,
+        symbol,
+        outcome.resolvedLabel || symbol.type || '',
+      );
+    }
+
+    const route = typeof params.route === 'string' ? params.route.trim() : '';
+    const service = typeof params.service === 'string' ? params.service.trim() : '';
+    const seedSet = new Set(seedIds);
+    const rows = this.runtimeSignalRows(data);
+    const matches = rows.filter(({ record }) =>
+      this.runtimeRecordMatches({ record, symbol, seedIds: seedSet, route, service }),
+    );
+    const bySection: Record<string, Record<string, unknown>[]> = {};
+    for (const match of matches) {
+      bySection[match.section] ??= [];
+      bySection[match.section].push(match.record);
+    }
+
+    const counts = Object.fromEntries(
+      Object.entries(bySection).map(([section, records]) => [section, records.length]),
+    );
+
+    return {
+      status: matches.length > 0 ? 'matched' : 'no_matches',
+      repo: repo.name,
+      runtime_store: signalPath,
+      generated_at: data.generatedAt ?? data.generated_at,
+      target: symbol
+        ? {
+            uid: symbol.id,
+            name: symbol.name,
+            kind: symbol.type,
+            filePath: symbol.filePath,
+            seedIds,
+          }
+        : undefined,
+      filters: {
+        route: route || undefined,
+        service: service || undefined,
+      },
+      summary: {
+        total_records: rows.length,
+        matched_records: matches.length,
+        counts,
+      },
+      evidence: bySection,
+    };
+  }
+
+  private runtimeRecordNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+    for (const key of keys) {
+      const raw = record[key];
+      const value = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+      if (Number.isFinite(value)) return value;
+    }
+    return undefined;
+  }
+
+  private runtimeRecordMetrics(
+    section: string,
+    record: Record<string, unknown>,
+  ): {
+    callCount: number;
+    errorCount: number;
+    errorRate: number;
+    p95LatencyMs?: number;
+  } {
+    const count = this.runtimeRecordNumber(record, 'count') ?? 0;
+    const callCount =
+      this.runtimeRecordNumber(record, 'callCount', 'calls') ??
+      (section === 'errors' || section === 'logPatterns' ? 0 : count);
+    const errorCount =
+      this.runtimeRecordNumber(record, 'errorCount', 'errors') ??
+      (section === 'errors' ? count || 1 : 0);
+    const explicitRate = this.runtimeRecordNumber(record, 'errorRate', 'error_rate');
+    const errorRate =
+      explicitRate !== undefined
+        ? explicitRate
+        : callCount > 0
+          ? Number((errorCount / callCount).toFixed(4))
+          : errorCount > 0
+            ? 1
+            : 0;
+    return {
+      callCount,
+      errorCount,
+      errorRate,
+      p95LatencyMs: this.runtimeRecordNumber(
+        record,
+        'p95LatencyMs',
+        'p95_ms',
+        'p95',
+        'durationMs',
+        'latencyMs',
+      ),
+    };
+  }
+
+  private runtimeRecordSummary(
+    section: string,
+    record: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const metrics = this.runtimeRecordMetrics(section, record);
+    const timeWindow =
+      record.timeWindow && typeof record.timeWindow === 'object' ? record.timeWindow : undefined;
+    const frames = this.runtimeStackFrames(record)
+      .slice(0, 3)
+      .map((frame) => {
+        const raw = this.runtimeRecordValue(frame, 'raw');
+        if (raw) return raw;
+        const filePath = this.runtimeRecordValue(frame, 'filePath', 'file');
+        const line = this.runtimeRecordValue(frame, 'line');
+        const symbol = this.runtimeRecordValue(frame, 'symbolName', 'functionName', 'name');
+        return [symbol, filePath && line ? `${filePath}:${line}` : filePath]
+          .filter(Boolean)
+          .join(' ');
+      })
+      .filter(Boolean);
+
+    return Object.fromEntries(
+      Object.entries({
+        section,
+        id: this.runtimeRecordValue(record, 'id'),
+        service: this.runtimeRecordValue(record, 'service', 'serviceName'),
+        environment: this.runtimeRecordValue(record, 'environment'),
+        route: this.runtimeRecordValue(record, 'route', 'routePath', 'path'),
+        method: this.runtimeRecordValue(record, 'method'),
+        name: this.runtimeRecordValue(record, 'name', 'spanName'),
+        symbolName: this.runtimeRecordValue(record, 'symbolName', 'functionName', 'methodName'),
+        filePath: this.runtimeRecordValue(record, 'filePath', 'file'),
+        message: this.runtimeRecordValue(record, 'message'),
+        pattern: this.runtimeRecordValue(record, 'pattern'),
+        lastSeen: this.runtimeRecordValue(record, 'lastSeen', 'timestamp'),
+        callCount: metrics.callCount || undefined,
+        errorCount: metrics.errorCount || undefined,
+        errorRate: metrics.errorRate || undefined,
+        p95LatencyMs: metrics.p95LatencyMs,
+        count: this.runtimeRecordNumber(record, 'count') || undefined,
+        timeWindow,
+        stackTop: frames.length > 0 ? frames : undefined,
+      }).filter(([, value]) => value !== '' && value !== undefined),
+    );
+  }
+
+  private async buildRuntimeImpactSignals(
+    repo: RepoHandle,
+    target: { id?: string; name?: string; filePath?: string },
+    impacted: Array<{ id?: string; name?: string; type?: string; filePath?: string; depth?: number }>,
+  ): Promise<Record<string, unknown> | undefined> {
+    const { path: signalPath, data } = await this.readRuntimeSignalStore(repo);
+    if (!data) return undefined;
+
+    const rows = this.runtimeSignalRows(data);
+    const targetSeedIds = new Set<string>(target.id ? [String(target.id)] : []);
+    const targetMatches = rows.filter(({ record }) =>
+      this.runtimeRecordMatches({ record, symbol: target, seedIds: targetSeedIds }),
+    );
+
+    const impactedMatches: Array<{
+      symbol: Record<string, unknown>;
+      section: string;
+      record: Record<string, unknown>;
+      metrics: ReturnType<LocalBackend['runtimeRecordMetrics']>;
+    }> = [];
+
+    for (const item of impacted) {
+      const seedIds = new Set<string>(item.id ? [String(item.id)] : []);
+      for (const row of rows) {
+        if (!this.runtimeRecordMatches({ record: row.record, symbol: item, seedIds })) continue;
+        impactedMatches.push({
+          symbol: {
+            id: item.id,
+            name: item.name,
+            type: item.type,
+            filePath: item.filePath,
+            depth: item.depth,
+          },
+          section: row.section,
+          record: row.record,
+          metrics: this.runtimeRecordMetrics(row.section, row.record),
+        });
+      }
+    }
+
+    const matchedRecords = targetMatches.length + impactedMatches.length;
+    const targetEvidence = targetMatches
+      .slice(0, 8)
+      .map(({ section, record }) => this.runtimeRecordSummary(section, record));
+
+    const hotPathMap = new Map<
+      string,
+      {
+        symbol: Record<string, unknown>;
+        callCount: number;
+        errorCount: number;
+        maxErrorRate: number;
+        maxP95LatencyMs?: number;
+        evidence: Record<string, unknown>[];
+      }
+    >();
+
+    for (const match of impactedMatches) {
+      const key = String(match.symbol.id || `${match.symbol.filePath}:${match.symbol.name}`);
+      const current =
+        hotPathMap.get(key) ??
+        {
+          symbol: match.symbol,
+          callCount: 0,
+          errorCount: 0,
+          maxErrorRate: 0,
+          maxP95LatencyMs: undefined,
+          evidence: [],
+        };
+      current.callCount += match.metrics.callCount;
+      current.errorCount += match.metrics.errorCount;
+      current.maxErrorRate = Math.max(current.maxErrorRate, match.metrics.errorRate);
+      if (match.metrics.p95LatencyMs !== undefined) {
+        current.maxP95LatencyMs =
+          current.maxP95LatencyMs === undefined
+            ? match.metrics.p95LatencyMs
+            : Math.max(current.maxP95LatencyMs, match.metrics.p95LatencyMs);
+      }
+      if (current.evidence.length < 3) {
+        current.evidence.push(this.runtimeRecordSummary(match.section, match.record));
+      }
+      hotPathMap.set(key, current);
+    }
+
+    const rankHotPath = (item: {
+      callCount: number;
+      errorCount: number;
+      maxErrorRate: number;
+      maxP95LatencyMs?: number;
+    }): number =>
+      item.errorCount * 20 +
+      item.maxErrorRate * 100 +
+      (item.maxP95LatencyMs ?? 0) / 100 +
+      Math.log10(item.callCount + 1);
+
+    const hotPaths = [...hotPathMap.values()]
+      .sort((a, b) => rankHotPath(b) - rankHotPath(a))
+      .slice(0, 10);
+
+    const runtimeErrors = impactedMatches
+      .filter((match) => match.section === 'errors')
+      .sort((a, b) => b.metrics.errorCount - a.metrics.errorCount)
+      .slice(0, 10)
+      .map((match) => ({
+        symbol: match.symbol,
+        evidence: this.runtimeRecordSummary(match.section, match.record),
+      }));
+
+    const latency = impactedMatches
+      .filter((match) => match.metrics.p95LatencyMs !== undefined)
+      .sort((a, b) => (b.metrics.p95LatencyMs ?? 0) - (a.metrics.p95LatencyMs ?? 0))
+      .slice(0, 10)
+      .map((match) => ({
+        symbol: match.symbol,
+        evidence: this.runtimeRecordSummary(match.section, match.record),
+      }));
+
+    const totalCallCount = [...hotPathMap.values()].reduce((sum, item) => sum + item.callCount, 0);
+    const totalErrorCount = [...hotPathMap.values()].reduce((sum, item) => sum + item.errorCount, 0);
+    const maxP95LatencyMs = [...hotPathMap.values()].reduce<number | undefined>(
+      (max, item) =>
+        item.maxP95LatencyMs === undefined
+          ? max
+          : max === undefined
+            ? item.maxP95LatencyMs
+            : Math.max(max, item.maxP95LatencyMs),
+      undefined,
+    );
+
+    return {
+      status: matchedRecords > 0 ? 'matched' : 'no_matches',
+      runtime_store: signalPath,
+      generated_at: data.generatedAt ?? data.generated_at,
+      summary: {
+        total_records: rows.length,
+        matched_records: matchedRecords,
+        impacted_symbols_with_runtime: hotPathMap.size,
+        call_count: totalCallCount || undefined,
+        error_count: totalErrorCount || undefined,
+        error_rate:
+          totalCallCount > 0 ? Number((totalErrorCount / totalCallCount).toFixed(4)) : undefined,
+        max_p95_latency_ms: maxP95LatencyMs,
+      },
+      target_evidence: targetEvidence,
+      hot_paths: hotPaths,
+      errors: runtimeErrors,
+      latency,
+    };
+  }
+
+  private markdownCell(value: unknown): string {
+    return String(value ?? '')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\|/g, '\\|')
+      .trim();
+  }
+
+  private anchorSummaryCell(value: unknown, maxLength = 180): string {
+    if (typeof value !== 'string') return '';
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+  }
+
+  private formatContextExportMarkdown(args: {
+    repo: RepoHandle;
+    targetName: string;
+    degree: number;
+    direction: string;
+    truncated: boolean;
+    nodes: any[];
+    edges: any[];
+  }): string {
+    const lines: string[] = [];
+    lines.push(`# Context Export: ${args.targetName}`);
+    lines.push('');
+    lines.push(`Repo: ${args.repo.name}`);
+    lines.push(`Degree: ${args.degree}`);
+    lines.push(`Direction: ${args.direction}`);
+    lines.push(`Nodes: ${args.nodes.length}`);
+    lines.push(`Edges: ${args.edges.length}`);
+    if (args.truncated) lines.push('Truncated: true');
+    lines.push('');
+    lines.push('## Nodes');
+    lines.push('| depth | kind | name | anchor | filePath | uid |');
+    lines.push('| --- | --- | --- | --- | --- | --- |');
+    for (const node of args.nodes) {
+      lines.push(
+        `| ${this.markdownCell(node.depth)} | ${this.markdownCell(node.kind)} | ${this.markdownCell(node.name)} | ${this.markdownCell(this.anchorSummaryCell(node.description))} | ${this.markdownCell(node.filePath)} | ${this.markdownCell(node.uid)} |`,
+      );
+    }
+    lines.push('');
+    lines.push('## Edges');
+    lines.push('| depth | from | relation | to | confidence |');
+    lines.push('| --- | --- | --- | --- | --- |');
+    for (const edge of args.edges) {
+      lines.push(
+        `| ${this.markdownCell(edge.depth)} | ${this.markdownCell(edge.fromName || edge.from)} | ${this.markdownCell(edge.relationType)} | ${this.markdownCell(edge.toName || edge.to)} | ${this.markdownCell(edge.confidence)} |`,
+      );
+    }
+    return lines.join('\n');
+  }
+
+  private formatContextExportJsonl(args: {
+    repo: RepoHandle;
+    target: any;
+    degree: number;
+    direction: string;
+    truncated: boolean;
+    nodes: any[];
+    edges: any[];
+  }): string {
+    const lines = [
+      {
+        type: 'meta',
+        repo: args.repo.name,
+        target: args.target,
+        degree: args.degree,
+        direction: args.direction,
+        truncated: args.truncated,
+        node_count: args.nodes.length,
+        edge_count: args.edges.length,
+      },
+      ...args.nodes.map((node) => ({ type: 'node', ...node })),
+      ...args.edges.map((edge) => ({ type: 'edge', ...edge })),
+    ];
+    return lines.map((line) => JSON.stringify(line)).join('\n');
+  }
+
+  private normalizeSkillName(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 50);
+  }
+
+  private normalizeSkillAction(value: unknown): SkillActionName | null {
+    const action = typeof value === 'string' && value.trim() ? value.trim() : 'summarize';
+    if (
+      action === 'summarize' ||
+      action === 'list_entry_points' ||
+      action === 'impact' ||
+      action === 'export_context' ||
+      action === 'validate_change'
+    ) {
+      return action;
+    }
+    return null;
+  }
+
+  private async listGeneratedSkills(repo: RepoHandle): Promise<string[]> {
+    const root = path.join(repo.repoPath, '.claude', 'skills', 'generated');
+    try {
+      const entries = await fs.readdir(root, { withFileTypes: true });
+      const skills: string[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const metadataPath = path.join(root, entry.name, 'skill.json');
+        try {
+          await fs.access(metadataPath);
+          skills.push(entry.name);
+        } catch {
+          /* ignore directories without executable metadata */
+        }
+      }
+      return skills.sort();
+    } catch {
+      return [];
+    }
+  }
+
+  private async readGeneratedSkillMetadata(
+    repo: RepoHandle,
+    skill: unknown,
+  ): Promise<
+    | { status: 'ok'; skillName: string; metadata: GeneratedSkillMetadata }
+    | { status: 'error'; error: string; available_skills: string[] }
+  > {
+    const skillName = this.normalizeSkillName(skill);
+    const available = await this.listGeneratedSkills(repo);
+    if (!skillName) {
+      return {
+        status: 'error',
+        error: 'skill parameter is required',
+        available_skills: available,
+      };
+    }
+
+    const root = path.resolve(repo.repoPath, '.claude', 'skills', 'generated');
+    const skillDir = path.resolve(root, skillName);
+    const relative = path.relative(root, skillDir);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return {
+        status: 'error',
+        error: `Invalid skill name: ${String(skill)}`,
+        available_skills: available,
+      };
+    }
+
+    try {
+      const raw = await fs.readFile(path.join(skillDir, 'skill.json'), 'utf-8');
+      const metadata = JSON.parse(raw) as GeneratedSkillMetadata;
+      return {
+        status: 'ok',
+        skillName,
+        metadata: { ...metadata, name: metadata.name ?? skillName },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        status: 'error',
+        error:
+          available.length > 0
+            ? `Generated skill "${skillName}" was not found or has invalid metadata: ${message}`
+            : 'No executable skills found. Run: gitnexus analyze --skills',
+        available_skills: available,
+      };
+    }
+  }
+
+  private skillArgs(params: any): Record<string, unknown> {
+    const rawArgs = params?.args;
+    const args =
+      rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? { ...(rawArgs as Record<string, unknown>) }
+        : {};
+
+    for (const key of [
+      'target',
+      'target_uid',
+      'uid',
+      'file_path',
+      'filePath',
+      'kind',
+      'direction',
+      'degree',
+      'depth',
+      'maxDepth',
+      'format',
+      'includeTests',
+      'include_tests',
+      'maxNodes',
+      'relationTypes',
+      'minConfidence',
+    ]) {
+      if (args[key] === undefined && params?.[key] !== undefined) {
+        args[key] = params[key];
+      }
+    }
+
+    return args;
+  }
+
+  private skillString(args: Record<string, unknown>, ...keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+  }
+
+  private skillBoolean(args: Record<string, unknown>, ...keys: string[]): boolean {
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        if (value.toLowerCase() === 'true') return true;
+        if (value.toLowerCase() === 'false') return false;
+      }
+    }
+    return false;
+  }
+
+  private skillRelationTypes(args: Record<string, unknown>): string[] | undefined {
+    const value = args.relationTypes;
+    if (!Array.isArray(value)) return undefined;
+    return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  }
+
+  private skillActions(metadata: GeneratedSkillMetadata): Array<{
+    name: string;
+    description?: string;
+    args?: Record<string, string>;
+  }> {
+    const actions = Array.isArray(metadata.actions) ? metadata.actions : [];
+    if (actions.length > 0) {
+      return actions
+        .filter((action) => typeof action.name === 'string' && action.name.trim())
+        .map((action) => ({
+          name: action.name!,
+          description: action.description,
+          args: action.args,
+        }));
+    }
+
+    return [
+      { name: 'summarize', description: 'Return a compact overview of this functional area.' },
+      { name: 'list_entry_points', description: 'List exported starting points.' },
+      { name: 'impact', description: 'Run impact analysis for a skill target.' },
+      { name: 'export_context', description: 'Export a bounded graph neighborhood.' },
+      { name: 'validate_change', description: 'Return suggested validation commands.' },
+    ];
+  }
+
+  private skillSymbolList(value: GeneratedSkillSymbol[] | undefined): GeneratedSkillSymbol[] {
+    return Array.isArray(value) ? value : [];
+  }
+
+  private selectSkillTarget(
+    metadata: GeneratedSkillMetadata,
+    args: Record<string, unknown>,
+  ): {
+    target: string;
+    target_uid?: string;
+    file_path?: string;
+    kind?: string;
+    source: 'explicit' | 'entry_point' | 'anchor';
+  } | null {
+    const explicitTarget = this.skillString(args, 'target');
+    const explicitUid = this.skillString(args, 'target_uid', 'uid');
+    const filePath = this.skillString(args, 'file_path', 'filePath');
+    const kind = this.skillString(args, 'kind');
+    if (explicitTarget || explicitUid) {
+      return {
+        target: explicitTarget || explicitUid!,
+        target_uid: explicitUid,
+        file_path: filePath,
+        kind,
+        source: 'explicit',
+      };
+    }
+
+    const fallback =
+      this.skillSymbolList(metadata.entryPoints)[0] ?? this.skillSymbolList(metadata.anchors)[0];
+    if (!fallback?.name && !fallback?.uid) return null;
+
+    return {
+      target: fallback.name || fallback.uid!,
+      target_uid: fallback.uid,
+      file_path: fallback.filePath,
+      kind: fallback.kind,
+      source: fallback === this.skillSymbolList(metadata.entryPoints)[0] ? 'entry_point' : 'anchor',
+    };
+  }
+
+  private skillSummary(metadata: GeneratedSkillMetadata, action: SkillActionName): any {
+    return {
+      status: 'ok',
+      skill: metadata.name,
+      action,
+      label: metadata.label,
+      project: metadata.projectName,
+      generated_at: metadata.generatedAt,
+      summary: {
+        symbol_count: metadata.symbolCount ?? 0,
+        file_count: metadata.fileCount ?? 0,
+        cohesion: metadata.cohesion ?? 0,
+        root_directories: metadata.rootDirectories ?? [],
+      },
+      key_files: metadata.keyFiles ?? [],
+      entry_points: this.skillSymbolList(metadata.entryPoints),
+      anchors: this.skillSymbolList(metadata.anchors),
+      validation_commands: metadata.validationCommands ?? [],
+      available_actions: this.skillActions(metadata),
+    };
+  }
+
+  private async runSkill(
+    repo: RepoHandle,
+    params: {
+      skill?: string;
+      action?: string;
+      args?: Record<string, unknown>;
+      repo?: string;
+    } = {},
+  ): Promise<any> {
+    const loaded = await this.readGeneratedSkillMetadata(repo, params.skill);
+    if (loaded.status === 'error') {
+      return { status: 'error', ...loaded };
+    }
+
+    const action = this.normalizeSkillAction(params.action);
+    if (!action) {
+      return {
+        status: 'error',
+        error: `Unsupported skill action: ${String(params.action)}`,
+        skill: loaded.skillName,
+        available_actions: this.skillActions(loaded.metadata),
+      };
+    }
+
+    const metadata = loaded.metadata;
+    const args = this.skillArgs(params);
+
+    if (action === 'summarize') {
+      return this.skillSummary(metadata, action);
+    }
+
+    if (action === 'list_entry_points') {
+      return {
+        status: 'ok',
+        skill: metadata.name,
+        action,
+        label: metadata.label,
+        entry_points: this.skillSymbolList(metadata.entryPoints),
+        anchors: this.skillSymbolList(metadata.anchors),
+      };
+    }
+
+    if (action === 'validate_change') {
+      const target = this.selectSkillTarget(metadata, args);
+      return {
+        status: 'ok',
+        skill: metadata.name,
+        action,
+        label: metadata.label,
+        validation_commands: metadata.validationCommands ?? [],
+        key_files: metadata.keyFiles ?? [],
+        anchors: this.skillSymbolList(metadata.anchors),
+        suggested_preflight: target
+          ? [
+              {
+                tool: 'run_skill',
+                params: {
+                  skill: metadata.name,
+                  action: 'impact',
+                  args: { target_uid: target.target_uid, target: target.target },
+                },
+              },
+              {
+                tool: 'run_skill',
+                params: {
+                  skill: metadata.name,
+                  action: 'export_context',
+                  args: { target_uid: target.target_uid, target: target.target },
+                },
+              },
+            ]
+          : [],
+      };
+    }
+
+    const target = this.selectSkillTarget(metadata, args);
+    if (!target) {
+      return {
+        status: 'error',
+        error:
+          'No target was provided and this skill has no entry points or anchors. Pass args.target or args.target_uid.',
+        skill: metadata.name,
+        action,
+      };
+    }
+
+    if (action === 'impact') {
+      const direction =
+        this.skillString(args, 'direction') === 'downstream' ? 'downstream' : 'upstream';
+      const result = await this.impact(repo, {
+        target: target.target,
+        target_uid: target.target_uid,
+        file_path: target.file_path,
+        kind: target.kind,
+        direction,
+        maxDepth: clampInt(args.maxDepth ?? args.depth, 1, 32, 3),
+        relationTypes: this.skillRelationTypes(args),
+        includeTests: this.skillBoolean(args, 'includeTests', 'include_tests'),
+        minConfidence:
+          args.minConfidence === undefined ? undefined : toFiniteNumber(args.minConfidence, 0),
+      });
+      return {
+        status: result?.error ? 'error' : 'ok',
+        skill: metadata.name,
+        action,
+        target,
+        result,
+      };
+    }
+
+    const direction = this.skillString(args, 'direction');
+    const format = this.skillString(args, 'format');
+    const result = await this.exportContext(repo, {
+      target: target.target,
+      target_uid: target.target_uid,
+      file_path: target.file_path,
+      kind: target.kind,
+      degree: clampInt(args.degree, 1, 3, 2),
+      direction:
+        direction === 'upstream' || direction === 'downstream' || direction === 'both'
+          ? direction
+          : 'both',
+      relationTypes: this.skillRelationTypes(args),
+      includeTests: this.skillBoolean(args, 'includeTests', 'include_tests'),
+      maxNodes: clampInt(args.maxNodes, 1, 500, 80),
+      format:
+        format === 'jsonl' || format === 'json' || format === 'markdown' ? format : 'markdown',
+    });
+
+    return {
+      status: result?.error ? 'error' : 'ok',
+      skill: metadata.name,
+      action,
+      target,
+      result,
+    };
+  }
+
+  private async exportContext(
+    repo: RepoHandle,
+    params: {
+      target?: string;
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
+      degree?: number;
+      direction?: 'upstream' | 'downstream' | 'both';
+      relationTypes?: string[];
+      includeTests?: boolean;
+      maxNodes?: number;
+      format?: 'markdown' | 'jsonl' | 'json';
+    } = {},
+  ): Promise<any> {
+    try {
+      await this.ensureInitialized(repo.id);
+
+      const target = typeof params.target === 'string' ? params.target.trim() : '';
+      const uid = typeof params.target_uid === 'string' ? params.target_uid.trim() : '';
+      if (!target && !uid) {
+        return {
+          error: 'Either target or target_uid is required',
+          status: 'error',
+        };
+      }
+
+      const outcome = await this.resolveSymbolCandidates(
+        repo,
+        { uid: uid || undefined, name: target || undefined },
+        { file_path: params.file_path, kind: params.kind },
+      );
+
+      const displayTarget = target || uid;
+      if (outcome.kind === 'not_found') {
+        return { error: `Target '${displayTarget}' not found`, status: 'not_found' };
+      }
+
+      if (outcome.kind === 'ambiguous') {
+        return {
+          status: 'ambiguous',
+          message: `Found ${outcome.candidates.length} symbols matching '${displayTarget}'. Use target_uid, file_path, or kind to disambiguate.`,
+          candidates: outcome.candidates.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: c.startLine,
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+
+      const degree = clampInt(params.degree, 1, 3, 2);
+      const maxNodes = clampInt(params.maxNodes, 1, 500, 80);
+      const includeTests = params.includeTests ?? false;
+      const format =
+        params.format === 'jsonl' || params.format === 'json' || params.format === 'markdown'
+          ? params.format
+          : 'markdown';
+      const direction =
+        params.direction === 'upstream' ||
+        params.direction === 'downstream' ||
+        params.direction === 'both'
+          ? params.direction
+          : 'both';
+      const directions = direction === 'both' ? ['upstream', 'downstream'] : [direction];
+      const relationTypes = normalizeImpactScoreRelationTypes(params.relationTypes);
+      const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
+      const queryLimit = Math.min(2000, Math.max(100, maxNodes * 6));
+      const targetSymbol = outcome.symbol;
+      const targetKind = outcome.resolvedLabel || targetSymbol.type || '';
+
+      const nodes = new Map<string, any>();
+      const edges = new Map<string, any>();
+      nodes.set(targetSymbol.id, {
+        uid: targetSymbol.id,
+        name: targetSymbol.name,
+        kind: targetKind,
+        filePath: targetSymbol.filePath,
+        startLine: targetSymbol.startLine,
+        endLine: targetSymbol.endLine,
+        depth: 0,
+        role: 'target',
+      });
+
+      let frontier = [targetSymbol.id];
+      const visited = new Set(frontier);
+      let truncated = false;
+
+      for (let depth = 1; depth <= degree && frontier.length > 0 && !truncated; depth++) {
+        const nextFrontier: string[] = [];
+        for (const dir of directions) {
+          const query =
+            dir === 'upstream'
+              ? `
+              MATCH (source)-[r:CodeRelation]->(center)
+              WHERE center.id IN $frontier AND r.type IN [${relTypeFilter}]
+              RETURN center.id AS centerId, center.name AS centerName,
+                     source.id AS id, source.name AS name, labels(source)[0] AS kind,
+                     source.filePath AS filePath, source.startLine AS startLine,
+                     source.endLine AS endLine, r.type AS relationType,
+                     r.confidence AS confidence
+              LIMIT ${queryLimit}
+            `
+              : `
+              MATCH (center)-[r:CodeRelation]->(target)
+              WHERE center.id IN $frontier AND r.type IN [${relTypeFilter}]
+              RETURN center.id AS centerId, center.name AS centerName,
+                     target.id AS id, target.name AS name, labels(target)[0] AS kind,
+                     target.filePath AS filePath, target.startLine AS startLine,
+                     target.endLine AS endLine, r.type AS relationType,
+                     r.confidence AS confidence
+              LIMIT ${queryLimit}
+            `;
+
+          const rows = await this.runImpactScoreQuery(repo, `export-context:${dir}`, query, {
+            frontier,
+          });
+
+          for (const row of rows) {
+            const relatedId = String(row.id ?? row[2] ?? '');
+            if (!relatedId) continue;
+            const filePath = String(row.filePath ?? row[5] ?? '');
+            if (!includeTests && isTestFilePath(filePath)) continue;
+            const centerId = String(row.centerId ?? row[0] ?? '');
+            const relationType = String(row.relationType ?? row[8] ?? '');
+            const storedConfidence = row.confidence ?? row[9];
+
+            if (!nodes.has(relatedId)) {
+              if (nodes.size >= maxNodes) {
+                truncated = true;
+                break;
+              }
+              nodes.set(relatedId, {
+                uid: relatedId,
+                name: row.name ?? row[3] ?? '',
+                kind: row.kind ?? row[4] ?? '',
+                filePath,
+                startLine: row.startLine ?? row[6],
+                endLine: row.endLine ?? row[7],
+                depth,
+              });
+            }
+
+            if (!visited.has(relatedId)) {
+              visited.add(relatedId);
+              nextFrontier.push(relatedId);
+            }
+
+            const from = dir === 'upstream' ? relatedId : centerId;
+            const to = dir === 'upstream' ? centerId : relatedId;
+            const edgeKey = `${from}->${relationType}->${to}`;
+            if (!edges.has(edgeKey)) {
+              const fromNode = nodes.get(from);
+              const toNode = nodes.get(to);
+              edges.set(edgeKey, {
+                from,
+                fromName: fromNode?.name,
+                to,
+                toName: toNode?.name,
+                relationType,
+                depth,
+                confidence:
+                  typeof storedConfidence === 'number' && storedConfidence > 0
+                    ? storedConfidence
+                    : confidenceForRelType(relationType),
+              });
+            }
+          }
+        }
+        frontier = nextFrontier;
+      }
+
+      const nodeList = Array.from(nodes.values()).sort((a, b) => {
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        return String(a.filePath || '').localeCompare(String(b.filePath || ''));
+      });
+      await this.attachNodeDescriptions(repo, nodeList);
+      const edgeList = Array.from(edges.values()).sort((a, b) => {
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        return String(a.relationType || '').localeCompare(String(b.relationType || ''));
+      });
+
+      const targetInfo = nodes.get(targetSymbol.id);
+      const content =
+        format === 'jsonl'
+          ? this.formatContextExportJsonl({
+              repo,
+              target: targetInfo,
+              degree,
+              direction,
+              truncated,
+              nodes: nodeList,
+              edges: edgeList,
+            })
+          : format === 'json'
+            ? JSON.stringify(
+                {
+                  repo: repo.name,
+                  target: targetInfo,
+                  degree,
+                  direction,
+                  truncated,
+                  nodes: nodeList,
+                  edges: edgeList,
+                },
+                null,
+                2,
+              )
+            : this.formatContextExportMarkdown({
+                repo,
+                targetName: targetInfo.name || displayTarget,
+                degree,
+                direction,
+                truncated,
+                nodes: nodeList,
+                edges: edgeList,
+              });
+
+      return {
+        status: 'exported',
+        format,
+        degree,
+        direction,
+        target: targetInfo,
+        node_count: nodeList.length,
+        edge_count: edgeList.length,
+        truncated,
+        content,
+        nodes: nodeList,
+        edges: edgeList,
+      };
+    } catch (err) {
+      return {
+        error: (err instanceof Error ? err.message : String(err)) || 'Context export failed',
+        status: 'error',
+        target: params.target ?? params.target_uid,
+      };
+    }
   }
 
   private async impact(
@@ -2948,6 +4961,19 @@ export class LocalBackend {
       risk = 'MEDIUM';
     }
 
+    const runtimeSignals = await this.buildRuntimeImpactSignals(
+      repo,
+      {
+        id: symId,
+        name: sym.name || sym[1],
+        filePath: sym.filePath || sym[2],
+      },
+      impacted,
+    ).catch((err) => {
+      logQueryError('impact:runtime-enrichment', err);
+      return undefined;
+    });
+
     return {
       target: {
         id: symId,
@@ -2966,6 +4992,7 @@ export class LocalBackend {
       },
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
+      ...(runtimeSignals && { runtime_signals: runtimeSignals }),
       byDepth: grouped,
     };
   }

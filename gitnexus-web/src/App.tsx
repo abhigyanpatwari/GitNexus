@@ -9,16 +9,20 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
+import { RefreshCw } from './lib/lucide-icons';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import {
   connectToServer,
+  fetchGroupStatuses,
   fetchRepos,
   normalizeServerUrl,
   connectHeartbeat,
+  connectIndexEvents,
   BackendError,
   type ConnectResult,
   type BackendRepo,
+  type IndexEventsSnapshot,
 } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 
@@ -29,15 +33,16 @@ const AppContent = () => {
     setGraph,
     setProgress,
     setProjectName,
+    projectName,
     progress,
     isRightPanelOpen,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
     refreshLLMSettings,
     initializeAgent,
-    startEmbeddingsWithFallback,
     codeReferences,
     selectedNode,
+    setSelectedNode,
     isCodePanelOpen,
     serverBaseUrl,
     setServerBaseUrl,
@@ -48,7 +53,56 @@ const AppContent = () => {
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const activeRepoRef = useRef<string | null>(null);
+  const indexedAtRef = useRef<string | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const selectedNodeRef = useRef(selectedNode);
+  const isCodePanelOpenRef = useRef(isCodePanelOpen);
+  const graphInteractionRef = useRef(false);
+  const graphInteractionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [serverDisconnected, setServerDisconnected] = useState(false);
+  const [graphSyncStatus, setGraphSyncStatus] = useState<'stale' | 'syncing' | 'synced' | 'failed'>(
+    'synced',
+  );
+  const [graphSyncMessage, setGraphSyncMessage] = useState<string | undefined>();
+  const [indexSnapshot, setIndexSnapshot] = useState<IndexEventsSnapshot | null>(null);
+  const [pendingGraphUpdate, setPendingGraphUpdate] = useState<{
+    repoName: string;
+    indexedAt: string;
+  } | null>(null);
+  const [autoApplyGraphUpdates, setAutoApplyGraphUpdates] = useState(true);
+  const [groupStatuses, setGroupStatuses] = useState<
+    Awaited<ReturnType<typeof fetchGroupStatuses>>
+  >([]);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
+
+  useEffect(() => {
+    isCodePanelOpenRef.current = isCodePanelOpen;
+  }, [isCodePanelOpen]);
+
+  useEffect(
+    () => () => {
+      if (graphInteractionTimerRef.current) clearTimeout(graphInteractionTimerRef.current);
+    },
+    [],
+  );
+
+  const isGraphBusy = useCallback(
+    () => graphInteractionRef.current || !!selectedNodeRef.current || isCodePanelOpenRef.current,
+    [],
+  );
+
+  const refreshGroupStatuses = useCallback(async (repoName?: string): Promise<void> => {
+    try {
+      setGroupStatuses(await fetchGroupStatuses(repoName));
+    } catch (err) {
+      console.warn('Failed to fetch group statuses:', err);
+      setGroupStatuses([]);
+    }
+  }, []);
 
   const handleServerConnect = useCallback(
     async (result: ConnectResult): Promise<void> => {
@@ -56,6 +110,10 @@ const AppContent = () => {
       // backend calls (queries, search, grep, readFile) scope to this repo.
       const repoName = result.repoInfo.name;
       const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
+      activeRepoRef.current = repoName;
+      indexedAtRef.current = result.repoInfo.indexedAt ?? null;
+      setGraphSyncStatus('synced');
+      setGraphSyncMessage(undefined);
       // Normalize both Windows (\) and Unix (/) path separators before splitting
       const projectName =
         result.repoInfo.name ||
@@ -63,6 +121,7 @@ const AppContent = () => {
         'server-project';
       setProjectName(projectName);
       setCurrentRepo(projectName);
+      void refreshGroupStatuses(projectName);
 
       // Build KnowledgeGraph from server data for visualization
       const graph = createKnowledgeGraph();
@@ -73,6 +132,11 @@ const AppContent = () => {
         graph.addRelationship(rel);
       }
       setGraph(graph);
+      if (selectedNodeRef.current) {
+        const refreshedSelection = result.nodes.find((node) => node.id === selectedNodeRef.current?.id);
+        setSelectedNode(refreshedSelection ?? null);
+      }
+      setPendingGraphUpdate(null);
 
       // Persist the active project in the URL for bookmarkability and F5 refresh resilience
       const urlObj = new URL(window.location.href);
@@ -82,12 +146,12 @@ const AppContent = () => {
       // Transition directly to exploring view
       setViewMode('exploring');
 
-      // Initialize agent with backend queries, then start embeddings
+      // Initialize agent with backend queries. Embeddings remain a manual action
+      // from the header so opening the graph does not take the local DB lock.
       try {
         if (getActiveProviderConfig()) {
           await initializeAgent(projectName);
         }
-        startEmbeddingsWithFallback();
       } catch (err) {
         console.warn('Failed to initialize agent:', err);
       }
@@ -95,12 +159,59 @@ const AppContent = () => {
     [
       setViewMode,
       setGraph,
+      setSelectedNode,
       setProjectName,
       setCurrentRepo,
+      refreshGroupStatuses,
       initializeAgent,
-      startEmbeddingsWithFallback,
     ],
   );
+
+  const refreshActiveGraph = useCallback(
+    async (repoName: string, indexedAt: string): Promise<void> => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      setGraphSyncStatus('syncing');
+      setGraphSyncMessage('Refreshing UI');
+
+      try {
+        const url = serverBaseUrl ?? window.location.origin;
+        const result = await connectToServer(url, undefined, undefined, repoName, {
+          awaitAnalysis: true,
+        });
+        await handleServerConnect(result);
+        indexedAtRef.current = result.repoInfo.indexedAt ?? indexedAt;
+        setGraphSyncStatus('synced');
+        setGraphSyncMessage(undefined);
+      } catch (err) {
+        console.error('Graph refresh failed:', err);
+        setGraphSyncStatus('failed');
+        setGraphSyncMessage('Refresh failed');
+      } finally {
+        refreshInFlightRef.current = false;
+      }
+    },
+    [handleServerConnect, serverBaseUrl],
+  );
+
+  const applyPendingGraphUpdate = useCallback(() => {
+    const pending = pendingGraphUpdate;
+    if (!pending) return;
+    setPendingGraphUpdate(null);
+    void refreshActiveGraph(pending.repoName, pending.indexedAt);
+  }, [pendingGraphUpdate, refreshActiveGraph]);
+
+  useEffect(() => {
+    if (!pendingGraphUpdate || !autoApplyGraphUpdates || isGraphBusy()) return;
+    applyPendingGraphUpdate();
+  }, [
+    applyPendingGraphUpdate,
+    autoApplyGraphUpdates,
+    isCodePanelOpen,
+    isGraphBusy,
+    pendingGraphUpdate,
+    selectedNode,
+  ]);
 
   // Auto-connect when ?server or ?project query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
@@ -187,6 +298,29 @@ const AppContent = () => {
     graphCanvasRef.current?.focusNode(nodeId);
   }, []);
 
+  const markGraphInteraction = useCallback(() => {
+    graphInteractionRef.current = true;
+    if (graphInteractionTimerRef.current) clearTimeout(graphInteractionTimerRef.current);
+    graphInteractionTimerRef.current = setTimeout(() => {
+      graphInteractionRef.current = false;
+    }, 900);
+  }, []);
+
+  const handleSwitchRepo = useCallback(
+    async (repoName: string) => {
+      setGroupStatuses([]);
+      setGraphSyncStatus('syncing');
+      setGraphSyncMessage('Switching repo');
+      await switchRepo(repoName);
+      activeRepoRef.current = repoName;
+      indexedAtRef.current = null;
+      setGraphSyncStatus('synced');
+      setGraphSyncMessage(undefined);
+      await refreshGroupStatuses(repoName);
+    },
+    [switchRepo, refreshGroupStatuses],
+  );
+
   // Handle settings saved - refresh and reinitialize agent
   // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
   const handleSettingsSaved = useCallback(() => {
@@ -208,6 +342,66 @@ const AppContent = () => {
 
     return cleanup;
   }, [viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'exploring') return;
+
+    const cleanup = connectIndexEvents(
+      (snapshot) => {
+        setIndexSnapshot(snapshot);
+        setAvailableRepos(snapshot.repos);
+        const activeRepo = activeRepoRef.current || projectName;
+        if (!activeRepo) return;
+
+        const repo = snapshot.repos.find((candidate) => candidate.name === activeRepo);
+        if (!repo) return;
+
+        const activeJob = snapshot.activeJobs?.find((job) => {
+          const jobRepoName = job.repoName || (job.repoPath || '').split(/[/\\]/).filter(Boolean).pop();
+          return jobRepoName?.toLowerCase() === activeRepo.toLowerCase();
+        });
+        if (activeJob) {
+          setGraphSyncStatus('syncing');
+          setGraphSyncMessage(activeJob.progress.message || 'Currently indexing');
+        }
+
+        const lastIndexedAt = indexedAtRef.current;
+        if (!lastIndexedAt) {
+          indexedAtRef.current = repo.indexedAt;
+          if (!activeJob) {
+            setGraphSyncStatus('synced');
+            setGraphSyncMessage(undefined);
+          }
+          return;
+        }
+
+        if (repo.indexedAt !== lastIndexedAt) {
+          setGraphSyncStatus('stale');
+          setGraphSyncMessage('Graph changed');
+          if (autoApplyGraphUpdates && !isGraphBusy()) {
+            void refreshActiveGraph(repo.name, repo.indexedAt);
+          } else {
+            setPendingGraphUpdate({ repoName: repo.name, indexedAt: repo.indexedAt });
+          }
+        }
+      },
+      (error) => {
+        if (!activeRepoRef.current && !projectName) return;
+        console.warn('Index update stream error:', error);
+        setGraphSyncStatus('failed');
+        setGraphSyncMessage('Sync interrupted');
+      },
+    );
+
+    return cleanup;
+  }, [
+    autoApplyGraphUpdates,
+    isGraphBusy,
+    projectName,
+    refreshActiveGraph,
+    setAvailableRepos,
+    viewMode,
+  ]);
 
   // Render based on view mode
   if (viewMode === 'onboarding') {
@@ -242,7 +436,8 @@ const AppContent = () => {
       <Header
         onFocusNode={handleFocusNode}
         availableRepos={availableRepos}
-        onSwitchRepo={switchRepo}
+        groupStatuses={groupStatuses}
+        onSwitchRepo={handleSwitchRepo}
         onReposChanged={(repos) => setAvailableRepos(repos)}
         onAnalyzeComplete={async (repoName) => {
           // A new repo was just indexed via the header dropdown.
@@ -280,8 +475,35 @@ const AppContent = () => {
         <FileTreePanel onFocusNode={handleFocusNode} />
 
         {/* Graph area - takes remaining space */}
-        <div className="relative min-w-0 flex-1">
+        <div
+          className="relative min-w-0 flex-1"
+          onPointerDown={markGraphInteraction}
+          onPointerMove={markGraphInteraction}
+          onWheel={markGraphInteraction}
+        >
           <GraphCanvas ref={graphCanvasRef} />
+
+          {pendingGraphUpdate && (
+            <div className="absolute top-4 right-16 z-30 flex items-center gap-2 rounded-lg border border-yellow-400/30 bg-yellow-500/15 px-3 py-2 text-xs text-yellow-100 shadow-xl backdrop-blur">
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span className="font-medium">Graph changed</span>
+              <button
+                onClick={applyPendingGraphUpdate}
+                className="rounded-md border border-yellow-300/30 bg-yellow-300/10 px-2 py-1 text-yellow-50 transition-colors hover:bg-yellow-300/20"
+              >
+                Apply now
+              </button>
+              <label className="flex items-center gap-1.5 text-yellow-100/80">
+                <input
+                  type="checkbox"
+                  checked={autoApplyGraphUpdates}
+                  onChange={(event) => setAutoApplyGraphUpdates(event.target.checked)}
+                  className="h-3 w-3 accent-yellow-300"
+                />
+                Auto apply
+              </label>
+            </div>
+          )}
 
           {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
           {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (
@@ -295,7 +517,13 @@ const AppContent = () => {
         {isRightPanelOpen && <RightPanel />}
       </main>
 
-      <StatusBar />
+      <StatusBar
+        activeRepoName={projectName}
+        groupStatuses={groupStatuses}
+        graphSyncStatus={graphSyncStatus}
+        graphSyncMessage={graphSyncMessage}
+        indexSnapshot={indexSnapshot}
+      />
 
       {serverDisconnected && (
         <div className="fixed bottom-12 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-yellow-500/30 bg-yellow-900/80 px-4 py-2 text-sm text-yellow-200 shadow-lg backdrop-blur">

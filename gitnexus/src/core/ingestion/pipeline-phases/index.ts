@@ -20,6 +20,7 @@ export {
   scopeResolutionPhase,
   type ScopeResolutionOutput,
 } from '../scope-resolution/pipeline/phase.js';
+export { anchorsPhase, type AnchorsOutput } from './anchors.js';
 export { mroPhase, type MROOutput } from './mro.js';
 export { communitiesPhase, type CommunitiesOutput } from './communities.js';
 export { processesPhase, type ProcessesOutput } from './processes.js';

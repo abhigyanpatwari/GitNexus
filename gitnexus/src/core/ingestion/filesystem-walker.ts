@@ -14,6 +14,7 @@ export interface FileEntry {
 export interface ScannedFile {
   path: string;
   size: number;
+  mtimeMs?: number;
 }
 
 /** Path-only reference (for type signatures) */
@@ -56,7 +57,7 @@ export const walkRepositoryPaths = async (
           skippedLargePaths.push(relativePath.replace(/\\/g, '/'));
           return null;
         }
-        return { path: relativePath.replace(/\\/g, '/'), size: stat.size };
+        return { path: relativePath.replace(/\\/g, '/'), size: stat.size, mtimeMs: stat.mtimeMs };
       }),
     );
 

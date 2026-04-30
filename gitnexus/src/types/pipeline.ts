@@ -1,6 +1,7 @@
 import type { KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
+import type { ScannedFile } from '../core/ingestion/filesystem-walker.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
@@ -9,6 +10,8 @@ export interface PipelineResult {
   repoPath: string;
   /** Total files scanned (for stats) */
   totalFileCount: number;
+  /** Scanned source files used to build the index. */
+  scannedFiles: ScannedFile[];
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
   /**

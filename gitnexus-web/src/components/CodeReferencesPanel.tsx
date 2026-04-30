@@ -41,6 +41,35 @@ const customTheme = {
   },
 };
 
+const getStringProperty = (
+  node: GraphNode | null | undefined,
+  key: keyof GraphNode['properties'],
+): string | undefined => {
+  const value = node?.properties?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+};
+
+const getStringArrayProperty = (
+  node: GraphNode | null | undefined,
+  key: keyof GraphNode['properties'],
+): string[] => {
+  const value = node?.properties?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+};
+
+const getAnchorVersion = (node: GraphNode | null | undefined): number | undefined => {
+  const value = node?.properties?.anchorVersion;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+};
+
+const formatAnchorDate = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return undefined;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
 export interface CodeReferencesPanelProps {
   onFocusNode: (nodeId: string) => void;
 }
@@ -194,6 +223,24 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   const selectedFilePath = selectedNode?.properties?.filePath;
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
   const showSelectedViewer = !!selectedNode && !!selectedFilePath;
+  const selectedSummary =
+    getStringProperty(selectedNode, 'summary') ?? getStringProperty(selectedNode, 'description');
+  const selectedPurpose = getStringProperty(selectedNode, 'purpose');
+  const selectedTags = getStringArrayProperty(selectedNode, 'tags');
+  const selectedAnchorModel = getStringProperty(selectedNode, 'anchorModel');
+  const selectedAnchorHash = getStringProperty(selectedNode, 'anchorHash');
+  const selectedAnchorVersion = getAnchorVersion(selectedNode);
+  const selectedAnchorGeneratedAt = formatAnchorDate(
+    getStringProperty(selectedNode, 'anchorGeneratedAt'),
+  );
+  const showSelectedAnchor =
+    !!selectedSummary ||
+    !!selectedPurpose ||
+    selectedTags.length > 0 ||
+    !!selectedAnchorModel ||
+    !!selectedAnchorHash ||
+    selectedAnchorVersion !== undefined ||
+    !!selectedAnchorGeneratedAt;
   const showCitations = aiReferences.length > 0;
 
   // Fetch file content from the server when a node with a filePath is selected.
@@ -378,6 +425,54 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
               </button>
             </div>
             <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+              {showSelectedAnchor && (
+                <div className="space-y-2 border-b border-border-subtle bg-surface/70 px-3 py-2.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-3.5 w-3.5 flex-shrink-0 text-amber-300" />
+                    <span className="text-[10px] font-semibold tracking-wide text-amber-200 uppercase">
+                      Semantic Anchor
+                    </span>
+                    <div className="min-w-0 flex-1" />
+                    {selectedAnchorVersion !== undefined && (
+                      <span className="rounded border border-border-subtle bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
+                        v{selectedAnchorVersion}
+                      </span>
+                    )}
+                  </div>
+
+                  {selectedSummary && (
+                    <p className="leading-relaxed text-text-secondary">{selectedSummary}</p>
+                  )}
+
+                  {selectedPurpose && (
+                    <div className="flex items-start gap-2 text-text-muted">
+                      <Target className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-cyan-300" />
+                      <span className="leading-relaxed">{selectedPurpose}</span>
+                    </div>
+                  )}
+
+                  {selectedTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedTags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded border border-cyan-400/20 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {(selectedAnchorModel || selectedAnchorHash || selectedAnchorGeneratedAt) && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border-subtle pt-2 font-mono text-[10px] text-text-muted">
+                      {selectedAnchorModel && <span>{selectedAnchorModel}</span>}
+                      {selectedAnchorHash && <span>{selectedAnchorHash}</span>}
+                      {selectedAnchorGeneratedAt && <span>{selectedAnchorGeneratedAt}</span>}
+                    </div>
+                  )}
+                </div>
+              )}
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />

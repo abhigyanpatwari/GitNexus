@@ -12,11 +12,12 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import { processStructure } from '../structure-processor.js';
 import type { ScanOutput } from './scan.js';
+import type { ScannedFile } from '../filesystem-walker.js';
 
 /** Structure phase produces no additional data — it writes directly to the graph. */
 export interface StructureOutput {
   /** Pass-through from scan for downstream phases. */
-  scannedFiles: { path: string; size: number }[];
+  scannedFiles: ScannedFile[];
   allPaths: string[];
   /**
    * Materialized once here and shared across all downstream consumers

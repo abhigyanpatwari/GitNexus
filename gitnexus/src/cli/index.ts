@@ -32,6 +32,16 @@ program
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option('--skip-group-sync', 'Skip auto-syncing repo groups after analysis')
+  .option(
+    '--incremental',
+    'Plan manifest-backed incremental invalidation before rebuilding the index',
+  )
+  .option('--llm-anchors', 'Enrich semantic anchors with the configured LLM provider')
+  .option(
+    '--llm-anchor-limit <n>',
+    'Maximum nodes to enrich when --llm-anchors is enabled. Default: 50.',
+  )
   .option('--skip-git', 'Index a folder without requiring a .git directory')
   .option(
     '--name <alias>',
@@ -69,6 +79,27 @@ program
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+
+program
+  .command('watch [path]')
+  .description('Watch a repository and keep its GitNexus index fresh')
+  .option('--debounce <ms>', 'Milliseconds to wait after file changes before re-analyzing', '1200')
+  .option('--poll', 'Use polling instead of native recursive filesystem events')
+  .option(
+    '--interval <ms>',
+    'Polling interval when --poll is used or native recursive watch is unavailable',
+    '2000',
+  )
+  .option('--skip-initial', 'Skip the initial analyze run and only react to changes')
+  .option('--embeddings', 'Preserve/generate embeddings during each analyze run')
+  .option('--skip-git', 'Watch a folder without requiring a .git directory')
+  .option('--name <alias>', 'Register this repo under a custom name in ~/.gitnexus/registry.json')
+  .option('--max-file-size <kb>', 'Skip files larger than this (KB). Passed through to analyze.')
+  .option(
+    '--worker-timeout <seconds>',
+    'Worker sub-batch idle timeout before retry/fallback. Passed through to analyze.',
+  )
+  .action(createLazyAction(() => import('./watch.js'), 'watchCommand'));
 
 program
   .command('index [path...]')
@@ -167,13 +198,113 @@ program
   .action(createLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
-  .command('context [name]')
-  .description('360-degree view of a code symbol: callers, callees, processes')
+  .command('context [args...]')
+  .description('360-degree symbol view, or context push/pull snapshots')
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('--content', 'Include full symbol source code')
-  .action(createLazyAction(() => import('./tool.js'), 'contextCommand'));
+  .option('--backend <backend>', 'Snapshot backend for push/pull: local or s3', 'local')
+  .option('-o, --output <path>', 'Output file/folder for context pull')
+  .option('--max-nodes <n>', 'Maximum graph node ids in a pushed snapshot (default: 250)')
+  .option('--max-edges <n>', 'Maximum graph edge ids in a pushed snapshot (default: 500)')
+  .option(
+    '--redact <pattern>',
+    'String/key pattern to redact from snapshots. Repeat for multiple patterns.',
+    (value, previous: string[]) => [...previous, value],
+    [],
+  )
+  .option('--signing-hook <path>', 'Executable that signs a snapshot path and prints a signature')
+  .option('--endpoint-url <url>', 'S3-compatible endpoint URL for AWS CLI push/pull')
+  .option('--json', 'JSON output for context push/pull')
+  .addHelpText(
+    'after',
+    '\nExamples:\n' +
+      '  gitnexus context AuthService\n' +
+      '  gitnexus context push ./context-lake --redact C:/Users/me\n' +
+      '  gitnexus context pull ./context-lake --output ./imported-context\n' +
+      '  gitnexus context push s3://bucket/team-context/ --backend s3 --endpoint-url https://s3.example.com',
+  )
+  .action(async (args: string[], options) => {
+    const [mode, target] = args ?? [];
+    if (mode === 'push') {
+      const { contextPushCommand } = await import('./context-lake.js');
+      return contextPushCommand(target, options);
+    }
+    if (mode === 'pull') {
+      const { contextPullCommand } = await import('./context-lake.js');
+      return contextPullCommand(target, options);
+    }
+    const { contextCommand } = await import('./tool.js');
+    return contextCommand(mode, options);
+  });
+
+program
+  .command('impact-score [target]')
+  .description('Fast preflight risk score for changing a symbol')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-k, --kind <kind>', 'Symbol kind to disambiguate common names')
+  .option('--include-tests', 'Include test files in examples')
+  .option('--max-examples <n>', 'Max caller/dependency examples to return (default: 10)')
+  .action(createLazyAction(() => import('./tool.js'), 'impactScoreCommand'));
+
+program
+  .command('export-context [target]')
+  .description('Export a bounded graph neighborhood around a symbol')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-k, --kind <kind>', 'Symbol kind to disambiguate common names')
+  .option('--degree <n>', 'Neighborhood degree (default: 2, max: 3)')
+  .option('-d, --direction <dir>', 'upstream, downstream, or both', 'both')
+  .option('--format <format>', 'markdown, jsonl, or json', 'markdown')
+  .option('--include-tests', 'Include test files in the exported neighborhood')
+  .option('--max-nodes <n>', 'Maximum nodes before truncating (default: 80)')
+  .action(createLazyAction(() => import('./tool.js'), 'exportContextCommand'));
+
+program
+  .command('run-skill <skill> [action]')
+  .description('Run a generated executable skill action')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-t, --target <target>', 'Symbol name for impact/export_context actions')
+  .option('-u, --uid <uid>', 'Direct symbol UID for impact/export_context actions')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-k, --kind <kind>', 'Symbol kind to disambiguate common names')
+  .option('-d, --direction <dir>', 'upstream, downstream, or both')
+  .option('--degree <n>', 'Context export degree (default: 2, max: 3)')
+  .option('--depth <n>', 'Impact max depth (default: 3)')
+  .option('--format <format>', 'markdown, jsonl, or json')
+  .option('--include-tests', 'Include test files in impact/export actions')
+  .option('--max-nodes <n>', 'Maximum context export nodes (default: 80)')
+  .action(createLazyAction(() => import('./tool.js'), 'runSkillCommand'));
+
+const runtime = program
+  .command('runtime')
+  .description('Import and inspect runtime/log overlays for an indexed repo');
+
+runtime
+  .command('import <input>')
+  .description('Import OTLP JSON, structured JSONL logs, or stack traces into .gitnexus/runtime-signals.json')
+  .option('-r, --repo <name>', 'Target repository (omit to use current repo)')
+  .option('--format <format>', 'auto, otlp-json, logs-jsonl, or stacktrace', 'auto')
+  .option('--replace', 'Replace existing runtime-signals.json instead of merging')
+  .option('--json', 'JSON output')
+  .action(createLazyAction(() => import('./runtime.js'), 'runtimeImportCommand'));
+
+runtime
+  .command('context')
+  .description('Read runtime evidence for a symbol, route, or service')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-t, --target <symbol>', 'Symbol name to match')
+  .option('-u, --uid <uid>', 'Direct symbol UID')
+  .option('-f, --file <path>', 'File path to disambiguate symbols')
+  .option('-k, --kind <kind>', 'Symbol kind to disambiguate symbols')
+  .option('--route <route>', 'Route path or id to match')
+  .option('--service <service>', 'Service name to match')
+  .option('--json', 'JSON output')
+  .action(createLazyAction(() => import('./runtime.js'), 'runtimeContextCommand'));
 
 program
   .command('impact <target>')

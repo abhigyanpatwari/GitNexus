@@ -19,6 +19,8 @@ import type {
   CrossLink,
   GroupConfig,
   GroupContextResult,
+  GroupRepoStatus,
+  GroupStatusResult,
   StoredContract,
 } from './types.js';
 
@@ -470,15 +472,7 @@ export class GroupService {
     }
     const registry = await readContractRegistry(groupDir);
 
-    const repoStatuses: Record<
-      string,
-      {
-        indexStale: boolean;
-        contractsStale: boolean;
-        missing: boolean;
-        commitsBehind?: number;
-      }
-    > = {};
+    const repoStatuses: Record<string, GroupRepoStatus> = {};
 
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
       try {
@@ -496,21 +490,73 @@ export class GroupService {
           snapshot && meta.indexedAt ? snapshot.indexedAt !== meta.indexedAt : !snapshot;
 
         repoStatuses[repoPath] = {
+          registryName,
           indexStale: staleness.isStale,
           contractsStale: Boolean(contractsStale),
           missing: false,
           commitsBehind: staleness.commitsBehind,
+          indexedAt: meta.indexedAt ?? null,
+          snapshotIndexedAt: snapshot?.indexedAt ?? null,
+          lastCommit: meta.lastCommit ?? null,
+          snapshotLastCommit: snapshot?.lastCommit ?? null,
         };
       } catch {
-        repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+        repoStatuses[repoPath] = {
+          registryName,
+          indexStale: false,
+          contractsStale: false,
+          missing: true,
+        };
       }
     }
 
-    return {
+    const repoEntries = Object.entries(repoStatuses);
+    const missingGroupRepos = repoEntries
+      .filter(([, status]) => status.missing)
+      .map(([repoPath]) => repoPath);
+    const indexStaleRepos = repoEntries
+      .filter(([, status]) => status.indexStale)
+      .map(([repoPath]) => repoPath);
+    const contractsStaleRepos = repoEntries
+      .filter(([, status]) => status.contractsStale)
+      .map(([repoPath]) => repoPath);
+
+    const summary = {
+      repoCount: repoEntries.length,
+      missingCount: missingGroupRepos.length,
+      indexStaleCount: indexStaleRepos.length,
+      contractsStaleCount: contractsStaleRepos.length,
+      missing: missingGroupRepos.length > 0,
+      indexStale: indexStaleRepos.length > 0,
+      contractsStale: contractsStaleRepos.length > 0,
+      actionRequired:
+        missingGroupRepos.length > 0 ||
+        indexStaleRepos.length > 0 ||
+        contractsStaleRepos.length > 0,
+    };
+
+    const recommendations: string[] = [];
+    if (summary.missing) {
+      recommendations.push('Register or re-analyze missing member repos, or update group.yaml.');
+    }
+    if (summary.indexStale) {
+      recommendations.push('Run gitnexus analyze in stale member repos, then sync the group.');
+    }
+    if (summary.contractsStale) {
+      recommendations.push(`Run gitnexus group sync ${name} to refresh contracts.json.`);
+    }
+
+    const result: GroupStatusResult = {
       group: name,
       lastSync: registry?.generatedAt || null,
       missingRepos: registry?.missingRepos || [],
       repos: repoStatuses,
+      summary,
+      missingGroupRepos,
+      indexStaleRepos,
+      contractsStaleRepos,
+      recommendations,
     };
+    return result;
   }
 }

@@ -3,9 +3,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { MermaidDiagram } from './MermaidDiagram';
 import { ToolCallCard } from './ToolCallCard';
 import { Copy, Check } from '@/lib/lucide-icons';
+
+const MermaidDiagram = React.lazy(() =>
+  import('./MermaidDiagram').then((m) => ({ default: m.MermaidDiagram })),
+);
 
 // Custom syntax theme
 const customTheme = {
@@ -159,7 +162,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
 
         // Render Mermaid diagrams
         if (language === 'mermaid') {
-          return <MermaidDiagram code={codeContent} />;
+          return (
+            <React.Suspense
+              fallback={<div className="p-3 text-xs text-text-muted">Loading diagram...</div>}
+            >
+              <MermaidDiagram code={codeContent} />
+            </React.Suspense>
+          );
         }
 
         return (

@@ -8,6 +8,7 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
+import { OpenApiExtractor } from './extractors/openapi-extractor.js';
 import { runExactMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -92,6 +93,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const entries = await readRegistry();
     const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
     const httpEx = new HttpRouteExtractor();
+    const openApiEx = new OpenApiExtractor();
     const grpcEx = new GrpcExtractor();
     const topicEx = new TopicExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
@@ -121,6 +123,23 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.http) {
             const extracted = await httpEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+
+            const existingHttpContracts = new Set(
+              autoContracts
+                .filter((c) => c.repo === groupPath && c.type === 'http')
+                .map((c) => `${c.role}\0${c.contractId}`),
+            );
+            const openApiContracts = await openApiEx.extract(executor, handle.repoPath, handle);
+            for (const c of openApiContracts) {
+              const key = `${c.role}\0${c.contractId}`;
+              if (existingHttpContracts.has(key)) continue;
+              existingHttpContracts.add(key);
               autoContracts.push({
                 ...c,
                 repo: groupPath,

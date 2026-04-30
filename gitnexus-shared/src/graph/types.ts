@@ -44,7 +44,12 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'
-  | 'Tool';
+  | 'Tool'
+  | 'RuntimeService'
+  | 'RuntimeSpan'
+  | 'RuntimeRoute'
+  | 'RuntimeError'
+  | 'RuntimeLogPattern';
 
 export type NodeProperties = {
   name: string;
@@ -62,6 +67,14 @@ export type NodeProperties = {
   keywords?: string[];
   description?: string;
   enrichedBy?: 'heuristic' | 'llm';
+  // Semantic anchors
+  summary?: string;
+  purpose?: string;
+  tags?: string[];
+  anchorModel?: string;
+  anchorHash?: string;
+  anchorVersion?: number;
+  anchorGeneratedAt?: string;
   // Process
   processType?: 'intra_community' | 'cross_community';
   stepCount?: number;
@@ -89,6 +102,21 @@ export type NodeProperties = {
   responseKeys?: string[];
   errorKeys?: string[];
   middleware?: string[];
+  // Runtime/log overlay
+  service?: string;
+  environment?: string;
+  route?: string;
+  method?: string;
+  callCount?: number;
+  errorCount?: number;
+  errorRate?: number;
+  p95LatencyMs?: number;
+  timeWindowStart?: string;
+  timeWindowEnd?: string;
+  stackHash?: string;
+  stackFrames?: unknown[];
+  pattern?: string;
+  lastSeen?: string;
   // Extensible
   [key: string]: unknown;
 };
@@ -115,7 +143,10 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
-  | 'QUERIES';
+  | 'QUERIES'
+  | 'RUNTIME_MAPS_TO'
+  | 'RUNTIME_OBSERVED_IN'
+  | 'RUNTIME_HAS_SIGNAL';
 
 export interface GraphNode {
   id: string;

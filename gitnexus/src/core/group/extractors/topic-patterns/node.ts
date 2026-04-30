@@ -16,6 +16,7 @@ import type { TopicMeta } from './types.js';
  *   - `channel.consume("queue", ...)` / `channel.publish(...)` / `channel.sendToQueue(...)`
  *   - `nc.subscribe("topic")` / `js.subscribe("topic")`
  *   - `nc.publish("topic", ...)` / `js.publish("topic", ...)`
+ *   - AWS SDK v2/v3 SNS publish and SQS send/receive calls
  *
  * The JavaScript and TypeScript tree-sitter grammars share node type
  * names for every construct we query here, so the pattern sources are
@@ -138,6 +139,111 @@ const NODE_TOPIC_PATTERNS: PatternSpec<TopicMeta>[] = [
           object: (identifier) @obj (#match? @obj "^(nc|js)$")
           property: (property_identifier) @prop (#match? @prop "^[Pp]ublish$"))
         arguments: (arguments . [(string) (template_string)] @value))
+    `,
+  },
+  {
+    meta: {
+      role: 'provider',
+      broker: 'sns',
+      confidence: 0.72,
+      symbolName: 'sns.publish',
+    },
+    query: `
+      (call_expression
+        function: (member_expression
+          property: (property_identifier) @prop (#eq? @prop "publish"))
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#eq? @key "TopicArn")
+              value: [(string) (template_string)] @value))))
+    `,
+  },
+  {
+    meta: {
+      role: 'provider',
+      broker: 'sns',
+      confidence: 0.78,
+      symbolName: 'PublishCommand',
+    },
+    query: `
+      (new_expression
+        constructor: (identifier) @cmd (#eq? @cmd "PublishCommand")
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#eq? @key "TopicArn")
+              value: [(string) (template_string)] @value))))
+    `,
+  },
+  {
+    meta: {
+      role: 'provider',
+      broker: 'sqs',
+      confidence: 0.72,
+      symbolName: 'sqs.sendMessage',
+    },
+    query: `
+      (call_expression
+        function: (member_expression
+          property: (property_identifier) @prop (#eq? @prop "sendMessage"))
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#match? @key "^(QueueUrl|QueueName)$")
+              value: [(string) (template_string)] @value))))
+    `,
+  },
+  {
+    meta: {
+      role: 'consumer',
+      broker: 'sqs',
+      confidence: 0.72,
+      symbolName: 'sqs.receiveMessage',
+    },
+    query: `
+      (call_expression
+        function: (member_expression
+          property: (property_identifier) @prop (#eq? @prop "receiveMessage"))
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#match? @key "^(QueueUrl|QueueName)$")
+              value: [(string) (template_string)] @value))))
+    `,
+  },
+  {
+    meta: {
+      role: 'provider',
+      broker: 'sqs',
+      confidence: 0.78,
+      symbolName: 'SendMessageCommand',
+    },
+    query: `
+      (new_expression
+        constructor: (identifier) @cmd (#match? @cmd "^(SendMessageCommand|SendMessageBatchCommand)$")
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#match? @key "^(QueueUrl|QueueName)$")
+              value: [(string) (template_string)] @value))))
+    `,
+  },
+  {
+    meta: {
+      role: 'consumer',
+      broker: 'sqs',
+      confidence: 0.78,
+      symbolName: 'ReceiveMessageCommand',
+    },
+    query: `
+      (new_expression
+        constructor: (identifier) @cmd (#eq? @cmd "ReceiveMessageCommand")
+        arguments: (arguments
+          (object
+            (pair
+              key: (property_identifier) @key (#match? @key "^(QueueUrl|QueueName)$")
+              value: [(string) (template_string)] @value))))
     `,
   },
 ];

@@ -10,6 +10,7 @@ import path from 'path';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
 import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
@@ -112,6 +113,75 @@ describe('streamAllCSVsToDisk', () => {
     const relContent = await fs.readFile(result.relCsvPath, 'utf-8');
     const relLines = relContent.trim().split('\n');
     expect(relLines.length).toBe(4); // header + 3 relationships
+  });
+
+  it('deduplicates equivalent relationship rows before writing CSV', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'func:main',
+      label: 'Function',
+      properties: { name: 'main', filePath: 'src/index.ts', startLine: 1, endLine: 4 },
+    });
+    graph.addNode({
+      id: 'func:save',
+      label: 'Function',
+      properties: { name: 'save', filePath: 'src/index.ts', startLine: 6, endLine: 8 },
+    });
+    graph.addNode({
+      id: 'prop:user.name',
+      label: 'CodeElement',
+      properties: { name: 'name', filePath: 'src/index.ts', startLine: 2, endLine: 2 },
+    });
+
+    graph.addRelationship({
+      id: 'calls-low',
+      sourceId: 'func:main',
+      targetId: 'func:save',
+      type: 'CALLS',
+      confidence: 0.53,
+      reason: 'scope-resolution: call',
+    });
+    graph.addRelationship({
+      id: 'calls-high',
+      sourceId: 'func:main',
+      targetId: 'func:save',
+      type: 'CALLS',
+      confidence: 0.85,
+      reason: 'global',
+    });
+    graph.addRelationship({
+      id: 'calls-high-duplicate',
+      sourceId: 'func:main',
+      targetId: 'func:save',
+      type: 'CALLS',
+      confidence: 0.85,
+      reason: 'global',
+    });
+    graph.addRelationship({
+      id: 'access-read',
+      sourceId: 'func:main',
+      targetId: 'prop:user.name',
+      type: 'ACCESSES',
+      confidence: 1,
+      reason: 'read',
+    });
+    graph.addRelationship({
+      id: 'access-write',
+      sourceId: 'func:main',
+      targetId: 'prop:user.name',
+      type: 'ACCESSES',
+      confidence: 1,
+      reason: 'write',
+    });
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+
+    expect(result.relRows).toBe(3);
+    const relContent = await fs.readFile(result.relCsvPath, 'utf-8');
+    expect(relContent).toContain('"global"');
+    expect(relContent).not.toContain('"scope-resolution: call"');
+    expect(relContent).toContain('"read"');
+    expect(relContent).toContain('"write"');
   });
 
   it('CSV content is properly escaped', async () => {

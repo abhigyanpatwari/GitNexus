@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
+    executeQuery: vi.fn(),
     streamQuery: vi.fn(),
   },
 }));
@@ -12,7 +13,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-import { ClientDisconnectedError, streamGraphNdjson } from '../../src/server/api.js';
+import {
+  buildGraph,
+  ClientDisconnectedError,
+  isMissingGraphAnchorColumnError,
+  streamGraphNdjson,
+} from '../../src/server/api.js';
 
 const createMockResponse = (writeImpl?: (chunk: string) => boolean) => {
   const response = new EventEmitter() as any;
@@ -21,6 +27,49 @@ const createMockResponse = (writeImpl?: (chunk: string) => boolean) => {
   response.write = vi.fn((chunk: string) => (writeImpl ? writeImpl(chunk) : true));
   return response;
 };
+
+const duplicateRelationshipRows = [
+  {
+    sourceId: 'Function:src/app.ts:main',
+    targetId: 'Function:src/app.ts:save',
+    type: 'CALLS',
+    confidence: 0.53,
+    reason: 'scope-resolution: call',
+    step: 0,
+  },
+  {
+    sourceId: 'Function:src/app.ts:main',
+    targetId: 'Function:src/app.ts:save',
+    type: 'CALLS',
+    confidence: 0.85,
+    reason: 'global',
+    step: 0,
+  },
+  {
+    sourceId: 'Function:src/app.ts:main',
+    targetId: 'Function:src/app.ts:save',
+    type: 'CALLS',
+    confidence: 0.85,
+    reason: 'global',
+    step: 0,
+  },
+  {
+    sourceId: 'Function:src/app.ts:main',
+    targetId: 'Property:src/app.ts:User.name',
+    type: 'ACCESSES',
+    confidence: 1,
+    reason: 'read',
+    step: 0,
+  },
+  {
+    sourceId: 'Function:src/app.ts:main',
+    targetId: 'Property:src/app.ts:User.name',
+    type: 'ACCESSES',
+    confidence: 1,
+    reason: 'write',
+    step: 0,
+  },
+];
 
 describe('streamGraphNdjson', () => {
   beforeEach(() => {
@@ -231,5 +280,150 @@ describe('streamGraphNdjson', () => {
         },
       },
     });
+  });
+
+  it('streams semantic anchor metadata for code nodes', async () => {
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (query.includes('MATCH (n:`Function`)')) {
+          expect(query).toContain('n.summary AS summary');
+          await onRow({
+            id: 'Function:src/auth.ts:authGate',
+            name: 'authGate',
+            filePath: 'src/auth.ts',
+            startLine: 10,
+            endLine: 18,
+            description: 'Function authGate implements behavior in auth.ts.',
+            summary: 'Function authGate implements behavior in auth.ts.',
+            purpose: 'Use this behavior anchor to trace callers before editing.',
+            tags: ['function', 'exported'],
+            anchorModel: 'heuristic-v1',
+            anchorHash: 'abc12345',
+            anchorVersion: 1,
+            anchorGeneratedAt: '2026-04-30T01:02:03.000Z',
+          });
+          return 1;
+        }
+        return 0;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    const records = writes.map((chunk) => JSON.parse(chunk));
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'node',
+        data: expect.objectContaining({
+          id: 'Function:src/auth.ts:authGate',
+          properties: expect.objectContaining({
+            summary: 'Function authGate implements behavior in auth.ts.',
+            purpose: 'Use this behavior anchor to trace callers before editing.',
+            tags: ['function', 'exported'],
+            anchorModel: 'heuristic-v1',
+            anchorHash: 'abc12345',
+            anchorVersion: 1,
+            anchorGeneratedAt: '2026-04-30T01:02:03.000Z',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('falls back to legacy node queries when anchor columns are absent', async () => {
+    expect(
+      isMissingGraphAnchorColumnError(new Error('Binder Error: property summary not found')),
+    ).toBe(true);
+
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (query.includes('MATCH (n:`Function`)') && query.includes('n.summary AS summary')) {
+        throw new Error('Binder Error: property summary not found');
+      }
+      if (query.includes('MATCH (n:`Function`)')) {
+        return [
+          {
+            id: 'Function:src/auth.ts:legacy',
+            name: 'legacy',
+            filePath: 'src/auth.ts',
+            startLine: 1,
+            endLine: 5,
+            description: 'Legacy description',
+          },
+        ];
+      }
+      if (query.includes('CodeRelation')) return [];
+      return [];
+    });
+
+    const graph = await buildGraph(false);
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.nodes[0].properties.description).toBe('Legacy description');
+    expect(graph.nodes[0].properties.summary).toBeUndefined();
+  });
+
+  it('deduplicates streamed relationships while keeping read and write access edges', async () => {
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (query.includes('CodeRelation')) {
+          for (const row of duplicateRelationshipRows) await onRow(row);
+          return duplicateRelationshipRows.length;
+        }
+        return 0;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    const records = writes.map((chunk) => JSON.parse(chunk));
+    const relationships = records.filter((record) => record.type === 'relationship');
+    expect(relationships).toHaveLength(3);
+
+    const calls = relationships.filter((record) => record.data.type === 'CALLS');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].data).toMatchObject({ confidence: 0.85, reason: 'global' });
+
+    const accessReasons = relationships
+      .filter((record) => record.data.type === 'ACCESSES')
+      .map((record) => record.data.reason)
+      .sort();
+    expect(accessReasons).toEqual(['read', 'write']);
+  });
+
+  it('deduplicates built graph relationships using the same relationship identity', async () => {
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (query.includes('MATCH (n:`File`)')) {
+        return [{ id: 'File:src/app.ts', name: 'app.ts', filePath: 'src/app.ts' }];
+      }
+      if (query.includes('CodeRelation')) return duplicateRelationshipRows;
+      return [];
+    });
+
+    const graph = await buildGraph(false);
+
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.relationships).toHaveLength(3);
+    expect(graph.relationships.find((rel) => rel.type === 'CALLS')).toMatchObject({
+      confidence: 0.85,
+      reason: 'global',
+    });
+    expect(
+      graph.relationships
+        .filter((rel) => rel.type === 'ACCESSES')
+        .map((rel) => rel.reason)
+        .sort(),
+    ).toEqual(['read', 'write']);
   });
 });

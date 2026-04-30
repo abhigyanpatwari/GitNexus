@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 13 tools are defined (per-repo + group_list/group_sync)
+ * - All 17 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -13,8 +13,8 @@ import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+  it('exports all tools (11 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(17);
   });
 
   it('contains all expected tool names', () => {
@@ -27,6 +27,10 @@ describe('GITNEXUS_TOOLS', () => {
         'context',
         'detect_changes',
         'rename',
+        'get_impact_score',
+        'export_context',
+        'runtime_context',
+        'run_skill',
         'impact',
         'api_impact',
       ]),
@@ -67,6 +71,44 @@ describe('GITNEXUS_TOOLS', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     expect(impactTool.inputSchema.required).toContain('target');
     expect(impactTool.inputSchema.required).toContain('direction');
+  });
+
+  it('get_impact_score supports target or target_uid without requiring both', () => {
+    const scoreTool = GITNEXUS_TOOLS.find((t) => t.name === 'get_impact_score')!;
+    expect(scoreTool.inputSchema.required).toEqual([]);
+    expect(scoreTool.inputSchema.properties.target).toBeDefined();
+    expect(scoreTool.inputSchema.properties.target_uid).toBeDefined();
+    expect(scoreTool.inputSchema.properties.maxExamples.maximum).toBe(50);
+  });
+
+  it('export_context supports bounded markdown/jsonl/json exports', () => {
+    const exportTool = GITNEXUS_TOOLS.find((t) => t.name === 'export_context')!;
+    expect(exportTool.inputSchema.required).toEqual([]);
+    expect(exportTool.inputSchema.properties.degree.maximum).toBe(3);
+    expect(exportTool.inputSchema.properties.maxNodes.maximum).toBe(500);
+    expect(exportTool.inputSchema.properties.format.enum).toEqual(['markdown', 'jsonl', 'json']);
+  });
+
+  it('runtime_context supports symbol, route, and service lookups without required parameters', () => {
+    const runtimeTool = GITNEXUS_TOOLS.find((t) => t.name === 'runtime_context')!;
+    expect(runtimeTool.inputSchema.required).toEqual([]);
+    expect(runtimeTool.inputSchema.properties.target_uid).toBeDefined();
+    expect(runtimeTool.inputSchema.properties.route).toBeDefined();
+    expect(runtimeTool.inputSchema.properties.service).toBeDefined();
+  });
+
+  it('run_skill requires a generated skill name and exposes executable actions', () => {
+    const runSkillTool = GITNEXUS_TOOLS.find((t) => t.name === 'run_skill')!;
+    expect(runSkillTool.inputSchema.required).toEqual(['skill']);
+    expect(runSkillTool.inputSchema.properties.skill.type).toBe('string');
+    expect(runSkillTool.inputSchema.properties.args.type).toBe('object');
+    expect(runSkillTool.inputSchema.properties.action.enum).toEqual([
+      'summarize',
+      'list_entry_points',
+      'impact',
+      'export_context',
+      'validate_change',
+    ]);
   });
 
   it('rename tool requires new_name', () => {
@@ -138,6 +180,20 @@ describe('GITNEXUS_TOOLS', () => {
   it('impact relationTypes is array of strings', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     const relProp = impactTool.inputSchema.properties.relationTypes;
+    expect(relProp.type).toBe('array');
+    expect(relProp.items).toEqual({ type: 'string' });
+  });
+
+  it('get_impact_score relationTypes is array of strings', () => {
+    const scoreTool = GITNEXUS_TOOLS.find((t) => t.name === 'get_impact_score')!;
+    const relProp = scoreTool.inputSchema.properties.relationTypes;
+    expect(relProp.type).toBe('array');
+    expect(relProp.items).toEqual({ type: 'string' });
+  });
+
+  it('export_context relationTypes is array of strings', () => {
+    const exportTool = GITNEXUS_TOOLS.find((t) => t.name === 'export_context')!;
+    const relProp = exportTool.inputSchema.properties.relationTypes;
     expect(relProp.type).toBe('array');
     expect(relProp.items).toEqual({ type: 'string' });
   });

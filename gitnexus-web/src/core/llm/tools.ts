@@ -15,10 +15,42 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES } from 'gitnexus-shared';
 import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
+import { formatNodeMarker, type AgentNodeMarker } from '../../lib/agent-tracking';
 
 const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]).includes(label);
 
 const validRelType = (t: string): boolean => (REL_TYPES as readonly string[]).includes(t);
+
+const escapeCypherString = (value: string): string => value.replace(/'/g, "''");
+
+const appendNodeMarker = (
+  body: string,
+  marker: AgentNodeMarker,
+  nodeIds: Iterable<string | null | undefined>,
+): string => {
+  const formatted = formatNodeMarker(marker, nodeIds);
+  return formatted ? `${body}\n\n${formatted}` : body;
+};
+
+const rowValue = (row: any, idx: number, key: string): unknown =>
+  Array.isArray(row) ? row[idx] : row?.[key];
+
+const collectNodeIdsFromRows = (rows: Record<string, unknown>[]): string[] => {
+  const preferredKeys = ['id', 'nodeId', 'sourceId', 'targetId'];
+  const nodeIds = new Set<string>();
+
+  for (const row of rows) {
+    if (!row || Array.isArray(row) || typeof row !== 'object') continue;
+    for (const key of preferredKeys) {
+      const value = row[key];
+      if (typeof value === 'string' && value.trim()) {
+        nodeIds.add(value);
+      }
+    }
+  }
+
+  return [...nodeIds];
+};
 
 /**
  * Backend query interface for Graph RAG tools.
@@ -39,6 +71,40 @@ export interface GraphRAGBackend {
  */
 export const createGraphRAGTools = (backend: GraphRAGBackend) => {
   const { executeQuery, search: backendSearch, grep: backendGrep, readFile } = backend;
+
+  const resolveFileNodeIds = async (filePaths: Iterable<string | null | undefined>) => {
+    const normalized = Array.from(
+      new Set(
+        Array.from(filePaths)
+          .filter((filePath): filePath is string => Boolean(filePath))
+          .map((filePath) => filePath.replace(/\\/g, '/').replace(/^\.?\//, '').trim())
+          .filter(Boolean),
+      ),
+    ).slice(0, 40);
+
+    if (normalized.length === 0) return [] as string[];
+
+    const clauses = normalized
+      .map((filePath) => {
+        const escaped = escapeCypherString(filePath);
+        return `(f.filePath = '${escaped}' OR f.filePath CONTAINS '${escaped}' OR '${escaped}' CONTAINS f.filePath)`;
+      })
+      .join(' OR ');
+
+    try {
+      const rows = await executeQuery(`
+        MATCH (f:File)
+        WHERE ${clauses}
+        RETURN DISTINCT f.id AS id
+        LIMIT 100
+      `);
+      return rows
+        .map((row: any) => rowValue(row, 0, 'id'))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    } catch {
+      return [];
+    }
+  };
 
   // ============================================================================
   // TOOL 1: SEARCH (Hybrid + 1-hop expansion)
@@ -143,7 +209,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       };
 
       if (!shouldGroup) {
-        return `Found ${searchResults.length} matches:\n\n${results.map((r) => formatResult(r)).join('\n\n')}`;
+        return appendNodeMarker(
+          `Found ${searchResults.length} matches:\n\n${results.map((r) => formatResult(r)).join('\n\n')}`,
+          'HIGHLIGHT_NODES',
+          results.map((r) => r.nodeId),
+        );
       }
 
       // Group by process (or "No process")
@@ -200,7 +270,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
         lines.push('');
       }
 
-      return lines.join('\n').trim();
+      return appendNodeMarker(
+        lines.join('\n').trim(),
+        'HIGHLIGHT_NODES',
+        results.map((r) => r.nodeId),
+      );
     },
     {
       name: 'search',
@@ -249,7 +323,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
                   `[${i + 1}] ${r.label || 'File'}: ${r.name || r.filePath?.split('/').pop() || '?'} (score: ${(r.score ?? 0).toFixed(3)})\n    File: ${r.filePath || 'n/a'}`,
               )
               .join('\n');
-            return `Semantic search for "${query}" (${semanticResults.length} results):\n\n${formatted}`;
+            return appendNodeMarker(
+              `Semantic search for "${query}" (${semanticResults.length} results):\n\n${formatted}`,
+              'HIGHLIGHT_NODES',
+              semanticResults.map((r) => r.nodeId),
+            );
           } catch {
             return 'Semantic search not available. Embeddings may not be generated. Use a non-vector Cypher query instead.';
           }
@@ -287,7 +365,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
             .join('\n');
 
           const truncated = results.length > 50 ? `\n\n_(${results.length - 50} more rows)_` : '';
-          return `**${results.length} results:**\n\n${header}\n${separator}\n${rows}${truncated}`;
+          return appendNodeMarker(
+            `**${results.length} results:**\n\n${header}\n${separator}\n${rows}${truncated}`,
+            'HIGHLIGHT_NODES',
+            collectNodeIdsFromRows(results),
+          );
         }
 
         // Fallback for non-object results
@@ -295,7 +377,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
           return `[${i + 1}] ${JSON.stringify(row)}`;
         });
         const truncated = results.length > 50 ? `\n... (${results.length - 50} more)` : '';
-        return `${results.length} results:\n${formatted.join('\n')}${truncated}`;
+        return appendNodeMarker(
+          `${results.length} results:\n${formatted.join('\n')}${truncated}`,
+          'HIGHLIGHT_NODES',
+          collectNodeIdsFromRows(results as Record<string, unknown>[]),
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation: CodeRelation with type property (CONTAINS, DEFINES, IMPORTS, CALLS). Example: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f, g`;
@@ -370,8 +456,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
         const formatted = results.map((r) => `${r.filePath}:${r.line}: ${r.text}`).join('\n');
         const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
+        const fileNodeIds = await resolveFileNodeIds(results.map((r) => r.filePath));
 
-        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
+        return appendNodeMarker(
+          `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`,
+          'HIGHLIGHT_NODES',
+          fileNodeIds,
+        );
       } catch (error) {
         return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -407,16 +498,25 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     async ({ filePath }: { filePath: string }) => {
       try {
         const content = await readFile(filePath);
+        const fileNodeIds = await resolveFileNodeIds([filePath]);
 
         // Truncate large files
         const MAX_CONTENT = 50000;
         if (content.length > MAX_CONTENT) {
           const lines = content.split('\n').length;
-          return `File: ${filePath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated]`;
+          return appendNodeMarker(
+            `File: ${filePath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated]`,
+            'HIGHLIGHT_NODES',
+            fileNodeIds,
+          );
         }
 
         const lines = content.split('\n').length;
-        return `File: ${filePath} (${lines} lines)\n\n${content}`;
+        return appendNodeMarker(
+          `File: ${filePath} (${lines} lines)\n\n${content}`,
+          'HIGHLIGHT_NODES',
+          fileNodeIds,
+        );
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes('not found') || message.includes('404')) {
@@ -509,7 +609,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           return `- ${label} (${steps} steps)`;
         });
 
-        return [
+        const overview = [
           `CLUSTERS (${clusters.length} total):`,
           `| Cluster | Symbols | Cohesion | Description |`,
           `| --- | --- | --- | --- |`,
@@ -526,6 +626,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           `CRITICAL PATHS:`,
           ...(criticalLines.length > 0 ? criticalLines : ['- None found']),
         ].join('\n');
+
+        return appendNodeMarker(overview, 'HIGHLIGHT_NODES', [
+          ...clusters.map((row: any) => rowValue(row, 0, 'id')),
+          ...processes.map((row: any) => rowValue(row, 0, 'id')),
+        ].filter((id): id is string => typeof id === 'string'));
       } catch (error) {
         return `Overview error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -613,7 +718,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
         const stepsQuery = `
           MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${pid.replace(/'/g, "''")}'})
-          RETURN s.name AS name, s.filePath AS filePath, r.step AS step
+          RETURN s.name AS name, s.filePath AS filePath, r.step AS step, s.id AS id
           ORDER BY r.step
         `;
         const clustersQuery = `
@@ -642,7 +747,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           return `- ${clabel}${desc ? ` — ${desc}` : ''}`;
         });
 
-        return [
+        const output = [
           `PROCESS: ${label}`,
           `Type: ${ptype || 'n/a'}`,
           `Steps: ${stepCount ?? steps.length}`,
@@ -653,6 +758,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           `CLUSTERS TOUCHED:`,
           ...(clusterLines.length > 0 ? clusterLines : ['- None found']),
         ].join('\n');
+
+        return appendNodeMarker(output, 'HIGHLIGHT_NODES', [
+          pid,
+          ...steps.map((row: any) => rowValue(row, 3, 'id')),
+          ...clusters.map((row: any) => rowValue(row, 0, 'id')),
+        ]);
       }
 
       if (resolvedType === 'cluster') {
@@ -664,7 +775,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
         const membersQuery = `
           MATCH (c:Community {id: '${cid.replace(/'/g, "''")}'})<-[:CodeRelation {type: 'MEMBER_OF'}]-(m)
-          RETURN m.name AS name, m.filePath AS filePath, label(m) AS nodeType
+          RETURN m.name AS name, m.filePath AS filePath, label(m) AS nodeType, m.id AS id
           LIMIT 50
         `;
         const processesQuery = `
@@ -693,7 +804,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           return `- ${plabel} (${steps} steps)`;
         });
 
-        return [
+        const output = [
           `CLUSTER: ${label}`,
           `Symbols: ${symbolCount ?? members.length}`,
           `Cohesion: ${cohesion !== null && cohesion !== undefined ? Number(cohesion).toFixed(2) : 'n/a'}`,
@@ -705,6 +816,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           `PROCESSES TOUCHING THIS CLUSTER:`,
           ...(processLines.length > 0 ? processLines : ['- None found']),
         ].join('\n');
+
+        return appendNodeMarker(output, 'HIGHLIGHT_NODES', [
+          cid,
+          ...members.map((row: any) => rowValue(row, 3, 'id')),
+          ...processes.map((row: any) => rowValue(row, 0, 'id')),
+        ]);
       }
 
       if (resolvedType === 'symbol') {
@@ -726,7 +843,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const processQuery = `
           MATCH (n:${nodeType} {id: '${String(nodeId).replace(/'/g, "''")}'})
           MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-          RETURN p.label AS label, r.step AS step, p.stepCount AS stepCount
+          RETURN p.label AS label, r.step AS step, p.stepCount AS stepCount, p.id AS id
           ORDER BY r.step
         `;
         const connectionsQuery = `
@@ -778,7 +895,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           }
         }
 
-        return [
+        const output = [
           `SYMBOL: ${nodeType} ${name}`,
           `ID: ${nodeId}`,
           `File: ${filePath || 'n/a'}`,
@@ -790,6 +907,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           `CONNECTIONS:`,
           connections,
         ].join('\n');
+
+        return appendNodeMarker(output, 'HIGHLIGHT_NODES', [
+          String(nodeId),
+          ...processRes.map((row: any) => rowValue(row, 3, 'id')),
+        ].filter((id): id is string => typeof id === 'string'));
       }
 
       return `Unable to explore "${target}".`;
@@ -1209,14 +1331,23 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               const formatted = filtered
                 .map((h) => `${h.filePath}:${h.line}: ${h.text}`)
                 .join('\n');
-              return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}), but textual references were detected (graph may be incomplete):\n\n${formatted}${multipleMatchWarning}`;
+              const fileNodeIds = await resolveFileNodeIds(filtered.map((h) => h.filePath));
+              return appendNodeMarker(
+                `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}), but textual references were detected (graph may be incomplete):\n\n${formatted}${multipleMatchWarning}`,
+                'HIGHLIGHT_NODES',
+                [targetId, ...fileNodeIds],
+              );
             }
           } catch {
             // Grep fallback failed — continue to default message
           }
         }
 
-        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.${multipleMatchWarning}`;
+        return appendNodeMarker(
+          `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.${multipleMatchWarning}`,
+          'HIGHLIGHT_NODES',
+          [targetId],
+        );
       }
 
       const depth1 = byDepth.get(1) || [];
@@ -1414,7 +1545,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
       lines.push(``);
 
-      return lines.join('\n');
+      return [
+        appendNodeMarker(lines.join('\n'), 'HIGHLIGHT_NODES', [targetId]),
+        formatNodeMarker('IMPACT', allNodeIds),
+      ]
+        .filter(Boolean)
+        .join('\n');
     },
     {
       name: 'impact',

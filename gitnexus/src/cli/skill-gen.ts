@@ -39,6 +39,7 @@ interface MemberSymbol {
   filePath: string;
   startLine: number;
   isExported: boolean;
+  description?: string;
 }
 
 interface FileInfo {
@@ -50,6 +51,74 @@ interface CrossConnection {
   targetLabel: string;
   count: number;
 }
+
+interface SkillSymbolReference {
+  uid: string;
+  name: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+  description?: string;
+}
+
+interface SkillActionDefinition {
+  name: 'summarize' | 'list_entry_points' | 'impact' | 'export_context' | 'validate_change';
+  description: string;
+  args?: Record<string, string>;
+}
+
+interface SkillMetadata {
+  schemaVersion: 1;
+  name: string;
+  label: string;
+  projectName: string;
+  generatedAt: string;
+  symbolCount: number;
+  fileCount: number;
+  cohesion: number;
+  rootDirectories: string[];
+  keyFiles: FileInfo[];
+  entryPoints: SkillSymbolReference[];
+  anchors: SkillSymbolReference[];
+  actions: SkillActionDefinition[];
+  validationCommands: string[];
+}
+
+const EXECUTABLE_SKILL_ACTIONS: SkillActionDefinition[] = [
+  {
+    name: 'summarize',
+    description: 'Return a compact overview of this functional area.',
+  },
+  {
+    name: 'list_entry_points',
+    description: 'List exported symbols that make good starting points for this area.',
+  },
+  {
+    name: 'impact',
+    description: 'Run impact analysis for a target in this area.',
+    args: {
+      target: 'Optional symbol name. Defaults to the first entry point.',
+      target_uid: 'Optional symbol UID for zero-ambiguity lookup.',
+      direction: 'upstream or downstream. Defaults to upstream.',
+      maxDepth: 'Maximum traversal depth. Defaults to 3.',
+    },
+  },
+  {
+    name: 'export_context',
+    description: 'Export a bounded graph neighborhood for a target in this area.',
+    args: {
+      target: 'Optional symbol name. Defaults to the first entry point.',
+      target_uid: 'Optional symbol UID for zero-ambiguity lookup.',
+      degree: 'Neighborhood degree, 1-3. Defaults to 2.',
+      direction: 'upstream, downstream, or both. Defaults to both.',
+      format: 'markdown, jsonl, or json. Defaults to markdown.',
+    },
+  },
+  {
+    name: 'validate_change',
+    description: 'Return suggested repo-level validation commands for changes in this area.',
+  },
+];
 
 // ============================================================================
 // MAIN EXPORT
@@ -118,6 +187,8 @@ export const generateSkillFiles = async (
   // Step 5: Generate skill files
   const skills: GeneratedSkillInfo[] = [];
   const usedNames = new Set<string>();
+  const generatedAt = new Date().toISOString();
+  const validationCommands = await detectValidationCommands(repoPath);
 
   for (const community of significant) {
     // Gather member symbols
@@ -157,11 +228,27 @@ export const generateSkillFiles = async (
       connections,
       kebabName,
     );
+    const metadata = renderSkillMetadata(
+      community,
+      projectName,
+      members,
+      files,
+      entryPoints,
+      kebabName,
+      repoPath,
+      generatedAt,
+      validationCommands,
+    );
 
     // Write file
     const skillDir = path.join(outputDir, kebabName);
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+    await fs.writeFile(
+      path.join(skillDir, 'skill.json'),
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      'utf-8',
+    );
 
     const info: GeneratedSkillInfo = {
       name: kebabName,
@@ -397,11 +484,24 @@ const gatherMembers = (
         filePath: node.properties.filePath || '',
         startLine: node.properties.startLine || 0,
         isExported: node.properties.isExported === true,
+        description:
+          typeof node.properties.description === 'string' && node.properties.description.trim()
+            ? node.properties.description.trim()
+            : undefined,
       });
     }
   }
 
   return members;
+};
+
+const cleanMarkdownText = (value: string): string =>
+  value.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+
+const truncateText = (value: string, maxLength: number): string => {
+  const normalized = cleanMarkdownText(value);
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
 };
 
 /**
@@ -547,6 +647,16 @@ const renderSkillMarkdown = (
     topNames.push(...members.slice(0, 3).map((m) => m.name));
   }
 
+  const anchorMembers = [...members]
+    .filter((m) => typeof m.description === 'string' && m.description.trim())
+    .sort((a, b) => {
+      if (a.isExported !== b.isExported) return a.isExported ? -1 : 1;
+      const labelCompare = a.label.localeCompare(b.label);
+      if (labelCompare !== 0) return labelCompare;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, 8);
+
   const lines: string[] = [];
 
   // Frontmatter
@@ -577,6 +687,20 @@ const renderSkillMarkdown = (
   }
   lines.push(`- Modifying ${community.label.toLowerCase()}-related functionality`);
   lines.push('');
+
+  if (anchorMembers.length > 0) {
+    lines.push('## Key Anchors');
+    lines.push('');
+    lines.push('Use these summaries before loading raw source:');
+    lines.push('');
+    for (const anchor of anchorMembers) {
+      const loc = anchor.startLine ? `${anchor.filePath}:${anchor.startLine}` : anchor.filePath;
+      lines.push(
+        `- **\`${anchor.name}\`** (${anchor.label}) - ${truncateText(anchor.description || '', 180)}${loc ? ` \`${loc}\`` : ''}`,
+      );
+    }
+    lines.push('');
+  }
 
   // Key Files (top 10)
   lines.push('## Key Files');
@@ -659,9 +783,131 @@ const renderSkillMarkdown = (
   return lines.join('\n');
 };
 
+const toSkillSymbolReference = (member: MemberSymbol, repoPath: string): SkillSymbolReference => ({
+  uid: member.id,
+  name: member.name,
+  kind: member.label,
+  filePath: toRelativePath(member.filePath, repoPath),
+  startLine: member.startLine,
+  ...(member.description ? { description: member.description } : {}),
+});
+
+const renderSkillMetadata = (
+  community: AggregatedCommunity,
+  projectName: string,
+  members: MemberSymbol[],
+  files: FileInfo[],
+  entryPoints: MemberSymbol[],
+  kebabName: string,
+  repoPath: string,
+  generatedAt: string,
+  validationCommands: string[],
+): SkillMetadata => {
+  const anchors = [...members]
+    .filter((m) => typeof m.description === 'string' && m.description.trim())
+    .sort((a, b) => {
+      if (a.isExported !== b.isExported) return a.isExported ? -1 : 1;
+      const labelCompare = a.label.localeCompare(b.label);
+      if (labelCompare !== 0) return labelCompare;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, 10)
+    .map((m) => toSkillSymbolReference(m, repoPath));
+
+  return {
+    schemaVersion: 1,
+    name: kebabName,
+    label: community.label,
+    projectName,
+    generatedAt,
+    symbolCount: community.symbolCount,
+    fileCount: files.length,
+    cohesion: community.cohesion,
+    rootDirectories: gatherRootDirectories(files),
+    keyFiles: files.slice(0, 10).map((file) => ({
+      relativePath: file.relativePath,
+      symbols: file.symbols.slice(0, 20),
+    })),
+    entryPoints: entryPoints.slice(0, 10).map((m) => toSkillSymbolReference(m, repoPath)),
+    anchors,
+    actions: EXECUTABLE_SKILL_ACTIONS,
+    validationCommands,
+  };
+};
+
 // ============================================================================
 // UTILITY HELPERS
 // ============================================================================
+
+const fileExists = async (filePath: string): Promise<boolean> => {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const detectNodePackageManager = async (
+  repoPath: string,
+): Promise<'npm' | 'pnpm' | 'yarn' | 'bun'> => {
+  if (await fileExists(path.join(repoPath, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (await fileExists(path.join(repoPath, 'yarn.lock'))) return 'yarn';
+  if (
+    (await fileExists(path.join(repoPath, 'bun.lockb'))) ||
+    (await fileExists(path.join(repoPath, 'bun.lock')))
+  ) {
+    return 'bun';
+  }
+  return 'npm';
+};
+
+const formatPackageScriptCommand = (
+  packageManager: 'npm' | 'pnpm' | 'yarn' | 'bun',
+  script: string,
+): string => {
+  if (packageManager === 'npm') return script === 'test' ? 'npm test' : `npm run ${script}`;
+  if (packageManager === 'bun') return `bun run ${script}`;
+  return `${packageManager} ${script}`;
+};
+
+const detectValidationCommands = async (repoPath: string): Promise<string[]> => {
+  const commands: string[] = [];
+  const packageJsonPath = path.join(repoPath, 'package.json');
+
+  try {
+    const packageJson = JSON.parse(
+      (await fs.readFile(packageJsonPath, 'utf-8')).replace(/^\uFEFF/, ''),
+    ) as {
+      scripts?: Record<string, string>;
+    };
+    const scripts = packageJson.scripts ?? {};
+    const packageManager = await detectNodePackageManager(repoPath);
+
+    for (const script of ['typecheck', 'lint', 'test', 'build']) {
+      if (typeof scripts[script] === 'string' && scripts[script].trim()) {
+        commands.push(formatPackageScriptCommand(packageManager, script));
+      }
+    }
+  } catch {
+    /* package.json is optional */
+  }
+
+  if (
+    (await fileExists(path.join(repoPath, 'pyproject.toml'))) ||
+    (await fileExists(path.join(repoPath, 'pytest.ini')))
+  ) {
+    commands.push('pytest');
+  }
+  if (await fileExists(path.join(repoPath, 'go.mod'))) {
+    commands.push('go test ./...');
+  }
+  if (await fileExists(path.join(repoPath, 'Cargo.toml'))) {
+    commands.push('cargo test');
+  }
+
+  return Array.from(new Set(commands));
+};
 
 /**
  * @brief Convert a community label to a kebab-case directory name
@@ -732,4 +978,14 @@ const getDominantDirectory = (files: FileInfo[]): string | null => {
   }
 
   return best;
+};
+
+const gatherRootDirectories = (files: FileInfo[]): string[] => {
+  const dirs = new Set<string>();
+  for (const file of files) {
+    const normalized = file.relativePath.replace(/\\/g, '/');
+    const [first] = normalized.split('/');
+    if (first) dirs.add(first);
+  }
+  return Array.from(dirs).sort();
 };

@@ -85,6 +85,14 @@ export interface AnalyzeOptions {
    * `allowDuplicateName` option end-to-end.
    */
   allowDuplicateName?: boolean;
+  /** Skip repo-group contract auto-sync after a successful analysis. */
+  skipGroupSync?: boolean;
+  /** Plan manifest-backed incremental invalidation before the rebuild. */
+  incremental?: boolean;
+  /** Enrich semantic anchors with configured LLM provider after heuristic anchors. */
+  llmAnchors?: boolean;
+  /** Maximum nodes to enrich with LLM semantic anchors. */
+  llmAnchorLimit?: string;
   /**
    * Override the walker's large-file skip threshold (#991). Value in KB;
    * clamped downstream to the tree-sitter 32 MB ceiling. Sets
@@ -166,6 +174,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
+  }
+
+  let llmAnchorLimit: number | undefined;
+  if (options?.llmAnchorLimit !== undefined) {
+    const parsed = Number(options.llmAnchorLimit);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error('  --llm-anchor-limit must be a non-negative integer.\n');
+      process.exitCode = 1;
+      return;
+    }
+    llmAnchorLimit = parsed;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -300,12 +319,16 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
         noStats: options?.noStats,
+        incremental: options?.incremental,
+        llmAnchors: options?.llmAnchors,
+        llmAnchorLimit,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
         allowDuplicateName: options?.allowDuplicateName,
+        skipGroupSync: options?.skipGroupSync,
       },
       {
         onProgress: (_phase, percent, message) => {

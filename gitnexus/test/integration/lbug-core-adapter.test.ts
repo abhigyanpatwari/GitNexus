@@ -160,6 +160,96 @@ withTestLbugDB(
           const result = await deleteNodesForFile('/absolutely/nonexistent/path/file.ts');
           expect(result).toEqual({ deletedNodes: 0 });
         });
+
+        it('upsertGraphSliceToLbug replaces a file slice and restores touching relationships', async () => {
+          const { executeQuery, upsertGraphSliceToLbug } =
+            await import('../../src/core/lbug/lbug-adapter.js');
+          const { buildTestGraph } = await import('../helpers/test-graph.js');
+
+          const graph = buildTestGraph(
+            [
+              {
+                id: 'File:src/index.ts',
+                label: 'File',
+                name: 'index.ts',
+                filePath: 'src/index.ts',
+              },
+              {
+                id: 'File:src/utils.ts',
+                label: 'File',
+                name: 'utils.ts',
+                filePath: 'src/utils.ts',
+              },
+              {
+                id: 'Function:src/index.ts:main:1',
+                label: 'Function',
+                name: 'main',
+                filePath: 'src/index.ts',
+                startLine: 1,
+                endLine: 10,
+                isExported: true,
+              },
+              {
+                id: 'Function:src/utils.ts:helper:1',
+                label: 'Function',
+                name: 'helperRenamed',
+                filePath: 'src/utils.ts',
+                startLine: 1,
+                endLine: 5,
+                isExported: true,
+              },
+              {
+                id: 'Function:src/utils.ts:extra:20',
+                label: 'Function',
+                name: 'extra',
+                filePath: 'src/utils.ts',
+                startLine: 20,
+                endLine: 25,
+                isExported: false,
+              },
+            ],
+            [
+              {
+                sourceId: 'Function:src/index.ts:main:1',
+                targetId: 'Function:src/utils.ts:helper:1',
+                type: 'CALLS',
+              },
+              {
+                sourceId: 'Function:src/utils.ts:helper:1',
+                targetId: 'Function:src/utils.ts:extra:20',
+                type: 'CALLS',
+              },
+              {
+                sourceId: 'File:src/utils.ts',
+                targetId: 'Function:src/utils.ts:helper:1',
+                type: 'CONTAINS',
+              },
+              {
+                sourceId: 'File:src/utils.ts',
+                targetId: 'Function:src/utils.ts:extra:20',
+                type: 'CONTAINS',
+              },
+            ],
+          );
+
+          const result = await upsertGraphSliceToLbug(graph, ['src/utils.ts']);
+
+          expect(result.failedNodes).toBe(0);
+          expect(result.failedRelationships).toBe(0);
+          expect(result.insertedNodes).toBe(3);
+          expect(result.insertedRelationships).toBe(4);
+
+          const utilsFunctions = await executeQuery(
+            "MATCH (n:Function) WHERE n.filePath = 'src/utils.ts' RETURN n.name AS name ORDER BY n.name",
+          );
+          expect(utilsFunctions.map((row) => row.name)).toEqual(['extra', 'helperRenamed']);
+
+          const restoredExternalEdge = await executeQuery(`
+            MATCH (a:Function {id: 'Function:src/index.ts:main:1'})-[r:CodeRelation]->(b:Function {id: 'Function:src/utils.ts:helper:1'})
+            RETURN r.type AS type
+          `);
+          expect(restoredExternalEdge.map((row) => row.type)).toEqual(['CALLS']);
+        });
       });
     });
   },

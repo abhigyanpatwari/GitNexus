@@ -17,6 +17,36 @@ export interface AnalyzeJobProgress {
   phase: string;
   percent: number;
   message: string;
+  detail?: string;
+  counts?: IndexingCounts;
+  warnings?: IndexingWarning[];
+}
+
+export interface IndexingCounts {
+  filesChanged?: number;
+  filesProcessed?: number;
+  totalFiles?: number;
+  symbolsUpdated?: number;
+  warnings?: number;
+}
+
+export type IndexingWarningKind =
+  | 'skipped_file'
+  | 'parser_failure'
+  | 'lock_conflict'
+  | 'retryable_error'
+  | 'indexing_error';
+
+export interface IndexingWarning {
+  id: string;
+  kind: IndexingWarningKind;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  repoName?: string;
+  repoPath?: string;
+  filePath?: string;
+  action?: string;
+  timestamp: number;
 }
 
 export interface AnalyzeJob {
@@ -27,6 +57,7 @@ export interface AnalyzeJob {
   repoName?: string;
   progress: AnalyzeJobProgress;
   error?: string;
+  warnings: IndexingWarning[];
   startedAt: number;
   completedAt?: number;
   /** Number of times the worker has been retried after a crash. */
@@ -75,6 +106,7 @@ export class JobManager {
       repoUrl: params.repoUrl,
       repoPath: params.repoPath,
       progress: { phase: 'queued', percent: 0, message: 'Waiting to start...' },
+      warnings: [],
       startedAt: Date.now(),
       retryCount: 0,
     };
@@ -114,6 +146,8 @@ export class JobManager {
         phase: update.status,
         percent: update.status === 'complete' ? 100 : job.progress.percent,
         message: update.status === 'complete' ? 'Complete' : update.error || 'Failed',
+        counts: job.progress.counts,
+        warnings: job.warnings,
       });
     } else if (update.progress) {
       this.emitter.emit(`progress:${id}`, update.progress);
@@ -121,6 +155,28 @@ export class JobManager {
   }
 
   /** Register a child process for a job — enables cancellation and timeout. */
+  /** Append a warning/error to the job and emit the updated progress snapshot. */
+  addWarning(jobId: string, warning: Omit<IndexingWarning, 'id' | 'timestamp'>): void {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+
+    const fullWarning: IndexingWarning = {
+      ...warning,
+      id: `${jobId}:${job.warnings.length + 1}`,
+      timestamp: Date.now(),
+    };
+    job.warnings.push(fullWarning);
+    job.progress = {
+      ...job.progress,
+      counts: {
+        ...job.progress.counts,
+        warnings: job.warnings.length,
+      },
+      warnings: job.warnings,
+    };
+    this.emitter.emit(`progress:${jobId}`, job.progress);
+  }
+
   registerChild(jobId: string, child: ChildProcess) {
     this.children.set(jobId, child);
 

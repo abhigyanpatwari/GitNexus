@@ -10,6 +10,7 @@ export type PipelinePhase =
   | 'imports'
   | 'calls'
   | 'heritage'
+  | 'anchors'
   | 'communities'
   | 'processes'
   | 'enriching'
@@ -25,5 +26,8 @@ export interface PipelineProgress {
     filesProcessed: number;
     totalFiles: number;
     nodesCreated: number;
+    filesChanged?: number;
+    symbolsUpdated?: number;
+    warnings?: number;
   };
 }

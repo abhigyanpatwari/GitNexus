@@ -48,17 +48,21 @@ describe('getStoragePath', () => {
 // ─── getStoragePaths ─────────────────────────────────────────────────
 
 describe('getStoragePaths', () => {
-  it('returns storagePath, lbugPath, metaPath', () => {
+  it('returns storagePath, lbugPath, metaPath, fileManifestPath, indexManifestPath', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.storagePath).toContain('.gitnexus');
     expect(paths.lbugPath).toContain('lbug');
     expect(paths.metaPath).toContain('meta.json');
+    expect(paths.fileManifestPath).toContain('file-manifest.json');
+    expect(paths.indexManifestPath).toContain('index-manifest.json');
   });
 
   it('all paths are under storagePath', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+    expect(paths.fileManifestPath.startsWith(paths.storagePath)).toBe(true);
+    expect(paths.indexManifestPath.startsWith(paths.storagePath)).toBe(true);
   });
 });
 

@@ -8,7 +8,12 @@ import {
   type GroupRepoHandle,
 } from '../../../src/core/group/service.js';
 import { writeContractRegistry } from '../../../src/core/group/storage.js';
-import type { ContractRegistry, StoredContract, CrossLink } from '../../../src/core/group/types.js';
+import type {
+  ContractRegistry,
+  StoredContract,
+  CrossLink,
+  GroupStatusResult,
+} from '../../../src/core/group/types.js';
 
 function makeTmpGroup(): { tmpDir: string; groupDir: string; cleanup: () => void } {
   const tmpDir = path.join(os.tmpdir(), `gitnexus-svc-${Date.now()}`);
@@ -530,6 +535,66 @@ repos:
         expect(result.group).toBe('test-group');
         expect(result.repos['app/backend'].missing).toBe(true);
         expect(result.repos['app/frontend'].missing).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupStatus_summarizes_stale_contract_snapshots', async () => {
+      const { cleanup, tmpDir, groupDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+
+        const backendStorage = path.join(tmpDir, 'stores', 'backend');
+        const frontendStorage = path.join(tmpDir, 'stores', 'frontend');
+        fs.mkdirSync(backendStorage, { recursive: true });
+        fs.mkdirSync(frontendStorage, { recursive: true });
+        fs.writeFileSync(
+          path.join(backendStorage, 'meta.json'),
+          JSON.stringify({ indexedAt: '2026-04-30T10:00:00.000Z', lastCommit: 'abc123' }),
+        );
+        fs.writeFileSync(
+          path.join(frontendStorage, 'meta.json'),
+          JSON.stringify({ indexedAt: '2026-04-30T09:00:00.000Z', lastCommit: 'def456' }),
+        );
+
+        await writeContractRegistry(groupDir, {
+          ...makeRegistry([]),
+          generatedAt: '2026-04-30T09:30:00.000Z',
+          repoSnapshots: {
+            'app/backend': {
+              indexedAt: '2026-04-30T09:00:00.000Z',
+              lastCommit: 'abc123',
+            },
+            'app/frontend': {
+              indexedAt: '2026-04-30T09:00:00.000Z',
+              lastCommit: 'def456',
+            },
+          },
+        });
+
+        const port = makePort({
+          resolveRepo: vi.fn(
+            async (name?: string): Promise<GroupRepoHandle> => ({
+              id: name || 'test',
+              name: name || 'test',
+              repoPath: tmpDir,
+              storagePath: name === 'test-backend' ? backendStorage : frontendStorage,
+            }),
+          ),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupStatus({ name: 'test-group' })) as GroupStatusResult;
+
+        expect(result.summary.contractsStale).toBe(true);
+        expect(result.summary.contractsStaleCount).toBe(1);
+        expect(result.summary.indexStaleCount).toBe(0);
+        expect(result.contractsStaleRepos).toEqual(['app/backend']);
+        expect(result.repos['app/backend'].snapshotIndexedAt).toBe('2026-04-30T09:00:00.000Z');
+        expect(result.repos['app/backend'].indexedAt).toBe('2026-04-30T10:00:00.000Z');
+        expect(result.recommendations.join('\n')).toContain('gitnexus group sync test-group');
       } finally {
         vi.unstubAllEnvs();
         cleanup();

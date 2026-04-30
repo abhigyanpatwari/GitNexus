@@ -6,6 +6,20 @@ import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
 const LS_URL_KEY = 'gitnexus-backend-url';
 
+const getSameOriginBackendUrl = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  const { hostname, origin, protocol } = window.location;
+  const isLocalHost =
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]';
+  if ((protocol === 'http:' || protocol === 'https:') && isLocalHost) {
+    return origin;
+  }
+  return null;
+};
+
 // ── Public interface ─────────────────────────────────────────────────────────
 
 export interface UseBackendResult {
@@ -27,6 +41,9 @@ export interface UseBackendResult {
 
 export function useBackend(): UseBackendResult {
   const [backendUrl] = useState<string>(() => {
+    const sameOriginBackendUrl = getSameOriginBackendUrl();
+    if (sameOriginBackendUrl) return sameOriginBackendUrl;
+
     try {
       return localStorage.getItem(LS_URL_KEY) ?? DEFAULT_BACKEND_URL;
     } catch {

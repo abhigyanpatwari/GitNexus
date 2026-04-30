@@ -94,7 +94,8 @@ export function getResourceTemplates(): ResourceTemplate[] {
     {
       uriTemplate: 'gitnexus://group/{name}/status',
       name: 'Group Index Status',
-      description: 'Per-repo index and contract-registry staleness for a repository group',
+      description:
+        'Per-repo index and contract-registry staleness for a repository group, including stale contract summaries',
       mimeType: 'text/yaml',
     },
   ];

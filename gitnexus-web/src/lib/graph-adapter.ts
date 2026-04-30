@@ -1,13 +1,26 @@
 import Graph from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
-import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
+import {
+  GRAPH_SURFACE_COLORS,
+  NODE_SIZES,
+  getAgentColor,
+  getCommunityColor,
+  getEdgeStyle,
+  getMetricColor,
+  getNodeTypeColor,
+  type GraphColorMode,
+} from './constants';
+
+export type { GraphColorMode } from './constants';
 
 export interface SigmaNodeAttributes {
   x: number;
   y: number;
+  z?: number;
   size: number;
   color: string;
+  baseColor?: string;
   label: string;
   nodeType: NodeLabel;
   filePath: string;
@@ -19,15 +32,34 @@ export interface SigmaNodeAttributes {
   mass?: number; // ForceAtlas2 mass - higher = more repulsion
   community?: number; // Community index from Leiden algorithm
   communityColor?: string; // Color assigned by community
+  dependencyCount?: number;
+  healthScore?: number;
+  impactScore?: number;
+  runtimeScore?: number;
+  agentScore?: number;
+  complexityScore?: number;
+  churnScore?: number;
 }
 
 export interface SigmaEdgeAttributes {
   size: number;
   color: string;
   relationType: string;
+  sourceId?: string;
+  targetId?: string;
+  confidence?: number;
+  reason?: string;
   type?: string;
   curvature?: number;
   zIndex?: number;
+}
+
+export interface GraphologyOptions {
+  colorMode?: GraphColorMode;
+  impactNodeIds?: Set<string>;
+  agentFocusNodeIds?: Set<string>;
+  citationNodeIds?: Set<string>;
+  toolNodeIds?: Set<string>;
 }
 
 /**
@@ -74,6 +106,172 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
   }
 };
 
+const getDependencyScore = (degree: number, maxDegree: number): number => {
+  if (maxDegree <= 0) return 0;
+  return Math.log1p(degree) / Math.log1p(maxDegree);
+};
+
+const getNumberProperty = (value: unknown): number => {
+  const n = typeof value === 'bigint' ? Number(value) : Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const getRuntimeScore = (
+  node: { id: string; properties: Record<string, unknown> },
+  maxErrors: number,
+): number => {
+  const explicitRate = getNumberProperty(node.properties.errorRate ?? node.properties.error_rate);
+  const errorCount = getNumberProperty(
+    node.properties.errorCount ?? node.properties.errors ?? node.properties.count,
+  );
+  const latency = getNumberProperty(
+    node.properties.p95LatencyMs ?? node.properties.durationMs ?? node.properties.latencyMs,
+  );
+  const errorScore = maxErrors > 0 ? Math.log1p(errorCount) / Math.log1p(maxErrors) : 0;
+  const latencyScore = latency > 0 ? Math.min(1, Math.log1p(latency) / Math.log1p(2500)) : 0;
+  return Math.max(Math.min(1, explicitRate), errorScore, latencyScore * 0.65);
+};
+
+const getComplexityValue = (node: { properties: Record<string, unknown> }): number => {
+  const explicit = getNumberProperty(
+    node.properties.complexity ??
+      node.properties.cyclomaticComplexity ??
+      node.properties.astComplexity,
+  );
+  if (explicit > 0) return explicit;
+  const start = getNumberProperty(node.properties.startLine);
+  const end = getNumberProperty(node.properties.endLine);
+  return end > start ? end - start : 0;
+};
+
+const getChurnValue = (node: { properties: Record<string, unknown> }): number =>
+  getNumberProperty(
+    node.properties.churn ??
+      node.properties.churnCount ??
+      node.properties.recentChanges ??
+      node.properties.gitChurn,
+  );
+
+const getNodeVisual = (
+  baseColor: string,
+  baseSize: number,
+  dependencyCount: number,
+  maxDependencyCount: number,
+  colorMode: GraphColorMode,
+  scores: {
+    impactScore?: number;
+    runtimeScore?: number;
+    agentScore?: number;
+    complexityScore?: number;
+    churnScore?: number;
+  } = {},
+): {
+  color: string;
+  size: number;
+  healthScore: number;
+  impactScore: number;
+  runtimeScore: number;
+  agentScore: number;
+  complexityScore: number;
+  churnScore: number;
+} => {
+  const healthScore = getDependencyScore(dependencyCount, maxDependencyCount);
+  const impactScore = scores.impactScore ?? healthScore;
+  const runtimeScore = scores.runtimeScore ?? 0;
+  const agentScore = scores.agentScore ?? 0;
+  const complexityScore = scores.complexityScore ?? 0;
+  const churnScore = scores.churnScore ?? 0;
+
+  if (colorMode === 'health') {
+    return {
+      color: getMetricColor('health', healthScore),
+      size: baseSize * (1 + healthScore * 0.85),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'impact') {
+    return {
+      color: getMetricColor('impact', impactScore),
+      size: baseSize * (1 + impactScore),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'runtime') {
+    return {
+      color: getMetricColor('runtime', runtimeScore),
+      size: baseSize * (1 + runtimeScore),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'agent') {
+    return {
+      color: getAgentColor(agentScore, baseColor),
+      size: baseSize * (1 + agentScore * 0.9),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'complexity') {
+    return {
+      color: getMetricColor('complexity', complexityScore),
+      size: baseSize * (1 + complexityScore * 0.7),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  if (colorMode === 'churn') {
+    return {
+      color: getMetricColor('churn', churnScore),
+      size: baseSize * (1 + churnScore * 0.7),
+      healthScore,
+      impactScore,
+      runtimeScore,
+      agentScore,
+      complexityScore,
+      churnScore,
+    };
+  }
+
+  return {
+    color: baseColor,
+    size: baseSize,
+    healthScore,
+    impactScore,
+    runtimeScore,
+    agentScore,
+    complexityScore,
+    churnScore,
+  };
+};
+
 /**
  * Converts the KnowledgeGraph to a graphology Graph for Sigma.js
  * Folders are positioned in a wide spread, children positioned NEAR their parents
@@ -84,9 +282,48 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
 export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
   communityMemberships?: Map<string, number>,
+  options: GraphologyOptions = {},
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
+  const colorMode = options.colorMode ?? 'type';
+  const dependencyCounts = new Map<string, number>();
+  const ignoredHealthRelationships = new Set(['MEMBER_OF', 'STEP_IN_PROCESS', 'ENTRY_POINT_OF']);
+
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (ignoredHealthRelationships.has(rel.type)) return;
+    dependencyCounts.set(rel.sourceId, (dependencyCounts.get(rel.sourceId) ?? 0) + 1);
+    dependencyCounts.set(rel.targetId, (dependencyCounts.get(rel.targetId) ?? 0) + 1);
+  });
+  const maxDependencyCount = Math.max(0, ...dependencyCounts.values());
+  const maxRuntimeErrors = Math.max(
+    0,
+    ...knowledgeGraph.nodes.map((node) =>
+      getNumberProperty(
+        node.properties.errorCount ?? node.properties.errors ?? node.properties.count,
+      ),
+    ),
+  );
+  const complexityValues = new Map<string, number>();
+  const churnValues = new Map<string, number>();
+  knowledgeGraph.nodes.forEach((node) => {
+    complexityValues.set(node.id, getComplexityValue(node));
+    churnValues.set(node.id, getChurnValue(node));
+  });
+  const maxComplexity = Math.max(0, ...complexityValues.values());
+  const maxChurn = Math.max(0, ...churnValues.values());
+  const scoreByMax = (value: number, maxValue: number): number =>
+    maxValue > 0 ? Math.log1p(value) / Math.log1p(maxValue) : 0;
+  const getAgentScore = (nodeId: string): number => {
+    if (options.toolNodeIds?.has(nodeId)) return 1;
+    if (options.citationNodeIds?.has(nodeId)) return 0.72;
+    if (options.agentFocusNodeIds?.has(nodeId)) return 0.55;
+    return 0;
+  };
+  const getImpactScore = (nodeId: string, dependencyCount: number): number =>
+    options.impactNodeIds?.has(nodeId)
+      ? 1
+      : getDependencyScore(dependencyCount, maxDependencyCount) * 0.55;
 
   // Build parent-child map from hierarchy relationships
   // CONTAINS: Folder -> File
@@ -167,13 +404,32 @@ export const knowledgeGraphToGraphology = (
 
     const baseSize = NODE_SIZES[node.label] || 8;
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
+    const baseColor = getNodeTypeColor(node.label);
+    const dependencyCount = dependencyCounts.get(node.id) ?? 0;
+    const complexityScore = scoreByMax(complexityValues.get(node.id) ?? 0, maxComplexity);
+    const churnScore = scoreByMax(churnValues.get(node.id) ?? 0, maxChurn);
+    const visual = getNodeVisual(
+      baseColor,
+      scaledSize,
+      dependencyCount,
+      maxDependencyCount,
+      colorMode,
+      {
+        impactScore: getImpactScore(node.id, dependencyCount),
+        runtimeScore: getRuntimeScore(node, maxRuntimeErrors),
+        agentScore: getAgentScore(node.id),
+        complexityScore,
+        churnScore,
+      },
+    );
 
-    // Structural nodes keep their type-based color
+    // Structural nodes keep type color by default; metric modes override it.
     graph.addNode(node.id, {
       x,
       y,
-      size: scaledSize,
-      color: NODE_COLORS[node.label] || '#9ca3af',
+      size: visual.size,
+      color: visual.color,
+      baseColor,
       label: node.properties.name,
       nodeType: node.label,
       filePath: node.properties.filePath,
@@ -181,6 +437,13 @@ export const knowledgeGraphToGraphology = (
       endLine: node.properties.endLine,
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
+      dependencyCount,
+      healthScore: visual.healthScore,
+      impactScore: visual.impactScore,
+      runtimeScore: visual.runtimeScore,
+      agentScore: visual.agentScore,
+      complexityScore: visual.complexityScore,
+      churnScore: visual.churnScore,
     });
   });
 
@@ -226,17 +489,37 @@ export const knowledgeGraphToGraphology = (
     // Check if this node has a community assignment (reuse communityIndex from above)
     const hasCommunity = communityIndex !== undefined;
 
-    // Symbol nodes get colored by community if available
-    const usesCommunityColor = hasCommunity && symbolTypes.has(node.label);
+    // In structure mode, symbol nodes use functional-area colors. In type mode
+    // they keep raw node-type colors so the legend remains truthful.
+    const usesCommunityColor =
+      colorMode === 'structure' && hasCommunity && symbolTypes.has(node.label);
     const nodeColor = usesCommunityColor
       ? getCommunityColor(communityIndex!)
-      : NODE_COLORS[node.label] || '#9ca3af';
+      : getNodeTypeColor(node.label);
+    const dependencyCount = dependencyCounts.get(nodeId) ?? 0;
+    const complexityScore = scoreByMax(complexityValues.get(nodeId) ?? 0, maxComplexity);
+    const churnScore = scoreByMax(churnValues.get(nodeId) ?? 0, maxChurn);
+    const visual = getNodeVisual(
+      nodeColor,
+      scaledSize,
+      dependencyCount,
+      maxDependencyCount,
+      colorMode,
+      {
+        impactScore: getImpactScore(nodeId, dependencyCount),
+        runtimeScore: getRuntimeScore(node, maxRuntimeErrors),
+        agentScore: getAgentScore(nodeId),
+        complexityScore,
+        churnScore,
+      },
+    );
 
     graph.addNode(nodeId, {
       x,
       y,
-      size: scaledSize,
-      color: nodeColor,
+      size: visual.size,
+      color: visual.color,
+      baseColor: nodeColor,
       label: node.properties.name,
       nodeType: node.label,
       filePath: node.properties.filePath,
@@ -246,6 +529,13 @@ export const knowledgeGraphToGraphology = (
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
       communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      dependencyCount,
+      healthScore: visual.healthScore,
+      impactScore: visual.impactScore,
+      runtimeScore: visual.runtimeScore,
+      agentScore: visual.agentScore,
+      complexityScore: visual.complexityScore,
+      churnScore: visual.churnScore,
     });
   };
 
@@ -274,39 +564,23 @@ export const knowledgeGraphToGraphology = (
     }
   });
 
-  // Add edges with distinct colors per relationship type
+  // Add edges using the shared relationship palette so renderers and legends agree.
   const edgeBaseSize = nodeCount > 20000 ? 0.4 : nodeCount > 5000 ? 0.6 : 1.0;
-
-  // Edge styles - each relationship type has a DISTINCT color for clarity
-  // Using varied hues so relationships are easily distinguishable
-  const EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
-    // STRUCTURAL - Greens (folder/file hierarchy)
-    CONTAINS: { color: '#2d5a3d', sizeMultiplier: 0.4 }, // Forest green - folder contains
-
-    // DEFINITIONS - Cyan/Teal (code definitions)
-    DEFINES: { color: '#0e7490', sizeMultiplier: 0.5 }, // Cyan - file defines function/class
-
-    // DEPENDENCIES - Blue (imports between files)
-    IMPORTS: { color: '#1d4ed8', sizeMultiplier: 0.6 }, // Blue - file imports file
-
-    // FUNCTION FLOW - Purple (call graph)
-    CALLS: { color: '#7c3aed', sizeMultiplier: 0.8 }, // Violet - function calls
-
-    // TYPE RELATIONSHIPS - Warm colors (OOP)
-    EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 }, // Orange - extension
-    IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 }, // Pink - interface implementation
-  };
 
   knowledgeGraph.relationships.forEach((rel) => {
     if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
       if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
+        const style = getEdgeStyle(rel.type);
         const curvature = 0.12 + Math.random() * 0.08;
 
         graph.addEdge(rel.sourceId, rel.targetId, {
           size: edgeBaseSize * style.sizeMultiplier,
           color: style.color,
           relationType: rel.type,
+          sourceId: rel.sourceId,
+          targetId: rel.targetId,
+          confidence: rel.confidence,
+          reason: rel.reason,
           type: 'curved',
           curvature: curvature,
         });

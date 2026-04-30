@@ -206,18 +206,30 @@ export const createWorkerPool = (
         onProgress(next);
       };
 
-      const replaceWorker = async (workerIndex: number) => {
+      // Terminating a worker thread while a native tree-sitter parser is active can
+      // abort the whole analyzer child on Windows (for example 0xc0000409).
+      const shouldTerminateTimedOutWorkers = process.platform !== 'win32';
+
+      const replaceWorker = async (workerIndex: number, terminateExisting = true) => {
         const worker = workers[workerIndex];
-        await worker?.terminate().catch(() => undefined);
+        if (terminateExisting) {
+          await worker?.terminate().catch(() => undefined);
+        } else {
+          worker?.unref();
+        }
         if (!stopped) workers[workerIndex] = new Worker(workerUrl);
       };
 
-      const fail = async (err: Error) => {
+      const fail = async (err: Error, terminateWorkers = true) => {
         poolBroken = true;
         poolFailure = err;
         if (stopped) return;
         stopped = true;
-        await Promise.all(workers.map((worker) => worker.terminate().catch(() => undefined)));
+        if (terminateWorkers) {
+          await Promise.all(workers.map((worker) => worker.terminate().catch(() => undefined)));
+        } else {
+          workers.forEach((worker) => worker.unref());
+        }
         reject(err);
       };
 
@@ -292,6 +304,7 @@ export const createWorkerPool = (
               `Analyze will retry through sequential fallback. Increase with ` +
               `--worker-timeout or GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS.`,
           ),
+          shouldTerminateTimedOutWorkers,
         );
         return false;
       };
@@ -336,7 +349,7 @@ export const createWorkerPool = (
               inFlightProgress[workerIndex] = 0;
               const shouldContinue = requeueAfterTimeout(workerIndex, job, lastProgress);
               if (!shouldContinue) return;
-              await replaceWorker(workerIndex);
+              await replaceWorker(workerIndex, shouldTerminateTimedOutWorkers);
               reportProgress();
               runWorker(workerIndex);
               maybeDone();

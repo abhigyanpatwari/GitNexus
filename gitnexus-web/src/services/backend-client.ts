@@ -25,6 +25,87 @@ export interface BackendRepo {
   };
 }
 
+export interface GroupRepoStatus {
+  registryName: string;
+  indexStale: boolean;
+  contractsStale: boolean;
+  missing: boolean;
+  commitsBehind?: number;
+  indexedAt?: string | null;
+  snapshotIndexedAt?: string | null;
+  lastCommit?: string | null;
+  snapshotLastCommit?: string | null;
+}
+
+export interface GroupStatusSummary {
+  repoCount: number;
+  missingCount: number;
+  indexStaleCount: number;
+  contractsStaleCount: number;
+  missing: boolean;
+  indexStale: boolean;
+  contractsStale: boolean;
+  actionRequired: boolean;
+}
+
+export interface GroupStatus {
+  group: string;
+  lastSync: string | null;
+  missingRepos: string[];
+  repos: Record<string, GroupRepoStatus>;
+  summary: GroupStatusSummary;
+  missingGroupRepos: string[];
+  indexStaleRepos: string[];
+  contractsStaleRepos: string[];
+  recommendations: string[];
+}
+
+export interface IndexEventsSnapshot {
+  generatedAt: string;
+  repos: BackendRepo[];
+  activeJobs?: ActiveIndexingJob[];
+  warnings?: IndexingWarning[];
+  locks?: ActiveRepoLock[];
+}
+
+export interface IndexingCounts {
+  filesChanged?: number;
+  filesProcessed?: number;
+  totalFiles?: number;
+  symbolsUpdated?: number;
+  warnings?: number;
+}
+
+export interface IndexingWarning {
+  id: string;
+  kind: 'skipped_file' | 'parser_failure' | 'lock_conflict' | 'retryable_error' | 'indexing_error';
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  repoName?: string;
+  repoPath?: string;
+  filePath?: string;
+  action?: string;
+  timestamp: number;
+}
+
+export interface ActiveRepoLock {
+  repoName?: string;
+  repoPath: string;
+  operation: 'analyze' | 'embed' | 'delete';
+  jobId?: string;
+  startedAt: number;
+}
+
+export interface ActiveIndexingJob {
+  id: string;
+  status: JobStatus['status'];
+  repoName?: string;
+  repoPath?: string;
+  startedAt: number;
+  progress: JobProgress;
+  warnings?: IndexingWarning[];
+}
+
 export interface EnrichedSearchResult {
   filePath: string;
   score: number;
@@ -54,6 +135,9 @@ export interface JobProgress {
   phase: string;
   percent: number;
   message: string;
+  detail?: string;
+  counts?: IndexingCounts;
+  warnings?: IndexingWarning[];
 }
 
 export interface JobStatus {
@@ -64,6 +148,7 @@ export interface JobStatus {
   repoName?: string;
   progress: JobProgress;
   error?: string;
+  warnings?: IndexingWarning[];
   startedAt: number;
   completedAt?: number;
 }
@@ -224,6 +309,9 @@ export function normalizeServerUrl(input: string): string {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 2_000;
+// Starting analysis returns a job id, but slow repo setup should not be cut off by
+// the generic UI request budget before progress streaming can attach.
+const ANALYZE_START_TIMEOUT_MS = 300_000;
 
 const fetchWithTimeout = async (
   url: string,
@@ -360,6 +448,57 @@ export const connectHeartbeat = (
   };
 };
 
+export const connectIndexEvents = (
+  onSnapshot: (snapshot: IndexEventsSnapshot) => void,
+  onError: (error: string) => void,
+): (() => void) => {
+  if (typeof EventSource === 'undefined') return () => {};
+
+  let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let es: EventSource | null = null;
+  let attempt = 0;
+  const MAX_BACKOFF_MS = 15_000;
+
+  const connect = () => {
+    if (closed) return;
+    es = new EventSource(`${_backendUrl}/api/index-events`);
+    es.addEventListener('snapshot', (event) => {
+      try {
+        attempt = 0;
+        onSnapshot(JSON.parse(event.data) as IndexEventsSnapshot);
+      } catch {
+        onError('Could not read index update event');
+      }
+    });
+    es.addEventListener('failed', (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { error?: string };
+        onError(payload.error || 'Index update stream failed');
+      } catch {
+        onError('Index update stream failed');
+      }
+    });
+    es.onerror = () => {
+      es?.close();
+      es = null;
+      if (closed) return;
+      onError('Index update stream disconnected');
+      const delay = Math.min(1_000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+      attempt++;
+      retryTimer = setTimeout(connect, delay);
+    };
+  };
+
+  connect();
+
+  return () => {
+    closed = true;
+    es?.close();
+    if (retryTimer) clearTimeout(retryTimer);
+  };
+};
+
 /** Delete a repo's index and unregister it. */
 export const deleteRepo = async (repoName: string): Promise<void> => {
   const response = await fetchWithTimeout(
@@ -386,6 +525,15 @@ export const fetchRepos = async (): Promise<BackendRepo[]> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/repos`);
   await assertOk(response);
   return response.json() as Promise<BackendRepo[]>;
+};
+
+/** Fetch repo-group staleness summaries, optionally limited to groups containing a repo. */
+export const fetchGroupStatuses = async (repo?: string): Promise<GroupStatus[]> => {
+  const params = repo ? `?repo=${encodeURIComponent(repo)}` : '';
+  const response = await fetchWithTimeout(`${_backendUrl}/api/groups${params}`);
+  await assertOk(response);
+  const body = await response.json();
+  return Array.isArray(body?.groups) ? (body.groups as GroupStatus[]) : [];
 };
 
 /** Fetch repo metadata.
@@ -644,6 +792,7 @@ export const startAnalyze = async (request: {
   path?: string;
   force?: boolean;
   embeddings?: boolean;
+  workerTimeout?: number;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,
@@ -652,7 +801,7 @@ export const startAnalyze = async (request: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     },
-    30_000,
+    ANALYZE_START_TIMEOUT_MS,
   );
   await assertOk(response);
   return response.json() as Promise<{ jobId: string; status: string }>;

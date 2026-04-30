@@ -19,12 +19,23 @@ export type { NodeTableName, RelType } from 'gitnexus-shared';
 // NODE TABLE SCHEMAS
 // ============================================================================
 
+const SEMANTIC_ANCHOR_COLUMNS = `
+  description STRING,
+  summary STRING,
+  purpose STRING,
+  tags STRING[],
+  anchorModel STRING,
+  anchorHash STRING,
+  anchorVersion INT32,
+  anchorGeneratedAt STRING`;
+
 export const FILE_SCHEMA = `
 CREATE NODE TABLE File (
   id STRING,
   name STRING,
   filePath STRING,
   content STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -45,7 +56,7 @@ CREATE NODE TABLE Function (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -58,7 +69,7 @@ CREATE NODE TABLE Class (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -71,7 +82,7 @@ CREATE NODE TABLE Interface (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -84,7 +95,7 @@ CREATE NODE TABLE Method (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   parameterCount INT32,
   returnType STRING,
   PRIMARY KEY (id)
@@ -99,7 +110,7 @@ CREATE NODE TABLE CodeElement (
   endLine INT64,
   isExported BOOLEAN,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -151,7 +162,7 @@ CREATE NODE TABLE \`${name}\` (
   startLine INT64,
   endLine INT64,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -183,6 +194,7 @@ CREATE NODE TABLE Route (
   responseKeys STRING[],
   errorKeys STRING[],
   middleware STRING[],
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -192,7 +204,81 @@ CREATE NODE TABLE Tool (
   id STRING,
   name STRING,
   filePath STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
+  PRIMARY KEY (id)
+)`;
+
+const RUNTIME_METRIC_COLUMNS = `
+  service STRING,
+  environment STRING,
+  callCount INT64,
+  errorCount INT64,
+  errorRate DOUBLE,
+  p95LatencyMs DOUBLE,
+  timeWindowStart STRING,
+  timeWindowEnd STRING`;
+
+export const RUNTIME_SERVICE_SCHEMA = `
+CREATE NODE TABLE RuntimeService (
+  id STRING,
+  name STRING,
+  ${RUNTIME_METRIC_COLUMNS},
+  PRIMARY KEY (id)
+)`;
+
+export const RUNTIME_SPAN_SCHEMA = `
+CREATE NODE TABLE RuntimeSpan (
+  id STRING,
+  name STRING,
+  route STRING,
+  method STRING,
+  filePath STRING,
+  symbolName STRING,
+  ${RUNTIME_METRIC_COLUMNS},
+  PRIMARY KEY (id)
+)`;
+
+export const RUNTIME_ROUTE_SCHEMA = `
+CREATE NODE TABLE RuntimeRoute (
+  id STRING,
+  name STRING,
+  route STRING,
+  method STRING,
+  ${RUNTIME_METRIC_COLUMNS},
+  PRIMARY KEY (id)
+)`;
+
+export const RUNTIME_ERROR_SCHEMA = `
+CREATE NODE TABLE RuntimeError (
+  id STRING,
+  name STRING,
+  service STRING,
+  environment STRING,
+  route STRING,
+  method STRING,
+  filePath STRING,
+  symbolName STRING,
+  message STRING,
+  errorType STRING,
+  count INT64,
+  lastSeen STRING,
+  stackHash STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const RUNTIME_LOG_PATTERN_SCHEMA = `
+CREATE NODE TABLE RuntimeLogPattern (
+  id STRING,
+  name STRING,
+  service STRING,
+  level STRING,
+  route STRING,
+  method STRING,
+  filePath STRING,
+  symbolName STRING,
+  pattern STRING,
+  count INT64,
+  lastSeen STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -206,7 +292,7 @@ CREATE NODE TABLE Section (
   endLine INT64,
   level INT64,
   content STRING,
-  description STRING,
+  ${SEMANTIC_ANCHOR_COLUMNS},
   PRIMARY KEY (id)
 )`;
 
@@ -420,6 +506,26 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM CodeElement TO Process,
   FROM Route TO Process,
   FROM Tool TO Process,
+  FROM RuntimeService TO RuntimeSpan,
+  FROM RuntimeService TO RuntimeRoute,
+  FROM RuntimeService TO RuntimeError,
+  FROM RuntimeService TO RuntimeLogPattern,
+  FROM RuntimeSpan TO File,
+  FROM RuntimeSpan TO Function,
+  FROM RuntimeSpan TO Method,
+  FROM RuntimeSpan TO Class,
+  FROM RuntimeSpan TO Route,
+  FROM RuntimeRoute TO Route,
+  FROM RuntimeError TO File,
+  FROM RuntimeError TO Function,
+  FROM RuntimeError TO Method,
+  FROM RuntimeError TO Class,
+  FROM RuntimeError TO Route,
+  FROM RuntimeLogPattern TO File,
+  FROM RuntimeLogPattern TO Function,
+  FROM RuntimeLogPattern TO Method,
+  FROM RuntimeLogPattern TO Class,
+  FROM RuntimeLogPattern TO Route,
   type STRING,
   confidence DOUBLE,
   reason STRING,
@@ -510,6 +616,12 @@ export const NODE_SCHEMA_QUERIES = [
   ROUTE_SCHEMA,
   // MCP tools
   TOOL_SCHEMA,
+  // Runtime/log overlays
+  RUNTIME_SERVICE_SCHEMA,
+  RUNTIME_SPAN_SCHEMA,
+  RUNTIME_ROUTE_SCHEMA,
+  RUNTIME_ERROR_SCHEMA,
+  RUNTIME_LOG_PATTERN_SCHEMA,
 ];
 
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];

@@ -1,15 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
+import { resolveServerAnalyzeWorkerTimeoutMs } from '../../src/server/api.js';
 
 describe('analyze API logic', () => {
   let manager: JobManager;
+  const originalWorkerTimeout = process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
 
   beforeEach(() => {
     manager = new JobManager();
+    delete process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
   });
 
   afterEach(() => {
     manager.dispose();
+    if (originalWorkerTimeout === undefined) {
+      delete process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
+    } else {
+      process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = originalWorkerTimeout;
+    }
   });
 
   it('creates a job and returns 202 shape', () => {
@@ -57,5 +65,19 @@ describe('analyze API logic', () => {
     expect(events[1].phase).toBe('calls');
     expect(events[2].phase).toBe('complete');
     expect(events[2].percent).toBe(100);
+  });
+
+  it('uses a longer parser worker timeout for server-started analysis by default', () => {
+    expect(resolveServerAnalyzeWorkerTimeoutMs(undefined)).toBe(120_000);
+  });
+
+  it('allows the server analyze request to override parser worker timeout in seconds', () => {
+    expect(resolveServerAnalyzeWorkerTimeoutMs(180)).toBe(180_000);
+  });
+
+  it('respects the worker timeout environment override when request omits it', () => {
+    process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = '240000';
+
+    expect(resolveServerAnalyzeWorkerTimeoutMs(undefined)).toBe(240_000);
   });
 });

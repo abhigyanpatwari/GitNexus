@@ -130,6 +130,41 @@ public class UserController {
       expect(getByIdRoute).toBeDefined();
     });
 
+    it('extracts Spring named mapping arguments and RequestMapping methods', async () => {
+      const dir = path.join(tmpDir, 'spring-named-args');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/ReportController.java'),
+        `
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api/v3")
+public class ReportController {
+    @GetMapping(path = "/reports")
+    public List<Report> list() { return service.findAll(); }
+
+    @RequestMapping(value = "/reports/{id}", method = RequestMethod.DELETE)
+    public void deleteReport(@PathVariable Long id) {}
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const listRoute = providers.find((c) => c.contractId === 'http::GET::/api/v3/reports');
+      expect(listRoute).toBeDefined();
+      expect(listRoute?.symbolName).toBe('list');
+
+      const deleteRoute = providers.find(
+        (c) => c.contractId === 'http::DELETE::/api/v3/reports/{param}',
+      );
+      expect(deleteRoute).toBeDefined();
+      expect(deleteRoute?.symbolName).toBe('deleteReport');
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
@@ -239,6 +274,97 @@ export class OrdersController {
       const patchRoute = providers.find((c) => c.contractId === 'http::PATCH::/orders/{param}');
       expect(patchRoute).toBeDefined();
       expect(patchRoute?.symbolName).toBe('updateOrder');
+    });
+
+    it('extracts Next.js App Router exported verb handlers from route files', async () => {
+      const dir = path.join(tmpDir, 'next-app-router');
+      const routeDir = path.join(dir, 'src/app/(admin)/api/users/[id]');
+      fs.mkdirSync(routeDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(routeDir, 'route.ts'),
+        `
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  return NextResponse.json({});
+}
+
+export const POST = async () => {
+  return NextResponse.json({});
+};
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const getRoute = providers.find((c) => c.contractId === 'http::GET::/api/users/{param}');
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.symbolName).toBe('GET');
+      expect(getRoute?.meta.framework).toBe('next-app-router');
+
+      const postRoute = providers.find((c) => c.contractId === 'http::POST::/api/users/{param}');
+      expect(postRoute).toBeDefined();
+      expect(postRoute?.symbolName).toBe('POST');
+    });
+
+    it('extracts Flask app and Blueprint route decorators', async () => {
+      const dir = path.join(tmpDir, 'flask-provider');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'app.py'),
+        `
+from flask import Flask, Blueprint
+
+app = Flask(__name__)
+api = Blueprint("api", __name__, url_prefix="/api")
+
+@app.route("/users", methods=["GET", "POST"])
+def users():
+    return []
+
+@api.route("/orders/<int:order_id>", methods=["DELETE"])
+def delete_order(order_id):
+    return ""
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/users')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::POST::/users')).toBeDefined();
+
+      const deleteRoute = providers.find(
+        (c) => c.contractId === 'http::DELETE::/api/orders/{param}',
+      );
+      expect(deleteRoute).toBeDefined();
+      expect(deleteRoute?.symbolName).toBe('delete_order');
+      expect(deleteRoute?.meta.framework).toBe('flask');
+    });
+
+    it('extracts Django path and re_path URLConf entries from urls.py', async () => {
+      const dir = path.join(tmpDir, 'django-provider');
+      fs.mkdirSync(path.join(dir, 'project'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'project', 'urls.py'),
+        `
+from django.urls import path, re_path
+from . import views
+
+urlpatterns = [
+    path("items/<int:item_id>/", views.item),
+    re_path(r"^orders/(?P<order_id>[^/]+)/$", views.order),
+]
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/items/{param}')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/orders/{param}')).toBeDefined();
+      expect(providers.every((c) => c.meta.framework === 'django')).toBe(true);
     });
   });
 
@@ -378,6 +504,59 @@ export function listDefaults() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
     });
 
+    it('extracts quoted option keys in object-style HTTP calls', async () => {
+      const dir = path.join(tmpDir, 'quoted-http-options');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/http.ts'),
+        `
+import axios from 'axios';
+
+axios({ 'url': '/api/orders', 'method': 'post' });
+fetch('/api/items', { 'method': 'DELETE' });
+$.ajax({ 'url': '/api/widgets', 'type': 'PATCH' });
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/api/items')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::PATCH::/api/widgets')).toBeDefined();
+    });
+
+    it('extracts likely custom HTTP client member calls', async () => {
+      const dir = path.join(tmpDir, 'custom-http-client');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/client.ts'),
+        `
+export function run(id: string) {
+  apiClient.post('/api/orders');
+  ordersApi.patch(\`/api/users/\${id}\`);
+  http.get('https://svc.local/api/health');
+
+  cache.get('/api/not-http');
+  map.delete('/api/not-http-either');
+  router.get('/api/provider-only', handler);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/health')).toBeDefined();
+      expect(consumers.find((c) => c.meta.path === '/api/not-http')).toBeUndefined();
+      expect(consumers.find((c) => c.meta.path === '/api/not-http-either')).toBeUndefined();
+      expect(consumers.find((c) => c.meta.path === '/api/provider-only')).toBeUndefined();
+    });
+
     it('does not emit consumers for unrelated object-literal calls (negative control)', async () => {
       const dir = path.join(tmpDir, 'jquery-axios-negative');
       fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
@@ -426,6 +605,41 @@ def create_order():
 
       expect(
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+    });
+
+    it('extracts Python httpx and aiohttp calls', async () => {
+      const dir = path.join(tmpDir, 'python-httpx-aiohttp-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import aiohttp
+import httpx
+
+client = httpx.Client(base_url="https://svc.local/api")
+
+async def run():
+    await httpx.get("https://svc.local/api/users")
+    httpx.request("PATCH", "/api/widgets/5")
+    client.post("/orders/42")
+    async with aiohttp.ClientSession() as session:
+        await session.delete("https://svc.local/api/items/7")
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::PATCH::/api/widgets/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/items/{param}'),
       ).toBeDefined();
     });
 

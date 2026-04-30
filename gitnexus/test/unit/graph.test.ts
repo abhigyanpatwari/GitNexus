@@ -420,4 +420,47 @@ describe('createKnowledgeGraph', () => {
       expect(g.getNode('cluster:x')).toBeDefined();
     });
   });
+
+  describe('file ownership indexes', () => {
+    it('tracks node and relationship ownership by source file', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      g.addNode(makeNode('fn:b', 'b', 'src/b.ts'));
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+
+      expect([...g.iterNodeIdsByFile('src/a.ts')]).toEqual(['fn:a']);
+      expect([...g.iterNodeIdsByFile('src/b.ts')]).toEqual(['fn:b']);
+      expect([...g.iterRelationshipIdsByFile('src/a.ts')]).toEqual(['fn:a-CALLS-fn:b']);
+      expect(g.getRelationshipOwnerFile('fn:a-CALLS-fn:b')).toBe('src/a.ts');
+
+      g.removeRelationship('fn:a-CALLS-fn:b');
+      expect([...g.iterRelationshipIdsByFile('src/a.ts')]).toHaveLength(0);
+      expect(g.getRelationshipOwnerFile('fn:a-CALLS-fn:b')).toBeUndefined();
+    });
+
+    it('backfills relationship ownership when nodes arrive after edges', () => {
+      const g = createKnowledgeGraph();
+      g.addRelationship(makeRel('fn:a', 'fn:b'));
+      expect([...g.iterRelationshipIdsByFile('src/a.ts')]).toHaveLength(0);
+
+      g.addNode(makeNode('fn:b', 'b', 'src/b.ts'));
+      expect([...g.iterRelationshipIdsByFile('src/b.ts')]).toEqual(['fn:a-CALLS-fn:b']);
+      expect(g.getRelationshipOwnerFile('fn:a-CALLS-fn:b')).toBe('src/b.ts');
+
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+      expect([...g.iterRelationshipIdsByFile('src/b.ts')]).toHaveLength(0);
+      expect([...g.iterRelationshipIdsByFile('src/a.ts')]).toEqual(['fn:a-CALLS-fn:b']);
+      expect(g.getRelationshipOwnerFile('fn:a-CALLS-fn:b')).toBe('src/a.ts');
+    });
+
+    it('returns fresh empty iterators for missing file ownership', () => {
+      const g = createKnowledgeGraph();
+      g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+
+      expect([...g.iterNodeIdsByFile('src/missing.ts')]).toHaveLength(0);
+      expect([...g.iterNodeIdsByFile('src/missing.ts')]).toHaveLength(0);
+      expect([...g.iterRelationshipIdsByFile('src/missing.ts')]).toHaveLength(0);
+      expect([...g.iterRelationshipIdsByFile('src/missing.ts')]).toHaveLength(0);
+    });
+  });
 });

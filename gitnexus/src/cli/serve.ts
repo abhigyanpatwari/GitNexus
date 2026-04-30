@@ -9,15 +9,13 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason: any) => {
   console.error('\n[gitnexus serve] Unhandled rejection:', reason?.message || reason);
   if (process.env.DEBUG) console.error(reason?.stack);
-  process.exit(1);
 });
 
 export const serveCommand = async (options?: { port?: string; host?: string }) => {
   const port = Number(options?.port ?? 4747);
-  // Default to 'localhost' so the OS decides whether to bind to 127.0.0.1 or
-  // ::1 based on system configuration, avoiding spurious CORS errors when the
-  // hosted frontend at gitnexus.vercel.app connects to localhost.
-  const host = options?.host ?? 'localhost';
+  // Bind to IPv4 loopback by default so both localhost and 127.0.0.1 work
+  // reliably on Windows machines that resolve localhost to ::1 first.
+  const host = options?.host ?? '127.0.0.1';
 
   try {
     await createServer(port, host);

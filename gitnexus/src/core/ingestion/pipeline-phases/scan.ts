@@ -11,10 +11,10 @@
  */
 
 import type { PipelinePhase, PipelineContext } from './types.js';
-import { walkRepositoryPaths } from '../filesystem-walker.js';
+import { walkRepositoryPaths, type ScannedFile } from '../filesystem-walker.js';
 
 export interface ScanOutput {
-  scannedFiles: { path: string; size: number }[];
+  scannedFiles: ScannedFile[];
   allPaths: string[];
   totalFiles: number;
 }
@@ -30,20 +30,22 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
-    const scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
-      const scanProgress = Math.round((current / total) * 15);
-      ctx.onProgress({
-        phase: 'extracting',
-        percent: scanProgress,
-        message: 'Scanning repository...',
-        detail: filePath,
-        stats: {
-          filesProcessed: current,
-          totalFiles: total,
-          nodesCreated: ctx.graph.nodeCount,
-        },
-      });
-    });
+    const scannedFiles =
+      ctx.options?.preScannedFiles ??
+      (await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
+        const scanProgress = Math.round((current / total) * 15);
+        ctx.onProgress({
+          phase: 'extracting',
+          percent: scanProgress,
+          message: 'Scanning repository...',
+          detail: filePath,
+          stats: {
+            filesProcessed: current,
+            totalFiles: total,
+            nodesCreated: ctx.graph.nodeCount,
+          },
+        });
+      }));
 
     const totalFiles = scannedFiles.length;
     const allPaths = scannedFiles.map((f) => f.path);

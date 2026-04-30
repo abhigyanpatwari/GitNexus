@@ -76,6 +76,28 @@ describe('JobManager', () => {
     expect(events[0].percent).toBe(50);
   });
 
+  it('attaches indexing warnings to progress counts', () => {
+    const job = manager.createJob({ repoPath: '/work/repo' });
+    const events: any[] = [];
+    manager.onProgress(job.id, (data) => events.push(data));
+
+    manager.addWarning(job.id, {
+      kind: 'lock_conflict',
+      severity: 'warning',
+      message: 'Repository "repo" is locked by an active analyze job.',
+      repoName: 'repo',
+      repoPath: '/work/repo',
+      action: 'Close other GitNexus processes that are indexing this repo, then retry.',
+    });
+
+    const updated = manager.getJob(job.id)!;
+    expect(updated.warnings).toHaveLength(1);
+    expect(updated.progress.counts?.warnings).toBe(1);
+    expect(updated.progress.warnings?.[0].kind).toBe('lock_conflict');
+    expect(events).toHaveLength(1);
+    expect(events[0].warnings[0].repoName).toBe('repo');
+  });
+
   it('emits terminal event on complete', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     const events: any[] = [];

@@ -42,6 +42,7 @@ import { forwardRef } from 'react';
 import type { LucideProps } from 'lucide-react';
 
 export {
+  Activity,
   AlertCircle,
   AlertTriangle,
   ArrowDown,
@@ -79,6 +80,8 @@ export {
   Loader2,
   Maximize2,
   MousePointerClick,
+  Navigation,
+  Orbit,
   PanelLeft,
   PanelLeftClose,
   PanelRightClose,

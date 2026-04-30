@@ -86,6 +86,32 @@ describe('formatQueryResult', () => {
     expect(result).toContain('Config');
   });
 
+  it('formats semantic anchor descriptions on symbols and definitions', () => {
+    const result = formatQueryResult({
+      processes: [{ id: 'p1', summary: 'Auth Flow', step_count: 1, symbol_count: 1 }],
+      process_symbols: [
+        {
+          process_id: 'p1',
+          type: 'Function',
+          name: 'authGate',
+          filePath: 'src/auth.ts',
+          description: 'Function authGate implements behavior in auth.ts.',
+        },
+      ],
+      definitions: [
+        {
+          type: 'Class',
+          name: 'Policy',
+          filePath: 'src/policy.ts',
+          description: 'Class Policy defines a type in policy.ts.',
+        },
+      ],
+    });
+
+    expect(result).toContain('Function authGate implements behavior');
+    expect(result).toContain('Class Policy defines a type');
+  });
+
   it('truncates definitions at 8', () => {
     const defs = Array.from({ length: 12 }, (_, i) => ({
       type: 'Interface',
@@ -123,7 +149,14 @@ describe('formatContextResult', () => {
 
   it('formats symbol with incoming/outgoing refs', () => {
     const result = formatContextResult({
-      symbol: { kind: 'Function', name: 'foo', filePath: 'src/a.ts', startLine: 1, endLine: 10 },
+      symbol: {
+        kind: 'Function',
+        name: 'foo',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 10,
+        description: 'Function foo implements behavior in a.ts.',
+      },
       incoming: {
         CALLS: [{ kind: 'Function', name: 'bar', filePath: 'src/b.ts' }],
       },
@@ -135,6 +168,7 @@ describe('formatContextResult', () => {
     expect(result).toContain('Function foo');
     expect(result).toContain('Called/imported by (1)');
     expect(result).toContain('Calls/imports (1)');
+    expect(result).toContain('Anchor: Function foo implements behavior');
   });
 
   it('formats process participation', () => {

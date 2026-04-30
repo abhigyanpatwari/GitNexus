@@ -5,7 +5,7 @@
  * Clicking a process opens the ProcessFlowModal with a flowchart.
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { lazy, Suspense, useState, useMemo, useCallback, useEffect } from 'react';
 import {
   GitBranch,
   Search,
@@ -19,8 +19,11 @@ import {
   Layers,
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState';
-import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';
+
+const ProcessFlowModal = lazy(() =>
+  import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal })),
+);
 
 /** Validate that an ID contains only expected node identifier characters (no Cypher metacharacters or spaces) */
 const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-/@]+$/.test(id);
@@ -464,12 +467,16 @@ export const ProcessesPanel = () => {
       </div>
 
       {/* Modal */}
-      <ProcessFlowModal
-        process={selectedProcess}
-        onClose={() => setSelectedProcess(null)}
-        onFocusInGraph={handleFocusInGraph}
-        isFullScreen={selectedProcess?.id === 'combined-all'}
-      />
+      {selectedProcess && (
+        <Suspense fallback={null}>
+          <ProcessFlowModal
+            process={selectedProcess}
+            onClose={() => setSelectedProcess(null)}
+            onFocusInGraph={handleFocusInGraph}
+            isFullScreen={selectedProcess.id === 'combined-all'}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

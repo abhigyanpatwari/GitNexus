@@ -102,6 +102,41 @@ export interface ContractRegistry {
   crossLinks: CrossLink[];
 }
 
+export interface GroupRepoStatus {
+  registryName: string;
+  indexStale: boolean;
+  contractsStale: boolean;
+  missing: boolean;
+  commitsBehind?: number;
+  indexedAt?: string | null;
+  snapshotIndexedAt?: string | null;
+  lastCommit?: string | null;
+  snapshotLastCommit?: string | null;
+}
+
+export interface GroupStatusSummary {
+  repoCount: number;
+  missingCount: number;
+  indexStaleCount: number;
+  contractsStaleCount: number;
+  missing: boolean;
+  indexStale: boolean;
+  contractsStale: boolean;
+  actionRequired: boolean;
+}
+
+export interface GroupStatusResult {
+  group: string;
+  lastSync: string | null;
+  missingRepos: string[];
+  repos: Record<string, GroupRepoStatus>;
+  summary: GroupStatusSummary;
+  missingGroupRepos: string[];
+  indexStaleRepos: string[];
+  contractsStaleRepos: string[];
+  recommendations: string[];
+}
+
 export interface StoredContract extends ExtractedContract {
   repo: string;
 }

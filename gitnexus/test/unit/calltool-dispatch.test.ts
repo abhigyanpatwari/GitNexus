@@ -8,21 +8,21 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
 // re-exports from the same module, so we mock the canonical source.
 // vi.hoisted runs before vi.mock hoisting, making the fns available to both factories.
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -51,14 +51,6 @@ vi.mock('../../src/core/git-staleness.js', () => ({
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
 
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return {
-    ...actual,
-    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
-  };
-});
-
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
   searchFTSFromLbug: vi.fn().mockResolvedValue([]),
@@ -78,6 +70,7 @@ import {
   isLbugReady,
   closeLbug,
 } from '../../src/mcp/core/lbug-adapter.js';
+import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -168,7 +161,9 @@ describe('LocalBackend.callTool', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
+    (searchFTSFromLbug as any).mockResolvedValue([]);
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
@@ -193,36 +188,171 @@ describe('LocalBackend.callTool', () => {
     expect(result).toHaveProperty('definitions');
   });
 
-  it('skips vector index query when VECTOR is unsupported by the platform', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);
-    (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
-      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
-      if (cypher.includes('MATCH (e:CodeEmbedding)')) return [];
-      return [];
-    });
-    (executeParameterized as any).mockResolvedValue([]);
-
+  it('dispatches run_skill summarize from generated skill metadata', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-skill-'));
     try {
-      await backend.callTool('query', { query: 'auth' });
+      await fs.mkdir(path.join(tmpDir, '.claude', 'skills', 'generated', 'auth'), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(tmpDir, '.claude', 'skills', 'generated', 'auth', 'skill.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          name: 'auth',
+          label: 'Auth',
+          projectName: 'TestProject',
+          generatedAt: '2026-04-30T00:00:00.000Z',
+          symbolCount: 4,
+          fileCount: 2,
+          cohesion: 0.82,
+          rootDirectories: ['src'],
+          keyFiles: [{ relativePath: 'src/auth.ts', symbols: ['authGate'] }],
+          entryPoints: [
+            {
+              uid: 'fn:authGate',
+              name: 'authGate',
+              kind: 'Function',
+              filePath: 'src/auth.ts',
+              startLine: 5,
+            },
+          ],
+          anchors: [
+            {
+              uid: 'fn:authGate',
+              name: 'authGate',
+              kind: 'Function',
+              filePath: 'src/auth.ts',
+              startLine: 5,
+              description: 'Function authGate protects route access.',
+            },
+          ],
+          actions: [
+            { name: 'summarize', description: 'Return overview.' },
+            { name: 'list_entry_points', description: 'List entry points.' },
+          ],
+          validationCommands: ['npm test'],
+        }),
+        'utf-8',
+      );
 
-      const queries = (executeQuery as any).mock.calls.map(
-        ([, cypher]: [string, string]) => cypher,
-      );
-      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(false);
-      expect(
-        queries.some(
-          (cypher: string) =>
-            cypher.includes('RETURN e.nodeId AS nodeId') &&
-            cypher.includes('e.embedding AS embedding'),
-        ),
-      ).toBe(true);
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('GitNexus [query:vector]: VECTOR index unavailable'),
-      );
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          path: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        },
+      ]);
+      const skillBackend = new LocalBackend();
+      await skillBackend.init();
+
+      const result = await skillBackend.callTool('run_skill', {
+        skill: 'Auth',
+        action: 'summarize',
+      });
+
+      expect(result).toMatchObject({
+        status: 'ok',
+        skill: 'auth',
+        action: 'summarize',
+        label: 'Auth',
+        summary: {
+          symbol_count: 4,
+          file_count: 2,
+          cohesion: 0.82,
+          root_directories: ['src'],
+        },
+      });
+      expect(result.entry_points[0].name).toBe('authGate');
+      expect(result.validation_commands).toEqual(['npm test']);
+      expect(initLbug).not.toHaveBeenCalled();
     } finally {
-      consoleError.mockRestore();
+      await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('dispatches run_skill list_entry_points without opening LadybugDB', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-skill-'));
+    try {
+      await fs.mkdir(path.join(tmpDir, '.claude', 'skills', 'generated', 'auth'), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(tmpDir, '.claude', 'skills', 'generated', 'auth', 'skill.json'),
+        JSON.stringify({
+          name: 'auth',
+          label: 'Auth',
+          entryPoints: [{ uid: 'fn:login', name: 'login', kind: 'Function' }],
+          anchors: [{ uid: 'fn:login', name: 'login', kind: 'Function', description: 'Logs in.' }],
+        }),
+        'utf-8',
+      );
+
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          path: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        },
+      ]);
+      const skillBackend = new LocalBackend();
+      await skillBackend.init();
+
+      const result = await skillBackend.callTool('run_skill', {
+        skill: 'auth',
+        action: 'list_entry_points',
+      });
+
+      expect(result).toMatchObject({
+        status: 'ok',
+        skill: 'auth',
+        action: 'list_entry_points',
+        entry_points: [{ uid: 'fn:login', name: 'login', kind: 'Function' }],
+      });
+      expect(initLbug).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('query tool includes semantic anchor descriptions for matched definitions', async () => {
+    (searchFTSFromLbug as any).mockResolvedValueOnce([
+      {
+        filePath: 'src/auth.ts',
+        score: 12,
+        nodeIds: ['Function:authGate'],
+      },
+    ]);
+    (executeParameterized as any).mockImplementation(
+      async (_repoId: string, query: string, _params: Record<string, unknown>) => {
+        if (query.includes('WHERE n.id IN $nodeIds')) {
+          return [
+            {
+              id: 'Function:authGate',
+              name: 'authGate',
+              type: 'Function',
+              filePath: 'src/auth.ts',
+              startLine: 5,
+              endLine: 12,
+            },
+          ];
+        }
+        if (query.includes('RETURN n.id AS id, n.description AS description')) {
+          return [
+            {
+              id: 'Function:authGate',
+              description:
+                'Function authGate implements behavior in auth.ts; no dependency edges yet.',
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('query', { query: 'permissions' });
+
+    expect(result.definitions).toHaveLength(1);
+    expect(result.definitions[0].description).toContain('authGate implements behavior');
   });
 
   it('query tool returns error for empty query', async () => {
@@ -522,6 +652,153 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
     expect(result).toBeDefined();
     expect(result.target).toBeDefined();
+  });
+
+  it('dispatches get_impact_score tool with high-risk centrality', async () => {
+    (executeParameterized as any).mockImplementation(
+      async (_repoId: string, query: string, _params: Record<string, unknown>) => {
+        if (query.includes('WHERE n.name = $symName')) {
+          return [
+            {
+              id: 'func:sharedUtil',
+              name: 'sharedUtil',
+              type: 'Function',
+              filePath: 'src/shared.ts',
+              startLine: 1,
+              endLine: 5,
+            },
+          ];
+        }
+        if (query.includes('COUNT(DISTINCT source.id) AS count')) {
+          return [{ relationType: 'CALLS', count: 150 }];
+        }
+        if (query.includes('COUNT(DISTINCT target.id) AS count')) {
+          return [];
+        }
+        if (query.includes('RETURN source.id AS id')) {
+          return [
+            {
+              id: 'func:caller',
+              name: 'caller',
+              type: 'Function',
+              filePath: 'src/caller.ts',
+              relationType: 'CALLS',
+              confidence: 0.9,
+            },
+          ];
+        }
+        if (query.includes('RETURN target.id AS id')) {
+          return [];
+        }
+        if (query.includes("r.type = 'STEP_IN_PROCESS'")) {
+          return [{ count: 0 }];
+        }
+        if (query.includes("r.type = 'MEMBER_OF'")) {
+          return [];
+        }
+        if (query.includes('WITH DISTINCT source LIMIT 200')) {
+          return [{ count: 0 }];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('get_impact_score', { target: 'sharedUtil' });
+
+    expect(result.status).toBe('scored');
+    expect(result.risk).toBe('HIGH');
+    expect(result.score).toBeGreaterThanOrEqual(60);
+    expect(result.metrics.incoming_edges).toBe(150);
+    expect(result.reasons[0].id).toBe('incoming_edges');
+    expect(result.top_callers).toHaveLength(1);
+  });
+
+  it('get_impact_score returns error when target and target_uid are both missing', async () => {
+    const result = await backend.callTool('get_impact_score', {});
+    expect(result.error).toContain('Either target or target_uid');
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it('dispatches runtime_context tool and reports missing sidecar cleanly', async () => {
+    const result = await backend.callTool('runtime_context', { route: '/api/orders' });
+    expect(result.status).toBe('no_runtime_data');
+    expect(result.expected_path).toContain('runtime-signals.json');
+  });
+
+  it('dispatches export_context tool as a bounded markdown neighborhood', async () => {
+    (executeParameterized as any).mockImplementation(
+      async (_repoId: string, query: string, _params: Record<string, unknown>) => {
+        if (query.includes('WHERE n.name = $symName')) {
+          return [
+            {
+              id: 'func:main',
+              name: 'main',
+              type: 'Function',
+              filePath: 'src/index.ts',
+              startLine: 1,
+              endLine: 5,
+            },
+          ];
+        }
+        if (query.includes('RETURN n.id AS id, n.description AS description')) {
+          const ids = (_params.ids as string[]) || [];
+          return ids.map((id) => ({
+            id,
+            description: `Function ${id.split(':').pop()} implements behavior in graph.ts; no dependency edges yet.`,
+          }));
+        }
+        if (query.includes('MATCH (source)-[r:CodeRelation]->(center)')) {
+          return [
+            {
+              centerId: 'func:main',
+              centerName: 'main',
+              id: 'func:caller',
+              name: 'caller',
+              kind: 'Function',
+              filePath: 'src/caller.ts',
+              startLine: 10,
+              endLine: 15,
+              relationType: 'CALLS',
+              confidence: 0.9,
+            },
+          ];
+        }
+        if (query.includes('MATCH (center)-[r:CodeRelation]->(target)')) {
+          return [
+            {
+              centerId: 'func:main',
+              centerName: 'main',
+              id: 'func:dependency',
+              name: 'dependency',
+              kind: 'Function',
+              filePath: 'src/dependency.ts',
+              startLine: 20,
+              endLine: 30,
+              relationType: 'CALLS',
+              confidence: 0.9,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('export_context', {
+      target: 'main',
+      degree: 1,
+      direction: 'both',
+      format: 'markdown',
+    });
+
+    expect(result.status).toBe('exported');
+    expect(result.format).toBe('markdown');
+    expect(result.node_count).toBe(3);
+    expect(result.edge_count).toBe(2);
+    expect(result.content).toContain('## Nodes');
+    expect(result.content).toContain('caller');
+    expect(result.content).toContain('dependency');
+    expect(result.content).toContain('Function main implements behavior');
+    expect(result.nodes[0].description).toContain('Function main implements behavior');
   });
 
   it('dispatches detect_changes tool', async () => {

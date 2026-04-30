@@ -48,6 +48,23 @@ const SPRING_CLASS_PREFIX_PATTERNS = compilePatterns({
 } satisfies LanguagePatterns<Record<string, never>>);
 
 // ─── Provider: Spring @(Get|Post|...)Mapping method annotations ───────
+const SPRING_CLASS_PREFIX_ARGS_PATTERNS = compilePatterns({
+  name: 'java-spring-class-prefix-args',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (class_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#eq? @ann "RequestMapping")
+              arguments: (annotation_argument_list) @args))) @class
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
   name: 'java-spring-method-route',
   language: Java,
@@ -72,6 +89,42 @@ const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
 // RestTemplate.put → PUT
 // RestTemplate.delete → DELETE
 // RestTemplate.patchForObject → PATCH
+const SPRING_METHOD_ROUTE_ARGS_PATTERNS = compilePatterns({
+  name: 'java-spring-method-route-args',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$")
+              arguments: (annotation_argument_list) @args))
+          name: (identifier) @method_name) @method
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const SPRING_REQUEST_MAPPING_METHOD_PATTERNS = compilePatterns({
+  name: 'java-spring-request-mapping-method',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#eq? @ann "RequestMapping")
+              arguments: (annotation_argument_list) @args))
+          name: (identifier) @method_name) @method
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 const REST_TEMPLATE_TO_HTTP: Record<string, string> = {
   getForObject: 'GET',
   getForEntity: 'GET',
@@ -171,6 +224,28 @@ function joinPath(prefix: string, methodPath: string): string {
   return `/${cleanPrefix}/${cleanSub}`;
 }
 
+const JAVA_STRING_LITERAL = /"(?:\\.|[^"\\])*"/;
+
+function stringLiteralFromMatch(match: RegExpMatchArray | null): string | null {
+  if (!match) return null;
+  return unquoteLiteral(match[1] ?? match[0]);
+}
+
+function pathFromAnnotationArgs(argsText: string): string | null {
+  const named = argsText.match(/\b(?:path|value)\s*=\s*(?:\{\s*)?("(?:\\.|[^"\\])*")/);
+  if (named) return stringLiteralFromMatch(named);
+
+  const positional = argsText.match(/^\(\s*("(?:\\.|[^"\\])*")/);
+  if (positional) return stringLiteralFromMatch(positional);
+
+  return stringLiteralFromMatch(argsText.match(JAVA_STRING_LITERAL));
+}
+
+function requestMethodFromAnnotationArgs(argsText: string): string | null {
+  const match = argsText.match(/\bRequestMethod\s*\.\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b/);
+  return match?.[1] ?? null;
+}
+
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
   language: Java,
@@ -184,6 +259,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const classNode = match.captures.class;
       if (!prefixNode || !classNode) continue;
       const prefix = unquoteLiteral(prefixNode.text);
+      if (prefix !== null) prefixByClassId.set(classNode.id, prefix);
+    }
+
+    for (const match of runCompiledPatterns(SPRING_CLASS_PREFIX_ARGS_PATTERNS, tree)) {
+      const argsNode = match.captures.args;
+      const classNode = match.captures.class;
+      if (!argsNode || !classNode) continue;
+      const prefix = pathFromAnnotationArgs(argsNode.text);
       if (prefix !== null) prefixByClassId.set(classNode.id, prefix);
     }
 
@@ -211,6 +294,50 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: RestTemplate ────────────────────────────────────
+    for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_ARGS_PATTERNS, tree)) {
+      const annNode = match.captures.ann;
+      const argsNode = match.captures.args;
+      const nameNode = match.captures.method_name;
+      const methodNode = match.captures.method;
+      if (!annNode || !argsNode || !methodNode) continue;
+      const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
+      if (!httpMethod) continue;
+      const rawPath = pathFromAnnotationArgs(argsNode.text);
+      if (rawPath === null) continue;
+      const enclosingClass = findEnclosingClass(methodNode);
+      const prefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
+      const fullPath = joinPath(prefix, rawPath);
+      out.push({
+        role: 'provider',
+        framework: 'spring',
+        method: httpMethod,
+        path: fullPath,
+        name: nameNode?.text ?? null,
+        confidence: 0.8,
+      });
+    }
+
+    for (const match of runCompiledPatterns(SPRING_REQUEST_MAPPING_METHOD_PATTERNS, tree)) {
+      const argsNode = match.captures.args;
+      const nameNode = match.captures.method_name;
+      const methodNode = match.captures.method;
+      if (!argsNode || !methodNode) continue;
+      const httpMethod = requestMethodFromAnnotationArgs(argsNode.text);
+      const rawPath = pathFromAnnotationArgs(argsNode.text);
+      if (!httpMethod || rawPath === null) continue;
+      const enclosingClass = findEnclosingClass(methodNode);
+      const prefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
+      const fullPath = joinPath(prefix, rawPath);
+      out.push({
+        role: 'provider',
+        framework: 'spring',
+        method: httpMethod,
+        path: fullPath,
+        name: nameNode?.text ?? null,
+        confidence: 0.8,
+      });
+    }
+
     for (const match of runCompiledPatterns(REST_TEMPLATE_PATTERNS, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;

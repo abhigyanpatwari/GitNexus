@@ -43,6 +43,15 @@ function serviceOnlyContractId(serviceName: string): string {
   return `grpc::${serviceName}/*`;
 }
 
+function canonicalProtoMethod(
+  proto: ProtoServiceInfo | null | undefined,
+  methodName?: string,
+): string | undefined {
+  if (!methodName) return undefined;
+  const protoMethod = proto?.methods.find((m) => m.toLowerCase() === methodName.toLowerCase());
+  return protoMethod ?? methodName;
+}
+
 /**
  * Replace all .proto comments and string literals with spaces, preserving the
  * original length and character offsets of the input. This lets downstream
@@ -449,8 +458,9 @@ export class GrpcExtractor implements ContractExtractor {
     // an arbitrary candidate. resolveProtoConflict already warned.
     if (candidates.length > 0 && proto === null) return null;
     const pkg = proto?.package ?? '';
-    const cid = d.methodName
-      ? contractId(pkg, d.serviceName, d.methodName)
+    const methodName = canonicalProtoMethod(proto, d.methodName);
+    const cid = methodName
+      ? contractId(pkg, d.serviceName, methodName)
       : proto
         ? serviceContractId(pkg, d.serviceName)
         : serviceOnlyContractId(d.serviceName);
@@ -459,7 +469,8 @@ export class GrpcExtractor implements ContractExtractor {
       service: d.serviceName,
       source: d.source,
     };
-    if (d.methodName) meta.method = d.methodName;
+    if (methodName) meta.method = methodName;
+    if (d.methodName && methodName !== d.methodName) meta.detectedMethod = d.methodName;
     return makeContract(cid, d.role, filePath, d.symbolName, confidence, meta);
   }
 

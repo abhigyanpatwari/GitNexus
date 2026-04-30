@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchGraph, normalizeServerUrl, setBackendUrl } from '../../src/services/backend-client';
+import {
+  fetchGraph,
+  fetchGroupStatuses,
+  normalizeServerUrl,
+  setBackendUrl,
+  startAnalyze,
+} from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -33,6 +39,7 @@ describe('normalizeServerUrl', () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -163,5 +170,64 @@ describe('fetchGraph', () => {
     await expect(fetchGraph('big-repo')).rejects.toMatchObject({
       message: 'stream failed',
     });
+  });
+});
+
+describe('fetchGroupStatuses', () => {
+  it('requests group statuses filtered by repo', async () => {
+    setBackendUrl('http://localhost:4747');
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ groups: [{ group: 'product' }], errors: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchGroupStatuses('web-app');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:4747/api/groups?repo=web-app',
+      expect.any(Object),
+    );
+    expect(result).toEqual([{ group: 'product' }]);
+  });
+});
+
+describe('startAnalyze', () => {
+  it('does not abort analysis startup after the default 30s request timeout', async () => {
+    vi.useFakeTimers();
+    setBackendUrl('http://localhost:4747');
+
+    let resolveFetch!: (response: Response) => void;
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise<Response>((resolve, reject) => {
+        resolveFetch = resolve;
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = startAnalyze({ path: 'C:\\repo' });
+    let rejected = false;
+    request.catch(() => {
+      rejected = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(30_001);
+
+    expect(rejected).toBe(false);
+
+    resolveFetch(
+      new Response(JSON.stringify({ jobId: 'job-1', status: 'queued' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(request).resolves.toEqual({ jobId: 'job-1', status: 'queued' });
   });
 });

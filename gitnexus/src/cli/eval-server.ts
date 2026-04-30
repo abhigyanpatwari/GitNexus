@@ -37,6 +37,14 @@ export interface EvalServerOptions {
 // Convert structured JSON results into compact, LLM-friendly text.
 // Design: minimize tokens, maximize actionability.
 
+function formatAnchorText(value: unknown, maxLength = 180): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
 export function formatQueryResult(result: any): string {
   if (result.error) return `Error: ${result.error}`;
 
@@ -59,7 +67,9 @@ export function formatQueryResult(result: any): string {
     const procSymbols = symbols.filter((s: any) => s.process_id === p.id);
     for (const s of procSymbols.slice(0, 6)) {
       const loc = s.startLine ? `:${s.startLine}` : '';
+      const anchor = formatAnchorText(s.description);
       lines.push(`   ${s.type} ${s.name} → ${s.filePath}${loc}`);
+      if (anchor) lines.push(`      ${anchor}`);
     }
     if (procSymbols.length > 6) {
       lines.push(`   ... and ${procSymbols.length - 6} more`);
@@ -70,7 +80,9 @@ export function formatQueryResult(result: any): string {
   if (defs.length > 0) {
     lines.push(`Standalone definitions:`);
     for (const d of defs.slice(0, 8)) {
+      const anchor = formatAnchorText(d.description);
       lines.push(`  ${d.type || 'Symbol'} ${d.name} → ${d.filePath || '?'}`);
+      if (anchor) lines.push(`    ${anchor}`);
     }
     if (defs.length > 8) lines.push(`  ... and ${defs.length - 8} more`);
   }
@@ -97,7 +109,9 @@ export function formatContextResult(result: any): string {
 
   const lines: string[] = [];
   const loc = sym.startLine ? `:${sym.startLine}-${sym.endLine}` : '';
+  const anchor = formatAnchorText(sym.description);
   lines.push(`${sym.kind} ${sym.name} → ${sym.filePath}${loc}`);
+  if (anchor) lines.push(`Anchor: ${anchor}`);
   lines.push('');
 
   // Incoming refs (who calls/imports/extends this)

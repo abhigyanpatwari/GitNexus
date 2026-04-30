@@ -311,6 +311,54 @@ describe('syncGroup', () => {
     }
   });
 
+  it('imports OpenAPI HTTP contracts during repo group sync', async () => {
+    const tmpDir = path.join(os.tmpdir(), `gitnexus-sync-openapi-${Date.now()}`);
+    fs.mkdirSync(path.join(tmpDir, 'docs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'docs/openapi.yaml'),
+      `
+openapi: 3.0.3
+paths:
+  /api/orders/{id}:
+    get:
+      operationId: getOrder
+`,
+    );
+
+    const { vi } = await import('vitest');
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const executeSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const config = makeConfig({ 'app/backend': 'backend-repo' });
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'backend-repo',
+          path: groupPath,
+          repoPath: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        }),
+        skipWrite: true,
+      });
+
+      const contract = result.contracts.find(
+        (c) => c.contractId === 'http::GET::/api/orders/{param}',
+      );
+      expect(contract).toBeDefined();
+      expect(contract?.repo).toBe('app/backend');
+      expect(contract?.role).toBe('provider');
+      expect(contract?.symbolName).toBe('getOrder');
+      expect(contract?.meta.source).toBe('openapi');
+    } finally {
+      initSpy.mockRestore();
+      executeSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('writes registry to groupDir when skipWrite is false', async () => {
     const tmpDir = path.join(os.tmpdir(), `gitnexus-sync-write-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });

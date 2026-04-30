@@ -18,8 +18,8 @@ export type GrpcRole = 'provider' | 'consumer';
  * contract id and choose a confidence based on whether the proto was
  * found.
  *
- * Most patterns produce service-level detections; `TS @GrpcMethod` is
- * the only pattern that captures an explicit `methodName`, producing
+ * Most patterns produce service-level detections; method-level detections
+ * are emitted when a plugin can identify a concrete RPC method, producing
  * a method-level contract (`grpc::pkg.Service/Method`).
  */
 export interface GrpcDetection {
@@ -30,7 +30,7 @@ export interface GrpcDetection {
   symbolName: string;
   /** Metadata source label (goes into `meta.source`). */
   source: string;
-  /** Explicit method name; set only by TS `@GrpcMethod`. */
+  /** Explicit RPC method name when known. */
   methodName?: string;
   /** Confidence when the proto map resolves the service. */
   confidenceWithProto: number;

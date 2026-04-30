@@ -6,9 +6,12 @@ import {
   getCommunityColor,
   DEFAULT_VISIBLE_LABELS,
   FILTERABLE_LABELS,
+  FILTER_COLOR_LEGEND_LABELS,
   ALL_EDGE_TYPES,
   DEFAULT_VISIBLE_EDGES,
   EDGE_INFO,
+  EDGE_STYLES,
+  GRAPH_COLOR_MODE_LEGENDS,
 } from '../../src/lib/constants';
 
 describe('NODE_COLORS', () => {
@@ -17,6 +20,11 @@ describe('NODE_COLORS', () => {
       expect(NODE_COLORS).toHaveProperty(label);
       expect(NODE_COLORS[label as keyof typeof NODE_COLORS]).toMatch(/^#[0-9a-f]{6}$/i);
     }
+  });
+
+  it('uses distinct colors for filterable node labels', () => {
+    const colors = FILTERABLE_LABELS.map((label) => NODE_COLORS[label]);
+    expect(new Set(colors).size).toBe(colors.length);
   });
 });
 
@@ -111,6 +119,34 @@ describe('edge types', () => {
     for (const info of Object.values(EDGE_INFO)) {
       expect(info.color).toMatch(/^#[0-9a-f]{6}$/i);
       expect(info.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('EDGE_INFO colors are derived from EDGE_STYLES', () => {
+    for (const type of ALL_EDGE_TYPES) {
+      expect(EDGE_INFO[type]).toEqual({
+        color: EDGE_STYLES[type].color,
+        label: EDGE_STYLES[type].label,
+      });
+    }
+  });
+});
+
+describe('graph legends', () => {
+  it('color-mode legends use valid colors', () => {
+    for (const legend of Object.values(GRAPH_COLOR_MODE_LEGENDS)) {
+      expect(legend.length).toBeGreaterThan(0);
+      for (const item of legend) {
+        expect(item.color).toMatch(/^#[0-9a-f]{6}$/i);
+        expect(item.label.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('filter legend labels are filterable and colorable', () => {
+    for (const label of FILTER_COLOR_LEGEND_LABELS) {
+      expect(FILTERABLE_LABELS).toContain(label);
+      expect(NODE_COLORS[label]).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
 });

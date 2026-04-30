@@ -35,11 +35,19 @@ function makeNode(
   filePath: string,
   startLine: number,
   isExported: boolean,
+  description?: string,
 ): GraphNode {
   return {
     id,
     label,
-    properties: { name, filePath, startLine, endLine: startLine + 10, isExported },
+    properties: {
+      name,
+      filePath,
+      startLine,
+      endLine: startLine + 10,
+      isExported,
+      ...(description ? { description } : {}),
+    },
   };
 }
 
@@ -676,6 +684,154 @@ describe('generateSkillFiles — file output', () => {
     expect(content).toContain('## Entry Points');
     expect(content).toContain('## Execution Flows');
     expect(content).toContain('## Connected Areas');
+  });
+
+  it('includes Key Anchors when member descriptions exist', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(
+      makeNode(
+        'fn:authGate',
+        'authGate',
+        'Function',
+        `${tmpDir}/src/auth/gate.ts`,
+        7,
+        true,
+        'Function authGate implements behavior in gate.ts; 3 incoming, 1 call edge.',
+      ),
+    );
+    graph.addNode(
+      makeNode(
+        'cls:policy',
+        'Policy',
+        'Class',
+        `${tmpDir}/src/auth/policy.ts`,
+        1,
+        true,
+        'Class Policy defines a type in policy.ts; 2 outgoing edges.',
+      ),
+    );
+    graph.addNode(
+      makeNode('fn:allow', 'allow', 'Function', `${tmpDir}/src/auth/allow.ts`, 20, false),
+    );
+    graph.addNode(makeNode('fn:deny', 'deny', 'Function', `${tmpDir}/src/auth/deny.ts`, 30, false));
+
+    const communities = [makeCommunity('c1', 'Auth', 4)];
+    const memberships = ['fn:authGate', 'cls:policy', 'fn:allow', 'fn:deny'].map((id) =>
+      makeMembership(id, 'c1'),
+    );
+
+    await generateSkillFiles(
+      tmpDir,
+      'TestProject',
+      buildPipelineResult({
+        graph,
+        repoPath: tmpDir,
+        communities,
+        memberships,
+      }),
+    );
+
+    const content = await fs.readFile(
+      path.join(tmpDir, '.claude', 'skills', 'generated', 'auth', 'SKILL.md'),
+      'utf-8',
+    );
+
+    expect(content).toContain('## Key Anchors');
+    expect(content).toContain('authGate');
+    expect(content).toContain('Function authGate implements behavior in gate.ts');
+    expect(content).toContain('Policy');
+  });
+
+  it('writes executable skill.json metadata beside SKILL.md', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          test: 'vitest',
+          build: 'tsc -p tsconfig.json',
+        },
+      }),
+      'utf-8',
+    );
+
+    const graph = createKnowledgeGraph();
+    graph.addNode(
+      makeNode(
+        'fn:authGate',
+        'authGate',
+        'Function',
+        `${tmpDir}/src/auth/gate.ts`,
+        7,
+        true,
+        'Function authGate validates access to protected routes.',
+      ),
+    );
+    graph.addNode(
+      makeNode(
+        'cls:policy',
+        'Policy',
+        'Class',
+        `${tmpDir}/src/auth/policy.ts`,
+        1,
+        true,
+        'Class Policy evaluates permission rules.',
+      ),
+    );
+    graph.addNode(
+      makeNode('fn:allow', 'allow', 'Function', `${tmpDir}/src/auth/allow.ts`, 20, false),
+    );
+    graph.addNode(makeNode('fn:deny', 'deny', 'Function', `${tmpDir}/src/auth/deny.ts`, 30, false));
+
+    const communities = [makeCommunity('c1', 'Auth', 4)];
+    const memberships = ['fn:authGate', 'cls:policy', 'fn:allow', 'fn:deny'].map((id) =>
+      makeMembership(id, 'c1'),
+    );
+
+    await generateSkillFiles(
+      tmpDir,
+      'TestProject',
+      buildPipelineResult({
+        graph,
+        repoPath: tmpDir,
+        communities,
+        memberships,
+      }),
+    );
+
+    const metadata = JSON.parse(
+      await fs.readFile(
+        path.join(tmpDir, '.claude', 'skills', 'generated', 'auth', 'skill.json'),
+        'utf-8',
+      ),
+    );
+
+    expect(metadata).toMatchObject({
+      schemaVersion: 1,
+      name: 'auth',
+      label: 'Auth',
+      projectName: 'TestProject',
+      symbolCount: 4,
+      fileCount: 4,
+    });
+    expect(metadata.actions.map((action: any) => action.name)).toEqual(
+      expect.arrayContaining([
+        'summarize',
+        'list_entry_points',
+        'impact',
+        'export_context',
+        'validate_change',
+      ]),
+    );
+    expect(metadata.entryPoints[0]).toMatchObject({
+      uid: 'fn:authGate',
+      name: 'authGate',
+      kind: 'Function',
+      filePath: 'src/auth/gate.ts',
+    });
+    expect(metadata.anchors.map((anchor: any) => anchor.name)).toEqual(
+      expect.arrayContaining(['authGate', 'Policy']),
+    );
+    expect(metadata.validationCommands).toEqual(['npm test', 'npm run build']);
   });
 
   /**

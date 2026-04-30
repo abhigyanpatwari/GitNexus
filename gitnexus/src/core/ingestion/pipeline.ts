@@ -18,6 +18,7 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
+import type { ScannedFile } from './filesystem-walker.js';
 import {
   runPipeline,
   getPhaseOutput,
@@ -31,6 +32,7 @@ import {
   ormPhase,
   crossFilePhase,
   scopeResolutionPhase,
+  anchorsPhase,
   mroPhase,
   communitiesPhase,
   processesPhase,
@@ -55,6 +57,18 @@ export interface PipelineOptions {
     minFiles?: number;
     minBytes?: number;
   };
+  /**
+   * Optional pre-scan from a caller that already walked the filesystem
+   * (for example, diff-aware up-to-date checks). When present, scanPhase
+   * reuses it instead of walking the repo again.
+   */
+  preScannedFiles?: ScannedFile[];
+  /** Opt into LLM-enriched semantic anchors after local heuristic anchors. */
+  llmAnchors?: boolean;
+  /** Cache file for LLM semantic anchor enrichment. */
+  semanticAnchorCachePath?: string;
+  /** Maximum nodes to enrich in one analyze run. */
+  llmAnchorLimit?: number;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -82,6 +96,7 @@ function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
     ormPhase,
     crossFilePhase,
     scopeResolutionPhase,
+    anchorsPhase,
   ];
 
   if (!options?.skipGraphPhases) {
@@ -116,6 +131,7 @@ export const runPipelineFromRepo = async (
     totalFiles: number;
     usedWorkerPool: boolean;
   }>(results, 'parse');
+  const { scannedFiles } = getPhaseOutput<{ scannedFiles: ScannedFile[] }>(results, 'scan');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
@@ -143,6 +159,7 @@ export const runPipelineFromRepo = async (
     graph,
     repoPath,
     totalFileCount: totalFiles,
+    scannedFiles,
     communityResult,
     processResult,
     usedWorkerPool,

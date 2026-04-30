@@ -25,6 +25,20 @@ export interface KnowledgeGraph {
    * existing `iterRelationships()` callers keep working.
    */
   iterRelationshipsByType: (type: RelationshipType) => IterableIterator<GraphRelationship>;
+  /**
+   * Iterate node ids emitted by a single source file. Backed by the
+   * graph's file ownership index; returns a fresh empty iterator for
+   * files with no emitted nodes.
+   */
+  iterNodeIdsByFile: (filePath: string) => IterableIterator<string>;
+  /**
+   * Iterate relationship ids owned by a single source file. Ownership is
+   * assigned to the source node's file when available, otherwise the
+   * target node's file. Returns a fresh empty iterator for files with no
+   * emitted relationships.
+   */
+  iterRelationshipIdsByFile: (filePath: string) => IterableIterator<string>;
+  getRelationshipOwnerFile: (relationshipId: string) => string | undefined;
   forEachNode: (fn: (node: GraphNode) => void) => void;
   forEachRelationship: (fn: (rel: GraphRelationship) => void) => void;
   getNode: (id: string) => GraphNode | undefined;

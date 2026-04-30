@@ -55,8 +55,8 @@ AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, cal
 
 Returns results grouped by process (execution flow):
 - processes: ranked execution flows with relevance priority
-- process_symbols: all symbols in those flows with file locations and module (functional area)
-- definitions: standalone types/interfaces not in any process
+- process_symbols: symbols in those flows with file locations, module, and semantic anchor descriptions when available
+- definitions: standalone symbols not in any process, with anchor descriptions when available
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
@@ -279,6 +279,224 @@ Each edit is tagged with confidence:
         },
       },
       required: ['new_name'],
+    },
+  },
+  {
+    name: 'get_impact_score',
+    description: `Fast preflight risk score for changing a code symbol.
+Calculates centrality, API/tool exposure, and cross-repo contract exposure without running a full blast-radius traversal.
+
+WHEN TO USE: Before an agent writes code. This is the quick "should I be careful here?" check for shared utilities, route handlers, tool handlers, core services, and framework glue.
+AFTER THIS: For MEDIUM, HIGH, or CRITICAL scores, run impact() upstream and inspect direct dependants before editing.
+
+Output includes:
+- score: 0-100
+- risk: LOW / MEDIUM / HIGH / CRITICAL
+- metrics: incoming/outgoing edges, process participation, API/tool edges, relative centrality, module memberships, cross-repo contracts
+- reasons: weighted factors that explain the score
+- top_callers and top_dependencies: examples to inspect first
+
+Handles disambiguation: pass target_uid for zero ambiguity, or narrow with file_path and kind.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'Name of function, class, method, or file to score',
+        },
+        target_uid: {
+          type: 'string',
+          description:
+            'Direct symbol UID from prior tool results (zero-ambiguity lookup, skips target resolution)',
+        },
+        file_path: {
+          type: 'string',
+          description: 'File path hint to disambiguate common names',
+        },
+        kind: {
+          type: 'string',
+          description:
+            "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')",
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional edge filter. Defaults to usage and contract edges: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF.',
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test files in example callers/dependencies (default: false)',
+        },
+        maxExamples: {
+          type: 'number',
+          description: 'Max caller/dependency examples to return (default: 10)',
+          default: 10,
+          minimum: 1,
+          maximum: 50,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'export_context',
+    description: `Export a bounded graph neighborhood around a symbol as Markdown, JSONL, or JSON.
+
+WHEN TO USE: Give an agent a compact context packet before an edit, review, or refactor without loading the whole graph.
+AFTER THIS: Use the exported nodes and edges as working context. Run get_impact_score() or impact() when the export shows shared callers or contract edges.
+
+Returns the target node plus nearby callers/dependencies up to the requested degree. Markdown includes semantic anchor summaries when available and is optimized for direct LLM reading; JSONL is optimized for agent pipelines.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'Name of function, class, method, or file to export around',
+        },
+        target_uid: {
+          type: 'string',
+          description:
+            'Direct symbol UID from prior tool results (zero-ambiguity lookup, skips target resolution)',
+        },
+        file_path: {
+          type: 'string',
+          description: 'File path hint to disambiguate common names',
+        },
+        kind: {
+          type: 'string',
+          description:
+            "Kind filter to disambiguate common names (e.g. 'Function', 'Class', 'Method', 'Interface', 'Constructor')",
+        },
+        degree: {
+          type: 'number',
+          description: 'Neighborhood degree to export (default: 2, max: 3)',
+          default: 2,
+          minimum: 1,
+          maximum: 3,
+        },
+        direction: {
+          type: 'string',
+          description: 'Neighborhood direction: upstream, downstream, or both (default: both)',
+          enum: ['upstream', 'downstream', 'both'],
+          default: 'both',
+        },
+        format: {
+          type: 'string',
+          description: 'Export format: markdown, jsonl, or json (default: markdown)',
+          enum: ['markdown', 'jsonl', 'json'],
+          default: 'markdown',
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional edge filter. Defaults to usage and contract edges such as CALLS, IMPORTS, ACCESSES, FETCHES, HANDLES_TOOL, and ENTRY_POINT_OF.',
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test files in the exported neighborhood (default: false)',
+        },
+        maxNodes: {
+          type: 'number',
+          description: 'Maximum nodes to include before truncating (default: 80, max: 500)',
+          default: 80,
+          minimum: 1,
+          maximum: 500,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'runtime_context',
+    description: `Read runtime evidence mapped to a symbol, route, or service from the repo's local runtime overlay.
+
+WHEN TO USE: Before prioritizing a risky edit or debugging production behavior. Complements static impact with call counts, errors, latency, spans, routes, and log patterns when a runtime-signals.json sidecar is present.
+AFTER THIS: Use impact() for static blast radius, then prioritize dependants with matching runtime failures or latency.
+
+Sidecar location: .gitnexus/runtime-signals.json in the indexed repo.
+Sidecar creation: run gitnexus runtime import <otlp-or-log-file> to normalize OTLP JSON, JSONL logs, or stack traces into the sidecar.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'Symbol name to match against runtime evidence',
+        },
+        target_uid: {
+          type: 'string',
+          description: 'Direct symbol UID from prior tool results',
+        },
+        file_path: {
+          type: 'string',
+          description: 'File path hint to disambiguate common names',
+        },
+        kind: {
+          type: 'string',
+          description: "Kind filter to disambiguate common names (e.g. 'Function', 'Method')",
+        },
+        route: {
+          type: 'string',
+          description: 'Route path or route id to match runtime route/span evidence',
+        },
+        service: {
+          type: 'string',
+          description: 'Service name to match runtime service evidence',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'run_skill',
+    description: `Execute a generated repo skill action from .claude/skills/generated/<skill>/skill.json.
+
+WHEN TO USE: Let an agent work at the functional-area level instead of manually rediscovering entry points. Use this after gitnexus analyze --skills has generated executable skill metadata.
+
+Actions:
+- summarize: compact area overview with anchors, key files, and validation commands
+- list_entry_points: exported symbols that are safe starting points
+- impact: impact() using an explicit target or the skill's first entry point
+- export_context: export_context() using an explicit target or the skill's first entry point
+- validate_change: suggested validation commands for this area`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        skill: {
+          type: 'string',
+          description: 'Generated skill name, e.g. "auth", "api-routes", or "storage".',
+        },
+        action: {
+          type: 'string',
+          description:
+            'Action to run: summarize, list_entry_points, impact, export_context, or validate_change. Defaults to summarize.',
+          enum: ['summarize', 'list_entry_points', 'impact', 'export_context', 'validate_change'],
+          default: 'summarize',
+        },
+        args: {
+          type: 'object',
+          description:
+            'Action-specific arguments. For impact/export_context, pass target or target_uid to override the default entry point.',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['skill'],
     },
   },
   {

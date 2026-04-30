@@ -15,6 +15,7 @@ import {
   AlertCircle,
 } from '@/lib/lucide-icons';
 import type { ToolCallInfo } from '../core/llm/types';
+import { stripNodeMarkers } from '../lib/agent-tracking';
 
 interface ToolCallCardProps {
   toolCall: ToolCallInfo;
@@ -106,6 +107,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const status = getStatusDisplay(toolCall.status);
   const formattedArgs = formatArgs(toolCall.args);
+  const displayResult = toolCall.result ? stripNodeMarkers(toolCall.result) : '';
 
   return (
     <div
@@ -157,16 +159,16 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
           )}
 
           {/* Result */}
-          {toolCall.result && (
+          {displayResult && (
             <div className="px-3 py-2">
               <div className="mb-1.5 text-[10px] tracking-wider text-text-muted uppercase">
                 Result
               </div>
               <div className="max-h-[400px] overflow-y-auto rounded bg-surface/50">
                 <pre className="p-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
-                  {toolCall.result.length > 3000
-                    ? toolCall.result.slice(0, 3000) + '\n\n... (truncated)'
-                    : toolCall.result}
+                  {displayResult.length > 3000
+                    ? displayResult.slice(0, 3000) + '\n\n... (truncated)'
+                    : displayResult}
                 </pre>
               </div>
             </div>

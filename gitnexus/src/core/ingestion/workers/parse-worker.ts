@@ -2319,6 +2319,8 @@ const processFileGroup = (
         });
       }
     }
+
+    if (tree && typeof tree.delete === 'function') tree.delete();
   }
 };
 

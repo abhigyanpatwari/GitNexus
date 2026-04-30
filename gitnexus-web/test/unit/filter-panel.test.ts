@@ -1,20 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { FILTERABLE_LABELS, NODE_COLORS } from '../../src/lib/constants';
+import {
+  FILTERABLE_LABELS,
+  FILTER_COLOR_LEGEND_LABELS,
+  NODE_COLORS,
+} from '../../src/lib/constants';
 import type { NodeLabel } from '../../src/core/graph/types';
 import * as lucideIcons from '../../src/lib/lucide-icons';
 
-const LEGEND_LABELS: NodeLabel[] = [
-  'Folder',
-  'File',
-  'Class',
-  'Interface',
-  'Enum',
-  'Type',
-  'Function',
-  'Method',
-  'Variable',
-  'Decorator',
-];
+const LEGEND_LABELS: NodeLabel[] = FILTER_COLOR_LEGEND_LABELS;
 
 const ICON_MAP: Record<string, string> = {
   Folder: 'Folder',
@@ -28,6 +21,13 @@ const ICON_MAP: Record<string, string> = {
   Decorator: 'AtSign',
   Import: 'FileCode',
   Variable: 'Variable',
+  Route: 'Target',
+  Tool: 'Zap',
+  RuntimeService: 'Server',
+  RuntimeSpan: 'Activity',
+  RuntimeRoute: 'Target',
+  RuntimeError: 'AlertTriangle',
+  RuntimeLogPattern: 'Terminal',
 };
 
 describe('filter panel icon mappings', () => {

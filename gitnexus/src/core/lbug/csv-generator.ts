@@ -15,7 +15,7 @@
 import fs from 'fs/promises';
 import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
-import type { GraphNode } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName } from './schema.js';
 
@@ -49,6 +49,75 @@ export const escapeCSVNumber = (
   if (value === undefined || value === null) return String(defaultValue);
   return String(value);
 };
+
+const csvText = (value: unknown): string | number => {
+  if (typeof value === 'string' || typeof value === 'number') return value;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return '';
+};
+
+const csvStringArrayLiteral = (value: unknown): string => {
+  const values = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  return `[${values
+    .map((item) =>
+      item
+        .replace(/[\[\],]/g, '-')
+        .replace(/\s+/g, '-')
+        .trim(),
+    )
+    .filter((item) => item.length > 0)
+    .join(',')}]`;
+};
+
+const semanticAnchorFields = (node: GraphNode): string[] => [
+  escapeCSVField(csvText(node.properties.description)),
+  escapeCSVField(csvText(node.properties.summary)),
+  escapeCSVField(csvText(node.properties.purpose)),
+  escapeCSVField(csvStringArrayLiteral(node.properties.tags)),
+  escapeCSVField(csvText(node.properties.anchorModel)),
+  escapeCSVField(csvText(node.properties.anchorHash)),
+  escapeCSVNumber(
+    typeof node.properties.anchorVersion === 'number' ? node.properties.anchorVersion : undefined,
+    -1,
+  ),
+  escapeCSVField(csvText(node.properties.anchorGeneratedAt)),
+];
+
+const runtimeMetricFields = (node: GraphNode): string[] => [
+  escapeCSVField(csvText(node.properties.service)),
+  escapeCSVField(csvText(node.properties.environment)),
+  escapeCSVNumber(typeof node.properties.callCount === 'number' ? node.properties.callCount : 0, 0),
+  escapeCSVNumber(typeof node.properties.errorCount === 'number' ? node.properties.errorCount : 0, 0),
+  escapeCSVNumber(typeof node.properties.errorRate === 'number' ? node.properties.errorRate : 0, 0),
+  escapeCSVNumber(
+    typeof node.properties.p95LatencyMs === 'number' ? node.properties.p95LatencyMs : undefined,
+    -1,
+  ),
+  escapeCSVField(csvText(node.properties.timeWindowStart)),
+  escapeCSVField(csvText(node.properties.timeWindowEnd)),
+];
+
+const normalizeRelationshipStep = (step: GraphRelationship['step']): number => {
+  if (step === undefined || step === null) return 0;
+  return Number.isFinite(step) ? step : 0;
+};
+
+const relationshipMergeReason = (rel: GraphRelationship): string =>
+  rel.type === 'CALLS' ? '' : rel.reason || '';
+
+const relationshipDedupeKey = (rel: GraphRelationship): string =>
+  [
+    rel.sourceId,
+    rel.type,
+    rel.targetId,
+    normalizeRelationshipStep(rel.step),
+    relationshipMergeReason(rel),
+  ].join('\u0000');
+
+const shouldReplaceRelationship = (current: GraphRelationship, next: GraphRelationship): boolean =>
+  next.confidence > current.confidence;
 
 // ============================================================================
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
@@ -227,14 +296,16 @@ export const streamAllCSVsToDisk = async (
   process.setMaxListeners(prevMax + 40);
 
   const contentCache = new FileContentCache(repoPath);
+  const semanticAnchorHeader =
+    'description,summary,purpose,tags,anchorModel,anchorHash,anchorVersion,anchorGeneratedAt';
 
   // Create writers for every node type up-front
   const fileWriter = new BufferedCSVWriter(
     path.join(csvDir, 'file.csv'),
-    'id,name,filePath,content',
+    `id,name,filePath,content,${semanticAnchorHeader}`,
   );
   const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
-  const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
+  const codeElementHeader = `id,name,filePath,startLine,endLine,isExported,content,${semanticAnchorHeader}`;
   const functionWriter = new BufferedCSVWriter(
     path.join(csvDir, 'function.csv'),
     codeElementHeader,
@@ -244,8 +315,7 @@ export const streamAllCSVsToDisk = async (
     path.join(csvDir, 'interface.csv'),
     codeElementHeader,
   );
-  const methodHeader =
-    'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
+  const methodHeader = `id,name,filePath,startLine,endLine,isExported,content,${semanticAnchorHeader},parameterCount,returnType`;
   const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
   const codeElemWriter = new BufferedCSVWriter(
     path.join(csvDir, 'codeelement.csv'),
@@ -263,23 +333,45 @@ export const streamAllCSVsToDisk = async (
   // Section nodes have an extra 'level' column
   const sectionWriter = new BufferedCSVWriter(
     path.join(csvDir, 'section.csv'),
-    'id,name,filePath,startLine,endLine,level,content,description',
+    `id,name,filePath,startLine,endLine,level,content,${semanticAnchorHeader}`,
   );
 
   // Route nodes for API endpoint mapping
   const routeWriter = new BufferedCSVWriter(
     path.join(csvDir, 'route.csv'),
-    'id,name,filePath,responseKeys,errorKeys,middleware',
+    `id,name,filePath,responseKeys,errorKeys,middleware,${semanticAnchorHeader}`,
   );
 
   // Tool nodes for MCP tool definitions
   const toolWriter = new BufferedCSVWriter(
     path.join(csvDir, 'tool.csv'),
-    'id,name,filePath,description',
+    `id,name,filePath,${semanticAnchorHeader}`,
+  );
+  const runtimeMetricsHeader =
+    'service,environment,callCount,errorCount,errorRate,p95LatencyMs,timeWindowStart,timeWindowEnd';
+  const runtimeServiceWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'runtimeservice.csv'),
+    `id,name,${runtimeMetricsHeader}`,
+  );
+  const runtimeSpanWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'runtimespan.csv'),
+    `id,name,route,method,filePath,symbolName,${runtimeMetricsHeader}`,
+  );
+  const runtimeRouteWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'runtimeroute.csv'),
+    `id,name,route,method,${runtimeMetricsHeader}`,
+  );
+  const runtimeErrorWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'runtimeerror.csv'),
+    'id,name,service,environment,route,method,filePath,symbolName,message,errorType,count,lastSeen,stackHash',
+  );
+  const runtimeLogPatternWriter = new BufferedCSVWriter(
+    path.join(csvDir, 'runtimelogpattern.csv'),
+    'id,name,service,level,route,method,filePath,symbolName,pattern,count,lastSeen',
   );
 
   // Multi-language node types share the same CSV shape (no isExported column)
-  const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+  const multiLangHeader = `id,name,filePath,startLine,endLine,content,${semanticAnchorHeader}`;
   const MULTI_LANG_TYPES = [
     'Struct',
     'Enum',
@@ -335,6 +427,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.properties.name || ''),
             escapeCSVField(node.properties.filePath || ''),
             escapeCSVField(content),
+            ...semanticAnchorFields(node),
           ].join(','),
         );
         break;
@@ -393,7 +486,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVNumber(node.properties.endLine, -1),
             node.properties.isExported ? 'true' : 'false',
             escapeCSVField(content),
-            escapeCSVField(node.properties.description || ''),
+            ...semanticAnchorFields(node),
             escapeCSVNumber(node.properties.parameterCount, 0),
             escapeCSVField(node.properties.returnType || ''),
           ].join(','),
@@ -411,7 +504,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVNumber(node.properties.endLine, -1),
             escapeCSVNumber(node.properties.level, 1),
             escapeCSVField(content),
-            escapeCSVField(node.properties.description || ''),
+            ...semanticAnchorFields(node),
           ].join(','),
         );
         break;
@@ -433,6 +526,7 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(keysStr),
             escapeCSVField(errorKeysStr),
             escapeCSVField(middlewareStr),
+            ...semanticAnchorFields(node),
           ].join(','),
         );
         break;
@@ -443,7 +537,76 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
             escapeCSVField(node.properties.filePath || ''),
-            escapeCSVField(node.properties.description || ''),
+            ...semanticAnchorFields(node),
+          ].join(','),
+        );
+        break;
+      case 'RuntimeService':
+        await runtimeServiceWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(csvText(node.properties.name || node.properties.service)),
+            ...runtimeMetricFields(node),
+          ].join(','),
+        );
+        break;
+      case 'RuntimeSpan':
+        await runtimeSpanWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(csvText(node.properties.name)),
+            escapeCSVField(csvText(node.properties.route)),
+            escapeCSVField(csvText(node.properties.method)),
+            escapeCSVField(csvText(node.properties.filePath)),
+            escapeCSVField(csvText(node.properties.symbolName)),
+            ...runtimeMetricFields(node),
+          ].join(','),
+        );
+        break;
+      case 'RuntimeRoute':
+        await runtimeRouteWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(csvText(node.properties.name || node.properties.route)),
+            escapeCSVField(csvText(node.properties.route)),
+            escapeCSVField(csvText(node.properties.method)),
+            ...runtimeMetricFields(node),
+          ].join(','),
+        );
+        break;
+      case 'RuntimeError':
+        await runtimeErrorWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(csvText(node.properties.name || node.properties.message)),
+            escapeCSVField(csvText(node.properties.service)),
+            escapeCSVField(csvText(node.properties.environment)),
+            escapeCSVField(csvText(node.properties.route)),
+            escapeCSVField(csvText(node.properties.method)),
+            escapeCSVField(csvText(node.properties.filePath)),
+            escapeCSVField(csvText(node.properties.symbolName)),
+            escapeCSVField(csvText(node.properties.message)),
+            escapeCSVField(csvText(node.properties.errorType || node.properties.type)),
+            escapeCSVNumber(typeof node.properties.count === 'number' ? node.properties.count : 1, 1),
+            escapeCSVField(csvText(node.properties.lastSeen)),
+            escapeCSVField(csvText(node.properties.stackHash)),
+          ].join(','),
+        );
+        break;
+      case 'RuntimeLogPattern':
+        await runtimeLogPatternWriter.addRow(
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(csvText(node.properties.name || node.properties.pattern)),
+            escapeCSVField(csvText(node.properties.service)),
+            escapeCSVField(csvText(node.properties.level)),
+            escapeCSVField(csvText(node.properties.route)),
+            escapeCSVField(csvText(node.properties.method)),
+            escapeCSVField(csvText(node.properties.filePath)),
+            escapeCSVField(csvText(node.properties.symbolName)),
+            escapeCSVField(csvText(node.properties.pattern)),
+            escapeCSVNumber(typeof node.properties.count === 'number' ? node.properties.count : 1, 1),
+            escapeCSVField(csvText(node.properties.lastSeen)),
           ].join(','),
         );
         break;
@@ -461,7 +624,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
+              ...semanticAnchorFields(node),
             ].join(','),
           );
         } else {
@@ -477,7 +640,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.startLine, -1),
                 escapeCSVNumber(node.properties.endLine, -1),
                 escapeCSVField(content),
-                escapeCSVField(node.properties.description || ''),
+                ...semanticAnchorFields(node),
               ].join(','),
             );
           }
@@ -501,6 +664,11 @@ export const streamAllCSVsToDisk = async (
     sectionWriter,
     routeWriter,
     toolWriter,
+    runtimeServiceWriter,
+    runtimeSpanWriter,
+    runtimeRouteWriter,
+    runtimeErrorWriter,
+    runtimeLogPatternWriter,
     ...multiLangWriters.values(),
   ];
   await Promise.all(allWriters.map((w) => w.finish()));
@@ -508,7 +676,16 @@ export const streamAllCSVsToDisk = async (
   // --- Stream relationship CSV ---
   const relCsvPath = path.join(csvDir, 'relations.csv');
   const relWriter = new BufferedCSVWriter(relCsvPath, 'from,to,type,confidence,reason,step');
+  const relationshipsByKey = new Map<string, GraphRelationship>();
   for (const rel of graph.iterRelationships()) {
+    const key = relationshipDedupeKey(rel);
+    const current = relationshipsByKey.get(key);
+    if (!current || shouldReplaceRelationship(current, rel)) {
+      relationshipsByKey.set(key, rel);
+    }
+  }
+
+  for (const rel of relationshipsByKey.values()) {
     await relWriter.addRow(
       [
         escapeCSVField(rel.sourceId),
@@ -516,7 +693,7 @@ export const streamAllCSVsToDisk = async (
         escapeCSVField(rel.type),
         escapeCSVNumber(rel.confidence, 1.0),
         escapeCSVField(rel.reason),
-        escapeCSVNumber((rel as any).step, 0),
+        escapeCSVNumber(normalizeRelationshipStep(rel.step), 0),
       ].join(','),
     );
   }
@@ -537,6 +714,11 @@ export const streamAllCSVsToDisk = async (
     ['Section' as NodeTableName, sectionWriter],
     ['Route' as NodeTableName, routeWriter],
     ['Tool' as NodeTableName, toolWriter],
+    ['RuntimeService' as NodeTableName, runtimeServiceWriter],
+    ['RuntimeSpan' as NodeTableName, runtimeSpanWriter],
+    ['RuntimeRoute' as NodeTableName, runtimeRouteWriter],
+    ['RuntimeError' as NodeTableName, runtimeErrorWriter],
+    ['RuntimeLogPattern' as NodeTableName, runtimeLogPatternWriter],
     ...Array.from(multiLangWriters.entries()).map(
       ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
     ),

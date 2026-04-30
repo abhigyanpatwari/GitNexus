@@ -1,4 +1,23 @@
-# GitNexus
+# NexusForge
+
+This repository is an independent, noncommercial fork of
+[GitNexus](https://github.com/abhigyanpatwari/GitNexus).
+
+NexusForge builds a live agentic coding intelligence layer on top of GitNexus:
+incremental indexing, cross-repo contract awareness, runtime/log overlays,
+agent safety tools, 3D context workflows, and team-shared context snapshots.
+
+During development the CLI remains `gitnexus` and the package names remain
+unchanged for compatibility. Fork-specific product copy uses NexusForge; upstream
+commands, package names, and attribution are called out where they still refer to
+the inherited GitNexus infrastructure.
+
+This fork is not affiliated with, endorsed by, or maintained by the upstream
+GitNexus maintainers. The original license and attribution are preserved. See
+[FORK_NOTES.md](FORK_NOTES.md) and [FORK_ROADMAP.md](FORK_ROADMAP.md).
+
+---
+
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
@@ -7,7 +26,7 @@
     <img src="https://trendshift.io/api/badge/repositories/19809" alt="abhigyanpatwari%2FGitNexus | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
 
-  <h2>Join the official Discord to discuss ideas, issues etc!</h2>
+  <h2>Upstream community links inherited from GitNexus</h2>
 
   <a href="https://discord.gg/MgJrmsqr62">
     <img src="https://img.shields.io/discord/1477255801545429032?color=5865F2&logo=discord&logoColor=white" alt="Discord"/>
@@ -19,11 +38,11 @@
     <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"/>
   </a>
 
-  <p><strong>Enterprise (SaaS & Self-hosted)</strong> - <a href="https://akonlabs.com">akonlabs.com</a></p>
+  <p><strong>Upstream enterprise/commercial info</strong> - <a href="https://akonlabs.com">akonlabs.com</a></p>
 
 </div>
 
-**Building nervous system for agent context.**
+**NexusForge is a local-first nervous system for agent context.**
 
 Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
 
@@ -40,12 +59,12 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 ---
 
-## Star History
+## Upstream Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://www.star-history.com/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
 
 
-## Two Ways to Use GitNexus
+## Two Ways to Use NexusForge
 
 |                   | **CLI + MCP**                                            | **Web UI**                                             |
 | ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -61,21 +80,17 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 ---
 
-## Enterprise
+## Upstream Enterprise And Package Notice
 
-GitNexus is available as an **enterprise offering** - either as a fully managed **SaaS** or a **self-hosted** deployment. Also available for **commercial use** of the OSS version with proper licensing.
+The following commercial and enterprise information is inherited from the
+upstream README. It does not describe an offering from this fork. This fork
+currently inherits the upstream PolyForm Noncommercial 1.0.0 license posture;
+see [FORK_NOTES.md](FORK_NOTES.md) and [LICENSE](LICENSE).
 
-Enterprise includes:
-- **PR Review** - automated blast radius analysis on pull requests
-- **Auto-updating Code Wiki** - always up-to-date documentation (Code Wiki is also available in OSS)
-- **Auto-reindexing** - knowledge graph stays fresh automatically
-- **Multi-repo support** - unified graph across repositories
-- **OCaml support** - additional language coverage
-- **Priority feature/language support** - request new languages or features
-
-**Upcoming:**
-- Auto regression forensics
-- End-to-end test generation
+The npm package name, hosted demo, community badges, and signed Docker image
+references below still point to upstream GitNexus infrastructure unless they are
+explicitly marked as fork-local. Use upstream channels for upstream commercial
+licensing or enterprise information rather than this fork.
 
 👉 Learn more at [akonlabs.com](https://akonlabs.com)
 
@@ -85,6 +100,8 @@ Enterprise includes:
 
 ## Development
 
+- [FORK_NOTES.md](FORK_NOTES.md) - fork identity, upstream relationship, and license boundary
+- [FORK_ROADMAP.md](FORK_ROADMAP.md) - independent agentic-coding roadmap for this fork
 - [ARCHITECTURE.md](ARCHITECTURE.md) — packages, index → graph → MCP flow, where to change code
 - [RUNBOOK.md](RUNBOOK.md) — analyze, embeddings, stale index, MCP recovery, CI snippets
 - [GUARDRAILS.md](GUARDRAILS.md) — safety rules and operational “Signs” for contributors and agents
@@ -198,10 +215,13 @@ gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus watch [path]            # Keep the index fresh while editing
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
 gitnexus status                  # Show index status for current repo
+gitnexus impact-score <symbol>   # Fast risk score before editing a symbol
+gitnexus export-context <symbol> # Export a bounded graph neighborhood for agents
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate repository wiki from knowledge graph
@@ -724,7 +744,7 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 | **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
 | **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
 | **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
-| **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
+| **Visualization**   | —                                    | Sigma.js + Three.js + Graphology        |
 | **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
 | **Clustering**      | Graphology                            | Graphology                              |
 | **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
@@ -733,20 +753,21 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ## Roadmap
 
-### Actively Building
+This fork keeps upstream's static graph strengths, but the active roadmap has
+shifted toward dynamic intelligence and agent operations. See
+[FORK_ROADMAP.md](FORK_ROADMAP.md) for the full plan.
 
-- [ ] **LLM Cluster Enrichment** — Semantic cluster names via LLM API
-- [ ] **AST Decorator Detection** — Parse @Controller, @Get, etc.
-- [ ] **Incremental Indexing** — Only re-index changed files
+### Fork Priorities
 
-### Recently Completed
-
-- [X] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
-- [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
-- [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
-- [X] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
-- [X] Community Detection, Process Detection, Confidence Scoring
-- [X] Hybrid Search, Vector Index
+- [ ] **Agent safety tools** - `get_impact_score`, bounded context export, and pre-edit risk reports.
+- [ ] **Diff-aware incremental indexing** - manifest-backed file ownership, upserts, deletes, and `--incremental`.
+- [x] **Watch mode and live UI sync** - background graph refresh while humans or agents edit.
+- [ ] **Semantic anchors** - cached summaries and purpose metadata on files, symbols, communities, and processes.
+- [ ] **Executable skills** - generated module skills with callable, structured actions.
+- [ ] **Cross-repo contract intelligence** - stronger HTTP, gRPC, OpenAPI, and topic matching.
+- [ ] **Runtime/log overlay** - OpenTelemetry and structured-log signals attached to static graph nodes.
+- [x] **3D agent operations view** - graph heatmaps, agent focus, and context clipping.
+- [ ] **Collaborative context lake** - portable signed snapshots for team-shared architectural maps.
 
 ---
 

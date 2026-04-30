@@ -12,6 +12,8 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import type { PipelineProgress } from 'gitnexus-shared';
+import { walkRepositoryPaths, type ScannedFile } from './ingestion/filesystem-walker.js';
 import {
   initLbug,
   loadGraphToLbug,
@@ -26,6 +28,10 @@ import {
   getStoragePaths,
   saveMeta,
   loadMeta,
+  loadFileManifest,
+  loadIndexManifest,
+  saveFileManifest,
+  saveIndexManifest,
   addToGitignore,
   registerRepo,
   cleanupOldKuzuFiles,
@@ -35,13 +41,25 @@ import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  createFileManifest,
+  diffFileManifests,
+  formatFileManifestDiffSummary,
+  type FileManifestDiff,
+  hasFileManifestChanges,
+} from './incremental/file-manifest.js';
+import { createIndexManifest } from './incremental/index-manifest.js';
+import {
+  planIncrementalInvalidation,
+  type IncrementalInvalidationPlan,
+} from './incremental/invalidation.js';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 export interface AnalyzeCallbacks {
-  onProgress: (phase: string, percent: number, message: string) => void;
+  onProgress: (phase: string, percent: number, message: string, detail?: PipelineProgress) => void;
   onLog?: (message: string) => void;
 }
 
@@ -83,6 +101,18 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /** Skip best-effort auto-sync for repo groups that include this repo. */
+  skipGroupSync?: boolean;
+  /**
+   * Plan manifest-backed incremental invalidation before the rebuild.
+   * This first pass still refreshes the LadybugDB index with a full load
+   * and recomputes global graph phases.
+   */
+  incremental?: boolean;
+  /** Opt into LLM semantic-anchor enrichment after local heuristic anchors. */
+  llmAnchors?: boolean;
+  /** Maximum nodes to enrich in one LLM anchor run. */
+  llmAnchorLimit?: number;
 }
 
 export interface AnalyzeResult {
@@ -97,6 +127,7 @@ export interface AnalyzeResult {
     embeddings?: number;
   };
   alreadyUpToDate?: boolean;
+  incrementalPlan?: IncrementalInvalidationPlan;
   /** The raw pipeline result — only populated when needed by callers (e.g. skill generation). */
   pipelineResult?: any;
 }
@@ -117,12 +148,14 @@ export const PHASE_LABELS: Record<string, string> = {
   imports: 'Resolving imports',
   calls: 'Tracing calls',
   heritage: 'Extracting inheritance',
+  anchors: 'Generating semantic anchors',
   communities: 'Detecting communities',
   processes: 'Detecting processes',
   complete: 'Pipeline complete',
   lbug: 'Loading into LadybugDB',
   fts: 'Creating search indexes',
   embeddings: 'Generating embeddings',
+  groups: 'Syncing repo groups',
   done: 'Done',
 };
 
@@ -147,8 +180,12 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
 ): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
-  const progress = (phase: string, percent: number, message: string) =>
-    callbacks.onProgress(phase, percent, message);
+  const progress = (
+    phase: string,
+    percent: number,
+    message: string,
+    detail?: PipelineProgress,
+  ) => callbacks.onProgress(phase, percent, message, detail);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 
@@ -161,17 +198,98 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
+  const previousFileManifest = await loadFileManifest(storagePath);
+  let preScannedFiles: ScannedFile[] | undefined;
+  let incrementalPlan: IncrementalInvalidationPlan | undefined;
+
+  const scanCurrentFileManifest = async (message: string) => {
+    progress('extracting', 0, message);
+    preScannedFiles = await walkRepositoryPaths(repoPath, (current, total) => {
+      const pct = total > 0 ? Math.min(10, Math.round((current / total) * 10)) : 10;
+      progress('extracting', pct, message);
+    });
+    return createFileManifest(preScannedFiles);
+  };
+
+  const prepareIncrementalPlan = async (diff: FileManifestDiff): Promise<void> => {
+    if (!options.incremental || incrementalPlan !== undefined) return;
+
+    const previousIndexManifest = await loadIndexManifest(storagePath);
+    incrementalPlan = planIncrementalInvalidation(diff, previousIndexManifest);
+
+    if (!previousIndexManifest) {
+      log('No index manifest found; running full rebuild to seed incremental mode.');
+      return;
+    }
+
+    const globalPhaseText =
+      incrementalPlan.globalPhases.length > 0 ? incrementalPlan.globalPhases.join(', ') : 'none';
+    log(
+      `Incremental invalidation planned: ${incrementalPlan.invalidatedFiles.length} file(s), ` +
+        `${incrementalPlan.impactedNodeIds.length} node id(s), ` +
+        `${incrementalPlan.impactedRelationshipIds.length} edge id(s).`,
+    );
+    progress('extracting', 12, 'Queued incremental invalidation', {
+      phase: 'extracting',
+      percent: 12,
+      message: 'Queued incremental invalidation',
+      stats: {
+        filesProcessed: 0,
+        totalFiles: diff.added.length + diff.modified.length + diff.deleted.length,
+        nodesCreated: 0,
+        filesChanged: diff.added.length + diff.modified.length + diff.deleted.length,
+        symbolsUpdated: incrementalPlan.impactedNodeIds.length,
+      },
+    });
+    log(`Global graph phases will be recomputed: ${globalPhaseText}.`);
+    log('Incremental load planning complete; refreshing LadybugDB with a full load for this run.');
+  };
 
   // ── Early-return: already up to date ──────────────────────────────
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
-      return {
-        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
-        repoPath,
-        stats: existingMeta.stats ?? {},
-        alreadyUpToDate: true,
-      };
+      const currentFileManifest = await scanCurrentFileManifest('Checking working tree changes...');
+
+      if (previousFileManifest) {
+        const diff = diffFileManifests(previousFileManifest, currentFileManifest);
+        if (!hasFileManifestChanges(diff)) {
+          return {
+            repoName:
+              options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+            repoPath,
+            stats: existingMeta.stats ?? {},
+            alreadyUpToDate: true,
+          };
+        }
+
+        log(`Working tree changed since last index (${formatFileManifestDiffSummary(diff)}).`);
+        await prepareIncrementalPlan(diff);
+      } else {
+        log('No file manifest found; rebuilding once to enable diff-aware up-to-date checks.');
+      }
+    }
+  }
+
+  // ── Incremental invalidation planning ──────────────────────────────
+  if (
+    options.incremental &&
+    existingMeta &&
+    !options.force &&
+    previousFileManifest &&
+    incrementalPlan === undefined
+  ) {
+    const currentFileManifest = await scanCurrentFileManifest(
+      'Planning incremental invalidation...',
+    );
+    const diff = diffFileManifests(previousFileManifest, currentFileManifest);
+    if (hasFileManifestChanges(diff)) {
+      log(`Working tree changed since last index (${formatFileManifestDiffSummary(diff)}).`);
+      await prepareIncrementalPlan(diff);
+    } else {
+      log(
+        'No file changes detected by incremental manifest; rebuilding to refresh commit metadata.',
+      );
     }
   }
 
@@ -248,12 +366,23 @@ export async function runFullAnalysis(
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
-    const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-    const scaled = Math.round(p.percent * 0.6);
-    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
-    progress(p.phase, scaled, message);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      const message = p.detail
+        ? `${p.message || phaseLabel} (${p.detail})`
+        : p.message || phaseLabel;
+      progress(p.phase, scaled, message, { ...p, percent: scaled, message });
+    },
+    {
+      ...(preScannedFiles ? { preScannedFiles } : {}),
+      llmAnchors: options.llmAnchors,
+      llmAnchorLimit: options.llmAnchorLimit,
+      semanticAnchorCachePath: path.join(storagePath, 'semantic-anchor-cache.json'),
+    },
+  );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -433,6 +562,11 @@ export async function runFullAnalysis(
       },
     };
     await saveMeta(storagePath, meta);
+    await saveFileManifest(storagePath, createFileManifest(pipelineResult.scannedFiles));
+    await saveIndexManifest(
+      storagePath,
+      await createIndexManifest(repoPath, pipelineResult.scannedFiles, pipelineResult.graph),
+    );
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
     // pipeline `force` above. The CLI maps it from
@@ -486,12 +620,27 @@ export async function runFullAnalysis(
     // ── Close LadybugDB ──────────────────────────────────────────────
     await closeLbug();
 
+    if (!options.skipGroupSync) {
+      progress('groups', 99, 'Syncing repo groups...');
+      try {
+        const { syncGroupsForAnalyzedRepo } = await import('./group/auto-sync.js');
+        await syncGroupsForAnalyzedRepo({
+          repoName: projectName,
+          repoPath,
+          onLog: log,
+        });
+      } catch (err) {
+        log(`Group auto-sync skipped: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     progress('done', 100, 'Done');
 
     return {
       repoName: projectName,
       repoPath,
       stats: meta.stats,
+      incrementalPlan,
       pipelineResult,
     };
   } catch (err) {

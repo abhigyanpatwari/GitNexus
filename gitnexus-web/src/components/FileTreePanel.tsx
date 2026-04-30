@@ -17,9 +17,20 @@ import {
   List,
   AtSign,
   Type,
+  Activity,
+  AlertTriangle,
+  Server,
+  Terminal,
+  Zap,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
-import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO } from '../lib/constants';
+import {
+  ALL_EDGE_TYPES,
+  EDGE_INFO,
+  FILTERABLE_LABELS,
+  FILTER_COLOR_LEGEND_LABELS,
+  NODE_COLORS,
+} from '../lib/constants';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
 // Tree node structure
@@ -201,6 +212,20 @@ const getNodeTypeIcon = (label: NodeLabel) => {
       return FileCode;
     case 'Variable':
       return Variable;
+    case 'Route':
+      return Target;
+    case 'Tool':
+      return Zap;
+    case 'RuntimeService':
+      return Server;
+    case 'RuntimeSpan':
+      return Activity;
+    case 'RuntimeRoute':
+      return Target;
+    case 'RuntimeError':
+      return AlertTriangle;
+    case 'RuntimeLogPattern':
+      return Terminal;
     default:
       return Variable;
   }
@@ -527,20 +552,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
               Color Legend
             </h3>
             <div className="grid grid-cols-2 gap-2">
-              {(
-                [
-                  'Folder',
-                  'File',
-                  'Class',
-                  'Interface',
-                  'Enum',
-                  'Type',
-                  'Function',
-                  'Method',
-                  'Variable',
-                  'Decorator',
-                ] as NodeLabel[]
-              ).map((label) => (
+              {FILTER_COLOR_LEGEND_LABELS.map((label) => (
                 <div key={label} className="flex items-center gap-1.5">
                   <div
                     className="h-2.5 w-2.5 rounded-full"

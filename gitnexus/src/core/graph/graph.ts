@@ -8,6 +8,10 @@ function emptyRelIter(): IterableIterator<GraphRelationship> {
   return ([] as GraphRelationship[]).values();
 }
 
+function emptyStringIter(): IterableIterator<string> {
+  return ([] as string[]).values();
+}
+
 export const createKnowledgeGraph = (): KnowledgeGraph => {
   const nodeMap = new Map<string, GraphNode>();
   const relationshipMap = new Map<string, GraphRelationship>();
@@ -25,6 +29,11 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
   // removeNode so `removeNodesByFile` reaches its file's nodes
   // directly instead of scanning the whole node map.
   const nodeIdsByFile = new Map<string, Set<string>>();
+  // Relationship file ownership: filePath -> Set<relId>. Incremental
+  // index manifests use this to know which stored edges must be deleted
+  // or replaced when a file changes.
+  const relationshipIdsByFile = new Map<string, Set<string>>();
+  const relationshipOwnerFileById = new Map<string, string>();
 
   // Private helpers that encode the dual-index invariants in one
   // place. All mutation paths go through these — adding a new
@@ -44,6 +53,27 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     bucket.delete(value);
     if (bucket.size === 0) map.delete(key);
   };
+  const filePathForNode = (nodeId: string): string | undefined => {
+    const filePath = nodeMap.get(nodeId)?.properties?.filePath;
+    return typeof filePath === 'string' && filePath.length > 0 ? filePath : undefined;
+  };
+  const ownerFileForRelationship = (rel: GraphRelationship): string | undefined => {
+    return filePathForNode(rel.sourceId) ?? filePathForNode(rel.targetId);
+  };
+  const reindexRelationshipOwner = (rel: GraphRelationship): void => {
+    const previousOwner = relationshipOwnerFileById.get(rel.id);
+    const nextOwner = ownerFileForRelationship(rel);
+    if (previousOwner === nextOwner) return;
+
+    if (previousOwner !== undefined) {
+      removeFromBucket(relationshipIdsByFile, previousOwner, rel.id);
+      relationshipOwnerFileById.delete(rel.id);
+    }
+    if (nextOwner !== undefined) {
+      addToBucket(relationshipIdsByFile, nextOwner, rel.id);
+      relationshipOwnerFileById.set(rel.id, nextOwner);
+    }
+  };
 
   const writeRel = (rel: GraphRelationship): void => {
     relationshipMap.set(rel.id, rel);
@@ -60,6 +90,7 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     if (rel.targetId !== rel.sourceId) {
       addToBucket(edgeIdsByNode, rel.targetId, rel.id);
     }
+    reindexRelationshipOwner(rel);
   };
   const deleteRel = (rel: GraphRelationship): void => {
     relationshipMap.delete(rel.id);
@@ -72,6 +103,11 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     if (rel.targetId !== rel.sourceId) {
       removeFromBucket(edgeIdsByNode, rel.targetId, rel.id);
     }
+    const ownerFile = relationshipOwnerFileById.get(rel.id);
+    if (ownerFile !== undefined) {
+      removeFromBucket(relationshipIdsByFile, ownerFile, rel.id);
+      relationshipOwnerFileById.delete(rel.id);
+    }
   };
 
   const addNode = (node: GraphNode) => {
@@ -80,6 +116,13 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     const filePath = node.properties?.filePath;
     if (typeof filePath === 'string' && filePath.length > 0) {
       addToBucket(nodeIdsByFile, filePath, node.id);
+    }
+    const touchingEdgeIds = edgeIdsByNode.get(node.id);
+    if (touchingEdgeIds !== undefined) {
+      for (const relId of touchingEdgeIds) {
+        const rel = relationshipMap.get(relId);
+        if (rel !== undefined) reindexRelationshipOwner(rel);
+      }
     }
   };
 
@@ -156,6 +199,16 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
       const bucket = relationshipsByType.get(type);
       return bucket === undefined ? emptyRelIter() : bucket.values();
     },
+    iterNodeIdsByFile: (filePath: string) => {
+      const bucket = nodeIdsByFile.get(filePath);
+      return bucket === undefined ? emptyStringIter() : bucket.values();
+    },
+    iterRelationshipIdsByFile: (filePath: string) => {
+      const bucket = relationshipIdsByFile.get(filePath);
+      return bucket === undefined ? emptyStringIter() : bucket.values();
+    },
+    getRelationshipOwnerFile: (relationshipId: string) =>
+      relationshipOwnerFileById.get(relationshipId),
     forEachNode(fn: (node: GraphNode) => void) {
       nodeMap.forEach(fn);
     },

@@ -49,6 +49,42 @@ describe('direct CLI tool commands', () => {
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Risk level: low'));
   });
 
+  it('dispatches run-skill with CLI-shaped arguments', async () => {
+    callToolMock.mockResolvedValue({ status: 'ok', skill: 'auth' });
+    const { runSkillCommand } = await import('../../src/cli/tool.js');
+
+    await runSkillCommand('auth', 'export_context', {
+      repo: 'gitnexus',
+      target: 'authGate',
+      uid: 'fn:authGate',
+      file: 'src/auth.ts',
+      kind: 'Function',
+      direction: 'both',
+      degree: '2',
+      format: 'markdown',
+      includeTests: true,
+      maxNodes: '25',
+    });
+
+    expect(callToolMock).toHaveBeenCalledWith('run_skill', {
+      skill: 'auth',
+      action: 'export_context',
+      args: {
+        target: 'authGate',
+        target_uid: 'fn:authGate',
+        file_path: 'src/auth.ts',
+        kind: 'Function',
+        direction: 'both',
+        degree: 2,
+        format: 'markdown',
+        includeTests: true,
+        maxNodes: 25,
+      },
+      repo: 'gitnexus',
+    });
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"skill": "auth"'));
+  });
+
   it('prints "No changes detected." when changed_count is 0', async () => {
     callToolMock.mockResolvedValue({
       summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'low' },

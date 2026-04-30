@@ -78,7 +78,42 @@ export interface IndexedRepo {
   storagePath: string;
   lbugPath: string;
   metaPath: string;
+  fileManifestPath: string;
+  indexManifestPath: string;
   meta: RepoMeta;
+}
+
+export interface RepoFileManifestEntry {
+  size: number;
+  mtimeMs: number;
+}
+
+export interface RepoFileManifest {
+  version: 1;
+  generatedAt: string;
+  files: Record<string, RepoFileManifestEntry>;
+}
+
+export interface RepoIndexManifestFile {
+  size: number;
+  mtimeMs: number;
+  hash: string;
+  emittedNodes: string[];
+  emittedEdges: string[];
+  parseDiagnostics: string[];
+  dependencies: string[];
+  dependants: string[];
+}
+
+export interface RepoIndexManifest {
+  version: 1;
+  generatedAt: string;
+  files: Record<string, RepoIndexManifestFile>;
+  summary: {
+    fileCount: number;
+    nodeCount: number;
+    edgeCount: number;
+  };
 }
 
 /**
@@ -115,6 +150,8 @@ export const getStoragePaths = (repoPath: string) => {
     storagePath,
     lbugPath: path.join(storagePath, 'lbug'),
     metaPath: path.join(storagePath, 'meta.json'),
+    fileManifestPath: path.join(storagePath, 'file-manifest.json'),
+    indexManifestPath: path.join(storagePath, 'index-manifest.json'),
   };
 };
 
@@ -191,6 +228,65 @@ export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<voi
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+};
+
+/**
+ * Load the cheap file snapshot used for diff-aware up-to-date checks.
+ */
+export const loadFileManifest = async (storagePath: string): Promise<RepoFileManifest | null> => {
+  try {
+    const manifestPath = path.join(storagePath, 'file-manifest.json');
+    const raw = await fs.readFile(manifestPath, 'utf-8');
+    const parsed = JSON.parse(raw) as RepoFileManifest;
+    if (parsed.version !== 1 || typeof parsed.files !== 'object' || parsed.files === null) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Save the cheap file snapshot used for diff-aware up-to-date checks.
+ */
+export const saveFileManifest = async (
+  storagePath: string,
+  manifest: RepoFileManifest,
+): Promise<void> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  const manifestPath = path.join(storagePath, 'file-manifest.json');
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+};
+
+/**
+ * Load the rich per-file index ownership manifest used by future
+ * incremental updates.
+ */
+export const loadIndexManifest = async (storagePath: string): Promise<RepoIndexManifest | null> => {
+  try {
+    const manifestPath = path.join(storagePath, 'index-manifest.json');
+    const raw = await fs.readFile(manifestPath, 'utf-8');
+    const parsed = JSON.parse(raw) as RepoIndexManifest;
+    if (parsed.version !== 1 || typeof parsed.files !== 'object' || parsed.files === null) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Save the rich per-file index ownership manifest.
+ */
+export const saveIndexManifest = async (
+  storagePath: string,
+  manifest: RepoIndexManifest,
+): Promise<void> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  const manifestPath = path.join(storagePath, 'index-manifest.json');
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
 };
 
 /**
