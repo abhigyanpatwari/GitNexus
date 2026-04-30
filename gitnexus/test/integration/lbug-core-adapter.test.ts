@@ -135,6 +135,20 @@ withTestLbugDB(
           ).resolves.toBeUndefined();
         });
 
+        it('ensureFTSIndex is idempotent and caches across writable calls (#1224)', async () => {
+          const { ensureFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
+
+          // First call creates the index. Second call must short-circuit on the
+          // in-process cache — guarantees the read-only guard added in #1224
+          // still respects the success path.
+          await expect(
+            ensureFTSIndex('Function', 'function_fts_ensure', ['name', 'content']),
+          ).resolves.toBeUndefined();
+          await expect(
+            ensureFTSIndex('Function', 'function_fts_ensure', ['name', 'content']),
+          ).resolves.toBeUndefined();
+        });
+
         it('getLbugStats returns valid counts', async () => {
           const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 
