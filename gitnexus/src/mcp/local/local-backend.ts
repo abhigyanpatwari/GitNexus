@@ -1110,13 +1110,12 @@ export class LocalBackend {
         }
       } else if (!this.warnedVectorUnsupported) {
         // Rare diagnostic: surface why we fell back to the exact scan path so
-        // operators can see at a glance that the VECTOR extension is missing on
-        // this runtime (e.g. Windows builds without the optional native
-        // dependency). Emitted once per `LocalBackend` instance lifetime to
-        // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+        // operators can see at a glance that VECTOR is disabled by platform
+        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
+        // noisy stderr on hot semantic-search paths (DoD §2.8).
         this.warnedVectorUnsupported = true;
         console.error(
-          'GitNexus [query:vector]: VECTOR index unavailable for this runtime; using exact scan fallback',
+          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
         );
       }
 
