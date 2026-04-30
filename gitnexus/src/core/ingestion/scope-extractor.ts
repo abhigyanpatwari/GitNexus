@@ -122,6 +122,7 @@ export function extract(
 
   // ── Pass 1: build the scope tree ─────────────────────────────────────
   const scopeDrafts = pass1BuildScopes(partitioned.scope, filePath, provider);
+  const moduleScope = ensureModuleScope(scopeDrafts, matches.length, filePath);
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
@@ -135,35 +136,6 @@ export function extract(
   // "what's the parent chain?" queries, not for content queries.
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
-
-  // Synthesize an empty Module scope when the provider emitted no scopes
-  // at all — this is the normal shape for an empty file (e.g. a 0-byte
-  // Python `__init__.py` package marker). A truly malformed provider that
-  // emits non-Module scopes without a Module is still rejected.
-  let moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
-  if (moduleScope === undefined) {
-    if (scopeDrafts.length === 0) {
-      const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
-      const synthetic: ScopeDraft = {
-        id: makeScopeId({ filePath, range, kind: 'Module' }),
-        parent: null,
-        kind: 'Module',
-        range,
-        filePath,
-        bindings: new Map(),
-        ownedDefs: [],
-        imports: [],
-        typeBindings: new Map(),
-      };
-      scopeDrafts.push(synthetic);
-      moduleScope = synthetic;
-    } else {
-      throw new Error(
-        `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-          `Provider must emit at least one @scope.module capture per file.`,
-      );
-    }
-  }
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
   const localDefs: SymbolDefinition[] = [];
@@ -302,6 +274,33 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+}
+
+function ensureModuleScope(
+  scopeDrafts: ScopeDraft[],
+  matchCount: number,
+  filePath: string,
+): ScopeDraft {
+  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
+  if (moduleScope !== undefined) return moduleScope;
+
+  if (scopeDrafts.length === 0 && matchCount === 0) {
+    const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
+    const synthetic = makeDraft(
+      makeScopeId({ filePath, range, kind: 'Module' }),
+      null,
+      'Module',
+      range,
+      filePath,
+    );
+    scopeDrafts.push(synthetic);
+    return synthetic;
+  }
+
+  throw new Error(
+    `ScopeExtractor: no Module scope found for '${filePath}'. ` +
+      `Provider must emit at least one @scope.module capture per file.`,
+  );
 }
 
 function draftToScope(draft: ScopeDraft): Scope {

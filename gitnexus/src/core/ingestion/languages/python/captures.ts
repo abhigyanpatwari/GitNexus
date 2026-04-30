@@ -43,15 +43,7 @@ export function emitPythonScopeCaptures(
         bufferSize: getTreeSitterBufferSize(sourceText),
       });
     } catch (err) {
-      // node-tree-sitter throws `Invalid argument` for sources that
-      // overrun internal buffers (commonly observed >32 KB on some
-      // platforms). Degrade gracefully rather than poisoning the
-      // bridge's catch with a confusing root-cause message.
-      const reason = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[python] tree-sitter parse failed for ${_filePath}: ${reason} — skipping scope extraction for this file`,
-      );
-      return [];
+      throw scopeExtractionError('parse', _filePath, err);
     }
     recordCacheMiss();
   } else {
@@ -62,15 +54,7 @@ export function emitPythonScopeCaptures(
   try {
     rawMatches = getPythonScopeQuery().matches(tree.rootNode);
   } catch (err) {
-    // Same defense as the parse() path above — query.matches() can
-    // throw `Invalid argument` for large trees on platforms where
-    // node-tree-sitter's internal match buffer overflows. Skip the
-    // file's scope extraction; legacy DAG ingestion is unaffected.
-    const reason = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[python] tree-sitter scope query failed for ${_filePath}: ${reason} — skipping scope extraction for this file`,
-    );
-    return [];
+    throw scopeExtractionError('scope query', _filePath, err);
   }
 
   const out: CaptureMatch[] = [];
@@ -163,4 +147,11 @@ export function emitPythonScopeCaptures(
   }
 
   return out;
+}
+
+function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {
+  const reason = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `[python] tree-sitter ${stage} failed for ${filePath}: ${reason}; skipping scope extraction for this file`,
+  );
 }
