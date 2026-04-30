@@ -253,8 +253,8 @@ describe('CLI end-to-end', () => {
       }>;
       expect(entries.length).toBeGreaterThanOrEqual(1);
       const matchesRepo = entries.some((e) => {
-        const a = path.resolve(e.path);
-        const b = path.resolve(repo);
+        const a = fs.realpathSync.native(e.path);
+        const b = fs.realpathSync.native(repo);
         return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
       });
       expect(
