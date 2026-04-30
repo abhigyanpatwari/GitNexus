@@ -17,7 +17,11 @@ import {
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
-import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from './lbug-config.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 // ---------------------------------------------------------------------------
@@ -318,8 +322,9 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
-  conn = new lbug.Connection(db);
+  const opened = await openLbugConnection(lbug, dbPath);
+  db = opened.db;
+  conn = opened.conn;
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
@@ -664,18 +669,12 @@ export const insertNodeToLbug = async (
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
-      const tempDb = new lbug.Database(targetDbPath, 0, false, false, LBUG_MAX_DB_SIZE);
-      const tempConn = new lbug.Connection(tempDb);
+      const tempHandle = await openLbugConnection(lbug, targetDbPath);
       try {
-        await tempConn.query(query);
+        await tempHandle.conn.query(query);
         return true;
       } finally {
-        try {
-          await tempConn.close();
-        } catch {}
-        try {
-          await tempDb.close();
-        } catch {}
+        await closeLbugConnection(tempHandle);
       }
     } else if (conn) {
       // Use existing persistent connection (when called from analyze)
@@ -711,8 +710,8 @@ export const batchInsertNodesToLbug = async (
   };
 
   // Open a single connection for all inserts
-  const tempDb = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
-  const tempConn = new lbug.Connection(tempDb);
+  const tempHandle = await openLbugConnection(lbug, dbPath);
+  const tempConn = tempHandle.conn;
 
   let inserted = 0;
   let failed = 0;
@@ -753,12 +752,7 @@ export const batchInsertNodesToLbug = async (
       }
     }
   } finally {
-    try {
-      await tempConn.close();
-    } catch {}
-    try {
-      await tempDb.close();
-    } catch {}
+    await closeLbugConnection(tempHandle);
   }
 
   return { inserted, failed };
@@ -1071,13 +1065,13 @@ export const deleteNodesForFile = async (
   const usePerQuery = !!dbPath;
 
   // Set up connection (either use existing or create per-query)
-  let tempDb: lbug.Database | null = null;
+  let tempHandle: LbugConnectionHandle | null = null;
   let tempConn: lbug.Connection | null = null;
   let targetConn: lbug.Connection | null = conn;
 
   if (usePerQuery) {
-    tempDb = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
-    tempConn = new lbug.Connection(tempDb);
+    tempHandle = await openLbugConnection(lbug, dbPath);
+    tempConn = tempHandle.conn;
     targetConn = tempConn;
   } else if (!conn) {
     throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
@@ -1127,16 +1121,7 @@ export const deleteNodesForFile = async (
     return { deletedNodes };
   } finally {
     // Close per-query connection if used
-    if (tempConn) {
-      try {
-        await tempConn.close();
-      } catch {}
-    }
-    if (tempDb) {
-      try {
-        await tempDb.close();
-      } catch {}
-    }
+    if (tempHandle) await closeLbugConnection(tempHandle);
   }
 };
 

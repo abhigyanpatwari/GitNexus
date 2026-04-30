@@ -1,3 +1,5 @@
+import type lbug from '@ladybugdb/core';
+
 /**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
  *
@@ -39,3 +41,48 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   }
   return 16 * 1024 * 1024 * 1024;
 })();
+
+type LbugModule = typeof lbug;
+
+export interface LbugDatabaseOptions {
+  readOnly?: boolean;
+}
+
+export interface LbugConnectionHandle {
+  db: lbug.Database;
+  conn: lbug.Connection;
+}
+
+export function createLbugDatabase(
+  lbugModule: LbugModule,
+  databasePath: string,
+  options: LbugDatabaseOptions = {},
+): lbug.Database {
+  return new lbugModule.Database(
+    databasePath,
+    0,
+    false,
+    options.readOnly ?? false,
+    LBUG_MAX_DB_SIZE,
+  );
+}
+
+export async function openLbugConnection(
+  lbugModule: LbugModule,
+  databasePath: string,
+  options: LbugDatabaseOptions = {},
+): Promise<LbugConnectionHandle> {
+  let db: lbug.Database | undefined;
+  try {
+    db = createLbugDatabase(lbugModule, databasePath, options);
+    return { db, conn: new lbugModule.Connection(db) };
+  } catch (err) {
+    if (db) await db.close().catch(() => {});
+    throw err;
+  }
+}
+
+export async function closeLbugConnection(handle: LbugConnectionHandle): Promise<void> {
+  await handle.conn.close().catch(() => {});
+  await handle.db.close().catch(() => {});
+}

@@ -18,7 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
-import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
+import { createLbugDatabase } from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -306,13 +306,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
       try {
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize (default)
-          false, // enableCompression
-          true, // readOnly
-          LBUG_MAX_DB_SIZE, // see lbug-config.ts
-        );
+        const db = createLbugDatabase(lbug, dbPath, { readOnly: true });
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);

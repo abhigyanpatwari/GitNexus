@@ -5,7 +5,11 @@ import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
-import { LBUG_MAX_DB_SIZE } from '../lbug/lbug-config.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 
 /**
@@ -157,14 +161,7 @@ export function findContractNode(
 export async function openBridgeDb(dbPath: string): Promise<BridgeHandle> {
   const parentDir = path.dirname(dbPath);
   await fsp.mkdir(parentDir, { recursive: true });
-  // Constructor signature (LadybugDB 0.16.0):
-  //   (databasePath, bufferManagerSize, enableCompression, readOnly,
-  //    maxDBSize, autoCheckpoint, checkpointThreshold)
-  // - enableCompression=false → keep prior behavior (0.16.0 flipped to true)
-  // - maxDBSize gated by lbug-config.LBUG_MAX_DB_SIZE — see that file for
-  //   the rationale (default 8 TB mmap fails on resource-constrained boxes)
-  const db = new lbug.Database(dbPath, 0, false, false, LBUG_MAX_DB_SIZE);
-  const conn = new lbug.Connection(db);
+  const { db, conn } = await openLbugConnection(lbug, dbPath);
   return { _db: db, _conn: conn, groupDir: parentDir } as BridgeHandle;
 }
 
@@ -668,32 +665,17 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
   // object — wrap each step separately and tear down the partial handle.
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LBUG_OPEN_RETRY_ATTEMPTS; attempt++) {
-    let db: lbug.Database | undefined;
-    let conn: lbug.Connection | undefined;
+    let handle: LbugConnectionHandle | undefined;
     try {
-      db = new lbug.Database(dbPath, 0, false, true, LBUG_MAX_DB_SIZE); // readOnly
-      conn = new lbug.Connection(db);
+      handle = await openLbugConnection(lbug, dbPath, { readOnly: true });
       // Force the lazy native init now so a transient lock surfaces here
       // (where we can retry) instead of on the first user query.
-      await db.init();
-      await conn.init();
-      return { _db: db, _conn: conn, groupDir } as BridgeHandle;
+      await handle.db.init();
+      await handle.conn.init();
+      return { _db: handle.db, _conn: handle.conn, groupDir } as BridgeHandle;
     } catch (err) {
       lastErr = err;
-      if (conn) {
-        try {
-          await conn.close();
-        } catch {
-          /* ignore */
-        }
-      }
-      if (db) {
-        try {
-          await db.close();
-        } catch {
-          /* ignore */
-        }
-      }
+      if (handle) await closeLbugConnection(handle);
       if (!isTransientLockError(err) || attempt === LBUG_OPEN_RETRY_ATTEMPTS) break;
       const delay = Math.min(LBUG_OPEN_RETRY_BASE_MS * attempt, LBUG_OPEN_RETRY_MAX_MS);
       await new Promise((r) => setTimeout(r, delay));
