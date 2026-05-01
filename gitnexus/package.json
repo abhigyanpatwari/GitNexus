@@ -47,7 +47,7 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-lua.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
@@ -78,6 +78,7 @@
     "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-javascript": "^0.23.0",
+    "tree-sitter-lua": "file:./vendor/tree-sitter-lua",
     "tree-sitter-php": "^0.23.0",
     "tree-sitter-python": "0.23.4",
     "tree-sitter-ruby": "^0.23.1",
