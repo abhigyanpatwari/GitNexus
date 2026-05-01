@@ -246,3 +246,6 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/** Lua: all definitions are public (no visibility modifiers). Local scope is file-scoped. */
+export const luaExportChecker: ExportChecker = (_node, _name) => true;

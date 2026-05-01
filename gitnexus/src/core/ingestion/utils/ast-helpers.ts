@@ -95,6 +95,9 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Lua
+  'function_definition_statement',
+  'local_function_definition_statement',
 ]);
 
 /**

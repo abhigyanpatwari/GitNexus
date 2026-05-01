@@ -1373,6 +1373,64 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+export const LUA_QUERIES = `
+; Functions (global)
+(function_definition_statement name: (identifier) @name) @definition.function
+
+; Methods — function M.foo() end (dot-access method on table)
+(function_definition_statement
+  name: (variable
+    table: (identifier) @definition.class.hint
+    field: (identifier) @name)) @definition.method
+
+; Methods — function M:bar() end (colon-access method on table)
+(function_definition_statement
+  name: (variable
+    table: (identifier) @definition.class.hint
+    method: (identifier) @name)) @definition.method
+
+; Local functions
+(local_function_definition_statement name: (identifier) @name) @definition.function
+
+; Imports — require('module') with expression_list wrapper
+(call
+  function: (variable name: (identifier) @_fn)
+  arguments: (argument_list (expression_list (string) @import.source))
+  (#eq? @_fn "require")) @import
+
+; Imports — require "module" without parens (string directly in argument_list)
+(call
+  function: (variable name: (identifier) @_fn)
+  arguments: (argument_list (string) @import.source)
+  (#eq? @_fn "require")) @import
+
+; Calls — free function calls: foo(...)
+(call function: (variable name: (identifier) @call.name)) @call
+
+; Calls — method/field calls: obj.method(...) or obj:method(...)
+(call
+  function: (variable
+    field: (identifier) @call.name)) @call
+(call
+  function: (variable
+    method: (identifier) @call.name)) @call
+
+; Local variable declarations: local x = ...
+(local_variable_declaration
+  (variable_list (variable name: (identifier) @name))) @definition.variable
+
+; Global variable assignments: x = ... (top-level)
+(variable_assignment
+  (variable_list (variable name: (identifier) @name))) @definition.variable
+
+; Table field assignments: M.field = value (property definition)
+(variable_assignment
+  (variable_list
+    (variable
+      table: (identifier) @assignment.receiver
+      field: (identifier) @assignment.property))) @assignment
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1390,6 +1448,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
+  [SupportedLanguages.Lua]: LUA_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };
