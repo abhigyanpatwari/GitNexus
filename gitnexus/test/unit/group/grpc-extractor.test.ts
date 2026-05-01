@@ -620,8 +620,10 @@ export class AuthGateway {
   // glob (in `extract`) used a hardcoded ignore array that bypassed
   // `IgnoreService`. Both globs now consume the shared filter (mirrors
   // `filesystem-walker.ts`) so any `.gitnexusignore` pattern is
-  // honoured. Covers both the .proto path (proto-context build) and
-  // the source-scan path (Java/Go/Node/Python consumer detection).
+  // honoured. The single test below exercises BOTH paths in the same
+  // run: a `.proto` under `mentor_env/` (proto-context build) AND a
+  // Python `_pb2_grpc.<Name>Stub` consumer under `mentor_env/`
+  // (source-scan path) — neither produces a contract.
   describe('respects .gitnexusignore (#1185)', () => {
     it('proto + source globs both skip files matched by .gitnexusignore', async () => {
       // Control: a regular .proto in a non-ignored dir.
@@ -633,7 +635,7 @@ service AuthService {
   rpc Login (LoginRequest) returns (LoginResponse);
 }`,
       );
-      // Vendored proto under a venv-style dir.
+      // Vendored proto under a venv-style dir — exercises proto-context glob.
       writeFile(
         'mentor_env/lib/leaked.proto',
         `syntax = "proto3";
@@ -642,16 +644,36 @@ service LeakedService {
   rpc Ping (PingRequest) returns (PingResponse);
 }`,
       );
+      // Vendored Python consumer under the same venv-style dir —
+      // exercises the second glob in `extract()` (source-scan path).
+      // Mirrors the canonical pattern from
+      // `test_extract_python_stub_returns_consumer` above; without the
+      // `.gitnexusignore` filter this WOULD emit a `grpc::*/LeakedService`
+      // consumer contract.
+      writeFile(
+        'mentor_env/lib/leaked_consumer.py',
+        `import grpc
+from proto import leaked_pb2_grpc
+
+channel = grpc.insecure_channel('localhost:50051')
+stub = leaked_pb2_grpc.LeakedServiceStub(channel)`,
+      );
       writeFile('.gitnexusignore', 'mentor_env/\n');
 
       const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
       // Control proto provider is still emitted.
       expect(contracts.find((c) => c.contractId === 'grpc::auth.AuthService/Login')).toBeDefined();
-      // Excluded proto path produces no contracts.
+      // Defence-in-depth: no contract — provider OR consumer — has a
+      // `symbolRef` path under the ignored directory. Catches both globs
+      // at once.
       expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+      // Specific assertions per glob path.
       expect(
         contracts.find((c) => c.contractId === 'grpc::leaked.LeakedService/Ping'),
       ).toBeUndefined();
+      expect(
+        contracts.some((c) => c.role === 'consumer' && /LeakedService/.test(c.contractId)),
+      ).toBe(false);
     });
   });
 });

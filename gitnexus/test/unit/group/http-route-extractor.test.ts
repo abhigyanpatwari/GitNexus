@@ -774,5 +774,45 @@ export default r;
       // Defence-in-depth: no contract whose symbolRef is under mentor_env/.
       expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
     });
+
+    // Pinned by the @claude review on PR #1247: above, only `.gitnexusignore`
+    // is exercised. `createIgnoreFilter` reads `.gitignore` too via
+    // `loadIgnoreRules`, but that integration is only proven at the
+    // `IgnoreService` level — no extractor-level test for the
+    // `.gitignore`-only code path. Adding one minimal extractor-level
+    // assertion here closes the gap (one shared test is sufficient
+    // because all three extractors consume the same filter object).
+    it('source-scan glob also skips files matched by `.gitignore` (no `.gitnexusignore`)', async () => {
+      const dir = path.join(tmpDir, 'gitignore-honoured');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'mentor_env/lib'), { recursive: true });
+      // Same Express pattern as above so detection logic is identical.
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/users.ts'),
+        `import { Router } from 'express';
+const router = Router();
+router.get('/api/users', (req, res) => res.json([]));
+export default router;
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'mentor_env/lib/leaked.ts'),
+        `import { Router } from 'express';
+const r = Router();
+r.get('/api/leaked', (req, res) => res.json([]));
+export default r;
+`,
+      );
+      // Note: NO .gitnexusignore — only `.gitignore`. This proves the
+      // `.gitignore` code path inside `createIgnoreFilter` is wired to
+      // the extractors' globs.
+      fs.writeFileSync(path.join(dir, '.gitignore'), 'mentor_env/\n');
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/leaked')).toBeUndefined();
+      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+    });
   });
 });
