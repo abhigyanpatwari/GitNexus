@@ -317,15 +317,16 @@ service OrderService {
     );
 
     try {
-      const { ThriftExtractor } = await import(
-        '../../../src/core/group/extractors/thrift-extractor.js'
-      );
-      const extractedProviders = (await new ThriftExtractor().extract(null, tmpDir, {
-        id: 'provider-repo',
-        path: 'app/provider',
-        repoPath: tmpDir,
-        storagePath: path.join(tmpDir, '.gitnexus'),
-      }))
+      const { ThriftExtractor } =
+        await import('../../../src/core/group/extractors/thrift-extractor.js');
+      const extractedProviders = (
+        await new ThriftExtractor().extract(null, tmpDir, {
+          id: 'provider-repo',
+          path: 'app/provider',
+          repoPath: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        })
+      )
         .filter((c) => c.role === 'provider')
         .map(
           (c): StoredContract => ({
@@ -424,15 +425,16 @@ class IfaceOrderHandler implements OrderService.Iface {
     );
 
     try {
-      const { ThriftExtractor } = await import(
-        '../../../src/core/group/extractors/thrift-extractor.js'
-      );
-      const extractedProviders = (await new ThriftExtractor().extract(null, tmpDir, {
-        id: 'provider-repo',
-        path: 'app/provider',
-        repoPath: tmpDir,
-        storagePath: path.join(tmpDir, '.gitnexus'),
-      }))
+      const { ThriftExtractor } =
+        await import('../../../src/core/group/extractors/thrift-extractor.js');
+      const extractedProviders = (
+        await new ThriftExtractor().extract(null, tmpDir, {
+          id: 'provider-repo',
+          path: 'app/provider',
+          repoPath: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        })
+      )
         .filter((c) => c.role === 'provider')
         .map(
           (c): StoredContract => ({

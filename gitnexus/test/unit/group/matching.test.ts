@@ -482,12 +482,53 @@ describe('runWildcardMatch', () => {
     expect(matched[0].contractId).toBe('thrift::OrderService/*');
   });
 
-  it('matches bare thrift service method to a package-qualified thrift provider method', () => {
+  it('does not match bare thrift service wildcard when multiple package-qualified services match', () => {
+    const consumer = makeThriftContract('thrift::OrderService/*', 'consumer', 'frontend');
+    const billingProvider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'billing',
+    );
+    const salesProvider = makeThriftContract(
+      'thrift::sales.v1.OrderService/PlaceOrder',
+      'provider',
+      'sales',
+    );
+
+    const providerIndex = buildProviderIndex([billingProvider, salesProvider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(0);
+    expect(remaining).toEqual([consumer]);
+  });
+
+  it('keeps fully-qualified thrift service wildcard matching when same bare service appears elsewhere', () => {
     const consumer = makeThriftContract(
-      'thrift::OrderService/PlaceOrder',
+      'thrift::billing.v1.OrderService/*',
       'consumer',
       'frontend',
     );
+    const billingProvider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'billing',
+    );
+    const salesProvider = makeThriftContract(
+      'thrift::sales.v1.OrderService/PlaceOrder',
+      'provider',
+      'sales',
+    );
+
+    const providerIndex = buildProviderIndex([billingProvider, salesProvider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].to.repo).toBe('billing');
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('matches bare thrift service method to a package-qualified thrift provider method', () => {
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
     const provider = makeThriftContract(
       'thrift::billing.v1.OrderService/PlaceOrder',
       'provider',
@@ -507,11 +548,7 @@ describe('runWildcardMatch', () => {
   });
 
   it('does not match bare thrift service method to a different provider method', () => {
-    const consumer = makeThriftContract(
-      'thrift::OrderService/PlaceOrder',
-      'consumer',
-      'frontend',
-    );
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
     const provider = makeThriftContract(
       'thrift::billing.v1.OrderService/GetOrderStatus',
       'provider',
@@ -526,11 +563,7 @@ describe('runWildcardMatch', () => {
   });
 
   it('does not match bare thrift service method when multiple package-qualified providers match', () => {
-    const consumer = makeThriftContract(
-      'thrift::OrderService/PlaceOrder',
-      'consumer',
-      'frontend',
-    );
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
     const billingProvider = makeThriftContract(
       'thrift::billing.v1.OrderService/PlaceOrder',
       'provider',

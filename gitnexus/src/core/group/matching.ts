@@ -257,6 +257,8 @@ export function runWildcardMatch(
     // "grpc::com.example.userservice/*" → "com.example.userservice"
     // "thrift::userservice/*" → "userservice"
     const fqService = normalized.slice(typeEnd + 2, -2); // strip "<type>::" and "/*"
+    const candidateProviders: StoredContract[] = [];
+    const matchedProviderServices = new Set<string>();
 
     for (const [key, providers] of providerIndex) {
       // Only match against non-wildcard same-type providers (method-level IDs).
@@ -276,34 +278,41 @@ export function runWildcardMatch(
 
       if (!isMatch) continue;
 
-      for (const provider of providers) {
-        // Skip same-repo same-service (same logic as runExactMatch)
-        if (provider.repo === consumer.repo) {
-          if (!provider.service || !consumer.service || provider.service === consumer.service) {
-            continue;
-          }
-        }
+      matchedProviderServices.add(providerFqService);
+      candidateProviders.push(...providers);
+    }
 
-        matched.push({
-          from: {
-            repo: consumer.repo,
-            service: consumer.service,
-            symbolUid: consumer.symbolUid,
-            symbolRef: consumer.symbolRef,
-          },
-          to: {
-            repo: provider.repo,
-            service: provider.service,
-            symbolUid: provider.symbolUid,
-            symbolRef: provider.symbolRef,
-          },
-          type: consumer.type,
-          contractId: consumer.contractId, // consumer's wildcard ID
-          matchType: 'wildcard',
-          confidence: Math.min(provider.confidence, consumer.confidence),
-        });
-        matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
+    if (consumerType === 'thrift' && !fqService.includes('.') && matchedProviderServices.size > 1) {
+      continue;
+    }
+
+    for (const provider of candidateProviders) {
+      // Skip same-repo same-service (same logic as runExactMatch)
+      if (provider.repo === consumer.repo) {
+        if (!provider.service || !consumer.service || provider.service === consumer.service) {
+          continue;
+        }
       }
+
+      matched.push({
+        from: {
+          repo: consumer.repo,
+          service: consumer.service,
+          symbolUid: consumer.symbolUid,
+          symbolRef: consumer.symbolRef,
+        },
+        to: {
+          repo: provider.repo,
+          service: provider.service,
+          symbolUid: provider.symbolUid,
+          symbolRef: provider.symbolRef,
+        },
+        type: consumer.type,
+        contractId: consumer.contractId, // consumer's wildcard ID
+        matchType: 'wildcard',
+        confidence: Math.min(provider.confidence, consumer.confidence),
+      });
+      matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
     }
   }
 

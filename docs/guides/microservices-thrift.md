@@ -125,7 +125,9 @@ When IDL context is missing, GitNexus may still emit a weaker consumer signal fo
 
 ## Group configuration
 
-Enable Thrift contract detection in the group config:
+New group configs enable Thrift contract detection by default. Keep `detect.thrift: true`
+when a group should scan for Thrift contracts, or set it to `false` to skip Thrift
+extraction for that group.
 
 ```yaml
 version: 1
@@ -144,6 +146,13 @@ detect:
   thrift: true
   topics: false
   shared_libs: true
+```
+
+To disable Thrift extraction explicitly:
+
+```yaml
+detect:
+  thrift: false
 ```
 
 After indexing each member repository, run group sync to extract contracts and write cross-repo links:
