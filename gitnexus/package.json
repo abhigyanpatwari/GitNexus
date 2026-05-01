@@ -72,9 +72,9 @@
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.1",
-    "tree-sitter-c": "0.23.2",
+    "tree-sitter-c": "0.21.4",
     "tree-sitter-c-sharp": "0.23.1",
-    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-cpp": "0.23.2",
     "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-javascript": "^0.23.0",
@@ -109,8 +109,7 @@
   "overrides": {
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
-    },
-    "tree-sitter-c": "0.23.2"
+    }
   },
   "engines": {
     "node": ">=20.0.0"
