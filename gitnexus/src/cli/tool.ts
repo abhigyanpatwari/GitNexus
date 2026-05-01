@@ -182,11 +182,8 @@ function formatDetectChangesResult(result: any): string {
   const changed = result?.changed_symbols || [];
   if (changed.length > 0) {
     lines.push('Changed symbols:');
-    for (const symbol of changed.slice(0, 15)) {
+    for (const symbol of changed) {
       lines.push(`  ${symbol.type} ${symbol.name} → ${symbol.filePath}`);
-    }
-    if (changed.length > 15) {
-      lines.push(`  ... and ${changed.length - 15} more`);
     }
     lines.push('');
   }
@@ -194,7 +191,7 @@ function formatDetectChangesResult(result: any): string {
   const affected = result?.affected_processes || [];
   if (affected.length > 0) {
     lines.push('Affected execution flows:');
-    for (const processInfo of affected.slice(0, 10)) {
+    for (const processInfo of affected) {
       const steps = (processInfo.changed_steps || []).map((s: any) => s.symbol).join(', ');
       lines.push(`  • ${processInfo.name} (${processInfo.step_count} steps) — changed: ${steps}`);
     }
