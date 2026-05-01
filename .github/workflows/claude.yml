@@ -4,6 +4,8 @@ name: Claude Code
 # runs as defined on the default branch, which allows access to secrets for
 # posting review comments on fork PRs. SECURITY: PR checkouts pin the fork's
 # HEAD SHA (not the branch name) to prevent TOCTOU races.
+# The claude-code-action sandboxes execution; it does not run arbitrary code
+# from the checked-out source.
 
 on:
   issue_comment:
@@ -119,7 +121,7 @@ jobs:
                 context.payload.label?.name === 'claude-review') ||
               (context.eventName === 'issue_comment' &&
                 Boolean(context.payload.issue?.pull_request) &&
-                (body.includes('@claude') || body.includes('/review')));
+                body.includes('/review'));
 
             core.setOutput('code_review', isCodeReview ? 'true' : 'false');
 
