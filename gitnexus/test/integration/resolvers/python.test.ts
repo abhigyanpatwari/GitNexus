@@ -417,6 +417,103 @@ describe('Python ancestor directory import resolution (Issue #417)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Multi-segment ancestor walk: `from services.sync import X` style imports
+// from a sibling sub-package nested under a shared root directory.
+//
+// Before this fix, single-segment ancestor walks worked (`from middleware
+// import X` from `backend/services/auth.py` → `backend/middleware.py`) but
+// multi-segment dotted imports were only resolved against the workspace
+// root. In a `backend/`-prefixed repo, `from services.sync import X` from
+// `backend/routers/cron.py` would silently drop because `services/sync.py`
+// does not exist at the workspace root — only `backend/services/sync.py`
+// does. The fix mirrors the single-segment ancestor walk for multi-segment
+// paths.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment ancestor directory import resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-multi-segment-ancestor-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves from services.sync import to backend/services/sync.py via ancestor walk', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const syncImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/services/sync.py',
+    );
+    expect(syncImport).toBeDefined();
+  });
+
+  it('resolves from services.alerts import to backend/services/alerts.py via ancestor walk', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const alertsImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/services/alerts.py',
+    );
+    expect(alertsImport).toBeDefined();
+  });
+
+  it('resolves from routers.alerts import to backend/routers/alerts.py (sibling sub-package)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const routerImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/routers/alerts.py',
+    );
+    expect(routerImport).toBeDefined();
+  });
+
+  it('emits CALLS edges for every multi-segment-imported callee', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'backend/routers/cron.py',
+    );
+
+    const startCronRunCalls = calls.filter((c) => c.target === '_start_cron_run');
+    expect(startCronRunCalls.length).toBe(3);
+    expect(startCronRunCalls.every((c) => c.targetFilePath === 'backend/services/sync.py')).toBe(
+      true,
+    );
+
+    const completeCronRunCalls = calls.filter((c) => c.target === '_complete_cron_run');
+    expect(completeCronRunCalls.length).toBe(1);
+    expect(completeCronRunCalls[0].targetFilePath).toBe('backend/services/sync.py');
+
+    const opsAlertCalls = calls.filter((c) => c.target === '_create_ops_alert');
+    expect(opsAlertCalls.length).toBe(2);
+    expect(opsAlertCalls.every((c) => c.targetFilePath === 'backend/services/alerts.py')).toBe(
+      true,
+    );
+
+    const sendDailyCalls = calls.filter((c) => c.target === 'send_daily_alerts');
+    expect(sendDailyCalls.length).toBe(2);
+    expect(sendDailyCalls.every((c) => c.targetFilePath === 'backend/routers/alerts.py')).toBe(
+      true,
+    );
+  });
+
+  it('preserves single-segment ancestor walk (regression check for from auth_utils import X)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'backend/routers/cron.py',
+    );
+
+    const verifyCalls = calls.filter((c) => c.target === 'verify_cron_secret');
+    expect(verifyCalls.length).toBe(1);
+    expect(verifyCalls[0].targetFilePath).toBe('backend/auth_utils.py');
+
+    const orgCalls = calls.filter((c) => c.target === 'get_org_id_from_header');
+    expect(orgCalls.length).toBe(1);
+    expect(orgCalls[0].targetFilePath).toBe('backend/auth_utils.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Re-export chain: from .base import X barrel pattern via __init__.py
 // ---------------------------------------------------------------------------
 
