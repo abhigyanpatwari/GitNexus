@@ -82,6 +82,7 @@
     "tree-sitter-python": "0.23.4",
     "tree-sitter-ruby": "^0.23.1",
     "tree-sitter-rust": "0.23.1",
+    "tree-sitter-scala": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "uuid": "^14.0.0"
   },

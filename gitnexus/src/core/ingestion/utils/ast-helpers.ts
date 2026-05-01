@@ -95,6 +95,8 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Scala
+  'function_definition',
 ]);
 
 /**
@@ -132,6 +134,10 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Kotlin
   'object_declaration',
   'companion_object',
+  // Scala
+  'object_definition',
+  'trait_definition',
+  'enum_definition',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -164,6 +170,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   singleton_class: 'Class', // Ruby: class << self inherits enclosing class name
   object_declaration: 'Class',
   companion_object: 'Class',
+  object_definition: 'Class',
+  trait_definition: 'Trait',
+  enum_definition: 'Enum',
 };
 
 /** Return the first matching ancestor unless a boundary ancestor is reached first. */

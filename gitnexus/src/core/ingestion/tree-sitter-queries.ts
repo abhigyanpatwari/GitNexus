@@ -1373,6 +1373,62 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+export const SCALA_QUERIES = `
+; Classes
+(class_definition name: (identifier) @name) @definition.class
+
+; Traits
+(trait_definition name: (identifier) @name) @definition.trait
+
+; Objects (companion or standalone)
+(object_definition name: (identifier) @name) @definition.class
+
+; Enums (Scala 3)
+(enum_definition name: (identifier) @name) @definition.enum
+
+; Methods (def inside class/trait/object)
+(function_definition name: (identifier) @name) @definition.method
+
+; Abstract method declarations
+(function_declaration name: (identifier) @name) @definition.method
+
+; Imports — capture the whole declaration (path extracted from text)
+(import_declaration) @import
+
+; Calls — field access: obj.method(...)
+(call_expression
+  function: (field_expression
+    field: (identifier) @call.name)) @call
+
+; Calls — constructor: new Foo(...)
+(instance_expression (type_identifier) @call.name) @call
+
+; Calls — free function (rare in Scala, but possible)
+(call_expression function: (identifier) @call.name) @call
+
+; Val declarations
+(val_definition pattern: (identifier) @name) @definition.const
+
+; Var declarations
+(var_definition pattern: (identifier) @name) @definition.variable
+
+; Heritage — extends
+(class_definition
+  name: (identifier) @heritage.class
+  (extends_clause (type_identifier) @heritage.extends)) @heritage
+
+; Heritage — trait extends trait
+(trait_definition
+  name: (identifier) @heritage.class
+  (extends_clause (type_identifier) @heritage.extends)) @heritage
+
+; Write access: obj.field = value
+(assignment_expression
+  left: (field_expression
+    value: (_) @assignment.receiver
+    field: (identifier) @assignment.property)) @assignment
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1390,6 +1446,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Ruby]: RUBY_QUERIES,
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
+  [SupportedLanguages.Scala]: SCALA_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };
