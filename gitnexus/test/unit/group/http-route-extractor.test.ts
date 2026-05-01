@@ -729,4 +729,50 @@ router.get('/api/posts/{postId}', handler2);
       });
     });
   });
+
+  // ─── #1185: contract extractors must honour .gitnexusignore ─────────
+  //
+  // Pre-#1185 the source-scan path used a hardcoded
+  // `[node_modules, .git, dist, build, vendor]` glob ignore array, so a
+  // user's `.gitnexusignore` pattern (e.g. a Python venv `mentor_env/`,
+  // a generated stubs dir, a noisy fixture tree) was silently scanned
+  // anyway. Since #1185 the source-scan path consumes the shared
+  // `IgnoreService` (mirrors `filesystem-walker.ts`), so any pattern in
+  // `.gitnexusignore` (or `.gitignore`) prunes the glob.
+  describe('respects .gitnexusignore (#1185)', () => {
+    it('source-scan glob skips files matched by .gitnexusignore', async () => {
+      const dir = path.join(tmpDir, 'gitnexusignore-honoured');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'mentor_env/lib'), { recursive: true });
+      // Control: a normal route file that SHOULD be discovered.
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/users.ts'),
+        `import { Router } from 'express';
+const router = Router();
+router.get('/api/users', (req, res) => res.json([]));
+export default router;
+`,
+      );
+      // Vendored source under a venv-style dir: the same Express
+      // pattern, but inside a directory the user wants excluded.
+      fs.writeFileSync(
+        path.join(dir, 'mentor_env/lib/leaked.ts'),
+        `import { Router } from 'express';
+const r = Router();
+r.get('/api/leaked', (req, res) => res.json([]));
+export default r;
+`,
+      );
+      fs.writeFileSync(path.join(dir, '.gitnexusignore'), 'mentor_env/\n');
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      // Control survives.
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      // Excluded path is pruned at the glob level — nothing emitted.
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/leaked')).toBeUndefined();
+      // Defence-in-depth: no contract whose symbolRef is under mentor_env/.
+      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+    });
+  });
 });

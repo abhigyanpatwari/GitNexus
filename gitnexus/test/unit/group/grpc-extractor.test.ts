@@ -613,6 +613,47 @@ export class AuthGateway {
       expect(contracts).toHaveLength(0);
     });
   });
+
+  // ─── #1185: gRPC extractor must honour .gitnexusignore ──────────────
+  //
+  // Both the `.proto` glob (in `buildProtoContext`) and the source-scan
+  // glob (in `extract`) used a hardcoded ignore array that bypassed
+  // `IgnoreService`. Both globs now consume the shared filter (mirrors
+  // `filesystem-walker.ts`) so any `.gitnexusignore` pattern is
+  // honoured. Covers both the .proto path (proto-context build) and
+  // the source-scan path (Java/Go/Node/Python consumer detection).
+  describe('respects .gitnexusignore (#1185)', () => {
+    it('proto + source globs both skip files matched by .gitnexusignore', async () => {
+      // Control: a regular .proto in a non-ignored dir.
+      writeFile(
+        'proto/auth.proto',
+        `syntax = "proto3";
+package auth;
+service AuthService {
+  rpc Login (LoginRequest) returns (LoginResponse);
+}`,
+      );
+      // Vendored proto under a venv-style dir.
+      writeFile(
+        'mentor_env/lib/leaked.proto',
+        `syntax = "proto3";
+package leaked;
+service LeakedService {
+  rpc Ping (PingRequest) returns (PingResponse);
+}`,
+      );
+      writeFile('.gitnexusignore', 'mentor_env/\n');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      // Control proto provider is still emitted.
+      expect(contracts.find((c) => c.contractId === 'grpc::auth.AuthService/Login')).toBeDefined();
+      // Excluded proto path produces no contracts.
+      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+      expect(
+        contracts.find((c) => c.contractId === 'grpc::leaked.LeakedService/Ping'),
+      ).toBeUndefined();
+    });
+  });
 });
 
 describe('buildProtoMap', () => {
