@@ -313,9 +313,19 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     process.exit(exitCode);
   };
 
-  // Handle graceful shutdown
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Handle graceful shutdown.
+  //
+  // Wrap `shutdown` so the signal handler doesn't pass Node's signal NAME
+  // (string) into `shutdown`'s `exitCode` parameter (#1132). When the signal
+  // arg flowed through unchanged it landed in `process.exit('SIGTERM')`,
+  // which throws TypeError [ERR_INVALID_ARG_TYPE] ("The 'code' argument must
+  // be of type number") and crashes the MCP server immediately on shutdown.
+  //
+  // POSIX-conventional codes (`128 + signal-number`) communicate
+  // signal-driven termination to monitoring/orchestration: SIGINT=2 → 130,
+  // SIGTERM=15 → 143.
+  process.on('SIGINT', () => shutdown(130));
+  process.on('SIGTERM', () => shutdown(143));
 
   // Log crashes to stderr so they aren't silently lost.
   // uncaughtException is fatal — shut down.
