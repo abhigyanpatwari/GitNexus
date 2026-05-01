@@ -218,21 +218,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let repoPath: string;
   if (inputPath) {
     repoPath = path.resolve(inputPath);
+  } else if (options?.skipGit) {
+    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
+    repoPath = path.resolve(process.cwd());
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      if (!options?.skipGit) {
-        console.log(
-          '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      // --skip-git: fall back to cwd as the root
-      repoPath = path.resolve(process.cwd());
-    } else {
-      repoPath = gitRoot;
+      console.log(
+        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+      );
+      process.exitCode = 1;
+      return;
     }
+    repoPath = gitRoot;
   }
 
   const repoHasGit = hasGitDir(repoPath);

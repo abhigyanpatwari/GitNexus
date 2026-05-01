@@ -36,4 +36,116 @@ describe('--skip-git CLI flag', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  describe('--skip-git does not walk up to parent git repo (#1232)', () => {
+    const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
+    let parentDir: string;
+
+    function createTestStructure() {
+      // Create structure:
+      //   parentDir/
+      //     .git/           (parent is a git repo)
+      //     COOLIO/
+      //       package.json
+      //       src/index.ts
+      //     SubWooder/
+      //       package.json
+      //       src/index.ts
+      parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-skip-git-'));
+      fs.mkdirSync(path.join(parentDir, '.git'));
+      fs.mkdirSync(path.join(parentDir, 'COOLIO', 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(parentDir, 'COOLIO', 'package.json'),
+        JSON.stringify({ name: 'coolio' }),
+      );
+      fs.writeFileSync(
+        path.join(parentDir, 'COOLIO', 'src', 'index.ts'),
+        'export const hello = "world";',
+      );
+      fs.mkdirSync(path.join(parentDir, 'SubWooder', 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(parentDir, 'SubWooder', 'package.json'),
+        JSON.stringify({ name: 'subwooder' }),
+      );
+      fs.writeFileSync(
+        path.join(parentDir, 'SubWooder', 'src', 'index.ts'),
+        'export const bass = 42;',
+      );
+      return parentDir;
+    }
+
+    function cleanup() {
+      if (parentDir) {
+        fs.rmSync(parentDir, { recursive: true, force: true });
+      }
+    }
+
+    it('from subdir inside parent git repo, indexes subdir not parent', () => {
+      createTestStructure();
+      try {
+        // Run analyze from COOLIO with --skip-git
+        const output = execSync(
+          `node "${cliPath}" analyze --skip-git --skip-agents-md`,
+          {
+            cwd: path.join(parentDir, 'COOLIO'),
+            encoding: 'utf8',
+            timeout: 60000,
+            env: {
+              ...process.env,
+              HOME: parentDir,
+              GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
+            },
+          },
+        );
+        // Should mention COOLIO not the parent dir name
+        expect(output).toContain('COOLIO');
+
+        // Check registry
+        const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
+        if (fs.existsSync(registryPath)) {
+          const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          const entry = registry.find((e: any) => e.name === 'COOLIO');
+          expect(entry).toBeTruthy();
+          expect(entry.path).toBe(path.join(parentDir, 'COOLIO'));
+          // Should NOT have an entry for the parent directory
+          const parentEntry = registry.find(
+            (e: any) => e.path === parentDir,
+          );
+          expect(parentEntry).toBeUndefined();
+        }
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('explicit input path with --skip-git indexes subdir', () => {
+      createTestStructure();
+      try {
+        const output = execSync(
+          `node "${cliPath}" analyze ./COOLIO --skip-git --skip-agents-md`,
+          {
+            cwd: parentDir,
+            encoding: 'utf8',
+            timeout: 60000,
+            env: {
+              ...process.env,
+              HOME: parentDir,
+              GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
+            },
+          },
+        );
+        expect(output).toContain('COOLIO');
+
+        const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
+        if (fs.existsSync(registryPath)) {
+          const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          const entry = registry.find((e: any) => e.name === 'COOLIO');
+          expect(entry).toBeTruthy();
+          expect(entry.path).toBe(path.join(parentDir, 'COOLIO'));
+        }
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });
