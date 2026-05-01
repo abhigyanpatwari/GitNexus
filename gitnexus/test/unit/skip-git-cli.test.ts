@@ -41,6 +41,42 @@ describe('--skip-git CLI flag', () => {
     const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
     let parentDir: string;
 
+    function testEnv() {
+      return {
+        ...process.env,
+        HOME: parentDir,
+        GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
+        GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
+      };
+    }
+
+    function readRegistry(): Array<{ name: string; path: string }> {
+      const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
+      expect(fs.existsSync(registryPath)).toBe(true);
+      return JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    }
+
+    function expectCoolioRegistryEntry() {
+      const registry = readRegistry();
+      const entry = registry.find((e) => e.name === 'COOLIO');
+      expect(entry).toBeTruthy();
+      expect(entry?.path).toBe(path.join(parentDir, 'COOLIO'));
+      expect(registry.find((e) => e.path === parentDir)).toBeUndefined();
+      expect(registry.find((e) => e.path === path.join(parentDir, 'SubWooder'))).toBeUndefined();
+      return entry;
+    }
+
+    function initParentGitRepo() {
+      execSync('git init', { cwd: parentDir, stdio: 'ignore' });
+      execSync(
+        'git -c user.name=test -c user.email=test@example.com commit --allow-empty -m init',
+        {
+          cwd: parentDir,
+          stdio: 'ignore',
+        },
+      );
+    }
+
     function createTestStructure() {
       // Create structure:
       //   parentDir/
@@ -52,7 +88,7 @@ describe('--skip-git CLI flag', () => {
       //       package.json
       //       src/index.ts
       parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-skip-git-'));
-      fs.mkdirSync(path.join(parentDir, '.git'));
+      initParentGitRepo();
       fs.mkdirSync(path.join(parentDir, 'COOLIO', 'src'), { recursive: true });
       fs.writeFileSync(
         path.join(parentDir, 'COOLIO', 'package.json'),
@@ -88,26 +124,21 @@ describe('--skip-git CLI flag', () => {
           cwd: path.join(parentDir, 'COOLIO'),
           encoding: 'utf8',
           timeout: 60000,
-          env: {
-            ...process.env,
-            HOME: parentDir,
-            GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
-          },
+          env: testEnv(),
         });
         // Should mention COOLIO not the parent dir name
         expect(output).toContain('COOLIO');
 
-        // Check registry
-        const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
-        if (fs.existsSync(registryPath)) {
-          const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-          const entry = registry.find((e: any) => e.name === 'COOLIO');
-          expect(entry).toBeTruthy();
-          expect(entry.path).toBe(path.join(parentDir, 'COOLIO'));
-          // Should NOT have an entry for the parent directory
-          const parentEntry = registry.find((e: any) => e.path === parentDir);
-          expect(parentEntry).toBeUndefined();
-        }
+        expectCoolioRegistryEntry();
+
+        const siblingQuery = execSync(`node "${cliPath}" query bass --repo COOLIO`, {
+          cwd: path.join(parentDir, 'COOLIO'),
+          encoding: 'utf8',
+          timeout: 60000,
+          env: testEnv(),
+        });
+        expect(siblingQuery).not.toContain('SubWooder');
+        expect(siblingQuery).not.toContain('bass');
       } finally {
         cleanup();
       }
@@ -120,21 +151,11 @@ describe('--skip-git CLI flag', () => {
           cwd: parentDir,
           encoding: 'utf8',
           timeout: 60000,
-          env: {
-            ...process.env,
-            HOME: parentDir,
-            GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
-          },
+          env: testEnv(),
         });
         expect(output).toContain('COOLIO');
 
-        const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
-        if (fs.existsSync(registryPath)) {
-          const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-          const entry = registry.find((e: any) => e.name === 'COOLIO');
-          expect(entry).toBeTruthy();
-          expect(entry.path).toBe(path.join(parentDir, 'COOLIO'));
-        }
+        expectCoolioRegistryEntry();
       } finally {
         cleanup();
       }

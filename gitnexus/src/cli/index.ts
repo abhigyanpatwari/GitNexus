@@ -34,7 +34,7 @@ program
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-git',
-    'Treat the provided path/cwd as the index root and disable git-root discovery',
+    'Treat the provided path/cwd as the index root and skip parent git-root discovery',
   )
   .option(
     '--name <alias>',
