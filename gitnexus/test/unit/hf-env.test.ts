@@ -58,4 +58,27 @@ describe('applyHfEnvOverrides', () => {
     applyHfEnvOverrides(envStub);
     expect(envStub.remoteHost).toBe('pre-existing-do-not-touch');
   });
+
+  it('remoteHost is left untouched when HF_ENDPOINT is whitespace-only', () => {
+    // Common copy-paste failure mode for users on restricted networks who
+    // pull `HF_ENDPOINT` values from shell scripts or docs with stray
+    // whitespace. The `.trim()` + truthiness guard ensures this is treated
+    // as "unset" rather than as an invalid host like `'   /'` that would
+    // silently misroute model downloads. Pinned by the @claude review on
+    // PR #1252.
+    process.env.HF_ENDPOINT = '   ';
+    envStub.remoteHost = 'sentinel';
+    applyHfEnvOverrides(envStub);
+    expect(envStub.remoteHost).toBe('sentinel');
+  });
+
+  it('remoteHost trims surrounding whitespace from HF_ENDPOINT', () => {
+    // Compatible mirror of the previous test for the case where the env
+    // var is non-empty AFTER trimming. Without `.trim()`, the bogus
+    // leading/trailing space would survive into the URL and break
+    // downloads.
+    process.env.HF_ENDPOINT = '  https://hf-mirror.com  ';
+    applyHfEnvOverrides(envStub);
+    expect(envStub.remoteHost).toBe('https://hf-mirror.com/');
+  });
 });

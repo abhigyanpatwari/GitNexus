@@ -49,9 +49,14 @@ export interface HfEnvSubset {
  */
 export function applyHfEnvOverrides(env: HfEnvSubset): void {
   env.cacheDir = process.env.HF_HOME ?? join(os.homedir(), '.cache', 'huggingface');
-  if (process.env.HF_ENDPOINT) {
-    env.remoteHost = process.env.HF_ENDPOINT.endsWith('/')
-      ? process.env.HF_ENDPOINT
-      : process.env.HF_ENDPOINT + '/';
+  // `.trim()` guards against the common copy-paste failure mode of
+  // `HF_ENDPOINT="  https://hf-mirror.com  "` (leading/trailing whitespace
+  // from shell scripts or docs) — without it, a whitespace-only value
+  // would be truthy and produce an invalid `env.remoteHost = '   /'` that
+  // silently misroutes downloads. Empty string remains falsy in JS so the
+  // truthy guard already handles the unset/empty cases.
+  const endpoint = process.env.HF_ENDPOINT?.trim();
+  if (endpoint) {
+    env.remoteHost = endpoint.endsWith('/') ? endpoint : endpoint + '/';
   }
 }
