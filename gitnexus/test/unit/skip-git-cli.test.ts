@@ -84,19 +84,16 @@ describe('--skip-git CLI flag', () => {
       createTestStructure();
       try {
         // Run analyze from COOLIO with --skip-git
-        const output = execSync(
-          `node "${cliPath}" analyze --skip-git --skip-agents-md`,
-          {
-            cwd: path.join(parentDir, 'COOLIO'),
-            encoding: 'utf8',
-            timeout: 60000,
-            env: {
-              ...process.env,
-              HOME: parentDir,
-              GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
-            },
+        const output = execSync(`node "${cliPath}" analyze --skip-git --skip-agents-md`, {
+          cwd: path.join(parentDir, 'COOLIO'),
+          encoding: 'utf8',
+          timeout: 60000,
+          env: {
+            ...process.env,
+            HOME: parentDir,
+            GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
           },
-        );
+        });
         // Should mention COOLIO not the parent dir name
         expect(output).toContain('COOLIO');
 
@@ -108,9 +105,7 @@ describe('--skip-git CLI flag', () => {
           expect(entry).toBeTruthy();
           expect(entry.path).toBe(path.join(parentDir, 'COOLIO'));
           // Should NOT have an entry for the parent directory
-          const parentEntry = registry.find(
-            (e: any) => e.path === parentDir,
-          );
+          const parentEntry = registry.find((e: any) => e.path === parentDir);
           expect(parentEntry).toBeUndefined();
         }
       } finally {
@@ -121,19 +116,16 @@ describe('--skip-git CLI flag', () => {
     it('explicit input path with --skip-git indexes subdir', () => {
       createTestStructure();
       try {
-        const output = execSync(
-          `node "${cliPath}" analyze ./COOLIO --skip-git --skip-agents-md`,
-          {
-            cwd: parentDir,
-            encoding: 'utf8',
-            timeout: 60000,
-            env: {
-              ...process.env,
-              HOME: parentDir,
-              GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
-            },
+        const output = execSync(`node "${cliPath}" analyze ./COOLIO --skip-git --skip-agents-md`, {
+          cwd: parentDir,
+          encoding: 'utf8',
+          timeout: 60000,
+          env: {
+            ...process.env,
+            HOME: parentDir,
+            GITNEXUS_HOME: path.join(parentDir, '.gitnexus-home'),
           },
-        );
+        });
         expect(output).toContain('COOLIO');
 
         const registryPath = path.join(parentDir, '.gitnexus-home', 'registry.json');
