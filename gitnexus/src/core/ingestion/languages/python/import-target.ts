@@ -129,18 +129,39 @@ function resolveAbsoluteFromFiles(
     }
   }
 
-  // Existing suffix-match fallback (preserved for monorepo/nested-repo
-  // layouts that don't share a directory ancestor with the importer).
+  // Suffix-match fallback (preserved for monorepo/nested-repo layouts
+  // that don't share a directory ancestor with the importer).
+  //
+  // Tie-break order when multiple files match the same suffix:
+  //  1. Fewest path segments (shorter, more canonical paths win — `lib/x.py`
+  //     beats `tooling/extras/x.py`).
+  //  2. Lexicographic order over the normalized path (final stable
+  //     tiebreak independent of file-set insertion order).
+  //
+  // Without an explicit tie-break the previous implementation returned
+  // the first match in `Set` iteration order, which depended on file
+  // ingestion order and produced non-deterministic edges across runs in
+  // multi-directory collision repos.
   const suffixFile = `/${directFile}`;
   const suffixPkg = `/${directPkg}`;
-  let suffixMatch: string | null = null;
+  const matches: { raw: string; norm: string }[] = [];
   for (const raw of allFilePaths) {
-    const f = raw.replace(/\\/g, '/');
-    if (suffixMatch === null && (f.endsWith(suffixFile) || f.endsWith(suffixPkg))) {
-      suffixMatch = raw;
+    const norm = raw.replace(/\\/g, '/');
+    if (norm.endsWith(suffixFile) || norm.endsWith(suffixPkg)) {
+      matches.push({ raw, norm });
     }
   }
-  return suffixMatch;
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0].raw;
+  matches.sort((a, b) => {
+    const aDepth = a.norm.split('/').length;
+    const bDepth = b.norm.split('/').length;
+    if (aDepth !== bDepth) return aDepth - bDepth;
+    if (a.norm < b.norm) return -1;
+    if (a.norm > b.norm) return 1;
+    return 0;
+  });
+  return matches[0].raw;
 }
 
 /**

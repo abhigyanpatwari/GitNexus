@@ -624,6 +624,127 @@ def handler():
 });
 
 // ---------------------------------------------------------------------------
+// Suffix-fallback determinism: when both root + ancestor walk miss but the
+// suffix scan finds multiple candidates in unrelated trees, the resolver
+// must pick the same file regardless of file-set insertion order. The
+// previous implementation returned the first match in `Set` iteration
+// order, which depended on file ingestion order and produced flapping
+// edges across runs in multi-directory collision repos.
+//
+// Tie-break order: fewest path segments, then lexicographic.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback determinism', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-determinism-'));
+    writeFixtureRepo(repoDir, {
+      // Importer's package. The `app/services/marker.py` file makes the
+      // `services` segment gate-pass under the ancestor-bounded
+      // `hasRepoCandidate` check, but `app/services/sync.py` is
+      // intentionally absent so the ancestor walk misses and the suffix
+      // fallback fires.
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+      // Two suffix candidates outside the importer's ancestor tree.
+      // `lib/services/sync.py` has 3 path segments, the alternative has
+      // 4 — the deterministic pick is `lib/services/sync.py`.
+      'lib/services/sync.py': `def handler():
+    return "lib"
+`,
+      'tooling/extras/services/sync.py': `def handler():
+    return "tooling"
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('picks the shortest-path candidate (lib/services/sync.py) and only that one', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const libEdge = imports.find((i) => i.targetFilePath === 'lib/services/sync.py');
+    expect(libEdge).toBeDefined();
+
+    const toolingEdge = imports.find((i) => i.targetFilePath === 'tooling/extras/services/sync.py');
+    expect(toolingEdge).toBeUndefined();
+  });
+
+  it('binds the call to the deterministic pick, not the alternate copy', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'app/main.py' && c.target === 'handler',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toBe('lib/services/sync.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lexicographic tiebreak: when two suffix candidates have the same
+// directory depth, the lexicographically smaller path wins. Without this,
+// equal-depth collisions would still depend on file-set insertion order.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback lexicographic tiebreak', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-lex-tiebreak-'));
+    writeFixtureRepo(repoDir, {
+      // Same gate-passing pattern as the determinism test — non-init
+      // marker file makes the `services` segment satisfy
+      // `hasRepoCandidate` for an importer at `app/main.py`.
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+      // Both candidates have depth 3, so directory-depth alone cannot
+      // disambiguate. Lexicographic order picks `alpha/...` over
+      // `omega/...` regardless of which file was ingested first.
+      'alpha/services/sync.py': `def handler():
+    return "alpha"
+`,
+      'omega/services/sync.py': `def handler():
+    return "omega"
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('picks the lexicographically smaller path on equal-depth ties', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const alphaEdge = imports.find((i) => i.targetFilePath === 'alpha/services/sync.py');
+    expect(alphaEdge).toBeDefined();
+
+    const omegaEdge = imports.find((i) => i.targetFilePath === 'omega/services/sync.py');
+    expect(omegaEdge).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Re-export chain: from .base import X barrel pattern via __init__.py
 // ---------------------------------------------------------------------------
 
