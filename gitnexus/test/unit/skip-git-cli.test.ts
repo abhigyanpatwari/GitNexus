@@ -56,13 +56,24 @@ describe('--skip-git CLI flag', () => {
       return JSON.parse(fs.readFileSync(registryPath, 'utf8'));
     }
 
+    function canonicalPath(filePath: string): string {
+      return fs.realpathSync(filePath);
+    }
+
     function expectCoolioRegistryEntry() {
       const registry = readRegistry();
       const entry = registry.find((e) => e.name === 'COOLIO');
       expect(entry).toBeTruthy();
-      expect(entry?.path).toBe(path.join(parentDir, 'COOLIO'));
-      expect(registry.find((e) => e.path === parentDir)).toBeUndefined();
-      expect(registry.find((e) => e.path === path.join(parentDir, 'SubWooder'))).toBeUndefined();
+      if (!entry) throw new Error('Expected COOLIO registry entry');
+      expect(canonicalPath(entry.path)).toBe(canonicalPath(path.join(parentDir, 'COOLIO')));
+      expect(
+        registry.find((e) => canonicalPath(e.path) === canonicalPath(parentDir)),
+      ).toBeUndefined();
+      expect(
+        registry.find(
+          (e) => canonicalPath(e.path) === canonicalPath(path.join(parentDir, 'SubWooder')),
+        ),
+      ).toBeUndefined();
       return entry;
     }
 
