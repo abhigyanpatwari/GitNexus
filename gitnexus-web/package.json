@@ -46,7 +46,7 @@
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
-    "react-zoom-pan-pinch": "^3.7.0",
+    "react-zoom-pan-pinch": "^4.0.3",
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.2",
     "tailwindcss": "^4.2.4",
