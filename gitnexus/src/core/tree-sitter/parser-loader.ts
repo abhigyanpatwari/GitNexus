@@ -14,11 +14,20 @@ const _require = createRequire(import.meta.url);
  *                          grammar can't be loaded. Mandatory for every
  *                          row so failures are never silent and never
  *                          generic.
- *   - `optional`         — when true, a load failure is non-fatal: we
- *                          emit `console.warn` and report the language
- *                          as unavailable. When false (the default),
- *                          we emit `console.error` and re-throw the
- *                          original error so the pipeline halts loudly.
+ *   - `optional`         — when true, a load failure does not throw:
+ *                          we report the language as unavailable and
+ *                          let callers skip files of this language.
+ *                          When false (the default), a load failure
+ *                          re-throws the original error so the
+ *                          pipeline halts loudly.
+ *   - `severity`         — log level for failure diagnostics. Defaults
+ *                          to `error` for required grammars and `warn`
+ *                          for optional ones. Set explicitly to `error`
+ *                          on optional rows whose package is listed in
+ *                          `dependencies` (not `optionalDependencies`):
+ *                          those failures indicate a real install
+ *                          problem and should never be hidden behind
+ *                          a low-severity warning.
  *
  * Adding or removing a grammar is one entry in this table — there is
  * no second list, no conditional spread, and no per-grammar branch in
@@ -28,6 +37,7 @@ interface GrammarSource {
   load: () => unknown;
   unavailableNote: string;
   optional?: boolean;
+  severity?: 'warn' | 'error';
 }
 
 const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
@@ -103,16 +113,24 @@ const SOURCES: Record<string, GrammarSource> = {
 
   // tree-sitter-c is a required dependency, but its native binding has
   // historically been ABI-incompatible with the bundled tree-sitter@0.21.1
-  // runtime on some platforms (#1242, #858). Loading it through the same
-  // optional machinery as Swift/Dart/Kotlin turns a would-be segfault
-  // into a clean warning while preserving every other language's analysis.
+  // runtime on some platforms (#1242, #858). Loading it through the
+  // optional machinery turns a would-be segfault into a clean degradation
+  // while preserving every other language's analysis. Severity is pinned
+  // to `error` because the package is in `dependencies`: a failure here
+  // is always an install/platform problem the user needs to see, never an
+  // expected "user opted out" condition like Swift/Dart/Kotlin.
   [SupportedLanguages.C]: {
     load: () => _require('tree-sitter-c'),
     optional: true,
+    severity: 'error',
     unavailableNote:
       'C parsing disabled: `tree-sitter-c` could not be loaded. ' +
-      'Likely causes: native ABI mismatch on this platform/Node combination, ' +
-      `missing prebuild for the host architecture. See ${ISSUES_URL}/1242.`,
+      'This package is in `dependencies` and prebuilds ship for all supported ' +
+      'platforms (win32/darwin/linux x64+arm64, Node 18/20/22), so this ' +
+      'usually indicates a corrupted install, an unsupported Node version, ' +
+      'or a native ABI mismatch with the bundled tree-sitter runtime. ' +
+      'Try `npm rebuild tree-sitter-c` or reinstalling, then re-run analyze. ' +
+      `If the failure persists, file details at ${ISSUES_URL}/1242.`,
   },
 
   // optionalDependencies — may be absent on platforms without prebuilds
@@ -146,7 +164,7 @@ const SOURCES: Record<string, GrammarSource> = {
 
 type LoadResult =
   | { ok: true; grammar: unknown }
-  | { ok: false; error: Error; note: string; fatal: boolean };
+  | { ok: false; error: Error; note: string; fatal: boolean; severity: 'warn' | 'error' };
 
 const loadCache = new Map<string, LoadResult>();
 const logged = new Set<string>();
@@ -157,7 +175,7 @@ const logFailure = (key: string, result: LoadResult): void => {
   logged.add(key);
   const message = `[gitnexus] ${result.note} (${result.error.message})`;
 
-  if (result.fatal) console.error(message);
+  if (result.severity === 'error') console.error(message);
   else console.warn(message);
 };
 
@@ -177,6 +195,7 @@ const loadGrammar = (key: string): LoadResult => {
       error: new Error(`Unsupported language: ${key}`),
       note: `No grammar registered for language key \`${key}\`. Add a row to SOURCES.`,
       fatal: true,
+      severity: 'error',
     };
     loadCache.set(key, result);
     return result;
@@ -186,11 +205,13 @@ const loadGrammar = (key: string): LoadResult => {
   try {
     result = { ok: true, grammar: source.load() };
   } catch (err) {
+    const fatal = !source.optional;
     result = {
       ok: false,
       error: err as Error,
       note: source.unavailableNote,
-      fatal: !source.optional,
+      fatal,
+      severity: source.severity ?? (fatal ? 'error' : 'warn'),
     };
   }
   loadCache.set(key, result);
