@@ -1,13 +1,14 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -15,6 +16,11 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Mirrors `csharp.test.ts`: skips tests in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.python`
+// when the legacy-resolver parity sweep runs (`REGISTRY_PRIMARY_PYTHON=0`). For the
+// default registry-primary CI run this is a transparent passthrough to vitest's `it`.
+const it = createResolverParityIt('python');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
