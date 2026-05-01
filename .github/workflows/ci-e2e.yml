@@ -25,6 +25,8 @@ jobs:
     if: needs.check-changes.result == 'success' && needs.check-changes.outputs.web_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GITNEXUS_HOME: ${{ runner.temp }}/gitnexus-home
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -44,9 +46,14 @@ jobs:
 
       - name: Analyze repository (index for backend)
         run: |
-          node gitnexus/dist/cli/index.js analyze || true
-          if [ ! -d ".gitnexus" ]; then
-            echo "::error::No .gitnexus index created"
+          E2E_REPO="${RUNNER_TEMP}/gitnexus-e2e-repo"
+          rm -rf "${E2E_REPO}"
+          mkdir -p "${E2E_REPO}"
+          cp -R gitnexus/test/fixtures/mini-repo/src "${E2E_REPO}/src"
+          printf '%s\n' '{"name":"e2e-mini-repo","version":"0.0.0","private":true}' > "${E2E_REPO}/package.json"
+          node gitnexus/dist/cli/index.js analyze "${E2E_REPO}" --skip-git --skip-agents-md --name e2e-mini-repo
+          if [ ! -d "${E2E_REPO}/.gitnexus" ]; then
+            echo "::error::No fixture .gitnexus index created"
             exit 1
           fi
 
