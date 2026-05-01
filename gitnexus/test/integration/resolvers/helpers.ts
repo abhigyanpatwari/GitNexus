@@ -19,6 +19,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // dependent and not aligned with this guarantee. Backporting the
     // sort to legacy is out of scope.
     'picks the lexicographically smaller path on equal-depth ties',
+    'binds the call to alpha/services/sync.py, not omega',
+    'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
   ]),
 };
 

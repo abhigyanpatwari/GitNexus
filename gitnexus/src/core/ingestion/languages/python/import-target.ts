@@ -88,7 +88,8 @@ export function resolvePythonImportTarget(
  * Precedence order:
  *  1. Workspace-root direct hit (`<pathLike>.py`, `<pathLike>/__init__.py`).
  *  2. Closest-ancestor match walking up from the importer's directory.
- *  3. Suffix fallback (first match).
+ *  3. Suffix fallback (deterministic: fewest path segments, then
+ *     lexicographic on the normalized path).
  *
  * Root wins over ancestor by construction — if both `services/sync.py` and
  * `backend/services/sync.py` exist, `backend/routers/cron.py`'s

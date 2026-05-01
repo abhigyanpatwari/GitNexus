@@ -748,6 +748,104 @@ def boot():
     const omegaEdge = imports.find((i) => i.targetFilePath === 'omega/services/sync.py');
     expect(omegaEdge).toBeUndefined();
   });
+
+  it('binds the call to alpha/services/sync.py, not omega', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'app/main.py' && c.target === 'handler',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toBe('alpha/services/sync.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Insertion-order independence: re-runs the depth and lexicographic
+// scenarios with the candidate files written in reverse order. The
+// deterministic sort in `resolveAbsoluteFromFiles` should pick the same
+// winner regardless. If a future refactor accidentally drops the sort
+// and falls back to `Set` insertion order, these tests pin the
+// regression directly.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback insertion-order independence', () => {
+  let depthRepoDir: string;
+  let lexRepoDir: string;
+  let depthResult: PipelineResult;
+  let lexResult: PipelineResult;
+
+  beforeAll(async () => {
+    // Depth scenario, files written in reverse order: tooling first, lib
+    // second. `writeFixtureRepo` iterates in object-property insertion
+    // order, and the pipeline scanner's directory traversal is also
+    // affected by mtime/inode order on most filesystems. The expected
+    // winner is still `lib/services/sync.py` (depth 3 < depth 4).
+    depthRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-determinism-rev-'));
+    writeFixtureRepo(depthRepoDir, {
+      'tooling/extras/services/sync.py': `def handler():
+    return "tooling"
+`,
+      'lib/services/sync.py': `def handler():
+    return "lib"
+`,
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+    });
+    depthResult = await runPipelineFromRepo(depthRepoDir, () => {});
+
+    // Lexicographic scenario, files written in reverse order: omega first.
+    // Expected winner is still `alpha/services/sync.py`.
+    lexRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-lex-rev-'));
+    writeFixtureRepo(lexRepoDir, {
+      'omega/services/sync.py': `def handler():
+    return "omega"
+`,
+      'alpha/services/sync.py': `def handler():
+    return "alpha"
+`,
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+    });
+    lexResult = await runPipelineFromRepo(lexRepoDir, () => {});
+  }, 120000);
+
+  afterAll(() => {
+    if (depthRepoDir !== undefined) fs.rmSync(depthRepoDir, { recursive: true, force: true });
+    if (lexRepoDir !== undefined) fs.rmSync(lexRepoDir, { recursive: true, force: true });
+  });
+
+  it('depth tiebreak still picks lib/services/sync.py with reversed file-write order', () => {
+    const imports = getRelationships(depthResult, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const libEdge = imports.find((i) => i.targetFilePath === 'lib/services/sync.py');
+    expect(libEdge).toBeDefined();
+
+    const toolingEdge = imports.find((i) => i.targetFilePath === 'tooling/extras/services/sync.py');
+    expect(toolingEdge).toBeUndefined();
+  });
+
+  it('lex tiebreak still picks alpha/services/sync.py with reversed file-write order', () => {
+    const imports = getRelationships(lexResult, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const alphaEdge = imports.find((i) => i.targetFilePath === 'alpha/services/sync.py');
+    expect(alphaEdge).toBeDefined();
+
+    const omegaEdge = imports.find((i) => i.targetFilePath === 'omega/services/sync.py');
+    expect(omegaEdge).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
