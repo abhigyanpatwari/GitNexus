@@ -360,7 +360,10 @@ def _classify_grammar(
         and npm_version != "?"
         and not range_includes(pinned_spec, npm_version)
     )
-    bump_now = behind_latest and current_compat
+    # Intentional pins must never appear as actionable bumps — by definition
+    # we're holding them back on purpose. The pin can only be lifted by
+    # editing INTENTIONAL_PINS and package.json together.
+    bump_now = behind_latest and current_compat and name not in INTENTIONAL_PINS
 
     if fetch_failed:
         bucket = "fetch_failed"
@@ -508,6 +511,20 @@ def main() -> int:
         if fetch_failed:
             status = "Unknown (fetch failed)"
             blockers[name] = f"`{name}`: npm registry fetch failed — could not verify peer dep"
+        elif name in INTENTIONAL_PINS:
+            # An intentional pin is, by definition, a held-back grammar:
+            # whatever npm-latest's peer dep says, our shipped version is
+            # the one whose ABI/peer must accept the target runtime, and
+            # the pin entry exists precisely because it does not. Treat
+            # it as a blocker until the pin is lifted (entry removed from
+            # INTENTIONAL_PINS), at which point this grammar falls back
+            # to standard classification on the next run.
+            status = "Intentionally pinned"
+            blockers[name] = (
+                f"`{name}` intentionally pinned at `{pinned_spec}` "
+                f"({INTENTIONAL_PINS[name]}) — pin must be lifted "
+                f"before the {TARGET_RUNTIME} runtime upgrade"
+            )
         elif target_compat:
             status = "Ready"
         elif upstream_abi and upstream_abi >= 15:
