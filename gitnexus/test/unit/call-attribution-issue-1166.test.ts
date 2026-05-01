@@ -393,3 +393,142 @@ describe('issue #1166 — regression guards', () => {
     expect(findCall(sites, 'persist')?.attributedTo).toBeNull();
   });
 });
+
+// ─── HOC-wrapped variable declarations (issue #1166 follow-up) ──────────────
+
+describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
+  // The third `tsExtractFunctionName` branch: `arguments → call_expression →
+  // variable_declarator`. Covers React.forwardRef / memo / useCallback /
+  // useMemo / observer / debounce — every HOC factory whose result is bound
+  // to a const. Without this branch, the wrapped arrow had no name and calls
+  // inside attributed to the file. See `languages/typescript.ts` for the
+  // resolution logic and `tree-sitter-queries.ts` for the @definition.function
+  // capture mirror.
+
+  it('attributes call inside `const X = forwardRef((p, r) => fn())` to "X"', () => {
+    // Bare-identifier callee form. The arrow's parent is `arguments`; the
+    // walker climbs to `call_expression` then to `variable_declarator` and
+    // returns the const's name.
+    const sites = collectCallAttributions(`
+      const Button = forwardRef((props, ref) => {
+        return doSomething(props);
+      });
+    `);
+    const call = findCall(sites, 'doSomething');
+    expect(call, 'doSomething call should be captured').toBeDefined();
+    expect(call!.attributedTo).toBe('Button');
+  });
+
+  it('attributes call inside `const X = React.forwardRef((p, r) => fn())` to "X" (member-expression callee)', () => {
+    // Member-expression callee form (`React.forwardRef`). The `arguments`-
+    // parent walk doesn't constrain the function field, so this resolves
+    // identically to the bare-identifier form.
+    const sites = collectCallAttributions(`
+      const Card = React.forwardRef((props, ref) => {
+        return doStuff(props);
+      });
+    `);
+    expect(findCall(sites, 'doStuff')?.attributedTo).toBe('Card');
+  });
+
+  it('attributes call inside `const X = useCallback(() => fn(), [])` to "X"', () => {
+    // useCallback / useMemo are the most common HOC-wrapped form in real
+    // React codebases. The trailing `[deps]` array doesn't affect the walk
+    // — the arrow is still the first `arguments` child.
+    const sites = collectCallAttributions(`
+      const handleClick = useCallback(() => {
+        sendEvent('click');
+      }, []);
+    `);
+    expect(findCall(sites, 'sendEvent')?.attributedTo).toBe('handleClick');
+  });
+
+  it('attributes call inside `const X = memo((props) => fn())` to "X"', () => {
+    const sites = collectCallAttributions(`
+      const Item = memo((props) => {
+        return render(props);
+      });
+    `);
+    expect(findCall(sites, 'render')?.attributedTo).toBe('Item');
+  });
+
+  it('does NOT name the HOC callback after its sibling (no first-sibling-wins regression)', () => {
+    // Two HOC-wrapped consts in the same module — each must take its own
+    // name, not bleed into the first declared. Mirrors the multi-action
+    // Zustand regression from PR #1175 review applied to HOC patterns.
+    const sites = collectCallAttributions(`
+      const handleClick = useCallback(() => {
+        doA();
+      }, []);
+
+      const handleSubmit = useCallback((value) => {
+        doB(value);
+      }, []);
+    `);
+    expect(findCall(sites, 'doA')?.attributedTo).toBe('handleClick');
+    expect(findCall(sites, 'doB')?.attributedTo).toBe('handleSubmit');
+  });
+
+  it('does NOT name a bare statement-level HOC call (unbound result)', () => {
+    // `useCallback(() => doStuff(), [])` at statement level (result thrown
+    // away). The walk climbs `arguments → call_expression → expression_statement`,
+    // which is NOT `variable_declarator`, so the branch returns null and the
+    // arrow stays anonymous. Calls inside attribute to no enclosing function.
+    const sites = collectCallAttributions(`
+      useCallback(() => {
+        doSomething();
+      }, []);
+    `);
+    // The `useCallback` call itself is module-level → null. The `doSomething`
+    // call is inside an unnamed arrow → null. Both must NOT borrow a name.
+    expect(findCall(sites, 'doSomething')?.attributedTo).toBeNull();
+    expect(findCall(sites, 'useCallback')?.attributedTo).toBeNull();
+  });
+
+  // ─── Definition-phase: HOC-wrapped consts must register as @definition.function ───
+
+  function definedFunctionNames(code: string): string[] {
+    const { parser, query } = makeParserAndQuery();
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'definition.function') isFn = true;
+        if (c.name === 'name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  it('captures `const X = HOC((args) => ...)` as @definition.function in TYPESCRIPT_QUERIES', () => {
+    // The query mirror of the resolver fix. Without these patterns,
+    // `Function:X` would never enter the registry on the legacy DAG and
+    // any CALLS edge claiming `Function:X` as source would dangle.
+    const names = definedFunctionNames(`
+      const Button = forwardRef((p, r) => render(p));
+      const Card = React.memo((p) => layout(p));
+      const handleClick = useCallback(() => doStuff(), []);
+      const computed = useMemo(() => result(), []);
+      const debounced = debounce((q) => search(q), 250);
+      export const Exported = forwardRef((p, r) => render(p));
+    `);
+    expect(names).toContain('Button');
+    expect(names).toContain('Card');
+    expect(names).toContain('handleClick');
+    expect(names).toContain('computed');
+    expect(names).toContain('debounced');
+    expect(names).toContain('Exported');
+  });
+
+  it('captures `const X = HOC(function (args) { ... })` (function-expression form)', () => {
+    // Pre-arrow legacy code uses `function () { ... }` instead of `() => ...`.
+    // The mirror pattern uses `(function_expression)` and must trigger.
+    const names = definedFunctionNames(`
+      const Legacy = wrap(function (x) { return doStuff(x); });
+    `);
+    expect(names).toContain('Legacy');
+  });
+});
