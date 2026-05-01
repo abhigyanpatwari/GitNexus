@@ -61,7 +61,7 @@ export function resolvePythonImportTarget(
   const pathLike = parsedImport.targetRaw.replace(/\./g, '/');
   if (pathLike.includes('/')) {
     const [leadingSegment] = pathLike.split('/').filter(Boolean);
-    if (!leadingSegment || !hasRepoCandidate(leadingSegment, ctx.allFilePaths)) {
+    if (!leadingSegment || !hasRepoCandidate(leadingSegment, ctx.allFilePaths, ctx.fromFile)) {
       return null;
     }
   }
@@ -85,10 +85,18 @@ export function resolvePythonImportTarget(
  * `__init__.py`), then falls back to a suffix match for nested layouts.
  * Returns the original (un-normalized) path from the set.
  *
+ * Precedence order:
+ *  1. Workspace-root direct hit (`<pathLike>.py`, `<pathLike>/__init__.py`).
+ *  2. Closest-ancestor match walking up from the importer's directory.
+ *  3. Suffix fallback (first match).
+ *
+ * Root wins over ancestor by construction — if both `services/sync.py` and
+ * `backend/services/sync.py` exist, `backend/routers/cron.py`'s
+ * `from services.sync import X` resolves to the root file. This mirrors
+ * Python's `sys.path` semantics where the project root is searched first.
+ *
  * The ancestor walk mirrors the single-segment behavior in
- * `resolvePythonImportInternal`: Python's import system resolves bare
- * imports against `sys.path` entries, which typically include the project
- * root and package directories. For `from services.sync import X` in
+ * `resolvePythonImportInternal`. For `from services.sync import X` in
  * `backend/routers/cron.py`, walk up: `backend/routers/services/sync.py` →
  * `backend/services/sync.py` ✓.
  */
@@ -105,13 +113,15 @@ function resolveAbsoluteFromFiles(
   if (allFilePaths.has(directPkg)) return directPkg;
 
   // Ancestor walk — match the single-segment resolver's behavior at
-  // multi-segment granularity. Closest match wins.
+  // multi-segment granularity. Closest match wins. Stop at `i > 0` because
+  // `i === 0` would re-check the workspace-root candidates already covered
+  // by the direct check above.
   const importerDir = fromFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   if (importerDir) {
     const dirParts = importerDir.split('/').filter(Boolean);
-    for (let i = dirParts.length; i >= 0; i--) {
+    for (let i = dirParts.length; i > 0; i--) {
       const ancestor = dirParts.slice(0, i).join('/');
-      const prefix = ancestor ? `${ancestor}/` : '';
+      const prefix = `${ancestor}/`;
       const candidateFile = `${prefix}${directFile}`;
       const candidatePkg = `${prefix}${directPkg}`;
       if (allFilePaths.has(candidateFile)) return candidateFile;
@@ -134,28 +144,54 @@ function resolveAbsoluteFromFiles(
 }
 
 /**
- * Does the repo contain a module/package named `leadingSegment` somewhere?
+ * Does the repo contain a module/package named `leadingSegment` somewhere
+ * the importer can plausibly reach?
+ *
  * Used to guard against false-positive suffix matches on external dotted
  * imports (e.g. `django.apps` matching a local `accounts/apps.py`).
  *
- * Checks, in order: `SEGMENT.py` root file, `SEGMENT/__init__.py`
- * regular package, any `SEGMENT/...py` file at the workspace root
- * (namespace package), or any nested `.../SEGMENT/...py` file (nested
- * namespace package, e.g. `backend/services/sync.py` for the leading
- * segment `services`). The nested case is bounded by the explicit
- * `/SEGMENT/` substring check so it does not match arbitrary file
- * basenames.
+ * Checks, in order:
+ *  1. `SEGMENT.py` root file or `SEGMENT/__init__.py` regular package.
+ *  2. Any `SEGMENT/...py` file at the workspace root (namespace package).
+ *  3. Any `<importer-ancestor>/SEGMENT/...py` file (nested namespace
+ *     package the importer could reach via an ancestor walk, e.g.
+ *     `backend/services/sync.py` from `backend/routers/cron.py`).
+ *
+ * The nested case is bounded to the importer's own ancestors so a
+ * vendored copy of an external package (e.g. `vendor/django/urls.py`)
+ * does not gate-pass external imports like `from django.urls import path`
+ * issued from `app/main.py`. Files inside the vendored tree itself
+ * (importer under `vendor/django/...`) still resolve correctly because
+ * the ancestor walk includes their own parents.
  */
-function hasRepoCandidate(leadingSegment: string, allFilePaths: Set<string>): boolean {
+function hasRepoCandidate(
+  leadingSegment: string,
+  allFilePaths: Set<string>,
+  fromFile: string,
+): boolean {
   const prefix = `${leadingSegment}/`;
-  const innerSegment = `/${leadingSegment}/`;
   const rootFile = `${leadingSegment}.py`;
   const initFile = `${leadingSegment}/__init__.py`;
+
+  // Build importer-ancestor prefixes: for `backend/routers/cron.py`,
+  // produces `["backend/routers/services/", "backend/services/"]` for
+  // segment `services` (closest first, root excluded — covered above).
+  const importerDir = fromFile.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+  const dirParts = importerDir ? importerDir.split('/').filter(Boolean) : [];
+  const ancestorPrefixes: string[] = [];
+  for (let i = dirParts.length; i > 0; i--) {
+    ancestorPrefixes.push(`${dirParts.slice(0, i).join('/')}/${leadingSegment}/`);
+  }
+
   for (const raw of allFilePaths) {
     const f = raw.replace(/\\/g, '/');
     if (f === rootFile || f === initFile) return true;
     if (f.startsWith(prefix) && f.endsWith('.py')) return true;
-    if (f.includes(innerSegment) && f.endsWith('.py')) return true;
+    if (f.endsWith('.py')) {
+      for (const ap of ancestorPrefixes) {
+        if (f.startsWith(ap)) return true;
+      }
+    }
   }
   return false;
 }
