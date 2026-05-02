@@ -23,7 +23,8 @@ import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
-import { getTreeSitterBufferSize } from '../../constants.js';
+import { Buffer } from 'node:buffer';
+import { getTreeSitterContentByteLength } from '../../constants.js';
 import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 
 export function emitPythonScopeCaptures(
@@ -39,8 +40,13 @@ export function emitPythonScopeCaptures(
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
     try {
-      tree = getPythonParser().parse(sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
+      // Callback form avoids the NAPI bufferSize bug in tree-sitter 0.21.x
+      // that triggers "Invalid argument" on files larger than ~32 KB.
+      const encoded = Buffer.from(sourceText, 'utf8');
+      const byteLength = getTreeSitterContentByteLength(sourceText);
+      tree = getPythonParser().parse((startIndex: number) => {
+        if (startIndex >= byteLength) return '';
+        return encoded.slice(startIndex, startIndex + 4096).toString('utf8');
       });
     } catch (err) {
       throw scopeExtractionError('parse', _filePath, err);

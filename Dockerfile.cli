@@ -44,6 +44,7 @@ COPY --from=builder --chown=node:node /app/gitnexus/dist ./gitnexus/dist
 COPY --from=builder --chown=node:node /app/gitnexus/node_modules ./gitnexus/node_modules
 COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/package.json
 COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
+COPY --from=builder --chown=node:node /app/gitnexus/scripts ./gitnexus/scripts
 
 USER node
 
