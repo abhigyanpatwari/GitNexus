@@ -15,51 +15,10 @@ import { isIP } from 'net';
 export function extractRepoName(url: string): string {
   const cleaned = url.replace(/\/+$/, '');
   const lastSegment = cleaned.split(/[/:]/).pop() || 'unknown';
-  return lastSegment.replace(/\.git$/i, '');
+  return lastSegment.replace(/\.git$/, '');
 }
 
-const sanitizeClonePathSegment = (segment: string): string => {
-  const sanitized = segment.replace(/[^a-zA-Z0-9._-]/g, '-');
-  return sanitized && sanitized !== '.' && sanitized !== '..' ? sanitized : 'unknown';
-};
-
-/**
- * Extract an owner-qualified clone slug from an HTTP(S) git URL.
- *
- * The server's clone cache must not be keyed only by the repository basename:
- * different owners can legitimately publish repositories with the same name.
- * Include the host and path components so those repositories do not silently
- * reuse each other's cached clone directory.
- */
-export function extractRepoSlug(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return sanitizeClonePathSegment(extractRepoName(url));
-  }
-
-  const rawSegments = parsed.pathname.split('/').filter(Boolean);
-  if (rawSegments.length === 0) {
-    return sanitizeClonePathSegment(extractRepoName(url));
-  }
-
-  rawSegments[rawSegments.length - 1] = rawSegments[rawSegments.length - 1].replace(
-    /\.git$/i,
-    '',
-  );
-  const segments = [parsed.hostname.toLowerCase(), ...rawSegments].map((segment) => {
-    try {
-      return sanitizeClonePathSegment(decodeURIComponent(segment));
-    } catch {
-      return sanitizeClonePathSegment(segment);
-    }
-  });
-
-  return segments.join('/');
-}
-
-/** Get the clone target directory for a repo name or owner-qualified slug. */
+/** Get the clone target directory for a repo name. */
 export function getCloneDir(repoName: string): string {
   return path.join(os.homedir(), '.gitnexus', 'repos', repoName);
 }

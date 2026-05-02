@@ -33,7 +33,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
-import { extractRepoName, extractRepoSlug, getCloneDir, cloneOrPull } from './git-clone.js';
+import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -776,9 +776,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
-        const cloneDir = getCloneDir(
-          entry.remoteUrl ? extractRepoSlug(entry.remoteUrl) : entry.name,
-        );
+        const cloneDir = getCloneDir(entry.name);
         try {
           const stat = await fs.stat(cloneDir);
           if (stat.isDirectory()) {
@@ -1293,8 +1291,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           // Clone if URL provided
           if (repoUrl && !repoLocalPath) {
             const repoName = extractRepoName(repoUrl);
-            const repoSlug = extractRepoSlug(repoUrl);
-            targetPath = getCloneDir(repoSlug);
+            targetPath = getCloneDir(repoName);
 
             jobManager.updateJob(job.id, {
               status: 'cloning',
