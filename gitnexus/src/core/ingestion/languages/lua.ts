@@ -92,6 +92,8 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const luaProvider = defineLanguage({
   id: SupportedLanguages.Lua,
   extensions: ['.lua'],
+  entryPointPatterns: [],
+  astFrameworkPatterns: [],
   treeSitterQueries: LUA_QUERIES,
   typeConfig: luaConfig,
   exportChecker: luaExportChecker,
