@@ -55,6 +55,8 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const scalaProvider = defineLanguage({
   id: SupportedLanguages.Scala,
   extensions: ['.scala', '.sc'],
+  entryPointPatterns: [/^main$/],
+  astFrameworkPatterns: [],
   treeSitterQueries: SCALA_QUERIES,
   typeConfig: scalaConfig,
   exportChecker: scalaExportChecker,
