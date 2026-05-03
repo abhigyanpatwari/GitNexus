@@ -948,4 +948,57 @@ describe('registerRepo worktree-aware basename fallback (#1259)', () => {
       }
     }
   });
+
+  // Pinned by the second @claude review on PR #1296: the FIRST review-fix
+  // commit (`7ceb839b`) introduced a regression in `hasCustomAlias`. Once
+  // a worktree is registered with the canonical basename
+  // (`{name: 'repo', path: '/repo/wt-feature'}`), `hasCustomAlias` saw
+  // `'repo' !== path.basename('/repo/wt-feature') = 'wt-feature'` and
+  // wrongly classified the canonical-root name as a sticky user alias.
+  // On re-analyze the duplicate-name guard then fired against the
+  // canonical checkout's entry → `RegistryNameCollisionError` blocking
+  // the primary "per-task worktree, repeated re-analyze" workflow this
+  // PR is supposed to FIX. This test exercises the full sequence:
+  // canonical → worktree → re-worktree, with both paths registered.
+  it('canonical → worktree → re-worktree re-register does not throw collision (#1259 hasCustomAlias regression)', async () => {
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    const worktreeDir = path.join(tmpRepo.dbPath, 'wt-feature');
+    execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+
+    try {
+      // 1. Register the canonical checkout — gets the canonical basename.
+      await registerRepo(tmpRepo.dbPath, meta);
+      // 2. Register the worktree — gets the SAME canonical basename
+      //    (because of the `resolveRepoIdentityRoot` fix). Two entries
+      //    coexist with the same name but different paths; this is the
+      //    documented "silent basename collision" behavior, not an error.
+      await registerRepo(worktreeDir, meta);
+      // 3. Re-register the worktree. Pre-`hasCustomAlias`-fix this threw
+      //    `RegistryNameCollisionError` because the existing worktree
+      //    entry (`{name: 'repo', path: worktreeDir}`) was misclassified
+      //    as a custom alias by `hasCustomAlias`, fired the guard
+      //    against the canonical entry. With the fix it must complete
+      //    without throwing.
+      await expect(registerRepo(worktreeDir, meta)).resolves.toBeDefined();
+
+      // Both registry entries should still be present and named
+      // canonically.
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(2);
+      const canonicalBasename = path.basename(tmpRepo.dbPath);
+      for (const entry of entries) {
+        expect(entry.name).toBe(canonicalBasename);
+      }
+    } finally {
+      try {
+        execSync(`git worktree remove -f "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+      } catch {
+        // Falls through to recursive rm in afterEach.
+      }
+    }
+  });
 });

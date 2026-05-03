@@ -389,6 +389,17 @@ export class RegistryNameCollisionError extends Error {
 const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): boolean => {
   const resolved = path.resolve(entry.path);
   if (entry.name === path.basename(resolved)) return false;
+  // Canonical-root-derived names are not user aliases either (#1259):
+  // a worktree registered under the canonical repo's basename
+  // (e.g. `{name: 'repo', path: '/repo/wt-feature'}`) must re-register
+  // cleanly without firing the duplicate-name collision guard. Without
+  // this check `entry.name = 'repo'` !== `path.basename('/repo/wt-feature') = 'wt-feature'`,
+  // so the prior check returns true → `isPreservedAlias = true` → guard
+  // throws `RegistryNameCollisionError` against the also-registered
+  // canonical checkout entry. The Claude-Code per-task worktree workflow
+  // — analyze canonical, then analyze worktree, then re-analyze worktree
+  // — would break on the third call.
+  if (entry.name === path.basename(resolveRepoIdentityRoot(resolved))) return false;
   if (inferredName && entry.name === inferredName) return false;
   return true;
 };
