@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execSync } from 'child_process';
-import { isGitRepo, getCurrentCommit, getGitRoot } from '../../src/storage/git.js';
+import {
+  isGitRepo,
+  getCurrentCommit,
+  getGitRoot,
+  parseRepoNameFromUrl,
+  sanitizeRepoName,
+} from '../../src/storage/git.js';
 
 // Mock child_process.execSync
 vi.mock('child_process', () => ({
@@ -90,6 +96,40 @@ describe('git utilities', () => {
       const result = getGitRoot('/repo/src');
       expect(result).not.toBeNull();
       expect(result!.trim()).toBe(result);
+    });
+  });
+
+  describe('sanitizeRepoName', () => {
+    it('strips leading dashes', () => {
+      expect(sanitizeRepoName('--repo')).toBe('repo');
+    });
+
+    it('replaces unsafe characters with underscores', () => {
+      expect(sanitizeRepoName('repo<tag>')).toBe('repo_tag_');
+      expect(sanitizeRepoName('repo:name')).toBe('repo_name');
+      expect(sanitizeRepoName('repo"quoted"')).toBe('repo_quoted_');
+    });
+
+    it('returns unknown for empty or invalid input', () => {
+      expect(sanitizeRepoName('')).toBe('unknown');
+      expect(sanitizeRepoName('---')).toBe('unknown');
+    });
+  });
+
+  describe('parseRepoNameFromUrl', () => {
+    it('extracts and sanitizes name from HTTPS URL', () => {
+      expect(parseRepoNameFromUrl('https://github.com/user/my-repo.git')).toBe('my-repo');
+      expect(parseRepoNameFromUrl('https://github.com/user/--payload.git')).toBe('payload');
+    });
+
+    it('extracts and sanitizes name from SSH URL', () => {
+      expect(parseRepoNameFromUrl('git@github.com:user/my-repo.git')).toBe('my-repo');
+      expect(parseRepoNameFromUrl('git@github.com:--payload.git')).toBe('payload');
+    });
+
+    it('returns null for empty URL', () => {
+      expect(parseRepoNameFromUrl('')).toBeNull();
+      expect(parseRepoNameFromUrl(null)).toBeNull();
     });
   });
 });
