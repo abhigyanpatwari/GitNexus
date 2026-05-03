@@ -121,6 +121,7 @@ export const findGitRootByDotGit = (fromPath: string): string | null => {
     }
   }
 };
+
 /**
  * Check whether a directory contains a .git entry (file or folder).
  *
