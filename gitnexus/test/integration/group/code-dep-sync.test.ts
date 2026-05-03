@@ -264,4 +264,41 @@ export function getVersion() { return VERSION; }`,
     expect(result.crossLinks).toHaveLength(1);
     expect(result.crossLinks[0].type).toBe('lib');
   });
+
+  it('config.links produces manifest cross-links when skipWrite is true', async () => {
+    const config = makeConfig({
+      links: [
+        {
+          from: 'apps/web',
+          to: 'libs/shared',
+          type: 'http',
+          contract: 'GET::/api/shared/health',
+          role: 'consumer',
+        },
+      ],
+      detect: {
+        http: false,
+        grpc: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+      },
+    });
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [],
+      skipWrite: true,
+    });
+
+    const manifestLink = result.crossLinks.find((cl) => cl.matchType === 'manifest');
+    expect(manifestLink).toBeDefined();
+    expect(manifestLink!.contractId).toBe('http::GET::/api/shared/health');
+    expect(manifestLink!.from.repo).toBe('apps/web');
+    expect(manifestLink!.to.repo).toBe('libs/shared');
+
+    // Manifest links should not be duplicated by an exact-match twin.
+    expect(
+      result.crossLinks.filter((cl) => cl.contractId === manifestLink!.contractId),
+    ).toHaveLength(1);
+  });
 });
