@@ -210,11 +210,14 @@ describe('getCanonicalRepoRoot', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-main-'));
     try {
       execSync('git init -q', { cwd: tmpDir });
-      // realpath because macOS symlinks `/var/folders/...` to
-      // `/private/var/folders/...`; git resolves to the canonical form,
-      // and so should the test expectation.
-      const repoRoot = fs.realpathSync(tmpDir);
-      expect(getCanonicalRepoRoot(tmpDir)).toBe(repoRoot);
+      // Compare via `path.basename` instead of full-path string equality so
+      // the test is robust to platform path-format quirks (Windows 8.3 short
+      // names like `C:\Users\RUNNER~1\…` vs long form `C:\Users\runneradmin\…`,
+      // macOS `/var/folders/… ↔ /private/var/folders/…`). The basename is the
+      // only part that registry name derivation actually uses (#1259).
+      const result = getCanonicalRepoRoot(tmpDir);
+      expect(result).not.toBeNull();
+      expect(path.basename(result!)).toBe(path.basename(tmpDir));
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -233,21 +236,25 @@ describe('getCanonicalRepoRoot', () => {
       const worktreeDir = path.join(repoDir, 'wt-feature');
       execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: repoDir });
 
-      const canonical = fs.realpathSync(repoDir);
-
-      // From the main checkout: canonical and getGitRoot agree.
-      expect(getCanonicalRepoRoot(repoDir)).toBe(canonical);
-
-      // From inside the worktree: canonical points BACK to the main repo,
-      // while `getGitRoot` (correctly) points at the worktree's own root.
-      // This asymmetry is exactly what fixes #1259 — the registry name
-      // derivation now collapses across worktrees.
+      // Both calls go through the same git executable, so their path-format
+      // output is guaranteed consistent — equality between them is the
+      // stable cross-platform assertion. (Comparing against `realpathSync`
+      // breaks on Windows where 8.3 short names and long names diverge.)
+      const fromMain = getCanonicalRepoRoot(repoDir);
       const fromWorktree = getCanonicalRepoRoot(worktreeDir);
-      expect(fromWorktree).toBe(canonical);
-      expect(fromWorktree).not.toBe(fs.realpathSync(worktreeDir));
+
+      expect(fromMain).not.toBeNull();
+      // From inside the worktree: canonical points BACK to the main repo's
+      // shared `.git`. This is the regression-guard for #1259 — the
+      // registry name derivation collapses across worktrees.
+      expect(fromWorktree).toBe(fromMain);
+      // Basename matches the canonical repo dir (NOT the worktree slug).
+      expect(path.basename(fromWorktree!)).toBe(path.basename(repoDir));
+      expect(path.basename(fromWorktree!)).not.toBe('wt-feature');
       // Sanity: getGitRoot returns the worktree-local root (existing
-      // behavior unchanged).
-      expect(getGitRoot(worktreeDir)).toBe(fs.realpathSync(worktreeDir));
+      // behavior unchanged). Compare basenames for the same path-format
+      // reason as above.
+      expect(path.basename(getGitRoot(worktreeDir)!)).toBe('wt-feature');
     } finally {
       // Best-effort cleanup; worktree teardown can leak open handles on
       // Windows so use force.
