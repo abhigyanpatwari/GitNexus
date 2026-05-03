@@ -239,4 +239,68 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
     const functionStrays = stray.filter((c) => c.sourceLabel === 'Function');
     expect(functionStrays, 'no other Function sources for doStuff calls').toEqual([]);
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Documented limitation: deeply-nested HOCs (`memo(forwardRef(...))`).
+  //
+  // The fixture `nested.tsx` documents that the OUTER pattern requires
+  // the arrow to be a direct grandchild of the const's `call_expression`
+  // value — when the arrow is wrapped in another `call_expression`
+  // (`memo(forwardRef(arrow))`), the pattern misses and the deepest
+  // arrow stays anonymous. The const itself (`Wrapped`) is also NOT a
+  // Function: the immediate arg of the outer `memo(...)` call is a
+  // `call_expression` (`forwardRef(...)`), not an arrow / fn-expression,
+  // so no `@declaration.function` pattern matches the outer shape either.
+  //
+  // We assert ABSENCE here (rather than positive resolution) so that any
+  // future change to the patterns or to `tsExtractFunctionName` that
+  // accidentally starts matching nested HOCs surfaces immediately. A
+  // proper fix for nested HOCs would require deciding which level wins
+  // the name (outer wrapper? deepest behaviour-arrow?) and is out of
+  // scope for this PR.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('nested HOCs (memo(forwardRef(...))): Wrapped is NOT a Function (known limitation)', () => {
+    // The outer const `Wrapped` matches NO `@declaration.function` pattern
+    // because the outer call's first argument is itself a call_expression,
+    // not an arrow_function / function_expression. It should be picked up
+    // as a Variable by `@definition.const` (or skipped entirely) — but it
+    // must NOT appear as a Function node.
+    const functions = new Set(getNodesByLabel(result, 'Function'));
+    expect(functions, 'Wrapped (nested HOC) must NOT be a Function node').not.toContain('Wrapped');
+  });
+
+  it('nested HOCs: helper() call inside the deepest arrow does NOT source from Function:Wrapped', () => {
+    // Calls inside the doubly-wrapped arrow have no named ancestor (deepest
+    // arrow is anonymous because `call_expression.parent` is `arguments`,
+    // not `variable_declarator`; the outer `memo` and `forwardRef` calls
+    // are themselves anonymous expressions). So calls in `nested.tsx` must
+    // either source from File or not be attributed to `Wrapped` at all.
+    //
+    // The negative assertion is what matters: a future change that wrongly
+    // attributes the deepest arrow to its outer const would silently corrupt
+    // impact analysis for any real code that nests HOCs (e.g.,
+    // `memo(forwardRef(...))` UI primitives).
+    const helperCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/nested.tsx' && c.target === 'helper',
+    );
+    expect(helperCalls.length, 'helper call must still be captured').toBeGreaterThan(0);
+
+    const fromWrapped = helperCalls.filter((c) => c.source === 'Wrapped');
+    expect(
+      fromWrapped,
+      'helper call must NOT be attributed to Function:Wrapped (deepest arrow stays anonymous)',
+    ).toEqual([]);
+
+    // Defensive: there should be no Function-sourced edges from anywhere in
+    // `nested.tsx` (everything is anonymous or module-level).
+    const allNestedCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'src/nested.tsx',
+    );
+    const functionSourced = allNestedCalls.filter((c) => c.sourceLabel === 'Function');
+    expect(
+      functionSourced,
+      'no Function-sourced CALLS from nested.tsx (all anchors should be File)',
+    ).toEqual([]);
+  });
 });

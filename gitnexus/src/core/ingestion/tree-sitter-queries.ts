@@ -85,14 +85,16 @@ export const TYPESCRIPT_QUERIES = `
   value: (function_expression)) @definition.function
 
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
-; Mirrors the four registry-primary patterns in
-; \`languages/typescript/query.ts\` so the legacy Call-Resolution DAG and
-; the registry-primary pipeline produce the same set of \`Function\` nodes
-; — required for the CI parity gate. Covers React.forwardRef / memo /
-; useCallback / useMemo / observer / debounce / user-defined HOC
-; factories. See \`tsExtractFunctionName\` for the resolution logic and
-; the \`query.ts\` comment for the full anchor-discipline rationale and
-; the chained-array-method trade-off.
+; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
+; so the legacy Call-Resolution DAG and the registry-primary pipeline
+; produce the same set of \`Function\` nodes — required for the CI parity
+; gate. Covers React.forwardRef / memo / useCallback / useMemo / observer
+; / debounce / user-defined HOC factories. The \`var X = HOC(...)\` form is
+; mirrored too (registry-primary has it) so that codebases mixing \`var\` and
+; \`const\` see identical attribution on both pipelines. See
+; \`tsExtractFunctionName\` for the resolution logic and the \`query.ts\`
+; comment for the full anchor-discipline rationale and the chained-
+; array-method trade-off.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
@@ -122,6 +124,22 @@ export const TYPESCRIPT_QUERIES = `
       value: (call_expression
         arguments: (arguments
           (function_expression)))))) @definition.function
+
+; \`var X = HOC(...)\` parity with registry-primary. Legacy code (and any
+; transpiler output that downlevels \`const\` to \`var\`) hits this shape.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      arguments: (arguments
+        (arrow_function))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      arguments: (arguments
+        (function_expression))))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.
@@ -302,7 +320,9 @@ export const JAVASCRIPT_QUERIES = `
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; See TYPESCRIPT_QUERIES section above for the full rationale (issue #1166
 ; follow-up — covers forwardRef / memo / useCallback / useMemo / observer
-; / debounce / user-defined HOC factories).
+; / debounce / user-defined HOC factories). Both \`const\` and \`var\` forms
+; are mirrored so JS code that uses \`var\` (or transpiler output) gets the
+; same attribution as the registry-primary path.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
@@ -332,6 +352,21 @@ export const JAVASCRIPT_QUERIES = `
       value: (call_expression
         arguments: (arguments
           (function_expression)))))) @definition.function
+
+; \`var X = HOC(...)\` parity with registry-primary.
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      arguments: (arguments
+        (arrow_function))))) @definition.function
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (call_expression
+      arguments: (arguments
+        (function_expression))))) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.

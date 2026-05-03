@@ -531,4 +531,57 @@ describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
     `);
     expect(names).toContain('Legacy');
   });
+
+  // ─── Documented trade-offs: pin behaviour so future readers aren't surprised ───
+
+  it('accepted false-positive: `const x = arr.find((y) => p(y))` attributes p to "x"', () => {
+    // The HOC-wrapped pattern (arrow's parent is `arguments`, grandparent is
+    // `call_expression`, great-grandparent is `variable_declarator`) is broad
+    // enough to also match chained array-method callbacks like Array#find /
+    // Array#some / Array#every — where `x` is a *value* (the result of the
+    // method), not a function. The arrow inside borrows the const's name and
+    // its inner calls attribute to it.
+    //
+    // This is documented in `languages/typescript/query.ts` as an accepted
+    // trade-off because:
+    //   1. `x` is never invoked as a function, so no incoming CALLS edge is
+    //      ever created — the spurious `Function:x` is graph-isolated on the
+    //      incoming side.
+    //   2. The outgoing edge `Function:x → predicate` is a minor mis-attribution
+    //      (the call IS happening, just not from a "function called x"), and
+    //      the alternative — narrowing the pattern to known HOC names — would
+    //      require maintaining a wrapper allowlist that breaks for every new
+    //      HOC factory.
+    //
+    // We pin this here so a future change that tightens the pattern is forced
+    // to update this test and re-evaluate the trade-off explicitly.
+    const sites = collectCallAttributions(`
+      const found = items.find((item) => predicate(item));
+    `);
+    expect(findCall(sites, 'predicate')?.attributedTo).toBe('found');
+  });
+
+  it('multi-arrow argument: both arrows resolve to the same const name (legacy DAG path)', () => {
+    // `const x = call(() => first(), () => second())` — both arrows share the
+    // same `arguments → call_expression → variable_declarator` ancestor chain,
+    // so `tsExtractFunctionName`'s third branch returns "x" for each. Calls
+    // inside both arrows therefore attribute to "x" on the legacy DAG path.
+    //
+    // In the registry-primary pipeline the two arrows produce two candidate
+    // `Function:x` defs that the qualified-name dedup collapses into one
+    // (last-write-wins by symbol range). The end result is the same set of
+    // CALLS edges sourced from "x"; only the def's range changes. We pin the
+    // legacy attribution here because that's what the unit harness exercises.
+    //
+    // The pattern is rare in real code (few APIs take two callbacks both
+    // worth tracking), but it does exist in some `register(setup, teardown)`
+    // / `addEventListener('event', handler, { once })` shaped helpers. If a
+    // future change drops one of the calls or attributes it elsewhere, we
+    // want to know.
+    const sites = collectCallAttributions(`
+      const x = call(() => first(), () => second());
+    `);
+    expect(findCall(sites, 'first')?.attributedTo).toBe('x');
+    expect(findCall(sites, 'second')?.attributedTo).toBe('x');
+  });
 });
