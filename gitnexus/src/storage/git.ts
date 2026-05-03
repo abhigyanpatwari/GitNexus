@@ -93,6 +93,34 @@ export const getGitRoot = (fromPath: string): string | null => {
     return null;
   }
 };
+
+/**
+ * Find a git root by checking only `.git` entries on the ancestor chain.
+ *
+ * Unlike `getGitRoot`, this does not spawn `git`, so MCP can cheaply decide
+ * whether a launch cwd is a worktree before running any subprocess there.
+ */
+export const findGitRootByDotGit = (fromPath: string): string | null => {
+  let current = path.resolve(fromPath);
+  try {
+    if (!statSync(current).isDirectory()) {
+      current = path.dirname(current);
+    }
+  } catch {
+    return null;
+  }
+
+  while (true) {
+    try {
+      statSync(path.join(current, '.git'));
+      return current;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+};
 /**
  * Check whether a directory contains a .git entry (file or folder).
  *

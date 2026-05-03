@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execSync } from 'child_process';
-import { isGitRepo, getCurrentCommit, getGitRoot } from '../../src/storage/git.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {
+  isGitRepo,
+  getCurrentCommit,
+  getGitRoot,
+  findGitRootByDotGit,
+} from '../../src/storage/git.js';
 
 // Mock child_process.execSync
 vi.mock('child_process', () => ({
@@ -90,6 +98,32 @@ describe('git utilities', () => {
       const result = getGitRoot('/repo/src');
       expect(result).not.toBeNull();
       expect(result!.trim()).toBe(result);
+    });
+  });
+
+  describe('findGitRootByDotGit', () => {
+    it('finds an ancestor .git directory without spawning git', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dotgit-'));
+      try {
+        fs.mkdirSync(path.join(tmpDir, '.git'));
+        const nested = path.join(tmpDir, 'packages', 'app');
+        fs.mkdirSync(nested, { recursive: true });
+
+        expect(findGitRootByDotGit(nested)).toBe(path.resolve(tmpDir));
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns null outside a git worktree without spawning git', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-nonrepo-'));
+      try {
+        expect(findGitRootByDotGit(tmpDir)).toBeNull();
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -233,6 +233,26 @@ describe('checkCwdMatch', () => {
     }
   });
 
+  it('returns match=none for a non-git cwd before resolving sibling remotes', async () => {
+    const indexed = await createTempDir('cwd-home-indexed-');
+    const nonGitCwd = await createTempDir('cwd-home-non-git-');
+    try {
+      const indexedHead = initRepoWithCommit(indexed.dbPath, 'https://example.com/foo/bar');
+      await registerRepo(indexed.dbPath, {
+        repoPath: indexed.dbPath,
+        lastCommit: indexedHead,
+        indexedAt: new Date().toISOString(),
+        remoteUrl: 'https://example.com/foo/bar',
+      });
+
+      const m = await checkCwdMatch(nonGitCwd.dbPath);
+      expect(m.match).toBe('none');
+    } finally {
+      await indexed.cleanup();
+      await nonGitCwd.cleanup();
+    }
+  });
+
   it('reports sibling-by-remote with a stale hint when cwd HEAD has advanced', async () => {
     // Polecat-style scenario from the issue: index at path A, query
     // from cwd=path B (same repo), get a warning rather than
