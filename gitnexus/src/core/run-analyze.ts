@@ -30,7 +30,13 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import {
+  getCurrentCommit,
+  getRemoteUrl,
+  hasGitDir,
+  getInferredRepoName,
+  getCanonicalRepoRoot,
+} from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
@@ -168,7 +174,14 @@ export async function runFullAnalysis(
     if (currentCommit !== '') {
       await ensureGitNexusIgnored(repoPath);
       return {
-        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+        // `getCanonicalRepoRoot` dereferences git worktrees so the registry
+        // name comes from the canonical repo's basename, not the worktree
+        // slug — see #1259. Falls back to `repoPath` for non-git folders
+        // (`--skip-git`) and when git is unavailable.
+        repoName:
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
@@ -345,7 +358,10 @@ export async function runFullAnalysis(
       }
 
       const { readServerMapping } = await import('./embeddings/server-mapping.js');
-      const projectName = path.basename(repoPath);
+      // Same canonical-root logic as the early-return path above (#1259):
+      // dereferences git worktrees so the embedding server mapping is keyed
+      // off the canonical repo name, consistent with the registry name.
+      const projectName = path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath);
       const serverName = await readServerMapping(projectName);
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,

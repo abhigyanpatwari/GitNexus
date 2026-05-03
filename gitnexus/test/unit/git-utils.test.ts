@@ -180,3 +180,83 @@ describe('getRemoteUrl', () => {
     }
   });
 });
+
+// ─── getCanonicalRepoRoot (#1259) ────────────────────────────────────────
+//
+// Critical for the worktree-naming bug: when `gitnexus analyze` runs from a
+// linked worktree, deriving `repoName` from `path.basename(getGitRoot(cwd))`
+// uses the worktree's directory slug instead of the canonical repo's
+// basename. `getCanonicalRepoRoot` exists specifically to dereference
+// worktrees via `git rev-parse --git-common-dir`.
+
+describe('getCanonicalRepoRoot', () => {
+  it('returns null for a plain temp directory (not a git repo)', async () => {
+    const { getCanonicalRepoRoot } = await import('../../src/storage/git.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-'));
+    try {
+      expect(getCanonicalRepoRoot(tmpDir)).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a non-existent path', async () => {
+    const { getCanonicalRepoRoot } = await import('../../src/storage/git.js');
+    expect(getCanonicalRepoRoot('/tmp/__gitnexus_canonical_nonexistent__')).toBeNull();
+  });
+
+  it('returns the repo root when called from a regular (non-worktree) checkout', async () => {
+    const { getCanonicalRepoRoot } = await import('../../src/storage/git.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-main-'));
+    try {
+      execSync('git init -q', { cwd: tmpDir });
+      // realpath because macOS symlinks `/var/folders/...` to
+      // `/private/var/folders/...`; git resolves to the canonical form,
+      // and so should the test expectation.
+      const repoRoot = fs.realpathSync(tmpDir);
+      expect(getCanonicalRepoRoot(tmpDir)).toBe(repoRoot);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the CANONICAL repo root when called from inside a linked worktree (#1259)', async () => {
+    const { getCanonicalRepoRoot, getGitRoot } = await import('../../src/storage/git.js');
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-wt-'));
+    try {
+      execSync('git init -q', { cwd: repoDir });
+      // `git worktree add` requires at least one commit on a real branch.
+      execSync('git config user.email "test@example.com"', { cwd: repoDir });
+      execSync('git config user.name "Test"', { cwd: repoDir });
+      execSync('git commit --allow-empty -q -m "initial"', { cwd: repoDir });
+      // Create a linked worktree on a new branch outside the main checkout.
+      const worktreeDir = path.join(repoDir, 'wt-feature');
+      execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: repoDir });
+
+      const canonical = fs.realpathSync(repoDir);
+
+      // From the main checkout: canonical and getGitRoot agree.
+      expect(getCanonicalRepoRoot(repoDir)).toBe(canonical);
+
+      // From inside the worktree: canonical points BACK to the main repo,
+      // while `getGitRoot` (correctly) points at the worktree's own root.
+      // This asymmetry is exactly what fixes #1259 — the registry name
+      // derivation now collapses across worktrees.
+      const fromWorktree = getCanonicalRepoRoot(worktreeDir);
+      expect(fromWorktree).toBe(canonical);
+      expect(fromWorktree).not.toBe(fs.realpathSync(worktreeDir));
+      // Sanity: getGitRoot returns the worktree-local root (existing
+      // behavior unchanged).
+      expect(getGitRoot(worktreeDir)).toBe(fs.realpathSync(worktreeDir));
+    } finally {
+      // Best-effort cleanup; worktree teardown can leak open handles on
+      // Windows so use force.
+      try {
+        execSync('git worktree remove -f wt-feature', { cwd: repoDir });
+      } catch {
+        // ignore — fall through to recursive rm
+      }
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});

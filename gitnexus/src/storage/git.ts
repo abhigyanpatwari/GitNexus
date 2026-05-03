@@ -95,6 +95,50 @@ export const getGitRoot = (fromPath: string): string | null => {
 };
 
 /**
+ * Get the *canonical* repository root, dereferencing git worktrees.
+ *
+ * Unlike `getGitRoot` (which uses `git rev-parse --show-toplevel` and
+ * returns the WORKTREE's root when called inside a linked worktree),
+ * this uses `git rev-parse --git-common-dir` — the shared `.git`
+ * directory, identical for the main checkout and every linked
+ * worktree — and returns its parent.
+ *
+ * Why it matters (#1259): when `gitnexus analyze` runs inside a
+ * worktree (e.g. `/repo/wt-feature/`), deriving `repoName` from
+ * `path.basename(getGitRoot(cwd))` registers the project under the
+ * worktree's directory slug (`wt-feature`) instead of the canonical
+ * repo's basename (`repo`). Each worktree then re-registers as a
+ * "different" project, AGENTS.md is rewritten with the wrong MCP URI,
+ * and Claude-Code-style worktree workflows silently accumulate
+ * duplicate registry entries.
+ *
+ * Returns `null` when the path is not inside a git repository or
+ * `git` is not available, so callers can chain safely:
+ * `getCanonicalRepoRoot(p) ?? getGitRoot(p) ?? p`.
+ *
+ * `--path-format=absolute` is required because `--git-common-dir`
+ * returns a path *relative to cwd* by default (e.g. `../.git` when
+ * called from a worktree), which would resolve to the wrong absolute
+ * path if the caller later resolved it from a different directory.
+ */
+export const getCanonicalRepoRoot = (fromPath: string): string | null => {
+  try {
+    const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
+      cwd: fromPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    if (!commonDir) return null;
+    // Common dir is `<repo>/.git` for both the main checkout and all
+    // linked worktrees. Its parent is the canonical repo root.
+    return path.dirname(path.resolve(commonDir));
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Find a git root by checking only `.git` entries on the ancestor chain.
  *
  * Unlike `getGitRoot`, this does not spawn `git`, so MCP can cheaply decide
