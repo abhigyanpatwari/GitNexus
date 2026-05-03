@@ -35,7 +35,7 @@ import {
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
-  getCanonicalRepoRoot,
+  resolveRepoIdentityRoot,
 } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
@@ -174,14 +174,13 @@ export async function runFullAnalysis(
     if (currentCommit !== '') {
       await ensureGitNexusIgnored(repoPath);
       return {
-        // `getCanonicalRepoRoot` dereferences git worktrees so the registry
-        // name comes from the canonical repo's basename, not the worktree
-        // slug — see #1259. Falls back to `repoPath` for non-git folders
-        // (`--skip-git`) and when git is unavailable.
+        // `resolveRepoIdentityRoot` collapses worktree roots to the
+        // canonical repo basename (#1259) but leaves arbitrary subdirs
+        // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
         repoName:
           options.registryName ??
           getInferredRepoName(repoPath) ??
-          path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath),
+          path.basename(resolveRepoIdentityRoot(repoPath)),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
@@ -370,7 +369,7 @@ export async function runFullAnalysis(
       const projectName =
         options.registryName ??
         getInferredRepoName(repoPath) ??
-        path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath);
+        path.basename(resolveRepoIdentityRoot(repoPath));
       const serverName = await readServerMapping(projectName);
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,

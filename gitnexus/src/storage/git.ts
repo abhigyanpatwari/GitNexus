@@ -139,6 +139,36 @@ export const getCanonicalRepoRoot = (fromPath: string): string | null => {
 };
 
 /**
+ * Resolve `fromPath` to the directory whose basename should drive the
+ * registry name (#1259) — the *identity root*. Three outcomes:
+ *
+ *   1. `fromPath` IS the canonical checkout root → returns it unchanged.
+ *   2. `fromPath` is a linked-worktree root (has its own `.git` entry, but
+ *      `git rev-parse --git-common-dir` points at a different `.git`) →
+ *      returns the canonical repo root.
+ *   3. `fromPath` is anything else — an arbitrary subdir under a git repo,
+ *      a non-git folder, a `--skip-git` subdir of an unrelated parent
+ *      checkout — returns `fromPath` unchanged.
+ *
+ * Why not just use `getCanonicalRepoRoot` directly? Because `git rev-parse
+ * --git-common-dir` resolves the same canonical root for ANY path inside
+ * a git repo, including unrelated subdirs. Using it for registry-name
+ * derivation would silently re-key a `--skip-git` subdir analyze under
+ * the parent git's basename, defeating the user's `--skip-git` intent
+ * (regressing the #1232/#1233 fix). The "is this path a tree root"
+ * gate confines the canonical-root collapse to exactly the cases where
+ * #1259 matters: main checkouts and linked worktrees.
+ */
+export const resolveRepoIdentityRoot = (fromPath: string): string => {
+  const resolved = path.resolve(fromPath);
+  const canonical = getCanonicalRepoRoot(resolved);
+  if (!canonical) return resolved; // non-git → use as-is
+  if (canonical === resolved) return canonical; // canonical checkout
+  if (hasGitDir(resolved)) return canonical; // linked worktree (has .git file)
+  return resolved; // arbitrary subdir under a git repo → preserve as-is
+};
+
+/**
  * Find a git root by checking only `.git` entries on the ancestor chain.
  *
  * Unlike `getGitRoot`, this does not spawn `git`, so MCP can cheaply decide

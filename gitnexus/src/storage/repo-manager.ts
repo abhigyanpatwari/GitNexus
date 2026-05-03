@@ -10,7 +10,7 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { getInferredRepoName, getCanonicalRepoRoot } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -470,14 +470,13 @@ export const registerRepo = async (
       name = existing.name;
       isPreservedAlias = true;
     } else {
-      // Canonical-root fallback: when the analyze invocation came from
-      // inside a git worktree, derive the registry name from the canonical
-      // repo's basename, not the worktree slug — see #1259. `path.resolve`
-      // alone returns the worktree path; `getCanonicalRepoRoot` walks
-      // through `git rev-parse --git-common-dir` to the shared `.git`
-      // parent. Falls back to `resolved` for non-git folders so
-      // `--skip-git` paths keep their existing behavior.
-      name = inferred ?? path.basename(getCanonicalRepoRoot(resolved) ?? resolved);
+      // Canonical-root fallback: when `resolved` is a worktree root,
+      // derive the registry name from the canonical repo's basename, not
+      // the worktree slug — see #1259. `resolveRepoIdentityRoot` confines
+      // the collapse to canonical checkouts and linked worktree roots only,
+      // so `--skip-git` subdirs of unrelated parent git repos keep using
+      // their own basename (preserves the #1232/#1233 fix's intent).
+      name = inferred ?? path.basename(resolveRepoIdentityRoot(resolved));
     }
   }
 
