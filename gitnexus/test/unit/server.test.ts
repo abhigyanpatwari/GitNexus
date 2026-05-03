@@ -13,6 +13,8 @@
  * directly through the MCP Server's handler dispatch.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
@@ -57,16 +59,22 @@ describe('createMCPServer', () => {
   it('tools/list response includes tool annotations', async () => {
     const backend = createMockBackend();
     const server = createMCPServer(backend);
-    const handler = (server as any)._requestHandlers.get('tools/list');
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    expect(typeof handler).toBe('function');
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
-    const response = await handler({ method: 'tools/list', params: {} }, {});
-    expect(response.tools).toHaveLength(GITNEXUS_TOOLS.length);
+      const response = await client.listTools();
+      expect(response.tools).toHaveLength(GITNEXUS_TOOLS.length);
 
-    for (const tool of response.tools) {
-      const definition = GITNEXUS_TOOLS.find((t) => t.name === tool.name)!;
-      expect(tool.annotations).toEqual(definition.annotations);
+      for (const tool of response.tools) {
+        const definition = GITNEXUS_TOOLS.find((t) => t.name === tool.name)!;
+        expect(tool.annotations).toEqual(definition.annotations);
+      }
+    } finally {
+      await client.close();
+      await server.close();
     }
   });
 });

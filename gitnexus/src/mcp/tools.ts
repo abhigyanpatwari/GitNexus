@@ -531,6 +531,8 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
     description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, exact-match cross-links.
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
+    // Writes contracts.json on every call; conservatively non-idempotent
+    // even though output is deterministic for identical input.
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

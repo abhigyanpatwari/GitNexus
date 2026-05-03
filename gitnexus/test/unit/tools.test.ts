@@ -12,6 +12,9 @@ import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
+// Read-only tools that legitimately reach external systems. Add a tool name
+// here when introducing a read-only tool that needs openWorldHint: true.
+const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
   it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
@@ -64,7 +67,7 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.annotations.readOnlyHint).toBe(true);
       expect(tool.annotations.destructiveHint).toBe(false);
       expect(tool.annotations.idempotentHint).toBe(true);
-      expect(tool.annotations.openWorldHint).toBe(tool.name === 'query');
+      expect(tool.annotations.openWorldHint).toBe(OPEN_WORLD_READ_ONLY_TOOLS.has(tool.name));
     }
   });
 
