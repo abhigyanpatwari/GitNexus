@@ -121,7 +121,6 @@ export const findGitRootByDotGit = (fromPath: string): string | null => {
     }
   }
 };
-
 /**
  * Check whether a directory contains a .git entry (file or folder).
  *
@@ -172,7 +171,7 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
 export const sanitizeRepoName = (name: string): string => {
   // 1. Prevent argument injection by stripping leading dashes.
   // 2. Remove characters that are unsafe for directory names across platforms.
-  return name.replace(/^-+/, '').replace(/[<>:\"/\\\\|?*]/g, '_') || 'unknown';
+  return name.replace(/^-+/, '').replace(/[<>:"/\\|?*]/g, '_') || 'unknown';
 };
 
 /**
@@ -186,7 +185,7 @@ export const parseRepoNameFromUrl = (url: string | null | undefined): string | n
   const trimmed = url.trim();
   if (!trimmed) return null;
   // Strip `.git` suffix (case-insensitive) and any trailing slashes.
-  const withoutSuffix = trimmed.replace(/\\.git\\/*$/i, '').replace(/\\/+$/, '');
+  const withoutSuffix = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
   
   // Last path segment, handling colons for SSH URLs.
   // For HTTPS URLs, the only colon should be in the protocol.
@@ -228,12 +227,12 @@ export interface FileDiff {
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
-  for (const line of diffOutput.split('\\n')) {
+  for (const line of diffOutput.split('\n')) {
     if (line.startsWith('+++ b/')) {
       current = { filePath: line.slice(6), hunks: [] };
       files.push(current);
     } else if (line.startsWith('@@') && current) {
-      const match = line.match(/@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@/);
+      const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
       if (match) {
         const start = parseInt(match[1], 10);
         const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
