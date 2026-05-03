@@ -18,6 +18,7 @@ import { goExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { goImportConfig } from '../import-resolvers/configs/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { goConfig as goFieldConfig } from '../field-extractors/configs/go.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -32,6 +33,45 @@ import { goHeritageConfig } from '../heritage-extractors/configs/go.js';
 export const goProvider = defineLanguage({
   id: SupportedLanguages.Go,
   extensions: ['.go'],
+  entryPointPatterns: [/Handler$/, /^Serve/, /^New[A-Z]/, /^Make[A-Z]/],
+  astFrameworkPatterns: [
+    {
+      framework: 'go-http',
+      entryPointMultiplier: 2.5,
+      reason: 'go-http-handler',
+      patterns: [
+        'http.Handler',
+        'http.HandlerFunc',
+        'ServeHTTP',
+        'http.ResponseWriter',
+        'http.Request',
+      ],
+    },
+    {
+      framework: 'gin',
+      entryPointMultiplier: 3.0,
+      reason: 'gin-handler',
+      patterns: ['gin.Context', 'gin.Default', 'gin.New'],
+    },
+    {
+      framework: 'echo',
+      entryPointMultiplier: 3.0,
+      reason: 'echo-handler',
+      patterns: ['echo.Context', 'echo.New'],
+    },
+    {
+      framework: 'fiber',
+      entryPointMultiplier: 3.0,
+      reason: 'fiber-handler',
+      patterns: ['fiber.Ctx', 'fiber.New', 'fiber.App'],
+    },
+    {
+      framework: 'go-grpc',
+      entryPointMultiplier: 2.8,
+      reason: 'grpc-service',
+      patterns: ['grpc.Server', 'RegisterServer', 'pb.Unimplemented'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: GO_QUERIES,
   typeConfig: goConfig,
   exportChecker: goExportChecker,

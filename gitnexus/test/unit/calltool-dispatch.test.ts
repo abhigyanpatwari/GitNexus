@@ -218,11 +218,27 @@ describe('LocalBackend.callTool', () => {
         ),
       ).toBe(true);
       expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('GitNexus [query:vector]: VECTOR index unavailable'),
+        expect.stringContaining(
+          'GitNexus [query:vector]: VECTOR extension not supported on this platform',
+        ),
       );
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('issues vector index query when VECTOR is supported by the platform', async () => {
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      return [];
+    });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await backend.callTool('query', { query: 'auth' });
+
+    const queries = (executeQuery as any).mock.calls.map(([, cypher]: [string, string]) => cypher);
+    expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(true);
   });
 
   it('query tool returns error for empty query', async () => {

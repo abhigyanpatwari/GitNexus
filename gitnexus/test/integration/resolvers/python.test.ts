@@ -1,13 +1,14 @@
 /**
  * Python: relative imports + class inheritance + ambiguous module disambiguation
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -15,6 +16,11 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Mirrors `csharp.test.ts`: skips tests in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.python`
+// when the legacy-resolver parity sweep runs (`REGISTRY_PRIMARY_PYTHON=0`). For the
+// default registry-primary CI run this is a transparent passthrough to vitest's `it`.
+const it = createResolverParityIt('python');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
@@ -413,6 +419,432 @@ describe('Python ancestor directory import resolution (Issue #417)', () => {
     );
     expect(fmtCall).toBeDefined();
     expect(fmtCall!.targetFilePath).toBe('a/utils.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-segment ancestor walk: `from services.sync import X` style imports
+// from a sibling sub-package nested under a shared root directory.
+//
+// Before this fix, single-segment ancestor walks worked (`from middleware
+// import X` from `backend/services/auth.py` → `backend/middleware.py`) but
+// multi-segment dotted imports were only resolved against the workspace
+// root. In a `backend/`-prefixed repo, `from services.sync import X` from
+// `backend/routers/cron.py` would silently drop because `services/sync.py`
+// does not exist at the workspace root — only `backend/services/sync.py`
+// does. The fix mirrors the single-segment ancestor walk for multi-segment
+// paths.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment ancestor directory import resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-multi-segment-ancestor-import'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves from services.sync import to backend/services/sync.py via ancestor walk', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const syncImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/services/sync.py',
+    );
+    expect(syncImport).toBeDefined();
+  });
+
+  it('resolves from services.alerts import to backend/services/alerts.py via ancestor walk', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const alertsImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/services/alerts.py',
+    );
+    expect(alertsImport).toBeDefined();
+  });
+
+  it('resolves from routers.alerts import to backend/routers/alerts.py (sibling sub-package)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const routerImport = imports.find(
+      (i) =>
+        i.sourceFilePath === 'backend/routers/cron.py' &&
+        i.targetFilePath === 'backend/routers/alerts.py',
+    );
+    expect(routerImport).toBeDefined();
+  });
+
+  it('emits CALLS edges for every multi-segment-imported callee', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'backend/routers/cron.py',
+    );
+
+    const startCronRunCalls = calls.filter((c) => c.target === '_start_cron_run');
+    expect(startCronRunCalls.length).toBe(3);
+    expect(startCronRunCalls.every((c) => c.targetFilePath === 'backend/services/sync.py')).toBe(
+      true,
+    );
+
+    const completeCronRunCalls = calls.filter((c) => c.target === '_complete_cron_run');
+    expect(completeCronRunCalls.length).toBe(1);
+    expect(completeCronRunCalls[0].targetFilePath).toBe('backend/services/sync.py');
+
+    const opsAlertCalls = calls.filter((c) => c.target === '_create_ops_alert');
+    expect(opsAlertCalls.length).toBe(2);
+    expect(opsAlertCalls.every((c) => c.targetFilePath === 'backend/services/alerts.py')).toBe(
+      true,
+    );
+
+    const sendDailyCalls = calls.filter((c) => c.target === 'send_daily_alerts');
+    expect(sendDailyCalls.length).toBe(2);
+    expect(sendDailyCalls.every((c) => c.targetFilePath === 'backend/routers/alerts.py')).toBe(
+      true,
+    );
+  });
+
+  it('preserves single-segment ancestor walk (regression check for from auth_utils import X)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'backend/routers/cron.py',
+    );
+
+    const verifyCalls = calls.filter((c) => c.target === 'verify_cron_secret');
+    expect(verifyCalls.length).toBe(1);
+    expect(verifyCalls[0].targetFilePath).toBe('backend/auth_utils.py');
+
+    const orgCalls = calls.filter((c) => c.target === 'get_org_id_from_header');
+    expect(orgCalls.length).toBe(1);
+    expect(orgCalls[0].targetFilePath).toBe('backend/auth_utils.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Negative case for `hasRepoCandidate` widening: a vendored copy of an
+// external package (e.g. `vendor/django/urls.py`) must not cause an external
+// import like `from django.urls import path` issued from an unrelated file
+// (`app/main.py`) to be treated as a local candidate. The ancestor-bounded
+// nested check rejects vendored matches that don't sit on the importer's
+// own ancestor path.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment widening: vendored external package false-positive guard', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-vendored-django-'));
+    writeFixtureRepo(repoDir, {
+      'app/main.py': `from django.urls import path
+
+def boot():
+    path("/")
+`,
+      'vendor/django/__init__.py': '',
+      'vendor/django/urls.py': `def path(p):
+    return p
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('does not resolve from django.urls to vendor/django/urls.py from an unrelated importer', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const stray = imports.find(
+      (i) => i.sourceFilePath === 'app/main.py' && i.targetFilePath === 'vendor/django/urls.py',
+    );
+    expect(stray).toBeUndefined();
+  });
+
+  it('does not emit a CALLS edge from app/main.py:boot to vendor/django/urls.py:path', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'app/main.py',
+    );
+    const stray = calls.find(
+      (c) => c.target === 'path' && c.targetFilePath === 'vendor/django/urls.py',
+    );
+    expect(stray).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workspace-root precedence: when both `services/sync.py` (root) and
+// `backend/services/sync.py` (ancestor) exist, an importer at
+// `backend/routers/cron.py` doing `from services.sync import X` resolves to
+// the root file. Mirrors Python's `sys.path` semantics where the project
+// root is searched before package-local namespaces.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: workspace root wins over ancestor', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-root-precedence-'));
+    writeFixtureRepo(repoDir, {
+      'services/__init__.py': '',
+      'services/sync.py': `def root_marker():
+    return "root"
+`,
+      'backend/__init__.py': '',
+      'backend/services/__init__.py': '',
+      'backend/services/sync.py': `def ancestor_marker():
+    return "ancestor"
+`,
+      'backend/routers/__init__.py': '',
+      'backend/routers/cron.py': `from services.sync import root_marker
+
+def handler():
+    return root_marker()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves the import edge to the root services/sync.py, not backend/services/sync.py', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'backend/routers/cron.py',
+    );
+    const rootEdge = imports.find((i) => i.targetFilePath === 'services/sync.py');
+    expect(rootEdge).toBeDefined();
+
+    const ancestorEdge = imports.find((i) => i.targetFilePath === 'backend/services/sync.py');
+    expect(ancestorEdge).toBeUndefined();
+  });
+
+  it('binds the imported name to the root file, not the ancestor copy', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'backend/routers/cron.py' && c.target === 'root_marker',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toBe('services/sync.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suffix-fallback determinism: when both root + ancestor walk miss but the
+// suffix scan finds multiple candidates in unrelated trees, the resolver
+// must pick the same file regardless of file-set insertion order. The
+// previous implementation returned the first match in `Set` iteration
+// order, which depended on file ingestion order and produced flapping
+// edges across runs in multi-directory collision repos.
+//
+// Tie-break order: fewest path segments, then lexicographic.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback determinism', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-determinism-'));
+    writeFixtureRepo(repoDir, {
+      // Importer's package. The `app/services/marker.py` file makes the
+      // `services` segment gate-pass under the ancestor-bounded
+      // `hasRepoCandidate` check, but `app/services/sync.py` is
+      // intentionally absent so the ancestor walk misses and the suffix
+      // fallback fires.
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+      // Two suffix candidates outside the importer's ancestor tree.
+      // `lib/services/sync.py` has 3 path segments, the alternative has
+      // 4 — the deterministic pick is `lib/services/sync.py`.
+      'lib/services/sync.py': `def handler():
+    return "lib"
+`,
+      'tooling/extras/services/sync.py': `def handler():
+    return "tooling"
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('picks the shortest-path candidate (lib/services/sync.py) and only that one', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const libEdge = imports.find((i) => i.targetFilePath === 'lib/services/sync.py');
+    expect(libEdge).toBeDefined();
+
+    const toolingEdge = imports.find((i) => i.targetFilePath === 'tooling/extras/services/sync.py');
+    expect(toolingEdge).toBeUndefined();
+  });
+
+  it('binds the call to the deterministic pick, not the alternate copy', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'app/main.py' && c.target === 'handler',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toBe('lib/services/sync.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lexicographic tiebreak: when two suffix candidates have the same
+// directory depth, the lexicographically smaller path wins. Without this,
+// equal-depth collisions would still depend on file-set insertion order.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback lexicographic tiebreak', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-lex-tiebreak-'));
+    writeFixtureRepo(repoDir, {
+      // Same gate-passing pattern as the determinism test — non-init
+      // marker file makes the `services` segment satisfy
+      // `hasRepoCandidate` for an importer at `app/main.py`.
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+      // Both candidates have depth 3, so directory-depth alone cannot
+      // disambiguate. Lexicographic order picks `alpha/...` over
+      // `omega/...` regardless of which file was ingested first.
+      'alpha/services/sync.py': `def handler():
+    return "alpha"
+`,
+      'omega/services/sync.py': `def handler():
+    return "omega"
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('picks the lexicographically smaller path on equal-depth ties', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const alphaEdge = imports.find((i) => i.targetFilePath === 'alpha/services/sync.py');
+    expect(alphaEdge).toBeDefined();
+
+    const omegaEdge = imports.find((i) => i.targetFilePath === 'omega/services/sync.py');
+    expect(omegaEdge).toBeUndefined();
+  });
+
+  it('binds the call to alpha/services/sync.py, not omega', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.sourceFilePath === 'app/main.py' && c.target === 'handler',
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0].targetFilePath).toBe('alpha/services/sync.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Insertion-order independence: re-runs the depth and lexicographic
+// scenarios with the candidate files written in reverse order. The
+// deterministic sort in `resolveAbsoluteFromFiles` should pick the same
+// winner regardless. If a future refactor accidentally drops the sort
+// and falls back to `Set` insertion order, these tests pin the
+// regression directly.
+// ---------------------------------------------------------------------------
+
+describe('Python multi-segment resolution: suffix fallback insertion-order independence', () => {
+  let depthRepoDir: string;
+  let lexRepoDir: string;
+  let depthResult: PipelineResult;
+  let lexResult: PipelineResult;
+
+  beforeAll(async () => {
+    // Depth scenario, files written in reverse order: tooling first, lib
+    // second. `writeFixtureRepo` iterates in object-property insertion
+    // order, and the pipeline scanner's directory traversal is also
+    // affected by mtime/inode order on most filesystems. The expected
+    // winner is still `lib/services/sync.py` (depth 3 < depth 4).
+    depthRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-determinism-rev-'));
+    writeFixtureRepo(depthRepoDir, {
+      'tooling/extras/services/sync.py': `def handler():
+    return "tooling"
+`,
+      'lib/services/sync.py': `def handler():
+    return "lib"
+`,
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+    });
+    depthResult = await runPipelineFromRepo(depthRepoDir, () => {});
+
+    // Lexicographic scenario, files written in reverse order: omega first.
+    // Expected winner is still `alpha/services/sync.py`.
+    lexRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-suffix-lex-rev-'));
+    writeFixtureRepo(lexRepoDir, {
+      'omega/services/sync.py': `def handler():
+    return "omega"
+`,
+      'alpha/services/sync.py': `def handler():
+    return "alpha"
+`,
+      'app/services/marker.py': `def _marker(): return True
+`,
+      'app/main.py': `from services.sync import handler
+
+def boot():
+    return handler()
+`,
+    });
+    lexResult = await runPipelineFromRepo(lexRepoDir, () => {});
+  }, 120000);
+
+  afterAll(() => {
+    if (depthRepoDir !== undefined) fs.rmSync(depthRepoDir, { recursive: true, force: true });
+    if (lexRepoDir !== undefined) fs.rmSync(lexRepoDir, { recursive: true, force: true });
+  });
+
+  it('depth tiebreak still picks lib/services/sync.py with reversed file-write order', () => {
+    const imports = getRelationships(depthResult, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const libEdge = imports.find((i) => i.targetFilePath === 'lib/services/sync.py');
+    expect(libEdge).toBeDefined();
+
+    const toolingEdge = imports.find((i) => i.targetFilePath === 'tooling/extras/services/sync.py');
+    expect(toolingEdge).toBeUndefined();
+  });
+
+  it('lex tiebreak still picks alpha/services/sync.py with reversed file-write order', () => {
+    const imports = getRelationships(lexResult, 'IMPORTS').filter(
+      (i) => i.sourceFilePath === 'app/main.py',
+    );
+
+    const alphaEdge = imports.find((i) => i.targetFilePath === 'alpha/services/sync.py');
+    expect(alphaEdge).toBeDefined();
+
+    const omegaEdge = imports.find((i) => i.targetFilePath === 'omega/services/sync.py');
+    expect(omegaEdge).toBeUndefined();
   });
 });
 

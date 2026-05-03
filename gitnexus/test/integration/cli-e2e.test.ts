@@ -198,6 +198,117 @@ describe('CLI end-to-end', () => {
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(MINI_REPO, '.gitignore'))).toBe(false);
+    expect(fs.readFileSync(path.join(gitnexusDir, '.gitignore'), 'utf-8')).toBe('*\n');
+  }, 60_000);
+
+  // Regression guard for issue #1169 — analyze must produce BOTH a
+  // meta.json AND a global-registry entry on success. The previous
+  // failure mode on Windows was banner-only output + exit 0 with
+  // neither artifact persisted; the new finalize invariant
+  // (assertAnalysisFinalized) makes that state a hard failure.
+  //
+  // Uses a fresh per-test repo copy (not the shared MINI_REPO) so
+  // an earlier sibling test's analyze cannot push this one onto the
+  // alreadyUpToDate fast path, which would skip the very wiring this
+  // test is here to protect.
+  it('analyze persists meta.json AND a matching registry entry (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+
+      expect(
+        result.status,
+        [
+          'analyze timed out before asserting finalization artifacts — this test guards #1169 and must not pass silently',
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
+
+      expect(
+        result.status,
+        [
+          `analyze exited with code ${result.status}`,
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(
+        fs.existsSync(metaPath),
+        `meta.json missing at ${metaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+      ).toBe(true);
+
+      const registryPath = path.join(gnHome, 'registry.json');
+      expect(
+        fs.existsSync(registryPath),
+        `registry.json missing at ${registryPath} after analyze exited 0`,
+      ).toBe(true);
+      const entries = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as Array<{
+        name: string;
+        path: string;
+      }>;
+      expect(entries.length).toBeGreaterThanOrEqual(1);
+      const matchesRepo = entries.some((e) => {
+        const a = fs.realpathSync.native(e.path);
+        const b = fs.realpathSync.native(repo);
+        return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      });
+      expect(
+        matchesRepo,
+        `registry has no entry for ${repo}; entries: ${JSON.stringify(entries.map((e) => e.path))}`,
+      ).toBe(true);
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(repoParent, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('already-up-to-date analyze fails when registry entry is missing (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-fastpath-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-fastpath-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        first.status,
+        [
+          `initial analyze exited with code ${first.status}`,
+          `stdout: ${first.stdout}`,
+          `stderr: ${first.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(fs.existsSync(metaPath)).toBe(true);
+
+      // Simulate the half-finalized state from the review: meta.json is
+      // present and lastCommit matches, but the repo is not discoverable
+      // because the global registry entry is missing.
+      fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
+
+      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        second.status,
+        [
+          'second analyze timed out before proving alreadyUpToDate finalization',
+          `stdout: ${second.stdout}`,
+          `stderr: ${second.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
+      expect(`${second.stdout}${second.stderr}`).toMatch(/Analysis did not finalize/i);
+      expect(`${second.stdout}${second.stderr}`).toMatch(/registry entry/i);
+      expect(second.status).toBe(1);
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(repoParent, { recursive: true, force: true });
+    }
   }, 60_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────

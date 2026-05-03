@@ -602,6 +602,82 @@ describe('Global registry lookup', () => {
   }
 });
 
+// ─── Integration: linked-worktree resolution (#1224) ───────────────
+
+describe('Linked git worktree resolution', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: PostToolUse emits stale from a linked worktree pointing at an indexed canonical repo`, () => {
+      // Layout mirrors `git worktree add ../<repo>-worktrees/feature-x`:
+      //   <root>/main-repo/.git              (canonical)
+      //   <root>/main-repo/.gitnexus/        (only here)
+      //   <root>/main-repo-worktrees/feat/   (linked worktree, no .gitnexus)
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-'));
+      const mainRepo = path.join(root, 'main-repo');
+      const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
+      try {
+        fs.mkdirSync(mainRepo, { recursive: true });
+        initGitRepo(mainRepo);
+        fs.mkdirSync(path.join(mainRepo, '.gitnexus'), { recursive: true });
+        fs.writeFileSync(
+          path.join(mainRepo, '.gitnexus', 'meta.json'),
+          JSON.stringify({ lastCommit: 'oldcommit', stats: {} }),
+        );
+
+        // Create the linked worktree on a new branch.
+        fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+        runGit(mainRepo, ['worktree', 'add', '-b', 'feat', worktreePath]);
+
+        // Sanity: walking up from the worktree never reaches `.gitnexus`.
+        expect(fs.existsSync(path.join(worktreePath, '.gitnexus'))).toBe(false);
+        expect(fs.existsSync(path.join(path.dirname(worktreePath), '.gitnexus'))).toBe(false);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: worktreePath,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('stale');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: PostToolUse silent from a linked worktree when canonical repo has no .gitnexus`, () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-'));
+      const mainRepo = path.join(root, 'main-repo');
+      const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
+      try {
+        fs.mkdirSync(mainRepo, { recursive: true });
+        initGitRepo(mainRepo);
+        // Note: NO .gitnexus/ in the canonical repo.
+
+        fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+        runGit(mainRepo, ['worktree', 'add', '-b', 'feat', worktreePath]);
+
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: worktreePath,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 // ─── Integration: dispatch map routes correctly ─────────────────────
 
 describe('Dispatch map routing (integration)', () => {

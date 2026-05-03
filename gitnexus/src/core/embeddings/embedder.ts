@@ -15,7 +15,6 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-import os from 'os';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -23,6 +22,7 @@ import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
+import { applyHfEnvOverrides } from './hf-env.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -158,11 +158,11 @@ export const initEmbedder = async (
     try {
       // Configure transformers.js environment
       env.allowLocalModels = false;
-      // Default cache to user-writable location. transformers.js defaults to
-      // ./node_modules/.cache inside its own install dir, which is unwritable
-      // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).
-      // Respect HF_HOME if set, otherwise fall back to ~/.cache/huggingface.
-      env.cacheDir = process.env.HF_HOME ?? join(os.homedir(), '.cache', 'huggingface');
+      // Bridge user-controlled env vars to transformers.js: HF_HOME →
+      // env.cacheDir, HF_ENDPOINT → env.remoteHost (#1205). Centralised in
+      // applyHfEnvOverrides so the MCP embedder entry point behaves
+      // identically.
+      applyHfEnvOverrides(env);
 
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {

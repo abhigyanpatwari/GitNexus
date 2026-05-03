@@ -39,8 +39,12 @@ function isGlobalRegistryDir(candidate) {
   );
 }
 
-function findGitNexusDir(startDir) {
-  let dir = startDir || process.cwd();
+/**
+ * Walk up from `startDir` looking for a non-registry `.gitnexus/` folder.
+ * Returns the path to `.gitnexus/` or null if not found within 5 levels.
+ */
+function walkForGitNexusDir(startDir) {
+  let dir = startDir;
   for (let i = 0; i < 5; i++) {
     const candidate = path.join(dir, '.gitnexus');
     if (fs.existsSync(candidate)) {
@@ -49,6 +53,51 @@ function findGitNexusDir(startDir) {
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Resolve the canonical (main) worktree root for `cwd`, when `cwd` is inside
+ * any git working tree — including a *linked* worktree created via
+ * `git worktree add`. Linked worktrees never contain `.gitnexus/`, so the
+ * upward walk from cwd alone misses the index. Returns null when `cwd` is
+ * not inside a git repo or `git` is not available.
+ *
+ * Implementation: `git rev-parse --git-common-dir` resolves to the canonical
+ * `.git/` directory (or `.git/worktrees/...` parent) that is shared across
+ * all linked worktrees. The canonical repo root is its parent directory.
+ */
+function findCanonicalRepoRoot(cwd) {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf-8',
+      timeout: 2000,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (result.error || result.status !== 0) return null;
+    const commonDir = (result.stdout || '').trim();
+    if (!commonDir || !path.isAbsolute(commonDir)) return null;
+    return path.dirname(commonDir);
+  } catch {
+    return null;
+  }
+}
+
+function findGitNexusDir(startDir) {
+  const cwd = startDir || process.cwd();
+
+  // Fast path: the cwd is inside the canonical repo (most common case).
+  const fromCwd = walkForGitNexusDir(cwd);
+  if (fromCwd) return fromCwd;
+
+  // Fallback: cwd may be inside a linked git worktree whose `.gitnexus/`
+  // only lives in the canonical repo root. Resolve the shared git dir
+  // and retry from there.
+  const canonicalRoot = findCanonicalRepoRoot(cwd);
+  if (canonicalRoot && canonicalRoot !== cwd) {
+    return walkForGitNexusDir(canonicalRoot);
   }
   return null;
 }

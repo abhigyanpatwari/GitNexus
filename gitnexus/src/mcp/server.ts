@@ -158,6 +158,7 @@ export function createMCPServer(backend: LocalBackend): Server {
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      annotations: tool.annotations,
     })),
   }));
 

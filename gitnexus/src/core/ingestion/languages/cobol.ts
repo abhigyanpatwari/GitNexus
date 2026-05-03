@@ -16,6 +16,8 @@ export const cobolProvider = defineLanguage({
   id: SupportedLanguages.Cobol,
   parseStrategy: 'standalone',
   extensions: [], // COBOL files detected by cobol-processor's isCobolFile/isJclFile
+  entryPointPatterns: [],
+  astFrameworkPatterns: [],
   treeSitterQueries: '',
   typeConfig: {
     declarationNodeTypes: new Set(),
