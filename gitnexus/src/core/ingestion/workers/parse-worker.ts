@@ -1441,10 +1441,16 @@ const processFileGroup = (
     // Runs BEFORE legacy extraction and its result is independent: a
     // failure here is caught inside `extractParsedFile` and does NOT
     // affect the legacy DAG path that follows.
-    const parsedFile = extractParsedFile(provider, parseContent, file.path, (message) => {
-      if (parentPort) parentPort.postMessage({ type: 'warning', message });
-      else console.warn(message);
-    });
+    const parsedFile = extractParsedFile(
+      provider,
+      parseContent,
+      file.path,
+      (message) => {
+        if (parentPort) parentPort.postMessage({ type: 'warning', message });
+        else console.warn(message);
+      },
+      tree,
+    );
     if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
 
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
@@ -2078,10 +2084,13 @@ const processFileGroup = (
         }
       }
 
-      // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
-      // Functions are not suffixed — they don't overload by name in the same scope.
+      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
+      // Top-level Function IDs stay stable; functions inside an owner may overload.
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
-      const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      const needsAritySuffix =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        (nodeLabel === 'Function' && enclosingClassId !== null);
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
       if (arityTag && defMethodMap && defMethodInfo) {
         const groups = buildCollisionGroups(defMethodMap);

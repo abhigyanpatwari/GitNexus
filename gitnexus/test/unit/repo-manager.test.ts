@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import {
   getStoragePath,
   getStoragePaths,
+  ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
   registerRepo,
@@ -59,6 +60,84 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+});
+
+// ─── GitNexus ignore rules (#1233) ─────────────────────────────────────
+
+describe('ensureGitNexusIgnored (#1233)', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-internal-gitignore-');
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  it('creates .gitnexus/.gitignore containing a catch-all ignore rule', async () => {
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(
+      fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
+    ).resolves.toBe('*\n');
+  });
+
+  it('does not create or modify the repository root .gitignore', async () => {
+    const rootGitignorePath = path.join(tmpRepo.dbPath, '.gitignore');
+    await fs.writeFile(rootGitignorePath, 'node_modules/\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(rootGitignorePath, 'utf-8')).resolves.toBe('node_modules/\n');
+  });
+
+  it('adds .gitnexus/ to .git/info/exclude when the repo has a real .git directory', async () => {
+    const excludePath = path.join(tmpRepo.dbPath, '.git', 'info', 'exclude');
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(excludePath, 'utf-8')).resolves.toBe('.gitnexus/\n');
+  });
+
+  it('appends .gitnexus/ to .git/info/exclude once without disturbing existing rules', async () => {
+    const excludePath = path.join(tmpRepo.dbPath, '.git', 'info', 'exclude');
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.writeFile(excludePath, '# local excludes\nnode_modules/\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(excludePath, 'utf-8')).resolves.toBe(
+      '# local excludes\nnode_modules/\n.gitnexus/\n',
+    );
+  });
+
+  it('does not create .git/info/exclude when .git is not a directory', async () => {
+    await fs.writeFile(path.join(tmpRepo.dbPath, '.git'), 'gitdir: ../real-git-dir\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.access(path.join(tmpRepo.dbPath, '.git', 'info', 'exclude'))).rejects.toThrow();
+  });
+
+  it('keeps generated .gitnexus files out of git status', async () => {
+    execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+    execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+      cwd: tmpRepo.dbPath,
+      stdio: 'pipe',
+    });
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    await fs.writeFile(path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json'), '{}\n');
+
+    const status = execSync('git status --short', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    });
+    expect(status).toBe('');
   });
 });
 

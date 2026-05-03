@@ -102,16 +102,20 @@ describe('extractParsedFile', () => {
     it('forwards the correct arguments to emitScopeCaptures', () => {
       let seenText: string | undefined;
       let seenPath: string | undefined;
+      let seenTree: unknown;
+      const cachedTree = { rootNode: {} };
       const provider = fakeProvider({
-        emitScopeCaptures: (text, path) => {
+        emitScopeCaptures: (text, path, tree) => {
           seenText = text;
           seenPath = path;
+          seenTree = tree;
           return [moduleScopeMatch()];
         },
       });
-      extractParsedFile(provider, 'the real text', 'deep/path/file.ts');
+      extractParsedFile(provider, 'the real text', 'deep/path/file.ts', undefined, cachedTree);
       expect(seenText).toBe('the real text');
       expect(seenPath).toBe('deep/path/file.ts');
+      expect(seenTree).toBe(cachedTree);
     });
   });
 

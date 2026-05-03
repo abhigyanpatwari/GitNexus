@@ -1,8 +1,8 @@
 /**
  * Test helper: Temporary LadybugDB factory
  *
- * Creates a temp directory, initializes LadybugDB with schema, and
- * optionally loads minimal test data. Returns a cleanup function.
+ * Creates temporary directories for tests and provides cleanup that tolerates
+ * LadybugDB's known Windows handle-release lag after retries.
  */
 import fs from 'fs/promises';
 import os from 'os';
@@ -11,6 +11,27 @@ import path from 'path';
 export interface TestDBHandle {
   dbPath: string;
   cleanup: () => Promise<void>;
+}
+
+const WINDOWS_NATIVE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY']);
+
+export async function cleanupTempDir(tmpDir: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      lastError = err;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+
+  const code = (lastError as NodeJS.ErrnoException | undefined)?.code;
+  if (process.platform === 'win32' && WINDOWS_NATIVE_LOCK_CODES.has(code ?? '')) {
+    return;
+  }
+  throw lastError;
 }
 
 /**
@@ -23,7 +44,7 @@ export async function createTempDir(prefix: string = 'gitnexus-test-'): Promise<
     dbPath: tmpDir,
     cleanup: async () => {
       try {
-        await fs.rm(tmpDir, { recursive: true, force: true });
+        await cleanupTempDir(tmpDir);
       } catch {
         // best-effort cleanup
       }

@@ -57,8 +57,20 @@ import {
 } from './typescript/index.js';
 
 /**
- * TypeScript/JavaScript: arrow_function and function_expression get their name
- * from the parent variable_declarator (e.g. `const foo = () => {}`).
+ * TypeScript/JavaScript: arrow_function and function_expression are
+ * anonymous AST nodes — they take their name from the surrounding
+ * declarative context.
+ *
+ * Recognised contexts:
+ *   - `const foo = () => {}` (variable_declarator) → "foo"
+ *   - `{ addItem: (item) => ... }` (pair / property_assignment) → "addItem"
+ *     Covers Zustand stores, TanStack Query factories, React Context
+ *     providers, and most other HOF-heavy idioms (issue #1166).
+ *
+ * Returns `null` for funcName when the arrow lives in a context that has
+ * no static name — call arguments, computed keys, return-from-arrow
+ * positions. The parent walk in findEnclosingFunctionId then continues
+ * up to the next named ancestor (or to the file).
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
@@ -66,19 +78,43 @@ const tsExtractFunctionName = (
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
 
   const parent = node.parent;
-  if (parent?.type !== 'variable_declarator') return null;
+  if (!parent) return null;
 
-  let nameNode = parent.childForFieldName?.('name');
-  if (!nameNode) {
-    for (let i = 0; i < parent.childCount; i++) {
-      const c = parent.child(i);
-      if (c?.type === 'identifier') {
-        nameNode = c;
-        break;
+  if (parent.type === 'variable_declarator') {
+    let nameNode = parent.childForFieldName?.('name');
+    if (!nameNode) {
+      for (let i = 0; i < parent.childCount; i++) {
+        const c = parent.child(i);
+        if (c?.type === 'identifier') {
+          nameNode = c;
+          break;
+        }
       }
     }
+    return { funcName: nameNode?.text ?? null, label: 'Function' };
   }
-  return { funcName: nameNode?.text ?? null, label: 'Function' };
+
+  // Object property pair: `{ addItem: (item) => ... }`.
+  // tree-sitter-typescript uses `pair`; tree-sitter-javascript also exposes
+  // `pair`. (Older grammars used `property_assignment`; we accept both.)
+  if (parent.type === 'pair' || parent.type === 'property_assignment') {
+    const keyNode = parent.childForFieldName?.('key');
+    if (!keyNode) return { funcName: null, label: 'Function' };
+    if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
+      return { funcName: keyNode.text, label: 'Function' };
+    }
+    if (keyNode.type === 'string') {
+      // `"add-item": () => ...` — the literal text inside the quotes.
+      const fragment = keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment');
+      const text = fragment?.text ?? null;
+      return { funcName: text, label: 'Function' };
+    }
+    // computed_property_name (`[ACTION_KEY]`) and other dynamic keys have
+    // no static name — fall through anonymous.
+    return { funcName: null, label: 'Function' };
+  }
+
+  return { funcName: null, label: 'Function' };
 };
 
 export const BUILT_INS: ReadonlySet<string> = new Set([

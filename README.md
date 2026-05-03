@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 > *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
 
-**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with goliath models.
+**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
 ---
 
@@ -324,19 +324,21 @@ flowchart TD
 
 ## Web UI (browser-based)
 
-A fully client-side graph explorer and AI chat. No server, no install — your code never leaves the browser.
+A client-side graph explorer and AI chat — your code never leaves your machine.
 
-**Try it now:** [gitnexus.vercel.app](https://gitnexus.vercel.app) — drag & drop a ZIP and start exploring.
+**Try it now:** [gitnexus.vercel.app](https://gitnexus.vercel.app) — run `npx gitnexus@latest serve` locally and the page auto-connects to your local backend.
 
 <img width="2550" height="1343" alt="gitnexus_img" src="https://github.com/user-attachments/assets/cc5d637d-e0e5-48e6-93ff-5bcfdb929285" />
 
-Or run locally:
+Or run the frontend locally:
 
 ```bash
 git clone https://github.com/abhigyanpatwari/gitnexus.git
 cd gitnexus/gitnexus-shared && npm install && npm run build
 cd ../gitnexus-web && npm install
 npm run dev
+# Then in another terminal, start the backend the frontend connects to:
+npx gitnexus@latest serve
 ```
 
 ## Docker

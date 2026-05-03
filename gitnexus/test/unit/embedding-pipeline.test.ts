@@ -167,7 +167,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
 
     // Mock loadVectorExtension (avoids needing the native lbug module)
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
   };
 
@@ -296,7 +296,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const executeQuery = vi.fn().mockImplementation(async (cypher: string) => {
@@ -451,6 +451,36 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(vectorIndexCalls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('stores embeddings with exact-scan fallback when VECTOR is unavailable', async () => {
+    vi.doMock('../../src/core/embeddings/embedder.js', () => ({
+      initEmbedder: vi.fn().mockResolvedValue(undefined),
+      embedBatch: vi
+        .fn()
+        .mockImplementation((texts: string[]) =>
+          Promise.resolve(texts.map(() => new Float32Array(384))),
+        ),
+      embedText: vi.fn().mockResolvedValue(new Float32Array(384)),
+      embeddingToArray: vi.fn().mockImplementation((emb: Float32Array) => Array.from(emb)),
+      isEmbedderReady: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      loadVectorExtension: vi.fn().mockResolvedValue(false),
+    }));
+
+    const node = makeNode();
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    const result = await runEmbeddingPipeline(executeQuery, executeWithReusedStatement, onProgress);
+
+    expect(result.vectorIndexReady).toBe(false);
+    expect(result.semanticMode).toBe('exact-scan');
+    expect(stmtCalls.some((call) => call.cypher.includes('CREATE'))).toBe(true);
+    expect(progressUpdates.at(-1)?.phase).toBe('ready');
+  });
+
   it('does not inject preceding context when overlap is disabled', async () => {
     const embedBatchSpy = vi
       .fn()
@@ -465,7 +495,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({
@@ -519,7 +549,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       isEmbedderReady: vi.fn().mockReturnValue(true),
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
-      loadVectorExtension: vi.fn().mockResolvedValue(undefined),
+      loadVectorExtension: vi.fn().mockResolvedValue(true),
     }));
 
     const node = makeNode({

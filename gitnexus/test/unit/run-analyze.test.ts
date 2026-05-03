@@ -1,5 +1,10 @@
+import { execSync } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
+import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import { createTempDir } from '../helpers/test-db.js';
 
 describe('run-analyze module', () => {
   it('exports runFullAnalysis as a function', async () => {
@@ -11,6 +16,44 @@ describe('run-analyze module', () => {
     const mod = await import('../../src/core/run-analyze.js');
     expect(mod.PHASE_LABELS).toBeDefined();
     expect(mod.PHASE_LABELS.parsing).toBe('Parsing code');
+  });
+
+  it('creates .gitnexus/.gitignore on the already-up-to-date fast path (#1233)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-path-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+      };
+      await saveMeta(storagePath, meta);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        {
+          onProgress: () => {},
+        },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      await expect(
+        fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
+      ).resolves.toBe('*\n');
+    } finally {
+      await tmpRepo.cleanup();
+    }
   });
 });
 

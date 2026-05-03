@@ -61,6 +61,29 @@ export const TYPESCRIPT_QUERIES = `
       name: (identifier) @name
       value: (function_expression)))) @definition.function
 
+; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
+; The pair's key field carries the meaningful name. Without these patterns,
+; calls inside the arrow are attributed to the file (issue #1166), and the
+; arrow itself is invisible to context() / impact() despite carrying real
+; behaviour (Zustand actions, TanStack queryFn, React Context providers).
+; String-key variant covers \`"add-item": () => ...\`; computed keys
+; (\`[K]: () => ...\`) intentionally fall through anonymous.
+(pair
+  key: (property_identifier) @name
+  value: (arrow_function)) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (function_expression)) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (arrow_function)) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (function_expression)) @definition.function
+
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.
 (lexical_declaration
@@ -218,6 +241,24 @@ export const JAVASCRIPT_QUERIES = `
     (variable_declarator
       name: (identifier) @name
       value: (function_expression)))) @definition.function
+
+; Object-property arrows / function expressions: \`{ addItem: () => ... }\`.
+; See TYPESCRIPT_QUERIES for rationale (issue #1166).
+(pair
+  key: (property_identifier) @name
+  value: (arrow_function)) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (function_expression)) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (arrow_function)) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (function_expression)) @definition.function
 
 ; Variable/constant declarations (non-function values).
 ; Overlap with @definition.function patterns is handled by parse-worker dedup.

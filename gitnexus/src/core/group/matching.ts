@@ -1,4 +1,4 @@
-import type { StoredContract, CrossLink } from './types.js';
+import type { StoredContract, CrossLink, MatchingConfig } from './types.js';
 
 export interface MatchResult {
   matched: CrossLink[];
@@ -12,6 +12,43 @@ export interface WildcardMatchResult {
 
 function isGrpcWildcard(cid: string): boolean {
   return cid.startsWith('grpc::') && cid.endsWith('/*');
+}
+
+/**
+ * Detect HTTP contracts that are too generic or infrastructure-level to
+ * produce meaningful cross-repo links. These are still extracted (useful
+ * for documentation / route maps) but excluded from cross-link matching.
+ *
+ * Two categories:
+ * 1. Health-check / readiness endpoints — every service has one, matching
+ *    them produces N×M false links.
+ * 2. Param-only paths — routes like `/{param}` or `/{param}/{param}` that
+ *    collapse to a single catch-all after normalization. These match any
+ *    service with a similar shape, producing false positives.
+ *
+ * Both are configurable via matching.exclude_links_paths and
+ * matching.exclude_links_param_only_paths in group.yaml.
+ */
+function buildNoisyContractFilter(
+  matchingConfig?: MatchingConfig,
+): (contractId: string) => boolean {
+  const excludePaths = matchingConfig?.exclude_links_paths?.length
+    ? new Set(matchingConfig.exclude_links_paths.map((p) => p.replace(/\/+$/, '')))
+    : new Set<string>();
+  const excludeParamOnly = matchingConfig?.exclude_links_param_only_paths === true;
+
+  return function isNoisyHttpContract(contractId: string): boolean {
+    if (!contractId.startsWith('http::')) return false;
+    const parts = contractId.split('::');
+    if (parts.length < 3) return false;
+    const pathPart = parts.slice(2).join('::').replace(/\/+$/, '');
+    if (excludePaths.has(pathPart)) return true;
+    if (excludeParamOnly) {
+      const segments = pathPart.split('/').filter(Boolean);
+      if (segments.length > 0 && segments.every((s) => s === '{param}')) return true;
+    }
+    return false;
+  };
 }
 
 export function normalizeContractId(id: string): string {
@@ -91,8 +128,12 @@ function findMatchingKeys(contractId: string, index: Map<string, StoredContract[
   return [];
 }
 
-export function buildProviderIndex(contracts: StoredContract[]): Map<string, StoredContract[]> {
-  const providers = contracts.filter((c) => c.role === 'provider');
+export function buildProviderIndex(
+  contracts: StoredContract[],
+  matchingConfig?: MatchingConfig,
+): Map<string, StoredContract[]> {
+  const isNoisy = buildNoisyContractFilter(matchingConfig);
+  const providers = contracts.filter((c) => c.role === 'provider' && !isNoisy(c.contractId));
   const index = new Map<string, StoredContract[]>();
   for (const p of providers) {
     const key = normalizeContractId(p.contractId);
@@ -106,11 +147,14 @@ export function buildProviderIndex(contracts: StoredContract[]): Map<string, Sto
 export function runExactMatch(
   contracts: StoredContract[],
   providerIndex?: Map<string, StoredContract[]>,
+  matchingConfig?: MatchingConfig,
 ): MatchResult {
-  const index = providerIndex ?? buildProviderIndex(contracts);
+  const isNoisy = buildNoisyContractFilter(matchingConfig);
+  const index = providerIndex ?? buildProviderIndex(contracts, matchingConfig);
 
-  // Skip gRPC wildcard consumers — they go to wildcard pass only
-  const consumers = contracts.filter((c) => c.role === 'consumer' && !isGrpcWildcard(c.contractId));
+  const consumers = contracts.filter(
+    (c) => c.role === 'consumer' && !isGrpcWildcard(c.contractId) && !isNoisy(c.contractId),
+  );
 
   const matched: CrossLink[] = [];
   const matchedConsumerIds = new Set<string>();
@@ -155,6 +199,7 @@ export function runExactMatch(
   // normalUnmatched: contracts that weren't matched in exact pass
   const normalUnmatched = contracts.filter((c) => {
     if (isGrpcWildcard(c.contractId)) return false; // excluded from exact, handled separately
+    if (isNoisy(c.contractId)) return false; // excluded from matching — don't surface as unmatched
     const id = `${c.repo}::${c.contractId}`;
     return c.role === 'provider' ? !matchedProviderIds.has(id) : !matchedConsumerIds.has(id);
   });

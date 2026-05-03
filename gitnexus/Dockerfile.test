@@ -3,7 +3,8 @@ WORKDIR /app
 RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN npm ci --ignore-scripts \
-    && node scripts/patch-tree-sitter-swift.cjs \
+    && npm rebuild tree-sitter-swift 2>&1 \
+    && node -e "require('tree-sitter-swift')" \
     && (npm rebuild 2>&1 || true) \
     && cd node_modules/tree-sitter-kotlin && npx --yes node-gyp rebuild 2>&1
 CMD ["npx", "vitest", "run", "test/integration", "--reporter=verbose"]

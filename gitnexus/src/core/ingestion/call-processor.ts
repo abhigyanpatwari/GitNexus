@@ -12,7 +12,7 @@ type ReceiverSource = ReceiverEnriched['receiverSource'];
  * DAG stage 4 fallback: used when `selectDispatch` is absent or returns null.
  * Preserves pre-DAG dispatch semantics:
  *   - 'constructor'         → constructor branch
- *   - 'free'                → free branch (admits Swift/Kotlin class-target fast path)
+ *   - 'free'                → free branch (admits class-target fast path)
  *   - 'member' or undefined → owner-scoped branch
  *
  * `undefined` callForm MUST route through owner-scoped (not free) so bare
@@ -1595,41 +1595,30 @@ const disambiguateByOverloadOrArgTypes = (
   return null;
 };
 
-/**
- * Collapse Swift-extension duplicate Class/Struct candidates to the primary
- * definition, preferring the shortest file path.
- *
- * Swift extensions (`extension User { ... }` in a separate file) create
- * multiple `Class` nodes sharing the same symbol name — one for the primary
- * declaration and one per extension file. When overload disambiguation and
- * receiver narrowing both fail to converge on a single candidate, this
- * heuristic picks the primary definition based on the assumption that it
- * lives at the shortest file path (e.g. `User.swift` over `UserExtensions.swift`).
- *
- * Intentionally narrower than {@link INSTANTIABLE_CLASS_TYPES}: only `Class`
- * and `Struct` are considered, not `Record`. Swift extensions only produce
- * `Class` duplicates in practice, and C#/Kotlin records do not exhibit the
- * same multi-file-definition pattern, so widening this set risks accidental
- * dedup of legitimately distinct record types.
- *
- * Returns a `ResolveResult` when the heuristic fires, `null` when the
- * candidate pool does not match the shape (mixed types, non-Class/Struct
- * kinds, or `length <= 1`). Callers should fall through to their own null
- * return when this helper returns `null`.
- *
- * Used by `resolveFreeCall`. Having a single source of truth prevents
- * duplication if the heuristic is ever tuned.
- */
-const dedupSwiftExtensionCandidates = (
+const orderProviderSameNameTypeCandidates = (
+  candidates: readonly SymbolDefinition[],
+  typeName: string,
+  filePath: string,
+): readonly SymbolDefinition[] | null => {
+  const language = getLanguageFromFilename(filePath);
+  if (language == null) return null;
+  return (
+    getProvider(language).orderSameNameTypeCandidates?.({
+      typeName,
+      callSiteFilePath: filePath,
+      candidates,
+    }) ?? null
+  );
+};
+
+const resolveProviderPrimaryTypeCandidate = (
   candidates: readonly SymbolDefinition[],
   tier: ResolutionTier,
+  typeName: string,
+  filePath: string,
 ): ResolveResult | null => {
-  if (candidates.length <= 1) return null;
-  const allSameType = candidates.every((c) => c.type === candidates[0].type);
-  if (!allSameType) return null;
-  if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;
-  const sorted = [...candidates].sort((a, b) => a.filePath.length - b.filePath.length);
-  return toResolveResult(sorted[0], tier);
+  const ordered = orderProviderSameNameTypeCandidates(candidates, typeName, filePath);
+  return ordered && ordered.length > 0 ? toResolveResult(ordered[0], tier) : null;
 };
 
 /**
@@ -2223,6 +2212,35 @@ const resolveMethodByOwner = (
     }
   }
 
+  if (!firstDef && !ambiguous) {
+    const orderedTypeCandidates = orderProviderSameNameTypeCandidates(
+      ctx.model.types.lookupClassByName(receiverTypeName),
+      receiverTypeName,
+      filePath,
+    );
+    if (orderedTypeCandidates) {
+      for (const candidate of orderedTypeCandidates) {
+        const def = canWalkMRO
+          ? lookupMethodByOwnerWithMRO(
+              candidate.nodeId,
+              methodName,
+              heritageMap,
+              ctx.model,
+              mroStrategy,
+              argCount,
+            )
+          : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+        if (!def) continue;
+        if (!firstDef) {
+          firstDef = def;
+        } else if (def.nodeId !== firstDef.nodeId) {
+          ambiguous = true;
+          break;
+        }
+      }
+    }
+  }
+
   if (!firstDef || ambiguous) return undefined;
   return { def: firstDef, tier: typeResolved.tier };
 };
@@ -2290,9 +2308,9 @@ export const resolveMemberCall = (
  * resolution via `ctx.resolve()`.
  *
  * Used for `foo()`, `doStuff()` — unqualified calls with no receiver.
- * Also handles Swift/Kotlin implicit constructors (`User()` without `new`)
- * by delegating to {@link resolveStaticCall} when the tiered pool contains
- * class-like targets.
+ * Also handles implicit constructors (`User()` without `new`) by delegating
+ * to {@link resolveStaticCall} when the tiered pool contains class-like
+ * targets.
  *
  * {@link resolveCallTarget} delegates here for `callForm === 'free'`.
  *
@@ -2324,33 +2342,30 @@ export const resolveFreeCall = (
 
   let filteredCandidates = filterCallableCandidates(tiered.candidates, argCount, 'free');
 
-  // Class-target fast path: Swift/Kotlin `User()` — free-form call targeting a
-  // class. Delegates to resolveStaticCall for O(1) class + constructor lookup.
+  // Class-target fast path: free-form call targeting a class. Delegates to
+  // resolveStaticCall for O(1) class + constructor lookup.
   // The `.some()` trigger must stay aligned with `INSTANTIABLE_CLASS_TYPES` —
   // any type admitted here that is not in that set will cause resolveStaticCall
   // to return null, wasting two lookup passes per call. `Enum` is deliberately
-  // excluded; `Record` is included so C# records and Kotlin data classes reach
-  // the fast path.
+  // excluded; `Record` is included so record-like class targets reach the fast
+  // path.
   // Align with INSTANTIABLE_CLASS_TYPES by reusing the set directly rather
   // than enumerating literal strings. This converts an invariant that was
   // previously enforced by a comment ("keep this list aligned with
   // INSTANTIABLE_CLASS_TYPES") into one enforced structurally — any future
-  // extension of the set (e.g. Kotlin `object`) propagates here automatically.
-  // The `dedupSwiftExtensionCandidates` helper used in the tail of this
-  // function deliberately uses a narrower literal `'Class' | 'Struct'` check
-  // — Swift extensions only produce Class duplicates in practice, so Record
-  // is excluded there by design. Do not collapse that helper into
-  // INSTANTIABLE_CLASS_TYPES.
+  // extension of the set propagates here automatically.
+  // Language providers can still choose a primary same-name type candidate in
+  // the tail of this function when their grammars index one logical type
+  // multiple times.
   const hasClassTarget =
     filteredCandidates.length === 0 &&
     tiered.candidates.some((c) => INSTANTIABLE_CLASS_TYPES.has(c.type));
   if (hasClassTarget) {
     const staticResult = resolveStaticCall(calledName, filePath, ctx, argCount, tiered);
     if (staticResult) return staticResult;
-    // Retry with constructor form: Swift/Kotlin constructor calls look like
-    // free function calls (no `new` keyword). If resolveStaticCall didn't
-    // match, re-filter with constructor form so CONSTRUCTOR_TARGET_TYPES
-    // applies.
+    // Retry with constructor form for languages whose constructor calls look
+    // like free function calls. If resolveStaticCall didn't match, re-filter
+    // with constructor form so CONSTRUCTOR_TARGET_TYPES applies.
     //
     // The retry fires for every null return from `resolveStaticCall`, which
     // can happen for three distinct reasons — all three are handled below:
@@ -2364,9 +2379,8 @@ export const resolveFreeCall = (
     //   (b) Homonym ambiguity — two or more instantiable class candidates
     //       share the name (e.g. `User` in two files, same tier). The
     //       retry repopulates `filteredCandidates` with both Classes and
-    //       they flow into `dedupSwiftExtensionCandidates` below, which
-    //       either picks the shortest-path primary or null-routes.
-    //       Covered by the R7 Swift-extension dedup test.
+    //       they flow into the provider same-name candidate hook below, which
+    //       can pick a primary definition or null-route.
     //
     //   (c) `resolveStaticCall` step 4 bailed because the tiered pool
     //       contains ownerless `Constructor` nodes (some extractors emit
@@ -2391,10 +2405,13 @@ export const resolveFreeCall = (
   }
 
   if (filteredCandidates.length !== 1) {
-    // See `dedupSwiftExtensionCandidates` — shared helper, single source of
-    // truth for the Swift-extension same-name collision heuristic.
-    const deduped = dedupSwiftExtensionCandidates(filteredCandidates, tiered.tier);
-    if (deduped) return deduped;
+    const primary = resolveProviderPrimaryTypeCandidate(
+      filteredCandidates,
+      tiered.tier,
+      calledName,
+      filePath,
+    );
+    if (primary) return primary;
     return null;
   }
 
@@ -2559,9 +2576,16 @@ export const resolveStaticCall = (
   //     Interface / Trait / Impl). Null-route via the fall-through `return
   //     null` — this is the dominant Codex-fix case.
   //   length === 1 → a single instantiable candidate remains, return it.
-  //   length  >  1 → two or more instantiable classes share the name (e.g.
-  //     homonym classes across files with no import narrowing). Fall through
-  //     to `return null` so the caller null-routes rather than guess.
+  //   length  >  1 → let the call-site provider choose a primary when it can
+  //     prove the candidates are one logical type; otherwise null-route.
+  const primary = resolveProviderPrimaryTypeCandidate(
+    instantiableCandidates,
+    typeResolved.tier,
+    className,
+    currentFile,
+  );
+  if (primary) return primary;
+
   if (instantiableCandidates.length === 1) {
     return toResolveResult(instantiableCandidates[0], typeResolved.tier);
   }

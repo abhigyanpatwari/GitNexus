@@ -207,6 +207,10 @@ export interface EmbeddingConfig {
   modelId: string;
   /** Number of nodes to embed in each batch */
   batchSize: number;
+  /** Number of chunks passed to one local/HTTP embedding call */
+  subBatchSize: number;
+  /** Maximum ONNX Runtime CPU threads for local inference */
+  threads: number;
   /** Embedding vector dimensions */
   dimensions: number;
   /** Device to use for inference: 'auto' tries GPU first (DirectML on Windows, CUDA on Linux), falls back to CPU */
@@ -229,6 +233,8 @@ export interface EmbeddingConfig {
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
   batchSize: 16,
+  subBatchSize: 8,
+  threads: 2,
   dimensions: 384,
   device: 'auto',
   maxSnippetLength: 500,

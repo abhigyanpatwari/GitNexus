@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -334,6 +334,201 @@ describe('syncGroup', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  describe('workspace_deps integration', () => {
+    let tmpDir: string;
+
+    function makeWsConfig(repos: Record<string, string>, workspaceDeps: boolean): GroupConfig {
+      return {
+        version: 1,
+        name: 'test',
+        description: '',
+        repos,
+        links: [],
+        packages: {},
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+          workspace_deps: workspaceDeps,
+        },
+        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      };
+    }
+
+    function writeFileSync(relPath: string, content: string) {
+      const absPath = path.join(tmpDir, relPath);
+      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      fs.writeFileSync(absPath, content, 'utf-8');
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('workspace_deps: true discovers Rust crate links through syncGroup', async () => {
+      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      writeFileSync(
+        'crate-a/Cargo.toml',
+        '[package]\nname = "mathlex"\nversion = "0.1.0"\n\n[dependencies]\n',
+      );
+      writeFileSync('crate-a/src/lib.rs', 'pub struct Expression {}\n');
+
+      writeFileSync(
+        'crate-b/Cargo.toml',
+        '[package]\nname = "thales"\nversion = "0.1.0"\n\n[dependencies]\nmathlex = { workspace = true }\n',
+      );
+      writeFileSync('crate-b/src/main.rs', 'use mathlex::Expression;\n');
+
+      const mockEntries: RegistryEntry[] = [
+        {
+          name: 'mathlex',
+          path: path.join(tmpDir, 'crate-a'),
+          storagePath: path.join(tmpDir, 'crate-a', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+        {
+          name: 'thales',
+          path: path.join(tmpDir, 'crate-b'),
+          storagePath: path.join(tmpDir, 'crate-b', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+      ];
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
+
+      const config = makeWsConfig({ 'parser/mathlex': 'mathlex', 'engine/thales': 'thales' }, true);
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
+      expect(manifestLinks).toHaveLength(1);
+      expect(manifestLinks[0].contractId).toBe('custom::mathlex::Expression');
+      expect(manifestLinks[0].from.repo).toBe('engine/thales');
+      expect(manifestLinks[0].to.repo).toBe('parser/mathlex');
+    });
+
+    it('workspace_deps: false skips Rust workspace extraction', async () => {
+      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-off-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      writeFileSync(
+        'crate-a/Cargo.toml',
+        '[package]\nname = "mathlex"\nversion = "0.1.0"\n\n[dependencies]\n',
+      );
+      writeFileSync('crate-a/src/lib.rs', 'pub struct Expression {}\n');
+
+      writeFileSync(
+        'crate-b/Cargo.toml',
+        '[package]\nname = "thales"\nversion = "0.1.0"\n\n[dependencies]\nmathlex = { workspace = true }\n',
+      );
+      writeFileSync('crate-b/src/main.rs', 'use mathlex::Expression;\n');
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue([]);
+
+      const config = makeWsConfig(
+        { 'parser/mathlex': 'mathlex', 'engine/thales': 'thales' },
+        false,
+      );
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      expect(result.crossLinks).toHaveLength(0);
+      expect(result.contracts).toHaveLength(0);
+    });
+
+    it('discovered workspace links merge with explicit manifest links', async () => {
+      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-merge-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      writeFileSync(
+        'crate-a/Cargo.toml',
+        '[package]\nname = "mathlex"\nversion = "0.1.0"\n\n[dependencies]\n',
+      );
+      writeFileSync('crate-a/src/lib.rs', 'pub struct Expression {}\n');
+
+      writeFileSync(
+        'crate-b/Cargo.toml',
+        '[package]\nname = "thales"\nversion = "0.1.0"\n\n[dependencies]\nmathlex = { workspace = true }\n',
+      );
+      writeFileSync('crate-b/src/main.rs', 'use mathlex::Expression;\n');
+
+      const mockEntries: RegistryEntry[] = [
+        {
+          name: 'mathlex',
+          path: path.join(tmpDir, 'crate-a'),
+          storagePath: path.join(tmpDir, 'crate-a', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+        {
+          name: 'thales',
+          path: path.join(tmpDir, 'crate-b'),
+          storagePath: path.join(tmpDir, 'crate-b', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+      ];
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
+
+      const explicitLinks: GroupManifestLink[] = [
+        {
+          from: 'parser/mathlex',
+          to: 'engine/thales',
+          type: 'http',
+          contract: 'GET::/api/parse',
+          role: 'provider',
+        },
+      ];
+
+      const config: GroupConfig = {
+        version: 1,
+        name: 'test',
+        description: '',
+        repos: { 'parser/mathlex': 'mathlex', 'engine/thales': 'thales' },
+        links: explicitLinks,
+        packages: {},
+        detect: {
+          http: false,
+          grpc: false,
+          topics: false,
+          shared_libs: false,
+          embedding_fallback: false,
+          workspace_deps: true,
+        },
+        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      };
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
+      expect(manifestLinks.length).toBeGreaterThanOrEqual(2);
+
+      const contractIds = manifestLinks.map((cl) => cl.contractId);
+      expect(contractIds).toContain('http::GET::/api/parse');
+      expect(contractIds).toContain('custom::mathlex::Expression');
+    });
   });
 });
 

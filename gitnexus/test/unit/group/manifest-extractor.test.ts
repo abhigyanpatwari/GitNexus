@@ -578,6 +578,164 @@ describe('ManifestExtractor', () => {
     expect(lowerContractId).toBe(upperContractId);
   });
 
+  it('resolves custom manifest links by exact symbol name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Expression',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'engine/thales',
+        async (_cypher, params) => {
+          if (params?.contract === 'Expression') {
+            return [
+              {
+                uid: 'uid-expression-struct',
+                name: 'Expression',
+                filePath: 'src/expression.rs',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          if (params?.contract === 'Expression') {
+            return [
+              {
+                uid: 'uid-expression-enum',
+                name: 'Expression',
+                filePath: 'src/ast.rs',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+
+    expect(provider?.symbolUid).toBe('uid-expression-enum');
+    expect(provider?.symbolRef.filePath).toBe('src/ast.rs');
+
+    expect(consumer?.symbolUid).toBe('uid-expression-struct');
+    expect(consumer?.symbolRef.filePath).toBe('src/expression.rs');
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('manifest');
+  });
+
+  it('falls back to synthetic uid when custom symbol not found in graph', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'core/units',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Dimension',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      ['engine/thales', async () => []],
+      ['core/units', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('manifest::core/units::custom::Dimension');
+  });
+
+  it('custom contract query uses positive label allowlist (not negative exclusion)', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Route',
+        role: 'provider',
+      },
+    ];
+    let capturedCypher = '';
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (cypher) => {
+          capturedCypher = cypher;
+          return [];
+        },
+      ],
+      ['engine/thales', async () => []],
+    ]);
+
+    await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(capturedCypher).toContain('Function|Method|Class|Interface|Struct|Enum|Trait');
+    expect(capturedCypher).not.toContain('NOT n:File');
+  });
+
+  it('custom contract with ambiguous name returns first-by-filePath deterministically', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Token',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          if (params?.contract === 'Token') {
+            return [{ uid: 'uid-token-first', name: 'Token', filePath: 'src/ast.rs' }];
+          }
+          return [];
+        },
+      ],
+      [
+        'engine/thales',
+        async (_cypher, params) => {
+          if (params?.contract === 'Token') {
+            return [{ uid: 'uid-token-consumer', name: 'Token', filePath: 'src/lexer.rs' }];
+          }
+          return [];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-token-first');
+  });
+
   it('returns empty for no links', async () => {
     const result = await extractor.extractFromManifest([]);
     expect(result.contracts).toHaveLength(0);
