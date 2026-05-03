@@ -870,3 +870,82 @@ describe('assertSafeStoragePath (#1003)', () => {
     expect(() => assertSafeStoragePath(entry)).not.toThrow();
   });
 });
+
+// ─── Worktree-aware registry-name fallback (#1259) ─────────────────────
+//
+// The first @claude review on PR #1296 caught a critical gap: my initial
+// fix only patched the early-return path in `runFullAnalysis`, leaving
+// the full-analysis path (which calls `registerRepo` directly) still
+// using the worktree-slug basename when no `--name` and no remote are
+// configured. This block proves `registerRepo`'s OWN basename fallback
+// now uses the canonical repo root via `getCanonicalRepoRoot` — the
+// regression-guard for the wiring at the registry layer, complementing
+// the helper-level coverage in `git-utils.test.ts`.
+
+describe('registerRepo worktree-aware basename fallback (#1259)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const meta: RepoMeta = {
+    repoPath: '',
+    lastCommit: 'abc1234',
+    indexedAt: '2026-05-03T00:00:00.000Z',
+    stats: { files: 1, nodes: 1 },
+  };
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-home-');
+    tmpRepo = await createTempDir('gitnexus-canonical-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('registerRepo from a linked worktree uses canonical repo basename, not worktree slug', async () => {
+    // Set up a real git repo with at least one commit (worktree add requires
+    // a non-empty branch). No remote is configured — that's the trigger for
+    // the basename fallback this test guards.
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    const worktreeDir = path.join(tmpRepo.dbPath, 'wt-feature');
+    execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+
+    try {
+      // Call registerRepo with the WORKTREE path and NO --name. Pre-fix this
+      // would register under the worktree's basename ("wt-feature"). The
+      // canonical-root fallback in registerRepo now resolves it to the
+      // canonical repo's basename (whatever `tmpRepo`'s temp-dir basename
+      // happens to be).
+      await registerRepo(worktreeDir, meta);
+
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(1);
+      // The registered name MUST NOT be the worktree slug.
+      expect(entries[0].name).not.toBe('wt-feature');
+      // It MUST match the canonical repo dir's basename. We compare via
+      // basename (not full-path equality) for the same Windows 8.3
+      // short-name reason as the `getCanonicalRepoRoot` helper tests:
+      // git and `fs.realpathSync` may resolve to different long/short
+      // forms of the same path on Windows runners, but both have the
+      // same `basename`.
+      expect(entries[0].name).toBe(path.basename(tmpRepo.dbPath));
+    } finally {
+      // Best-effort worktree teardown before the temp-dir cleanup runs.
+      try {
+        execSync(`git worktree remove -f "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+      } catch {
+        // Falls through to recursive rm in afterEach.
+      }
+    }
+  });
+});

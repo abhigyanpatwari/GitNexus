@@ -358,10 +358,19 @@ export async function runFullAnalysis(
       }
 
       const { readServerMapping } = await import('./embeddings/server-mapping.js');
-      // Same canonical-root logic as the early-return path above (#1259):
-      // dereferences git worktrees so the embedding server mapping is keyed
-      // off the canonical repo name, consistent with the registry name.
-      const projectName = path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath);
+      // Mirror the registry's name-resolution chain so the server-mapping
+      // lookup key stays aligned with the final registry name (#1259):
+      //   --name → remote-derived → canonical-root basename
+      // (preserved-alias is intentionally NOT consulted here — server
+      // mappings are addressed by the operationally-meaningful name the
+      // user configures, not by a sticky registry-only alias they may not
+      // know about. The previous canonical-only logic ignored both --name
+      // and remote-derived names, silently breaking server-mapping for
+      // anyone with a `--name` alias or remote-named repo.)
+      const projectName =
+        options.registryName ??
+        getInferredRepoName(repoPath) ??
+        path.basename(getCanonicalRepoRoot(repoPath) ?? repoPath);
       const serverName = await readServerMapping(projectName);
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,
