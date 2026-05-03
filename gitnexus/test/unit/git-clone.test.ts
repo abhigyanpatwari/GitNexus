@@ -137,9 +137,7 @@ describe('git-clone', () => {
       // explicit RFC1918 cases document SSRF coverage for the full private
       // IPv4 surface — not just loopback and cloud metadata.
       expect(() => validateGitUrl('http://[64:ff9b::a00:1]/repo.git')).toThrow('private/internal'); // 10.0.0.1
-      expect(() => validateGitUrl('http://[64:ff9b::ac10:1]/repo.git')).toThrow(
-        'private/internal',
-      ); // 172.16.0.1
+      expect(() => validateGitUrl('http://[64:ff9b::ac10:1]/repo.git')).toThrow('private/internal'); // 172.16.0.1
       expect(() => validateGitUrl('http://[64:ff9b::c0a8:101]/repo.git')).toThrow(
         'private/internal',
       ); // 192.168.1.1
@@ -149,9 +147,7 @@ describe('git-clone', () => {
       // 6to4 encodes an IPv4 address in bits 17-48, so 2002:WWXX:YYZZ::*
       // routes to W.X.Y.Z on 6to4-capable stacks. The protocol is deprecated
       // (RFC 7526), so the entire 2002::/16 block is defensively rejected.
-      expect(() => validateGitUrl('http://[2002:7f00:1::1]/repo.git')).toThrow(
-        'private/internal',
-      ); // 127.0.0.1
+      expect(() => validateGitUrl('http://[2002:7f00:1::1]/repo.git')).toThrow('private/internal'); // 127.0.0.1
       expect(() => validateGitUrl('http://[2002:a9fe:a9fe::1]/repo.git')).toThrow(
         'private/internal',
       ); // 169.254.169.254
