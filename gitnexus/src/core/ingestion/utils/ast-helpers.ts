@@ -429,10 +429,24 @@ export const findSiblingChild = (
 
 /** Generic name extraction from a function-like AST node.
  *  Tries `node.childForFieldName('name')?.text`, then scans children for
- *  `identifier` / `property_identifier` / `simple_identifier`. */
+ *  `identifier` / `property_identifier` / `simple_identifier`.
+ *
+ *  `arrow_function` and `function_expression` (TS/JS) are inherently
+ *  anonymous — they have no `name` field, and their first identifier
+ *  child is a *parameter*, not a function name. Returning a parameter
+ *  identifier here would synthesize phantom Function IDs (e.g. callers
+ *  walking up from a call inside `arr.map(x => fn(x))` would get
+ *  attributed to a non-existent "Function x"). The language's
+ *  `methodExtractor.extractFunctionName` hook is responsible for naming
+ *  these via parent context (variable_declarator, pair, etc.); when it
+ *  declines, the parent walk should continue rather than fall through
+ *  here. See issue #1166. */
 export const genericFuncName = (node: SyntaxNode): string | null => {
   const nameField = node.childForFieldName?.('name');
   if (nameField) return nameField.text;
+  if (node.type === 'arrow_function' || node.type === 'function_expression') {
+    return null;
+  }
   for (let i = 0; i < node.childCount; i++) {
     const c = node.child(i);
     if (

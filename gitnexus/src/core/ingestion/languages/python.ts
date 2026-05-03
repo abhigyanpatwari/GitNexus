@@ -15,6 +15,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -106,6 +107,21 @@ function normalizePythonStringLiteral(text: string): string | undefined {
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
+  entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
+  astFrameworkPatterns: [
+    {
+      framework: 'fastapi',
+      entryPointMultiplier: 3.0,
+      reason: 'fastapi-decorator',
+      patterns: ['@app.get', '@app.post', '@app.put', '@app.delete', '@router.get'],
+    },
+    {
+      framework: 'flask',
+      entryPointMultiplier: 2.8,
+      reason: 'flask-decorator',
+      patterns: ['@app.route', '@blueprint.route'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: PYTHON_QUERIES,
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,

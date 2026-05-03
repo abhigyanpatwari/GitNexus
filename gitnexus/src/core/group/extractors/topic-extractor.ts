@@ -1,5 +1,6 @@
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
+import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
@@ -56,22 +57,21 @@ export class TopicExtractor implements ContractExtractor {
     repoPath: string,
     _repo: RepoHandle,
   ): Promise<ExtractedContract[]> {
+    // Honour `.gitnexusignore` / `.gitignore` via the shared IgnoreService —
+    // mirrors `filesystem-walker.ts`. The 5-name hardcoded list
+    // (`node_modules, .git, vendor, dist, build`) is preserved because every
+    // entry is in `DEFAULT_IGNORE_LIST`, so default behaviour is unchanged
+    // (#1185). The Go-specific `**/*_test.go` filter is layered on top via a
+    // small wrapper so glob-level pruning is preserved (we never read those
+    // files); the wrapper short-circuits before calling the base filter.
+    const baseFilter = await createIgnoreFilter(repoPath);
+    const ignoreFilter: typeof baseFilter = {
+      ignored: (p) => p.relative().endsWith('_test.go') || baseFilter.ignored(p),
+      childrenIgnored: (p) => baseFilter.childrenIgnored(p),
+    };
     const files = await glob(TOPIC_SCAN_GLOB, {
       cwd: repoPath,
-      ignore: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/vendor/**',
-        '**/dist/**',
-        '**/build/**',
-        // Language-level test file conventions. Go test files
-        // `*_test.go` live next to source; other languages either use
-        // separate test directories (Python's `tests/`, Java's
-        // `src/test/`) or are already covered by the dist/build ignores.
-        // Pushed to the glob level so the orchestrator stays
-        // language-agnostic.
-        '**/*_test.go',
-      ],
+      ignore: ignoreFilter,
       nodir: true,
     });
 

@@ -17,6 +17,11 @@ import {
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from './lbug-config.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 // ---------------------------------------------------------------------------
@@ -147,14 +152,15 @@ let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
 /**
- * In-process cache of FTS indexes that have been ensured against the current
- * writable connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips
- * for callers that explicitly opt into `ensureFTSIndex`. Cleared by
- * `closeLbug` so a re-init starts fresh.
+ * In-process cache of FTS indexes observed against the current singleton
+ * connection. Avoids repeated `CALL CREATE_FTS_INDEX` calls, which can trip
+ * native duplicate-index/WAL edge cases. Cleared on re-init and close.
  *
  * Key format: `${tableName}:${indexName}`.
  */
 const ensuredFTSIndexes = new Set<string>();
+
+const ftsIndexKey = (tableName: string, indexName: string): string => `${tableName}:${indexName}`;
 
 /**
  * Check if an error indicates a missing column or table (schema-level problem)
@@ -191,6 +197,19 @@ export const isDbBusyError = (err: unknown): boolean => {
     msg.includes('already in use') ||
     msg.includes('could not set lock')
   );
+};
+
+/**
+ * Return true when the error message indicates a write was attempted against
+ * a read-only LadybugDB connection. The MCP query pool opens DBs read-only,
+ * so any path that calls a `CREATE_*` procedure there will surface this
+ * (e.g. defensive `ensureFTSIndex` calls). Owners of the writable analyze
+ * path should ignore this error — index creation is owned by `gitnexus
+ * analyze` and either already happened or will happen on the next run.
+ */
+export const isReadOnlyDbError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /read-only database/i.test(msg);
 };
 
 const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -253,6 +272,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
+        ensuredFTSIndexes.clear();
       });
       // Sleep outside the lock — no need to block others while waiting
       await new Promise((resolve) => setTimeout(resolve, DB_LOCK_RETRY_DELAY_MS * attempt));
@@ -285,6 +305,7 @@ const doInitLbug = async (dbPath: string) => {
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
+    ensuredFTSIndexes.clear();
   }
 
   // LadybugDB stores the database as a single file (not a directory).
@@ -317,14 +338,14 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath);
-  conn = new lbug.Connection(db);
+  const opened = await openLbugConnection(lbug, dbPath);
+  db = opened.db;
+  conn = opened.conn;
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
       await conn.query(schemaQuery);
     } catch (err) {
-      // Only ignore "already exists" errors - log everything else
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('already exists')) {
         console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
@@ -664,18 +685,12 @@ export const insertNodeToLbug = async (
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
-      const tempDb = new lbug.Database(targetDbPath);
-      const tempConn = new lbug.Connection(tempDb);
+      const tempHandle = await openLbugConnection(lbug, targetDbPath);
       try {
-        await tempConn.query(query);
+        await tempHandle.conn.query(query);
         return true;
       } finally {
-        try {
-          await tempConn.close();
-        } catch {}
-        try {
-          await tempDb.close();
-        } catch {}
+        await closeLbugConnection(tempHandle);
       }
     } else if (conn) {
       // Use existing persistent connection (when called from analyze)
@@ -711,8 +726,8 @@ export const batchInsertNodesToLbug = async (
   };
 
   // Open a single connection for all inserts
-  const tempDb = new lbug.Database(dbPath);
-  const tempConn = new lbug.Connection(tempDb);
+  const tempHandle = await openLbugConnection(lbug, dbPath);
+  const tempConn = tempHandle.conn;
 
   let inserted = 0;
   let failed = 0;
@@ -753,12 +768,7 @@ export const batchInsertNodesToLbug = async (
       }
     }
   } finally {
-    try {
-      await tempConn.close();
-    } catch {}
-    try {
-      await tempDb.close();
-    } catch {}
+    await closeLbugConnection(tempHandle);
   }
 
   return { inserted, failed };
@@ -1071,13 +1081,13 @@ export const deleteNodesForFile = async (
   const usePerQuery = !!dbPath;
 
   // Set up connection (either use existing or create per-query)
-  let tempDb: lbug.Database | null = null;
+  let tempHandle: LbugConnectionHandle | null = null;
   let tempConn: lbug.Connection | null = null;
   let targetConn: lbug.Connection | null = conn;
 
   if (usePerQuery) {
-    tempDb = new lbug.Database(dbPath);
-    tempConn = new lbug.Connection(tempDb);
+    tempHandle = await openLbugConnection(lbug, dbPath);
+    tempConn = tempHandle.conn;
     targetConn = tempConn;
   } else if (!conn) {
     throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
@@ -1127,16 +1137,7 @@ export const deleteNodesForFile = async (
     return { deletedNodes };
   } finally {
     // Close per-query connection if used
-    if (tempConn) {
-      try {
-        await tempConn.close();
-      } catch {}
-    }
-    if (tempDb) {
-      try {
-        await tempDb.close();
-      } catch {}
-    }
+    if (tempHandle) await closeLbugConnection(tempHandle);
   }
 };
 
@@ -1214,6 +1215,9 @@ export const createFTSIndex = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
+  const key = ftsIndexKey(tableName, indexName);
+  if (ensuredFTSIndexes.has(key)) return;
+
   if (!(await loadFTSExtension())) {
     return;
   }
@@ -1223,10 +1227,13 @@ export const createFTSIndex = async (
 
   try {
     await conn.query(query);
+    ensuredFTSIndexes.add(key);
   } catch (e: any) {
-    if (!e.message?.includes('already exists')) {
-      throw e;
+    if (e.message?.includes('already exists')) {
+      ensuredFTSIndexes.add(key);
+      return;
     }
+    throw e;
   }
 };
 
@@ -1239,6 +1246,13 @@ export const createFTSIndex = async (
  *
  * Safe to call repeatedly — the in-process Set guarantees only the first
  * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.
+ *
+ * Defense in depth: if the active connection is read-only (e.g. the MCP
+ * pool adapter), `CREATE_FTS_INDEX` will fail with "Cannot execute write
+ * operations in a read-only database". Treat that as a no-op and cache
+ * the key so callers don't loop on a path that can never succeed here —
+ * the index is owned by `gitnexus analyze` (writable) and either already
+ * exists or will be created on the next analyze.
  */
 export const ensureFTSIndex = async (
   tableName: string,
@@ -1246,10 +1260,20 @@ export const ensureFTSIndex = async (
   properties: string[],
   stemmer: string = 'porter',
 ): Promise<void> => {
-  const key = `${tableName}:${indexName}`;
+  const key = ftsIndexKey(tableName, indexName);
   if (ensuredFTSIndexes.has(key)) return;
-  await createFTSIndex(tableName, indexName, properties, stemmer);
-  ensuredFTSIndexes.add(key);
+  try {
+    await createFTSIndex(tableName, indexName, properties, stemmer);
+  } catch (e) {
+    // Read-only DB: writable analyze owns index creation; silently skip
+    // and cache so callers don't loop on a path that can never succeed
+    // here (the MCP query pool opens DBs read-only by design).
+    if (isReadOnlyDbError(e)) {
+      ensuredFTSIndexes.add(key);
+      return;
+    }
+    throw e;
+  }
 };
 
 /**
@@ -1321,5 +1345,7 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
     await conn.query(`CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`);
   } catch {
     // Index may not exist
+  } finally {
+    ensuredFTSIndexes.delete(ftsIndexKey(tableName, indexName));
   }
 };

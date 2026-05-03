@@ -12,6 +12,16 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
   ]),
+  python: new Set([
+    // Suffix-fallback lex tiebreak depends on the registry-primary
+    // resolver's deterministic sort. The legacy resolver returns the
+    // first match in `Set` iteration order, which is insertion-order
+    // dependent and not aligned with this guarantee. Backporting the
+    // sort to legacy is out of scope.
+    'picks the lexicographically smaller path on equal-depth ties',
+    'binds the call to alpha/services/sync.py, not omega',
+    'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
+  ]),
 };
 
 type ResolverParityEnv = Readonly<Record<string, string | undefined>>;

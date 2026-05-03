@@ -740,10 +740,58 @@ function findExportByName(
   defs: readonly SymbolDefinition[],
   name: string,
 ): SymbolDefinition | undefined {
+  // GENERIC RULE (applies to every language using this finalize
+  // algorithm): when MULTIPLE `SymbolDefinition`s share the same simple
+  // name in `localDefs`, prefer callable / type-like defs over plain
+  // value defs (`Variable`, `Property`, …). The CALLER side of an
+  // import almost always wants the callable, not a value shadow that
+  // happens to share the name — and without a deterministic
+  // preference, capture order silently decides which def the import
+  // binds to.
+  //
+  // The single-def case is unchanged: when only one def has the name,
+  // it's returned regardless of its type (the `fallback` path below).
+  //
+  // TypeScript is the first known language where this matters in
+  // practice: `const fn = () => {}` emits BOTH a `Function` def (from
+  // `@declaration.function` on the inner arrow) AND a `Variable` def
+  // (from the generic `@declaration.variable` pattern matching the
+  // wrapping `lexical_declaration`), and consumers of `import { fn }`
+  // need to bind to the callable. Other migrated languages don't
+  // currently produce dual emits of this shape, so the rule is a no-op
+  // for them today; future languages get the same correctness
+  // guarantee for free if they ever do.
+  //
+  // See `gitnexus/test/integration/resolvers/typescript-hof-callbacks.test.ts`
+  // for the cross-file regression this rule prevents.
+  let fallback: SymbolDefinition | undefined;
   for (const d of defs) {
-    if (deriveSimpleName(d) === name) return d;
+    if (deriveSimpleName(d) !== name) continue;
+    if (isCallableOrTypeLike(d.type)) return d;
+    if (fallback === undefined) fallback = d;
   }
-  return undefined;
+  return fallback;
+}
+
+const CALLABLE_OR_TYPE_LIKE: ReadonlySet<string> = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Record',
+  'Trait',
+  'Namespace',
+  'Module',
+  'TypeAlias',
+  'Type',
+  'Typedef',
+]);
+
+function isCallableOrTypeLike(type: string): boolean {
+  return CALLABLE_OR_TYPE_LIKE.has(type);
 }
 
 function countEdgesWithin(edgeIndex: Map<string, ImportEdgeDraft[]>, files: Set<string>): number {

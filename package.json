@@ -6,7 +6,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "lint:fix": "eslint --fix ."
+    "lint:fix": "eslint --fix .",
+    "gitnexus:refresh": "gitnexus analyze --embeddings --skills",
+    "gitnexus:full": "gitnexus analyze --force --embeddings --skills"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.57.2",

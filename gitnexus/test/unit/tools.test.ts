@@ -19,6 +19,10 @@ const GROUP_TOOLS = new Set([
   'group_graph',
   'group_discover',
 ]);
+const MUTATING_TOOLS = new Set(['rename', 'group_sync', 'group_discover']);
+// Read-only tools that legitimately reach external systems. Add a tool name
+// here when introducing a read-only tool that needs openWorldHint: true.
+const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
   it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 7 group)', () => {
@@ -47,10 +51,53 @@ describe('GITNEXUS_TOOLS', () => {
       expect(typeof tool.name).toBe('string');
       expect(tool.description).toBeTruthy();
       expect(typeof tool.description).toBe('string');
+      expect(tool.annotations).toBeDefined();
       expect(tool.inputSchema).toBeDefined();
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
       expect(Array.isArray(tool.inputSchema.required)).toBe(true);
+    }
+  });
+
+  it('each tool exposes all MCP safety annotations', () => {
+    for (const tool of GITNEXUS_TOOLS) {
+      expect(typeof tool.annotations.readOnlyHint).toBe('boolean');
+      expect(typeof tool.annotations.destructiveHint).toBe('boolean');
+      expect(typeof tool.annotations.idempotentHint).toBe('boolean');
+      expect(typeof tool.annotations.openWorldHint).toBe('boolean');
+    }
+  });
+
+  it('read-only tools are marked non-destructive and idempotent', () => {
+    for (const tool of GITNEXUS_TOOLS) {
+      if (MUTATING_TOOLS.has(tool.name)) continue;
+
+      expect(tool.annotations.readOnlyHint).toBe(true);
+      expect(tool.annotations.destructiveHint).toBe(false);
+      expect(tool.annotations.idempotentHint).toBe(true);
+      expect(tool.annotations.openWorldHint).toBe(OPEN_WORLD_READ_ONLY_TOOLS.has(tool.name));
+    }
+  });
+
+  it('query is marked open-world because it may use external embeddings', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(queryTool.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    });
+  });
+
+  it('mutating tools are marked non-read-only, destructive, and non-idempotent', () => {
+    for (const name of ['rename', 'group_sync', 'group_discover'] as const) {
+      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
+      expect(tool.annotations).toEqual({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      });
     }
   });
 

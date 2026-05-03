@@ -32,7 +32,10 @@ program
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
-  .option('--skip-git', 'Index a folder without requiring a .git directory')
+  .option(
+    '--skip-git',
+    'Treat the provided path/cwd as the index root and skip parent git-root discovery',
+  )
   .option(
     '--name <alias>',
     'Register this repo under a custom name in ~/.gitnexus/registry.json ' +

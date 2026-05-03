@@ -19,7 +19,7 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/workspace:ro
     restart: unless-stopped
     healthcheck:
-      test: ['CMD', 'curl', '-fsS', 'http://localhost:4747/api/heartbeat']
+      test: ['CMD', 'curl', '-fsSI', 'http://localhost:4747/api/heartbeat']
       interval: 30s
       timeout: 5s
       retries: 3

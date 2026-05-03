@@ -821,6 +821,7 @@ export class GroupService {
         topics: true,
         shared_libs: true,
         embedding_fallback: false,
+        workspace_deps: true,
       },
       matching: {
         bm25_threshold: 0.7,

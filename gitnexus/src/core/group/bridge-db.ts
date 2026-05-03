@@ -5,7 +5,41 @@ import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+
+/**
+ * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
+ *
+ * - `.wal` — write-ahead log; persists across opens but must be associated
+ *   with the same database instance (LadybugDB 0.16.0 enforces this via a
+ *   database-id check and rejects opens with the diagnostic
+ *   `"Database ID for temporary file 'X.wal' does not match the current
+ *   database. This file may have been left behind from a previous database
+ *   with the same name"`).
+ * - `.shadow` — non-blocking concurrent checkpoint sidecar (added in
+ *   LadybugDB 0.15.4); same pairing constraint as `.wal`.
+ *
+ * `bridge-db` writes to a `bridge.lbug.tmp` file and then atomically renames
+ * it into place. The rename only moves the main file; sidecars must be
+ * cleaned up explicitly or the next writer trips the database-id check.
+ */
+const LBUG_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
+
+async function removeLbugFile(basePath: string): Promise<void> {
+  const candidates = [basePath, ...LBUG_SIDECAR_SUFFIXES.map((s) => `${basePath}${s}`)];
+  for (const f of candidates) {
+    try {
+      await fsp.rm(f, { recursive: true, force: true });
+    } catch {
+      /* best-effort: caller will surface real errors via the open path */
+    }
+  }
+}
 
 export function contractNodeId(
   repo: string,
@@ -127,8 +161,7 @@ export function findContractNode(
 export async function openBridgeDb(dbPath: string): Promise<BridgeHandle> {
   const parentDir = path.dirname(dbPath);
   await fsp.mkdir(parentDir, { recursive: true });
-  const db = new lbug.Database(dbPath, 0, false, false); // writable
-  const conn = new lbug.Connection(db);
+  const { db, conn } = await openLbugConnection(lbug, dbPath);
   return { _db: db, _conn: conn, groupDir: parentDir } as BridgeHandle;
 }
 
@@ -195,6 +228,17 @@ function unwrapQueryResult(queryResult: lbug.QueryResult | lbug.QueryResult[]): 
 }
 
 export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
+  // CHECKPOINT before close so the WAL/.shadow contents are flushed into
+  // the main database file. Without this, LadybugDB 0.16.0's non-blocking
+  // checkpoint thread can outlive the close call and leave sidecar pages
+  // pending on disk, which makes a subsequent read-side open either race
+  // with the WAL replay or trip the database-id check on the sidecars.
+  // CHECKPOINT is a no-op when there's nothing pending, so it's cheap.
+  try {
+    await (handle._conn as lbug.Connection).query('CHECKPOINT');
+  } catch {
+    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  }
   try {
     await (handle._conn as lbug.Connection).close();
   } catch {
@@ -322,12 +366,11 @@ export async function writeBridge(
     }
   };
 
-  // Clean up any leftover tmp
-  try {
-    await fsp.rm(tmpPath, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  // Clean up any leftover tmp main file AND its `.wal` / `.shadow` sidecars.
+  // LadybugDB 0.16.0 rejects opening a database whose sidecars belong to a
+  // different database instance (database-id check), so any stale sidecar
+  // from a crashed previous run will fail the next writeBridge.
+  await removeLbugFile(tmpPath);
 
   // 1. Create temp DB, insert all data.
   //
@@ -497,18 +540,43 @@ export async function writeBridge(
   }
 
   // 3. Atomic swap: old→.bak, tmp→final, rm .bak
+  //
+  // The current database file (with its `.wal` / `.shadow` sidecars) is
+  // moved aside, then the freshly built tmp database takes its place.
+  // We move the sidecars together with the main file so the open below
+  // and any external readers see a consistent set; orphan sidecars from
+  // the tmp namespace are then removed because LadybugDB looks for them
+  // under the renamed-to base name and would reject mismatching IDs.
   try {
     await fsp.access(finalPath);
     await retryRename(finalPath, bakPath);
+    for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+      try {
+        await fsp.access(`${finalPath}${suffix}`);
+        await retryRename(`${finalPath}${suffix}`, `${bakPath}${suffix}`);
+      } catch {
+        /* sidecar absent — nothing to move */
+      }
+    }
   } catch {
     /* no existing db */
   }
   await retryRename(tmpPath, finalPath);
-  try {
-    await fsp.rm(bakPath, { recursive: true, force: true });
-  } catch {
-    /* ignore */
+  for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+    // Rename — not delete — so the WAL (which may carry uncommitted-at-
+    // close-time pages on a graceful close, depending on
+    // `autoCheckpoint` / `checkpointThreshold`) and the `.shadow`
+    // checkpoint snapshot stay paired with the database file under its
+    // final name. LadybugDB 0.16.0's database-id check rejects an open
+    // when the sidecars belong to a different base name.
+    try {
+      await fsp.access(`${tmpPath}${suffix}`);
+      await retryRename(`${tmpPath}${suffix}`, `${finalPath}${suffix}`);
+    } catch {
+      /* sidecar absent — nothing to move */
+    }
   }
+  await removeLbugFile(bakPath);
 
   // 4. Write meta.json
   await writeBridgeMeta(groupDir, {
@@ -524,10 +592,38 @@ export async function writeBridge(
 /*  openBridgeDbReadOnly                                               */
 /* ------------------------------------------------------------------ */
 
-export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHandle | null> {
+/**
+ * Substrings observed in the message of an `Error` raised by the LadybugDB
+ * native open path when Windows still holds an exclusive lock on the file
+ * after a writer's `Database.close()` returned. LadybugDB 0.16.0's
+ * non-blocking checkpoint thread can briefly outlive the close call, so a
+ * read-side opener that races in immediately afterwards sees Win32 error
+ * 33 ("The process cannot access the file because another process has
+ * locked a portion of the file"). Retrying with a small back-off lets the
+ * background thread settle and the OS release the handle.
+ */
+const LBUG_OPEN_RETRY_PATTERNS = [
+  'process cannot access the file',
+  'another process has locked',
+  'could not set lock',
+  'lock held by another process',
+];
+
+const LBUG_OPEN_RETRY_ATTEMPTS = 10;
+const LBUG_OPEN_RETRY_BASE_MS = 100;
+/** Cap individual back-off delays so the total wait is bounded (~3s). */
+const LBUG_OPEN_RETRY_MAX_MS = 500;
+
+function isTransientLockError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return LBUG_OPEN_RETRY_PATTERNS.some((p) => msg.includes(p));
+}
+
+async function ensureBridgeDbFileAvailable(groupDir: string): Promise<boolean> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
   try {
     await fsp.access(dbPath);
+    return true;
   } catch {
     // Check for .bak recovery. Use `retryRename` (not `fsp.rename`) for the
     // exact same reason the rest of this file does: the scenario that
@@ -538,42 +634,62 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
     try {
       await fsp.access(bakPath);
       await retryRename(bakPath, dbPath);
+      for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+        try {
+          await fsp.access(`${bakPath}${suffix}`);
+          await retryRename(`${bakPath}${suffix}`, `${dbPath}${suffix}`);
+        } catch {
+          /* sidecar absent */
+        }
+      }
+      return true;
     } catch {
-      return null;
+      return false;
     }
   }
+}
+
+export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHandle | null> {
+  const dbPath = path.join(groupDir, 'bridge.lbug');
+  if (!(await ensureBridgeDbFileAvailable(groupDir))) return null;
+
   // Version gate: check meta.json version compatibility
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return null; // incompatible schema version — fallback to JSON or re-sync
   }
 
-  // Open the native handle. If Connection construction throws AFTER
-  // Database was successfully allocated, we'd leak the native Database
-  // object. Wrap each step separately and tear down the partial handle.
-  let db: lbug.Database | undefined;
-  let conn: lbug.Connection | undefined;
-  try {
-    db = new lbug.Database(dbPath, 0, false, true); // readOnly
-    conn = new lbug.Connection(db);
-    return { _db: db, _conn: conn, groupDir } as BridgeHandle;
-  } catch {
-    if (conn) {
-      try {
-        await conn.close();
-      } catch {
-        /* ignore */
-      }
+  // Open the native handle with a bounded retry on transient OS-level file
+  // locks (see LBUG_OPEN_RETRY_PATTERNS). If Connection construction throws
+  // AFTER Database was successfully allocated, we'd leak the native Database
+  // object — wrap each step separately and tear down the partial handle.
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= LBUG_OPEN_RETRY_ATTEMPTS; attempt++) {
+    let handle: LbugConnectionHandle | undefined;
+    try {
+      handle = await openLbugConnection(lbug, dbPath, { readOnly: true });
+      // Force the lazy native init now so a transient lock surfaces here
+      // (where we can retry) instead of on the first user query.
+      await handle.db.init();
+      await handle.conn.init();
+      return { _db: handle.db, _conn: handle.conn, groupDir } as BridgeHandle;
+    } catch (err) {
+      lastErr = err;
+      if (handle) await closeLbugConnection(handle);
+      if (!isTransientLockError(err) || attempt === LBUG_OPEN_RETRY_ATTEMPTS) break;
+      const delay = Math.min(LBUG_OPEN_RETRY_BASE_MS * attempt, LBUG_OPEN_RETRY_MAX_MS);
+      await new Promise((r) => setTimeout(r, delay));
     }
-    if (db) {
-      try {
-        await db.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    return null;
   }
+  if (process.env.GITNEXUS_DEBUG_BRIDGE) {
+    console.warn(
+      `[bridge-db] openBridgeDbReadOnly(${groupDir}) gave up after ` +
+        `${LBUG_OPEN_RETRY_ATTEMPTS} attempts: ${
+          lastErr instanceof Error ? lastErr.message : String(lastErr)
+        }`,
+    );
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,8 +697,7 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
 /* ------------------------------------------------------------------ */
 
 export async function bridgeExists(groupDir: string): Promise<boolean> {
-  const handle = await openBridgeDbReadOnly(groupDir);
-  if (!handle) return false;
-  await closeBridgeDb(handle);
-  return true;
+  if (!(await ensureBridgeDbFileAvailable(groupDir))) return false;
+  const meta = await readBridgeMeta(groupDir);
+  return meta.version === 0 || meta.version === BRIDGE_SCHEMA_VERSION;
 }
