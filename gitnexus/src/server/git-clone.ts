@@ -10,28 +10,11 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
+import { parseRepoNameFromUrl } from '../storage/git';
 
 /** Extract the repository name from a git URL (HTTPS or SSH). */
 export function extractRepoName(url: string): string {
-  const cleaned = url.replace(/\/+$/, '');
-  
-  // For SSH URLs like git@github.com:user/repo.git, we need to handle the colon.
-  // For HTTPS URLs, the only colon should be in the protocol.
-  let lastSegment: string;
-  if (cleaned.includes('@') && cleaned.includes(':') && !cleaned.startsWith('http')) {
-    // Likely an SSH URL
-    lastSegment = cleaned.split(/[:/]/).pop() || 'unknown';
-  } else {
-    // Likely an HTTPS URL or local path
-    lastSegment = cleaned.split('/').pop() || 'unknown';
-  }
-  
-  const name = lastSegment.replace(/\.git$/, '');
-
-  // Sanitize the name:
-  // 1. Prevent argument injection by stripping leading dashes.
-  // 2. Remove characters that are unsafe for directory names across platforms.
-  return name.replace(/^-+/, '').replace(/[<>:"/\\|?*]/g, '_') || 'unknown';
+  return parseRepoNameFromUrl(url) || 'unknown';
 }
 
 /** Get the clone target directory for a repo name. */
