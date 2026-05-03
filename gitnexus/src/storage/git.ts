@@ -93,6 +93,34 @@ export const getGitRoot = (fromPath: string): string | null => {
     return null;
   }
 };
+
+/**
+ * Find a git root by checking only `.git` entries on the ancestor chain.
+ *
+ * Unlike `getGitRoot`, this does not spawn `git`, so MCP can cheaply decide
+ * whether a launch cwd is a worktree before running any subprocess there.
+ */
+export const findGitRootByDotGit = (fromPath: string): string | null => {
+  let current = path.resolve(fromPath);
+  try {
+    if (!statSync(current).isDirectory()) {
+      current = path.dirname(current);
+    }
+  } catch {
+    return null;
+  }
+
+  while (true) {
+    try {
+      statSync(path.join(current, '.git'));
+      return current;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
+  }
+};
 /**
  * Check whether a directory contains a .git entry (file or folder).
  *
@@ -137,34 +165,41 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
 };
 
 /**
+ * Sanitize a repository name to prevent argument injection and ensure
+ * cross-platform filesystem compatibility.
+ */
+export const sanitizeRepoName = (name: string): string => {
+  // 1. Prevent argument injection by stripping leading dashes.
+  // 2. Remove characters that are unsafe for directory names across platforms.
+  return name.replace(/^-+/, '').replace(/[<>:\"/\\\\|?*]/g, '_') || 'unknown';
+};
+
+/**
  * Parse a repository name out of a git remote URL. Handles the common
  * SSH (`git@host:owner/repo.git`), HTTPS (`https://host/owner/repo.git`),
  * `git://`, `ssh://`, and `file://` shapes. Returns `null` for empty /
  * unparseable input.
- *
- * The heuristic: strip a trailing `.git` and trailing slashes, then
- * take the segment after the last `/` or `:`.
  */
 export const parseRepoNameFromUrl = (url: string | null | undefined): string | null => {
   if (!url) return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
   // Strip `.git` suffix (case-insensitive) and any trailing slashes.
-  const withoutSuffix = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
+  const withoutSuffix = trimmed.replace(/\\.git\\/*$/i, '').replace(/\\/+$/, '');
   
   // Last path segment, handling colons for SSH URLs.
   // For HTTPS URLs, the only colon should be in the protocol.
   let candidate: string;
   if (withoutSuffix.includes('@') && withoutSuffix.includes(':') && !withoutSuffix.startsWith('http')) {
     // Likely an SSH URL
-    const m = withoutSuffix.match(/[/:]([^/:]+)$/);
-    candidate = m ? m[1] : withoutSuffix;
+    const segments = withoutSuffix.split(/[:/]/);
+    candidate = segments.pop() || withoutSuffix;
   } else {
     // Likely an HTTPS URL or local path
     candidate = withoutSuffix.split('/').pop() || withoutSuffix;
   }
   
-  return candidate || null;
+  return candidate ? sanitizeRepoName(candidate) : null;
 };
 
 /**
@@ -192,12 +227,12 @@ export interface FileDiff {
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
-  for (const line of diffOutput.split('\n')) {
+  for (const line of diffOutput.split('\\n')) {
     if (line.startsWith('+++ b/')) {
       current = { filePath: line.slice(6), hunks: [] };
       files.push(current);
     } else if (line.startsWith('@@') && current) {
-      const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+      const match = line.match(/@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@/);
       if (match) {
         const start = parseInt(match[1], 10);
         const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
