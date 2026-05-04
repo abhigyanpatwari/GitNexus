@@ -1,13 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import {
   extractRepoName,
   getCloneDir,
   validateGitUrl,
   cloneOrPull,
   buildCloneArgs,
+  normalizeGitUrlForCompare,
+  assertRemoteMatchesRequestedUrl,
+  getRemoteOriginUrl,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -330,6 +335,195 @@ describe('git-clone', () => {
       await expect(cloneOrPull('https://github.com/a/b.git', cloneRoot + '-evil')).rejects.toThrow(
         'Clone target must be a subdirectory',
       );
+    });
+
+    // Closes the SSRF-bypass vector that Codex's adversarial review on
+    // PR #1325 surfaced: validateGitUrl was only called in the clone
+    // branch. An attacker URL that shared a basename with an existing
+    // clone would skip the SSRF check entirely on the pull path.
+    //
+    // The barrier-pass-but-validateGitUrl-throw case here works because
+    // cloneOrPull validates the URL after the containment check and before
+    // the existence probe, so the rejection fires regardless of whether
+    // the target dir exists on disk.
+    it('rejects URLs that fail validateGitUrl even when the target shape is valid', async () => {
+      const fakeTarget = path.join(cloneRoot, 'name-that-does-not-exist');
+      await expect(cloneOrPull('http://127.0.0.1/repo.git', fakeTarget)).rejects.toThrow(
+        'private/internal',
+      );
+      await expect(cloneOrPull('http://localhost/repo.git', fakeTarget)).rejects.toThrow(
+        'private/internal',
+      );
+      await expect(cloneOrPull('file:///etc/passwd', fakeTarget)).rejects.toThrow(
+        'Only https:// and http://',
+      );
+    });
+  });
+
+  describe('normalizeGitUrlForCompare', () => {
+    it('strips trailing .git', () => {
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo.git')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/repo'),
+      );
+    });
+
+    it('strips trailing slashes', () => {
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo/')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/repo'),
+      );
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo///')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/repo'),
+      );
+    });
+
+    it('lowercases the hostname but preserves path case', () => {
+      expect(normalizeGitUrlForCompare('https://GitHub.com/owner/Repo.git')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/Repo'),
+      );
+      // Different path case → distinct repos (hosts treat path as case-sensitive on the wire)
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo')).not.toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/REPO'),
+      );
+    });
+
+    it('strips default ports', () => {
+      expect(normalizeGitUrlForCompare('https://github.com:443/owner/repo')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/repo'),
+      );
+      expect(normalizeGitUrlForCompare('http://github.com:80/owner/repo')).toBe(
+        normalizeGitUrlForCompare('http://github.com/owner/repo'),
+      );
+    });
+
+    it('preserves non-default ports', () => {
+      expect(normalizeGitUrlForCompare('https://git.corp:8443/owner/repo')).not.toBe(
+        normalizeGitUrlForCompare('https://git.corp/owner/repo'),
+      );
+    });
+
+    it('strips userinfo (basic auth) so equivalent URLs compare equal', () => {
+      expect(normalizeGitUrlForCompare('https://user:pass@github.com/owner/repo.git')).toBe(
+        normalizeGitUrlForCompare('https://github.com/owner/repo'),
+      );
+    });
+
+    it('treats different hosts as distinct', () => {
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo')).not.toBe(
+        normalizeGitUrlForCompare('https://gitlab.com/owner/repo'),
+      );
+    });
+
+    it('treats different paths on the same host as distinct', () => {
+      expect(normalizeGitUrlForCompare('https://github.com/owner/repo')).not.toBe(
+        normalizeGitUrlForCompare('https://github.com/attacker/repo'),
+      );
+    });
+  });
+
+  describe('assertRemoteMatchesRequestedUrl', () => {
+    // Closes the wrong-repo silent-analysis vector that Codex's adversarial
+    // review on PR #1325 surfaced. Tests use a tmpdir-based fixture
+    // (anywhere on disk — independent of CLONE_ROOT) so the helper can be
+    // exercised without polluting the user's actual clone root.
+    let fixtureDir: string;
+
+    beforeAll(async () => {
+      fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-remote-match-'));
+      // git init + set remote.origin.url. We can't call git init via runGit
+      // since it's private; spawn directly.
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('git', ['init', '--quiet'], { cwd: fixtureDir, stdio: 'ignore' });
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+        );
+        proc.on('error', reject);
+      });
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn(
+          'git',
+          ['config', 'remote.origin.url', 'https://github.com/legitorg/myproject.git'],
+          { cwd: fixtureDir, stdio: 'ignore' },
+        );
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`git config exit ${code}`)),
+        );
+        proc.on('error', reject);
+      });
+    });
+
+    afterAll(async () => {
+      await fs.rm(fixtureDir, { recursive: true, force: true });
+    });
+
+    it('accepts the requested URL when it matches the configured remote', async () => {
+      await expect(
+        assertRemoteMatchesRequestedUrl(fixtureDir, 'https://github.com/legitorg/myproject.git'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('accepts equivalent forms (with/without .git, trailing slash, default port)', async () => {
+      await expect(
+        assertRemoteMatchesRequestedUrl(fixtureDir, 'https://github.com/legitorg/myproject'),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertRemoteMatchesRequestedUrl(fixtureDir, 'https://github.com/legitorg/myproject/'),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertRemoteMatchesRequestedUrl(
+          fixtureDir,
+          'https://github.com:443/legitorg/myproject.git',
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    // The exact wrong-repo vector from Codex's review:
+    //   existing clone → github.com/legitorg/myproject
+    //   request URL    → gitlab.example/attacker/myproject
+    // Both share the basename 'myproject'. Without this check, the pull
+    // would succeed and analysis would return wrong-repo data.
+    it('rejects a different host with the same basename', async () => {
+      await expect(
+        assertRemoteMatchesRequestedUrl(
+          fixtureDir,
+          'https://gitlab.example/attacker/myproject.git',
+        ),
+      ).rejects.toThrow('not the requested URL');
+    });
+
+    it('rejects a different owner on the same host', async () => {
+      await expect(
+        assertRemoteMatchesRequestedUrl(fixtureDir, 'https://github.com/attacker/myproject.git'),
+      ).rejects.toThrow('not the requested URL');
+    });
+
+    it('rejects when the directory has no remote.origin', async () => {
+      const noRemoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-no-remote-'));
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('git', ['init', '--quiet'], { cwd: noRemoteDir, stdio: 'ignore' });
+          proc.on('close', (code) =>
+            code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+          );
+          proc.on('error', reject);
+        });
+        await expect(
+          assertRemoteMatchesRequestedUrl(noRemoteDir, 'https://github.com/owner/repo.git'),
+        ).rejects.toThrow('no remote.origin');
+      } finally {
+        await fs.rm(noRemoteDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('getRemoteOriginUrl', () => {
+    it('returns null for a directory that is not a git repository', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-not-git-'));
+      try {
+        const result = await getRemoteOriginUrl(tmp);
+        expect(result).toBeNull();
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
     });
   });
 });

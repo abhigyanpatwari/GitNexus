@@ -242,14 +242,135 @@ export function buildCloneArgs(url: string, targetDir: string): string[] {
 }
 
 /**
+ * Normalize a git URL into a comparable form.
+ *
+ * Two URLs are considered the same repository when their normalized forms
+ * are identical: lowercased hostname, no trailing `.git`, no trailing
+ * slashes on the path, default port stripped. Path comparison stays
+ * case-sensitive because that's how Git hosts treat the path component on
+ * the wire (case-folding GitHub's web UI is a separate convenience).
+ *
+ * Returns the original input if URL parsing fails — the caller can still
+ * compare with the literal string for non-URL forms (e.g. SSH `git@host:`).
+ */
+export function normalizeGitUrlForCompare(url: string): string {
+  // Strip trailing slashes and a trailing `.git` for both URL and SSH forms.
+  let trimmed = url;
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === '/') {
+    trimmed = trimmed.slice(0, -1);
+  }
+  if (trimmed.endsWith('.git')) trimmed = trimmed.slice(0, -4);
+
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hostname = parsed.hostname.toLowerCase();
+    // strip default ports
+    if (
+      (parsed.protocol === 'https:' && parsed.port === '443') ||
+      (parsed.protocol === 'http:' && parsed.port === '80')
+    ) {
+      parsed.port = '';
+    }
+    // Strip credentials — never material to repo identity, and including
+    // them would let two equivalent URLs (with/without basic auth) compare
+    // unequal.
+    parsed.username = '';
+    parsed.password = '';
+    // Recompose without trailing slash on the path.
+    let pathname = parsed.pathname;
+    while (pathname.length > 1 && pathname[pathname.length - 1] === '/') {
+      pathname = pathname.slice(0, -1);
+    }
+    parsed.pathname = pathname;
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}${parsed.pathname}`;
+  } catch {
+    // Non-URL forms (e.g. `git@github.com:owner/repo`) — return the trimmed
+    // form lowercased on the hostname-ish prefix. SSH-form normalization
+    // is best-effort; exact-string compare is sufficient for the threat
+    // model (mismatched origins still differ at the literal level).
+    return trimmed.toLowerCase();
+  }
+}
+
+/**
+ * Read `remote.origin.url` from an existing clone using `git config --get`.
+ *
+ * Returns `null` if the config key is absent, the spawn fails, or the
+ * directory isn't a git repository. The caller decides what a missing
+ * remote means for its threat model — for cloneOrPull, a missing remote
+ * on an existing clone is treated as a refuse-to-pull condition.
+ */
+export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const proc = spawn('git', ['config', '--get', 'remote.origin.url'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    let stdout = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk;
+    });
+    proc.on('close', (code) => {
+      if (code === 0 && stdout.trim()) {
+        resolve(stdout.trim());
+      } else {
+        resolve(null);
+      }
+    });
+    proc.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * Verify that an existing clone's `remote.origin.url` matches the requested
+ * URL (after normalization). Throws on mismatch or missing remote.
+ *
+ * Closes the wrong-repo silent-analysis vector that Codex's adversarial
+ * review on PR #1325 surfaced: clone dirs are keyed by URL basename, so a
+ * request for `https://gitlab.example/attacker/repo.git` would otherwise
+ * collide with an existing `~/.gitnexus/repos/repo` cloned from a different
+ * origin and `git pull --ff-only` would silently succeed against the wrong
+ * remote.
+ *
+ * Exported so the comparison logic is testable in isolation against any
+ * tmpdir-based fixture, without needing to populate CLONE_ROOT.
+ */
+export async function assertRemoteMatchesRequestedUrl(
+  targetDir: string,
+  requestedUrl: string,
+): Promise<void> {
+  const remoteUrl = await getRemoteOriginUrl(targetDir);
+  if (remoteUrl === null) {
+    throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
+  }
+  if (normalizeGitUrlForCompare(remoteUrl) !== normalizeGitUrlForCompare(requestedUrl)) {
+    throw new Error(
+      `Existing clone at ${targetDir} has remote ${remoteUrl}, not the requested URL ${requestedUrl}`,
+    );
+  }
+}
+
+/**
  * Clone or pull a git repository.
  * If targetDir doesn't exist: git clone --depth 1
- * If targetDir exists with .git: git pull --ff-only
+ * If targetDir exists with .git: git pull --ff-only (after verifying the
+ * existing clone's remote.origin matches the requested URL).
  *
  * Security:
  *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
  *     path.relative containment barrier below is the inline canonical idiom
  *     CodeQL's js/path-injection sanitizer recognizes.
+ *   - validateGitUrl runs unconditionally on the requested URL — both the
+ *     clone path and the pull path. An earlier shape only validated on the
+ *     clone branch; an existing clone with the same basename let an
+ *     attacker's URL skip the SSRF / scheme / private-IP checks (Codex
+ *     adversarial review on PR #1325).
+ *   - When the target already has `.git`, the existing clone's
+ *     remote.origin.url is fetched and compared (normalized) to the
+ *     requested URL. Refuses to pull if they differ — this closes the
+ *     wrong-repo silent-analysis vector where two URLs sharing a basename
+ *     would collide on the same on-disk clone dir.
  *   - The git URL is passed after a `--` separator so a value beginning with
  *     `--` (e.g. `--upload-pack=evil`) cannot be interpreted as a git option
  *     (CodeQL js/second-order-command-line-injection).
@@ -276,16 +397,24 @@ export async function cloneOrPull(
     throw new Error(`Clone target must be a subdirectory of ${CLONE_ROOT}`);
   }
 
+  // Always validate the requested URL — the prior shape only ran this in
+  // the clone branch, leaving the pull branch as an SSRF / blocked-host
+  // bypass when an existing clone shared the basename of an attacker URL.
+  validateGitUrl(url);
+
   const exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
 
   if (exists) {
+    // Confirm the existing clone is actually the same repository the caller
+    // requested. Without this check, a pull would silently succeed against
+    // whatever remote the dir was originally cloned from.
+    await assertRemoteMatchesRequestedUrl(safeTarget, url);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     await runGit(['pull', '--ff-only'], safeTarget);
   } else {
-    validateGitUrl(url);
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
     await runGit(buildCloneArgs(url, safeTarget));
