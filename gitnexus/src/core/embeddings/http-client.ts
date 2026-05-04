@@ -104,22 +104,18 @@ const httpEmbedBatch = async (
       body: JSON.stringify({ input: batch, model }),
     });
   } catch (err) {
-    // Timeouts should not be retried — the server is unresponsive.
-    // AbortSignal.timeout() throws DOMException with name 'TimeoutError'.
+    // Retry timeouts, DNS, and connection errors with backoff.
+    // Transient timeouts (network jitter, server overloaded) are worth retrying
+    // before giving up on the entire batch.
     const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-    if (isTimeout) {
-      throw new Error(
-        `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
-      );
-    }
-    // DNS, connection errors — retry with backoff
     if (attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
       return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
     }
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
+    const prefix = isTimeout ? `Timed out after ${HTTP_TIMEOUT_MS}ms` : 'Request failed';
+    throw new Error(`Embedding ${prefix} (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
   }
 
   if (!resp.ok) {
