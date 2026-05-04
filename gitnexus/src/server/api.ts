@@ -1057,16 +1057,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const filePath = req.query.path as string;
-      if (!filePath) {
+      // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
+      // Without this, an attacker could pass `?path=a&path=b` to bypass the
+      // length-bound traversal check below (CodeQL js/type-confusion-through-
+      // parameter-tampering, same class as the /api/grep critical fix).
+      const rawFilePath = req.query.path;
+      if (rawFilePath === undefined || rawFilePath === '') {
         res.status(400).json({ error: 'Missing path' });
         return;
       }
+      const filePath = assertString(rawFilePath, 'path');
 
-      // Prevent path traversal — resolve and verify the path stays within the repo root
+      // Path-injection containment — inline at the sink with the canonical
+      // path.relative idiom that CodeQL's js/path-injection sanitizer
+      // recognizes. assertSafePath in validation.ts performs the equivalent
+      // check, but cross-module helpers are not followed by CodeQL's
+      // interprocedural analysis for path-traversal sanitization in JS, so
+      // the barrier must be visible inline at the readFile sink.
       const repoRoot = path.resolve(entry.path);
       const fullPath = path.resolve(repoRoot, filePath);
-      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
+      const fullRel = path.relative(repoRoot, fullPath);
+      if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
         res.status(403).json({ error: 'Path traversal denied' });
         return;
       }
