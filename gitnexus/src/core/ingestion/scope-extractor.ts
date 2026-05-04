@@ -122,6 +122,7 @@ export function extract(
 
   // ── Pass 1: build the scope tree ─────────────────────────────────────
   const scopeDrafts = pass1BuildScopes(partitioned.scope, filePath, provider);
+  const moduleScope = ensureModuleScope(scopeDrafts, matches.length, filePath);
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
@@ -135,14 +136,6 @@ export function extract(
   // "what's the parent chain?" queries, not for content queries.
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
-
-  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
-  if (moduleScope === undefined) {
-    throw new Error(
-      `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-        `Provider must emit at least one @scope.module capture per file.`,
-    );
-  }
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
   const localDefs: SymbolDefinition[] = [];
@@ -281,6 +274,33 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+}
+
+function ensureModuleScope(
+  scopeDrafts: ScopeDraft[],
+  matchCount: number,
+  filePath: string,
+): ScopeDraft {
+  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
+  if (moduleScope !== undefined) return moduleScope;
+
+  if (scopeDrafts.length === 0 && matchCount === 0) {
+    const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
+    const synthetic = makeDraft(
+      makeScopeId({ filePath, range, kind: 'Module' }),
+      null,
+      'Module',
+      range,
+      filePath,
+    );
+    scopeDrafts.push(synthetic);
+    return synthetic;
+  }
+
+  throw new Error(
+    `ScopeExtractor: no Module scope found for '${filePath}'. ` +
+      `Provider must emit at least one @scope.module capture per file.`,
+  );
 }
 
 function draftToScope(draft: ScopeDraft): Scope {
@@ -521,6 +541,8 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const declaredType = match['@declaration.field-type']?.text;
+  const returnType = match['@declaration.return-type']?.text;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -530,6 +552,8 @@ function buildDefFromDeclarationMatch(
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(declaredType !== undefined ? { declaredType } : {}),
+    ...(returnType !== undefined ? { returnType } : {}),
   };
 }
 

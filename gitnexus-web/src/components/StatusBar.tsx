@@ -50,7 +50,9 @@ const formatRelativeTime = (iso?: string): string => {
   return `${Math.round(hours / 24)}d ago`;
 };
 
-const toLockWarning = (lock: NonNullable<IndexEventsSnapshot['locks']>[number]): IndexingWarning => ({
+const toLockWarning = (
+  lock: NonNullable<IndexEventsSnapshot['locks']>[number],
+): IndexingWarning => ({
   id: `lock:${lock.jobId || lock.repoPath}:${lock.startedAt}`,
   kind: 'lock_conflict',
   severity: 'warning',
@@ -63,7 +65,9 @@ const toLockWarning = (lock: NonNullable<IndexEventsSnapshot['locks']>[number]):
 
 const compactNumber = (value?: number): string => {
   if (value === undefined || value === null) return '0';
-  return Intl.NumberFormat(undefined, { notation: value >= 10000 ? 'compact' : 'standard' }).format(value);
+  return Intl.NumberFormat(undefined, { notation: value >= 10000 ? 'compact' : 'standard' }).format(
+    value,
+  );
 };
 
 const warningLabel = (warning: IndexingWarning): string =>
@@ -87,9 +91,13 @@ export const StatusBar = ({
   const activeRepo = indexSnapshot?.repos.find((repo) => repo.name === activeRepoName);
   const activeJob = indexSnapshot?.activeJobs?.find((job) => {
     const jobRepoName = job.repoName || (job.repoPath || '').split(/[/\\]/).filter(Boolean).pop();
-    return activeRepoName ? jobRepoName?.toLowerCase() === activeRepoName.toLowerCase() : Boolean(jobRepoName);
+    return activeRepoName
+      ? jobRepoName?.toLowerCase() === activeRepoName.toLowerCase()
+      : Boolean(jobRepoName);
   });
-  const activePhase = activeJob ? (PHASE_LABELS[activeJob.progress.phase] ?? activeJob.progress.phase) : 'Watching';
+  const activePhase = activeJob
+    ? (PHASE_LABELS[activeJob.progress.phase] ?? activeJob.progress.phase)
+    : 'Watching';
   const counts = activeJob?.progress.counts;
   const warnings = useMemo(() => {
     const combined = [
@@ -179,7 +187,7 @@ export const StatusBar = ({
             <>
               <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-accent to-node-interface transition-all duration-300"
+                  className="to-node-interface h-full rounded-full bg-gradient-to-r from-accent transition-all duration-300"
                   style={{ width: `${progress.percent}%` }}
                 />
               </div>
@@ -187,7 +195,9 @@ export const StatusBar = ({
             </>
           ) : (
             <div className="flex shrink-0 items-center gap-1.5" data-testid="status-ready">
-              <span className={`h-1.5 w-1.5 rounded-full ${syncStatusStyle[graphSyncStatus].dot}`} />
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${syncStatusStyle[graphSyncStatus].dot}`}
+              />
               <span>{graphSyncMessage ?? syncStatusStyle[graphSyncStatus].label}</span>
             </div>
           )}
@@ -231,7 +241,9 @@ export const StatusBar = ({
             >
               <AlertTriangle className="h-3.5 w-3.5" />
               {compactNumber(warningCount)}
-              <ChevronUp className={`h-3 w-3 transition-transform ${warningDrawerOpen ? 'rotate-180' : ''}`} />
+              <ChevronUp
+                className={`h-3 w-3 transition-transform ${warningDrawerOpen ? 'rotate-180' : ''}`}
+              />
             </button>
           )}
           {graph && (

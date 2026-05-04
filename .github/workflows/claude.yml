@@ -1,8 +1,17 @@
 name: Claude Code
 
+# Label-triggered code-review requests use pull_request_target so the workflow
+# runs as defined on the default branch, which allows access to secrets for
+# posting review comments on fork PRs. SECURITY: PR checkouts pin the fork's
+# HEAD SHA (not the branch name) to prevent TOCTOU races.
+# The claude-code-action sandboxes execution; it does not run arbitrary code
+# from the checked-out source.
+
 on:
   issue_comment:
     types: [created]
+  pull_request_target:
+    types: [labeled]
   pull_request_review_comment:
     types: [created]
   issues:
@@ -21,7 +30,10 @@ jobs:
     if: |
       (
         github.event_name == 'issue_comment' &&
-        contains(github.event.comment.body, '@claude') &&
+        (
+          contains(github.event.comment.body, '@claude') ||
+          (github.event.issue.pull_request && contains(github.event.comment.body, '/review'))
+        ) &&
         (github.event.comment.author_association == 'OWNER' ||
          github.event.comment.author_association == 'MEMBER' ||
          github.event.comment.author_association == 'COLLABORATOR')
@@ -46,6 +58,14 @@ jobs:
         (github.event.issue.author_association == 'OWNER' ||
          github.event.issue.author_association == 'MEMBER' ||
          github.event.issue.author_association == 'COLLABORATOR')
+      ) ||
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.label.name == 'claude-review' &&
+        github.event.pull_request.draft == false &&
+        (github.event.pull_request.author_association == 'OWNER' ||
+         github.event.pull_request.author_association == 'MEMBER' ||
+         github.event.pull_request.author_association == 'COLLABORATOR')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -63,32 +83,47 @@ jobs:
         with:
           script: |
             // Determine if this event is PR-related
-            let prNumber = null;
+            let pr = null;
             if (context.eventName === 'issue_comment' && context.payload.issue.pull_request) {
-              prNumber = context.payload.issue.number;
+              const resp = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              pr = resp.data;
             } else if (context.eventName === 'pull_request_review_comment') {
-              prNumber = context.payload.pull_request.number;
+              pr = context.payload.pull_request;
             } else if (context.eventName === 'pull_request_review') {
-              prNumber = context.payload.pull_request.number;
+              pr = context.payload.pull_request;
+            } else if (context.eventName === 'pull_request_target') {
+              pr = context.payload.pull_request;
             }
 
-            if (!prNumber) {
+            if (!pr) {
               core.setOutput('is_pr', 'false');
               return;
             }
 
-            const resp = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
-            const pr = resp.data;
-
             core.setOutput('is_pr', 'true');
-            core.setOutput('number', String(prNumber));
+            core.setOutput('number', String(pr.number));
             core.setOutput('sha', pr.head.sha);
             core.setOutput('repo', pr.head.repo.full_name);
             core.setOutput('branch', pr.head.ref);
+
+      - name: Resolve Claude mode
+        id: mode
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const body = (context.payload.comment?.body ?? '').toLowerCase();
+            const isCodeReview =
+              (context.eventName === 'pull_request_target' &&
+                context.payload.label?.name === 'claude-review') ||
+              (context.eventName === 'issue_comment' &&
+                Boolean(context.payload.issue?.pull_request) &&
+                body.includes('/review'));
+
+            core.setOutput('code_review', isCodeReview ? 'true' : 'false');
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -98,6 +133,7 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Code
+        if: steps.mode.outputs.code_review != 'true'
         id: claude
         uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
@@ -109,3 +145,16 @@ jobs:
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
+
+      - name: Run Claude Code Review
+        if: steps.mode.outputs.code_review == 'true'
+        id: claude-review
+        uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_non_write_users: '*'
+          show_full_output: true
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'

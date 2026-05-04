@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'path';
 import { readRegistry, type RegistryEntry, type CwdMatch } from '../storage/repo-manager.js';
-import { getGitRoot, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
+import { findGitRootByDotGit, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
 
 export interface StalenessInfo {
   isStale: boolean;
@@ -101,9 +101,10 @@ export async function checkCwdMatch(cwd: string): Promise<CwdMatch> {
   }
   if (bestPath) return { match: 'path', entry: bestPath };
 
-  // 2) Sibling-by-remote: locate the cwd's git root, get its remote
-  //    URL, and look for any registered entry with the same fingerprint.
-  const cwdGitRoot = getGitRoot(cwdResolved);
+  // 2) Sibling-by-remote: locate the cwd's git root using only ancestor
+  //    `.git` checks before shelling out. This keeps MCP startup from
+  //    running git in an unrelated launch cwd such as $HOME (#1138).
+  const cwdGitRoot = findGitRootByDotGit(cwdResolved);
   if (!cwdGitRoot) return { match: 'none' };
 
   const cwdRemote = getRemoteUrl(cwdGitRoot);

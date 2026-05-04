@@ -32,7 +32,7 @@ import {
   loadIndexManifest,
   saveFileManifest,
   saveIndexManifest,
-  addToGitignore,
+  ensureGitNexusIgnored,
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
@@ -61,6 +61,12 @@ import {
 export interface AnalyzeCallbacks {
   onProgress: (phase: string, percent: number, message: string, detail?: PipelineProgress) => void;
   onLog?: (message: string) => void;
+  beforeClose?: (context: {
+    repoName: string;
+    repoPath: string;
+    stats: AnalyzeResult['stats'];
+    pipelineResult: any;
+  }) => Promise<void>;
 }
 
 export interface AnalyzeOptions {
@@ -180,12 +186,8 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
 ): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
-  const progress = (
-    phase: string,
-    percent: number,
-    message: string,
-    detail?: PipelineProgress,
-  ) => callbacks.onProgress(phase, percent, message, detail);
+  const progress = (phase: string, percent: number, message: string, detail?: PipelineProgress) =>
+    callbacks.onProgress(phase, percent, message, detail);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 
@@ -249,11 +251,24 @@ export async function runFullAnalysis(
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
+      await ensureGitNexusIgnored(repoPath);
       const currentFileManifest = await scanCurrentFileManifest('Checking working tree changes...');
 
       if (previousFileManifest) {
         const diff = diffFileManifests(previousFileManifest, currentFileManifest);
         if (!hasFileManifestChanges(diff)) {
+          if (options.registryName !== undefined || options.allowDuplicateName) {
+            const projectName = await registerRepo(repoPath, existingMeta, {
+              name: options.registryName,
+              allowDuplicateName: options.allowDuplicateName,
+            });
+            return {
+              repoName: projectName,
+              repoPath,
+              stats: existingMeta.stats ?? {},
+              alreadyUpToDate: true,
+            };
+          }
           return {
             repoName:
               options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
@@ -581,10 +596,8 @@ export async function runFullAnalysis(
       allowDuplicateName: options.allowDuplicateName,
     });
 
-    // Only attempt to update .gitignore when a .git directory is present.
-    if (hasGitDir(repoPath)) {
-      await addToGitignore(repoPath);
-    }
+    // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
+    await ensureGitNexusIgnored(repoPath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
@@ -618,6 +631,13 @@ export async function runFullAnalysis(
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
+    await callbacks.beforeClose?.({
+      repoName: projectName,
+      repoPath,
+      stats: meta.stats,
+      pipelineResult,
+    });
+
     await closeLbug();
 
     if (!options.skipGroupSync) {

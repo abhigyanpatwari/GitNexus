@@ -223,7 +223,7 @@ const getCameraTarget = (
 };
 
 export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraphReturn => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null!);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);

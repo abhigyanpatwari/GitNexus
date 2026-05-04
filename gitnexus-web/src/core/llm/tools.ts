@@ -100,7 +100,12 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       new Set(
         Array.from(filePaths)
           .filter((filePath): filePath is string => Boolean(filePath))
-          .map((filePath) => filePath.replace(/\\/g, '/').replace(/^\.?\//, '').trim())
+          .map((filePath) =>
+            filePath
+              .replace(/\\/g, '/')
+              .replace(/^\.?\//, '')
+              .trim(),
+          )
           .filter(Boolean),
       ),
     ).slice(0, 40);
@@ -653,10 +658,14 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           ...(criticalLines.length > 0 ? criticalLines : ['- None found']),
         ].join('\n');
 
-        return appendNodeMarker(overview, 'HIGHLIGHT_NODES', [
-          ...clusters.map((row: any) => rowValue(row, 0, 'id')),
-          ...processes.map((row: any) => rowValue(row, 0, 'id')),
-        ].filter((id): id is string => typeof id === 'string'));
+        return appendNodeMarker(
+          overview,
+          'HIGHLIGHT_NODES',
+          [
+            ...clusters.map((row: any) => rowValue(row, 0, 'id')),
+            ...processes.map((row: any) => rowValue(row, 0, 'id')),
+          ].filter((id): id is string => typeof id === 'string'),
+        );
       } catch (error) {
         return `Overview error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -934,10 +943,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           connections,
         ].join('\n');
 
-        return appendNodeMarker(output, 'HIGHLIGHT_NODES', [
-          String(nodeId),
-          ...processRes.map((row: any) => rowValue(row, 3, 'id')),
-        ].filter((id): id is string => typeof id === 'string'));
+        return appendNodeMarker(
+          output,
+          'HIGHLIGHT_NODES',
+          [String(nodeId), ...processRes.map((row: any) => rowValue(row, 3, 'id'))].filter(
+            (id): id is string => typeof id === 'string',
+          ),
+        );
       }
 
       return `Unable to explore "${target}".`;

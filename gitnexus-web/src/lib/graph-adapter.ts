@@ -2,7 +2,6 @@ import Graph from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
 import {
-  GRAPH_SURFACE_COLORS,
   NODE_SIZES,
   getAgentColor,
   getCommunityColor,

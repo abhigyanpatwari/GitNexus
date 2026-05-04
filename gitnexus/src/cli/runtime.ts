@@ -51,7 +51,9 @@ async function resolveRuntimeRepo(repoParam?: string): Promise<RegistryEntry> {
     };
   }
 
-  throw new Error('No indexed repository found. Pass --repo <name-or-path> or run from a repo with .gitnexus.');
+  throw new Error(
+    'No indexed repository found. Pass --repo <name-or-path> or run from a repo with .gitnexus.',
+  );
 }
 
 export const runtimeImportCommand = async (
@@ -93,9 +95,7 @@ export const runtimeImportCommand = async (
   }
 };
 
-export const runtimeContextCommand = async (
-  options: RuntimeContextOptions = {},
-): Promise<void> => {
+export const runtimeContextCommand = async (options: RuntimeContextOptions = {}): Promise<void> => {
   const backend = new LocalBackend();
   try {
     await backend.init();

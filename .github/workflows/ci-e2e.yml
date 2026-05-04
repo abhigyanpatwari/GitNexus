@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Configure e2e GitNexus home
+        run: echo "GITNEXUS_HOME=${RUNNER_TEMP}/gitnexus-home" >> "$GITHUB_ENV"
+
       - uses: ./.github/actions/setup-gitnexus-web
 
       - name: Install Playwright browsers
@@ -44,9 +47,14 @@ jobs:
 
       - name: Analyze repository (index for backend)
         run: |
-          node gitnexus/dist/cli/index.js analyze || true
-          if [ ! -d ".gitnexus" ]; then
-            echo "::error::No .gitnexus index created"
+          E2E_REPO="${RUNNER_TEMP}/gitnexus-e2e-repo"
+          rm -rf "${E2E_REPO}"
+          mkdir -p "${E2E_REPO}"
+          cp -R gitnexus/test/fixtures/mini-repo/src "${E2E_REPO}/src"
+          printf '%s\n' '{"name":"e2e-mini-repo","version":"0.0.0","private":true}' > "${E2E_REPO}/package.json"
+          node gitnexus/dist/cli/index.js analyze "${E2E_REPO}" --skip-git --skip-agents-md --name e2e-mini-repo
+          if [ ! -d "${E2E_REPO}/.gitnexus" ]; then
+            echo "::error::No fixture .gitnexus index created"
             exit 1
           fi
 

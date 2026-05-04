@@ -93,7 +93,7 @@ export interface FinalizeHooks {
     targetRaw: string,
     fromFile: string,
     workspaceIndex: WorkspaceIndex,
-  ): string | null;
+  ): string | readonly string[] | null;
 
   /**
    * For a wildcard `import * from M`, return the names visible in the
@@ -127,20 +127,22 @@ export interface FinalizedScc {
 /**
  * Counters reported by `finalize`.
  *
- * **Counting granularity** — all edge counters are **per-`ParsedImport`**,
- * not per-materialized-`ImportEdge`. A single `wildcard` ParsedImport that
- * expands to N exports counts as one linked edge in these stats; the
- * materialized output (`FinalizeOutput.imports`) will have N edges for
- * that input. `dynamic-unresolved` ParsedImports count as linked (they
- * pass through with no `linkStatus`), so `linkedEdges` ≠ "has a
+ * **Counting granularity** — `totalEdges` is **per-generated-`ImportEdgeDraft`**,
+ * which may exceed the number of `ParsedImport` records when
+ * `resolveImportTarget` returns a multi-file array (e.g. Go package-scoped
+ * imports fan out to every `.go` file in the target directory). A single
+ * `wildcard` ParsedImport that expands to N exports also counts as one
+ * linked edge here; the materialized output (`FinalizeOutput.imports`) will
+ * have N edges for that input. `dynamic-unresolved` ParsedImports count as
+ * linked (they pass through with no `linkStatus`), so `linkedEdges` ≠ "has a
  * BindingRef" — use the `bindings` map for that.
  *
- * In other words: `totalEdges === input.parsedImports.length` summed
+ * In other words: `totalEdges >= input.parsedImports.length` summed
  * across files, and `linkedEdges + unresolvedEdges === totalEdges`.
  */
 export interface FinalizeStats {
   readonly totalFiles: number;
-  /** Total `ParsedImport` records seen across all files. */
+  /** Total `ImportEdgeDraft` records generated (≥ ParsedImport count). */
   readonly totalEdges: number;
   /**
    * `ParsedImport`s whose finalized edge does NOT carry
@@ -179,9 +181,9 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   for (const file of input.files) {
     const drafts: ImportEdgeDraft[] = [];
     for (const parsed of file.parsedImports) {
-      const draft = makeEdgeDraft(parsed, file, hooks, input.workspaceIndex);
-      drafts.push(draft);
-      totalEdges++;
+      const draftArray = makeEdgeDrafts(parsed, file, hooks, input.workspaceIndex);
+      drafts.push(...draftArray);
+      totalEdges += draftArray.length;
     }
     edgeIndex.set(file.filePath, drafts);
   }
@@ -320,12 +322,12 @@ interface ImportEdgeDraft {
   finalized: ImportEdge | null;
 }
 
-function makeEdgeDraft(
+function makeEdgeDrafts(
   parsed: ParsedImport,
   file: FinalizeFile,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
-): ImportEdgeDraft {
+): ImportEdgeDraft[] {
   // Dynamic-unresolved passes through — no `BindingRef`, no target file.
   if (parsed.kind === 'dynamic-unresolved') {
     const base: ImportEdge = {
@@ -334,14 +336,16 @@ function makeEdgeDraft(
       targetExportedName: '',
       kind: 'dynamic-unresolved',
     };
-    return {
-      source: parsed,
-      fromFile: file.filePath,
-      fromScope: file.moduleScope,
-      targetFile: null,
-      base,
-      finalized: base, // already fully finalized
-    };
+    return [
+      {
+        source: parsed,
+        fromFile: file.filePath,
+        fromScope: file.moduleScope,
+        targetFile: null,
+        base,
+        finalized: base, // already fully finalized
+      },
+    ];
   }
 
   const targetFile = hooks.resolveImportTarget(parsed.targetRaw ?? '', file.filePath, workspace);
@@ -355,14 +359,16 @@ function makeEdgeDraft(
       kind: edgeKindFor(parsed),
       linkStatus: 'unresolved',
     };
-    return {
-      source: parsed,
-      fromFile: file.filePath,
-      fromScope: file.moduleScope,
-      targetFile: null,
-      base,
-      finalized: base,
-    };
+    return [
+      {
+        source: parsed,
+        fromFile: file.filePath,
+        fromScope: file.moduleScope,
+        targetFile: null,
+        base,
+        finalized: base,
+      },
+    ];
   }
 
   // Resolvable at the file level; intra-SCC fixpoint may still fail to fill
@@ -370,21 +376,24 @@ function makeEdgeDraft(
   // and resolved-dynamic imports are terminal at the file level — no
   // `targetDefId` needed since they materialize no `BindingRef`. Pre-
   // finalize them here so the fixpoint loop skips them entirely.
-  const base: ImportEdge = {
-    localName: extractLocalName(parsed),
-    targetFile,
-    targetExportedName: extractExportedName(parsed),
-    kind: edgeKindFor(parsed),
-  };
+  const targetFiles = Array.isArray(targetFile) ? targetFile : [targetFile];
   const isFileLevelTerminal = parsed.kind === 'side-effect' || parsed.kind === 'dynamic-resolved';
-  return {
-    source: parsed,
-    fromFile: file.filePath,
-    fromScope: file.moduleScope,
-    targetFile,
-    base,
-    finalized: isFileLevelTerminal ? base : null,
-  };
+  return targetFiles.map((tf) => {
+    const base: ImportEdge = {
+      localName: extractLocalName(parsed),
+      targetFile: tf,
+      targetExportedName: extractExportedName(parsed),
+      kind: edgeKindFor(parsed),
+    };
+    return {
+      source: parsed,
+      fromFile: file.filePath,
+      fromScope: file.moduleScope,
+      targetFile: tf,
+      base,
+      finalized: isFileLevelTerminal ? base : null,
+    };
+  });
 }
 
 function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
@@ -740,10 +749,58 @@ function findExportByName(
   defs: readonly SymbolDefinition[],
   name: string,
 ): SymbolDefinition | undefined {
+  // GENERIC RULE (applies to every language using this finalize
+  // algorithm): when MULTIPLE `SymbolDefinition`s share the same simple
+  // name in `localDefs`, prefer callable / type-like defs over plain
+  // value defs (`Variable`, `Property`, …). The CALLER side of an
+  // import almost always wants the callable, not a value shadow that
+  // happens to share the name — and without a deterministic
+  // preference, capture order silently decides which def the import
+  // binds to.
+  //
+  // The single-def case is unchanged: when only one def has the name,
+  // it's returned regardless of its type (the `fallback` path below).
+  //
+  // TypeScript is the first known language where this matters in
+  // practice: `const fn = () => {}` emits BOTH a `Function` def (from
+  // `@declaration.function` on the inner arrow) AND a `Variable` def
+  // (from the generic `@declaration.variable` pattern matching the
+  // wrapping `lexical_declaration`), and consumers of `import { fn }`
+  // need to bind to the callable. Other migrated languages don't
+  // currently produce dual emits of this shape, so the rule is a no-op
+  // for them today; future languages get the same correctness
+  // guarantee for free if they ever do.
+  //
+  // See `gitnexus/test/integration/resolvers/typescript-hof-callbacks.test.ts`
+  // for the cross-file regression this rule prevents.
+  let fallback: SymbolDefinition | undefined;
   for (const d of defs) {
-    if (deriveSimpleName(d) === name) return d;
+    if (deriveSimpleName(d) !== name) continue;
+    if (isCallableOrTypeLike(d.type)) return d;
+    if (fallback === undefined) fallback = d;
   }
-  return undefined;
+  return fallback;
+}
+
+const CALLABLE_OR_TYPE_LIKE: ReadonlySet<string> = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Record',
+  'Trait',
+  'Namespace',
+  'Module',
+  'TypeAlias',
+  'Type',
+  'Typedef',
+]);
+
+function isCallableOrTypeLike(type: string): boolean {
+  return CALLABLE_OR_TYPE_LIKE.has(type);
 }
 
 function countEdgesWithin(edgeIndex: Map<string, ImportEdgeDraft[]>, files: Set<string>): number {

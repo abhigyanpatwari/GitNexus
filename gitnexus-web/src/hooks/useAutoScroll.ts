@@ -19,8 +19,8 @@ export function useAutoScroll<T>(
   isChatLoading: boolean,
   bottomThreshold = DEFAULT_BOTTOM_THRESHOLD,
 ): UseAutoScrollResult {
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null!);
+  const messagesContainerRef = useRef<HTMLDivElement>(null!);
 
   const [isAtBottom, setIsAtBottom] = useState(true);
 

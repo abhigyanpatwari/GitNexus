@@ -14,9 +14,7 @@ describe('agent tracking node markers', () => {
     const ids = ['File:src/app.ts', 'Function:src/app.ts:main:1'];
     const marker = formatNodeMarker('HIGHLIGHT_NODES', ids);
 
-    expect(marker).toBe(
-      '[HIGHLIGHT_NODES:File%3Asrc%2Fapp.ts,Function%3Asrc%2Fapp.ts%3Amain%3A1]',
-    );
+    expect(marker).toBe('[HIGHLIGHT_NODES:File%3Asrc%2Fapp.ts,Function%3Asrc%2Fapp.ts%3Amain%3A1]');
     expect(parseNodeMarker(marker, 'HIGHLIGHT_NODES')).toEqual(ids);
   });
 

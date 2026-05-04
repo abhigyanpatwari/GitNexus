@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execSync } from 'child_process';
-import { isGitRepo, getCurrentCommit, getGitRoot } from '../../src/storage/git.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {
+  isGitRepo,
+  getCurrentCommit,
+  getGitRoot,
+  findGitRootByDotGit,
+} from '../../src/storage/git.js';
 
 // Mock child_process.execSync
 vi.mock('child_process', () => ({
@@ -90,6 +98,70 @@ describe('git utilities', () => {
       const result = getGitRoot('/repo/src');
       expect(result).not.toBeNull();
       expect(result!.trim()).toBe(result);
+    });
+  });
+
+  describe('findGitRootByDotGit', () => {
+    it('finds an ancestor .git directory without spawning git', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dotgit-'));
+      try {
+        fs.mkdirSync(path.join(tmpDir, '.git'));
+        const nested = path.join(tmpDir, 'packages', 'app');
+        fs.mkdirSync(nested, { recursive: true });
+
+        expect(findGitRootByDotGit(nested)).toBe(path.resolve(tmpDir));
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns null outside a git worktree without spawning git', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-nonrepo-'));
+      try {
+        expect(findGitRootByDotGit(tmpDir)).toBeNull();
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    // Linked worktrees and submodules use a `.git` file (not directory) that
+    // points at the real gitdir. statSync succeeds for both, so the ancestor
+    // walk should treat such roots identically to ordinary repos.
+    it('treats a .git file (linked worktree) as a valid root', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-'));
+      try {
+        fs.writeFileSync(path.join(tmpDir, '.git'), 'gitdir: /fake/worktrees/wt\n');
+        const nested = path.join(tmpDir, 'src', 'pkg');
+        fs.mkdirSync(nested, { recursive: true });
+
+        expect(findGitRootByDotGit(nested)).toBe(path.resolve(tmpDir));
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns null when the input path does not exist', () => {
+      const missing = path.join(os.tmpdir(), `gitnexus-missing-${Date.now()}-${Math.random()}`);
+      expect(findGitRootByDotGit(missing)).toBeNull();
+      expect(mockExecSync).not.toHaveBeenCalled();
+    });
+
+    it('walks from a file input by starting at its parent directory', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-fileinput-'));
+      try {
+        fs.mkdirSync(path.join(tmpDir, '.git'));
+        const filePath = path.join(tmpDir, 'pkg', 'index.ts');
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, 'export {};\n');
+
+        expect(findGitRootByDotGit(filePath)).toBe(path.resolve(tmpDir));
+        expect(mockExecSync).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

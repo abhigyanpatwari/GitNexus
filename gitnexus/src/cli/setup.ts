@@ -32,15 +32,27 @@ interface SetupResult {
  */
 function resolveGitnexusBin(): string | null {
   try {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    const resolved = execFileSync(cmd, ['gitnexus'], {
+    const isWin = process.platform === 'win32';
+    const cmd = isWin ? 'where' : 'which';
+    const output = execFileSync(cmd, ['gitnexus'], {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .split('\n')[0]
-      .trim();
-    return resolved || null;
+    });
+    const lines = output
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (isWin) {
+      // On Windows, `where` returns multiple entries (e.g. the POSIX shell
+      // script AND the .cmd/.bat wrapper). Prefer the wrapper because
+      // child_process.spawn() cannot execute a shell script directly.
+      const cmdLine = lines.find((l) => /\.(cmd|bat)$/i.test(l));
+      return cmdLine || lines[0] || null;
+    }
+
+    return lines[0] || null;
   } catch {
     return null;
   }

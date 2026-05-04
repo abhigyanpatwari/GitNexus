@@ -240,7 +240,10 @@ function statsToRate(stats: AggregateStats): number {
   return stats.callCount > 0 ? Number((stats.errorCount / stats.callCount).toFixed(4)) : 0;
 }
 
-function mergeTimeWindows(a?: RuntimeTimeWindow, b?: RuntimeTimeWindow): RuntimeTimeWindow | undefined {
+function mergeTimeWindows(
+  a?: RuntimeTimeWindow,
+  b?: RuntimeTimeWindow,
+): RuntimeTimeWindow | undefined {
   const start = [a?.start, b?.start].filter(Boolean).sort()[0];
   const end = [a?.end, b?.end].filter(Boolean).sort().at(-1);
   return start || end ? { start, end } : undefined;
@@ -369,7 +372,8 @@ export function importOtlpJson(raw: string, sourceFile: string): RuntimeSignalSt
 
   for (const resourceSpan of resourceSpans) {
     const resourceAttrs = attrsArrayToObject(resourceSpan?.resource?.attributes);
-    const service = readAttr(resourceAttrs, ['service.name', 'serviceName', 'service']) ?? 'unknown-service';
+    const service =
+      readAttr(resourceAttrs, ['service.name', 'serviceName', 'service']) ?? 'unknown-service';
     const environment = readAttr(resourceAttrs, [
       'deployment.environment',
       'deployment.environment.name',
@@ -489,7 +493,12 @@ export function importJsonlLogs(raw: string, sourceFile: string): RuntimeSignalS
       const statusCode = readNumAttr(row, ['statusCode', 'status', 'http.status_code']);
       const durationMs = readNumAttr(row, ['durationMs', 'latencyMs', 'elapsedMs']);
       const filePath = readAttr(row, ['filePath', 'file', 'code.filepath']);
-      const symbolName = readAttr(row, ['symbolName', 'functionName', 'methodName', 'code.function']);
+      const symbolName = readAttr(row, [
+        'symbolName',
+        'functionName',
+        'methodName',
+        'code.function',
+      ]);
 
       store.logs.push({
         id: `RuntimeLog:${hashText(`${sourceFile}:${index}:${message}`)}`,
@@ -507,20 +516,20 @@ export function importJsonlLogs(raw: string, sourceFile: string): RuntimeSignalS
 
       const pattern = normalizeMessagePattern(message);
       const patternKey = `${service ?? ''}|${level ?? ''}|${pattern}`;
-      const current =
-        patternCounts.get(patternKey) ?? {
-          id: `RuntimeLogPattern:${hashText(patternKey)}`,
-          service,
-          level,
-          pattern,
-          count: 0,
-          route,
-          method,
-          filePath,
-          symbolName,
-        };
+      const current = patternCounts.get(patternKey) ?? {
+        id: `RuntimeLogPattern:${hashText(patternKey)}`,
+        service,
+        level,
+        pattern,
+        count: 0,
+        route,
+        method,
+        filePath,
+        symbolName,
+      };
       current.count += 1;
-      if (timestamp && (!current.lastSeen || timestamp > current.lastSeen)) current.lastSeen = timestamp;
+      if (timestamp && (!current.lastSeen || timestamp > current.lastSeen))
+        current.lastSeen = timestamp;
       patternCounts.set(patternKey, current);
 
       if (level === 'error' || isErrorStatus(statusCode)) {
@@ -528,20 +537,19 @@ export function importJsonlLogs(raw: string, sourceFile: string): RuntimeSignalS
         const frames = stack ? parseStackFrames(stack) : [];
         const type = readAttr(row, ['error.type', 'exception.type', 'type']);
         const key = `${service ?? ''}|${type ?? ''}|${pattern}|${stack ? hashText(stack) : ''}`;
-        const currentError =
-          errorCounts.get(key) ?? {
-            id: `RuntimeError:${hashText(key)}`,
-            service,
-            type,
-            message,
-            count: 0,
-            route,
-            method,
-            filePath: frames[0]?.filePath ?? filePath,
-            symbolName: frames[0]?.symbolName ?? symbolName,
-            stackHash: stack ? hashText(stack) : undefined,
-            stackFrames: frames,
-          };
+        const currentError = errorCounts.get(key) ?? {
+          id: `RuntimeError:${hashText(key)}`,
+          service,
+          type,
+          message,
+          count: 0,
+          route,
+          method,
+          filePath: frames[0]?.filePath ?? filePath,
+          symbolName: frames[0]?.symbolName ?? symbolName,
+          stackHash: stack ? hashText(stack) : undefined,
+          stackFrames: frames,
+        };
         currentError.count += 1;
         if (timestamp && (!currentError.lastSeen || timestamp > currentError.lastSeen)) {
           currentError.lastSeen = timestamp;
@@ -610,9 +618,15 @@ export function parseStackFrames(stack: string): RuntimeStackFrame[] {
 
 export function importStackTrace(raw: string, sourceFile: string): RuntimeSignalStore {
   const store = createEmptyRuntimeSignalStore([sourceFile]);
-  const chunks = raw.split(/\n\s*\n/g).map((chunk) => chunk.trim()).filter(Boolean);
+  const chunks = raw
+    .split(/\n\s*\n/g)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
   for (const chunk of chunks.length > 0 ? chunks : [raw]) {
-    const lines = chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const lines = chunk
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
     if (lines.length === 0) continue;
     const first = lines[0];
     const firstMatch = first.match(/^([A-Za-z0-9_.:$-]+(?:Error|Exception|Panic)?):?\s*(.*)$/);
@@ -636,10 +650,12 @@ export function importStackTrace(raw: string, sourceFile: string): RuntimeSignal
 export function detectRuntimeImportFormat(filePath: string, raw: string): RuntimeImportFormat {
   const lower = filePath.toLowerCase();
   if (lower.endsWith('.jsonl') || lower.endsWith('.ndjson')) return 'logs-jsonl';
-  if (lower.endsWith('.log') || lower.endsWith('.trace') || lower.endsWith('.stack')) return 'stacktrace';
+  if (lower.endsWith('.log') || lower.endsWith('.trace') || lower.endsWith('.stack'))
+    return 'stacktrace';
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.resourceSpans)) return 'otlp-json';
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.resourceSpans))
+      return 'otlp-json';
     if (Array.isArray(parsed)) return 'logs-jsonl';
   } catch {
     if (raw.split(/\r?\n/).some((line) => line.trim().startsWith('{'))) return 'logs-jsonl';
@@ -682,7 +698,9 @@ export async function importRuntimeFile(
   return importStackTrace(raw, resolved);
 }
 
-export async function readRuntimeSignalStore(signalPath: string): Promise<RuntimeSignalStore | null> {
+export async function readRuntimeSignalStore(
+  signalPath: string,
+): Promise<RuntimeSignalStore | null> {
   try {
     const raw = await fs.readFile(signalPath, 'utf-8');
     const parsed = JSON.parse(raw) as RuntimeSignalStore;

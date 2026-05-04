@@ -65,7 +65,7 @@ export const EmbeddingStatus = () => {
             className="group flex items-center gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-sm text-text-secondary transition-all hover:border-accent/50 hover:bg-hover hover:text-text-primary"
             title="Generate embeddings for semantic search"
           >
-            <Brain className="h-4 w-4 text-node-interface transition-colors group-hover:text-accent" />
+            <Brain className="text-node-interface h-4 w-4 transition-colors group-hover:text-accent" />
             <span className="hidden sm:inline">Enable Semantic Search</span>
             <Zap className="h-3 w-3 text-text-muted" />
           </button>
@@ -86,7 +86,7 @@ export const EmbeddingStatus = () => {
             <span className="text-xs text-text-secondary">Loading AI model...</span>
             <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-accent to-node-interface transition-all duration-300"
+                className="to-node-interface h-full rounded-full bg-gradient-to-r from-accent transition-all duration-300"
                 style={{ width: `${downloadPercent}%` }}
               />
             </div>
@@ -104,15 +104,15 @@ export const EmbeddingStatus = () => {
     const percent = embeddingProgress?.percent ?? 0;
 
     return (
-      <div className="flex items-center gap-2.5 rounded-lg border border-node-function/30 bg-surface px-3 py-1.5 text-sm">
-        <Loader2 className="h-4 w-4 animate-spin text-node-function" />
+      <div className="border-node-function/30 flex items-center gap-2.5 rounded-lg border bg-surface px-3 py-1.5 text-sm">
+        <Loader2 className="text-node-function h-4 w-4 animate-spin" />
         <div className="flex flex-col gap-0.5">
           <span className="text-xs text-text-secondary">
             Embedding {processed}/{total} nodes
           </span>
           <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-node-function to-accent transition-all duration-300"
+              className="from-node-function h-full rounded-full bg-gradient-to-r to-accent transition-all duration-300"
               style={{ width: `${percent}%` }}
             />
           </div>
@@ -124,8 +124,8 @@ export const EmbeddingStatus = () => {
   // Indexing
   if (embeddingStatus === 'indexing') {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-node-interface/30 bg-surface px-3 py-1.5 text-sm text-text-secondary">
-        <Loader2 className="h-4 w-4 animate-spin text-node-interface" />
+      <div className="border-node-interface/30 flex items-center gap-2 rounded-lg border bg-surface px-3 py-1.5 text-sm text-text-secondary">
+        <Loader2 className="text-node-interface h-4 w-4 animate-spin" />
         <span className="text-xs">Creating vector index...</span>
       </div>
     );
@@ -135,7 +135,7 @@ export const EmbeddingStatus = () => {
   if (embeddingStatus === 'ready') {
     return (
       <div
-        className="flex items-center gap-2 rounded-lg border border-node-function/30 bg-node-function/10 px-3 py-1.5 text-sm text-node-function"
+        className="border-node-function/30 bg-node-function/10 text-node-function flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm"
         title="Semantic search is ready! Use natural language in the AI chat."
       >
         <Check className="h-4 w-4" />

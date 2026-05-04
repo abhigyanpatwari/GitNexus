@@ -138,7 +138,9 @@ const AppContent = () => {
       }
       setGraph(graph);
       if (selectedNodeRef.current) {
-        const refreshedSelection = result.nodes.find((node) => node.id === selectedNodeRef.current?.id);
+        const refreshedSelection = result.nodes.find(
+          (node) => node.id === selectedNodeRef.current?.id,
+        );
         setSelectedNode(refreshedSelection ?? null);
       }
       setPendingGraphUpdate(null);
@@ -362,7 +364,8 @@ const AppContent = () => {
         if (!repo) return;
 
         const activeJob = snapshot.activeJobs?.find((job) => {
-          const jobRepoName = job.repoName || (job.repoPath || '').split(/[/\\]/).filter(Boolean).pop();
+          const jobRepoName =
+            job.repoName || (job.repoPath || '').split(/[/\\]/).filter(Boolean).pop();
           return jobRepoName?.toLowerCase() === activeRepo.toLowerCase();
         });
         if (activeJob) {

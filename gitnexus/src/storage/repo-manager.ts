@@ -131,6 +131,7 @@ export interface RegistryEntry {
 }
 
 const GITNEXUS_DIR = '.gitnexus';
+const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
@@ -334,23 +335,45 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
 };
 
 /**
- * Add .gitnexus to .gitignore if not already present
+ * Keep generated index files ignored without modifying the user's root .gitignore.
  */
-export const addToGitignore = async (repoPath: string): Promise<void> => {
-  const gitignorePath = path.join(repoPath, '.gitignore');
+export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => {
+  const gitignorePath = path.join(getStoragePath(repoPath), '.gitignore');
+
+  await fs.mkdir(path.dirname(gitignorePath), { recursive: true });
+  await fs.writeFile(gitignorePath, '*\n', 'utf-8');
+
+  await ensureGitInfoExclude(repoPath);
+};
+
+const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
+  const gitDirPath = path.join(path.resolve(repoPath), '.git');
+  const excludePath = path.join(gitDirPath, 'info', 'exclude');
 
   try {
-    const content = await fs.readFile(gitignorePath, 'utf-8');
-    if (content.includes(GITNEXUS_DIR)) return;
-
-    const newContent = content.endsWith('\n')
-      ? `${content}${GITNEXUS_DIR}\n`
-      : `${content}\n${GITNEXUS_DIR}\n`;
-    await fs.writeFile(gitignorePath, newContent, 'utf-8');
+    const gitDir = await fs.stat(gitDirPath);
+    if (!gitDir.isDirectory()) return;
   } catch {
-    // .gitignore doesn't exist, create it
-    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
+    return;
   }
+
+  await fs.mkdir(path.dirname(excludePath), { recursive: true });
+
+  let content = '';
+  try {
+    content = await fs.readFile(excludePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+
+  const excludes = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  if (excludes.includes(GITNEXUS_DIR) || excludes.includes(GITNEXUS_EXCLUDE_ENTRY)) return;
+
+  const separator = content.length === 0 || content.endsWith('\n') ? '' : '\n';
+  await fs.writeFile(excludePath, `${content}${separator}${GITNEXUS_EXCLUDE_ENTRY}\n`, 'utf-8');
 };
 
 // ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────
@@ -656,6 +679,84 @@ export class RegistryAmbiguousTargetError extends Error {
     this.name = 'RegistryAmbiguousTargetError';
   }
 }
+
+/**
+ * Thrown by {@link assertAnalysisFinalized} when a successful `analyze`
+ * run did not actually persist `meta.json` or did not register the repo
+ * in `~/.gitnexus/registry.json` (#1169).
+ *
+ * Why this exists: on Windows, `gitnexus analyze` has been observed to
+ * exit cleanly (code 0) with `lbug.wal` written but no `meta.json`,
+ * leaving the repo invisible to `gitnexus list`/`status` and downstream
+ * MCP discovery. The only signal to the user was an empty banner —
+ * which is indistinguishable from a no-op early return. This invariant
+ * fails loudly with an actionable diagnostic so the silent-finalize bug
+ * surfaces with a non-zero exit code and a recoverable error message
+ * regardless of the upstream root cause (re-exec churn, native module
+ * side effects, antivirus, or future regressions).
+ */
+export class AnalysisNotFinalizedError extends Error {
+  readonly kind = 'AnalysisNotFinalizedError' as const;
+  constructor(
+    public readonly repoPath: string,
+    public readonly storagePath: string,
+    public readonly missing: 'meta' | 'registry-entry',
+    public readonly registryPath: string,
+  ) {
+    const detail =
+      missing === 'meta'
+        ? `meta.json was not written to ${path.join(storagePath, 'meta.json')}`
+        : `registry entry for ${repoPath} was not added to ${registryPath}`;
+    super(
+      `Analysis did not finalize for ${repoPath}: ${detail}. ` +
+        `The on-disk index is incomplete and was not registered. ` +
+        `Re-run "gitnexus analyze" — if the problem persists, inspect ` +
+        `${storagePath} for a stale lbug.wal that signals an aborted write.`,
+    );
+    this.name = 'AnalysisNotFinalizedError';
+  }
+}
+
+/**
+ * Verify that a successful `analyze` call actually produced an indexed,
+ * registered repo on disk. Two checks, both strictly required:
+ *
+ *   1. `meta.json` must exist at `<repoPath>/.gitnexus/meta.json`.
+ *   2. The global registry (`getGlobalRegistryPath()`) must contain an
+ *      entry whose canonical path matches `repoPath`.
+ *
+ * Throws {@link AnalysisNotFinalizedError} on the first failure with the
+ * specific missing artifact. Pure read — does not mutate disk state.
+ *
+ * Callers must skip this assertion on the `alreadyUpToDate` early-return
+ * path, where the rebuild was deliberately not run.
+ */
+export const assertAnalysisFinalized = async (repoPath: string): Promise<void> => {
+  const resolved = path.resolve(repoPath);
+  const { storagePath, metaPath } = getStoragePaths(resolved);
+
+  try {
+    await fs.access(metaPath);
+  } catch {
+    throw new AnalysisNotFinalizedError(resolved, storagePath, 'meta', getGlobalRegistryPath());
+  }
+
+  const entries = await readRegistry();
+  const canonicalInput = canonicalizePath(resolved);
+  const isWin = process.platform === 'win32';
+  const found = entries.some((e) => {
+    const a = canonicalizePath(e.path);
+    return isWin ? a.toLowerCase() === canonicalInput.toLowerCase() : a === canonicalInput;
+  });
+  if (!found) {
+    throw new AnalysisNotFinalizedError(
+      resolved,
+      storagePath,
+      'registry-entry',
+      getGlobalRegistryPath(),
+    );
+  }
+};
 
 /**
  * Thrown by {@link assertSafeStoragePath} when a registry entry's

@@ -165,7 +165,7 @@ export const Header = ({
       <div className="flex items-center gap-4">
         {/* Logo */}
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent to-node-interface text-sm font-bold text-white shadow-glow">
+          <div className="to-node-interface flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent text-sm font-bold text-white shadow-glow">
             ◇
           </div>
           <span className="text-[15px] font-semibold tracking-tight">NexusForge</span>
@@ -186,7 +186,7 @@ export const Header = ({
                     : 'border-border-subtle bg-surface text-text-secondary hover:border-border-default hover:bg-hover'
                 } `}
               >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-node-function" />
+                <span className="bg-node-function h-1.5 w-1.5 animate-pulse rounded-full" />
                 <span className="max-w-[160px] truncate">{projectName}</span>
                 <ChevronDown
                   className={`h-3 w-3 text-text-muted transition-transform duration-200 ${isRepoDropdownOpen ? 'rotate-180' : ''}`}
@@ -233,7 +233,7 @@ export const Header = ({
                               }}
                               className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
                             >
-                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-node-folder" />
+                              <FolderOpen className="text-node-folder h-3.5 w-3.5 shrink-0" />
                               <span className="flex-1 truncate font-mono text-sm text-text-primary">
                                 {repo.name}
                               </span>

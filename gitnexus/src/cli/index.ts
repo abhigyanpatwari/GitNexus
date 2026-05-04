@@ -42,7 +42,10 @@ program
     '--llm-anchor-limit <n>',
     'Maximum nodes to enrich when --llm-anchors is enabled. Default: 50.',
   )
-  .option('--skip-git', 'Index a folder without requiring a .git directory')
+  .option(
+    '--skip-git',
+    'Treat the provided path/cwd as the index root and skip parent git-root discovery',
+  )
   .option(
     '--name <alias>',
     'Register this repo under a custom name in ~/.gitnexus/registry.json ' +
@@ -198,7 +201,7 @@ program
   .action(createLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
-  .command('context [args...]')
+  .command('context [name] [target]')
   .description('360-degree symbol view, or context push/pull snapshots')
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
@@ -225,8 +228,7 @@ program
       '  gitnexus context pull ./context-lake --output ./imported-context\n' +
       '  gitnexus context push s3://bucket/team-context/ --backend s3 --endpoint-url https://s3.example.com',
   )
-  .action(async (args: string[], options) => {
-    const [mode, target] = args ?? [];
+  .action(async (mode: string | undefined, target: string | undefined, options) => {
     if (mode === 'push') {
       const { contextPushCommand } = await import('./context-lake.js');
       return contextPushCommand(target, options);
@@ -286,7 +288,9 @@ const runtime = program
 
 runtime
   .command('import <input>')
-  .description('Import OTLP JSON, structured JSONL logs, or stack traces into .gitnexus/runtime-signals.json')
+  .description(
+    'Import OTLP JSON, structured JSONL logs, or stack traces into .gitnexus/runtime-signals.json',
+  )
   .option('-r, --repo <name>', 'Target repository (omit to use current repo)')
   .option('--format <format>', 'auto, otlp-json, logs-jsonl, or stacktrace', 'auto')
   .option('--replace', 'Replace existing runtime-signals.json instead of merging')

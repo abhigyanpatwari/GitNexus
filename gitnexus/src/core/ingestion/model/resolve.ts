@@ -157,19 +157,27 @@ export function c3Linearize(
 
     // Add the direct parents list as the final sequence
     const sequences = [...parentLinearizations, [...directParents]];
+    const heads = new Uint32Array(sequences.length); // head pointer per sequence
     const result: string[] = [];
 
+    // Tail-count map: how many sequences contain this id at index > head.
+    // O(1) membership check replaces O(n) indexOf scans.
+    const tailCount = new Map<string, number>();
+    for (const seq of sequences) {
+      for (let i = 1; i < seq.length; i++) {
+        tailCount.set(seq[i], (tailCount.get(seq[i]) ?? 0) + 1);
+      }
+    }
+
+    let remaining = sequences.reduce((n, s) => n + s.length, 0);
     let inconsistent = false;
-    while (sequences.some((s) => s.length > 0)) {
-      // Find a good head: one that doesn't appear in the tail of any other sequence
+
+    while (remaining > 0) {
       let head: string | null = null;
-      for (const seq of sequences) {
-        if (seq.length === 0) continue;
-        const candidate = seq[0];
-        const inTail = sequences.some(
-          (other) => other.length > 1 && other.indexOf(candidate, 1) !== -1,
-        );
-        if (!inTail) {
+      for (let si = 0; si < sequences.length; si++) {
+        if (heads[si] >= sequences[si].length) continue;
+        const candidate = sequences[si][heads[si]];
+        if ((tailCount.get(candidate) ?? 0) === 0) {
           head = candidate;
           break;
         }
@@ -182,10 +190,19 @@ export function c3Linearize(
 
       result.push(head);
 
-      // Remove the chosen head from all sequences
-      for (const seq of sequences) {
-        if (seq.length > 0 && seq[0] === head) {
-          seq.shift();
+      // Advance head pointers past the chosen head; update tail counts
+      for (let si = 0; si < sequences.length; si++) {
+        if (heads[si] >= sequences[si].length) continue;
+        if (sequences[si][heads[si]] === head) {
+          heads[si]++;
+          remaining--;
+          // promoted was in this sequence's active tail; now it's the new head — remove from tailCount
+          if (heads[si] < sequences[si].length) {
+            const promoted = sequences[si][heads[si]];
+            const prev = tailCount.get(promoted)!;
+            if (prev <= 1) tailCount.delete(promoted);
+            else tailCount.set(promoted, prev - 1);
+          }
         }
       }
     }

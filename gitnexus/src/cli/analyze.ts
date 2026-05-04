@@ -17,11 +17,54 @@ import {
   getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
+  AnalysisNotFinalizedError,
+  assertAnalysisFinalized,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import fs from 'fs/promises';
+
+// Capture stderr.write at module load BEFORE anything (LadybugDB native
+// init, progress bar, console redirection) can monkey-patch it. The
+// fatal handlers below MUST reach the user even when the analyze path
+// has redirected console.* through the progress bar's bar.log() — the
+// previous behaviour silently swallowed stack traces and made #1169
+// indistinguishable from a no-op success on Windows.
+const realStderrWrite = process.stderr.write.bind(process.stderr);
+
+const writeFatalToStderr = (label: string, err: unknown): void => {
+  const isErr = err instanceof Error;
+  const message = isErr ? err.message : String(err);
+  realStderrWrite(`\n  ${label}: ${message}\n`);
+  if (isErr && err.stack) realStderrWrite(`${err.stack}\n`);
+};
+
+let fatalHandlersInstalled = false;
+
+/**
+ * Install one-shot `unhandledRejection` / `uncaughtException` handlers
+ * that surface the failure to the real stderr (bypassing any console
+ * redirection installed by the progress bar) and force a non-zero exit
+ * code. Without these, an async error escaping {@link analyzeCommand}'s
+ * try/catch was reported as exit 0 with no diagnostic — the silent
+ * failure mode tracked in #1169.
+ */
+const installFatalHandlers = (): void => {
+  if (fatalHandlersInstalled) return;
+  fatalHandlersInstalled = true;
+  process.on('unhandledRejection', (err) => {
+    writeFatalToStderr('Analysis failed (unhandled rejection)', err);
+    process.exit(1);
+  });
+  process.on('uncaughtException', (err) => {
+    writeFatalToStderr('Analysis failed (uncaught exception)', err);
+    process.exit(1);
+  });
+};
+
+const invokedViaGitNexusCli = (): boolean =>
+  /(?:^|[\\/])cli[\\/]index\.(?:ts|js)$/.test(process.argv[1] ?? '');
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -110,6 +153,11 @@ export interface AnalyzeOptions {
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
 
+  // Install fatal handlers immediately after re-exec resolution so any
+  // async error that escapes the try/catch below (#1169) surfaces with
+  // a stack trace and a non-zero exit code instead of a silent exit 0.
+  installFatalHandlers();
+
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -192,21 +240,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let repoPath: string;
   if (inputPath) {
     repoPath = path.resolve(inputPath);
+  } else if (options?.skipGit) {
+    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
+    repoPath = path.resolve(process.cwd());
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      if (!options?.skipGit) {
-        console.log(
-          '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      // --skip-git: fall back to cwd as the root
-      repoPath = path.resolve(process.cwd());
-    } else {
-      repoPath = gitRoot;
+      console.log(
+        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+      );
+      process.exitCode = 1;
+      return;
     }
+    repoPath = gitRoot;
   }
 
   const repoHasGit = hasGitDir(repoPath);
@@ -235,6 +281,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   const maxFileSizeBanner = getMaxFileSizeBannerMessage();
   if (maxFileSizeBanner) {
     console.log(`${maxFileSizeBanner}\n`);
+  }
+
+  if (!options?.skipGroupSync) {
+    try {
+      // Load the LadybugDB-backed group sync module before the main analysis
+      // opens and closes its writable handle. On Windows, loading that second
+      // adapter after teardown can crash the native runtime even when no
+      // configured groups are ultimately synced.
+      await import('../core/group/auto-sync.js');
+    } catch {
+      // Auto-sync itself reports actionable errors later; this preflight only
+      // controls import timing for the native adapter.
+    }
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
@@ -335,10 +394,63 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           updateBar(percent, message);
         },
         onLog: barLog,
+        beforeClose: options?.skills
+          ? async (analysis) => {
+              updateBar(99, 'Generating skill files...');
+              try {
+                const { generateSkillFiles } = await import('./skill-gen.js');
+                const { generateAIContextFiles } = await import('./ai-context.js');
+                const skillResult = await generateSkillFiles(
+                  repoPath,
+                  analysis.repoName,
+                  analysis.pipelineResult,
+                );
+                if (skillResult.skills.length > 0) {
+                  barLog(`  Generated ${skillResult.skills.length} skill files`);
+                  const s = analysis.stats;
+                  const communityResult = analysis.pipelineResult?.communityResult;
+                  let aggregatedClusterCount = 0;
+                  if (communityResult?.communities) {
+                    const groups = new Map<string, number>();
+                    for (const c of communityResult.communities) {
+                      const label = c.heuristicLabel || c.label || 'Unknown';
+                      groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+                    }
+                    aggregatedClusterCount = Array.from(groups.values()).filter(
+                      (count: number) => count >= 5,
+                    ).length;
+                  }
+                  const { storagePath: sp } = getStoragePaths(repoPath);
+                  await generateAIContextFiles(
+                    repoPath,
+                    sp,
+                    analysis.repoName,
+                    {
+                      files: s.files ?? 0,
+                      nodes: s.nodes ?? 0,
+                      edges: s.edges ?? 0,
+                      communities: s.communities,
+                      clusters: aggregatedClusterCount,
+                      processes: s.processes,
+                    },
+                    skillResult.skills,
+                    { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+                  );
+                }
+              } catch {
+                /* best-effort */
+              }
+            }
+          : undefined,
       },
     );
 
     if (result.alreadyUpToDate) {
+      // Even the fast path must prove the repo is discoverable. A prior
+      // run can write meta.json and then fail before registerRepo(); in
+      // that half-finalized state, runFullAnalysis returns alreadyUpToDate
+      // on the next invocation unless we check the registry here too.
+      await assertAnalysisFinalized(repoPath);
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
@@ -351,54 +463,14 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
 
-    // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
-      updateBar(99, 'Generating skill files...');
-      try {
-        const { generateSkillFiles } = await import('./skill-gen.js');
-        const { generateAIContextFiles } = await import('./ai-context.js');
-        const skillResult = await generateSkillFiles(
-          repoPath,
-          result.repoName,
-          result.pipelineResult,
-        );
-        if (skillResult.skills.length > 0) {
-          barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
-          const s = result.stats;
-          const communityResult = result.pipelineResult?.communityResult;
-          let aggregatedClusterCount = 0;
-          if (communityResult?.communities) {
-            const groups = new Map<string, number>();
-            for (const c of communityResult.communities) {
-              const label = c.heuristicLabel || c.label || 'Unknown';
-              groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-            }
-            aggregatedClusterCount = Array.from(groups.values()).filter(
-              (count: number) => count >= 5,
-            ).length;
-          }
-          const { storagePath: sp } = getStoragePaths(repoPath);
-          await generateAIContextFiles(
-            repoPath,
-            sp,
-            result.repoName,
-            {
-              files: s.files ?? 0,
-              nodes: s.nodes ?? 0,
-              edges: s.edges ?? 0,
-              communities: s.communities,
-              clusters: aggregatedClusterCount,
-              processes: s.processes,
-            },
-            skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
-          );
-        }
-      } catch {
-        /* best-effort */
-      }
-    }
+    // Post-finalize invariant (#1169): runFullAnalysis nominally writes
+    // meta.json and registers the repo, but on Windows it has been
+    // observed to return successfully with neither artifact present
+    // (banner-only output, exit 0). Verify both before declaring
+    // success so the silent-finalize state surfaces with a non-zero
+    // exit code and an actionable error instead of being mistaken for
+    // a healthy index.
+    await assertAnalysisFinalized(repoPath);
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -427,6 +499,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     console.log('');
+    if (invokedViaGitNexusCli()) {
+      process.exit(0);
+    }
   } catch (err: any) {
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);
@@ -449,10 +524,34 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       );
       console.error('');
       process.exitCode = 1;
+      if (invokedViaGitNexusCli()) process.exit(1);
       return;
     }
 
-    console.error(`\n  Analysis failed: ${msg}\n`);
+    // Finalize invariant failure (#1169) — keep the rich actionable
+    // message intact and write through realStderrWrite so it can't be
+    // erased by a leftover bar refresh on slow terminals.
+    if (err instanceof AnalysisNotFinalizedError) {
+      writeFatalToStderr('Analysis did not finalize', err);
+      realStderrWrite(
+        `\n  Diagnostic checklist:\n` +
+          `    1. Re-run "gitnexus analyze" - transient native errors often clear on retry.\n` +
+          `    2. Inspect ${err.storagePath} - a leftover lbug.wal indicates an aborted write.\n` +
+          `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
+          `       and attach the trace to the GitNexus issue tracker.\n\n`,
+      );
+      process.exitCode = 1;
+      if (invokedViaGitNexusCli()) process.exit(1);
+      return;
+    }
+
+    // Bypass the redirected console.error and write the full stack to
+    // the real stderr captured at module load. The redirected
+    // console.error wraps every line with `\\x1b[2K\\r` (ANSI clear-line)
+    // and forces a bar.update() afterwards, which on some Windows
+    // terminals visually erases the failure message — the canonical
+    // shape of the silent-exit symptom in #1169.
+    writeFatalToStderr('Analysis failed', err);
 
     // Provide helpful guidance for known failure modes
     if (
@@ -496,6 +595,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     process.exitCode = 1;
+    if (invokedViaGitNexusCli()) process.exit(1);
     return;
   }
 

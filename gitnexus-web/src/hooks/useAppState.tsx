@@ -430,39 +430,44 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   );
 
   // Code References methods
-  const addCodeReference = useCallback((ref: Omit<CodeReference, 'id'>) => {
-    const id = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const newRef: CodeReference = { ...ref, id };
+  const addCodeReference = useCallback(
+    (ref: Omit<CodeReference, 'id'>) => {
+      const id = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newRef: CodeReference = { ...ref, id };
 
-    setCodeReferences((prev) => {
-      // Don't add duplicates (same file + line range)
-      const isDuplicate = prev.some(
-        (r) =>
-          r.filePath === ref.filePath && r.startLine === ref.startLine && r.endLine === ref.endLine,
-      );
-      if (isDuplicate) return prev;
-      return [...prev, newRef];
-    });
+      setCodeReferences((prev) => {
+        // Don't add duplicates (same file + line range)
+        const isDuplicate = prev.some(
+          (r) =>
+            r.filePath === ref.filePath &&
+            r.startLine === ref.startLine &&
+            r.endLine === ref.endLine,
+        );
+        if (isDuplicate) return prev;
+        return [...prev, newRef];
+      });
 
-    // Auto-open panel when references are added
-    setCodePanelOpen(true);
+      // Auto-open panel when references are added
+      setCodePanelOpen(true);
 
-    // Signal the Code Inspector to focus (scroll + glow) this reference.
-    // This should happen even if the reference already exists (duplicates are ignored),
-    // so it must be separate from the add-to-list behavior.
-    setCodeReferenceFocus({
-      filePath: ref.filePath,
-      startLine: ref.startLine,
-      endLine: ref.endLine,
-      ts: Date.now(),
-    });
+      // Signal the Code Inspector to focus (scroll + glow) this reference.
+      // This should happen even if the reference already exists (duplicates are ignored),
+      // so it must be separate from the add-to-list behavior.
+      setCodeReferenceFocus({
+        filePath: ref.filePath,
+        startLine: ref.startLine,
+        endLine: ref.endLine,
+        ts: Date.now(),
+      });
 
-    // Track AI highlights separately so they can be toggled off in the UI
-    if (ref.nodeId && ref.source === 'ai') {
-      setAICitationHighlightedNodeIds((prev) => new Set([...prev, ref.nodeId!]));
-      triggerNodeAnimation([ref.nodeId], 'pulse');
-    }
-  }, [triggerNodeAnimation]);
+      // Track AI highlights separately so they can be toggled off in the UI
+      if (ref.nodeId && ref.source === 'ai') {
+        setAICitationHighlightedNodeIds((prev) => new Set([...prev, ref.nodeId!]));
+        triggerNodeAnimation([ref.nodeId], 'pulse');
+      }
+    },
+    [triggerNodeAnimation],
+  );
 
   // Remove ONLY AI-provided refs so each new chat response refreshes the Code panel
   const clearAICodeReferences = useCallback(() => {

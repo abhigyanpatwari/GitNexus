@@ -113,7 +113,7 @@ export const WebGPUFallbackDialog = ({
           </div>
 
           {isSmallCodebase && (
-            <p className="flex items-center gap-1.5 rounded-lg bg-node-function/10 px-3 py-2 text-xs text-node-function">
+            <p className="bg-node-function/10 text-node-function flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs">
               <Rocket className="h-3.5 w-3.5" />
               Small codebase detected! CPU should be fine.
             </p>
@@ -135,7 +135,7 @@ export const WebGPUFallbackDialog = ({
             onClick={onUseCPU}
             className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all ${
               isSmallCodebase
-                ? 'bg-node-function text-white hover:bg-node-function/90'
+                ? 'bg-node-function hover:bg-node-function/90 text-white'
                 : 'border border-amber-500/30 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
             }`}
           >

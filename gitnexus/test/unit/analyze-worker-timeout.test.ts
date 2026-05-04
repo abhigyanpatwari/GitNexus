@@ -14,6 +14,8 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
+  AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},
+  assertAnalysisFinalized: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../src/storage/git.js', () => ({

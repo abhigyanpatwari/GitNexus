@@ -12,10 +12,7 @@ describe('Graph RAG tools', () => {
         {
           filePath: 'src/GraphCanvas.tsx',
           score: 4.2,
-          nodeIds: [
-            'File:src/GraphCanvas.tsx',
-            'Function:src/GraphCanvas.tsx:GraphCanvas',
-          ],
+          nodeIds: ['File:src/GraphCanvas.tsx', 'Function:src/GraphCanvas.tsx:GraphCanvas'],
         },
       ]),
     });

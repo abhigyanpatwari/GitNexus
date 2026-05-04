@@ -89,7 +89,10 @@ const runtimeMetricFields = (node: GraphNode): string[] => [
   escapeCSVField(csvText(node.properties.service)),
   escapeCSVField(csvText(node.properties.environment)),
   escapeCSVNumber(typeof node.properties.callCount === 'number' ? node.properties.callCount : 0, 0),
-  escapeCSVNumber(typeof node.properties.errorCount === 'number' ? node.properties.errorCount : 0, 0),
+  escapeCSVNumber(
+    typeof node.properties.errorCount === 'number' ? node.properties.errorCount : 0,
+    0,
+  ),
   escapeCSVNumber(typeof node.properties.errorRate === 'number' ? node.properties.errorRate : 0, 0),
   escapeCSVNumber(
     typeof node.properties.p95LatencyMs === 'number' ? node.properties.p95LatencyMs : undefined,
@@ -587,7 +590,10 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(csvText(node.properties.symbolName)),
             escapeCSVField(csvText(node.properties.message)),
             escapeCSVField(csvText(node.properties.errorType || node.properties.type)),
-            escapeCSVNumber(typeof node.properties.count === 'number' ? node.properties.count : 1, 1),
+            escapeCSVNumber(
+              typeof node.properties.count === 'number' ? node.properties.count : 1,
+              1,
+            ),
             escapeCSVField(csvText(node.properties.lastSeen)),
             escapeCSVField(csvText(node.properties.stackHash)),
           ].join(','),
@@ -605,7 +611,10 @@ export const streamAllCSVsToDisk = async (
             escapeCSVField(csvText(node.properties.filePath)),
             escapeCSVField(csvText(node.properties.symbolName)),
             escapeCSVField(csvText(node.properties.pattern)),
-            escapeCSVNumber(typeof node.properties.count === 'number' ? node.properties.count : 1, 1),
+            escapeCSVNumber(
+              typeof node.properties.count === 'number' ? node.properties.count : 1,
+              1,
+            ),
             escapeCSVField(csvText(node.properties.lastSeen)),
           ].join(','),
         );

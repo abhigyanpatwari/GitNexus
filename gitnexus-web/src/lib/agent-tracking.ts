@@ -65,7 +65,11 @@ const getFileName = (filePath: unknown): string => {
   return normalized.split('/').filter(Boolean).pop() ?? '';
 };
 
-const addResolvedId = (result: string[], seen: Set<string>, nodeId: string | undefined): boolean => {
+const addResolvedId = (
+  result: string[],
+  seen: Set<string>,
+  nodeId: string | undefined,
+): boolean => {
   if (!nodeId || seen.has(nodeId)) return false;
   seen.add(nodeId);
   result.push(nodeId);

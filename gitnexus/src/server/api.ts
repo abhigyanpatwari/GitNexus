@@ -33,6 +33,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork, spawn } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager, type IndexingWarning, type IndexingCounts } from './analyze-job.js';
+import { assertString, escapeRegExp, BadRequestError } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
@@ -102,7 +103,6 @@ function callBackendResourceInChildProcess(
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timer: NodeJS.Timeout;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -127,7 +127,7 @@ function callBackendResourceInChildProcess(
       }
     };
 
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       child.kill();
       finish(() => reject(new Error(`GitNexus backend method "${method}" timed out`)));
     }, 120_000);
@@ -212,7 +212,6 @@ function callGraphInChildProcess(
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timer: NodeJS.Timeout;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -237,7 +236,7 @@ function callGraphInChildProcess(
       }
     };
 
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       child.kill();
       finish(() => reject(new Error('GitNexus graph worker timed out')));
     }, 120_000);
@@ -1034,6 +1033,9 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
 };
 
 const statusFromError = (err: any): number => {
+  // Validation helpers throw BadRequestError / ForbiddenError with a typed
+  // .status field — honor it before falling back to message-string matching.
+  if (err instanceof BadRequestError) return err.status;
   const msg = String(err?.message ?? '');
   if (msg.includes('No indexed repositories') || msg.includes('not found')) return 404;
   if (msg.includes('Multiple repositories')) return 400;
@@ -1118,6 +1120,87 @@ export async function collectGroupStatusesForApi(
 
   return { groups, errors };
 }
+
+/**
+ * Handle a GET /api/file request body. Extracted from createServer's route
+ * registration so it can be unit-tested without spinning up an HTTP server
+ * — calling app.get(...) inside a test triggers CodeQL's
+ * js/missing-rate-limiting query, which is appropriate for production
+ * route handlers but a false positive for tests of the handler logic.
+ *
+ * The function takes the express req and res (typed loosely so test code
+ * can pass minimal mocks) plus the resolved repo path. All path-traversal
+ * containment is done inline at the readFile sink with the canonical
+ * path.relative idiom for CodeQL js/path-injection recognition.
+ */
+export const handleFileRequest = async (
+  req: { query: any },
+  res: {
+    status: (code: number) => { json: (body: any) => void };
+    json: (body: any) => void;
+  },
+  repoPath: string,
+): Promise<void> => {
+  try {
+    // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
+    // Without this, an attacker could pass `?path=a&path=b` to bypass the
+    // length-bound traversal check below (CodeQL js/type-confusion-through-
+    // parameter-tampering, same class as the /api/grep critical fix).
+    const rawFilePath = req.query.path;
+    if (rawFilePath === undefined || rawFilePath === '') {
+      res.status(400).json({ error: 'Missing path' });
+      return;
+    }
+    const filePath = assertString(rawFilePath, 'path');
+
+    // Path-injection containment — inline at the sink with the canonical
+    // path.relative idiom that CodeQL's js/path-injection sanitizer
+    // recognizes. assertSafePath in validation.ts performs the equivalent
+    // check, but cross-module helpers are not followed by CodeQL's
+    // interprocedural analysis for path-traversal sanitization in JS, so
+    // the barrier must be visible inline at the readFile sink.
+    const repoRoot = path.resolve(repoPath);
+    const fullPath = path.resolve(repoRoot, filePath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
+      res.status(403).json({ error: 'Path traversal denied' });
+      return;
+    }
+
+    const raw = await fs.readFile(fullPath, 'utf-8');
+
+    // Optional line-range support: ?startLine=10&endLine=50
+    // Returns only the requested slice (0-indexed), plus metadata.
+    const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
+    const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
+
+    if (startLine !== undefined && Number.isFinite(startLine)) {
+      const lines = raw.split('\n');
+      const start = Math.max(0, startLine);
+      const end =
+        endLine !== undefined && Number.isFinite(endLine)
+          ? Math.min(lines.length, endLine + 1)
+          : lines.length;
+      res.json({
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      });
+    } else {
+      res.json({ content: raw, totalLines: raw.split('\n').length });
+    }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      res.status(404).json({ error: 'File not found' });
+    } else {
+      // statusFromError returns err.status for BadRequestError / ForbiddenError
+      // (assertString → 400 on array-form ?path=a&path=b; ForbiddenError → 403
+      // on traversal). Falls back to 500 for unrecognized failures.
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to read file' });
+    }
+  }
+};
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
@@ -1331,20 +1414,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           jobId: lock.jobId,
           startedAt: lock.startedAt,
         }));
-        const signature = JSON.stringify(
-          {
-            repos: repos.map((repo) => ({
-              name: repo.name,
-              path: repo.path,
-              indexedAt: repo.indexedAt,
-              lastCommit: repo.lastCommit,
-              stats: repo.stats,
-            })),
-            activeJobs,
-            recentWarnings,
-            locks,
-          },
-        );
+        const signature = JSON.stringify({
+          repos: repos.map((repo) => ({
+            name: repo.name,
+            path: repo.path,
+            indexedAt: repo.indexedAt,
+            lastCommit: repo.lastCommit,
+            stats: repo.stats,
+          })),
+          activeJobs,
+          recentWarnings,
+          locks,
+        });
         if (force || signature !== lastSignature) {
           lastSignature = signature;
           writeEvent('snapshot', {
@@ -1481,15 +1562,26 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const storagePath = getStoragePath(entry.path);
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
-        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
-        const cloneDir = getCloneDir(entry.name);
+        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
+        // getCloneDir now throws on names that are not filesystem-safe (e.g.
+        // local repos registered with names like "my project" or "org/repo").
+        // Such repos legitimately have no clone dir, so treat the rejection as
+        // "nothing to clean up" rather than letting it fail the delete handler.
+        let cloneDir: string | null = null;
         try {
-          const stat = await fs.stat(cloneDir);
-          if (stat.isDirectory()) {
-            await fs.rm(cloneDir, { recursive: true, force: true });
-          }
+          cloneDir = getCloneDir(entry.name);
         } catch {
-          /* clone dir may not exist (local repos) */
+          /* repo name not eligible for a clone dir (local repo) */
+        }
+        if (cloneDir) {
+          try {
+            const stat = await fs.stat(cloneDir);
+            if (stat.isDirectory()) {
+              await fs.rm(cloneDir, { recursive: true, force: true });
+            }
+          } catch {
+            /* clone dir may not exist */
+          }
         }
 
         // 3. Unregister from the global registry
@@ -1769,56 +1861,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Read file — with path traversal guard
   app.get('/api/file', async (req, res) => {
-    try {
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-      const filePath = req.query.path as string;
-      if (!filePath) {
-        res.status(400).json({ error: 'Missing path' });
-        return;
-      }
-
-      // Prevent path traversal — resolve and verify the path stays within the repo root
-      const repoRoot = path.resolve(entry.path);
-      const fullPath = path.resolve(repoRoot, filePath);
-      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
-        res.status(403).json({ error: 'Path traversal denied' });
-        return;
-      }
-
-      const raw = await fs.readFile(fullPath, 'utf-8');
-
-      // Optional line-range support: ?startLine=10&endLine=50
-      // Returns only the requested slice (0-indexed), plus metadata.
-      const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
-      const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
-
-      if (startLine !== undefined && Number.isFinite(startLine)) {
-        const lines = raw.split('\n');
-        const start = Math.max(0, startLine);
-        const end =
-          endLine !== undefined && Number.isFinite(endLine)
-            ? Math.min(lines.length, endLine + 1)
-            : lines.length;
-        res.json({
-          content: lines.slice(start, end).join('\n'),
-          startLine: start,
-          endLine: end - 1,
-          totalLines: lines.length,
-        });
-      } else {
-        res.json({ content: raw, totalLines: raw.split('\n').length });
-      }
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        res.status(404).json({ error: 'File not found' });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to read file' });
-      }
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return;
     }
+    await handleFileRequest(req, res, entry.path);
   });
 
   // Grep — regex search across file contents in the indexed repo
@@ -1830,22 +1878,36 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const pattern = req.query.pattern as string;
-      if (!pattern) {
+      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
+      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
+      // type check, the `.length` guard below counts array elements instead of
+      // characters, allowing arbitrarily long patterns through.
+      const rawPattern = req.query.pattern;
+      if (rawPattern === undefined) {
+        res.status(400).json({ error: 'Missing "pattern" query parameter' });
+        return;
+      }
+      const pattern = assertString(rawPattern, 'pattern');
+      if (pattern.length === 0) {
         res.status(400).json({ error: 'Missing "pattern" query parameter' });
         return;
       }
 
-      // ReDoS protection: reject overly long or dangerous patterns
+      // Length cap: applies to both literal and regex modes as a defense-in-depth
+      // bound against pathological input.
       if (pattern.length > 200) {
         res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
         return;
       }
 
-      // Validate regex syntax
+      // Treat user input as a literal substring in all cases to prevent
+      // regex-injection/ReDoS via attacker-controlled regex syntax.
+      const effectivePattern = escapeRegExp(pattern);
+
+      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
       let regex: RegExp;
       try {
-        regex = new RegExp(pattern, 'gim');
+        regex = new RegExp(effectivePattern, 'gim');
       } catch {
         res.status(400).json({ error: 'Invalid regex pattern' });
         return;
@@ -1896,7 +1958,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.json({ results });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Grep failed' });
+      res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }
   });
 
@@ -2324,7 +2386,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // ── Embedding endpoints ────────────────────────────────────────────
-
 
   // POST /api/embed — trigger server-side embedding generation
   app.post('/api/embed', async (req, res) => {

@@ -54,7 +54,9 @@ async function resolveContextRepo(repoParam?: string): Promise<RegistryEntry> {
     };
   }
 
-  throw new Error('No indexed repository found. Pass --repo <name-or-path> or run from a repo with .gitnexus.');
+  throw new Error(
+    'No indexed repository found. Pass --repo <name-or-path> or run from a repo with .gitnexus.',
+  );
 }
 
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
@@ -84,7 +86,9 @@ export const contextPushCommand = async (
       if (!destination) throw new Error('S3 push requires a destination like s3://bucket/path/');
       const tmpPath = path.join(os.tmpdir(), snapshotFileName(snapshot));
       await fs.writeFile(tmpPath, JSON.stringify(snapshot, null, 2), 'utf-8');
-      const target = destination.endsWith('/') ? `${destination}${path.basename(tmpPath)}` : destination;
+      const target = destination.endsWith('/')
+        ? `${destination}${path.basename(tmpPath)}`
+        : destination;
       await copyWithAwsCli(tmpPath, target, options.endpointUrl);
       await fs.rm(tmpPath, { force: true }).catch(() => {});
       writtenPath = target;
@@ -118,7 +122,9 @@ export const contextPushCommand = async (
       );
     }
   } catch (err) {
-    process.stderr.write(`Context push failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `Context push failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     process.exitCode = 1;
   }
 };
@@ -133,7 +139,8 @@ export const contextPullCommand = async (
     let s3TempPath = '';
 
     if (wantsS3) {
-      if (!source) throw new Error('S3 pull requires a source like s3://bucket/snapshot.context.json');
+      if (!source)
+        throw new Error('S3 pull requires a source like s3://bucket/snapshot.context.json');
       s3TempPath = path.join(os.tmpdir(), `nexusforge-pull-${Date.now()}.context.json`);
       await copyWithAwsCli(source, s3TempPath, options.endpointUrl);
       localSource = s3TempPath;
@@ -174,7 +181,9 @@ export const contextPullCommand = async (
       );
     }
   } catch (err) {
-    process.stderr.write(`Context pull failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `Context pull failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     process.exitCode = 1;
   }
 };

@@ -210,7 +210,7 @@ export const getLayoutBudget = (nodeCount: number): LayoutBudget => {
 };
 
 export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null!);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null>(null);
   const layoutRef = useRef<FA2Layout | null>(null);

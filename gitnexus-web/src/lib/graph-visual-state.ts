@@ -229,12 +229,16 @@ export const resolveGraphNodeVisual = ({
   }
 
   if (isHovered) {
-    return createNodeVisual(mixColor(brightenColor(color, 1.25), '#ffffff', 0.08), baseSize * 1.24, {
-      zIndex: 1,
-      emphasis: 0.82,
-      shell: true,
-      shellColor: '#e0f2fe',
-    });
+    return createNodeVisual(
+      mixColor(brightenColor(color, 1.25), '#ffffff', 0.08),
+      baseSize * 1.24,
+      {
+        zIndex: 1,
+        emphasis: 0.82,
+        shell: true,
+        shellColor: '#e0f2fe',
+      },
+    );
   }
 
   return createNodeVisual(color, baseSize);

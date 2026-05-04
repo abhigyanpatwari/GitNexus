@@ -344,7 +344,7 @@ export const RightPanel = () => {
             <div ref={scrollContainerRef} className="scrollbar-thin flex-1 overflow-y-auto p-4">
               {chatMessages.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center px-4 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
+                  <div className="to-node-interface mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent text-2xl shadow-glow">
                     🧠
                   </div>
                   <h3 className="mb-2 text-base font-medium">Ask me anything</h3>

@@ -27,6 +27,7 @@ export interface DetectConfig {
   topics: boolean;
   shared_libs: boolean;
   embedding_fallback: boolean;
+  workspace_deps: boolean;
 }
 
 export interface MatchingConfig {

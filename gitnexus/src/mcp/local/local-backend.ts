@@ -42,7 +42,10 @@ import {
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
-import { getExactScanLimit } from '../../core/platform/capabilities.js';
+import {
+  getExactScanLimit,
+  isVectorExtensionSupportedByPlatform,
+} from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
 // AI context generation is CLI-only (gitnexus analyze)
@@ -366,6 +369,13 @@ export class LocalBackend {
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
   private groupToolSvc: GroupService | null = null;
+  /**
+   * One-shot stderr warning for the VECTOR-extension fallback. Without this
+   * guard the diagnostic would fire on every `semanticSearch()` call on
+   * platforms where the extension is unsupported, making MCP stderr noisy.
+   */
+  private warnedVectorUnsupported = false;
+
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
    * `${repoId}|${cwdGitRoot}`. Without this guard every tool call
@@ -1336,30 +1346,41 @@ export class LocalBackend {
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      try {
-        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-          const vectorQuery = `
-            CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
-              CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
-            YIELD node AS emb, distance
-            WITH emb, distance
-            WHERE distance < 0.6
-            RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
-                   emb.startLine AS startLine, emb.endLine AS endLine, distance
-            ORDER BY distance
-          `;
+      if (isVectorExtensionSupportedByPlatform()) {
+        try {
+          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+            const vectorQuery = `
+              CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
+                CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
+              YIELD node AS emb, distance
+              WITH emb, distance
+              WHERE distance < 0.6
+              RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
+                     emb.startLine AS startLine, emb.endLine AS endLine, distance
+              ORDER BY distance
+            `;
 
-          const embResults = await executeQuery(repo.id, vectorQuery);
-          return embResults.map((row) => ({
-            nodeId: row.nodeId ?? row[0],
-            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-            startLine: row.startLine ?? row[2] ?? 0,
-            endLine: row.endLine ?? row[3] ?? 0,
-            distance: row.distance ?? row[4],
-          }));
-        });
-      } catch {
-        bestChunks = new Map();
+            const embResults = await executeQuery(repo.id, vectorQuery);
+            return embResults.map((row) => ({
+              nodeId: row.nodeId ?? row[0],
+              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+              startLine: row.startLine ?? row[2] ?? 0,
+              endLine: row.endLine ?? row[3] ?? 0,
+              distance: row.distance ?? row[4],
+            }));
+          });
+        } catch {
+          bestChunks = new Map();
+        }
+      } else if (!this.warnedVectorUnsupported) {
+        // Rare diagnostic: surface why we fell back to the exact scan path so
+        // operators can see at a glance that VECTOR is disabled by platform
+        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
+        // noisy stderr on hot semantic-search paths (DoD §2.8).
+        this.warnedVectorUnsupported = true;
+        console.error(
+          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
+        );
       }
 
       if (bestChunks.size === 0) {
@@ -3333,7 +3354,14 @@ export class LocalBackend {
     }
 
     if (route) {
-      const recordRoute = this.runtimeRecordValue(record, 'route', 'routePath', 'path', 'routeId', 'name');
+      const recordRoute = this.runtimeRecordValue(
+        record,
+        'route',
+        'routePath',
+        'path',
+        'routeId',
+        'name',
+      );
       if (recordRoute && this.runtimeRouteMatches(recordRoute, route)) return true;
     }
 
@@ -3359,7 +3387,13 @@ export class LocalBackend {
 
     for (const frame of this.runtimeStackFrames(record)) {
       const frameFile = this.runtimeRecordValue(frame, 'filePath', 'file');
-      const frameName = this.runtimeRecordValue(frame, 'symbolName', 'functionName', 'methodName', 'name');
+      const frameName = this.runtimeRecordValue(
+        frame,
+        'symbolName',
+        'functionName',
+        'methodName',
+        'name',
+      );
       if (symbolFile && frameFile && this.runtimePathMatches(frameFile, symbolFile)) {
         return !frameName || this.runtimeNameMatches(symbolName, frameName);
       }
@@ -3475,7 +3509,10 @@ export class LocalBackend {
     };
   }
 
-  private runtimeRecordNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+  private runtimeRecordNumber(
+    record: Record<string, unknown>,
+    ...keys: string[]
+  ): number | undefined {
     for (const key of keys) {
       const raw = record[key];
       const value = typeof raw === 'bigint' ? Number(raw) : Number(raw);
@@ -3573,7 +3610,13 @@ export class LocalBackend {
   private async buildRuntimeImpactSignals(
     repo: RepoHandle,
     target: { id?: string; name?: string; filePath?: string },
-    impacted: Array<{ id?: string; name?: string; type?: string; filePath?: string; depth?: number }>,
+    impacted: Array<{
+      id?: string;
+      name?: string;
+      type?: string;
+      filePath?: string;
+      depth?: number;
+    }>,
   ): Promise<Record<string, unknown> | undefined> {
     const { path: signalPath, data } = await this.readRuntimeSignalStore(repo);
     if (!data) return undefined;
@@ -3629,16 +3672,14 @@ export class LocalBackend {
 
     for (const match of impactedMatches) {
       const key = String(match.symbol.id || `${match.symbol.filePath}:${match.symbol.name}`);
-      const current =
-        hotPathMap.get(key) ??
-        {
-          symbol: match.symbol,
-          callCount: 0,
-          errorCount: 0,
-          maxErrorRate: 0,
-          maxP95LatencyMs: undefined,
-          evidence: [],
-        };
+      const current = hotPathMap.get(key) ?? {
+        symbol: match.symbol,
+        callCount: 0,
+        errorCount: 0,
+        maxErrorRate: 0,
+        maxP95LatencyMs: undefined,
+        evidence: [],
+      };
       current.callCount += match.metrics.callCount;
       current.errorCount += match.metrics.errorCount;
       current.maxErrorRate = Math.max(current.maxErrorRate, match.metrics.errorRate);
@@ -3688,7 +3729,10 @@ export class LocalBackend {
       }));
 
     const totalCallCount = [...hotPathMap.values()].reduce((sum, item) => sum + item.callCount, 0);
-    const totalErrorCount = [...hotPathMap.values()].reduce((sum, item) => sum + item.errorCount, 0);
+    const totalErrorCount = [...hotPathMap.values()].reduce(
+      (sum, item) => sum + item.errorCount,
+      0,
+    );
     const maxP95LatencyMs = [...hotPathMap.values()].reduce<number | undefined>(
       (max, item) =>
         item.maxP95LatencyMs === undefined

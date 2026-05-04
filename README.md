@@ -37,6 +37,9 @@ GitNexus maintainers. The original license and attribution are preserved. See
   <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/">
     <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"/>
   </a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/abhigyanpatwari/GitNexus">
+    <img src="https://api.securityscorecards.dev/projects/github.com/abhigyanpatwari/GitNexus/badge" alt="OpenSSF Scorecard"/>
+  </a>
 
   <p><strong>Upstream enterprise/commercial info</strong> - <a href="https://akonlabs.com">akonlabs.com</a></p>
 

@@ -51,7 +51,10 @@ export const diffFileManifests = (
     const prior = previous.files[filePath];
     if (!prior) {
       added.push(filePath);
-    } else if (prior.size !== current.size || Math.trunc(prior.mtimeMs) !== Math.trunc(current.mtimeMs)) {
+    } else if (
+      prior.size !== current.size ||
+      Math.trunc(prior.mtimeMs) !== Math.trunc(current.mtimeMs)
+    ) {
       modified.push(filePath);
     } else {
       unchanged++;

@@ -12,17 +12,11 @@ describe('edge selection helpers', () => {
     ).toBe(true);
 
     expect(
-      edgeSelectionEquals(
-        ['CALLS', 'IMPORTS'] as EdgeType[],
-        ['CALLS', 'FETCHES'] as EdgeType[],
-      ),
+      edgeSelectionEquals(['CALLS', 'IMPORTS'] as EdgeType[], ['CALLS', 'FETCHES'] as EdgeType[]),
     ).toBe(false);
 
     expect(
-      edgeSelectionEquals(
-        ['CALLS', 'IMPORTS'] as EdgeType[],
-        ['CALLS', 'CALLS'] as EdgeType[],
-      ),
+      edgeSelectionEquals(['CALLS', 'IMPORTS'] as EdgeType[], ['CALLS', 'CALLS'] as EdgeType[]),
     ).toBe(false);
   });
 

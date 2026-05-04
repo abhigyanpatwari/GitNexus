@@ -112,6 +112,17 @@ describe('Pass 1: scope tree', () => {
     expect(result.moduleScope).toBe(result.scopes[0]!.id);
   });
 
+  it('synthesizes a single empty Module scope when the provider emits no captures', () => {
+    const result = extract([], 'empty.py', mockProvider());
+    expect(result.scopes).toHaveLength(1);
+    expect(result.scopes[0]!).toMatchObject({
+      kind: 'Module',
+      parent: null,
+      range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
+    });
+    expect(result.moduleScope).toBe(result.scopes[0]!.id);
+  });
+
   it('nests Class under Module when the class range is contained in the module range', () => {
     const result = extract(
       [scopeMatch('module', 1, 0, 100, 0), scopeMatch('class', 5, 0, 50, 0)],

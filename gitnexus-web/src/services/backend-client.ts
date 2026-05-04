@@ -714,9 +714,9 @@ export const runQuery = async (
     body: JSON.stringify({ cypher, repo }),
   });
   await assertOk(response);
-  const body = await readJsonResponse<{ result?: Record<string, unknown>[] } | Record<string, unknown>[]>(
-    response,
-  );
+  const body = await readJsonResponse<
+    { result?: Record<string, unknown>[] } | Record<string, unknown>[]
+  >(response);
   return (Array.isArray(body) ? body : (body.result ?? [])) as Record<string, unknown>[];
 };
 

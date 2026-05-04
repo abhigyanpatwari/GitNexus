@@ -160,7 +160,8 @@ export async function watchCommand(inputPath?: string, options: WatchOptions = {
     process.exitCode = 1;
     return;
   }
-  const usePolling = options.poll || (process.platform !== 'win32' && process.platform !== 'darwin');
+  const usePolling =
+    options.poll || (process.platform !== 'win32' && process.platform !== 'darwin');
 
   console.log(`GitNexus watch: ${repoPath}`);
   console.log(
@@ -232,15 +233,11 @@ export async function watchCommand(inputPath?: string, options: WatchOptions = {
     }, pollIntervalMs);
     cleanup = () => clearInterval(timer);
   } else {
-    const watcher: FSWatcher = fs.watch(
-      repoPath,
-      { recursive: true },
-      (_eventType, filename) => {
-        if (!filename) return;
-        const rel = String(filename).replace(/\\/g, '/');
-        schedule(rel);
-      },
-    );
+    const watcher: FSWatcher = fs.watch(repoPath, { recursive: true }, (_eventType, filename) => {
+      if (!filename) return;
+      const rel = String(filename).replace(/\\/g, '/');
+      schedule(rel);
+    });
     watcher.on('error', (err) => {
       console.error(`GitNexus watch: watcher error: ${err.message}`);
     });

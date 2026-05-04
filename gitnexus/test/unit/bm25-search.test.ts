@@ -33,10 +33,10 @@ describe('BM25 search', () => {
 
       expect(vi.mocked(createFTSIndex).mock.calls).toEqual([
         ['File', 'file_fts', ['name', 'content']],
-        ['Function', 'function_fts', ['name', 'content']],
-        ['Class', 'class_fts', ['name', 'content']],
-        ['Method', 'method_fts', ['name', 'content']],
-        ['Interface', 'interface_fts', ['name', 'content']],
+        ['Function', 'function_fts', ['name', 'content', 'description']],
+        ['Class', 'class_fts', ['name', 'content', 'description']],
+        ['Method', 'method_fts', ['name', 'content', 'description']],
+        ['Interface', 'interface_fts', ['name', 'content', 'description']],
       ]);
     });
   });

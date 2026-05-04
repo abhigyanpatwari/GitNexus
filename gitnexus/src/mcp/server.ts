@@ -90,7 +90,6 @@ function callToolInChildProcess(name: string, args: unknown): Promise<unknown> {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timer: NodeJS.Timeout;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -114,7 +113,7 @@ function callToolInChildProcess(name: string, args: unknown): Promise<unknown> {
         child.kill();
       }
     };
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       child.kill();
       finish(() => reject(new Error(`GitNexus tool "${name}" timed out in isolated worker`)));
     }, 120_000);
@@ -330,6 +329,7 @@ export function createMCPServer(backend: LocalBackend): Server {
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      annotations: tool.annotations,
     })),
   }));
 

@@ -57,8 +57,7 @@ export interface ContextSnapshot {
   };
 }
 
-const sha256 = (value: string | Buffer): string =>
-  createHash('sha256').update(value).digest('hex');
+const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 
 const readJson = async (filePath: string): Promise<any | null> => {
   try {
@@ -177,10 +176,7 @@ const redactValue = (value: unknown, patterns: string[], key = ''): unknown => {
     return '[redacted]';
   }
   if (typeof value === 'string') {
-    return patterns.reduce(
-      (current, pattern) => current.split(pattern).join('[redacted]'),
-      value,
-    );
+    return patterns.reduce((current, pattern) => current.split(pattern).join('[redacted]'), value);
   }
   if (Array.isArray(value)) return value.map((item) => redactValue(item, patterns));
   if (value && typeof value === 'object') {
@@ -271,7 +267,8 @@ export const verifyContextSnapshot = (snapshot: ContextSnapshot): boolean => {
   return sha256(JSON.stringify(unsigned)) === snapshot.checksum;
 };
 
-export const defaultContextLakeDir = (): string => path.join(os.homedir(), '.gitnexus', 'context-lake');
+export const defaultContextLakeDir = (): string =>
+  path.join(os.homedir(), '.gitnexus', 'context-lake');
 
 export const snapshotFileName = (snapshot: ContextSnapshot): string => {
   const commit = snapshot.repo.commit ? snapshot.repo.commit.slice(0, 12) : 'no-commit';
@@ -291,7 +288,9 @@ export const writeLocalSnapshot = async (
   return filePath;
 };
 
-export const readLocalSnapshot = async (source: string): Promise<{ path: string; snapshot: ContextSnapshot }> => {
+export const readLocalSnapshot = async (
+  source: string,
+): Promise<{ path: string; snapshot: ContextSnapshot }> => {
   const resolved = path.resolve(source);
   const stat = await fs.stat(resolved);
   let filePath = resolved;
@@ -302,7 +301,10 @@ export const readLocalSnapshot = async (source: string): Promise<{ path: string;
       .map((entry) => path.join(resolved, entry));
     if (snapshots.length === 0) throw new Error(`No .context.json snapshots found in ${resolved}`);
     const withStats = await Promise.all(
-      snapshots.map(async (snapshotPath) => ({ path: snapshotPath, stat: await fs.stat(snapshotPath) })),
+      snapshots.map(async (snapshotPath) => ({
+        path: snapshotPath,
+        stat: await fs.stat(snapshotPath),
+      })),
     );
     withStats.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
     filePath = withStats[0].path;

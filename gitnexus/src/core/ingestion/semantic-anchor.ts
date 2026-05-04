@@ -203,11 +203,15 @@ export const applySemanticAnchors = (
   let anchoredNodes = 0;
 
   for (const node of graph.iterNodes()) {
-    const anchor = createSemanticAnchor(node, counts.get(node.id) ?? {
-      incoming: 0,
-      outgoing: 0,
-      byType: {},
-    }, generatedAt);
+    const anchor = createSemanticAnchor(
+      node,
+      counts.get(node.id) ?? {
+        incoming: 0,
+        outgoing: 0,
+        byType: {},
+      },
+      generatedAt,
+    );
     if (!anchor) continue;
 
     node.properties.summary = anchor.summary;
