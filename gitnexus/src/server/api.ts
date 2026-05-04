@@ -527,6 +527,87 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+/**
+ * Handle a GET /api/file request body. Extracted from createServer's route
+ * registration so it can be unit-tested without spinning up an HTTP server
+ * — calling app.get(...) inside a test triggers CodeQL's
+ * js/missing-rate-limiting query, which is appropriate for production
+ * route handlers but a false positive for tests of the handler logic.
+ *
+ * The function takes the express req and res (typed loosely so test code
+ * can pass minimal mocks) plus the resolved repo path. All path-traversal
+ * containment is done inline at the readFile sink with the canonical
+ * path.relative idiom for CodeQL js/path-injection recognition.
+ */
+export const handleFileRequest = async (
+  req: { query: any },
+  res: {
+    status: (code: number) => { json: (body: any) => void };
+    json: (body: any) => void;
+  },
+  repoPath: string,
+): Promise<void> => {
+  try {
+    // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
+    // Without this, an attacker could pass `?path=a&path=b` to bypass the
+    // length-bound traversal check below (CodeQL js/type-confusion-through-
+    // parameter-tampering, same class as the /api/grep critical fix).
+    const rawFilePath = req.query.path;
+    if (rawFilePath === undefined || rawFilePath === '') {
+      res.status(400).json({ error: 'Missing path' });
+      return;
+    }
+    const filePath = assertString(rawFilePath, 'path');
+
+    // Path-injection containment — inline at the sink with the canonical
+    // path.relative idiom that CodeQL's js/path-injection sanitizer
+    // recognizes. assertSafePath in validation.ts performs the equivalent
+    // check, but cross-module helpers are not followed by CodeQL's
+    // interprocedural analysis for path-traversal sanitization in JS, so
+    // the barrier must be visible inline at the readFile sink.
+    const repoRoot = path.resolve(repoPath);
+    const fullPath = path.resolve(repoRoot, filePath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
+      res.status(403).json({ error: 'Path traversal denied' });
+      return;
+    }
+
+    const raw = await fs.readFile(fullPath, 'utf-8');
+
+    // Optional line-range support: ?startLine=10&endLine=50
+    // Returns only the requested slice (0-indexed), plus metadata.
+    const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
+    const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
+
+    if (startLine !== undefined && Number.isFinite(startLine)) {
+      const lines = raw.split('\n');
+      const start = Math.max(0, startLine);
+      const end =
+        endLine !== undefined && Number.isFinite(endLine)
+          ? Math.min(lines.length, endLine + 1)
+          : lines.length;
+      res.json({
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      });
+    } else {
+      res.json({ content: raw, totalLines: raw.split('\n').length });
+    }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      res.status(404).json({ error: 'File not found' });
+    } else {
+      // statusFromError returns err.status for BadRequestError / ForbiddenError
+      // (assertString → 400 on array-form ?path=a&path=b; ForbiddenError → 403
+      // on traversal). Falls back to 500 for unrecognized failures.
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to read file' });
+    }
+  }
+};
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
@@ -1179,56 +1260,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Read file — with path traversal guard
   app.get('/api/file', async (req, res) => {
-    try {
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-      const filePath = req.query.path as string;
-      if (!filePath) {
-        res.status(400).json({ error: 'Missing path' });
-        return;
-      }
-
-      // Prevent path traversal — resolve and verify the path stays within the repo root
-      const repoRoot = path.resolve(entry.path);
-      const fullPath = path.resolve(repoRoot, filePath);
-      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
-        res.status(403).json({ error: 'Path traversal denied' });
-        return;
-      }
-
-      const raw = await fs.readFile(fullPath, 'utf-8');
-
-      // Optional line-range support: ?startLine=10&endLine=50
-      // Returns only the requested slice (0-indexed), plus metadata.
-      const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
-      const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
-
-      if (startLine !== undefined && Number.isFinite(startLine)) {
-        const lines = raw.split('\n');
-        const start = Math.max(0, startLine);
-        const end =
-          endLine !== undefined && Number.isFinite(endLine)
-            ? Math.min(lines.length, endLine + 1)
-            : lines.length;
-        res.json({
-          content: lines.slice(start, end).join('\n'),
-          startLine: start,
-          endLine: end - 1,
-          totalLines: lines.length,
-        });
-      } else {
-        res.json({ content: raw, totalLines: raw.split('\n').length });
-      }
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        res.status(404).json({ error: 'File not found' });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to read file' });
-      }
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return;
     }
+    await handleFileRequest(req, res, entry.path);
   });
 
   // Grep — regex search across file contents in the indexed repo
