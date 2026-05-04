@@ -1134,13 +1134,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Mode selection (CodeQL js/regex-injection): default to literal substring
-      // search so user input cannot control regex semantics. Callers that genuinely
-      // need regex syntax must opt in with `?regex=true`. In every callsite audited
-      // at the time of this change (gitnexus-web LLM tool: error strings, TODOs,
-      // variable names; backend-client.grep) the literal default matches intent.
-      const regexMode = req.query.regex === 'true' || req.query.regex === '1';
-      const effectivePattern = regexMode ? pattern : escapeRegExp(pattern);
+      // Treat user input as a literal substring in all cases to prevent
+      // regex-injection/ReDoS via attacker-controlled regex syntax.
+      const effectivePattern = escapeRegExp(pattern);
 
       // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
       let regex: RegExp;
