@@ -69,6 +69,12 @@ type BridgeNeighborRow = {
   contractType: string;
 };
 
+function neighborRegistryAllowed(port: GroupToolPort, registryName: string): boolean {
+  const al = port.mcpRepoAllowlist;
+  if (!al || al.size === 0) return true;
+  return al.has(registryName.trim().toLowerCase());
+}
+
 export interface RunGroupImpactDeps {
   port: GroupToolPort;
   gitnexusDir: string;
@@ -334,6 +340,16 @@ export async function runGroupImpact(
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
+  const baseReg = config.repos[repoPath];
+  const al = deps.port.mcpRepoAllowlist;
+  if (al && al.size > 0) {
+    if (!baseReg || !al.has(baseReg.trim().toLowerCase())) {
+      return {
+        error: `Group repo path "${repoPath}" is not exposed by this MCP server (repo allowlist).`,
+      };
+    }
+  }
+
   const resolved = await resolveGroupRepo(deps.port, config, repoPath);
   if ('error' in resolved) return { error: resolved.error };
 
@@ -483,6 +499,7 @@ export async function runGroupImpact(
 
       const regName = config.repos[n.neighborRepo];
       if (!regName) continue;
+      if (!neighborRegistryAllowed(deps.port, regName)) continue;
 
       let neighborHandle: GroupRepoHandle;
       try {

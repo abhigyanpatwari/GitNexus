@@ -100,6 +100,130 @@ export function getResourceTemplates(): ResourceTemplate[] {
   ];
 }
 
+/** Path tail after `gitnexus://repo/<name>/` for MCP catalog rows (subset mode). */
+const MCP_REPO_RESOURCE_SLICES: Array<{
+  tail: string;
+  catalogTitle: string;
+  description: string;
+  mimeType: string;
+}> = [
+  {
+    tail: 'context',
+    catalogTitle: 'Repo overview',
+    description: 'Codebase stats, staleness check, and available tools',
+    mimeType: 'text/yaml',
+  },
+  {
+    tail: 'clusters',
+    catalogTitle: 'Repo modules',
+    description: 'All functional areas (Leiden clusters)',
+    mimeType: 'text/yaml',
+  },
+  {
+    tail: 'processes',
+    catalogTitle: 'Repo processes',
+    description: 'All execution flows',
+    mimeType: 'text/yaml',
+  },
+  {
+    tail: 'schema',
+    catalogTitle: 'Graph schema',
+    description: 'Node/edge schema for Cypher queries',
+    mimeType: 'text/yaml',
+  },
+];
+
+function repoPathSegmentForUri(repoName: string): string {
+  return encodeURIComponent(repoName);
+}
+
+export function concreteRepoResourceUri(repoName: string, tail: string): string {
+  return `gitnexus://repo/${repoPathSegmentForUri(repoName)}/${tail}`;
+}
+
+function mapStaticResourceDefinitionsForRestrictMode(
+  restricted: boolean,
+): ResourceDefinition[] {
+  return getResourceDefinitions().map((r) => {
+    if (restricted && r.uri === 'gitnexus://repos') {
+      return {
+        ...r,
+        name: 'MCP-visible repositories',
+        description:
+          'Repos this MCP server exposes (subset when started with --repos or GITNEXUS_MCP_REPOS). Not the full global registry.',
+      };
+    }
+    if (restricted && r.uri === 'gitnexus://setup') {
+      return {
+        ...r,
+        name: 'GitNexus setup (MCP subset)',
+        description:
+          'Onboarding-style content for repos visible to this MCP process only (same allowlist as list_repos).',
+      };
+    }
+    return r;
+  });
+}
+
+/**
+ * Resources returned by MCP `resources/list` — matches {@link LocalBackend.listRepos}
+ * when repo allowlist is active (concrete per-repo URIs, no misleading `{name}` catalog).
+ */
+export async function buildMcpListResourcesPayload(
+  backend: LocalBackend,
+): Promise<ResourceDefinition[]> {
+  const restricted = backend.isMcpRepoAllowlistActive();
+  const staticPart = mapStaticResourceDefinitionsForRestrictMode(restricted);
+  if (!restricted) {
+    return staticPart;
+  }
+
+  const repos = await backend.listRepos();
+  const extra: ResourceDefinition[] = [];
+  for (const repo of repos) {
+    const rname = repo.name;
+    for (const slice of MCP_REPO_RESOURCE_SLICES) {
+      extra.push({
+        uri: concreteRepoResourceUri(rname, slice.tail),
+        name: `${slice.catalogTitle} (${rname})`,
+        description: `${slice.description} — MCP allowlist view.`,
+        mimeType: slice.mimeType,
+      });
+    }
+  }
+  return [...staticPart, ...extra];
+}
+
+/**
+ * Resource templates for MCP `resources/templates/list`.
+ * When allowlist is active, repo-scoped `{name}` templates are replaced by concrete
+ * URIs per visible repo so the catalog matches `list_repos` and `gitnexus://repos`.
+ */
+export async function buildMcpResourceTemplatesPayload(
+  backend: LocalBackend,
+): Promise<ResourceTemplate[]> {
+  const all = getResourceTemplates();
+  if (!backend.isMcpRepoAllowlistActive()) {
+    return all;
+  }
+
+  const repos = await backend.listRepos();
+  const groupTemplates = all.filter((t) => t.uriTemplate.startsWith('gitnexus://group/'));
+  const concrete: ResourceTemplate[] = [];
+  for (const repo of repos) {
+    for (const slice of MCP_REPO_RESOURCE_SLICES) {
+      const uri = concreteRepoResourceUri(repo.name, slice.tail);
+      concrete.push({
+        uriTemplate: uri,
+        name: `${slice.catalogTitle} (${repo.name})`,
+        description: `${slice.description} — MCP allowlist.`,
+        mimeType: slice.mimeType,
+      });
+    }
+  }
+  return [...groupTemplates, ...concrete];
+}
+
 /** Query parameters for `gitnexus://group/{name}/contracts` */
 export type GroupContractsResourceFilter = {
   type?: string;
@@ -273,10 +397,20 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return 'repos: []\n# No repositories indexed. Run: gitnexus analyze';
+    const emptyHint = backend.isMcpRepoAllowlistActive()
+      ? '\n# MCP allowlist active: none of the allowed names matched the registry (or registry is empty).'
+      : '';
+    return `repos: []\n# No repositories indexed. Run: gitnexus analyze${emptyHint}`;
   }
 
-  const lines: string[] = ['repos:'];
+  const lines: string[] = [];
+  if (backend.isMcpRepoAllowlistActive()) {
+    lines.push(
+      '# MCP subset: only repos allowed for this server (--repos / GITNEXUS_MCP_REPOS), not the full registry.',
+    );
+    lines.push('');
+  }
+  lines.push('repos:');
   for (const repo of repos) {
     lines.push(`  - name: "${repo.name}"`);
     lines.push(`    path: "${repo.path}"`);

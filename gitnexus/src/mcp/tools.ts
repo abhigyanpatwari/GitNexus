@@ -54,9 +54,10 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
-    description: `List all indexed repositories available to GitNexus.
+    description: `List indexed repositories available to this MCP server.
 
 Returns each repo's name, path, indexed date, last commit, and stats.
+If the server was started with \`gitnexus mcp --repos\` (or GITNEXUS_MCP_REPOS), this list is only that subset — not every repo in the global registry.
 
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.

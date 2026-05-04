@@ -10,6 +10,9 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
+  buildMcpListResourcesPayload,
+  buildMcpResourceTemplatesPayload,
+  concreteRepoResourceUri,
   getResourceDefinitions,
   getResourceTemplates,
   parseResourceUri,
@@ -20,6 +23,9 @@ import {
 
 function createMockBackend(overrides: Partial<Record<string, any>> = {}): any {
   return {
+    isMcpRepoAllowlistActive: vi
+      .fn()
+      .mockReturnValue(overrides.allowlistActive ?? false),
     listRepos: vi.fn().mockResolvedValue(overrides.repos ?? []),
     resolveRepo: vi.fn().mockResolvedValue(
       overrides.resolvedRepo ?? {
@@ -76,6 +82,43 @@ describe('getResourceDefinitions', () => {
       expect(def.description).toBeTruthy();
       expect(def.mimeType).toBeTruthy();
     }
+  });
+});
+
+describe('buildMcpListResourcesPayload / buildMcpResourceTemplatesPayload', () => {
+  it('unrestricted: static resources only, full template catalog', async () => {
+    const backend = createMockBackend({
+      allowlistActive: false,
+      repos: [{ name: 'A', path: '/a', indexedAt: '1', lastCommit: 'c' }],
+    });
+    const list = await buildMcpListResourcesPayload(backend);
+    expect(list).toHaveLength(2);
+    expect(list.some((r) => r.uri === 'gitnexus://repos')).toBe(true);
+    const tmpl = await buildMcpResourceTemplatesPayload(backend);
+    expect(tmpl.some((t) => t.uriTemplate.includes('{name}'))).toBe(true);
+    expect(tmpl).toHaveLength(8);
+  });
+
+  it('restricted: adds concrete per-repo URIs and renames static repos entry', async () => {
+    const backend = createMockBackend({
+      allowlistActive: true,
+      repos: [
+        { name: 'OnlyRepo', path: '/x', indexedAt: '1', lastCommit: 'abc' },
+      ],
+    });
+    const list = await buildMcpListResourcesPayload(backend);
+    expect(list.find((r) => r.uri === 'gitnexus://repos')?.name).toBe('MCP-visible repositories');
+    const ctx = list.find((r) => r.uri === concreteRepoResourceUri('OnlyRepo', 'context'));
+    expect(ctx).toBeDefined();
+    expect(list.filter((r) => r.uri.startsWith('gitnexus://repo/')).length).toBe(4);
+
+    const tmpl = await buildMcpResourceTemplatesPayload(backend);
+    expect(tmpl.some((t) => t.uriTemplate.startsWith('gitnexus://repo/{name}'))).toBe(false);
+    expect(tmpl.some((t) => t.uriTemplate === concreteRepoResourceUri('OnlyRepo', 'context'))).toBe(
+      true,
+    );
+    expect(tmpl.filter((t) => t.uriTemplate.startsWith('gitnexus://group/')).length).toBe(2);
+    expect(tmpl.length).toBe(6);
   });
 });
 

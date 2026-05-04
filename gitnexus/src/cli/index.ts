@@ -91,7 +91,11 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio) — serves all indexed repos')
+  .description('Start MCP server (stdio) — serves indexed repos (optional subset via --repos)')
+  .option(
+    '--repos <names>',
+    'Comma-separated registry repo names to expose (default: all). Env: GITNEXUS_MCP_REPOS; CLI overrides env.',
+  )
   .action(createLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program

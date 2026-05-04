@@ -55,6 +55,9 @@ function resolveGitnexusBin(): string | null {
  *
  * Falls back to npx when the binary isn't on PATH — e.g. first-time
  * users who ran `npx gitnexus analyze` but haven't done `npm i -g`.
+ *
+ * To expose only some registered repos over MCP, use `gitnexus mcp --repos name1,name2`
+ * or set env `GITNEXUS_MCP_REPOS=name1,name2` (e.g. in the editor MCP server `env` block).
  */
 function getMcpEntry() {
   const bin = resolveGitnexusBin();

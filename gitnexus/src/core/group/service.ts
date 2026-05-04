@@ -32,6 +32,11 @@ export interface GroupRepoHandle {
 }
 
 export interface GroupToolPort {
+  /**
+   * When set (`gitnexus mcp --repos` / `GITNEXUS_MCP_REPOS`), group tools only
+   * include registry names in this set (lowercase). Omitted = unrestricted.
+   */
+  mcpRepoAllowlist?: ReadonlySet<string> | null;
   resolveRepo(repoParam?: string): Promise<GroupRepoHandle>;
   impact(
     repo: GroupRepoHandle,
@@ -211,6 +216,30 @@ async function loadContractRegistryResilient(
   return { ok: true, registry, skippedCorrupt };
 }
 
+function mcpAllowlist(port: GroupToolPort): ReadonlySet<string> | null {
+  const al = port.mcpRepoAllowlist;
+  if (!al || al.size === 0) return null;
+  return al;
+}
+
+function filterReposByMcpAllowlist(
+  repos: Record<string, string>,
+  allowlist: ReadonlySet<string> | null,
+): Record<string, string> {
+  if (!allowlist) return repos;
+  return Object.fromEntries(
+    Object.entries(repos).filter(([, reg]) => allowlist.has(reg.trim().toLowerCase())),
+  );
+}
+
+function filterGroupMemberEntries(
+  entries: [string, string][],
+  allowlist: ReadonlySet<string> | null,
+): [string, string][] {
+  if (!allowlist) return entries;
+  return entries.filter(([, reg]) => allowlist.has(reg.trim().toLowerCase()));
+}
+
 export class GroupService {
   constructor(private readonly port: GroupToolPort) {}
 
@@ -232,12 +261,18 @@ export class GroupService {
     return {
       name: config.name,
       description: config.description,
-      repos: config.repos,
+      repos: filterReposByMcpAllowlist(config.repos, mcpAllowlist(this.port)),
       links: config.links,
     };
   }
 
   async groupSync(params: Record<string, unknown>): Promise<unknown> {
+    if (mcpAllowlist(this.port)) {
+      return {
+        error:
+          'group_sync is disabled when the MCP server runs with a repo allowlist (--repos / GITNEXUS_MCP_REPOS).',
+      };
+    }
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
@@ -288,7 +323,25 @@ export class GroupService {
       );
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
     }
-    const out: Record<string, unknown> = { contracts, crossLinks: registry.crossLinks };
+
+    let crossLinksOut = registry.crossLinks;
+    const al = mcpAllowlist(this.port);
+    if (al) {
+      let groupCfg: GroupConfig;
+      try {
+        groupCfg = await loadGroupConfig(groupDir);
+      } catch {
+        return { error: `Cannot load group.yaml for "${name}" while applying repo allowlist.` };
+      }
+      const pathOk = (repoPath: string) => {
+        const reg = groupCfg.repos[repoPath];
+        return Boolean(reg && al.has(reg.trim().toLowerCase()));
+      };
+      contracts = contracts.filter((c) => pathOk(c.repo));
+      crossLinksOut = crossLinksOut.filter((l) => pathOk(l.from.repo) && pathOk(l.to.repo));
+    }
+
+    const out: Record<string, unknown> = { contracts, crossLinks: crossLinksOut };
     if (skippedCorrupt > 0) out.skippedCorrupt = skippedCorrupt;
     return out;
   }
@@ -344,9 +397,19 @@ export class GroupService {
       };
     }
 
-    const memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
+    let memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
+    memberEntries = filterGroupMemberEntries(memberEntries, mcpAllowlist(this.port));
+    if (memberEntries.length === 0) {
+      return {
+        group: name,
+        target: target || uid,
+        service: servicePrefix,
+        error: 'No group members in scope for this MCP server (repo allowlist).',
+        results: [],
+      };
+    }
 
     const results: GroupContextResult['results'] = await Promise.all(
       memberEntries.map(async ([repoPath, registryName]) => {
@@ -412,9 +475,13 @@ export class GroupService {
       throw err;
     }
 
-    const memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
+    let memberEntries = Object.entries(config.repos).filter(([repoPath]) =>
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
+    memberEntries = filterGroupMemberEntries(memberEntries, mcpAllowlist(this.port));
+    if (memberEntries.length === 0) {
+      return { error: 'No group members in scope for this MCP server (repo allowlist).' };
+    }
 
     const perRepo = await Promise.all(
       memberEntries.map(async ([repoPath, registryName]) => {
@@ -469,6 +536,7 @@ export class GroupService {
       throw err;
     }
     const registry = await readContractRegistry(groupDir);
+    const al = mcpAllowlist(this.port);
 
     const repoStatuses: Record<
       string,
@@ -481,6 +549,9 @@ export class GroupService {
     > = {};
 
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
+      if (al && !al.has(registryName.trim().toLowerCase())) {
+        continue;
+      }
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const metaPath = path.join(repoObj.storagePath, 'meta.json');
@@ -506,10 +577,19 @@ export class GroupService {
       }
     }
 
+    const rawMissing = registry?.missingRepos || [];
+    const missingRepos =
+      al != null
+        ? rawMissing.filter((repoPath) => {
+            const reg = config.repos[repoPath];
+            return Boolean(reg && al.has(reg.trim().toLowerCase()));
+          })
+        : rawMissing;
+
     return {
       group: name,
       lastSync: registry?.generatedAt || null,
-      missingRepos: registry?.missingRepos || [],
+      missingRepos,
       repos: repoStatuses,
     };
   }

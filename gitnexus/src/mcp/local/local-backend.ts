@@ -211,7 +211,18 @@ interface RepoHandle {
   stats?: RegistryEntry['stats'];
 }
 
+/** Options for {@link LocalBackend} (MCP subset mode, tests, etc.). */
+export type LocalBackendOptions = {
+  /**
+   * Only these registry repo names (see `gitnexus list`) are loaded. Names are
+   * matched case-insensitively. Omit or pass empty for full registry (default).
+   */
+  mcpRepoAllowlist?: string[];
+};
+
 export class LocalBackend {
+  private readonly mcpRepoAllowlist: ReadonlySet<string> | null;
+
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
@@ -234,12 +245,26 @@ export class LocalBackend {
    */
   private warnedVectorUnsupported = false;
 
+  constructor(opts?: LocalBackendOptions) {
+    const raw = opts?.mcpRepoAllowlist?.map((s) => s.trim()).filter((s) => s.length > 0) ?? [];
+    this.mcpRepoAllowlist = raw.length > 0 ? new Set(raw.map((n) => n.toLowerCase())) : null;
+  }
+
+  /**
+   * True when this backend was constructed with a non-empty MCP repo allowlist
+   * (`gitnexus mcp --repos` / `GITNEXUS_MCP_REPOS`). Used for MCP resource metadata.
+   */
+  isMcpRepoAllowlistActive(): boolean {
+    return this.mcpRepoAllowlist != null && this.mcpRepoAllowlist.size > 0;
+  }
+
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
    */
   getGroupService(): GroupService {
     if (!this.groupToolSvc) {
       const port: GroupToolPort = {
+        mcpRepoAllowlist: this.mcpRepoAllowlist,
         resolveRepo: (p) => this.resolveRepo(p),
         impact: (r, p) => this.impact(r as RepoHandle, p),
         query: (r, p) => this.query(r as RepoHandle, p),
@@ -273,7 +298,11 @@ export class LocalBackend {
    * LadybugDB connections for removed repos are NOT closed (they idle-timeout naturally).
    */
   private async refreshRepos(): Promise<void> {
-    const entries = await listRegisteredRepos({ validate: true });
+    const entriesAll = await listRegisteredRepos({ validate: true });
+    const entries =
+      this.mcpRepoAllowlist == null
+        ? entriesAll
+        : entriesAll.filter((e) => this.mcpRepoAllowlist!.has(e.name.trim().toLowerCase()));
     const freshIds = new Set<string>();
 
     for (const entry of entries) {
@@ -3092,7 +3121,11 @@ export class LocalBackend {
     const groupName = (slash === -1 ? raw : raw.slice(0, slash)).trim();
     const memberRest = slash === -1 ? undefined : raw.slice(slash + 1).trim() || undefined;
 
-    const resolved = await resolveAtGroupMemberRepoPath(groupName, memberRest);
+    const resolved = await resolveAtGroupMemberRepoPath(
+      groupName,
+      memberRest,
+      this.mcpRepoAllowlist,
+    );
     if (resolved.ok === false) return { error: resolved.error };
 
     const svc = this.getGroupService();

@@ -157,7 +157,8 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
-gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
+gitnexus mcp                     # Start MCP server (stdio) — all indexed repos (default)
+gitnexus mcp --repos a,b         # Same, but only registry names a and b (also GITNEXUS_MCP_REPOS)
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
 gitnexus list                    # List all indexed repositories

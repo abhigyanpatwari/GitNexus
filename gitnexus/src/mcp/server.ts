@@ -26,7 +26,11 @@ import {
 import { GITNEXUS_TOOLS } from './tools.js';
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
-import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import {
+  buildMcpListResourcesPayload,
+  buildMcpResourceTemplatesPayload,
+  readResource,
+} from './resources.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -37,14 +41,34 @@ import { getResourceDefinitions, getResourceTemplates, readResource } from './re
  * Design: Each hint is a short, actionable instruction (not a suggestion).
  * The hint references the specific tool/resource to use next.
  */
-function getNextStepHint(toolName: string, args: Record<string, any> | undefined): string {
+async function getNextStepHint(
+  backend: LocalBackend,
+  toolName: string,
+  args: Record<string, any> | undefined,
+): Promise<string> {
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
   const repoPath = repo || '{name}';
 
   switch (toolName) {
-    case 'list_repos':
+    case 'list_repos': {
+      if (backend.isMcpRepoAllowlistActive()) {
+        const repos = await backend.listRepos();
+        if (repos.length === 0) {
+          return `\n\n---\n**Next:** No repos in this MCP allowlist; fix --repos / GITNEXUS_MCP_REPOS or run \`gitnexus analyze\`.`;
+        }
+        if (repos.length === 1) {
+          const n = repos[0].name;
+          const enc = encodeURIComponent(n);
+          return `\n\n---\n**Next:** READ gitnexus://repo/${enc}/context for an overview and staleness check.`;
+        }
+        const examples = repos
+          .map((r) => `gitnexus://repo/${encodeURIComponent(r.name)}/context`)
+          .join(', ');
+        return `\n\n---\n**Next:** READ one of these (same repos as list_repos): ${examples}`;
+      }
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
+    }
 
     case 'query':
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
@@ -100,7 +124,7 @@ export function createMCPServer(backend: LocalBackend): Server {
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const resources = getResourceDefinitions();
+    const resources = await buildMcpListResourcesPayload(backend);
     return {
       resources: resources.map((r) => ({
         uri: r.uri,
@@ -113,7 +137,7 @@ export function createMCPServer(backend: LocalBackend): Server {
 
   // Handle list resource templates request (for dynamic resources)
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    const templates = getResourceTemplates();
+    const templates = await buildMcpResourceTemplatesPayload(backend);
     return {
       resourceTemplates: templates.map((t) => ({
         uriTemplate: t.uriTemplate,
@@ -169,7 +193,7 @@ export function createMCPServer(backend: LocalBackend): Server {
     try {
       const result = await backend.callTool(name, args);
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+      const hint = await getNextStepHint(backend, name, args as Record<string, any> | undefined);
 
       return {
         content: [
