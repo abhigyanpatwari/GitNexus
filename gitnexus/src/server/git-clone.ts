@@ -11,16 +11,47 @@ import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 
-/** Extract the repository name from a git URL (HTTPS or SSH). */
+/** Root directory for all cloned repositories. Targets must resolve inside this. */
+const CLONE_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+
+// A valid git repository name is filesystem-safe: alphanumerics plus `. _ -`.
+// Rejecting anything else (including `..`, `/`, `\`, shell metacharacters)
+// guarantees getCloneDir(repoName) cannot escape CLONE_ROOT regardless of
+// how the caller derived repoName.
+const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+
+/**
+ * Extract the repository name from a git URL (HTTPS or SSH).
+ *
+ * Throws if the URL does not yield a filesystem-safe last segment. A name
+ * like `..` or `foo/bar` would otherwise let `getCloneDir(name)` escape the
+ * clone root via path traversal.
+ */
 export function extractRepoName(url: string): string {
-  const cleaned = url.replace(/\/+$/, '');
-  const lastSegment = cleaned.split(/[/:]/).pop() || 'unknown';
-  return lastSegment.replace(/\.git$/, '');
+  // Strip trailing slashes without a regex to avoid polynomial-ReDoS on
+  // pathological inputs like `https://x.com/y` + '/'.repeat(1e6). CodeQL's
+  // js/polynomial-redos flagged `/\/+$/` here.
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  const cleaned = url.slice(0, end);
+
+  const lastSegment = cleaned.split(/[/:]/).pop() || '';
+  const stripped = lastSegment.endsWith('.git') ? lastSegment.slice(0, -4) : lastSegment;
+
+  if (!stripped || stripped === '.' || stripped === '..' || !REPO_NAME_PATTERN.test(stripped)) {
+    throw new Error('Could not extract a valid repository name from URL');
+  }
+  return stripped;
 }
 
 /** Get the clone target directory for a repo name. */
 export function getCloneDir(repoName: string): string {
-  return path.join(os.homedir(), '.gitnexus', 'repos', repoName);
+  // Re-validate at the boundary even though extractRepoName already checked —
+  // callers may pass a repoName from another source (test fixtures, scripts).
+  if (!repoName || repoName === '.' || repoName === '..' || !REPO_NAME_PATTERN.test(repoName)) {
+    throw new Error('Invalid repository name');
+  }
+  return path.join(CLONE_ROOT, repoName);
 }
 
 // Cloud metadata hostnames that must never be reachable via user-supplied URLs
@@ -200,28 +231,49 @@ export interface CloneProgress {
  * Clone or pull a git repository.
  * If targetDir doesn't exist: git clone --depth 1
  * If targetDir exists with .git: git pull --ff-only
+ *
+ * Security:
+ *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
+ *     path.relative containment barrier below is the inline canonical idiom
+ *     CodeQL's js/path-injection sanitizer recognizes.
+ *   - The git URL is passed after a `--` separator so a value beginning with
+ *     `--` (e.g. `--upload-pack=evil`) cannot be interpreted as a git option
+ *     (CodeQL js/second-order-command-line-injection).
  */
 export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
 ): Promise<string> {
-  const exists = await fs.access(path.join(targetDir, '.git')).then(
+  // Containment barrier — inline with the canonical path.relative idiom so
+  // CodeQL recognizes the sanitizer at every following filesystem and
+  // subprocess sink. The same `safeTarget` is used for every downstream
+  // path operation — no reassignment that the analyzer could lose track of.
+  const safeTarget = path.resolve(targetDir);
+  const rel = path.relative(CLONE_ROOT, safeTarget);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Clone target must be a subdirectory of ${CLONE_ROOT}`);
+  }
+
+  const exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
 
   if (exists) {
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], targetDir);
+    await runGit(['pull', '--ff-only'], safeTarget);
   } else {
     validateGitUrl(url);
-    await fs.mkdir(path.dirname(targetDir), { recursive: true });
+    await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(['clone', '--depth', '1', url, targetDir]);
+    // The `--` separator stops git from parsing the url or safeTarget as
+    // option flags. Without it, a URL like `--upload-pack=evil ...` would
+    // execute an attacker-chosen subprocess.
+    await runGit(['clone', '--depth', '1', '--', url, safeTarget]);
   }
 
-  return targetDir;
+  return safeTarget;
 }
 
 function runGit(args: string[], cwd?: string): Promise<void> {

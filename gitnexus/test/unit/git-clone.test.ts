@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { extractRepoName, getCloneDir, validateGitUrl } from '../../src/server/git-clone.js';
+import path from 'node:path';
+import os from 'node:os';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -22,6 +24,51 @@ describe('git-clone', () => {
     it('handles nested paths', () => {
       expect(extractRepoName('https://gitlab.com/group/subgroup/repo.git')).toBe('repo');
     });
+
+    it('rejects URLs whose last segment is "..": prevents getCloneDir traversal escape', () => {
+      // Without the safe-name pattern, a URL ending in `/..` would yield
+      // `getCloneDir('..')` = `~/.gitnexus/repos/..` = `~/.gitnexus/`, breaking
+      // out of the intended clone root.
+      expect(() => extractRepoName('https://github.com/owner/repo:..')).toThrow(
+        'valid repository name',
+      );
+      expect(() => extractRepoName('https://example.com/foo:..')).toThrow('valid repository name');
+    });
+
+    it('rejects URLs that yield a single dot', () => {
+      expect(() => extractRepoName('https://example.com/foo:.')).toThrow('valid repository name');
+    });
+
+    it('rejects URLs with shell metacharacters in the last segment', () => {
+      // The split on /[/:]/ does not split on backslashes or other shell chars,
+      // so a name like `repo;rm -rf /` would slip through without the pattern.
+      expect(() => extractRepoName('https://example.com/foo:repo;rm')).toThrow(
+        'valid repository name',
+      );
+      expect(() => extractRepoName('https://example.com/foo:repo$x')).toThrow(
+        'valid repository name',
+      );
+    });
+
+    it('rejects empty input', () => {
+      expect(() => extractRepoName('')).toThrow('valid repository name');
+    });
+
+    it('handles many trailing slashes without polynomial-time blowup', () => {
+      // Pathological input the previous /\\/+$/ regex was flagged for
+      // (CodeQL js/polynomial-redos). The string-loop replacement is O(n).
+      const url = 'https://example.com/repo' + '/'.repeat(10000);
+      const start = performance.now();
+      expect(extractRepoName(url)).toBe('repo');
+      const elapsedMs = performance.now() - start;
+      expect(elapsedMs).toBe(elapsedMs); // satisfies vitest "expectation present"
+      // Soft sanity check: 10k trailing slashes should resolve in well under
+      // 50 ms on any reasonable machine; flag if pathological behaviour returns.
+      // (Threshold intentionally loose to avoid CI flakes.)
+      if (elapsedMs > 100) {
+        throw new Error(`extractRepoName took ${elapsedMs}ms — possible ReDoS regression`);
+      }
+    });
   });
 
   describe('getCloneDir', () => {
@@ -30,6 +77,26 @@ describe('git-clone', () => {
       expect(dir).toContain('.gitnexus');
       expect(dir).toMatch(/repos/);
       expect(dir).toContain('my-repo');
+    });
+
+    it('rejects ".." to prevent path-traversal escape from the clone root', () => {
+      expect(() => getCloneDir('..')).toThrow('Invalid repository name');
+      expect(() => getCloneDir('.')).toThrow('Invalid repository name');
+      expect(() => getCloneDir('')).toThrow('Invalid repository name');
+    });
+
+    it('rejects names containing path separators', () => {
+      expect(() => getCloneDir('foo/bar')).toThrow('Invalid repository name');
+      expect(() => getCloneDir('foo\\bar')).toThrow('Invalid repository name');
+    });
+
+    it('returned path is always a direct child of the clone root', () => {
+      const cloneRoot = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+      const dir = getCloneDir('my-repo');
+      const rel = path.relative(cloneRoot, path.resolve(dir));
+      // path.relative from the parent to the child must be just the child name —
+      // no .. and no path separators inside.
+      expect(rel).toBe('my-repo');
     });
   });
 
