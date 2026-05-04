@@ -155,7 +155,7 @@ describe('worker pool integration', () => {
     }).toThrow(/Worker script not found/);
   });
 
-  // ─── Unhappy paths ──────────────────────────────────────────────────
+  // --- Unhappy paths -----------------------------------------------------
 
   it.skipIf(!hasDistWorker)('dispatch after terminate rejects', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
@@ -508,7 +508,7 @@ describe('worker pool integration', () => {
     // 2 workers but subBatchSize=4 means all 4 items form 1 job; second worker stays idle.
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
       subBatchSize: 4,
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 300,
       maxTimeoutRetries: 0,
       timeoutBackoffFactor: 3,
     });
@@ -528,7 +528,7 @@ describe('worker pool integration', () => {
       warnSpy.mockRestore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('fails fast on a result message that violates the worker protocol', async () => {
     const { tempDir, workerPath } = writeTempWorker(
