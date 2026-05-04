@@ -222,20 +222,16 @@ export const registerWebUI = (app: express.Express, staticDir: string | null): v
     // is enough to trip the analyzer. The limit is generous (300 rpm/IP =
     // 5 req/s sustained) so that multi-tab browser navigation, prefetch,
     // and service-worker revalidation do not produce 429s for legitimate
-    // SPA users. On 429 we content-negotiate: if the client accepts HTML
-    // (browser navigation), serve the SPA shell so the UI does not show a
-    // raw JSON dump; only API-style clients get the JSON error body.
+    // SPA users. At this rate, real browser navigation is extremely
+    // unlikely to hit the limit in practice, so the cosmetic issue of
+    // JSON-on-429 to a browser is a low-likelihood path. Content
+    // negotiation on the 429 (returning the SPA shell to HTML clients
+    // instead of `{ error: '...' }`) would require swapping
+    // express-rate-limit's `message` for a `handler` function and is
+    // deferred to keep this PR focused on closing the CodeQL alert.
     app.get(SPA_FALLBACK_REGEX, createRouteLimiter({ limit: 300 }), (_req, res) => {
       res.sendFile(path.join(staticDir, 'index.html'));
     });
-    // Note: we keep the JSON 429 body for non-HTML clients (curl, fetch
-    // calls that hit the fallback by mistake). Adding HTML content-
-    // negotiation on the 429 itself would require swapping
-    // express-rate-limit's `message` for a `handler` function — deferred
-    // to keep this PR focused on closing the CodeQL alert. The 5 req/s
-    // limit is high enough that real browser navigation will not hit it
-    // in practice, so the JSON-on-429 cosmetic issue is a low-likelihood
-    // path. Tracked as a follow-up.
   } else {
     app.get('/', (_req, res) => {
       res.type('html').send(landingPageHtml());

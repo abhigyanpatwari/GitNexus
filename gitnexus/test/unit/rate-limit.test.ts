@@ -133,7 +133,9 @@ describe('createRouteLimiter — integration with a real route', () => {
     expect(res.status).toBe(429);
     const retryAfter = res.headers.get('retry-after');
     expect(retryAfter).toBeTruthy();
-    // Either an integer-seconds form or an HTTP-date — both are spec-valid.
+    // express-rate-limit v8 emits Retry-After in integer-seconds form. The
+    // RFC also allows HTTP-date, but ERL does not use that shape; if a
+    // future version switches, this assertion needs an HTTP-date branch.
     const seconds = Number(retryAfter);
     expect(Number.isFinite(seconds) && seconds >= 0).toBe(true);
   });
