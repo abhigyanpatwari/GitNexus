@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import type { GroupConfig, GroupManifestLink, ContractType, ContractRole } from './types.js';
 
 const _require = createRequire(import.meta.url);
@@ -23,6 +24,40 @@ const DEFAULT_MATCHING = {
   exclude_links_paths: [] as string[],
   exclude_links_param_only_paths: false,
 };
+
+function optionalNonEmptyString(
+  link: Record<string, unknown>,
+  key: string,
+  linkIndex: number,
+): string | undefined {
+  if (link[key] === undefined || link[key] === null) return undefined;
+  if (typeof link[key] !== 'string' || link[key].trim() === '') {
+    throw new Error(`links[${linkIndex}].${key} must be a non-empty string when present`);
+  }
+  return link[key].trim();
+}
+
+function optionalSafeRelativePath(
+  link: Record<string, unknown>,
+  key: string,
+  linkIndex: number,
+): string | undefined {
+  const value = optionalNonEmptyString(link, key, linkIndex);
+  if (value === undefined) return undefined;
+
+  const normalizedSeparators = value.replace(/\\/g, '/');
+  if (
+    path.posix.isAbsolute(normalizedSeparators) ||
+    /^[A-Za-z]:\//.test(normalizedSeparators)
+  ) {
+    throw new Error(`links[${linkIndex}].${key} must be a relative path`);
+  }
+  if (normalizedSeparators.split('/').includes('..')) {
+    throw new Error(`links[${linkIndex}].${key} must not contain path traversal segments`);
+  }
+
+  return path.posix.normalize(normalizedSeparators);
+}
 
 export function parseGroupConfig(yamlContent: string): GroupConfig {
   const raw = yaml.load(yamlContent, { schema: yaml.JSON_SCHEMA }) as Record<string, unknown>;
@@ -73,6 +108,10 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
       type: link.type as ContractType,
       contract: String(link.contract),
       role: link.role as ContractRole,
+      fromSymbol: optionalNonEmptyString(link, 'fromSymbol', i),
+      fromFilePath: optionalSafeRelativePath(link, 'fromFilePath', i),
+      toSymbol: optionalNonEmptyString(link, 'toSymbol', i),
+      toFilePath: optionalSafeRelativePath(link, 'toFilePath', i),
     };
   });
 

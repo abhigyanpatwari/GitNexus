@@ -331,6 +331,9 @@ describe('syncGroup', () => {
       const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
       expect(registry.version).toBe(1);
       expect(registry.contracts).toHaveLength(0);
+      expect(result.bridge.status).toBe('written');
+      expect(result.bridge.written).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'bridge.lbug'))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

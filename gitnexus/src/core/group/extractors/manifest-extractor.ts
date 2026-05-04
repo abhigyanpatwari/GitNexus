@@ -74,6 +74,33 @@ export function manifestSymbolUid(repo: string, contractId: string): string {
   return `manifest::${repo}::${contractId}`;
 }
 
+interface ManifestEndpointHint {
+  symbol?: string;
+  filePath?: string;
+}
+
+function endpointHintForRepo(repoPathKey: string, link: GroupManifestLink): ManifestEndpointHint {
+  if (repoPathKey === link.from) {
+    return { symbol: link.fromSymbol, filePath: link.fromFilePath };
+  }
+  if (repoPathKey === link.to) {
+    return { symbol: link.toSymbol, filePath: link.toFilePath };
+  }
+  return {};
+}
+
+function fallbackSymbolRef(repoPathKey: string, link: GroupManifestLink) {
+  const hint = endpointHintForRepo(repoPathKey, link);
+  return {
+    filePath: hint.filePath ?? '',
+    name: hint.symbol ?? link.contract,
+  };
+}
+
+function fallbackCustomSymbolName(contract: string): string {
+  return contract.includes('::') ? contract.split('::').pop()! : contract;
+}
+
 export class ManifestExtractor {
   async extractFromManifest(
     links: GroupManifestLink[],
@@ -90,7 +117,14 @@ export class ManifestExtractor {
     type ResolvedSymbol = { filePath: string; name: string; uid: string } | null;
     const resolveCache = new Map<string, Promise<ResolvedSymbol>>();
     const resolveOnce = (repo: string, link: GroupManifestLink): Promise<ResolvedSymbol> => {
-      const key = `${repo}\u0000${link.type}\u0000${link.contract}`;
+      const hint = endpointHintForRepo(repo, link);
+      const key = [
+        repo,
+        link.type,
+        link.contract,
+        hint.symbol ?? '',
+        hint.filePath ?? '',
+      ].join('\u0000');
       let pending = resolveCache.get(key);
       if (!pending) {
         pending = this.resolveSymbol(repo, link, dbExecutors);
@@ -123,8 +157,8 @@ export class ManifestExtractor {
       providerSymbol,
       consumerSymbol,
     } of perLink) {
-      const providerRef = providerSymbol || { filePath: '', name: link.contract };
-      const consumerRef = consumerSymbol || { filePath: '', name: link.contract };
+      const providerRef = providerSymbol || fallbackSymbolRef(providerRepo, link);
+      const consumerRef = consumerSymbol || fallbackSymbolRef(consumerRepo, link);
       // When the resolver finds a real graph symbol we keep its uid, otherwise
       // fall back to the deterministic synthetic uid (see manifestSymbolUid).
       const providerUid = providerSymbol?.uid || manifestSymbolUid(providerRepo, contractId);
@@ -269,20 +303,30 @@ export class ManifestExtractor {
           { contract: link.contract },
         );
       } else if (link.type === 'custom') {
-        // Workspace extractors produce qualified contracts like "mathlex::Expression".
-        // Graph nodes store the unqualified symbol name ("Expression"), so strip
-        // the "provider::" prefix before querying.
-        const symbolName = link.contract.includes('::')
-          ? link.contract.split('::').pop()!
-          : link.contract;
+        // Endpoint hints are tied to the group.yaml endpoints (`from` / `to`).
+        // They let manifest authors disambiguate same-name custom symbols by
+        // supplying the symbol name and the repo-relative file path for each
+        // side. Without a file path, more than one exact match is considered
+        // ambiguous and falls back to the synthetic manifest uid.
+        const hint = endpointHintForRepo(repoPathKey, link);
+        const symbolName = hint.symbol ?? fallbackCustomSymbolName(link.contract);
+        const filePath = hint.filePath;
         rows = await executor(
-          `MATCH (n:Function|Method|Class|Interface|Struct|Enum|Trait|Constructor|TypeAlias|Impl|Macro|Union|Typedef|Property|Record|Delegate|Annotation|Template|Const|Static|CodeElement)
+          `MATCH (n:Const|Function|Method|Class|Interface|Variable|TypeAlias)
            WHERE n.name = $symbolName
+           ${filePath ? 'AND n.filePath = $filePath' : ''}
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
-           LIMIT 1`,
-          { symbolName },
+           LIMIT ${filePath ? 1 : 2}`,
+          filePath ? { symbolName, filePath } : { symbolName },
         );
+        if (!filePath && rows.length > 1) {
+          console.warn(
+            `[manifest-extractor] custom symbol ${symbolName} is ambiguous in ${repoPathKey}; ` +
+              'add fromFilePath/toFilePath endpoint hints in group.yaml',
+          );
+          return null;
+        }
       } else {
         return null;
       }

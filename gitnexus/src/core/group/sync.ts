@@ -14,6 +14,7 @@ import { detectServiceBoundaries, assignService } from './service-boundary-detec
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
+import { writeBridge, type WriteBridgeReport } from './bridge-db.js';
 
 export interface SyncOptions {
   extractorOverride?:
@@ -34,6 +35,16 @@ export interface SyncResult {
   unmatched: StoredContract[];
   missingRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
+  bridge: SyncBridgeResult;
+}
+
+export interface SyncBridgeResult {
+  status: 'written' | 'skipped' | 'failed';
+  written: boolean;
+  path: string;
+  reason?: string;
+  error?: string;
+  report?: WriteBridgeReport;
 }
 
 export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry[]): string {
@@ -79,6 +90,19 @@ function dedupeCrossLinks(links: CrossLink[]): CrossLink[] {
   return out;
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function skippedBridge(groupDir: string | undefined, reason: string): SyncBridgeResult {
+  return {
+    status: 'skipped',
+    written: false,
+    path: groupDir ? path.join(groupDir, 'bridge.lbug') : '',
+    reason,
+  };
+}
+
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
@@ -86,6 +110,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   let manifestCrossLinks: CrossLink[] = [];
   let dbExecutors: Map<string, CypherExecutor> | undefined;
   let registryEntries: RegistryEntry[] | undefined;
+  const openPoolIds: string[] = [];
 
   const eo = opts?.extractorOverride;
   if (eo && eo.length === 0) {
@@ -98,84 +123,77 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const grpcEx = new GrpcExtractor();
     const topicEx = new TopicExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
-    const openPoolIds: string[] = [];
 
-    try {
-      for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const handle = await resolve(regName, groupPath);
-        if (!handle) {
-          missingRepos.push(groupPath);
-          continue;
-        }
-
-        const poolId = handle.id;
-        const lbugPath = path.join(handle.storagePath, 'lbug');
-        try {
-          await initLbug(poolId, lbugPath);
-          openPoolIds.push(poolId);
-
-          const executor: CypherExecutor = (query, params) =>
-            executeParameterized(poolId, query, params ?? {});
-
-          dbExecutors.set(groupPath, executor);
-
-          const boundaries = await detectServiceBoundaries(handle.repoPath);
-
-          if (config.detect.http) {
-            const extracted = await httpEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
-            }
-          }
-
-          if (config.detect.grpc) {
-            const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
-            }
-          }
-
-          if (config.detect.topics) {
-            const extracted = await topicEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
-            }
-          }
-
-          const metaPath = path.join(handle.storagePath, 'meta.json');
-          try {
-            const raw = await fs.readFile(metaPath, 'utf-8');
-            const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
-            repoSnapshots[groupPath] = {
-              indexedAt: m.indexedAt || '',
-              lastCommit: m.lastCommit || '',
-            };
-          } catch {
-            const e = entries.find((en) => en.name === regName);
-            repoSnapshots[groupPath] = {
-              indexedAt: e?.indexedAt || '',
-              lastCommit: e?.lastCommit || '',
-            };
-          }
-        } catch {
-          missingRepos.push(groupPath);
-        }
+    for (const [groupPath, regName] of Object.entries(config.repos)) {
+      const handle = await resolve(regName, groupPath);
+      if (!handle) {
+        missingRepos.push(groupPath);
+        continue;
       }
-    } finally {
-      for (const id of [...new Set(openPoolIds)]) {
-        await closeLbug(id).catch(() => {});
+
+      const poolId = handle.id;
+      const lbugPath = path.join(handle.storagePath, 'lbug');
+      try {
+        await initLbug(poolId, lbugPath);
+        openPoolIds.push(poolId);
+
+        const executor: CypherExecutor = (query, params) =>
+          executeParameterized(poolId, query, params ?? {});
+
+        dbExecutors.set(groupPath, executor);
+
+        const boundaries = await detectServiceBoundaries(handle.repoPath);
+
+        if (config.detect.http) {
+          const extracted = await httpEx.extract(executor, handle.repoPath, handle);
+          for (const c of extracted) {
+            autoContracts.push({
+              ...c,
+              repo: groupPath,
+              service: assignService(c.symbolRef.filePath, boundaries),
+            });
+          }
+        }
+
+        if (config.detect.grpc) {
+          const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
+          for (const c of extracted) {
+            autoContracts.push({
+              ...c,
+              repo: groupPath,
+              service: assignService(c.symbolRef.filePath, boundaries),
+            });
+          }
+        }
+
+        if (config.detect.topics) {
+          const extracted = await topicEx.extract(executor, handle.repoPath, handle);
+          for (const c of extracted) {
+            autoContracts.push({
+              ...c,
+              repo: groupPath,
+              service: assignService(c.symbolRef.filePath, boundaries),
+            });
+          }
+        }
+
+        const metaPath = path.join(handle.storagePath, 'meta.json');
+        try {
+          const raw = await fs.readFile(metaPath, 'utf-8');
+          const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
+          repoSnapshots[groupPath] = {
+            indexedAt: m.indexedAt || '',
+            lastCommit: m.lastCommit || '',
+          };
+        } catch {
+          const e = entries.find((en) => en.name === regName);
+          repoSnapshots[groupPath] = {
+            indexedAt: e?.indexedAt || '',
+            lastCommit: e?.lastCommit || '',
+          };
+        }
+      } catch {
+        missingRepos.push(groupPath);
       }
     }
   }
@@ -209,9 +227,8 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // Process manifest links declared in group.yaml (plus any auto-discovered).
   // ManifestExtractor is fully implemented but was never wired into this
   // pipeline — config.links were parsed and validated but silently dropped.
-  // Placed after the DB try/finally: resolveSymbol falls back to synthetic
-  // UIDs when dbExecutors is undefined or a pool is closed, so cross-links
-  // are always generated regardless of whether real DB executors are available.
+  // Resolve while repo DB executors are still open. If a repo executor is
+  // unavailable, resolveSymbol still falls back to deterministic synthetic UIDs.
   if (allLinks.length > 0) {
     const knownRepos = new Set(Object.keys(config.repos));
     for (const link of allLinks) {
@@ -232,6 +249,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
       );
     }
+  }
+
+  for (const id of [...new Set(openPoolIds)]) {
+    await closeLbug(id).catch(() => {});
   }
 
   const { matched, unmatched } = runExactMatch(autoContracts, undefined, config.matching);
@@ -256,11 +277,42 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     await writeContractRegistry(opts.groupDir, registry);
   }
 
+  let bridge = skippedBridge(
+    opts?.groupDir,
+    opts?.skipWrite ? 'skipWrite option is enabled' : 'groupDir option is missing',
+  );
+  if (opts?.groupDir && !opts.skipWrite) {
+    const bridgePath = path.join(opts.groupDir, 'bridge.lbug');
+    try {
+      const report = await writeBridge(opts.groupDir, {
+        contracts: allContracts,
+        crossLinks,
+        repoSnapshots,
+        missingRepos,
+      });
+      bridge = {
+        status: 'written',
+        written: true,
+        path: bridgePath,
+        report,
+      };
+    } catch (err) {
+      bridge = {
+        status: 'failed',
+        written: false,
+        path: bridgePath,
+        error: errorMessage(err),
+      };
+      console.warn(`[group/sync] bridge.lbug write failed: ${bridge.error}`);
+    }
+  }
+
   return {
     contracts: allContracts,
     crossLinks,
     unmatched,
     missingRepos,
     repoSnapshots,
+    bridge,
   };
 }

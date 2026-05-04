@@ -19,6 +19,10 @@ export interface GroupManifestLink {
   type: ContractType;
   contract: string;
   role: ContractRole;
+  fromSymbol?: string;
+  fromFilePath?: string;
+  toSymbol?: string;
+  toFilePath?: string;
 }
 
 export interface DetectConfig {
@@ -190,6 +194,7 @@ export interface BridgeHandle {
   readonly _db: unknown;
   readonly _conn: unknown;
   readonly groupDir: string;
+  readonly readOnly?: boolean;
 }
 
 export interface BridgeMeta {

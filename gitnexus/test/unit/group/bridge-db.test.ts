@@ -250,6 +250,29 @@ describe('writeBridge + read', () => {
     await closeBridgeDb(handle!);
   });
 
+  itLbugReopen('test_openBridgeDbReadOnly_can_reopen_after_read_close', async () => {
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const first = await openBridgeDbReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+    await queryBridge<{ repo: string }>(first!, 'MATCH (c:Contract) RETURN c.repo AS repo');
+    await closeBridgeDb(first!);
+
+    const second = await openBridgeDbReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    const rows = await queryBridge<{ repo: string }>(
+      second!,
+      'MATCH (c:Contract) RETURN c.repo AS repo',
+    );
+    expect(rows).toHaveLength(1);
+    await closeBridgeDb(second!);
+  });
+
   itLbugReopen('test_writeBridge_crossLinks_queryable', async () => {
     const provider = makeContract({ repo: 'backend', role: 'provider' });
     const consumer = makeContract({

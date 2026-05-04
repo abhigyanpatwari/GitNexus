@@ -128,4 +128,54 @@ links:
 `;
     expect(() => parseGroupConfig(yaml)).toThrow(/nonexistent/i);
   });
+
+  it('preserves endpoint hints on manifest links', () => {
+    const yaml = `
+version: 1
+name: test
+repos:
+  provider: repo-a
+  consumer: repo-b
+links:
+  - from: provider
+    to: consumer
+    type: custom
+    contract: PAYMENT_STATUS_CONTRACT
+    role: provider
+    fromSymbol: PAYMENT_STATUS_CONTRACT
+    fromFilePath: app/src/contracts/billing-contracts.js
+    toSymbol: PAYMENT_STATUS_CONTRACT
+    toFilePath: app/src/contracts/operations-contracts.js
+`;
+    const config = parseGroupConfig(yaml);
+    expect(config.links[0]).toMatchObject({
+      fromSymbol: 'PAYMENT_STATUS_CONTRACT',
+      fromFilePath: 'app/src/contracts/billing-contracts.js',
+      toSymbol: 'PAYMENT_STATUS_CONTRACT',
+      toFilePath: 'app/src/contracts/operations-contracts.js',
+    });
+  });
+
+  it('rejects unsafe endpoint hint paths', () => {
+    const base = `
+version: 1
+name: test
+repos:
+  provider: repo-a
+  consumer: repo-b
+links:
+  - from: provider
+    to: consumer
+    type: custom
+    contract: PAYMENT_STATUS_CONTRACT
+    role: provider
+    fromSymbol: PAYMENT_STATUS_CONTRACT
+`;
+    expect(() => parseGroupConfig(`${base}    fromFilePath: /tmp/contracts.js\n`)).toThrow(
+      /relative path/i,
+    );
+    expect(() => parseGroupConfig(`${base}    fromFilePath: ../contracts.js\n`)).toThrow(
+      /path traversal/i,
+    );
+  });
 });

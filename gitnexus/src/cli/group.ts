@@ -181,6 +181,11 @@ export function registerGroupCommands(program: Command): void {
         console.log(
           `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
         );
+        if (result.bridge.status === 'written') {
+          console.log(`Wrote bridge.lbug (${result.bridge.report?.linksInserted ?? 0} bridge links)`);
+        } else if (result.bridge.status === 'failed') {
+          console.log(`Bridge write failed: ${result.bridge.error}`);
+        }
       }
     });
 

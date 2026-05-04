@@ -11,8 +11,10 @@ import {
   fileMatchesServicePrefix,
 } from '../../../src/core/group/cross-impact.js';
 import type { GroupToolPort } from '../../../src/core/group/service.js';
-import { writeBridgeMeta } from '../../../src/core/group/bridge-db.js';
+import { writeBridge, writeBridgeMeta } from '../../../src/core/group/bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from '../../../src/core/group/bridge-schema.js';
+
+const itLbugReopen = process.platform === 'win32' ? it.skip : it;
 
 function tmpGroup(): { tmpDir: string; groupDir: string; cleanup: () => void } {
   const tmpDir = path.join(os.tmpdir(), `gitnexus-ci-${Date.now()}-${Math.random()}`);
@@ -274,6 +276,94 @@ describe('cross-impact', () => {
       if ('error' in r) {
         expect(r.error).toContain('schema');
       }
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
+  itLbugReopen('test_runGroupImpact_synthetic_manifest_uid_does_not_false_match_cross_repo', async () => {
+    const { tmpDir, groupDir, cleanup } = tmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    await writeBridge(groupDir, {
+      contracts: [
+        {
+          contractId: 'custom::SHARED_CONTRACT',
+          type: 'custom',
+          role: 'provider',
+          repo: 'app/backend',
+          symbolUid: 'manifest::app/backend::custom::SHARED_CONTRACT',
+          symbolRef: { filePath: 'src/contract.ts', name: 'SHARED_CONTRACT' },
+          symbolName: 'SHARED_CONTRACT',
+          confidence: 1,
+          meta: { source: 'manifest' },
+        },
+        {
+          contractId: 'custom::SHARED_CONTRACT',
+          type: 'custom',
+          role: 'consumer',
+          repo: 'app/frontend',
+          symbolUid: 'manifest::app/frontend::custom::SHARED_CONTRACT',
+          symbolRef: { filePath: 'src/contract.ts', name: 'SHARED_CONTRACT' },
+          symbolName: 'SHARED_CONTRACT',
+          confidence: 1,
+          meta: { source: 'manifest' },
+        },
+      ],
+      crossLinks: [
+        {
+          from: {
+            repo: 'app/frontend',
+            symbolUid: 'manifest::app/frontend::custom::SHARED_CONTRACT',
+            symbolRef: { filePath: 'src/contract.ts', name: 'SHARED_CONTRACT' },
+          },
+          to: {
+            repo: 'app/backend',
+            symbolUid: 'manifest::app/backend::custom::SHARED_CONTRACT',
+            symbolRef: { filePath: 'src/contract.ts', name: 'SHARED_CONTRACT' },
+          },
+          type: 'custom',
+          contractId: 'custom::SHARED_CONTRACT',
+          matchType: 'manifest',
+          confidence: 1,
+        },
+      ],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(async (name: string) => ({
+          id: name,
+          name,
+          repoPath: '/r',
+          storagePath: '/r/.gitnexus',
+        })),
+        impact: vi.fn(async () => ({
+          target: { id: 'Const:src/contract.ts:SHARED_CONTRACT', filePath: 'src/contract.ts' },
+          summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+          byDepth: {},
+          risk: 'LOW',
+        })),
+        impactByUid: vi.fn(),
+        query: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'app/backend',
+          target: 'SHARED_CONTRACT',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(false);
+      if (!('error' in r)) {
+        expect(r.summary.cross_repo_hits).toBe(0);
+        expect(r.cross).toHaveLength(0);
+      }
+      expect(port.impactByUid).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
       cleanup();

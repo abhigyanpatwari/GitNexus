@@ -640,6 +640,80 @@ describe('ManifestExtractor', () => {
     expect(result.crossLinks[0].matchType).toBe('manifest');
   });
 
+  it('uses endpoint hints to resolve custom provider and consumer symbols by file path', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'commerce/billing',
+        to: 'commerce/operations',
+        type: 'custom',
+        contract: 'PAYMENT_STATUS_CONTRACT',
+        role: 'provider',
+        fromSymbol: 'PAYMENT_STATUS_CONTRACT',
+        fromFilePath: 'app/src/contracts/billing-contracts.js',
+        toSymbol: 'PAYMENT_STATUS_CONTRACT',
+        toFilePath: 'app/src/contracts/operations-contracts.js',
+      },
+    ];
+
+    const seen: Record<string, Record<string, unknown> | undefined> = {};
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'commerce/billing',
+        async (_cypher, params) => {
+          seen.billing = params;
+          if (
+            params?.symbolName === 'PAYMENT_STATUS_CONTRACT' &&
+            params?.filePath === 'app/src/contracts/billing-contracts.js'
+          ) {
+            return [
+              {
+                uid: 'Const:app/src/contracts/billing-contracts.js:PAYMENT_STATUS_CONTRACT',
+                name: 'PAYMENT_STATUS_CONTRACT',
+                filePath: 'app/src/contracts/billing-contracts.js',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      [
+        'commerce/operations',
+        async (_cypher, params) => {
+          seen.operations = params;
+          if (
+            params?.symbolName === 'PAYMENT_STATUS_CONTRACT' &&
+            params?.filePath === 'app/src/contracts/operations-contracts.js'
+          ) {
+            return [
+              {
+                uid: 'Const:app/src/contracts/operations-contracts.js:PAYMENT_STATUS_CONTRACT',
+                name: 'PAYMENT_STATUS_CONTRACT',
+                filePath: 'app/src/contracts/operations-contracts.js',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+
+    expect(seen.billing?.filePath).toBe('app/src/contracts/billing-contracts.js');
+    expect(seen.operations?.filePath).toBe('app/src/contracts/operations-contracts.js');
+    expect(provider?.symbolUid).toBe(
+      'Const:app/src/contracts/billing-contracts.js:PAYMENT_STATUS_CONTRACT',
+    );
+    expect(consumer?.symbolUid).toBe(
+      'Const:app/src/contracts/operations-contracts.js:PAYMENT_STATUS_CONTRACT',
+    );
+  });
+
   it('custom contract with qualified name (provider::Symbol) strips prefix before graph query', async () => {
     const links: GroupManifestLink[] = [
       {
@@ -728,11 +802,11 @@ describe('ManifestExtractor', () => {
 
     await extractor.extractFromManifest(links, dbExecutors);
 
-    expect(capturedCypher).toContain('Function|Method|Class|Interface|Struct|Enum|Trait');
+    expect(capturedCypher).toContain('Const|Function|Method|Class|Interface|Variable|TypeAlias');
     expect(capturedCypher).not.toContain('NOT n:File');
   });
 
-  it('custom contract with ambiguous name returns first-by-filePath deterministically', async () => {
+  it('custom contract with ambiguous name falls back unless a filePath hint is provided', async () => {
     const links: GroupManifestLink[] = [
       {
         from: 'parser/mathlex',
@@ -751,7 +825,10 @@ describe('ManifestExtractor', () => {
         'parser/mathlex',
         async (_cypher, params) => {
           if (params?.symbolName === 'Token') {
-            return [{ uid: 'uid-token-first', name: 'Token', filePath: 'src/ast.rs' }];
+            return [
+              { uid: 'uid-token-first', name: 'Token', filePath: 'src/ast.rs' },
+              { uid: 'uid-token-second', name: 'Token', filePath: 'src/token.rs' },
+            ];
           }
           return [];
         },
@@ -769,7 +846,7 @@ describe('ManifestExtractor', () => {
 
     const result = await extractor.extractFromManifest(links, dbExecutors);
     const provider = result.contracts.find((c) => c.role === 'provider');
-    expect(provider?.symbolUid).toBe('uid-token-first');
+    expect(provider?.symbolUid).toBe('manifest::parser/mathlex::custom::Token');
   });
 
   it('returns empty for no links', async () => {

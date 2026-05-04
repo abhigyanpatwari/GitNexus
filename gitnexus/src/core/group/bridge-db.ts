@@ -41,6 +41,16 @@ async function removeLbugFile(basePath: string): Promise<void> {
   }
 }
 
+async function removeLbugSidecars(basePath: string): Promise<void> {
+  for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+    try {
+      await fsp.rm(`${basePath}${suffix}`, { recursive: true, force: true });
+    } catch {
+      /* best-effort: stale sidecars will surface via the next open path */
+    }
+  }
+}
+
 export function contractNodeId(
   repo: string,
   contractId: string,
@@ -228,16 +238,16 @@ function unwrapQueryResult(queryResult: lbug.QueryResult | lbug.QueryResult[]): 
 }
 
 export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
-  // CHECKPOINT before close so the WAL/.shadow contents are flushed into
-  // the main database file. Without this, LadybugDB 0.16.0's non-blocking
-  // checkpoint thread can outlive the close call and leave sidecar pages
-  // pending on disk, which makes a subsequent read-side open either race
-  // with the WAL replay or trip the database-id check on the sidecars.
-  // CHECKPOINT is a no-op when there's nothing pending, so it's cheap.
-  try {
-    await (handle._conn as lbug.Connection).query('CHECKPOINT');
-  } catch {
-    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  if (!handle.readOnly) {
+    // CHECKPOINT before closing a writable handle so the WAL/.shadow contents
+    // are flushed into the main database file. Do not run this for read-only
+    // bridge handles: LadybugDB can leave shadow pages that the next read-only
+    // opener cannot replay.
+    try {
+      await (handle._conn as lbug.Connection).query('CHECKPOINT');
+    } catch {
+      /* ignore — older LadybugDB or schemaless DB may not accept it */
+    }
   }
   try {
     await (handle._conn as lbug.Connection).close();
@@ -619,6 +629,23 @@ function isTransientLockError(err: unknown): boolean {
   return LBUG_OPEN_RETRY_PATTERNS.some((p) => msg.includes(p));
 }
 
+function needsWritableShadowReplay(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes('replay shadow pages under read-only mode');
+}
+
+async function replayBridgeShadowPages(dbPath: string, groupDir: string): Promise<void> {
+  const handle = await openLbugConnection(lbug, dbPath, { readOnly: false });
+  const bridgeHandle = { _db: handle.db, _conn: handle.conn, groupDir, readOnly: false } as BridgeHandle;
+  try {
+    await handle.db.init();
+    await handle.conn.init();
+  } finally {
+    await closeBridgeDb(bridgeHandle);
+  }
+  await removeLbugSidecars(dbPath);
+}
+
 async function ensureBridgeDbFileAvailable(groupDir: string): Promise<boolean> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
   try {
@@ -672,10 +699,19 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       // (where we can retry) instead of on the first user query.
       await handle.db.init();
       await handle.conn.init();
-      return { _db: handle.db, _conn: handle.conn, groupDir } as BridgeHandle;
+      return { _db: handle.db, _conn: handle.conn, groupDir, readOnly: true } as BridgeHandle;
     } catch (err) {
       lastErr = err;
       if (handle) await closeLbugConnection(handle);
+      if (needsWritableShadowReplay(err)) {
+        try {
+          await replayBridgeShadowPages(dbPath, groupDir);
+        } catch (replayErr) {
+          lastErr = replayErr;
+          break;
+        }
+        continue;
+      }
       if (!isTransientLockError(err) || attempt === LBUG_OPEN_RETRY_ATTEMPTS) break;
       const delay = Math.min(LBUG_OPEN_RETRY_BASE_MS * attempt, LBUG_OPEN_RETRY_MAX_MS);
       await new Promise((r) => setTimeout(r, delay));
