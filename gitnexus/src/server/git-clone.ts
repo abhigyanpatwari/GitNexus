@@ -228,6 +228,20 @@ export interface CloneProgress {
 }
 
 /**
+ * Build the `git clone` argument list for a given URL and target directory.
+ *
+ * The `--` separator is non-negotiable: it stops git from parsing a URL that
+ * starts with `--` (e.g. `--upload-pack=evil`) as an option flag, which would
+ * otherwise execute an attacker-chosen subprocess (CodeQL
+ * js/second-order-command-line-injection, alerts #166/#167).
+ *
+ * Exported so the separator placement is testable without mocking spawn.
+ */
+export function buildCloneArgs(url: string, targetDir: string): string[] {
+  return ['clone', '--depth', '1', '--', url, targetDir];
+}
+
+/**
  * Clone or pull a git repository.
  * If targetDir doesn't exist: git clone --depth 1
  * If targetDir exists with .git: git pull --ff-only
@@ -249,6 +263,13 @@ export async function cloneOrPull(
   // CodeQL recognizes the sanitizer at every following filesystem and
   // subprocess sink. The same `safeTarget` is used for every downstream
   // path operation — no reassignment that the analyzer could lose track of.
+  //
+  // Limitation: this is a lexical containment check, not a realpath check.
+  // If an attacker can place a symlink under CLONE_ROOT pointing outside it,
+  // the lexical check passes but the clone lands at the symlink target. That
+  // requires pre-existing local write access to CLONE_ROOT, so the threat
+  // model considers it out of scope; CodeQL js/path-injection accepts the
+  // lexical form. Tracked as a follow-up if defense-in-depth is needed.
   const safeTarget = path.resolve(targetDir);
   const rel = path.relative(CLONE_ROOT, safeTarget);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
@@ -267,10 +288,7 @@ export async function cloneOrPull(
     validateGitUrl(url);
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    // The `--` separator stops git from parsing the url or safeTarget as
-    // option flags. Without it, a URL like `--upload-pack=evil ...` would
-    // execute an attacker-chosen subprocess.
-    await runGit(['clone', '--depth', '1', '--', url, safeTarget]);
+    await runGit(buildCloneArgs(url, safeTarget));
   }
 
   return safeTarget;

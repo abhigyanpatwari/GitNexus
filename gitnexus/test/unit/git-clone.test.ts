@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { extractRepoName, getCloneDir, validateGitUrl } from '../../src/server/git-clone.js';
+import {
+  extractRepoName,
+  getCloneDir,
+  validateGitUrl,
+  cloneOrPull,
+  buildCloneArgs,
+} from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -61,13 +67,10 @@ describe('git-clone', () => {
       const start = performance.now();
       expect(extractRepoName(url)).toBe('repo');
       const elapsedMs = performance.now() - start;
-      expect(elapsedMs).toBe(elapsedMs); // satisfies vitest "expectation present"
-      // Soft sanity check: 10k trailing slashes should resolve in well under
-      // 50 ms on any reasonable machine; flag if pathological behaviour returns.
-      // (Threshold intentionally loose to avoid CI flakes.)
-      if (elapsedMs > 100) {
-        throw new Error(`extractRepoName took ${elapsedMs}ms — possible ReDoS regression`);
-      }
+      // Threshold of 500ms is intentionally loose to absorb slow CI runners
+      // while still catching a true polynomial regression (which would take
+      // multiple seconds on 10k slashes).
+      expect(elapsedMs).toBeLessThan(500);
     });
   });
 
@@ -252,6 +255,81 @@ describe('git-clone', () => {
 
     it('blocks 0.0.0.0', () => {
       expect(() => validateGitUrl('http://0.0.0.0/repo.git')).toThrow('private/internal');
+    });
+  });
+
+  describe('buildCloneArgs', () => {
+    // Closes the test-coverage gap that PR #1325 review (HIGH finding 1)
+    // identified for CodeQL js/second-order-command-line-injection alerts
+    // #166/#167. The barrier these tests guard is the `--` separator that
+    // prevents an option-like URL from being parsed by git as a flag.
+    it('places `--` before the URL', () => {
+      const args = buildCloneArgs('https://github.com/owner/repo.git', '/safe/target');
+      const dashDashIdx = args.indexOf('--');
+      const urlIdx = args.indexOf('https://github.com/owner/repo.git');
+      expect(dashDashIdx).toBeGreaterThan(-1);
+      expect(urlIdx).toBeGreaterThan(dashDashIdx);
+    });
+
+    it('treats an option-like URL as a positional argument, not a flag', () => {
+      // The exact mitigation for second-order-command-line-injection: a URL
+      // beginning with `--` must appear after the `--` separator so git
+      // refuses to interpret it as `--upload-pack=evil`.
+      const args = buildCloneArgs('--upload-pack=evil', '/safe/target');
+      const dashDashIdx = args.indexOf('--');
+      const urlIdx = args.indexOf('--upload-pack=evil');
+      expect(dashDashIdx).toBeGreaterThan(-1);
+      expect(urlIdx).toBeGreaterThan(dashDashIdx);
+      // And targetDir comes after URL, also positional.
+      expect(args.indexOf('/safe/target')).toBeGreaterThan(urlIdx);
+    });
+
+    it('preserves --depth 1 for shallow clones', () => {
+      const args = buildCloneArgs('https://github.com/owner/repo.git', '/safe/target');
+      const depthIdx = args.indexOf('--depth');
+      expect(depthIdx).toBeGreaterThan(-1);
+      expect(args[depthIdx + 1]).toBe('1');
+      // --depth must be before the `--` separator (it's an option, not a positional).
+      expect(depthIdx).toBeLessThan(args.indexOf('--'));
+    });
+  });
+
+  describe('cloneOrPull — containment barrier', () => {
+    // Closes the test-coverage gap that PR #1325 review (HIGH finding 1)
+    // identified for CodeQL js/path-injection alerts #176/#177/#178. The
+    // barrier these tests guard is the path.relative containment check at
+    // the entry of cloneOrPull, which must reject any targetDir not strictly
+    // inside CLONE_ROOT before any filesystem or subprocess sink.
+    //
+    // These tests do NOT mock spawn — the barrier throws synchronously
+    // before git is invoked, so the rejection is observable directly.
+    const cloneRoot = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+
+    it('rejects an absolute target outside CLONE_ROOT', async () => {
+      await expect(cloneOrPull('https://github.com/a/b.git', '/etc/passwd')).rejects.toThrow(
+        'Clone target must be a subdirectory',
+      );
+    });
+
+    it('rejects CLONE_ROOT itself (the rel === "" branch)', async () => {
+      await expect(cloneOrPull('https://github.com/a/b.git', cloneRoot)).rejects.toThrow(
+        'Clone target must be a subdirectory',
+      );
+    });
+
+    it('rejects a parent-directory traversal attempt', async () => {
+      await expect(
+        cloneOrPull('https://github.com/a/b.git', path.join(cloneRoot, '..', 'escape')),
+      ).rejects.toThrow('Clone target must be a subdirectory');
+    });
+
+    it('rejects a sibling directory with a common prefix (CLONE_ROOT-evil)', async () => {
+      // Classic startsWith(root + sep) pitfall: '/x/repos' does not catch
+      // '/x/repos-evil/...'. The path.relative idiom does, and the test
+      // documents that property at the cloneOrPull boundary.
+      await expect(cloneOrPull('https://github.com/a/b.git', cloneRoot + '-evil')).rejects.toThrow(
+        'Clone target must be a subdirectory',
+      );
     });
   });
 });

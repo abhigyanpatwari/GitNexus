@@ -860,15 +860,26 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const storagePath = getStoragePath(entry.path);
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
-        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
-        const cloneDir = getCloneDir(entry.name);
+        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
+        // getCloneDir now throws on names that are not filesystem-safe (e.g.
+        // local repos registered with names like "my project" or "org/repo").
+        // Such repos legitimately have no clone dir, so treat the rejection as
+        // "nothing to clean up" rather than letting it fail the delete handler.
+        let cloneDir: string | null = null;
         try {
-          const stat = await fs.stat(cloneDir);
-          if (stat.isDirectory()) {
-            await fs.rm(cloneDir, { recursive: true, force: true });
-          }
+          cloneDir = getCloneDir(entry.name);
         } catch {
-          /* clone dir may not exist (local repos) */
+          /* repo name not eligible for a clone dir (local repo) */
+        }
+        if (cloneDir) {
+          try {
+            const stat = await fs.stat(cloneDir);
+            if (stat.isDirectory()) {
+              await fs.rm(cloneDir, { recursive: true, force: true });
+            }
+          } catch {
+            /* clone dir may not exist */
+          }
         }
 
         // 3. Unregister from the global registry
