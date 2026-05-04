@@ -332,11 +332,14 @@ export const createWorkerPool = (
             if (!settled) {
               settled = true;
               cleanup();
-              activeWorkers--;
               inFlightProgress[workerIndex] = 0;
               const shouldContinue = requeueAfterTimeout(workerIndex, job, lastProgress);
-              if (!shouldContinue) return;
+              if (!shouldContinue) {
+                activeWorkers--;
+                return;
+              }
               await replaceWorker(workerIndex);
+              activeWorkers--;
               reportProgress();
               runWorker(workerIndex);
               maybeDone();
