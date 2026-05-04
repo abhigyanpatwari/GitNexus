@@ -1,0 +1,36 @@
+name: Dependency Review
+
+# Blocks PRs that introduce dependencies with high/critical known vulnerabilities.
+# Reads the dependency graph diff between PR head and base.
+#
+# This is a required-check candidate after one week of clean runs
+# (operator decision — see docs/plans/2026-05-03-001-feat-automated-security-scans-plan.md).
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # pull-requests:write enables the inline summary comment on failure.
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

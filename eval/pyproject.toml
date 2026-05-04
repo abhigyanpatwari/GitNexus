@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mini-swe-agent>=2.0.0",
-    "litellm>=1.50.0,!=1.82.7,!=1.82.8",
+    "litellm!=1.82.7,!=1.82.8,>=1.83.7",
     "datasets>=3.0.0",
     "typer>=0.12.0",
     "rich>=13.0.0",
@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
+    "pytest>=9.0.3",
     "ruff>=0.5.0",
     "hypothesis>=6.88.0",
     "coverage>=7.6.0",

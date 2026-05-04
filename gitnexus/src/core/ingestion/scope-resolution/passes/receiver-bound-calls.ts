@@ -46,6 +46,7 @@ import {
   findExportedDef,
   findOwnedMember,
   findReceiverTypeBinding,
+  isClassLike,
 } from '../scope/walkers.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
@@ -249,25 +250,30 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 1: namespace receiver ───────────────────────────────
-      const targetFile = namespaceTargets.get(receiverName);
-      if (targetFile !== undefined) {
-        const memberDef = findExportedDef(targetFile, memberName, index);
-        if (memberDef !== undefined) {
-          const ok = tryEmitEdge(
-            graph,
-            scopes,
-            nodeLookup,
-            site,
-            memberDef,
-            memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
-            seen,
-            0.85,
-            collapse,
-          );
-          if (ok) emitted++;
-          handledSites.add(siteKey);
-          continue;
+      const targetFiles = namespaceTargets.get(receiverName);
+      if (targetFiles !== undefined) {
+        let found = false;
+        for (const targetFile of targetFiles) {
+          const memberDef = findExportedDef(targetFile, memberName, index);
+          if (memberDef !== undefined) {
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+              seen,
+              0.85,
+              collapse,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            found = true;
+            break;
+          }
         }
+        if (found) continue;
       }
 
       // ── Case 2: class-name receiver ──────────────────────────────
@@ -309,28 +315,33 @@ export function emitReceiverBoundCalls(
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
-        const targetFile3 = namespaceTargets.get(nsName);
-        if (targetFile3 !== undefined && className.length > 0) {
-          const classDef3 = findExportedDef(targetFile3, className, index);
-          if (classDef3 !== undefined) {
-            const memberDef = findOwnedMember(classDef3.nodeId, memberName, model);
-            if (memberDef !== undefined) {
-              const ok = tryEmitEdge(
-                graph,
-                scopes,
-                nodeLookup,
-                site,
-                memberDef,
-                memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
-                seen,
-              );
-              if (ok) {
-                emitted++;
-                handledSites.add(siteKey);
+        const targetFiles3 = namespaceTargets.get(nsName);
+        if (targetFiles3 !== undefined && className.length > 0) {
+          let found3 = false;
+          for (const targetFile3 of targetFiles3) {
+            const classDef3 = findExportedDef(targetFile3, className, index);
+            if (classDef3 !== undefined) {
+              const memberDef = findOwnedMember(classDef3.nodeId, memberName, model);
+              if (memberDef !== undefined) {
+                const ok = tryEmitEdge(
+                  graph,
+                  scopes,
+                  nodeLookup,
+                  site,
+                  memberDef,
+                  memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                  seen,
+                );
+                if (ok) {
+                  emitted++;
+                  handledSites.add(siteKey);
+                }
+                found3 = true;
+                break;
               }
-              continue;
             }
           }
+          if (found3) continue;
         }
       }
 
@@ -394,10 +405,20 @@ export function emitReceiverBoundCalls(
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
         let ownerDef = findClassBindingInScope(site.inScope, typeRef.rawName, scopes);
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
-        // rawName is itself a class symbol. Map for-of tuple bindings
-        // (`__MAP_TUPLE_i__:mapId`), callable aliases (`getUser` → User),
-        // and other compound-friendly shapes need the compound resolver
-        // keyed by the receiver identifier.
+        // rawName is itself a class symbol reachable through scope bindings.
+        // For languages with namespace-style imports (Go), imported types
+        // don't create bindings. Fall back to QualifiedNameIndex — single-
+        // match wins; ambiguous/missing falls through.
+        if (ownerDef === undefined) {
+          const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
+          if (qnameIds.length === 1) {
+            const qdef = scopes.defs.get(qnameIds[0]!);
+            if (qdef !== undefined && isClassLike(qdef.type)) ownerDef = qdef;
+          }
+        }
+        // Map for-of tuple bindings (`__MAP_TUPLE_i__:mapId`), callable
+        // aliases (`getUser` → User), and other compound-friendly shapes
+        // need the compound resolver keyed by the receiver identifier.
         if (ownerDef === undefined) {
           ownerDef = resolveCompoundReceiverClass(
             receiverName,

@@ -1,0 +1,34 @@
+# zizmor config — pre-existing intentional patterns flagged on initial introduction.
+# Each ignore below has a documented mitigation. Re-evaluate when the source workflow changes.
+#
+# To run zizmor locally with this config:
+#   zizmor --config .github/zizmor.yml .
+
+rules:
+  dangerous-triggers:
+    ignore:
+      # workflow_run is REQUIRED to post sticky comments on fork PRs — the
+      # default-branch privileged token isn't accessible from `pull_request`
+      # on a fork. Mitigated by: read-only `actions:read` + `contents:read`
+      # for artifact download; `pull-requests:write` is the only write scope;
+      # no checkout of fork code occurs. Header comment in the file documents.
+      - ci-report.yml
+
+      # pull_request_target needed by claude-code-action to access secrets
+      # and post review comments on fork PRs. Mitigated by: PR checkouts pin
+      # the fork's HEAD SHA (not the branch ref) to prevent TOCTOU races,
+      # and claude-code-action sandboxes execution. Header comment documents.
+      - claude.yml
+
+      # pull_request_target on the autolabel job needs `pull-requests:write`
+      # to apply labels. Mitigated by: release-drafter runs with `dry-run:
+      # true`, reads only `.github/release-drafter.yml` from the BASE ref,
+      # and the validate-title job (which runs untrusted `pull_request`
+      # context) holds no write permissions. Header comment documents.
+      - pr-labeler.yml
+
+  # Note: cache-poisoning is NOT exempted. The two prior findings in
+  # publish.yml and release-candidate.yml were fixed structurally by
+  # dropping `cache: npm` from those workflows (matches the pattern used
+  # by PyO3/maturin for the same audit). See the commit that added this
+  # file for the rationale.

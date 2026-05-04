@@ -96,8 +96,73 @@ describe('git-clone', () => {
       );
     });
 
-    it('does not block valid public IPs', () => {
+    it('blocks IPv4-compatible IPv6 (RFC 4291 deprecated, ::w.x.y.z)', () => {
+      // Node's URL parser collapses ::127.0.0.1 to ::7f00:1 — no ::ffff: marker,
+      // but still routable to 127.0.0.1 on most stacks.
+      expect(() => validateGitUrl('http://[::127.0.0.1]/repo.git')).toThrow('private/internal');
+      expect(() => validateGitUrl('http://[::7f00:1]/repo.git')).toThrow('private/internal');
+      // 169.254.169.254 (cloud metadata) embedded as IPv4-compatible
+      expect(() => validateGitUrl('http://[::a9fe:a9fe]/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks IPv4-compatible IPv6 in expanded / zero-padded forms', () => {
+      // The compressed-form check above relies on the WHATWG URL parser
+      // normalising fully-expanded inputs to ::xxxx[:yyyy]. These cases pin
+      // that assumption: if a future Node release stops collapsing them, a
+      // bypass would silently re-open without these tests catching it.
+      expect(() => validateGitUrl('http://[0:0:0:0:0:0:7f00:1]/repo.git')).toThrow(
+        'private/internal',
+      );
+      expect(() =>
+        validateGitUrl('http://[0000:0000:0000:0000:0000:0000:7f00:0001]/repo.git'),
+      ).toThrow('private/internal');
+      // Mixed notation: trailing IPv4 quad in an otherwise expanded address.
+      expect(() => validateGitUrl('http://[0:0:0:0:0:0:127.0.0.1]/repo.git')).toThrow(
+        'private/internal',
+      );
+    });
+
+    it('blocks NAT64 well-known prefix (64:ff9b::/96)', () => {
+      // 64:ff9b::7f00:1 → 127.0.0.1 via NAT64 translation
+      expect(() => validateGitUrl('http://[64:ff9b::7f00:1]/repo.git')).toThrow('private/internal');
+      expect(() => validateGitUrl('http://[64:ff9b::a9fe:a9fe]/repo.git')).toThrow(
+        'private/internal',
+      );
+      // RFC 8215 local NAT64 prefix
+      expect(() => validateGitUrl('http://[64:ff9b:1::1]/repo.git')).toThrow('private/internal');
+    });
+
+    it('blocks NAT64 with embedded RFC1918 addresses', () => {
+      // The startsWith('64:ff9b:') check covers any embedded IPv4. These
+      // explicit RFC1918 cases document SSRF coverage for the full private
+      // IPv4 surface — not just loopback and cloud metadata.
+      expect(() => validateGitUrl('http://[64:ff9b::a00:1]/repo.git')).toThrow('private/internal'); // 10.0.0.1
+      expect(() => validateGitUrl('http://[64:ff9b::ac10:1]/repo.git')).toThrow('private/internal'); // 172.16.0.1
+      expect(() => validateGitUrl('http://[64:ff9b::c0a8:101]/repo.git')).toThrow(
+        'private/internal',
+      ); // 192.168.1.1
+    });
+
+    it('blocks 6to4 prefix (2002::/16, RFC 3056)', () => {
+      // 6to4 encodes an IPv4 address in bits 17-48, so 2002:WWXX:YYZZ::*
+      // routes to W.X.Y.Z on 6to4-capable stacks. The protocol is deprecated
+      // (RFC 7526), so the entire 2002::/16 block is defensively rejected.
+      expect(() => validateGitUrl('http://[2002:7f00:1::1]/repo.git')).toThrow('private/internal'); // 127.0.0.1
+      expect(() => validateGitUrl('http://[2002:a9fe:a9fe::1]/repo.git')).toThrow(
+        'private/internal',
+      ); // 169.254.169.254
+      expect(() => validateGitUrl('http://[2002:c0a8:101::1]/repo.git')).toThrow(
+        'private/internal',
+      ); // 192.168.1.1
+    });
+
+    it('does not block valid public IPs (IPv4 and IPv6)', () => {
       expect(() => validateGitUrl('https://140.82.121.4/repo.git')).not.toThrow();
+      // Regression guard against over-blocking legitimate public IPv6.
+      // Cloudflare DNS (2606:4700::/32) and Google DNS (2001:4860::/32) —
+      // chosen because their prefixes don't collide with any block above.
+      expect(() => validateGitUrl('https://[2606:4700:4700::1111]/repo.git')).not.toThrow();
+      expect(() => validateGitUrl('https://[2001:4860:4860::8888]/repo.git')).not.toThrow();
     });
 
     it('blocks CGN range (100.64.0.0/10)', () => {

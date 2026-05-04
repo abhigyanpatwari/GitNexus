@@ -10,7 +10,7 @@ import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { CodeDepExtractor } from './extractors/code-dep-extractor.js';
 import { readNpmManifest } from './extractors/manifest-reader.js';
-import { extractRustWorkspaceLinks } from './extractors/rust-workspace-extractor.js';
+import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { runExactMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -235,13 +235,15 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       if (e) repoPaths.set(groupPath, e.path);
     }
 
-    const wsResult = await extractRustWorkspaceLinks(config.repos, repoPaths, dbExecutors);
+    const wsResult = await discoverWorkspaceLinks(config.repos, repoPaths, dbExecutors);
     if (wsResult.links.length > 0) {
       allLinks = [...allLinks, ...wsResult.links];
       if (opts?.verbose) {
-        console.log(
-          `  workspace-deps: discovered ${wsResult.links.length} cross-crate links from ${wsResult.discoveredCrates.size} Rust crates`,
-        );
+        for (const s of wsResult.stats) {
+          console.log(
+            `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
+          );
+        }
       }
     }
   }

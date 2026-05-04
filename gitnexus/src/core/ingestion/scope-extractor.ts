@@ -541,6 +541,8 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const declaredType = match['@declaration.field-type']?.text;
+  const returnType = match['@declaration.return-type']?.text;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -550,6 +552,8 @@ function buildDefFromDeclarationMatch(
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(declaredType !== undefined ? { declaredType } : {}),
+    ...(returnType !== undefined ? { returnType } : {}),
   };
 }
 

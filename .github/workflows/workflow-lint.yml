@@ -1,0 +1,58 @@
+name: Workflow Lint (zizmor)
+
+# Lints .github/workflows/** for known GitHub Actions security misconfigurations:
+# unpinned Actions, dangerous ${{ ... }} interpolation in run: blocks,
+# missing per-job permissions:, etc.
+#
+# Scoped to PRs that touch .github/** only — keeps off the typical PR critical path.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install zizmor
+        # Pinned — resolves to whatever's latest on PyPI otherwise.
+        # Bump via Dependabot pip ecosystem (see .github/dependabot.yml).
+        run: pipx install zizmor==1.24.1
+
+      # Initial threshold: medium. High+ findings fail the job; medium findings
+      # appear in the Security tab without blocking. Tune after first run.
+      # Per-rule exemptions for pre-existing intentional patterns live in
+      # .github/zizmor.yml (each carries a documented mitigation).
+      - name: Run zizmor
+        run: zizmor --config .github/zizmor.yml --format sarif --min-severity medium . > zizmor.sarif
+        continue-on-error: true
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3.35.3
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+      - name: Fail on high+ findings
+        run: zizmor --config .github/zizmor.yml --min-severity high .

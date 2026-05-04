@@ -1,0 +1,45 @@
+name: Gitleaks
+
+# Deterministic in-CI secret scanning. Defense-in-depth on top of GitHub's
+# native secret-scanning push protection (which is a repo Settings toggle —
+# see SECURITY.md for the recommended admin action).
+#
+# PR runs scan the diff (fast); main pushes scan full history.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history needed for the on-push full-history scan; on PRs the
+          # action diffs against the base ref so the cost is bounded by the PR.
+          fetch-depth: 0
+          # Don't bake the token into the cloned .git/config; downstream
+          # steps (and Gitleaks itself) don't need it for repo operations.
+          persist-credentials: false
+
+      # No GITLEAKS_LICENSE secret is required for OSS / public-repo usage.
+      # If this repo becomes private, the action will require a license key.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true

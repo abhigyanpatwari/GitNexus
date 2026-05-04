@@ -37,8 +37,12 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
+          # Hermetic install for the published artifact — no cache carry-over
+          # from non-tag contexts. setup-node v5+ caches by default when a
+          # packageManager field is present in package.json, so the explicit
+          # opt-out is required to clear the zizmor cache-poisoning audit.
+          # ~30s slower per release; runs rarely.
+          package-manager-cache: false
       - name: Build gitnexus-shared
         run: npm install && npm run build
         working-directory: gitnexus-shared

@@ -139,6 +139,39 @@ function assertNotPrivateIPv6(ip: string): void {
   if (lower.includes(':ffff:')) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
+
+  // IPv4-compatible IPv6 (RFC 4291 § 2.5.5.1, deprecated form: ::w.x.y.z).
+  // Node's URL parser collapses http://[::127.0.0.1]/ to "::7f00:1" — the IPv4
+  // is hidden in the last 32 bits without the ::ffff: marker, so the check
+  // above misses it. The form is still routable to the embedded IPv4 on most
+  // network stacks, so any address compressed to ::xxxx[:yyyy] must be blocked.
+  if (/^::[0-9a-f]{1,4}(:[0-9a-f]{1,4})?$/.test(lower)) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // NAT64 well-known prefix (RFC 6052 § 2.1: 64:ff9b::/96, plus the local
+  // 64:ff9b:1::/48 from RFC 8215). Maps any IPv4 address — including private
+  // ranges — into IPv6, so a host with NAT64 can reach the embedded IPv4 via
+  // e.g. 64:ff9b::7f00:1 → 127.0.0.1.
+  // The check intentionally covers the full 64:ff9b::/32 block (broader than
+  // the two cited ranges): IANA reserves it for IPv4-IPv6 translation, so
+  // blocking the whole prefix is defensively sound and prevents a narrower
+  // CIDR check from quietly re-opening the bypass for 64:ff9b:1::/48 or any
+  // future translation assignment.
+  if (lower.startsWith('64:ff9b:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // 6to4 (RFC 3056, 2002::/16). Encodes an IPv4 address in bits 17-48, so
+  // 2002:7f00:0001::1 routes to 127.0.0.1 on 6to4-capable stacks. The
+  // protocol was deprecated by RFC 7526 and the public relay anycast
+  // (192.88.99.1) has been retired, so broad-blocking the prefix has near-
+  // zero false-positive cost while closing the IPv4-embedded bypass.
+  // Teredo (2001::/32) embeds IPv4 obfuscated by XOR; precise blocking is
+  // impractical and is out of scope here.
+  if (lower.startsWith('2002:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
 }
 
 function assertNotPrivateIPv4(ip: string): void {

@@ -187,6 +187,27 @@ export function findClassBindingInScope(
 
     currentId = scope.parent;
   }
+  // Fallback for languages (Go) where namespace-style imports don't
+  // create scope bindings: resolve via QualifiedNameIndex. Only fires
+  // when the scope-chain walk found nothing; single-match wins.
+  const qnames = scopes.qualifiedNames.get(receiverName);
+  if (qnames.length === 1) {
+    const def = scopes.defs.get(qnames[0]!);
+    if (def !== undefined && isClassLike(def.type)) return def;
+  }
+  // Second fallback: dotted names like "models.User" — try the simple
+  // name (tail after last dot) for languages where defs are indexed by
+  // simple name (Go). Only when the dotted lookup fails.
+  if (receiverName.includes('.')) {
+    const simple = receiverName.slice(receiverName.lastIndexOf('.') + 1);
+    if (simple.length > 0 && simple !== receiverName) {
+      const simpleIds = scopes.qualifiedNames.get(simple);
+      if (simpleIds.length === 1) {
+        const def = scopes.defs.get(simpleIds[0]!);
+        if (def !== undefined && isClassLike(def.type)) return def;
+      }
+    }
+  }
   return undefined;
 }
 
