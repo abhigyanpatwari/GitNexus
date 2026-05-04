@@ -671,8 +671,7 @@ service OrderService {
   });
 
   it('writes registry to groupDir when skipWrite is false', async () => {
-    const tmpDir = path.join(os.tmpdir(), `gitnexus-sync-write-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-write-'));
 
     try {
       const config = makeConfig({});
@@ -731,8 +730,7 @@ service OrderService {
     });
 
     it('workspace_deps: true discovers Rust crate links through syncGroup', async () => {
-      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-${Date.now()}`);
-      fs.mkdirSync(tmpDir, { recursive: true });
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-'));
 
       writeFileSync(
         'crate-a/Cargo.toml',
@@ -780,9 +778,8 @@ service OrderService {
       expect(manifestLinks[0].to.repo).toBe('parser/mathlex');
     });
 
-    it('workspace_deps: false skips Rust workspace extraction', async () => {
-      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-off-${Date.now()}`);
-      fs.mkdirSync(tmpDir, { recursive: true });
+    it('workspace_deps: false skips workspace extraction entirely', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-off-'));
 
       writeFileSync(
         'crate-a/Cargo.toml',
@@ -814,8 +811,7 @@ service OrderService {
     });
 
     it('discovered workspace links merge with explicit manifest links', async () => {
-      tmpDir = path.join(os.tmpdir(), `gitnexus-sync-ws-merge-${Date.now()}`);
-      fs.mkdirSync(tmpDir, { recursive: true });
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-merge-'));
 
       writeFileSync(
         'crate-a/Cargo.toml',
@@ -884,11 +880,58 @@ service OrderService {
       });
 
       const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
-      expect(manifestLinks.length).toBeGreaterThanOrEqual(2);
+      expect(manifestLinks).toHaveLength(2);
 
       const contractIds = manifestLinks.map((cl) => cl.contractId);
       expect(contractIds).toContain('http::GET::/api/parse');
       expect(contractIds).toContain('custom::mathlex::Expression');
+    });
+
+    it('discovers Node workspace links through syncGroup orchestrator', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-node-'));
+
+      writeFileSync('shared/package.json', '{"name": "@myorg/shared", "version": "1.0.0"}');
+      writeFileSync('shared/src/index.ts', 'export class Config {}\n');
+
+      writeFileSync(
+        'app/package.json',
+        '{"name": "@myorg/app", "version": "1.0.0", "dependencies": {"@myorg/shared": "workspace:*"}}',
+      );
+      writeFileSync('app/src/index.ts', "import { Config } from '@myorg/shared';\n");
+
+      const mockEntries: RegistryEntry[] = [
+        {
+          name: 'shared',
+          path: path.join(tmpDir, 'shared'),
+          storagePath: path.join(tmpDir, 'shared', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+        {
+          name: 'app',
+          path: path.join(tmpDir, 'app'),
+          storagePath: path.join(tmpDir, 'app', '.gitnexus'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+      ];
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
+
+      const config = makeWsConfig({ 'pkg/shared': 'shared', 'pkg/app': 'app' }, true);
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
+      expect(manifestLinks).toHaveLength(1);
+      const nodeLink = manifestLinks.find(
+        (cl) => cl.contractId === 'custom::@myorg/shared::Config',
+      );
+      expect(nodeLink).toBeDefined();
     });
   });
 });

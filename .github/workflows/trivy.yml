@@ -1,0 +1,73 @@
+name: Trivy Image Scan
+
+# Builds Dockerfile.cli and Dockerfile.web, then scans the resulting images
+# for OS-package and language-package CVEs at HIGH/CRITICAL severity.
+# Findings upload to the Security tab; record-only (does not block merges).
+#
+# NOT triggered on PRs — image builds are slow and base-image CVE churn
+# shouldn't gate feature delivery.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Trivy (${{ matrix.image.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { dockerfile: Dockerfile.cli, name: gitnexus-cli }
+          - { dockerfile: Dockerfile.web, name: gitnexus-web }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build image (load locally for scan)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          load: true
+          push: false
+          tags: scan-target:${{ matrix.image.name }}
+
+      # aquasecurity/trivy-action versions < 0.35.0 are flagged by
+      # GHSA-69fq-xp46-6x23 (briefly compromised supply chain). Pinned to
+      # v0.36.0 (post-incident clean release) by commit SHA.
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: scan-target:${{ matrix.image.name }}
+          format: sarif
+          output: trivy-${{ matrix.image.name }}.sarif
+          severity: HIGH,CRITICAL
+          # Hides CVEs with no available fix in the base image.
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Upload to Security tab
+        uses: github/codeql-action/upload-sarif@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3.35.3
+        with:
+          sarif_file: trivy-${{ matrix.image.name }}.sarif
+          category: trivy-${{ matrix.image.name }}

@@ -707,7 +707,7 @@ describe('ManifestExtractor', () => {
       [
         'engine/thales',
         async (_cypher, params) => {
-          if (params?.contract === 'Expression') {
+          if (params?.symbolName === 'Expression') {
             return [
               {
                 uid: 'uid-expression-struct',
@@ -722,7 +722,7 @@ describe('ManifestExtractor', () => {
       [
         'parser/mathlex',
         async (_cypher, params) => {
-          if (params?.contract === 'Expression') {
+          if (params?.symbolName === 'Expression') {
             return [
               {
                 uid: 'uid-expression-enum',
@@ -749,6 +749,42 @@ describe('ManifestExtractor', () => {
 
     expect(result.crossLinks).toHaveLength(1);
     expect(result.crossLinks[0].matchType).toBe('manifest');
+  });
+
+  it('custom contract with qualified name (provider::Symbol) strips prefix before graph query', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'mathlex::Expression',
+        role: 'provider',
+      },
+    ];
+
+    let capturedParams: Record<string, unknown> | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          capturedParams = params;
+          if (params?.symbolName === 'Expression') {
+            return [{ uid: 'uid-expr', name: 'Expression', filePath: 'src/ast.rs' }];
+          }
+          return [];
+        },
+      ],
+      ['engine/thales', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+    const provider = result.contracts.find((c) => c.role === 'provider');
+
+    expect(capturedParams?.symbolName).toBe('Expression');
+    expect(provider?.symbolUid).toBe('uid-expr');
   });
 
   it('falls back to synthetic uid when custom symbol not found in graph', async () => {
@@ -825,7 +861,7 @@ describe('ManifestExtractor', () => {
       [
         'parser/mathlex',
         async (_cypher, params) => {
-          if (params?.contract === 'Token') {
+          if (params?.symbolName === 'Token') {
             return [{ uid: 'uid-token-first', name: 'Token', filePath: 'src/ast.rs' }];
           }
           return [];
@@ -834,7 +870,7 @@ describe('ManifestExtractor', () => {
       [
         'engine/thales',
         async (_cypher, params) => {
-          if (params?.contract === 'Token') {
+          if (params?.symbolName === 'Token') {
             return [{ uid: 'uid-token-consumer', name: 'Token', filePath: 'src/lexer.rs' }];
           }
           return [];

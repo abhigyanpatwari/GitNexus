@@ -14,6 +14,7 @@ export default [
       'gitnexus/vendor/**',
       'gitnexus-web/src/vendor/**',
       'gitnexus/test/fixtures/**',
+      'gitnexus-web/test/fixtures/**',
       'gitnexus-web/playwright-report/**',
       'gitnexus-web/test-results/**',
       '**/*.d.ts',

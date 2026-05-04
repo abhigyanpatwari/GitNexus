@@ -29,6 +29,15 @@ import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import { goHeritageConfig } from '../heritage-extractors/configs/go.js';
+import {
+  emitGoScopeCaptures,
+  goArityCompatibility,
+  goBindingScopeFor,
+  goImportOwningScope,
+  goReceiverBinding,
+  interpretGoImport,
+  interpretGoTypeBinding,
+} from './go/index.js';
 
 export const goProvider = defineLanguage({
   id: SupportedLanguages.Go,
@@ -83,4 +92,15 @@ export const goProvider = defineLanguage({
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
   heritageExtractor: createHeritageExtractor(goHeritageConfig),
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
+  emitScopeCaptures: emitGoScopeCaptures,
+  interpretImport: interpretGoImport,
+  interpretTypeBinding: interpretGoTypeBinding,
+  bindingScopeFor: goBindingScopeFor,
+  importOwningScope: goImportOwningScope,
+  receiverBinding: goReceiverBinding,
+  arityCompatibility: goArityCompatibility,
+  // resolveImportTarget lives on ScopeResolver (4-param signature),
+  // not on LanguageProvider (2-param signature). See go/scope-resolver.ts.
 });
