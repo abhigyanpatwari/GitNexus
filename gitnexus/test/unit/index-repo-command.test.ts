@@ -5,7 +5,7 @@ const mockAccess = vi.fn();
 const mockGetStoragePaths = vi.fn();
 const mockLoadMeta = vi.fn();
 const mockRegisterRepo = vi.fn();
-const mockAddToGitignore = vi.fn();
+const mockEnsureGitNexusIgnored = vi.fn();
 const mockGetGitRoot = vi.fn();
 const mockIsGitRepo = vi.fn();
 
@@ -19,7 +19,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   getStoragePaths: mockGetStoragePaths,
   loadMeta: mockLoadMeta,
   registerRepo: mockRegisterRepo,
-  addToGitignore: mockAddToGitignore,
+  ensureGitNexusIgnored: mockEnsureGitNexusIgnored,
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -53,7 +53,7 @@ describe('indexCommand', () => {
       stats: { nodes: 10, edges: 20 },
     });
     mockAccess.mockResolvedValue(undefined);
-    mockAddToGitignore.mockResolvedValue(undefined);
+    mockEnsureGitNexusIgnored.mockResolvedValue(undefined);
     mockGetGitRoot.mockReturnValue(resolvedRepo);
     mockIsGitRepo.mockReturnValue(true);
   });
@@ -134,8 +134,8 @@ describe('indexCommand', () => {
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
     );
-    expect(mockAddToGitignore).toHaveBeenCalledTimes(1);
-    expect(mockAddToGitignore).toHaveBeenCalledWith(resolvedRepo);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledTimes(1);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(resolvedRepo);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -170,7 +170,7 @@ describe('indexCommand', () => {
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
     );
-    expect(mockAddToGitignore).toHaveBeenCalledWith(resolvedRepo);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(resolvedRepo);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -189,7 +189,7 @@ describe('indexCommand', () => {
     await indexCommand(['/repo', '/other']);
 
     expect(mockRegisterRepo).not.toHaveBeenCalled();
-    expect(mockAddToGitignore).not.toHaveBeenCalled();
+    expect(mockEnsureGitNexusIgnored).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     expect(logSpy).toHaveBeenCalledWith('  The `index` command accepts a single path only.');
   });

@@ -335,12 +335,11 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 3b: chain-typebinding (`city → user.get_city`) ──────
-      if (
-        typeRef !== undefined &&
-        typeRef.rawName.includes('.') &&
-        !typeRef.rawName.includes('(') &&
-        !namespaceTargets.has(typeRef.rawName.split('.')[0]!)
-      ) {
+      const chainHead =
+        typeRef !== undefined && typeRef.rawName.includes('.') && !typeRef.rawName.includes('(')
+          ? (typeRef.rawName.split('.', 1)[0] ?? '')
+          : undefined;
+      if (typeRef !== undefined && chainHead !== undefined && !namespaceTargets.has(chainHead)) {
         // Try the plain dotted-field walk first — covers property /
         // collection-accessor shapes (`.Values`, Kotlin `.size`) and
         // field chains. Fall back to call-form (`x()`) which treats
@@ -393,7 +392,21 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
-        const ownerDef = findClassBindingInScope(site.inScope, typeRef.rawName, scopes);
+        let ownerDef = findClassBindingInScope(site.inScope, typeRef.rawName, scopes);
+        // `findClassBindingInScope(..., typeRef.rawName)` only works when
+        // rawName is itself a class symbol. Map for-of tuple bindings
+        // (`__MAP_TUPLE_i__:mapId`), callable aliases (`getUser` → User),
+        // and other compound-friendly shapes need the compound resolver
+        // keyed by the receiver identifier.
+        if (ownerDef === undefined) {
+          ownerDef = resolveCompoundReceiverClass(
+            receiverName,
+            site.inScope,
+            scopes,
+            index,
+            compoundOpts,
+          );
+        }
         if (ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;

@@ -74,7 +74,7 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
-import { buildPositionIndex, buildScopeTree, makeScopeId } from 'gitnexus-shared';
+import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
@@ -122,6 +122,7 @@ export function extract(
 
   // ── Pass 1: build the scope tree ─────────────────────────────────────
   const scopeDrafts = pass1BuildScopes(partitioned.scope, filePath, provider);
+  const moduleScope = ensureModuleScope(scopeDrafts, matches.length, filePath);
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
@@ -135,14 +136,6 @@ export function extract(
   // "what's the parent chain?" queries, not for content queries.
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
-
-  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
-  if (moduleScope === undefined) {
-    throw new Error(
-      `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-        `Provider must emit at least one @scope.module capture per file.`,
-    );
-  }
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
   const localDefs: SymbolDefinition[] = [];
@@ -283,6 +276,33 @@ interface ScopeDraft {
   readonly typeBindings: Map<string, TypeRef>;
 }
 
+function ensureModuleScope(
+  scopeDrafts: ScopeDraft[],
+  matchCount: number,
+  filePath: string,
+): ScopeDraft {
+  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
+  if (moduleScope !== undefined) return moduleScope;
+
+  if (scopeDrafts.length === 0 && matchCount === 0) {
+    const range: Range = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 };
+    const synthetic = makeDraft(
+      makeScopeId({ filePath, range, kind: 'Module' }),
+      null,
+      'Module',
+      range,
+      filePath,
+    );
+    scopeDrafts.push(synthetic);
+    return synthetic;
+  }
+
+  throw new Error(
+    `ScopeExtractor: no Module scope found for '${filePath}'. ` +
+      `Provider must emit at least one @scope.module capture per file.`,
+  );
+}
+
 function draftToScope(draft: ScopeDraft): Scope {
   const frozenBindings = new Map<string, readonly BindingRef[]>();
   for (const [name, refs] of draft.bindings) {
@@ -331,20 +351,37 @@ function pass1BuildScopes(
   }
 
   // Sort by (startLine, startCol) ASC, (endLine, endCol) DESC so outer
-  // scopes appear before their children for parent-resolution.
+  // scopes appear before their children for parent-resolution. When two
+  // candidates have exactly equal ranges (e.g. a `compilation_unit` and
+  // the only top-level scope in the file — see `canParentScope`), Module
+  // sorts first so it lands on the stack ahead of the candidate that will
+  // claim it as parent.
   candidates.sort((a, b) => {
     if (a.range.startLine !== b.range.startLine) return a.range.startLine - b.range.startLine;
     if (a.range.startCol !== b.range.startCol) return a.range.startCol - b.range.startCol;
     if (a.range.endLine !== b.range.endLine) return b.range.endLine - a.range.endLine;
-    return b.range.endCol - a.range.endCol;
+    if (a.range.endCol !== b.range.endCol) return b.range.endCol - a.range.endCol;
+    if (a.kind === b.kind) return 0;
+    if (a.kind === 'Module') return -1;
+    if (b.kind === 'Module') return 1;
+    return 0;
   });
 
   const drafts: ScopeDraft[] = [];
   const stack: Candidate[] = []; // enclosing real scopes, outermost at [0]
 
   for (const cand of candidates) {
-    // Pop the stack until the top strictly contains this candidate.
-    while (stack.length > 0 && !rangeStrictlyContains(stack[stack.length - 1]!.range, cand.range)) {
+    // Pop the stack until the top can parent this candidate (strict
+    // containment, plus the equal-range Module carve-out).
+    while (
+      stack.length > 0 &&
+      !canParentScope(
+        stack[stack.length - 1]!.range,
+        cand.range,
+        stack[stack.length - 1]!.kind,
+        cand.kind,
+      )
+    ) {
       stack.pop();
     }
 
@@ -905,24 +942,6 @@ function rangesEqual(a: Range, b: Range): boolean {
     a.endLine === b.endLine &&
     a.endCol === b.endCol
   );
-}
-
-function rangeStrictlyContains(outer: Range, inner: Range): boolean {
-  if (
-    outer.startLine === inner.startLine &&
-    outer.startCol === inner.startCol &&
-    outer.endLine === inner.endLine &&
-    outer.endCol === inner.endCol
-  ) {
-    return false;
-  }
-  const startsBefore =
-    outer.startLine < inner.startLine ||
-    (outer.startLine === inner.startLine && outer.startCol <= inner.startCol);
-  const endsAfter =
-    outer.endLine > inner.endLine ||
-    (outer.endLine === inner.endLine && outer.endCol >= inner.endCol);
-  return startsBefore && endsAfter;
 }
 
 /**

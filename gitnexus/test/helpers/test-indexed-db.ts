@@ -1,19 +1,16 @@
 /**
  * Test helper: Indexed LadybugDB lifecycle manager
  *
- * Uses a shared LadybugDB created by globalSetup (test/global-setup.ts).
- * Each test file clears all data, reseeds, and initializes adapters —
- * avoiding per-file schema creation overhead.
+ * Creates an isolated LadybugDB per suite, reseeds, and initializes adapters.
  *
  * Cleanup properly closes adapters and releases native resources.
  *
  * Each test file gets a unique repoId to prevent MCP pool map collisions.
  * Seed data is NOT included — each test provides its own via options.seed.
  */
-/// <reference path="../vitest.d.ts" />
 import path from 'path';
-import { describe, beforeAll, afterAll, inject } from 'vitest';
-import type { TestDBHandle } from './test-db.js';
+import { describe, beforeAll, afterAll } from 'vitest';
+import { createTempDir, type TestDBHandle } from './test-db.js';
 import { NODE_TABLES, EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 
 export interface IndexedDBHandle {
@@ -56,8 +53,8 @@ export interface WithTestLbugDBOptions {
 }
 
 /**
- * Manages the full LadybugDB test lifecycle using the shared global DB:
- * data clearing, reseeding, FTS indexes, adapter init/teardown.
+ * Manages the full LadybugDB test lifecycle:
+ * database creation, data clearing, reseeding, FTS indexes, adapter init/teardown.
  *
  * All data operations go through the core adapter's writable connection —
  * no raw lbug.Database() connections are opened.  This avoids file-lock
@@ -77,8 +74,8 @@ export function withTestLbugDB(
   const timeout = options?.timeout ?? 120_000;
 
   const setup = async () => {
-    // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
+    const tmpHandle = await createTempDir('gitnexus-lbug-');
+    const dbPath = path.join(tmpHandle.dbPath, 'lbug');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
@@ -87,10 +84,7 @@ export function withTestLbugDB(
     //    already open for this dbPath (no new native objects created).
     await adapter.initLbug(dbPath);
 
-    // 2. Load FTS extension (idempotent — skips if already loaded)
-    await adapter.loadFTSExtension();
-
-    // 3. Drop stale FTS indexes from previous test file
+    // 2. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         try {
@@ -101,27 +95,27 @@ export function withTestLbugDB(
       }
     }
 
-    // 4. Clear all data via adapter (DETACH DELETE cascades to relationships)
+    // 3. Clear all data via adapter (DETACH DELETE cascades to relationships)
     for (const table of NODE_TABLES) {
       await adapter.executeQuery(`MATCH (n:\`${table}\`) DETACH DELETE n`);
     }
     await adapter.executeQuery(`MATCH (n:${EMBEDDING_TABLE_NAME}) DELETE n`);
 
-    // 5. Seed new data via adapter
+    // 4. Seed new data via adapter
     if (options?.seed?.length) {
       for (const q of options.seed) {
         await adapter.executeQuery(q);
       }
     }
 
-    // 6. Create FTS indexes on fresh data
+    // 5. Create FTS indexes on fresh data
     if (options?.ftsIndexes?.length) {
       for (const idx of options.ftsIndexes) {
         await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
       }
     }
 
-    // 7. Open pool adapter by injecting the core adapter's writable Database.
+    // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API
     //    destructor issues.  Reusing the writable Database avoids both problems.
@@ -140,15 +134,14 @@ export function withTestLbugDB(
         await poolAdapter.closeLbug(repoId);
       }
       await adapter.closeLbug();
+      await tmpHandle.cleanup();
     };
 
     // tmpHandle.dbPath → parent temp dir (not the lbug file) so tests
     // that create sibling directories (e.g. 'storage') still work.
-    const tmpDir = path.dirname(dbPath);
-    const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
     ref.handle = { dbPath, repoId, tmpHandle, cleanup };
 
-    // 8. User's final setup (mocks, dynamic imports, etc.)
+    // 7. User's final setup (mocks, dynamic imports, etc.)
     if (options?.afterSetup) {
       await options.afterSetup(ref.handle);
     }

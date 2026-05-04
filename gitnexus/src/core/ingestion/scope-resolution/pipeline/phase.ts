@@ -36,7 +36,7 @@ import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
-import { isDev } from '../../utils/env.js';
+import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 
 export interface ScopeResolutionOutput {
   /** True when at least one language ran. */
@@ -126,14 +126,26 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         if (content !== undefined) files.push({ path: fp, content });
       }
 
+      // Load per-language import-resolution config (tsconfig paths,
+      // composer.json autoload, go.mod, ...). One I/O round trip per
+      // workspace pass — cached implicitly by the result handed to
+      // every `resolveImportTarget` call below.
+      const resolutionConfig =
+        provider.loadResolutionConfig !== undefined
+          ? await provider.loadResolutionConfig(ctx.repoPath)
+          : undefined;
+
       const stats = runScopeResolution(
         {
           graph: ctx.graph,
           model,
           files,
           treeCache: scopeTreeCache,
+          resolutionConfig,
           onWarn: (msg) => {
-            if (isDev) console.warn(`[scope-resolution:${lang}] ${msg}`);
+            if (isSemanticModelValidatorEnabled()) {
+              console.warn(`[scope-resolution:${lang}] ${msg}`);
+            }
           },
         },
         provider,

@@ -38,7 +38,7 @@ buildTypeEnv(tree, language, symbolTable?)
 
 The `TypeEnvironment` is built once per file. `call-processor.ts` then uses `lookup()` to determine receiver types and narrow candidate symbols from the `SymbolTable`.
 
-> **Note (RFC #909 Ring 3):** `call-processor.ts` is the legacy call-resolution path. Languages in `MIGRATED_LANGUAGES` (currently Python) route through the scope-resolution pipeline instead — see `ARCHITECTURE.md § Scope-Resolution Pipeline`. TypeEnv is still built for migrated languages in the parse worker, but receiver typing flows through `ParsedTypeBinding` + `ScopeResolutionIndexes` rather than `call-processor.ts`.
+> **Note (RFC #909 Ring 3):** `call-processor.ts` is the legacy call-resolution path. Languages in `MIGRATED_LANGUAGES` (see `gitnexus/src/core/ingestion/registry-primary-flag.ts`) route through the scope-resolution pipeline instead — see `ARCHITECTURE.md § Scope-Resolution Pipeline`. TypeEnv is still built for migrated languages in the parse worker, but receiver typing flows through `ParsedTypeBinding` + `ScopeResolutionIndexes` rather than `call-processor.ts`.
 
 ---
 

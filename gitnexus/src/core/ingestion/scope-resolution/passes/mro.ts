@@ -97,8 +97,9 @@ export const defaultLinearize: LinearizeStrategy = (_classDefId, directParents, 
   const ancestors: string[] = [];
   const visited = new Set<string>();
   const queue: string[] = [...directParents];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
+  for (;;) {
+    const cur = queue.shift();
+    if (cur === undefined) break;
     if (visited.has(cur)) continue;
     visited.add(cur);
     ancestors.push(cur);

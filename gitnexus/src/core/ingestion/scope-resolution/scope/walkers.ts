@@ -1,13 +1,14 @@
 /**
  * Scope-chain lookup primitives shared across language providers.
  *
- * Four functions:
+ * Five functions:
  *   - `findReceiverTypeBinding` — walk scope.typeBindings up the chain
  *     for a receiver name.
- *   - `findClassBindingInScope` — walk scope.bindings + indexes.bindings
- *     (pre-finalize + post-finalize) for a class-kind binding. Dual-
- *     source is required because the cross-file finalize pass produces
- *     a separate bindings map that is not merged back into scope.bindings.
+ *   - `lookupBindingsAt` — read finalized + augmented binding refs at
+ *     one scope, deduped by `def.nodeId`. The dual-source-aware
+ *     primitive every other binding lookup composes with.
+ *   - `findClassBindingInScope` — walk scope.bindings + the indexes via
+ *     `lookupBindingsAt` for a class-kind binding.
  *   - `findOwnedMember` — find a method/field owned by a class def
  *     across all parsed files by (ownerId, simpleName).
  *   - `findExportedDef` — find a file-level exported def (top-of-module
@@ -19,10 +20,84 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import type { ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+
+const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
+
+/**
+ * Look up binding refs at `scopeId` for `name`, consulting both the
+ * finalize-owned `bindings` channel and the post-finalize
+ * `bindingAugmentations` channel (see invariant I8 in
+ * `contract/scope-resolver.ts`). Finalized refs come first; augmented
+ * refs append, deduped by `def.nodeId` so a sibling that's also
+ * explicitly imported doesn't double-emit.
+ *
+ * Returns a shared frozen empty array when neither channel has the
+ * name — callers can compare against `=== EMPTY_BINDINGS` if they
+ * want a fast-path miss check. The bucket arrays are returned by
+ * reference when only one channel populates them; the merged path
+ * allocates a fresh array.
+ *
+ * Walker primitives (`findClassBindingInScope`,
+ * `findCallableBindingInScope`, `findExportedDefByName`) and
+ * post-finalize passes that read finalized bindings (e.g.
+ * `propagateImportedReturnTypes`, `namespace-targets`) MUST go
+ * through this helper instead of `scopes.bindings.get(...)` directly,
+ * so the augmentation channel is always visible.
+ */
+export function lookupBindingsAt(
+  scopeId: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] {
+  const finalized = scopes.bindings.get(scopeId)?.get(name);
+  const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
+  const fLen = finalized?.length ?? 0;
+  const aLen = augmented?.length ?? 0;
+  if (fLen === 0 && aLen === 0) return EMPTY_BINDINGS;
+  if (aLen === 0) return finalized!;
+  if (fLen === 0) return augmented!;
+  const seen = new Set<string>();
+  const out: BindingRef[] = [];
+  for (const r of finalized!) {
+    seen.add(r.def.nodeId);
+    out.push(r);
+  }
+  for (const r of augmented!) {
+    if (seen.has(r.def.nodeId)) continue;
+    out.push(r);
+  }
+  return out;
+}
+
+const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
+
+/**
+ * Return the union of bound names at `scopeId` across both the
+ * finalized and augmented channels. Companion to `lookupBindingsAt`
+ * for callers that need to iterate every name at a scope (e.g.
+ * `propagateImportedReturnTypes`). Order is not guaranteed; callers
+ * that need stable iteration should sort externally.
+ *
+ * Fast paths (zero allocation) when at most one channel is populated:
+ * returns the underlying `Map.keys()` iterator directly. Only when both
+ * channels carry names do we materialize a `Set` for deduplication.
+ */
+export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Iterable<string> {
+  const finalized = scopes.bindings.get(scopeId);
+  const augmented = scopes.bindingAugmentations.get(scopeId);
+  const fSize = finalized?.size ?? 0;
+  const aSize = augmented?.size ?? 0;
+  if (fSize === 0 && aSize === 0) return EMPTY_NAMES;
+  if (aSize === 0) return finalized!.keys();
+  if (fSize === 0) return augmented!.keys();
+  const out = new Set<string>(finalized!.keys());
+  for (const name of augmented!.keys()) out.add(name);
+  return out;
+}
 
 /**
  * True when a def's `type` names a class-like declaration — every kind
@@ -78,8 +153,10 @@ export function findReceiverTypeBinding(
  * Walks the scope chain upward and consults TWO sources at each step:
  *   1. `scope.bindings` — populated during scope-extraction Pass 2 with
  *      local declarations (`origin: 'local'`).
- *   2. `indexes.bindings` — populated by the cross-file finalize pass
- *      with import/namespace/wildcard/reexport origins.
+ *   2. The cross-file finalized + augmented bindings, via
+ *      `lookupBindingsAt` (per I8: finalized = canonical immutable
+ *      output; augmented = post-finalize hooks like
+ *      `populateNamespaceSiblings`).
  *
  * Without (2) we'd miss every cross-file class-receiver call.
  */
@@ -103,12 +180,9 @@ export function findClassBindingInScope(
       }
     }
 
-    const finalizedScopeBindings = scopes.bindings.get(currentId);
-    const importedBindings = finalizedScopeBindings?.get(receiverName);
-    if (importedBindings !== undefined) {
-      for (const b of importedBindings) {
-        if (isClassLike(b.def.type)) return b.def;
-      }
+    const importedBindings = lookupBindingsAt(currentId, receiverName, scopes);
+    for (const b of importedBindings) {
+      if (isClassLike(b.def.type)) return b.def;
     }
 
     currentId = scope.parent;
@@ -119,8 +193,9 @@ export function findClassBindingInScope(
 /**
  * Look up a callable (Function/Method/Constructor) by name in the
  * given scope's chain. Uses the dual-source pattern (scope.bindings +
- * indexes.bindings) so cross-file imports are visible — without it
- * free calls to imported functions never resolve via the post-pass.
+ * `lookupBindingsAt` for finalized + augmented) so cross-file
+ * imports are visible — without it free calls to imported functions
+ * never resolve via the post-pass.
  *
  * Mirrors `findClassBindingInScope` exactly; only the accepted
  * def-type predicate differs.
@@ -147,13 +222,10 @@ export function findCallableBindingInScope(
       }
     }
 
-    const finalizedScopeBindings = scopes.bindings.get(currentId);
-    const importedBindings = finalizedScopeBindings?.get(callableName);
-    if (importedBindings !== undefined) {
-      for (const b of importedBindings) {
-        if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
-          return b.def;
-        }
+    const importedBindings = lookupBindingsAt(currentId, callableName, scopes);
+    for (const b of importedBindings) {
+      if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+        return b.def;
       }
     }
 
@@ -294,11 +366,9 @@ export function findExportedDefByName(
         if (b.def.type === 'Function' || b.def.type === 'Method') return b.def;
       }
     }
-    const finalized = scopes.bindings.get(currentId)?.get(name);
-    if (finalized !== undefined) {
-      for (const b of finalized) {
-        if (b.def.type === 'Function' || b.def.type === 'Method') return b.def;
-      }
+    const finalized = lookupBindingsAt(currentId, name, scopes);
+    for (const b of finalized) {
+      if (b.def.type === 'Function' || b.def.type === 'Method') return b.def;
     }
     currentId = scope.parent;
   }
@@ -355,7 +425,12 @@ export function findOwnedMember(
  * excluded.
  *
  * Reads from `WorkspaceResolutionIndex.moduleScopeByFile` (scope-tied
- * lookup that doesn't live on `SemanticModel`).
+ * lookup that doesn't live on `SemanticModel`). This intentionally
+ * does NOT call `lookupBindingsAt`: `findExportedDef` answers "what
+ * did the target file declare locally at module scope?", while
+ * `bindingAugmentations` models importer-side visibility created by
+ * post-finalize hooks. Callers that need importer-visible exports use
+ * `findExportedDefByName`, which is dual-channel aware.
  */
 export function findExportedDef(
   targetFile: string,

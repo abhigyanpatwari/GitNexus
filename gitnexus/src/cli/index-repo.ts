@@ -14,7 +14,7 @@ import fs from 'fs/promises';
 import {
   getStoragePaths,
   loadMeta,
-  addToGitignore,
+  ensureGitNexusIgnored,
   registerRepo,
 } from '../storage/repo-manager.js';
 import { getGitRoot, getRemoteUrl, isGitRepo } from '../storage/git.js';
@@ -115,7 +115,7 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
     meta.remoteUrl = getRemoteUrl(repoPath);
   }
   await registerRepo(repoPath, meta);
-  await addToGitignore(repoPath);
+  await ensureGitNexusIgnored(repoPath);
 
   const projectName = path.basename(repoPath);
   const { stats } = meta;

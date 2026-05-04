@@ -10,10 +10,12 @@
  *   - namedBindingExtractor: present (from X import Y)
  */
 
+import type { NodeLabel } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -29,8 +31,11 @@ import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import type { CaptureMap } from '../language-provider.js';
+import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
   emitPythonScopeCaptures,
+  pythonFunctionDefinitionLabel,
   interpretPythonImport,
   interpretPythonTypeBinding,
   pythonArityCompatibility,
@@ -71,9 +76,52 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'abs',
 ]);
 
+function pythonDescriptionExtractor(
+  nodeLabel: NodeLabel,
+  _nodeName: string,
+  captureMap: CaptureMap,
+): string | undefined {
+  if (nodeLabel !== 'Function' && nodeLabel !== 'Method') return undefined;
+  const functionNode = captureMap['definition.function'] ?? captureMap['definition.method'];
+  if (functionNode === undefined) return undefined;
+  return extractPythonDocstring(functionNode);
+}
+
+function extractPythonDocstring(functionNode: SyntaxNode): string | undefined {
+  const body = functionNode.childForFieldName('body');
+  const firstStatement = body?.namedChild(0);
+  if (firstStatement?.type !== 'expression_statement') return undefined;
+
+  const literal = firstStatement.namedChild(0);
+  if (literal?.type !== 'string') return undefined;
+  return normalizePythonStringLiteral(literal.text);
+}
+
+function normalizePythonStringLiteral(text: string): string | undefined {
+  const match = text.match(/^[rRuUbBfF]*("""|'''|"|')([\s\S]*)\1$/);
+  const raw = match?.[2]?.trim();
+  if (!raw) return undefined;
+  return raw.replace(/\s+/g, ' ');
+}
+
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
+  entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
+  astFrameworkPatterns: [
+    {
+      framework: 'fastapi',
+      entryPointMultiplier: 3.0,
+      reason: 'fastapi-decorator',
+      patterns: ['@app.get', '@app.post', '@app.put', '@app.delete', '@router.get'],
+    },
+    {
+      framework: 'flask',
+      entryPointMultiplier: 2.8,
+      reason: 'flask-decorator',
+      patterns: ['@app.route', '@blueprint.route'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: PYTHON_QUERIES,
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
@@ -87,7 +135,9 @@ export const pythonProvider = defineLanguage({
   variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor(pythonClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
+  descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
+  labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // Python is the first migration. See ./python/index.ts for the

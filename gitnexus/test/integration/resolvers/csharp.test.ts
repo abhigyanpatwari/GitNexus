@@ -1,11 +1,12 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('csharp');
 
 // ---------------------------------------------------------------------------
 // Heritage: class + interface resolution via base_list
@@ -2418,5 +2421,164 @@ describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch
       (c) => c.source === 'Touch' && (c.target === 'Hits' || c.target === 'Misses'),
     );
     expect(stray).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 regression: large source files (>32 KB) combined with a
+// cross-namespace `using` and a colliding local class. Pins both fixes in
+// the resolver dataset:
+//
+//   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
+//      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
+//      fails to reparse with "Invalid argument" and CreateUser is dropped.
+//   2. populateCsharpNamespaceSiblings must append to bindingAugmentations
+//      instead of mutating frozen finalize-produced BindingRef[] arrays;
+//      otherwise the cross-namespace inject loop throws "Cannot add property
+//      N, object is not extensible" when the importer also declares the same
+//      simple name locally.
+// ---------------------------------------------------------------------------
+
+describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    // Force the worker pool path with low thresholds so the scope-resolution
+    // cache-miss reparse actually fires (workers can't share Tree instances
+    // across MessageChannels). This is what reproduces the >32 KB
+    // "Invalid argument" failure end-to-end through the pipeline.
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-large-cache-miss-resolution'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 120000);
+
+  it('extracts UserService.CreateUser despite the >32 KB source size', () => {
+    // Without the adaptive-buffer fix, UserService.cs would fail to reparse
+    // on cache miss and CreateUser would not be extracted at all.
+    expect(getNodesByLabel(result, 'Method')).toEqual(
+      expect.arrayContaining(['CreateUser', 'Save']),
+    );
+  });
+
+  it('detects all three classes (User, Helper, UserService)', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(
+      expect.arrayContaining(['User', 'Helper', 'UserService']),
+    );
+  });
+
+  it('resolves CreateUser -> User constructor across same namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find(
+      (c) => c.source === 'CreateUser' && c.target === 'User' && c.targetLabel === 'Class',
+    );
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetFilePath).toBe('Models/User.cs');
+  });
+
+  it('resolves CreateUser -> Save through namespace siblings', () => {
+    // Without the freeze fix, populateCsharpNamespaceSiblings throws on
+    // the colliding `Helper` bucket, aborting the whole scopeResolution
+    // phase, so no CALLS edges from CreateUser would be emitted at all.
+    const calls = getRelationships(result, 'CALLS');
+    const save = calls.find((c) => c.source === 'CreateUser' && c.target === 'Save');
+    expect(save).toBeDefined();
+    expect(save!.targetFilePath).toBe('Models/User.cs');
+    expect(['import-resolved', 'global']).toContain(save!.rel.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1066 companion regression: small-file trigger for the same
+// frozen-bucket failure. Where csharp-large-cache-miss-resolution exercises
+// the path through tree-sitter cache-miss reparse on >32 KB files, this
+// fixture trips the same `Object.freeze` contract on the populator's
+// namespace-import loop in a single small file pair: the importer locally
+// declares a class with the same simple name as a sibling reachable through
+// `using`, so the extractor pre-populates (and freezes) `User` in the
+// importer's Module bindings before populateNamespaceSiblings tries to
+// append the cross-file `Collision.Models.User`. Pre-#1082 the populator
+// pushed onto the frozen array → "Cannot add property N, object is not
+// extensible" → whole scopeResolution phase aborted. Post-#1082 the
+// augmentation channel keeps both bindings visible to readers, with the
+// local `Collision.App.User` taking precedence per origin ordering.
+// ---------------------------------------------------------------------------
+
+describe('C# frozen-binding collision via using-import (issue #1066 companion)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-frozen-binding-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('completes scopeResolution without throwing on the colliding bucket', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['User', 'Program']));
+  });
+
+  it('detects both User declarations across the two namespaces', () => {
+    const users = getNodesByLabelFull(result, 'Class').filter((n) => n.name === 'User');
+    expect(users.length).toBe(2);
+    const paths = users.map((u) => u.properties.filePath).sort();
+    expect(paths).toEqual(['App/Program.cs', 'Models/User.cs']);
+  });
+
+  it('resolves Program.Run -> local Collision.App.User constructor (origin:local shadows namespace)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find(
+      (c) => c.source === 'Run' && c.target === 'User' && c.targetLabel === 'Class',
+    );
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetFilePath).toBe('App/Program.cs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1086 regression: when a C# file consists of a single top-level
+// namespace_declaration that ends exactly at EOF (no trailing newline,
+// no leading content outside the namespace block), tree-sitter-c-sharp
+// reports identical ranges for `compilation_unit` and `namespace_declaration`.
+// Pre-fix, scope-extractor's parent-finder relied on strict containment, so
+// the Module was popped off the stack and the Namespace ended up with
+// parent=null → ScopeTreeInvariantError → scopeResolution silently aborted
+// for the file (extractParsedFile swallows). Post-fix, `canParentScope`
+// allows a same-range Module to keep parenthood, so extraction completes
+// and the file's symbols stay reachable to the cross-file resolver.
+//
+// Hit on real PersistentWindows .Designer.cs files. The fixture mirrors
+// that shape minimally — both files end on the closing `}` with no
+// trailing newline.
+// ---------------------------------------------------------------------------
+
+describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-namespace-as-root-no-trailing-newline'),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+  }, 60000);
+
+  it('completes scope extraction for both files (no Namespace-as-root abort)', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(expect.arrayContaining(['User', 'Program']));
+  });
+
+  it('emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path', () => {
+    // The `csharp-scope: using` reason on the IMPORTS edge is the signal
+    // that scope-resolution drove the resolution (not the legacy DAG
+    // fallback). Pre-fix, Models/User.cs aborted in scope-extractor and
+    // the only IMPORTS edge available — if any — would have come from a
+    // path with a different reason tag, or be missing entirely.
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.find(
+      (e) => e.sourceFilePath === 'App/Program.cs' && e.targetFilePath === 'Models/User.cs',
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.rel.reason).toBe('csharp-scope: using');
   });
 });

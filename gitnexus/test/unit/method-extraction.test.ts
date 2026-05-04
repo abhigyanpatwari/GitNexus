@@ -4385,12 +4385,14 @@ class Foo {
       expect(m.parameters[0]).toEqual({
         name: 'name',
         type: 'String',
+        rawType: 'String',
         isOptional: false,
         isVariadic: false,
       });
       expect(m.parameters[1]).toEqual({
         name: 'age',
         type: 'Int',
+        rawType: 'Int',
         isOptional: true,
         isVariadic: false,
       });

@@ -26,7 +26,7 @@
  *   `node_modules/tree-sitter-proto/build/Release/tree_sitter_proto_binding.node`
  *   — under npm-managed territory, safe on upgrade.
  *
- *   Mirrors scripts/patch-tree-sitter-swift.cjs. Best-effort: if any
+ *   Mirrors the tree-sitter-dart build helper. Best-effort: if any
  *   precondition fails (optional dep absent, no toolchain, --ignore-scripts),
  *   warn and exit 0 so gitnexus install still succeeds.
  */

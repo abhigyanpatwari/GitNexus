@@ -88,14 +88,21 @@
  *     per-(caller, target) collapse semantics require multiple call
  *     sites in the same caller body not produce multiple edges.
  *
- *   - **I3 — `propagateImportedReturnTypes` mutation timing.** The
- *     pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
+ *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
+ *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
  *     `draftToScope`, NOT frozen). It MUST run AFTER `finalizeScopeModel`
  *     (so `indexes.bindings` is populated) and BEFORE
  *     `resolveReferenceSites` (so resolution sees the propagated types).
  *     The pass also re-runs `followChainPostFinalize` on every scope's
  *     typeBindings because scope-extractor's pass-4 already ran and
  *     missed any chain whose terminal lives in a foreign file.
+ *     Within the pass, files are walked in `indexes.sccs` reverse-
+ *     topological order (leaves first) so multi-hop alias chains
+ *     (e.g. `models.User → service.user → app.user`) collapse to the
+ *     terminal class in a single pass — every importer sees its
+ *     source's already-chain-followed typeBindings. Cyclic SCCs reach
+ *     a partial fixpoint within a single pass without iterating to
+ *     convergence; `ts-circular` only asserts pipeline-no-throw.
  *
  *   - **I4 — `emitReceiverBoundCalls` case order.** Cases are evaluated
  *     in this order; the FIRST that emits an edge wins:
@@ -129,14 +136,45 @@
  *     once per workspace at resolve time), and merging would create a
  *     god-interface that complicates future migrations.
  *
- *   - **I8 — Post-finalize hooks may mutate `Scope.typeBindings` and
- *     `indexes.bindings`.** `propagateImportedReturnTypes` and
- *     `populateNamespaceSiblings` both write to these structures via
- *     `as Map<...>` casts through `ReadonlyMap` facades. Downstream
- *     consumers MUST NOT freeze or snapshot these maps before all
- *     post-finalize hooks have run. The `ReadonlyMap<...>` type on
- *     `ScopeResolutionIndexes` is a read-guidance surface for
- *     consumers, NOT an immutability promise during the resolve phase.
+ *   - **I8 — Two-channel binding lifecycle.**
+ *     `indexes.bindings` is the **finalize-output channel**. After
+ *     `finalizeScopeModel` returns, its inner `BindingRef[]` arrays
+ *     are deep-frozen by `materializeBindings` and MUST NOT be
+ *     mutated by any post-finalize hook. Treat `indexes.bindings` as
+ *     immutable from the moment `finalizeScopeModel` returns.
+ *
+ *     `indexes.bindingAugmentations` is the **post-finalize
+ *     append-only channel**. Hooks like `populateNamespaceSiblings`
+ *     append cross-file bindings synthesized after finalize (C#
+ *     same-namespace visibility, `using static` member exposure)
+ *     into this channel, NOT into `indexes.bindings`. Inner arrays
+ *     here are NEVER frozen — hooks `push()` directly. Any consumer
+ *     that reads post-finalize workspace bindings MUST query both
+ *     index channels via `lookupBindingsAt`
+ *     (`scope-resolution/scope/walkers.ts`); the helper returns
+ *     finalized refs first, appends unique augmentation refs after,
+ *     and dedupes by `def.nodeId` so finalized metadata wins on
+ *     duplicate defs. Per-`Scope.bindings` local declarations are the
+ *     lexical extraction channel and remain a separate first-tier
+ *     lookup for local shadowing.
+ *
+ *     `Scope.typeBindings` remains mutable post-finalize per I6 (it
+ *     is intentionally not frozen at any point).
+ *
+ *     The `ReadonlyMap<...>` types on `ScopeResolutionIndexes` are
+ *     compile-time read-guidance for consumers; structural mutation
+ *     of `bindingAugmentations` is performed via a deliberate
+ *     `as Map<...>` cast inside the hook implementations and is the
+ *     ONLY sanctioned channel for post-finalize binding fanout.
+ *
+ *     The dev-mode runtime validator
+ *     (`validateBindingsImmutability` in
+ *     `scope-resolution/validate-bindings-immutability.ts`) surfaces
+ *     any drift — i.e. a hook writing to `indexes.bindings` instead
+ *     of `bindingAugmentations`, or producing a non-frozen finalized
+ *     bucket — via `onWarn` when explicitly enabled by
+ *     `NODE_ENV === 'development' || VALIDATE_SEMANTIC_MODEL === '1'`
+ *     (`VALIDATE_SEMANTIC_MODEL=0` is an explicit off switch).
  *
  *   - **I9 — `SemanticModel` is the single authoritative symbol store.**
  *     Every symbol-indexed lookup (key = `nodeId | simpleName |
@@ -264,12 +302,38 @@ export interface ScopeResolver {
    * resolvers that must distinguish "this module exists in the repo"
    * from "this module is external" (Python's fallback resolver, for
    * example).
+   *
+   * `resolutionConfig` is the opaque value returned by
+   * `loadResolutionConfig` (loaded once per workspace pass by the
+   * orchestrator). TypeScript uses this to thread `tsconfig.json` path
+   * aliases through to the standard resolver. Languages that don't
+   * need any extra config ignore the parameter.
    */
   resolveImportTarget(
     targetRaw: string,
     fromFile: string,
     allFilePaths: ReadonlySet<string>,
+    resolutionConfig?: unknown,
   ): string | null;
+
+  /**
+   * Optional one-shot loader for cross-file import-resolution config
+   * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
+   * composer.json autoload for PHP). The orchestrator calls this once
+   * per workspace pass with the repo root and threads the result into
+   * every subsequent `resolveImportTarget` call as the
+   * `resolutionConfig` parameter.
+   *
+   * Languages that don't need any per-workspace config leave this
+   * undefined; the orchestrator threads `undefined` to
+   * `resolveImportTarget` in that case. Returning `null` is also
+   * supported and equivalent to "no config available".
+   *
+   * May be sync or async — the orchestrator awaits the result. The
+   * shape is opaque to the orchestrator (`unknown`); the per-language
+   * `resolveImportTarget` casts it to the language's expected shape.
+   */
+  loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
 
   /**
    * Per-scope binding-merge precedence. The shared finalize pass

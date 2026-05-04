@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
+import { createLbugDatabase } from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -69,7 +70,6 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
-  vectorLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
 }
@@ -175,7 +175,6 @@ function closeOne(repoId: string): void {
         // for the same dbPath reuse it instead of hitting a file lock.
         shared.refCount = 0;
         shared.ftsLoaded = false;
-        shared.vectorLoaded = false;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
@@ -307,14 +306,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
       try {
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize (default)
-          false, // enableCompression (default)
-          true, // readOnly
-        );
+        const db = createLbugDatabase(lbug, dbPath, { readOnly: true });
         restoreStdout();
-        shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
+        shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
@@ -354,19 +348,11 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Load FTS extension once per shared Database.
   // Done BEFORE pool registration so no concurrent checkout can grab
   // the connection while the async FTS load is in progress.
+  // policy: 'load-only' — the read pool must never trigger a network
+  // install; analyze owns extension installation. If LOAD fails, search
+  // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0]);
-  }
-
-  // Load VECTOR extension once per shared Database for semantic search support.
-  if (!shared.vectorLoaded) {
-    try {
-      await available[0].query('INSTALL VECTOR');
-      await available[0].query('LOAD EXTENSION VECTOR');
-      shared.vectorLoaded = true;
-    } catch {
-      // VECTOR extension may not be available
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
@@ -412,7 +398,7 @@ export async function initLbugWithDb(
   // closeOne() respects the external flag and skips db.close().
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    shared = { db: existingDb, refCount: 0, ftsLoaded: false, vectorLoaded: false, external: true };
+    shared = { db: existingDb, refCount: 0, ftsLoaded: false, external: true };
     dbCache.set(dbPath, shared);
   }
   shared.refCount++;
@@ -427,20 +413,11 @@ export async function initLbugWithDb(
     preWarmActive = false;
   }
 
-  // Load FTS extension if not already loaded on this Database
+  // Load FTS extension if not already loaded on this Database.
+  // policy: 'load-only' — same contract as initLbug above; the read pool
+  // must not block on a network install during query execution.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0]);
-  }
-
-  // Load VECTOR extension for semantic search support
-  if (!shared.vectorLoaded) {
-    try {
-      await available[0].query('INSTALL VECTOR');
-      await available[0].query('LOAD EXTENSION VECTOR');
-      shared.vectorLoaded = true;
-    } catch {
-      // VECTOR extension may not be available
-    }
+    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
 
   pool.set(repoId, {

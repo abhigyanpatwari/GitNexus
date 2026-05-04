@@ -56,13 +56,49 @@ function findDef(file: ParsedFile, name: string) {
 
 describe('Python scopes — module / class / function', () => {
   it('case 01: minimal module produces a single Module scope', () => {
-    // Empty source produces a zero-range module node; the central
-    // extractor treats zero-range scopes as malformed (and rightly so —
-    // they collide with sibling-overlap detection on subsequent reparses).
-    // Real Python files always have at least a newline.
     const f = parse('pass\n');
     expect(f.scopes).toHaveLength(1);
     expect(f.scopes[0]!.kind).toBe('Module');
+  });
+
+  it('case 01a: empty and whitespace-only files are skipped without warnings', () => {
+    for (const src of ['', ' \n\t']) {
+      const warnings: string[] = [];
+      const parsed = extractParsedFile(pythonProvider, src, 'pkg/__init__.py', (msg) => {
+        warnings.push(msg);
+      });
+
+      expect(parsed).toBeUndefined();
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  it('case 01b: large cache-miss files use the adaptive tree-sitter buffer', () => {
+    const padding = 'x'.repeat(600 * 1024);
+    const f = parse(`# ${padding}\ndef after_padding():\n    return 1\n`);
+    expect(scopesByKind(f, 'Module')).toHaveLength(1);
+    expect(findDef(f, 'after_padding')?.type).toBe('Function');
+  });
+
+  it('case 01c: UTF-8-heavy cache-miss files use byte-sized parser buffers', () => {
+    const padding = '漢'.repeat(190_000);
+    const f = parse(`# ${padding}\ndef after_padding():\n    return 1\n`);
+    expect(scopesByKind(f, 'Module')).toHaveLength(1);
+    expect(findDef(f, 'after_padding')?.type).toBe('Function');
+  });
+
+  it('case 01d: scope query failures are skipped through the bridge with context', () => {
+    const warnings: string[] = [];
+    const parsed = extractParsedFile(
+      pythonProvider,
+      'def broken():\n    return 1\n',
+      'broken.py',
+      (msg) => warnings.push(msg),
+      { rootNode: undefined },
+    );
+
+    expect(parsed).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/tree-sitter scope query failed for broken\.py/);
   });
 
   it('case 02: module-level assignment produces a Variable declaration in Module scope', () => {
@@ -94,15 +130,18 @@ describe('Python scopes — module / class / function', () => {
     const fn = scopesByKind(f, 'Function')[0]!;
     expect(cls.parent).toBe(mod.id);
     expect(fn.parent).toBe(cls.id);
+    expect(findDef(f, 'm')?.type).toBe('Method');
   });
 
-  it('case 06: nested function nests Function under Function', () => {
-    const f = parse('def outer():\n    def inner():\n        pass\n');
+  it('case 06: nested function remains Function when declared inside a method body', () => {
+    const f = parse('class A:\n    def m(self):\n        def inner():\n            pass\n');
     const fns = scopesByKind(f, 'Function');
     expect(fns).toHaveLength(2);
-    const outer = fns.find((s) => s.range.startLine === 1)!;
-    const inner = fns.find((s) => s.range.startLine === 2)!;
+    const outer = fns.find((s) => s.range.startLine === 2)!;
+    const inner = fns.find((s) => s.range.startLine === 3)!;
     expect(inner.parent).toBe(outer.id);
+    expect(findDef(f, 'm')?.type).toBe('Method');
+    expect(findDef(f, 'inner')?.type).toBe('Function');
   });
 });
 

@@ -30,7 +30,15 @@ import {
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
+import {
+  rankExactEmbeddingRows,
+  type ExactEmbeddingRow,
+} from '../../core/embeddings/exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
+import {
+  getExactScanLimit,
+  isVectorExtensionSupportedByPlatform,
+} from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
 // AI context generation is CLI-only (gitnexus analyze)
@@ -217,6 +225,14 @@ export class LocalBackend {
    * making MCP stderr unreadable.
    */
   private warnedSiblingDrift: Set<string> = new Set();
+
+  /**
+   * One-shot stderr warning for the VECTOR-extension fallback. Without this
+   * guard the diagnostic would fire on every `semanticSearch()` call on
+   * platforms where the extension is unsupported (e.g. Windows), making MCP
+   * stderr noisy per DoD §2.8.
+   */
+  private warnedVectorUnsupported = false;
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -1062,27 +1078,79 @@ export class LocalBackend {
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
 
-      const bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-        const vectorQuery = `
-          CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
-            CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
-          YIELD node AS emb, distance
-          WITH emb, distance
-          WHERE distance < 0.6
-          RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
-                 emb.startLine AS startLine, emb.endLine AS endLine, distance
-          ORDER BY distance
-        `;
+      let bestChunks = new Map<
+        string,
+        { distance: number; chunkIndex: number; startLine: number; endLine: number }
+      >();
+      if (isVectorExtensionSupportedByPlatform()) {
+        try {
+          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+            const vectorQuery = `
+            CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
+              CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
+            YIELD node AS emb, distance
+            WITH emb, distance
+            WHERE distance < 0.6
+            RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
+                   emb.startLine AS startLine, emb.endLine AS endLine, distance
+            ORDER BY distance
+          `;
 
-        const embResults = await executeQuery(repo.id, vectorQuery);
-        return embResults.map((row) => ({
+            const embResults = await executeQuery(repo.id, vectorQuery);
+            return embResults.map((row) => ({
+              nodeId: row.nodeId ?? row[0],
+              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+              startLine: row.startLine ?? row[2] ?? 0,
+              endLine: row.endLine ?? row[3] ?? 0,
+              distance: row.distance ?? row[4],
+            }));
+          });
+        } catch {
+          bestChunks = new Map();
+        }
+      } else if (!this.warnedVectorUnsupported) {
+        // Rare diagnostic: surface why we fell back to the exact scan path so
+        // operators can see at a glance that VECTOR is disabled by platform
+        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
+        // noisy stderr on hot semantic-search paths (DoD §2.8).
+        this.warnedVectorUnsupported = true;
+        console.error(
+          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
+        );
+      }
+
+      if (bestChunks.size === 0) {
+        const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
+        const exactLimit = getExactScanLimit();
+        if (embeddingCount > exactLimit) return [];
+
+        const rows = await executeQuery(
+          repo.id,
+          `
+          MATCH (e:${EMBEDDING_TABLE_NAME})
+          RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
+                 e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
+        `,
+        );
+        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
           nodeId: row.nodeId ?? row[0],
           chunkIndex: row.chunkIndex ?? row[1] ?? 0,
           startLine: row.startLine ?? row[2] ?? 0,
           endLine: row.endLine ?? row[3] ?? 0,
-          distance: row.distance ?? row[4],
+          embedding: row.embedding ?? row[4] ?? [],
         }));
-      });
+        bestChunks = new Map(
+          rankExactEmbeddingRows(exactRows, queryVec, limit, 0.6).map((row) => [
+            row.nodeId,
+            {
+              distance: row.distance,
+              chunkIndex: row.chunkIndex,
+              startLine: row.startLine,
+              endLine: row.endLine,
+            },
+          ]),
+        );
+      }
 
       if (bestChunks.size === 0) return [];
 

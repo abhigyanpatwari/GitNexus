@@ -53,13 +53,13 @@ class MCPBridge:
 
         try:
             # Find gitnexus binary
-            gitnexus_bin = self._find_gitnexus()
-            if not gitnexus_bin:
+            gitnexus_cmd = self._find_gitnexus_command()
+            if not gitnexus_cmd:
                 logger.error("GitNexus not found. Install with: npm install -g gitnexus")
                 return False
 
             self.process = subprocess.Popen(
-                [gitnexus_bin, "mcp"],
+                [*gitnexus_cmd, "mcp"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -152,33 +152,34 @@ class MCPBridge:
                 return contents[0].get("text", "")
         return None
 
-    def _find_gitnexus(self) -> str | None:
-        """Find the gitnexus CLI binary."""
+    def _find_gitnexus_command(self) -> list[str] | None:
+        """Find the gitnexus CLI command prefix."""
         # Check if npx is available (preferred - uses local install)
-        for cmd in ["npx"]:
-            try:
-                result = subprocess.run(
-                    [cmd, "gitnexus", "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=MCP_FIND_GITNEXUS_TIMEOUT_SECONDS,
-                    cwd=self.repo_path,
-                )
-                if result.returncode == 0:
-                    return cmd  # Will use "npx gitnexus mcp"
-            except Exception:
-                continue
+        try:
+            result = subprocess.run(
+                ["npx", "gitnexus", "--version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=MCP_FIND_GITNEXUS_TIMEOUT_SECONDS,
+                cwd=self.repo_path,
+            )
+            if result.returncode == 0:
+                return ["npx", "gitnexus"]
+        except Exception:
+            pass
 
         # Check for global install
         try:
             result = subprocess.run(
                 ["gitnexus", "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=MCP_FIND_GITNEXUS_FALLBACK_TIMEOUT_SECONDS,
             )
             if result.returncode == 0:
-                return "gitnexus"
+                return ["gitnexus"]
         except Exception:
             pass
 

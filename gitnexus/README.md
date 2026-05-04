@@ -156,6 +156,7 @@ gitnexus analyze --embeddings    # Enable embedding generation (slower, better s
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
+gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
@@ -295,6 +296,25 @@ If `npm install -g gitnexus` fails on native modules:
 npm install -g gitnexus
 ```
 
+### Analyze warns about unavailable FTS or VECTOR extensions
+
+GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions — they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
+
+Configure the behavior with two environment variables:
+
+| Variable | Values | Default | Effect |
+|----------|--------|---------|--------|
+| `GITNEXUS_LBUG_EXTENSION_INSTALL` | `auto`, `load-only`, `never` | `auto` | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely. |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer | `15000` | Wall-clock budget for the out-of-process `INSTALL` child before it is killed. |
+
+```bash
+# Offline/airgapped: never reach the network for extensions
+GITNEXUS_LBUG_EXTENSION_INSTALL=load-only npx gitnexus analyze
+
+# Slow network: give extension downloads more time
+GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS=30000 npx gitnexus analyze
+```
+
 ### Analysis runs out of memory
 
 For very large repositories:
@@ -322,6 +342,21 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+### Analyze reports a worker timeout
+
+Worker parse timeouts are recoverable. GitNexus retries stalled worker jobs with backoff, splits large jobs to isolate slow files, and falls back to the sequential parser when needed. If a large repository needs more time per worker job, use either:
+
+```bash
+# CLI flag, in seconds
+npx gitnexus analyze --worker-timeout 60
+
+# Environment variable, in milliseconds
+export GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000
+npx gitnexus analyze
+```
+
+For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget. The default is **8388608 bytes (8 MB)**.
 
 ## Privacy
 

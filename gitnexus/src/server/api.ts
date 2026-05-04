@@ -127,6 +127,105 @@ export const isIgnorableGraphQueryError = (err: unknown): boolean => {
   );
 };
 
+export const SPA_FALLBACK_REGEX = /^(?!\/api(?:\/|$))(?!.*\.\w{1,10}$).*/;
+
+export const resolveWebDistDir = async (
+  primaryDir: string,
+  fallbackDir: string,
+): Promise<string | null> => {
+  const envDir = process.env.GITNEXUS_WEB_DIST;
+  const dirs = envDir ? [envDir, primaryDir, fallbackDir] : [primaryDir, fallbackDir];
+  for (const dir of dirs) {
+    try {
+      await fs.access(path.join(dir, 'index.html'));
+      return dir;
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        console.warn(`[serve] could not access web UI dir ${dir}:`, err.message);
+      }
+    }
+  }
+  return null;
+};
+
+export const landingPageHtml = (): string => `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GitNexus</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Outfit,system-ui,-apple-system,sans-serif;background:#06060a;color:#e4e4ed;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1.5rem}
+.card{background:#101018;border:1px solid #2a2a3a;border-radius:0.75rem;padding:2rem;max-width:480px;width:100%}
+.logo{font-size:1.5rem;font-weight:700;color:#e4e4ed;letter-spacing:-0.02em;margin-bottom:0.25rem}
+.subtitle{font-size:0.875rem;color:#8888a0;margin-bottom:1.5rem}
+.section-title{font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#5a5a70;margin-bottom:0.75rem}
+.endpoint{margin:0.25rem 0;font-size:0.875rem}
+.endpoint a{color:#7c3aed;text-decoration:none}
+.endpoint a:hover{text-decoration:underline}
+.endpoint code{background:#16161f;padding:0.15em 0.4em;border-radius:0.25rem;font-size:0.8rem;color:#8888a0}
+.divider{height:1px;background:#1e1e2a;margin:1.25rem 0}
+.terminal{background:#0a0a10;border:1px solid #1e1e2a;border-radius:0.5rem;padding:0.75rem 1rem;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:0.8rem;color:#8888a0;margin-bottom:1rem;overflow-x:auto}
+.terminal .prompt{color:#7c3aed;user-select:none}
+.terminal .cmd{color:#e4e4ed}
+.link-row{display:flex;align-items:center;gap:0.5rem;font-size:0.875rem;margin-top:0.5rem}
+.link-row svg{flex-shrink:0}
+a.ext{color:#7c3aed;text-decoration:none;display:inline-flex;align-items:center;gap:0.25rem}
+a.ext:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">GitNexus</div>
+  <div class="subtitle">API server is running</div>
+  <div class="section-title">Endpoints</div>
+  <p class="endpoint"><a href="/api/info">/api/info</a> <span style="color:#5a5a70">— Server version &amp; context</span></p>
+  <p class="endpoint"><a href="/api/repos">/api/repos</a> <span style="color:#5a5a70">— Indexed repositories</span></p>
+  <p class="endpoint"><code>/api/heartbeat</code> <span style="color:#5a5a70">— SSE heartbeat</span></p>
+  <p class="endpoint"><code>/api/graph</code> <code>/api/query</code> <code>/api/search</code> <span style="color:#5a5a70">— Data</span></p>
+  <p class="endpoint"><code>/api/mcp</code> <span style="color:#5a5a70">— MCP over StreamableHTTP</span></p>
+  <div class="divider"></div>
+  <div class="section-title">Web UI not found</div>
+  <div class="terminal"><span class="prompt">$ </span><span class="cmd">cd gitnexus-web &amp;&amp; npm run build</span></div>
+  <div class="link-row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+    <a class="ext" href="https://gitnexus.vercel.app" target="_blank" rel="noopener noreferrer">gitnexus.vercel.app</a>
+    <span style="color:#5a5a70">— connects to this server</span>
+  </div>
+</div>
+</body>
+</html>`;
+
+export const staticCacheControlSetHeaders = (res: express.Response, filePath: string): void => {
+  if (filePath.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-cache');
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+};
+
+export const registerWebUI = (app: express.Express, staticDir: string | null): void => {
+  if (staticDir) {
+    app.use(
+      express.static(staticDir, {
+        setHeaders: staticCacheControlSetHeaders,
+      }),
+    );
+    // ⚠ This must remain the LAST route before the global error handler.
+    // The regex excludes /api paths AND paths with file extensions (.js, .css, etc.)
+    // so missing assets get real 404s instead of the SPA HTML.
+    // Adding routes below this will be unreachable for non-API, non-asset paths.
+    app.get(SPA_FALLBACK_REGEX, (_req, res) => {
+      res.sendFile(path.join(staticDir, 'index.html'));
+    });
+  } else {
+    app.get('/', (_req, res) => {
+      res.type('html').send(landingPageHtml());
+    });
+  }
+};
+
 const ensureStreamIsWritable = (res: express.Response, signal?: AbortSignal): void => {
   if (signal?.aborted || res.destroyed || res.writableEnded) {
     throw new ClientDisconnectedError();
@@ -1557,6 +1656,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
   });
 
+  // ── Web UI (served at root) ───────────────────────────────────────
+
+  // Resolve the gitnexus-web dist directory relative to this file's location.
+  // In the published package: <pkg>/dist/server/api.js → <pkg>/web/
+  // In dev (tsx):            gitnexus/src/server/api.ts → gitnexus-web/dist/
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const webDistDir = path.resolve(__dirname, '..', '..', 'web');
+  const devWebDistDir = path.resolve(__dirname, '..', '..', '..', 'gitnexus-web', 'dist');
+  const staticDir = await resolveWebDistDir(webDistDir, devWebDistDir);
+  registerWebUI(app, staticDir);
+
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Unhandled error:', err);
@@ -1586,5 +1696,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
+
+    // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts)
+    let shuttingDown = false;
+    process.on('uncaughtException', (err) => {
+      console.error('GitNexus uncaughtException:', err?.stack || err);
+      if (!shuttingDown) {
+        shuttingDown = true;
+        shutdown().catch(() => {});
+      }
+    });
+    process.on('unhandledRejection', (reason: any) => {
+      console.error('GitNexus unhandledRejection:', reason?.stack || reason);
+    });
   });
 };

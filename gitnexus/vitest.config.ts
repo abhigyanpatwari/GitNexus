@@ -3,7 +3,6 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     // Shared settings — inherited by all projects via extends: true
-    globalSetup: ['test/global-setup.ts'],
     testTimeout: 30000,
     hookTimeout: 120000,
     pool: 'forks',
@@ -51,6 +50,7 @@ export default defineConfig({
           name: 'lbug-db',
           include: [
             'test/integration/lbug-core-adapter.test.ts',
+            'test/integration/lbug-vector-extension.test.ts',
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
@@ -62,6 +62,8 @@ export default defineConfig({
             'test/integration/lbug-lock-retry.test.ts',
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
+            'test/integration/java-class-impact.test.ts',
+            'test/integration/class-impact-all-languages.test.ts',
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -71,10 +73,11 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'default',
-          sequence: { groupOrder: 2 },
+          sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
             'test/integration/lbug-core-adapter.test.ts',
+            'test/integration/lbug-vector-extension.test.ts',
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
@@ -84,10 +87,21 @@ export default defineConfig({
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
-            'test/integration/lbug-lock-retry.test.ts',
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
+            'test/integration/java-class-impact.test.ts',
+            'test/integration/class-impact-all-languages.test.ts',
+            'test/integration/skills-e2e.test.ts',
           ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'cli-e2e',
+          include: ['test/integration/skills-e2e.test.ts'],
+          fileParallelism: false,
+          sequence: { groupOrder: 2 },
         },
       },
     ],

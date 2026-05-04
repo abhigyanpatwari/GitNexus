@@ -48,7 +48,11 @@ import type {
   FileScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
-import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
+import {
+  getTreeSitterBufferSize,
+  getTreeSitterContentByteLength,
+  TREE_SITTER_MAX_BUFFER,
+} from './constants.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -352,7 +356,7 @@ const processParsingSequential = async (
     }
 
     // Skip files larger than the max tree-sitter buffer (32 MB)
-    if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
+    if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
@@ -375,7 +379,7 @@ const processParsingSequential = async (
     let tree: Parser.Tree;
     try {
       tree = parser.parse(parseContent, undefined, {
-        bufferSize: getTreeSitterBufferSize(parseContent.length),
+        bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (parseError) {
       console.warn(`Skipping unparseable file: ${file.path}`);
@@ -538,10 +542,13 @@ const processParsingSequential = async (
         }
       }
 
-      // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
-      // Functions are not suffixed — they don't overload by name in the same scope.
+      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
+      // Top-level Function IDs stay stable; functions inside an owner may overload.
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
-      const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      const needsAritySuffix =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        (nodeLabel === 'Function' && enclosingClassId !== null);
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
       if (arityTag && seqDefMethods && seqDefMethodInfo && seqClassNodeId !== undefined) {
         // Use cached method map + collision groups (built once per class, not per method)
@@ -721,6 +728,14 @@ export const processParsing = async (
   onFileProgress?: FileProgressCallback,
   workerPool?: WorkerPool,
 ): Promise<WorkerExtractedData | null> => {
+  let lastProgress = 0;
+  const reportProgress: FileProgressCallback | undefined = onFileProgress
+    ? (current, total, detail) => {
+        lastProgress = Math.max(lastProgress, current);
+        onFileProgress(lastProgress, total, detail);
+      }
+    : undefined;
+
   if (workerPool) {
     if (scopeTreeCache !== undefined && process.env.PROF_SCOPE_RESOLUTION === '1') {
       // Trees can't cross MessageChannels, so worker-parsed files land
@@ -738,12 +753,15 @@ export const processParsing = async (
         symbolTable,
         astCache,
         workerPool,
-        onFileProgress,
+        reportProgress,
       );
     } catch (err) {
-      console.warn(
-        'Worker pool parsing failed, falling back to sequential:',
-        err instanceof Error ? err.message : err,
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('Worker pool parsing stopped; continuing with sequential parser:', message);
+      reportProgress?.(
+        lastProgress,
+        files.length,
+        `Sequential fallback after worker issue: ${message}`,
       );
     }
   }
@@ -755,7 +773,7 @@ export const processParsing = async (
     symbolTable,
     astCache,
     scopeTreeCache,
-    onFileProgress,
+    reportProgress,
   );
   return null;
 };

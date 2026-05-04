@@ -27,7 +27,6 @@ import {
   type SemanticSearchResult,
   type ModelProgress,
   type EmbeddingContext,
-  DEFAULT_EMBEDDING_CONFIG,
   EMBEDDABLE_LABELS,
   isShortLabel,
   LABEL_METHOD,
@@ -35,6 +34,8 @@ import {
   STRUCTURAL_LABELS,
   collectBestChunks,
 } from './types.js';
+import { resolveEmbeddingConfig } from './config.js';
+import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import {
   EMBEDDING_TABLE_NAME,
   EMBEDDING_INDEX_NAME,
@@ -42,8 +43,20 @@ import {
   STALE_HASH_SENTINEL,
 } from '../lbug/schema.js';
 import { loadVectorExtension } from '../lbug/lbug-adapter.js';
+import { getExactScanLimit } from '../platform/capabilities.js';
 
 const isDev = process.env.NODE_ENV === 'development';
+
+const vectorUnavailableMessage =
+  'VECTOR extension is unavailable for this LadybugDB runtime; semantic search will use exact scan when embeddings exist.';
+
+const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
+  const vectorReady = await loadVectorExtension();
+  if (!vectorReady) {
+    return false;
+  }
+  return true;
+};
 /**
  * Bump this when the embedding text template changes in a way that should
  * invalidate existing vectors, such as metadata/header shape changes,
@@ -192,18 +205,25 @@ export const batchInsertEmbeddings = async (
  */
 const createVectorIndex = async (
   executeQuery: (cypher: string) => Promise<any[]>,
-): Promise<void> => {
-  // Delegate to the adapter which tracks loaded state and handles DB reconnect resets
-  await loadVectorExtension();
-
+): Promise<boolean> => {
+  if (!(await ensureVectorExtensionAvailable())) return false;
   try {
     await executeQuery(CREATE_VECTOR_INDEX_QUERY);
+    return true;
   } catch (error) {
     if (isDev) {
       console.warn('Vector index creation warning:', error);
     }
+    return false;
   }
 };
+
+export interface EmbeddingPipelineResult {
+  nodesProcessed: number;
+  chunksProcessed: number;
+  vectorIndexReady: boolean;
+  semanticMode: 'vector-index' | 'exact-scan';
+}
 
 /**
  * Run the embedding pipeline
@@ -230,10 +250,14 @@ export const runEmbeddingPipeline = async (
   skipNodeIds?: Set<string>,
   context?: EmbeddingContext,
   existingEmbeddings?: Map<string, string>,
-): Promise<void> => {
-  const finalConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...config };
+): Promise<EmbeddingPipelineResult> => {
+  const finalConfig = resolveEmbeddingConfig(config);
+  let totalChunks = 0;
 
   try {
+    const vectorAvailable = await ensureVectorExtensionAvailable();
+    if (!vectorAvailable && isDev) console.warn(vectorUnavailableMessage);
+
     // Phase 1: Load embedding model
     onProgress({
       phase: 'loading-model',
@@ -338,7 +362,7 @@ export const runEmbeddingPipeline = async (
       // Ensure the vector index exists even when no new nodes need embedding.
       // A prior crash or first-time incremental run may have left CodeEmbedding
       // rows without ever reaching index creation.
-      await createVectorIndex(executeQuery);
+      const vectorIndexReady = await createVectorIndex(executeQuery);
 
       onProgress({
         phase: 'ready',
@@ -346,7 +370,12 @@ export const runEmbeddingPipeline = async (
         nodesProcessed: 0,
         totalNodes: 0,
       });
-      return;
+      return {
+        nodesProcessed: 0,
+        chunksProcessed: 0,
+        vectorIndexReady,
+        semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
+      };
     }
 
     // Phase 3: Chunk + embed nodes
@@ -354,7 +383,6 @@ export const runEmbeddingPipeline = async (
     const chunkSize = finalConfig.chunkSize;
     const overlap = finalConfig.overlap;
     let processedNodes = 0;
-    let totalChunks = 0;
 
     onProgress({
       phase: 'embedding',
@@ -445,7 +473,7 @@ export const runEmbeddingPipeline = async (
       }
 
       // Embed chunk texts in sub-batches to control memory
-      const EMBED_SUB_BATCH = 8;
+      const EMBED_SUB_BATCH = finalConfig.subBatchSize;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
@@ -495,7 +523,7 @@ export const runEmbeddingPipeline = async (
       console.log('📇 Creating vector index...');
     }
 
-    await createVectorIndex(executeQuery);
+    const vectorIndexReady = await createVectorIndex(executeQuery);
 
     onProgress({
       phase: 'ready',
@@ -509,6 +537,12 @@ export const runEmbeddingPipeline = async (
         `✅ Embedding pipeline complete! (${totalChunks} chunks from ${totalNodes} nodes)`,
       );
     }
+    return {
+      nodesProcessed: totalNodes,
+      chunksProcessed: totalChunks,
+      vectorIndexReady,
+      semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
@@ -543,27 +577,71 @@ export const semanticSearch = async (
   const queryVec = embeddingToArray(queryEmbedding);
   const queryVecStr = `[${queryVec.join(',')}]`;
 
-  const bestChunks = await collectBestChunks(k, async (fetchLimit) => {
-    const vectorQuery = `
-      CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
-        CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${fetchLimit})
-      YIELD node AS emb, distance
-      WITH emb, distance
-      WHERE distance < ${maxDistance}
-      RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
-             emb.startLine AS startLine, emb.endLine AS endLine, distance
-      ORDER BY distance
-    `;
+  let bestChunks = new Map<
+    string,
+    { distance: number; chunkIndex: number; startLine: number; endLine: number }
+  >();
+  if (await loadVectorExtension()) {
+    try {
+      bestChunks = await collectBestChunks(k, async (fetchLimit) => {
+        const vectorQuery = `
+          CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
+            CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${fetchLimit})
+          YIELD node AS emb, distance
+          WITH emb, distance
+          WHERE distance < ${maxDistance}
+          RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
+                 emb.startLine AS startLine, emb.endLine AS endLine, distance
+          ORDER BY distance
+        `;
 
-    const embResults = await executeQuery(vectorQuery);
-    return embResults.map((row) => ({
-      nodeId: row.nodeId ?? row[0],
-      chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-      startLine: row.startLine ?? row[2] ?? 0,
-      endLine: row.endLine ?? row[3] ?? 0,
-      distance: row.distance ?? row[4],
-    }));
-  });
+        const embResults = await executeQuery(vectorQuery);
+        return embResults.map((row) => ({
+          nodeId: row.nodeId ?? row[0],
+          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+          startLine: row.startLine ?? row[2] ?? 0,
+          endLine: row.endLine ?? row[3] ?? 0,
+          distance: row.distance ?? row[4],
+        }));
+      });
+    } catch {
+      bestChunks = new Map();
+    }
+  }
+
+  if (bestChunks.size === 0) {
+    const countRows = await executeQuery(
+      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+    );
+    const countRow = countRows[0];
+    const embeddingCount = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
+    const exactLimit = getExactScanLimit();
+    if (embeddingCount > 0 && embeddingCount <= exactLimit) {
+      const rows = await executeQuery(`
+        MATCH (e:${EMBEDDING_TABLE_NAME})
+        RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
+               e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
+      `);
+      const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
+        nodeId: row.nodeId ?? row[0],
+        chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+        startLine: row.startLine ?? row[2] ?? 0,
+        endLine: row.endLine ?? row[3] ?? 0,
+        embedding: row.embedding ?? row[4] ?? [],
+      }));
+      bestChunks = new Map(
+        rankExactEmbeddingRows(exactRows, queryVec, k, maxDistance).map((row) => [
+          row.nodeId,
+          {
+            distance: row.distance,
+            chunkIndex: row.chunkIndex,
+            startLine: row.startLine,
+            endLine: row.endLine,
+          },
+        ]),
+      );
+    }
+  }
 
   if (bestChunks.size === 0) {
     return [];

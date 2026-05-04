@@ -15,7 +15,11 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
-import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from '../constants.js';
+import {
+  getTreeSitterBufferSize,
+  getTreeSitterContentByteLength,
+  TREE_SITTER_MAX_BUFFER,
+} from '../constants.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 
@@ -210,6 +214,7 @@ export interface ExtractedToolDef {
   toolName: string;
   description: string;
   lineNumber: number;
+  handlerNodeId?: string;
 }
 
 export interface ExtractedORMQuery {
@@ -758,7 +763,7 @@ const processBatch = (
 
   let totalProcessed = 0;
   let lastReported = 0;
-  const PROGRESS_INTERVAL = 100; // report every 100 files
+  const PROGRESS_INTERVAL = Math.max(1, Math.min(100, Math.ceil(files.length / 10)));
 
   const onFileProcessed = onProgress
     ? () => {
@@ -822,6 +827,10 @@ const processBatch = (
           (result.skippedLanguages[language] || 0) + tsxFiles.length;
       }
     }
+  }
+
+  if (onProgress && totalProcessed !== lastReported) {
+    onProgress(totalProcessed);
   }
 
   return result;
@@ -1383,7 +1392,7 @@ const processFileGroup = (
 
   for (const file of files) {
     // Skip files larger than the max tree-sitter buffer (32 MB)
-    if (file.content.length > TREE_SITTER_MAX_BUFFER) continue;
+    if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
@@ -1402,7 +1411,7 @@ const processFileGroup = (
     let tree;
     try {
       tree = parser.parse(parseContent, undefined, {
-        bufferSize: getTreeSitterBufferSize(parseContent.length),
+        bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
       console.warn(
@@ -1432,10 +1441,16 @@ const processFileGroup = (
     // Runs BEFORE legacy extraction and its result is independent: a
     // failure here is caught inside `extractParsedFile` and does NOT
     // affect the legacy DAG path that follows.
-    const parsedFile = extractParsedFile(provider, parseContent, file.path, (message) => {
-      if (parentPort) parentPort.postMessage({ type: 'warning', message });
-      else console.warn(message);
-    });
+    const parsedFile = extractParsedFile(
+      provider,
+      parseContent,
+      file.path,
+      (message) => {
+        if (parentPort) parentPort.postMessage({ type: 'warning', message });
+        else console.warn(message);
+      },
+      tree,
+    );
     if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
 
     // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
@@ -2069,10 +2084,13 @@ const processFileGroup = (
         }
       }
 
-      // Append #<paramCount> to Method/Constructor IDs to disambiguate overloads.
-      // Functions are not suffixed — they don't overload by name in the same scope.
+      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
+      // Top-level Function IDs stay stable; functions inside an owner may overload.
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
-      const needsAritySuffix = nodeLabel === 'Method' || nodeLabel === 'Constructor';
+      const needsAritySuffix =
+        nodeLabel === 'Method' ||
+        nodeLabel === 'Constructor' ||
+        (nodeLabel === 'Function' && enclosingClassId !== null);
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
       if (arityTag && defMethodMap && defMethodInfo) {
         const groups = buildCollisionGroups(defMethodMap);
@@ -2141,8 +2159,9 @@ const processFileGroup = (
               result.toolDefs.push({
                 filePath: file.path,
                 toolName: nodeName,
-                description: dec.arg || '',
+                description: (dec.arg || description || '').slice(0, 200),
                 lineNumber: definitionNode.startPosition.row + lineOffset,
+                handlerNodeId: nodeId,
               });
             }
             fileDecorators.delete(checkLine);

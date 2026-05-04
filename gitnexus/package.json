@@ -35,7 +35,8 @@
     "hooks",
     "scripts",
     "skills",
-    "vendor"
+    "vendor",
+    "web"
   ],
   "scripts": {
     "build": "node scripts/build.js",
@@ -46,13 +47,13 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",
-    "@ladybugdb/core": "^0.15.2",
+    "@ladybugdb/core": "^0.16.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
@@ -71,9 +72,9 @@
     "onnxruntime-node": "^1.24.0",
     "pandemonium": "^2.4.0",
     "tree-sitter": "^0.21.1",
-    "tree-sitter-c": "0.23.2",
+    "tree-sitter-c": "0.21.4",
     "tree-sitter-c-sharp": "0.23.1",
-    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-cpp": "0.23.2",
     "tree-sitter-go": "^0.23.0",
     "tree-sitter-java": "^0.23.5",
     "tree-sitter-javascript": "^0.23.0",
@@ -87,10 +88,10 @@
   "optionalDependencies": {
     "node-addon-api": "^8.0.0",
     "node-gyp-build": "^4.8.0",
-    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
+    "tree-sitter-dart": "file:./vendor/tree-sitter-dart",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
-    "tree-sitter-swift": "^0.6.0"
+    "tree-sitter-swift": "file:./vendor/tree-sitter-swift"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
@@ -108,8 +109,7 @@
   "overrides": {
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
-    },
-    "tree-sitter-c": "0.23.2"
+    }
   },
   "engines": {
     "node": ">=20.0.0"

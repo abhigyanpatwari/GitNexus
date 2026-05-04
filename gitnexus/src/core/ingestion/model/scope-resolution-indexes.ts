@@ -62,8 +62,21 @@ export interface ScopeResolutionIndexes {
   readonly methodDispatch: MethodDispatchIndex;
   /** Finalized `ImportEdge[]` per module scope. */
   readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
-  /** Merged bindings (local + imports + wildcards) per module scope. */
+  /** Finalize-output bindings (local + imports + wildcards) per module scope.
+   *  Inner `BindingRef[]` arrays are frozen by `materializeBindings`;
+   *  this channel is permanently immutable post-finalize. Consumers
+   *  MUST read via `lookupBindingsAt` so the augmentation channel is
+   *  consulted alongside. See I8 in `contract/scope-resolver.ts`. */
   readonly bindings: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
+  /** Append-only post-finalize augmentation channel. Populated by
+   *  language hooks such as `populateNamespaceSiblings` for cross-file
+   *  bindings synthesized after finalize (e.g. C# same-namespace
+   *  visibility, `using static` member exposure). Inner arrays are
+   *  NOT frozen — hooks `push()` directly. Walkers must consult both
+   *  this map and `bindings` via `lookupBindingsAt`; finalized refs
+   *  are returned first and win duplicate `def.nodeId` metadata, with
+   *  unique augmentations appended after. See I8. */
+  readonly bindingAugmentations: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
   /** SCC condensation of the file-level import graph — callers that want

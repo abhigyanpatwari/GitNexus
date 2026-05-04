@@ -23,6 +23,7 @@ import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
+import { getTreeSitterBufferSize } from '../../constants.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = [
@@ -52,7 +53,9 @@ export function emitCsharpScopeCaptures(
   // the LanguageProvider contract layer; cast here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getCsharpParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = getCsharpParser().parse(sourceText);
+    tree = getCsharpParser().parse(sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
+    });
     recordCacheMiss();
   } else {
     recordCacheHit();

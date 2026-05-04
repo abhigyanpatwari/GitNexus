@@ -148,13 +148,11 @@ describe('primaryLanguages', () => {
   });
 
   it('returns exactly the flipped languages (env opts in unmigrated, opts out migrated)', () => {
-    // Python and C# are migrated (default-on); both explicitly off via
-    // env vars. Go and Java are unmigrated (default-off); Go opted in,
-    // Java left off. This pins the semantics across all
-    // MIGRATED_LANGUAGES — as languages migrate, add their
-    // `REGISTRY_PRIMARY_<LANG> = 'false'` line here alongside Python / C#.
+    // Migrated languages are default-on; each must be opted out here when
+    // testing explicit env overrides. Go (unmigrated) opts in; Java stays off.
     process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
     process.env['REGISTRY_PRIMARY_CSHARP'] = 'false';
+    process.env['REGISTRY_PRIMARY_TYPESCRIPT'] = 'false';
     process.env['REGISTRY_PRIMARY_GO'] = '1';
     const enabled = primaryLanguages();
     expect(enabled.has(SupportedLanguages.Python)).toBe(false);

@@ -581,13 +581,13 @@ async function installCursorSkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Install global OpenCode skills to ~/.config/opencode/skill/gitnexus/
+ * Install global OpenCode skills to ~/.config/opencode/skills/gitnexus/
  */
 async function installOpenCodeSkills(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) return;
 
-  const skillsDir = path.join(opencodeDir, 'skill');
+  const skillsDir = path.join(opencodeDir, 'skills');
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {

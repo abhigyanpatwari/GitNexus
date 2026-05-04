@@ -5,9 +5,12 @@
  * All tools support an optional `repo` parameter for multi-repo setups.
  */
 
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+
 export interface ToolDefinition {
   name: string;
   description: string;
+  annotations: ToolAnnotations;
   inputSchema: {
     type: 'object';
     properties: Record<
@@ -27,6 +30,27 @@ export interface ToolDefinition {
   };
 }
 
+const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const QUERY_TOOL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+};
+
+const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+};
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -39,6 +63,7 @@ AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work wi
 
 When multiple repos are indexed, you MUST specify the "repo" parameter
 on other tools (query, context, impact, etc.) to target the correct one.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -63,6 +88,7 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
 SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
+    annotations: QUERY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -156,6 +182,7 @@ TIPS:
 - Community = auto-detected functional area (Leiden algorithm). Properties: heuristicLabel, cohesion, symbolCount, keywords, description, enrichedBy
 - Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId
 - Use heuristicLabel (not label) for human-readable community/process names`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -183,6 +210,7 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -226,6 +254,7 @@ WHEN TO USE: Before committing — to understand what your changes affect. Pre-c
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
 Returns: changed symbols, affected processes, and a risk summary.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -258,6 +287,7 @@ AFTER THIS: Run detect_changes() to verify no unexpected side effects.
 Each edit is tagged with confidence:
 - "graph": found via knowledge graph relationships (high confidence, safe to accept)
 - "text_search": found via regex text search (lower confidence, review carefully)`,
+    annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -311,6 +341,7 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match
 GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge.
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -404,6 +435,7 @@ WHEN TO USE: Understanding API consumption patterns, finding orphaned routes. Fo
 AFTER THIS: Use impact() on specific route handlers to see full blast radius.
 
 Returns: route nodes with their handlers, middleware wrapper chains (e.g., withAuth, withRateLimit), and consumers.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,6 +458,7 @@ Returns: route nodes with their handlers, middleware wrapper chains (e.g., withA
 WHEN TO USE: Understanding tool APIs, finding tool implementations, impact analysis for tool changes.
 
 Returns: tool nodes with their handler files and descriptions.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -443,6 +476,7 @@ WHEN TO USE: Detecting mismatches between what an API route returns and what con
 REQUIRES: Route nodes with responseKeys (extracted from .json({...}) calls during indexing).
 
 Returns routes that have both detected response keys AND consumers. Shows top-level keys each endpoint returns (e.g., data, pagination, error) and what keys each consumer accesses. Reports MISMATCH status when a consumer accesses keys not present in the route's response shape.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -467,6 +501,7 @@ WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend
 Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
 
 Returns: single route object when one match, or { routes: [...], total: N } for multiple matches. Combines route_map, shape_check, and impact data.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -482,6 +517,7 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     description: `List all configured repository groups, or return details for one group (repos, manifest links).
 
 WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single group's config.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -495,6 +531,9 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
     description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, exact-match cross-links.
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
+    // Writes contracts.json on every call; conservatively non-idempotent
+    // even though output is deterministic for identical input.
+    annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {

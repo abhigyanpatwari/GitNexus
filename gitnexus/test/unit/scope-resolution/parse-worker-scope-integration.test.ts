@@ -67,6 +67,27 @@ describe('extractParsedFile', () => {
   });
 
   describe('provider HAS migrated', () => {
+    it('returns undefined without warning for whitespace-only source', () => {
+      const warnings: string[] = [];
+      let called = false;
+      const provider = fakeProvider({
+        emitScopeCaptures: () => {
+          called = true;
+          throw new Error('should not inspect empty source');
+        },
+      });
+
+      for (const src of ['', ' \n\t']) {
+        const result = extractParsedFile(provider, src, 'pkg/__init__.py', (msg) => {
+          warnings.push(msg);
+        });
+        expect(result).toBeUndefined();
+      }
+
+      expect(called).toBe(false);
+      expect(warnings).toEqual([]);
+    });
+
     it('threads emitScopeCaptures output through ScopeExtractor', () => {
       const provider = fakeProvider({
         emitScopeCaptures: () => [moduleScopeMatch()],
@@ -81,16 +102,20 @@ describe('extractParsedFile', () => {
     it('forwards the correct arguments to emitScopeCaptures', () => {
       let seenText: string | undefined;
       let seenPath: string | undefined;
+      let seenTree: unknown;
+      const cachedTree = { rootNode: {} };
       const provider = fakeProvider({
-        emitScopeCaptures: (text, path) => {
+        emitScopeCaptures: (text, path, tree) => {
           seenText = text;
           seenPath = path;
+          seenTree = tree;
           return [moduleScopeMatch()];
         },
       });
-      extractParsedFile(provider, 'the real text', 'deep/path/file.ts');
+      extractParsedFile(provider, 'the real text', 'deep/path/file.ts', undefined, cachedTree);
       expect(seenText).toBe('the real text');
       expect(seenPath).toBe('deep/path/file.ts');
+      expect(seenTree).toBe(cachedTree);
     });
   });
 

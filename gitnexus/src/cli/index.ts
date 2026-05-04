@@ -32,7 +32,10 @@ program
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
-  .option('--skip-git', 'Index a folder without requiring a .git directory')
+  .option(
+    '--skip-git',
+    'Treat the provided path/cwd as the index root and skip parent git-root discovery',
+  )
   .option(
     '--name <alias>',
     'Register this repo under a custom name in ~/.gitnexus/registry.json ' +
@@ -48,11 +51,23 @@ program
     '--max-file-size <kb>',
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
   )
+  .option(
+    '--worker-timeout <seconds>',
+    'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
+  )
+  .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
+  .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
+  .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
+  .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
   .addHelpText(
     'after',
     '\nEnvironment variables:\n' +
       '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
+      '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
+      '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
+      '  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n' +
+      '  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n' +
       '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
@@ -88,6 +103,11 @@ program
   .command('status')
   .description('Show index status for current repo')
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
+
+program
+  .command('doctor')
+  .description('Show runtime platform capabilities and embedding configuration')
+  .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
   .command('clean')

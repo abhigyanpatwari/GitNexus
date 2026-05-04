@@ -20,6 +20,7 @@ export interface ToolDef {
   name: string;
   filePath: string;
   description: string;
+  handlerNodeId?: string;
 }
 
 export interface ToolsOutput {
@@ -42,7 +43,14 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
     for (const td of allToolDefs) {
       if (seenToolNames.has(td.toolName)) continue;
       seenToolNames.add(td.toolName);
-      toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });
+      const handlerNodeId =
+        td.handlerNodeId && ctx.graph.getNode(td.handlerNodeId) ? td.handlerNodeId : undefined;
+      toolDefs.push({
+        name: td.toolName,
+        filePath: td.filePath,
+        description: td.description,
+        ...(handlerNodeId !== undefined ? { handlerNodeId } : {}),
+      });
     }
 
     // TS tool definition arrays — require inputSchema nearby
@@ -84,10 +92,10 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
           properties: { name: td.name, filePath: td.filePath, description: td.description },
         });
 
-        const handlerFileId = generateId('File', td.filePath);
+        const handlerId = td.handlerNodeId ?? generateId('File', td.filePath);
         ctx.graph.addRelationship({
-          id: generateId('HANDLES_TOOL', `${handlerFileId}->${toolNodeId}`),
-          sourceId: handlerFileId,
+          id: generateId('HANDLES_TOOL', `${handlerId}->${toolNodeId}`),
+          sourceId: handlerId,
           targetId: toolNodeId,
           type: 'HANDLES_TOOL',
           confidence: 1.0,

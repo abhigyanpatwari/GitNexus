@@ -23,6 +23,8 @@ import { getPythonParser, getPythonScopeQuery } from './query.js';
 import { synthesizeReceiverTypeBinding } from './receiver-binding.js';
 import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
+import { getTreeSitterBufferSize } from '../../constants.js';
+import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 
 export function emitPythonScopeCaptures(
   sourceText: string,
@@ -36,12 +38,24 @@ export function emitPythonScopeCaptures(
   // here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = getPythonParser().parse(sourceText);
+    try {
+      tree = getPythonParser().parse(sourceText, undefined, {
+        bufferSize: getTreeSitterBufferSize(sourceText),
+      });
+    } catch (err) {
+      throw scopeExtractionError('parse', _filePath, err);
+    }
     recordCacheMiss();
   } else {
     recordCacheHit();
   }
-  const rawMatches = getPythonScopeQuery().matches(tree.rootNode);
+
+  let rawMatches: ReturnType<ReturnType<typeof getPythonScopeQuery>['matches']>;
+  try {
+    rawMatches = getPythonScopeQuery().matches(tree.rootNode);
+  } catch (err) {
+    throw scopeExtractionError('scope query', _filePath, err);
+  }
 
   const out: CaptureMatch[] = [];
 
@@ -95,6 +109,10 @@ export function emitPythonScopeCaptures(
       const anchorCap = grouped['@declaration.function']!;
       const fnNode = findNodeAtRange(tree.rootNode, anchorCap.range, 'function_definition');
       if (fnNode !== null) {
+        if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
+          delete grouped['@declaration.function'];
+          grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
+        }
         const arity = computePythonArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(
@@ -129,4 +147,11 @@ export function emitPythonScopeCaptures(
   }
 
   return out;
+}
+
+function scopeExtractionError(stage: string, filePath: string, err: unknown): Error {
+  const reason = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `[python] tree-sitter ${stage} failed for ${filePath}: ${reason}; skipping scope extraction for this file`,
+  );
 }

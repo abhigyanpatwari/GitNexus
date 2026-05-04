@@ -2895,6 +2895,24 @@ class User : BaseModel<string> {
       expect(typeEnv.constructorBindings.find((b) => b.varName === 'user')).toBeUndefined();
     });
 
+    describeSwift('Swift constructor binding scanner', () => {
+      it('returns constructor binding for explicit User.init(...) calls', () => {
+        const tree = parseSwift(`
+func run() {
+  let user = User.init(name: "alice")
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'swift');
+        expect(flatGet(typeEnv, 'user')).toBeUndefined();
+        expect(typeEnv.constructorBindings).toEqual([
+          expect.objectContaining({
+            varName: 'user',
+            calleeName: 'User',
+          }),
+        ]);
+      });
+    });
+
     it('returns constructor bindings for Python x = UnknownClass()', () => {
       const tree = parse(
         `

@@ -11,17 +11,18 @@
  * field-chain resolution fails at `findClassBindingInScope('User')`
  * in the Service.cs scope chain.
  *
- * Implementation: after the finalize pass populates `indexes.bindings`
- * (from explicit `using` directives), walk each file's tree-sitter
- * AST for `namespace_declaration` / `file_scoped_namespace_declaration`
- * and `using_directive` nodes. The orchestrator hands us its
- * `treeCache` so files already parsed by `extractParsedFile` are
- * re-used instead of re-parsed — `ParsedFile`'s underlying tree is
- * the single source of truth. Group classes by namespace, and inject
- * cross-file sibling classes into each Namespace scope's finalized
- * bindings with `origin: 'namespace'` — a tier below `local` so a
- * local declaration still shadows a cross-file sibling with the same
- * name.
+ * Implementation: after the finalize pass populates immutable
+ * `indexes.bindings` (from explicit `using` directives), walk each
+ * file's tree-sitter AST for `namespace_declaration` /
+ * `file_scoped_namespace_declaration` and `using_directive` nodes.
+ * The orchestrator hands us its `treeCache` so files already parsed
+ * by `extractParsedFile` are re-used instead of re-parsed —
+ * `ParsedFile`'s underlying tree is the single source of truth.
+ * Group classes by namespace, and append cross-file sibling classes
+ * into each Namespace scope's `bindingAugmentations` bucket with
+ * `origin: 'namespace'`. Finalized bindings remain first in
+ * `lookupBindingsAt`, and local lexical `Scope.bindings` remains the
+ * first-tier shadowing channel.
  *
  * The tree-sitter walk is authoritative: it sees `global using static`,
  * aliased `using static X = Y.Z;`, attributed namespace declarations,
@@ -34,6 +35,7 @@ import type { SyntaxNode } from 'tree-sitter';
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
+import { getTreeSitterBufferSize } from '../../constants.js';
 
 interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
@@ -52,7 +54,11 @@ interface CsharpFileStructure {
  *  shared across calls. */
 function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
-  const tree = (cachedTree as CsharpTree | undefined) ?? getCsharpParser().parse(content);
+  const tree =
+    (cachedTree as CsharpTree | undefined) ??
+    getCsharpParser().parse(content, undefined, {
+      bufferSize: getTreeSitterBufferSize(content),
+    });
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
 
@@ -106,8 +112,8 @@ export interface CsharpSiblingInputs {
 }
 
 /**
- * Mutate `indexes.bindings` in-place, adding cross-file sibling class
- * defs to each Namespace scope. Class-like defs (Class / Interface /
+ * Append cross-file sibling class defs to each Namespace scope's
+ * `bindingAugmentations` bucket. Class-like defs (Class / Interface /
  * Struct / Record / Enum) are visible cross-file; method / field
  * members are not.
  */
@@ -198,12 +204,15 @@ export function populateCsharpNamespaceSiblings(
     }
   }
 
-  // Inject cross-file siblings into each namespace scope's finalized
-  // bindings. `indexes.bindings` is typed `ReadonlyMap<ScopeId, ...>`
-  // but is a plain Map at runtime; mutating here is the established
-  // pattern (see `propagateImportedReturnTypes` which does the same
-  // for module-scope typeBindings).
-  const finalized = indexes.bindings as Map<ScopeId, Map<string, BindingRef[]>>;
+  // Inject cross-file siblings into each namespace scope's
+  // post-finalize augmentation channel (per I8). The
+  // `indexes.bindingAugmentations` map is the dedicated mutable
+  // append-only buffer for post-finalize hooks: inner `BindingRef[]`
+  // arrays here are NEVER frozen (unlike `indexes.bindings`, which
+  // `materializeBindings` freezes). Walkers consult both channels
+  // via `lookupBindingsAt`; we never need to consult or mutate
+  // `indexes.bindings`.
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
   // Cross-namespace type-binding propagation: for each file, mirror
   // method return-type bindings from same-namespace sibling files and
@@ -301,17 +310,13 @@ export function populateCsharpNamespaceSiblings(
         const simpleName = mq.includes('.') ? mq.slice(mq.lastIndexOf('.') + 1) : mq;
         if (simpleName === '') continue;
 
-        // Add to `indexes.bindings[moduleScope]` so
-        // `findCallableBindingInScope` picks it up.
-        let scopeBindings = finalized.get(moduleScope.id);
-        if (scopeBindings === undefined) {
-          scopeBindings = new Map<string, BindingRef[]>();
-          finalized.set(moduleScope.id, scopeBindings);
-        }
-        const existing = scopeBindings.get(simpleName) ?? [];
-        if (existing.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
-        existing.push({ def: memberDef, origin: 'import' });
-        scopeBindings.set(simpleName, existing);
+        // Append to the augmentation bucket for the importer's module
+        // scope. `findCallableBindingInScope` reads via
+        // `lookupBindingsAt`, which fans out across `bindings` +
+        // `bindingAugmentations`.
+        const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
+        if (bucketArr.some((b) => b.def.nodeId === memberDef.nodeId)) continue;
+        bucketArr.push({ def: memberDef, origin: 'import' });
       }
     }
   }
@@ -337,15 +342,9 @@ export function populateCsharpNamespaceSiblings(
         const q = def.qualifiedName ?? '';
         const simpleName = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
         if (simpleName === '') continue;
-        let scopeBindings = finalized.get(moduleScope.id);
-        if (scopeBindings === undefined) {
-          scopeBindings = new Map<string, BindingRef[]>();
-          finalized.set(moduleScope.id, scopeBindings);
-        }
-        const existing = scopeBindings.get(simpleName) ?? [];
-        if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
-        existing.push({ def, origin: 'namespace' });
-        scopeBindings.set(simpleName, existing);
+        const bucketArr = getAugmentationBucket(augmentations, moduleScope.id, simpleName);
+        if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+        bucketArr.push({ def, origin: 'namespace' });
       }
     }
   }
@@ -366,11 +365,6 @@ export function populateCsharpNamespaceSiblings(
     }
 
     for (const { scopeId, filePath } of bucket.scopes) {
-      let scopeBindings = finalized.get(scopeId);
-      if (scopeBindings === undefined) {
-        scopeBindings = new Map<string, BindingRef[]>();
-        finalized.set(scopeId, scopeBindings);
-      }
       for (const [name, defs] of defsByName) {
         // Skip names already present locally — `origin: 'local'` in
         // scope.bindings would naturally shadow the cross-file
@@ -378,16 +372,40 @@ export function populateCsharpNamespaceSiblings(
         const local = bucket.scopes.find((s) => s.filePath === filePath)?.scope.bindings.get(name);
         if (local !== undefined && local.some((b) => b.origin === 'local')) continue;
 
-        const existing = scopeBindings.get(name) ?? [];
+        let bucketArr: BindingRef[] | null = null;
         for (const def of defs) {
           if (def.filePath === filePath) continue; // don't self-reference
-          if (existing.some((b) => b.def.nodeId === def.nodeId)) continue;
-          existing.push({ def, origin: 'namespace' });
+          if (bucketArr === null) bucketArr = getAugmentationBucket(augmentations, scopeId, name);
+          if (bucketArr.some((b) => b.def.nodeId === def.nodeId)) continue;
+          bucketArr.push({ def, origin: 'namespace' });
         }
-        if (existing.length > 0) scopeBindings.set(name, existing);
       }
     }
   }
+}
+
+/** Get-or-create a mutable inner bucket inside the `bindingAugmentations`
+ *  channel. The inner arrays here are mutable by contract (see
+ *  `ScopeResolutionIndexes.bindingAugmentations` doc + scope-resolver I8);
+ *  callers may `push` directly. Allocating the outer/inner Maps lazily
+ *  keeps the augmentation footprint zero for files with no cross-file
+ *  fanout. */
+function getAugmentationBucket(
+  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  scopeId: ScopeId,
+  name: string,
+): BindingRef[] {
+  let scopeBindings = augmentations.get(scopeId);
+  if (scopeBindings === undefined) {
+    scopeBindings = new Map<string, BindingRef[]>();
+    augmentations.set(scopeId, scopeBindings);
+  }
+  let bucketArr = scopeBindings.get(name);
+  if (bucketArr === undefined) {
+    bucketArr = [];
+    scopeBindings.set(name, bucketArr);
+  }
+  return bucketArr;
 }
 
 function isTypeDef(def: SymbolDefinition): boolean {

@@ -78,6 +78,14 @@ export type ImportSemantics =
   | 'namespace'
   | 'explicit-reexport';
 
+/** Configuration for AST-based framework detection patterns. */
+export interface AstFrameworkPatternConfig {
+  framework: string;
+  entryPointMultiplier: number;
+  reason: string;
+  patterns: string[];
+}
+
 /**
  * Everything a language needs to provide.
  * Required fields must be explicitly set; optional fields have defaults
@@ -88,6 +96,16 @@ interface LanguageProviderConfig {
   readonly id: SupportedLanguages;
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
+
+  /** Entry-point function name patterns specific to this language.
+   *  Merged with universal patterns at runtime for process detection scoring.
+   *  Default: [] (only universal patterns apply). */
+  readonly entryPointPatterns?: readonly RegExp[];
+
+  /** AST-based framework detection patterns for this language.
+   *  Used by detectFrameworkFromAST to identify framework entry points.
+   *  Default: [] (no AST framework detection for this language). */
+  readonly astFrameworkPatterns?: readonly AstFrameworkPatternConfig[];
 
   // ── Parser ────────────────────────────────────────────────────────
   /** Parse strategy: 'tree-sitter' (default) uses AST parsing via tree-sitter.
@@ -497,6 +515,15 @@ interface LanguageProviderConfig {
   ) => 'free' | 'member' | 'constructor' | 'index';
 
   // ── Resolution phase (RFC §4v2) ────────────────────────────────────
+
+  /** Order same-name type candidates when a language can index multiple
+   * definitions for one logical type. Return null to keep shared ambiguity
+   * handling. */
+  readonly orderSameNameTypeCandidates?: (params: {
+    readonly typeName: string;
+    readonly callSiteFilePath: string;
+    readonly candidates: readonly SymbolDefinition[];
+  }) => readonly SymbolDefinition[] | null;
 
   /**
    * Is this callable definition compatible with the given call-site arity?

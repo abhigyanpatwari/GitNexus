@@ -5,7 +5,7 @@ import {
   buildProviderIndex,
   runWildcardMatch,
 } from '../../../src/core/group/matching.js';
-import type { StoredContract } from '../../../src/core/group/types.js';
+import type { StoredContract, MatchingConfig } from '../../../src/core/group/types.js';
 
 describe('normalizeContractId', () => {
   it('lowercases HTTP method', () => {
@@ -401,5 +401,229 @@ describe('runWildcardMatch', () => {
 
     expect(matched).toHaveLength(1);
     expect(matched[0].contractId).toBe('grpc::com.example.UserService/*');
+  });
+});
+
+describe('buildNoisyContractFilter (via runExactMatch)', () => {
+  const makeContract = (
+    id: string,
+    role: 'provider' | 'consumer',
+    repo: string,
+  ): StoredContract => ({
+    contractId: id,
+    type: 'http',
+    role,
+    symbolUid: `uid-${repo}-${id}`,
+    symbolRef: { filePath: `src/${repo}.ts`, name: `fn-${id}` },
+    symbolName: `fn-${id}`,
+    confidence: 0.8,
+    meta: {},
+    repo,
+  });
+
+  it('exclude_links_paths prevents cross-links for configured paths', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/ping'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/ping', 'provider', 'backend'),
+      makeContract('http::GET::/ping', 'consumer', 'frontend'),
+      makeContract('http::GET::/api/users', 'provider', 'backend'),
+      makeContract('http::GET::/api/users', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].contractId).toBe('http::GET::/api/users');
+  });
+
+  it('excluded providers do not appear in matched', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/health'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/health', 'provider', 'backend'),
+      makeContract('http::GET::/health', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(0);
+  });
+
+  it('excluded contracts do not appear in unmatched', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/ping'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/ping', 'provider', 'backend'),
+      makeContract('http::GET::/ping', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toHaveLength(0);
+  });
+
+  it('exclude_links_param_only_paths filters /{param} and /{param}/{param}', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: [],
+      exclude_links_param_only_paths: true,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/{param}', 'provider', 'backend'),
+      makeContract('http::GET::/{param}', 'consumer', 'frontend'),
+      makeContract('http::GET::/{param}/{param}', 'provider', 'backend'),
+      makeContract('http::GET::/{param}/{param}', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toHaveLength(0);
+  });
+
+  it('mixed routes like /users/{param} are NOT excluded by param_only', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: [],
+      exclude_links_param_only_paths: true,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/users/{param}', 'provider', 'backend'),
+      makeContract('http::GET::/users/{param}', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].contractId).toBe('http::GET::/users/{param}');
+  });
+
+  it('default config (no exclusions) produces no filtering', () => {
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/ping', 'provider', 'backend'),
+      makeContract('http::GET::/ping', 'consumer', 'frontend'),
+      makeContract('http::GET::/{param}', 'provider', 'backend'),
+      makeContract('http::GET::/{param}', 'consumer', 'frontend'),
+    ];
+
+    const { matched } = runExactMatch(contracts);
+
+    expect(matched).toHaveLength(2);
+  });
+
+  it('trailing slash on contractId still matches configured exclusion', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/ping'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/ping/', 'provider', 'backend'),
+      makeContract('http::GET::/ping/', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toHaveLength(0);
+  });
+
+  it('root path exclusion ["/"] suppresses http::GET::/ contracts', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/'],
+      exclude_links_param_only_paths: false,
+    };
+
+    const contracts: StoredContract[] = [
+      makeContract('http::GET::/', 'provider', 'backend'),
+      makeContract('http::GET::/', 'consumer', 'frontend'),
+      makeContract('http::GET::/api/users', 'provider', 'backend'),
+      makeContract('http::GET::/api/users', 'consumer', 'frontend'),
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched, unmatched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].contractId).toBe('http::GET::/api/users');
+    expect(unmatched).toHaveLength(0);
+  });
+
+  it('non-HTTP contracts are never filtered', () => {
+    const matchingConfig: MatchingConfig = {
+      bm25_threshold: 0.7,
+      embedding_threshold: 0.65,
+      max_candidates_per_step: 3,
+      exclude_links_paths: ['/ping'],
+      exclude_links_param_only_paths: true,
+    };
+
+    const contracts: StoredContract[] = [
+      {
+        contractId: 'topic::events.ping',
+        type: 'topic',
+        role: 'provider',
+        symbolUid: 'uid-backend-topic',
+        symbolRef: { filePath: 'src/backend.ts', name: 'fn-topic' },
+        symbolName: 'fn-topic',
+        confidence: 0.8,
+        meta: {},
+        repo: 'backend',
+      },
+      {
+        contractId: 'topic::events.ping',
+        type: 'topic',
+        role: 'consumer',
+        symbolUid: 'uid-frontend-topic',
+        symbolRef: { filePath: 'src/frontend.ts', name: 'fn-topic' },
+        symbolName: 'fn-topic',
+        confidence: 0.8,
+        meta: {},
+        repo: 'frontend',
+      },
+    ];
+
+    const providerIndex = buildProviderIndex(contracts, matchingConfig);
+    const { matched } = runExactMatch(contracts, providerIndex, matchingConfig);
+
+    expect(matched).toHaveLength(1);
   });
 });

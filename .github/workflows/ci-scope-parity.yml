@@ -11,7 +11,8 @@ name: Scope Resolution Parity
 # TWICE on every PR:
 #
 #   1. `REGISTRY_PRIMARY_<LANG>=0` — legacy DAG path (guarantees we haven't
-#      broken the old path while migrating).
+#      broken the old path while migrating). Known legacy gaps may be skipped
+#      through the resolver test helper's expected-failure list.
 #   2. `REGISTRY_PRIMARY_<LANG>=1` — registry-primary path (guarantees the
 #      new path carries the same behavior — the parity gate).
 #

@@ -22,6 +22,7 @@ import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { rustImportConfig } from '../import-resolvers/configs/rust.js';
 import { extractRustNamedBindings } from '../named-bindings/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { rustConfig as rustFieldConfig } from '../field-extractors/configs/rust.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -121,6 +122,41 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const rustProvider = defineLanguage({
   id: SupportedLanguages.Rust,
   extensions: ['.rs'],
+  entryPointPatterns: [/^(get|post|put|delete)_handler$/i, /^handle_/, /^new$/, /^run$/, /^spawn/],
+  astFrameworkPatterns: [
+    {
+      framework: 'actix-web',
+      entryPointMultiplier: 3.0,
+      reason: 'actix-attribute',
+      patterns: [
+        '#[get',
+        '#[post',
+        '#[put',
+        '#[delete',
+        '#[actix_web',
+        'HttpRequest',
+        'HttpResponse',
+      ],
+    },
+    {
+      framework: 'axum',
+      entryPointMultiplier: 3.0,
+      reason: 'axum-routing',
+      patterns: ['Router::new', 'axum::extract', 'axum::routing'],
+    },
+    {
+      framework: 'rocket',
+      entryPointMultiplier: 3.0,
+      reason: 'rocket-attribute',
+      patterns: ['#[get', '#[post', '#[launch', 'rocket::'],
+    },
+    {
+      framework: 'tokio',
+      entryPointMultiplier: 2.5,
+      reason: 'tokio-runtime',
+      patterns: ['#[tokio::main]', '#[tokio::test]'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: RUST_QUERIES,
   typeConfig: rustConfig,
   exportChecker: rustExportChecker,

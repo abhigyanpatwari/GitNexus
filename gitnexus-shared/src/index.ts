@@ -134,7 +134,11 @@ export type {
 // Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)
 export { makeScopeId, clearScopeIdInternPool } from './scope-resolution/scope-id.js';
 export type { ScopeIdInput } from './scope-resolution/scope-id.js';
-export { buildScopeTree, ScopeTreeInvariantError } from './scope-resolution/scope-tree.js';
+export {
+  buildScopeTree,
+  canParentScope,
+  ScopeTreeInvariantError,
+} from './scope-resolution/scope-tree.js';
 export type { ScopeTree } from './scope-resolution/scope-tree.js';
 export { buildPositionIndex } from './scope-resolution/position-index.js';
 export type { PositionIndex } from './scope-resolution/position-index.js';

@@ -21,11 +21,12 @@ import {
   closeLbug,
   loadCachedEmbeddings,
 } from './lbug/lbug-adapter.js';
+import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
   getStoragePaths,
   saveMeta,
   loadMeta,
-  addToGitignore,
+  ensureGitNexusIgnored,
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
@@ -165,6 +166,7 @@ export async function runFullAnalysis(
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
+      await ensureGitNexusIgnored(repoPath);
       return {
         repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
         repoPath,
@@ -250,7 +252,8 @@ export async function runFullAnalysis(
   const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
     const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
     const scaled = Math.round(p.percent * 0.6);
-    progress(p.phase, scaled, phaseLabel);
+    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
+    progress(p.phase, scaled, message);
   });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
@@ -280,12 +283,9 @@ export async function runFullAnalysis(
     });
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-    // FTS indexes are created lazily on first `query`/`context` call instead
-    // of eagerly here. On small repos / CI runners the LadybugDB
-    // CREATE_FTS_INDEX cost is ~440 ms × 5 (≈2 s) regardless of table size,
-    // which dominated `analyze` runtime and pushed Windows CI past its
-    // 30 s test budget. Lazy creation is implemented in
-    // `core/search/bm25-index.ts` via `ensureFTSIndex`.
+    progress('fts', 85, 'Creating search indexes...');
+    await createSearchFTSIndexes();
+    progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     if (cachedEmbeddings.length > 0) {
@@ -318,6 +318,7 @@ export async function runFullAnalysis(
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
     let embeddingSkipped = true;
+    let semanticMode: 'vector-index' | 'exact-scan' | undefined;
 
     if (shouldGenerateEmbeddings) {
       if (stats.nodes <= EMBEDDING_NODE_LIMIT) {
@@ -346,7 +347,7 @@ export async function runFullAnalysis(
       const { readServerMapping } = await import('./embeddings/server-mapping.js');
       const projectName = path.basename(repoPath);
       const serverName = await readServerMapping(projectName);
-      await runEmbeddingPipeline(
+      const embeddingResult = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
         (p) => {
@@ -364,6 +365,15 @@ export async function runFullAnalysis(
         { repoName: projectName, serverName },
         existingEmbeddings,
       );
+      if (embeddingResult.semanticMode === 'exact-scan') {
+        semanticMode = 'exact-scan';
+        log(
+          'Semantic embeddings were generated without a VECTOR index; ' +
+            'queries will use exact-scan fallback within the configured limit.',
+        );
+      } else {
+        semanticMode = 'vector-index';
+      }
     }
 
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
@@ -375,11 +385,24 @@ export async function runFullAnalysis(
       const embResult = await executeQuery(
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
       );
-      embeddingCount = embResult?.[0]?.cnt ?? 0;
+      const row = embResult?.[0];
+      embeddingCount = Number(row?.cnt ?? row?.[0] ?? 0);
     } catch {
       /* table may not exist if embeddings never ran */
     }
 
+    if (!embeddingSkipped && stats.nodes > 0 && embeddingCount === 0) {
+      throw new Error(
+        'Embedding generation completed without persisted embeddings. ' +
+          'The index was not registered to avoid silently reporting embeddings: 0.',
+      );
+    }
+
+    const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
+    const runtimeCapabilities = getRuntimeCapabilities();
+    const effectiveSemanticMode =
+      semanticMode ??
+      (runtimeCapabilities.semanticMode === 'vector-index' ? 'vector-index' : 'exact-scan');
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -399,6 +422,16 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
+      capabilities: {
+        graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
+        fts: { provider: 'ladybugdb-fts', status: runtimeCapabilities.fts },
+        vectorSearch: {
+          provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
+          status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',
+          exactScanLimit: runtimeCapabilities.exactScanLimit,
+          reason: runtimeCapabilities.reason,
+        },
+      },
     };
     await saveMeta(storagePath, meta);
     // Forward the --name alias and the registry-collision bypass bit.
@@ -415,10 +448,8 @@ export async function runFullAnalysis(
       allowDuplicateName: options.allowDuplicateName,
     });
 
-    // Only attempt to update .gitignore when a .git directory is present.
-    if (hasGitDir(repoPath)) {
-      await addToGitignore(repoPath);
-    }
+    // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
+    await ensureGitNexusIgnored(repoPath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;

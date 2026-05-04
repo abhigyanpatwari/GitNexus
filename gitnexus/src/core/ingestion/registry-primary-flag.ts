@@ -58,7 +58,9 @@ import { SupportedLanguages } from 'gitnexus-shared';
  *      so this set also controls what gets silenced in the legacy DAG.
  *
  * Add a language here ONLY after shadow parity ≥ 99% fixtures / ≥ 98%
- * corpus per RFC §6.4. The parity CI gate will block the PR otherwise.
+ * corpus per RFC §6.4. TypeScript is temporarily accepted under the
+ * Ring 3 CI parity gate while corpus-level shadow-mode wiring is tracked
+ * in #927 for this migration.
  *
  * The set is intentionally a static TypeScript literal (not a JSON import,
  * not an env lookup) so CI can discover it via `tsx` without a build step
@@ -67,6 +69,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<SupportedLanguages>([
   SupportedLanguages.Python,
   SupportedLanguages.CSharp,
+  SupportedLanguages.TypeScript,
 ]);
 
 /**

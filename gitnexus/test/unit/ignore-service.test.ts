@@ -561,21 +561,30 @@ describe('loadIgnoreRules — error handling', () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it.skipIf(process.platform === 'win32')('warns on EACCES but does not throw', async () => {
-    const gitignorePath = path.join(tmpDir, '.gitignore');
-    await fs.writeFile(gitignorePath, 'data/\n');
-    await fs.chmod(gitignorePath, 0o000);
+  // Also skip under uid=0: root bypasses POSIX read-permission checks, so
+  // chmod 000 does NOT trigger EACCES — fs.readFile reads the file anyway
+  // and loadIgnoreRules returns parsed rules instead of null. This makes
+  // the test fail in any privileged environment (rootful Docker, CI runners
+  // configured with root). The non-root branch still exercises the real
+  // EACCES path; root just can't reproduce the failure mode.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'warns on EACCES but does not throw',
+    async () => {
+      const gitignorePath = path.join(tmpDir, '.gitignore');
+      await fs.writeFile(gitignorePath, 'data/\n');
+      await fs.chmod(gitignorePath, 0o000);
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = await loadIgnoreRules(tmpDir);
-    // Should still return (null or partial), not throw
-    expect(result).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('.gitignore'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await loadIgnoreRules(tmpDir);
+      // Should still return (null or partial), not throw
+      expect(result).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('.gitignore'));
 
-    warnSpy.mockRestore();
-    await fs.chmod(gitignorePath, 0o644);
-    await fs.unlink(gitignorePath);
-  });
+      warnSpy.mockRestore();
+      await fs.chmod(gitignorePath, 0o644);
+      await fs.unlink(gitignorePath);
+    },
+  );
 });
 
 describe('loadIgnoreRules — GITNEXUS_NO_GITIGNORE env var', () => {

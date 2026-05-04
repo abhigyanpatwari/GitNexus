@@ -25,6 +25,13 @@ const DIST_WORKER = path.resolve(
 );
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
+function writeTempWorker(prefix: string, source: string): { tempDir: string; workerPath: string } {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const workerPath = path.join(tempDir, 'worker.js');
+  fs.writeFileSync(workerPath, source);
+  return { tempDir, workerPath };
+}
+
 describe('worker pool integration', () => {
   let pool: WorkerPool | undefined;
 
@@ -187,10 +194,8 @@ describe('worker pool integration', () => {
   );
 
   it('treats warning messages as non-terminal and still resolves the worker result', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-warning-'));
-    const workerPath = path.join(tempDir, 'warning-worker.js');
-    fs.writeFileSync(
-      workerPath,
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-worker-warning-',
       `
       const { parentPort } = require('node:worker_threads');
       parentPort.on('message', (msg) => {
@@ -223,10 +228,334 @@ describe('worker pool integration', () => {
     }
   });
 
+  it('keeps a slow sub-batch alive when the worker reports progress', async () => {
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-worker-progress-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          let processed = 1;
+          parentPort.postMessage({ type: 'progress', filesProcessed: processed });
+          const timer = setInterval(() => {
+            processed++;
+            parentPort.postMessage({ type: 'progress', filesProcessed: processed });
+            if (processed === 4) {
+              clearInterval(timer);
+              parentPort.postMessage({ type: 'sub-batch-done' });
+            }
+          }, 120);
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: 4 } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 500,
+      maxTimeoutRetries: 0,
+    });
+
+    try {
+      const progressCalls: number[] = [];
+      const results = await pool.dispatch<any, any>(
+        Array.from({ length: 4 }, (_, i) => ({ path: `slow-${i}.ts`, content: '' })),
+        (filesProcessed) => progressCalls.push(filesProcessed),
+      );
+      expect(results).toEqual([{ fileCount: 4 }]);
+      expect(progressCalls).toEqual([1, 2, 3, 4]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces a timed-out worker and retries with a longer timeout', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-retry-'));
+    const markerPath = path.join(tempDir, 'first-attempt.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          if (!fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'timed out once');
+            return;
+          }
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: 1, recovered: true } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 1,
+      timeoutBackoffFactor: 4,
+    });
+
+    try {
+      const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
+      expect(results).toEqual([{ fileCount: 1, recovered: true }]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.6s timeout'));
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves global path order across split-and-retry', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-split-'));
+    const markerPath = path.join(tempDir, 'stalled-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          if (current.includes('stall.ts') && current.length > 1 && !fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'split this job');
+            return;
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: current.length, paths: current } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchSize: 2,
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 0,
+      timeoutBackoffFactor: 3,
+    });
+
+    try {
+      const progressCalls: number[] = [];
+      const results = await pool.dispatch<any, any>(
+        [
+          { path: 'first.ts', content: '' },
+          { path: 'second.ts', content: '' },
+          { path: 'stall.ts', content: '' },
+          { path: 'after.ts', content: '' },
+        ],
+        (filesProcessed) => progressCalls.push(filesProcessed),
+      );
+
+      expect(results.flatMap((result) => result.paths)).toEqual([
+        'first.ts',
+        'second.ts',
+        'stall.ts',
+        'after.ts',
+      ]);
+      expect(progressCalls).toEqual([...progressCalls].sort((a, b) => a - b));
+      expect(progressCalls.at(-1)).toBe(4);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into 1/1 item jobs'));
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a persistently stalled singleton so the caller can fall back sequentially', async () => {
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-worker-stalled-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') return;
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 0,
+    });
+
+    try {
+      await expect(pool.dispatch<any, any>([{ path: 'stalled.ts', content: '' }])).rejects.toThrow(
+        /sequential fallback/,
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resolve early when a stalled peer job is requeued during another worker finish', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-race-'));
+    const markerPath = path.join(tempDir, 'stalled-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      function finish() {
+        parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+        parentPort.postMessage({ type: 'sub-batch-done' });
+      }
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          if (current.includes('stall-a.ts') && current.length > 1 && !fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'stall the second job once');
+            return;
+          }
+          if (current.includes('tail-a.ts')) {
+            setTimeout(finish, 180);
+            return;
+          }
+          finish();
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: current.length, paths: current } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
+      subBatchSize: 2,
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 0,
+      timeoutBackoffFactor: 3,
+    });
+
+    try {
+      const results = await pool.dispatch<any, any>([
+        { path: 'first-a.ts', content: '' },
+        { path: 'first-b.ts', content: '' },
+        { path: 'stall-a.ts', content: '' },
+        { path: 'stall-b.ts', content: '' },
+        { path: 'tail-a.ts', content: '' },
+        { path: 'tail-b.ts', content: '' },
+      ]);
+
+      expect(results.flatMap((result) => result.paths)).toEqual([
+        'first-a.ts',
+        'first-b.ts',
+        'stall-a.ts',
+        'stall-b.ts',
+        'tail-a.ts',
+        'tail-b.ts',
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into 1/1 item jobs'));
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails fast on a result message that violates the worker protocol', async () => {
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-worker-protocol-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: 1 } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 100,
+    });
+
+    try {
+      await expect(pool.dispatch<any, any>([{ path: 'bad.ts', content: '' }])).rejects.toThrow(
+        /protocol error/,
+      );
+      await expect(pool.dispatch<any, any>([{ path: 'after.ts', content: '' }])).rejects.toThrow(
+        /previous failure.*protocol error/,
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds worker jobs by byte budget as well as file count', async () => {
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-worker-byte-budget-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { paths: current } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchSize: 10,
+      subBatchMaxBytes: 6,
+      subBatchIdleTimeoutMs: 100,
+    });
+
+    try {
+      const results = await pool.dispatch<any, any>([
+        { path: 'a.ts', content: '1234' },
+        { path: 'b.ts', content: '5678' },
+        { path: 'c.ts', content: '90' },
+      ]);
+      expect(results.map((result) => result.paths)).toEqual([['a.ts'], ['b.ts', 'c.ts']]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     const zeroPool = createWorkerPool(workerUrl, 0);
     expect(zeroPool.size).toBe(0);
     return zeroPool.terminate();
+  });
+
+  it.skipIf(!hasDistWorker)('dispatch with size 0 rejects clearly', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    const zeroPool = createWorkerPool(workerUrl, 0);
+    try {
+      await expect(zeroPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }])).rejects.toThrow(
+        /no active workers/,
+      );
+    } finally {
+      await zeroPool.terminate();
+    }
   });
 });

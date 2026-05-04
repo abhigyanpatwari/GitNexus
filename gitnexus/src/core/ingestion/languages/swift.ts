@@ -11,10 +11,11 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -126,6 +127,24 @@ const swiftExtractFunctionName = (
   if (node.type === 'init_declaration') return { funcName: 'init', label: 'Constructor' };
   if (node.type === 'deinit_declaration') return { funcName: 'deinit', label: 'Constructor' };
   return null; // fall through to generic
+};
+
+const orderSwiftSameNameTypeCandidates = ({
+  callSiteFilePath,
+  candidates,
+}: {
+  readonly typeName: string;
+  readonly callSiteFilePath: string;
+  readonly candidates: readonly SymbolDefinition[];
+}): readonly SymbolDefinition[] | null => {
+  if (!callSiteFilePath.endsWith('.swift')) return null;
+  if (candidates.length <= 1) return null;
+  if (!candidates.every((c) => c.type === candidates[0].type)) return null;
+  if (candidates[0].type !== 'Class' && candidates[0].type !== 'Struct') return null;
+  if (!candidates.every((c) => c.filePath.endsWith('.swift'))) return null;
+  return [...candidates].sort(
+    (a, b) => a.filePath.length - b.filePath.length || a.filePath.localeCompare(b.filePath),
+  );
 };
 
 const BUILT_INS: ReadonlySet<string> = new Set([
@@ -241,6 +260,60 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const swiftProvider = defineLanguage({
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
+  entryPointPatterns: [
+    /^viewDidLoad$/,
+    /^viewWillAppear$/,
+    /^viewDidAppear$/,
+    /^viewWillDisappear$/,
+    /^viewDidDisappear$/,
+    /^application\(/,
+    /^scene\(/,
+    /^body$/,
+    /Coordinator$/,
+    /^sceneDidBecomeActive$/,
+    /^sceneWillResignActive$/,
+    /^didFinishLaunchingWithOptions$/,
+    /ViewController$/,
+    /^configure[A-Z]/,
+    /^setup[A-Z]/,
+    /^makeBody$/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'uikit',
+      entryPointMultiplier: 2.5,
+      reason: 'uikit-lifecycle',
+      patterns: [
+        'viewDidLoad',
+        'viewWillAppear',
+        'viewDidAppear',
+        'UIViewController',
+        '@IBOutlet',
+        '@IBAction',
+        '@objc',
+      ],
+    },
+    {
+      framework: 'swiftui',
+      entryPointMultiplier: 2.8,
+      reason: 'swiftui-pattern',
+      patterns: [
+        '@main',
+        'WindowGroup',
+        'ContentView',
+        '@StateObject',
+        '@ObservedObject',
+        '@EnvironmentObject',
+        '@Published',
+      ],
+    },
+    {
+      framework: 'vapor',
+      entryPointMultiplier: 3.0,
+      reason: 'vapor-routing',
+      patterns: ['app.get', 'app.post', 'req.content.decode', 'Vapor'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
@@ -257,5 +330,6 @@ export const swiftProvider = defineLanguage({
   classExtractor: createClassExtractor(swiftClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Swift),
   implicitImportWirer: wireSwiftImplicitImports,
+  orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
 });
