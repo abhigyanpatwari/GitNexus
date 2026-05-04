@@ -1001,4 +1001,38 @@ describe('registerRepo worktree-aware basename fallback (#1259)', () => {
       }
     }
   });
+
+  // Pinned by the third @claude review on PR #1296 (MEDIUM #2): the
+  // `hasGitDir` gate inside `resolveRepoIdentityRoot` is the safeguard
+  // that keeps the #1232/#1233 `--skip-git` behaviour working — an
+  // arbitrary subdir under a parent git repo (no `.git` of its own)
+  // must NOT collapse to the parent's canonical root, otherwise users
+  // who analyze a subdir get the parent repo's basename in the
+  // registry. The COOLIO `--skip-git` integration test in
+  // `skip-git-cli.test.ts` already proves this end-to-end, but no
+  // direct test sat at the `registerRepo` layer to guard the gate
+  // against future refactors. This is that direct test.
+  it('registerRepo on an arbitrary subdir under a git repo preserves the subdir basename (#1232 / #1233 gate)', async () => {
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    // A subdir of the canonical checkout, NOT a worktree (no `.git` file
+    // here — `mkdirSync` only). `resolveRepoIdentityRoot` must keep
+    // returning this exact path (basename used for the registry name)
+    // rather than collapsing to the parent repo's canonical root.
+    const subdir = path.join(tmpRepo.dbPath, 'arbitrary-subdir');
+    await fs.mkdir(subdir, { recursive: true });
+
+    await registerRepo(subdir, meta);
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1);
+    // Registered name must be the SUBDIR's basename, NOT the parent
+    // canonical repo's basename — the inverse of what worktree
+    // collapse does.
+    expect(entries[0].name).toBe('arbitrary-subdir');
+    expect(entries[0].name).not.toBe(path.basename(tmpRepo.dbPath));
+  });
 });
