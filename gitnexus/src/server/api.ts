@@ -33,7 +33,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
-import { assertString, BadRequestError } from './validation.js';
+import { assertString, escapeRegExp, BadRequestError } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
@@ -1127,16 +1127,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // ReDoS protection: reject overly long or dangerous patterns
+      // Length cap: applies to both literal and regex modes as a defense-in-depth
+      // bound against pathological input.
       if (pattern.length > 200) {
         res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
         return;
       }
 
-      // Validate regex syntax
+      // Mode selection (CodeQL js/regex-injection): default to literal substring
+      // search so user input cannot control regex semantics. Callers that genuinely
+      // need regex syntax must opt in with `?regex=true`. In every callsite audited
+      // at the time of this change (gitnexus-web LLM tool: error strings, TODOs,
+      // variable names; backend-client.grep) the literal default matches intent.
+      const regexMode = req.query.regex === 'true' || req.query.regex === '1';
+      const effectivePattern = regexMode ? pattern : escapeRegExp(pattern);
+
+      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
       let regex: RegExp;
       try {
-        regex = new RegExp(pattern, 'gim');
+        regex = new RegExp(effectivePattern, 'gim');
       } catch {
         res.status(400).json({ error: 'Invalid regex pattern' });
         return;
