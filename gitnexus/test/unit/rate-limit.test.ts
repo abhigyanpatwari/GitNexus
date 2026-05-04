@@ -230,6 +230,14 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.delete\('\/api\/repo',\s*createRouteLimiter\(/);
   });
 
+  it('POST /api/analyze is wired with createRouteLimiter', () => {
+    expect(apiSource).toMatch(/app\.post\('\/api\/analyze',\s*createRouteLimiter\(/);
+  });
+
+  it('POST /api/embed is wired with createRouteLimiter', () => {
+    expect(apiSource).toMatch(/app\.post\('\/api\/embed',\s*createRouteLimiter\(/);
+  });
+
   it('SPA fallback is wired with createRouteLimiter', () => {
     expect(apiSource).toMatch(/app\.get\(SPA_FALLBACK_REGEX,\s*createRouteLimiter\(/);
   });

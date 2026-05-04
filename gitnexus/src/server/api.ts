@@ -1348,7 +1348,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // ── Analyze API ──────────────────────────────────────────────────────
 
   // POST /api/analyze — start a new analysis job
-  app.post('/api/analyze', async (req, res) => {
+  app.post('/api/analyze', createRouteLimiter({ limit: 10 }), async (req, res) => {
     try {
       const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
 
@@ -1615,7 +1615,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', async (req, res) => {
+  app.post('/api/embed', createRouteLimiter({ limit: 20 }), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
