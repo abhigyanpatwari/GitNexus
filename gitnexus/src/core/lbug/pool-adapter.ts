@@ -16,6 +16,7 @@
  */
 
 import fs from 'fs/promises';
+import { dirname, resolve as pathResolve } from 'path';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
 
@@ -245,9 +246,123 @@ const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+const SHADOW_REPLAY_WAIT_MS = 5000;
 
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
+/** Deduplicates writable shadow-page replay for the same database path. */
+const shadowReplayPromises = new Map<string, Promise<void>>();
+
+function isReadOnlyShadowReplayError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes('read-only mode') && msg.includes('replay shadow pages');
+}
+
+function isStaleShadowFileError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    (msg.includes('database id for temporary file') &&
+      msg.includes('.shadow') &&
+      msg.includes('does not match')) ||
+    (msg.includes('cannot open file') && msg.includes('.shadow') && msg.includes('error 2'))
+  );
+}
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForDbPathIdle(dbPath: string): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < SHADOW_REPLAY_WAIT_MS) {
+    const active = [...pool.values()].some(
+      (entry) => entry.dbPath === dbPath && entry.checkedOut > 0,
+    );
+    if (!active) return;
+    await delay(25);
+  }
+}
+
+async function closeDbPathPools(dbPath: string): Promise<void> {
+  await waitForDbPathIdle(dbPath);
+  const repoIds = [...pool.entries()]
+    .filter(([, entry]) => entry.dbPath === dbPath)
+    .map(([repoId]) => repoId);
+  await Promise.all(repoIds.map((repoId) => closeOne(repoId)));
+}
+
+async function removeStaleShadowFiles(dbPath: string): Promise<void> {
+  const recoveryPaths = [`${dbPath}.shadow`, `${dbPath}.wal`];
+  const resolvedDbParent = pathResolve(dirname(dbPath));
+
+  for (const recoveryPath of recoveryPaths) {
+    const resolvedRecoveryPath = pathResolve(recoveryPath);
+    if (dirname(resolvedRecoveryPath) !== resolvedDbParent) {
+      throw new Error(`Refusing to remove unexpected LadybugDB recovery file: ${recoveryPath}`);
+    }
+    await fs.rm(resolvedRecoveryPath, { force: true });
+  }
+}
+
+async function tryReplayShadowPagesWritable(dbPath: string): Promise<void> {
+  let replayDb: lbug.Database | null = null;
+  let replayConn: lbug.Connection | null = null;
+  silenceStdout();
+  try {
+    replayDb = new lbug.Database(dbPath);
+  } finally {
+    restoreStdout();
+  }
+
+  try {
+    replayConn = createConnection(replayDb);
+    try {
+      const queryResult = await replayConn.query('CHECKPOINT');
+      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+      await Promise.resolve(result?.close?.()).catch(() => {});
+    } catch (err) {
+      if (isStaleShadowFileError(err)) {
+        throw err;
+      }
+      // Opening writable is the important step; checkpoint is best-effort.
+    }
+  } finally {
+    await Promise.resolve(replayConn?.close()).catch(() => {});
+    await Promise.resolve(replayDb.close()).catch(() => {});
+  }
+}
+
+async function replayShadowPagesWritable(dbPath: string): Promise<void> {
+  const existing = shadowReplayPromises.get(dbPath);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const promise = (async () => {
+    await closeDbPathPools(dbPath);
+    let staleShadowRecoveryAttempted = false;
+
+    for (;;) {
+      try {
+        await tryReplayShadowPagesWritable(dbPath);
+        return;
+      } catch (err) {
+        if (isStaleShadowFileError(err) && !staleShadowRecoveryAttempted) {
+          staleShadowRecoveryAttempted = true;
+          await removeStaleShadowFiles(dbPath);
+          continue;
+        }
+        throw err;
+      }
+    }
+  })();
+
+  shadowReplayPromises.set(dbPath, promise);
+  try {
+    await promise;
+  } finally {
+    shadowReplayPromises.delete(dbPath);
+  }
+}
 
 /**
  * Initialize (or reuse) a Database + connection pool for a specific repo.
@@ -317,6 +432,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       } catch (err: any) {
         restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
+        if (isReadOnlyShadowReplayError(lastError)) {
+          await replayShadowPagesWritable(dbPath);
+          continue;
+        }
         const isLockError =
           lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
@@ -514,7 +633,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
+async function executeQueryOnce(repoId: string, cypher: string): Promise<any[]> {
   const entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
@@ -543,17 +662,34 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
     restoreStdout();
     checkin(entry, conn);
   }
+}
+
+export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
+  try {
+    return await executeQueryOnce(repoId, cypher);
+  } catch (err) {
+    if (!isReadOnlyShadowReplayError(err)) {
+      throw err;
+    }
+    const dbPath = pool.get(repoId)?.dbPath;
+    if (!dbPath) {
+      throw err;
+    }
+    await replayShadowPagesWritable(dbPath);
+    await initLbug(repoId, dbPath);
+    return executeQueryOnce(repoId, cypher);
+  }
 };
 
 /**
  * Execute a parameterized query on a specific repo's connection pool.
  * Uses prepare/execute pattern to prevent Cypher injection.
  */
-export const executeParameterized = async (
+async function executeParameterizedOnce(
   repoId: string,
   cypher: string,
   params: Record<string, any>,
-): Promise<any[]> => {
+): Promise<any[]> {
   const entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
@@ -582,6 +718,27 @@ export const executeParameterized = async (
     activeQueryCount--;
     restoreStdout();
     checkin(entry, conn);
+  }
+}
+
+export const executeParameterized = async (
+  repoId: string,
+  cypher: string,
+  params: Record<string, any>,
+): Promise<any[]> => {
+  try {
+    return await executeParameterizedOnce(repoId, cypher, params);
+  } catch (err) {
+    if (!isReadOnlyShadowReplayError(err)) {
+      throw err;
+    }
+    const dbPath = pool.get(repoId)?.dbPath;
+    if (!dbPath) {
+      throw err;
+    }
+    await replayShadowPagesWritable(dbPath);
+    await initLbug(repoId, dbPath);
+    return executeParameterizedOnce(repoId, cypher, params);
   }
 };
 

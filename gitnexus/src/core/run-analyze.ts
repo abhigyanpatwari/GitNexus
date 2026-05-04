@@ -388,7 +388,7 @@ export async function runFullAnalysis(
   progress('lbug', 60, 'Loading into LadybugDB...');
 
   await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`, `${lbugPath}.shadow`];
   for (const f of lbugFiles) {
     try {
       await fs.rm(f, { recursive: true, force: true });

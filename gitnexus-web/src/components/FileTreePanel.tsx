@@ -5,10 +5,16 @@ import {
   Folder,
   FolderOpen,
   FileCode,
+  Code,
   Search,
   Filter,
   PanelLeftClose,
   PanelLeft,
+  Home,
+  FileArchive,
+  Layers,
+  GitBranch,
+  Sparkles,
   Box,
   Braces,
   Variable,
@@ -26,6 +32,8 @@ import {
 import { useAppState } from '../hooks/useAppState';
 import {
   ALL_EDGE_TYPES,
+  DEFAULT_VISIBLE_EDGES,
+  DEFAULT_VISIBLE_LABELS,
   EDGE_INFO,
   FILTERABLE_LABELS,
   FILTER_COLOR_LEGEND_LABELS,
@@ -190,28 +198,56 @@ const TreeItem = ({
 // Icon for node types
 const getNodeTypeIcon = (label: NodeLabel) => {
   switch (label) {
+    case 'Project':
+      return Home;
+    case 'Package':
+      return FileArchive;
+    case 'Module':
+    case 'Namespace':
+    case 'Section':
+      return Layers;
     case 'Folder':
       return Folder;
     case 'File':
       return FileCode;
     case 'Class':
+    case 'Struct':
+    case 'Record':
       return Box;
     case 'Function':
-      return Braces;
     case 'Method':
+    case 'Impl':
+    case 'Macro':
+    case 'Delegate':
+    case 'Constructor':
       return Braces;
     case 'Interface':
+    case 'Trait':
       return Hash;
     case 'Enum':
+    case 'Union':
       return List;
     case 'Type':
+    case 'TypeAlias':
+    case 'Typedef':
+    case 'Template':
       return Type;
     case 'Decorator':
+    case 'Annotation':
       return AtSign;
     case 'Import':
       return FileCode;
     case 'Variable':
+    case 'Const':
+    case 'Static':
+    case 'Property':
       return Variable;
+    case 'CodeElement':
+      return Code;
+    case 'Community':
+      return Sparkles;
+    case 'Process':
+      return GitBranch;
     case 'Route':
       return Target;
     case 'Tool':
@@ -239,8 +275,10 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
   const {
     graph,
     visibleLabels,
+    setVisibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
+    setVisibleEdgeTypes,
     toggleEdgeVisibility,
     selectedNode,
     setSelectedNode,
@@ -321,6 +359,22 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
   );
 
   const selectedPath = selectedNode?.properties.filePath || null;
+  const nodeTypeCounts = useMemo(() => {
+    const counts = new Map<NodeLabel, number>();
+    if (!graph) return counts;
+    graph.nodes.forEach((node) => {
+      counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+    });
+    return counts;
+  }, [graph]);
+  const edgeTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!graph) return counts;
+    graph.relationships.forEach((rel) => {
+      counts.set(rel.type, (counts.get(rel.type) ?? 0) + 1);
+    });
+    return counts;
+  }, [graph]);
 
   if (isCollapsed) {
     return (
@@ -433,18 +487,44 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
       {activeTab === 'filters' && (
         <div className="scrollbar-thin flex-1 overflow-y-auto p-3">
           <div className="mb-3">
-            <h3 className="mb-2 text-xs font-medium tracking-wide text-text-secondary uppercase">
-              Node Types
-            </h3>
-            <p className="mb-3 text-[11px] text-text-muted">
-              Toggle visibility of node types in the graph
-            </p>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium tracking-wide text-text-secondary uppercase">
+                Node Types
+              </h3>
+              <span className="text-[10px] text-text-muted">
+                {visibleLabels.length}/{FILTERABLE_LABELS.length}
+              </span>
+            </div>
+            <div className="mb-3 flex gap-1">
+              <button
+                type="button"
+                onClick={() => setVisibleLabels([...FILTERABLE_LABELS])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleLabels([])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                None
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleLabels([...DEFAULT_VISIBLE_LABELS])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                Reset
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-col gap-1">
             {FILTERABLE_LABELS.map((label) => {
               const Icon = getNodeTypeIcon(label);
               const isVisible = visibleLabels.includes(label);
+              const count = nodeTypeCounts.get(label) ?? 0;
 
               return (
                 <button
@@ -463,6 +543,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                     <Icon className="h-3 w-3" style={{ color: NODE_COLORS[label] }} />
                   </div>
                   <span className="flex-1 text-xs">{label}</span>
+                  {count > 0 && <span className="text-[10px] text-text-muted">{count}</span>}
                   <div
                     className={`h-2 w-2 rounded-full transition-colors ${isVisible ? 'bg-accent' : 'bg-border-subtle'}`}
                   />
@@ -473,17 +554,43 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
 
           {/* Edge Type Toggles */}
           <div className="mt-6 border-t border-border-subtle pt-4">
-            <h3 className="mb-2 text-xs font-medium tracking-wide text-text-secondary uppercase">
-              Edge Types
-            </h3>
-            <p className="mb-3 text-[11px] text-text-muted">
-              Toggle visibility of relationship types
-            </p>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium tracking-wide text-text-secondary uppercase">
+                Edge Types
+              </h3>
+              <span className="text-[10px] text-text-muted">
+                {visibleEdgeTypes.length}/{ALL_EDGE_TYPES.length}
+              </span>
+            </div>
+            <div className="mb-3 flex gap-1">
+              <button
+                type="button"
+                onClick={() => setVisibleEdgeTypes([...ALL_EDGE_TYPES])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleEdgeTypes([])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                None
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleEdgeTypes([...DEFAULT_VISIBLE_EDGES])}
+                className="rounded border border-border-subtle px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+              >
+                Reset
+              </button>
+            </div>
 
             <div className="flex flex-col gap-1">
               {ALL_EDGE_TYPES.map((edgeType) => {
                 const info = EDGE_INFO[edgeType];
                 const isVisible = visibleEdgeTypes.includes(edgeType);
+                const count = edgeTypeCounts.get(edgeType) ?? 0;
 
                 return (
                   <button
@@ -500,6 +607,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                       style={{ backgroundColor: info.color }}
                     />
                     <span className="flex-1 text-xs">{info.label}</span>
+                    {count > 0 && <span className="text-[10px] text-text-muted">{count}</span>}
                     <div
                       className={`h-2 w-2 rounded-full transition-colors ${isVisible ? 'bg-accent' : 'bg-border-subtle'}`}
                     />

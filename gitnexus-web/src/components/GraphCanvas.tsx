@@ -45,14 +45,20 @@ import {
 } from '../lib/graph-adapter';
 import { describeGraphDiff, diffKnowledgeGraphs, type GraphDiff } from '../lib/graph-diff';
 import {
+  ALL_EDGE_TYPES,
+  DEFAULT_VISIBLE_EDGES,
+  DEFAULT_VISIBLE_LABELS,
   EDGE_INFO,
+  FILTERABLE_LABELS,
   GRAPH_COLOR_MODE_LEGENDS,
   GRAPH_SURFACE_COLORS,
+  NODE_COLORS,
   type EdgeType,
   type GraphColorMode,
   type LegendItem,
 } from '../lib/constants';
-import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import { copyEdgeSelection, edgeSelectionEquals } from '../lib/edge-selection';
+import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 
@@ -87,7 +93,7 @@ const GRAPH_DETAIL_MODES: Record<GraphDetailMode, GraphDetailModeConfig> = {
     label: 'Structure',
     description: 'Folders, files, types, and ownership edges.',
     colorMode: 'structure',
-    edgeTypes: ['CONTAINS', 'DEFINES', 'IMPORTS', 'MEMBER_OF'],
+    edgeTypes: ['CONTAINS', 'DEFINES', 'IMPORTS', 'USES', 'DECORATES', 'MEMBER_OF'],
   },
   callFlow: {
     title: 'Call-flow',
@@ -125,7 +131,10 @@ const GRAPH_DETAIL_MODES: Record<GraphDetailMode, GraphDetailModeConfig> = {
     colorMode: 'health',
     edgeTypes: [
       'CALLS',
+      'INHERITS',
       'IMPORTS',
+      'USES',
+      'DECORATES',
       'ACCESSES',
       'HAS_METHOD',
       'HAS_PROPERTY',
@@ -248,10 +257,13 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     visibleLabels,
     visibleEdgeTypes,
     setVisibleEdgeTypes,
+    toggleEdgeVisibility,
     openCodePanel,
     openChatPanel,
     depthFilter,
     highlightedNodeIds,
+    setVisibleLabels,
+    toggleLabelVisibility,
     aiCitationHighlightedNodeIds,
     aiToolHighlightedNodeIds,
     blastRadiusNodeIds,
@@ -265,7 +277,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
   const [graphViewMode, setGraphViewMode] = useState<GraphViewMode>('2d');
-  const [graphDetailMode, setGraphDetailMode] = useState<GraphDetailMode>('structural');
+  const [graphDetailMode, setGraphDetailMode] = useState<GraphDetailMode | null>('structural');
   const [graphColorMode, setGraphColorMode] = useState<GraphColorMode>('structure');
   const [contextCopied, setContextCopied] = useState(false);
   const [graphChangeSummary, setGraphChangeSummary] = useState<GraphDiff | null>(null);
@@ -305,11 +317,31 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     isAIHighlightsEnabled,
   ]);
 
+  const disabledAINodeIds = useMemo(() => new Set<string>(), []);
+  const activeAICitationNodeIds = isAIHighlightsEnabled
+    ? aiCitationHighlightedNodeIds
+    : disabledAINodeIds;
+  const activeAIToolNodeIds = isAIHighlightsEnabled ? aiToolHighlightedNodeIds : disabledAINodeIds;
+  const rendererHighlightedNodeIds = useMemo(() => {
+    if (!isAIHighlightsEnabled) return highlightedNodeIds;
+    const next = new Set(highlightedNodeIds);
+    for (const id of aiCitationHighlightedNodeIds) next.add(id);
+    for (const id of aiToolHighlightedNodeIds) next.add(id);
+    return next;
+  }, [
+    highlightedNodeIds,
+    aiCitationHighlightedNodeIds,
+    aiToolHighlightedNodeIds,
+    isAIHighlightsEnabled,
+  ]);
+
   // Blast radius nodes (only when AI highlights enabled)
   const effectiveBlastRadiusNodeIds = useMemo(() => {
     if (!isAIHighlightsEnabled) return new Set<string>();
     return blastRadiusNodeIds;
   }, [blastRadiusNodeIds, isAIHighlightsEnabled]);
+  const agentActivityTotal =
+    activeAICitationNodeIds.size + activeAIToolNodeIds.size + effectiveBlastRadiusNodeIds.size;
 
   const effectiveAnimatedNodes = useMemo(() => {
     const next = new Map<string, NodeAnimation>();
@@ -325,8 +357,49 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     return new Map(graph.nodes.map((n) => [n.id, n]));
   }, [graph]);
 
-  const activeDetailMode = GRAPH_DETAIL_MODES[graphDetailMode];
   const activeVisibleEdgeTypes = visibleEdgeTypes;
+  const nodeTypeCounts = useMemo(() => {
+    const counts = new Map<NodeLabel, number>();
+    if (!graph) return counts;
+    graph.nodes.forEach((node) => {
+      counts.set(node.label, (counts.get(node.label) ?? 0) + 1);
+    });
+    return counts;
+  }, [graph]);
+  const edgeTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!graph) return counts;
+    graph.relationships.forEach((rel) => {
+      counts.set(rel.type, (counts.get(rel.type) ?? 0) + 1);
+    });
+    return counts;
+  }, [graph]);
+  const nodeTypeOptions = useMemo(() => {
+    const hasGraphCounts = nodeTypeCounts.size > 0;
+    return FILTERABLE_LABELS.filter(
+      (label) =>
+        !hasGraphCounts ||
+        nodeTypeCounts.has(label) ||
+        visibleLabels.includes(label) ||
+        DEFAULT_VISIBLE_LABELS.includes(label),
+    );
+  }, [nodeTypeCounts, visibleLabels]);
+  const edgeTypeOptions = useMemo(() => {
+    const hasGraphCounts = edgeTypeCounts.size > 0;
+    return ALL_EDGE_TYPES.filter(
+      (edgeType) =>
+        !hasGraphCounts ||
+        edgeTypeCounts.has(edgeType) ||
+        activeVisibleEdgeTypes.includes(edgeType) ||
+        DEFAULT_VISIBLE_EDGES.includes(edgeType),
+    );
+  }, [activeVisibleEdgeTypes, edgeTypeCounts]);
+  const isDetailModeSelectionActive = useCallback(
+    (mode: GraphDetailMode) =>
+      graphColorMode === GRAPH_DETAIL_MODES[mode].colorMode &&
+      edgeSelectionEquals(visibleEdgeTypes, GRAPH_DETAIL_MODES[mode].edgeTypes),
+    [graphColorMode, visibleEdgeTypes],
+  );
 
   const selectedNodeInsight = useMemo(() => {
     if (!graph || !appSelectedNode) return null;
@@ -507,7 +580,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onNodeClick: handleNodeClick,
     onNodeHover: handleNodeHover,
     onStageClick: handleStageClick,
-    highlightedNodeIds: effectiveHighlightedNodeIds,
+    highlightedNodeIds: rendererHighlightedNodeIds,
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes: activeVisibleEdgeTypes,
@@ -532,7 +605,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     onNodeClick: handleNodeClick,
     onNodeHover: handleNodeHover,
     onStageClick: handleStageClick,
-    highlightedNodeIds: effectiveHighlightedNodeIds,
+    highlightedNodeIds: rendererHighlightedNodeIds,
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes: activeVisibleEdgeTypes,
@@ -613,8 +686,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       colorMode: graphColorMode,
       impactNodeIds: effectiveBlastRadiusNodeIds,
       agentFocusNodeIds: effectiveHighlightedNodeIds,
-      citationNodeIds: aiCitationHighlightedNodeIds,
-      toolNodeIds: aiToolHighlightedNodeIds,
+      citationNodeIds: activeAICitationNodeIds,
+      toolNodeIds: activeAIToolNodeIds,
     };
     const visualOnlyUpdate = previousKnowledgeGraphRef.current === graph;
     const graphDiff =
@@ -685,8 +758,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     graphColorMode,
     effectiveBlastRadiusNodeIds,
     effectiveHighlightedNodeIds,
-    aiCitationHighlightedNodeIds,
-    aiToolHighlightedNodeIds,
+    activeAICitationNodeIds,
+    activeAIToolNodeIds,
   ]);
 
   // Update node visibility when filters change
@@ -898,10 +971,56 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       const detailMode = GRAPH_DETAIL_MODES[mode];
       setGraphDetailMode(mode);
       setGraphColorMode(detailMode.colorMode);
-      setVisibleEdgeTypes(detailMode.edgeTypes);
+      setVisibleEdgeTypes(copyEdgeSelection(detailMode.edgeTypes));
     },
     [setVisibleEdgeTypes],
   );
+
+  const handleColorModeChange = useCallback((mode: GraphColorMode) => {
+    setGraphDetailMode(null);
+    setGraphColorMode(mode);
+  }, []);
+
+  const handleToggleEdgeVisibility = useCallback(
+    (edgeType: EdgeType) => {
+      setGraphDetailMode(null);
+      toggleEdgeVisibility(edgeType);
+    },
+    [toggleEdgeVisibility],
+  );
+
+  const showAllNodeTypes = useCallback(() => {
+    setVisibleLabels([...nodeTypeOptions]);
+  }, [nodeTypeOptions, setVisibleLabels]);
+
+  const hideAllNodeTypes = useCallback(() => {
+    setVisibleLabels([]);
+  }, [setVisibleLabels]);
+
+  const resetNodeTypes = useCallback(() => {
+    setVisibleLabels([...DEFAULT_VISIBLE_LABELS]);
+  }, [setVisibleLabels]);
+
+  const showAllEdgeTypes = useCallback(() => {
+    setGraphDetailMode(null);
+    setVisibleEdgeTypes([...edgeTypeOptions]);
+  }, [edgeTypeOptions, setVisibleEdgeTypes]);
+
+  const hideAllEdgeTypes = useCallback(() => {
+    setGraphDetailMode(null);
+    setVisibleEdgeTypes([]);
+  }, [setVisibleEdgeTypes]);
+
+  const resetEdgeTypes = useCallback(() => {
+    setGraphDetailMode(null);
+    setVisibleEdgeTypes(copyEdgeSelection(DEFAULT_VISIBLE_EDGES));
+  }, [setVisibleEdgeTypes]);
+
+  const clearAgentActivity = useCallback(() => {
+    clearAIToolHighlights();
+    clearAICitationHighlights();
+    clearBlastRadius();
+  }, [clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius]);
 
   const colorModeControls: Array<{
     mode: GraphColorMode;
@@ -1041,21 +1160,25 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <div className="mt-3 grid grid-cols-5 gap-1">
             {(
               Object.entries(GRAPH_DETAIL_MODES) as Array<[GraphDetailMode, GraphDetailModeConfig]>
-            ).map(([mode, detail]) => (
-              <button
-                key={mode}
-                onClick={() => handleDetailModeChange(mode)}
-                className={`rounded-md border px-1.5 py-1 text-[10px] transition-colors ${
-                  graphDetailMode === mode
-                    ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-100'
-                    : 'border-border-subtle bg-deep/70 text-text-muted hover:bg-hover hover:text-text-primary'
-                }`}
-                title={`Apply ${detail.title} edge preset: ${detail.description}`}
-                data-testid={`graph-detail-mode-${mode}`}
-              >
-                {detail.label}
-              </button>
-            ))}
+            ).map(([mode, detail]) => {
+              const isActivePreset = graphDetailMode === mode && isDetailModeSelectionActive(mode);
+
+              return (
+                <button
+                  key={mode}
+                  onClick={() => handleDetailModeChange(mode)}
+                  className={`rounded-md border px-1.5 py-1 text-[10px] transition-colors ${
+                    isActivePreset
+                      ? 'border-cyan-400/40 bg-cyan-500/15 text-cyan-100'
+                      : 'border-border-subtle bg-deep/70 text-text-muted hover:bg-hover hover:text-text-primary'
+                  }`}
+                  title={`Apply ${detail.title} edge preset: ${detail.description}`}
+                  data-testid={`graph-detail-mode-${mode}`}
+                >
+                  {detail.label}
+                </button>
+              );
+            })}
           </div>
 
           <div className="mt-3 border-t border-border-subtle pt-2">
@@ -1085,27 +1208,181 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
                 </span>
               ))}
             </div>
+            {isAIHighlightsEnabled && agentActivityTotal > 0 && (
+              <div className="mt-2 border-t border-border-subtle pt-2">
+                <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted uppercase">
+                  <span>Agent activity</span>
+                  <button
+                    type="button"
+                    onClick={clearAgentActivity}
+                    className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                    title="Clear agent graph activity"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="mt-1 grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    onClick={clearAICitationHighlights}
+                    className="rounded border border-violet-400/20 bg-violet-500/10 px-1.5 py-1 text-left transition-colors hover:bg-violet-500/15"
+                    title="Clear citation highlights"
+                  >
+                    <div className="text-xs font-semibold text-violet-100">
+                      {activeAICitationNodeIds.size}
+                    </div>
+                    <div className="text-[10px] text-violet-200/70 uppercase">Citations</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAIToolHighlights}
+                    className="rounded border border-cyan-400/20 bg-cyan-500/10 px-1.5 py-1 text-left transition-colors hover:bg-cyan-500/15"
+                    title="Clear tool-result highlights"
+                  >
+                    <div className="text-xs font-semibold text-cyan-100">
+                      {activeAIToolNodeIds.size}
+                    </div>
+                    <div className="text-[10px] text-cyan-200/70 uppercase">Tools</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearBlastRadius}
+                    className="rounded border border-red-400/20 bg-red-500/10 px-1.5 py-1 text-left transition-colors hover:bg-red-500/15"
+                    title="Clear impact highlights"
+                  >
+                    <div className="text-xs font-semibold text-red-100">
+                      {effectiveBlastRadiusNodeIds.size}
+                    </div>
+                    <div className="text-[10px] text-red-200/70 uppercase">Impact</div>
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="mt-2 border-t border-border-subtle pt-2">
               <div className="flex items-center justify-between gap-3 text-[10px] text-text-muted uppercase">
-                <span>Visible edges</span>
-                <span>{activeVisibleEdgeTypes.length} edge types</span>
+                <span>Visible nodes</span>
+                <span>
+                  {visibleLabels.length}/{nodeTypeOptions.length} types
+                </span>
               </div>
-              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">
-                {activeVisibleEdgeTypes.slice(0, 6).map((edgeType) => (
-                  <span
-                    key={`${graphDetailMode}-${edgeType}`}
-                    className="inline-flex items-center gap-1 text-[10px] text-text-muted"
-                  >
-                    <span
-                      className="h-1.5 w-3 rounded-full"
-                      style={{
-                        backgroundColor:
-                          EDGE_INFO[edgeType]?.color ?? GRAPH_SURFACE_COLORS.fallbackEdge,
-                      }}
-                    />
-                    {EDGE_INFO[edgeType]?.label ?? edgeType}
-                  </span>
-                ))}
+              <div className="mt-1 flex gap-1">
+                <button
+                  type="button"
+                  onClick={showAllNodeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Show every node type present in this graph"
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={hideAllNodeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Hide every node type"
+                >
+                  None
+                </button>
+                <button
+                  type="button"
+                  onClick={resetNodeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Restore default node visibility"
+                >
+                  Reset
+                </button>
+              </div>
+              <div className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">
+                {nodeTypeOptions.map((label) => {
+                  const isVisible = visibleLabels.includes(label);
+                  const count = nodeTypeCounts.get(label) ?? 0;
+
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => toggleLabelVisibility(label)}
+                      className={`inline-flex min-h-6 items-center gap-1 rounded border px-1.5 text-[10px] transition-colors ${
+                        isVisible
+                          ? 'border-cyan-400/25 bg-elevated text-text-primary'
+                          : 'border-border-subtle bg-deep/50 text-text-muted hover:bg-hover hover:text-text-secondary'
+                      }`}
+                      title={`${isVisible ? 'Hide' : 'Show'} ${label} nodes${count ? ` (${count})` : ''}`}
+                      aria-pressed={isVisible}
+                      data-testid={`graph-node-toggle-${label}`}
+                    >
+                      <span
+                        className={`h-2 w-2 rounded-full ${isVisible ? '' : 'opacity-40'}`}
+                        style={{ backgroundColor: NODE_COLORS[label] }}
+                      />
+                      <span>{label}</span>
+                      {count > 0 && <span className="text-text-muted">{count}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="mt-3 border-t border-border-subtle pt-2">
+              <div className="flex items-center justify-between gap-3 text-[10px] text-text-muted uppercase">
+                <span>Visible edges</span>
+                <span>
+                  {activeVisibleEdgeTypes.length}/{edgeTypeOptions.length} types
+                </span>
+              </div>
+              <div className="mt-1 flex gap-1">
+                <button
+                  type="button"
+                  onClick={showAllEdgeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Show every edge type present in this graph"
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={hideAllEdgeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Hide every edge type"
+                >
+                  None
+                </button>
+                <button
+                  type="button"
+                  onClick={resetEdgeTypes}
+                  className="rounded border border-border-subtle bg-deep/60 px-1.5 py-0.5 text-[10px] text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
+                  title="Restore default edge visibility"
+                >
+                  Reset
+                </button>
+              </div>
+              <div className="mt-1 flex max-h-28 flex-wrap gap-1 overflow-y-auto pr-1">
+                {edgeTypeOptions.map((edgeType) => {
+                  const info = EDGE_INFO[edgeType];
+                  const isVisible = activeVisibleEdgeTypes.includes(edgeType);
+                  const count = edgeTypeCounts.get(edgeType) ?? 0;
+
+                  return (
+                    <button
+                      key={`${graphDetailMode ?? 'custom'}-${edgeType}`}
+                      type="button"
+                      onClick={() => handleToggleEdgeVisibility(edgeType)}
+                      className={`inline-flex min-h-6 items-center gap-1 rounded border px-1.5 text-[10px] transition-colors ${
+                        isVisible
+                          ? 'border-cyan-400/25 bg-elevated text-text-primary'
+                          : 'border-border-subtle bg-deep/50 text-text-muted hover:bg-hover hover:text-text-secondary'
+                      }`}
+                      title={`${isVisible ? 'Hide' : 'Show'} ${info.label}`}
+                      aria-pressed={isVisible}
+                      data-testid={`graph-edge-toggle-${edgeType}`}
+                    >
+                      <span
+                        className={`h-1.5 w-3 rounded-full ${isVisible ? '' : 'opacity-40'}`}
+                        style={{ backgroundColor: info.color }}
+                      />
+                      <span>{info.label}</span>
+                      {count > 0 && <span className="text-text-muted">{count}</span>}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1306,7 +1583,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           return (
             <button
               key={mode}
-              onClick={() => setGraphColorMode(mode)}
+              onClick={() => handleColorModeChange(mode)}
               className={`flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
                 graphColorMode === mode
                   ? activeClass

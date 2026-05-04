@@ -1511,8 +1511,8 @@ export class LocalBackend {
 
     for (const c of clusters) {
       const label = c.heuristicLabel || c.label || 'Unknown';
-      const symbols = c.symbolCount || 0;
-      const cohesion = c.cohesion || 0;
+      const symbols = toFiniteNumber(c.symbolCount, 0);
+      const cohesion = toFiniteNumber(c.cohesion, 0);
       const existing = groups.get(label);
 
       if (!existing) {

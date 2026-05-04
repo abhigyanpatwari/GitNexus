@@ -7,52 +7,8 @@ import noverlap from 'graphology-layout-noverlap';
 import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
-import { GRAPH_HIGHLIGHT_COLORS, GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
-// Helper: Parse hex color to RGB
-const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16),
-      }
-    : { r: 100, g: 100, b: 100 };
-};
-
-// Helper: RGB to hex
-const rgbToHex = (r: number, g: number, b: number): string => {
-  return (
-    '#' +
-    [r, g, b]
-      .map((x) => {
-        const hex = Math.max(0, Math.min(255, Math.round(x))).toString(16);
-        return hex.length === 1 ? '0' + hex : hex;
-      })
-      .join('')
-  );
-};
-
-// Dim a color by mixing with dark background (keeps color hint)
-const dimColor = (hex: string, amount: number): string => {
-  const rgb = hexToRgb(hex);
-  const darkBg = hexToRgb(GRAPH_SURFACE_COLORS.dimMix);
-  return rgbToHex(
-    darkBg.r + (rgb.r - darkBg.r) * amount,
-    darkBg.g + (rgb.g - darkBg.g) * amount,
-    darkBg.b + (rgb.b - darkBg.b) * amount,
-  );
-};
-
-// Brighten a color (increase luminosity)
-const brightenColor = (hex: string, factor: number): string => {
-  const rgb = hexToRgb(hex);
-  return rgbToHex(
-    rgb.r + ((255 - rgb.r) * (factor - 1)) / factor,
-    rgb.g + ((255 - rgb.g) * (factor - 1)) / factor,
-    rgb.b + ((255 - rgb.b) * (factor - 1)) / factor,
-  );
-};
+import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
+import { resolveGraphEdgeVisual, resolveGraphNodeVisual } from '../lib/graph-visual-state';
 
 interface UseSigmaOptions {
   onNodeClick?: (nodeId: string) => void;
@@ -449,113 +405,26 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
 
         const currentSelected = selectedNodeRef.current;
-        const highlighted = highlightedRef.current;
-        const blastRadius = blastRadiusRef.current;
-        const animatedNodes = animatedNodesRef.current;
-        const hasHighlights = highlighted.size > 0;
-        const hasBlastRadius = blastRadius.size > 0;
-        const isQueryHighlighted = highlighted.has(node);
-        const isBlastRadiusNode = blastRadius.has(node);
+        const graph = graphRef.current;
+        const visual = resolveGraphNodeVisual({
+          nodeId: node,
+          color: data.color || GRAPH_SURFACE_COLORS.fallbackNode,
+          size: data.size || 8,
+          selectedNodeId: currentSelected,
+          highlightedNodeIds: highlightedRef.current,
+          blastRadiusNodeIds: blastRadiusRef.current,
+          animatedNodes: animatedNodesRef.current,
+          isNeighbor: currentSelected
+            ? Boolean(
+                graph?.hasEdge(node, currentSelected) || graph?.hasEdge(currentSelected, node),
+              )
+            : false,
+        });
 
-        // Apply animation effects FIRST (before other highlighting)
-        const animation = animatedNodes.get(node);
-        if (animation) {
-          const now = Date.now();
-          const elapsed = now - animation.startTime;
-          const progress = Math.min(elapsed / animation.duration, 1);
-
-          // Calculate animation phase (0-1-0-1... oscillation)
-          const phase = (Math.sin(progress * Math.PI * 4) + 1) / 2;
-
-          if (animation.type === 'pulse') {
-            // Cyan pulse for search results
-            const sizeMultiplier = 1.5 + phase * 0.8;
-            res.size = (data.size || 8) * sizeMultiplier;
-            res.color =
-              phase > 0.5
-                ? GRAPH_HIGHLIGHT_COLORS.query
-                : brightenColor(GRAPH_HIGHLIGHT_COLORS.query, 1.3);
-            res.zIndex = 5;
-            res.highlighted = true;
-          } else if (animation.type === 'ripple') {
-            // Red ripple for blast radius
-            const sizeMultiplier = 1.3 + phase * 1.2;
-            res.size = (data.size || 8) * sizeMultiplier;
-            res.color =
-              phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.blast : GRAPH_HIGHLIGHT_COLORS.blastPulse;
-            res.zIndex = 5;
-            res.highlighted = true;
-          } else if (animation.type === 'glow') {
-            // Purple glow for highlight
-            const sizeMultiplier = 1.4 + phase * 0.6;
-            res.size = (data.size || 8) * sizeMultiplier;
-            res.color =
-              phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.change : GRAPH_HIGHLIGHT_COLORS.changePulse;
-            res.zIndex = 5;
-            res.highlighted = true;
-          }
-
-          return res;
-        }
-
-        // Blast radius takes priority (red highlighting)
-        if (hasBlastRadius && !currentSelected) {
-          if (isBlastRadiusNode) {
-            res.color = GRAPH_HIGHLIGHT_COLORS.blast;
-            res.size = (data.size || 8) * 1.8;
-            res.zIndex = 3;
-            res.highlighted = true;
-          } else if (isQueryHighlighted) {
-            // Regular cyan highlight for non-blast-radius nodes
-            res.color = GRAPH_HIGHLIGHT_COLORS.query;
-            res.size = (data.size || 8) * 1.4;
-            res.zIndex = 2;
-            res.highlighted = true;
-          } else {
-            res.color = dimColor(data.color, 0.15);
-            res.size = (data.size || 8) * 0.4;
-            res.zIndex = 0;
-          }
-          return res;
-        }
-
-        if (hasHighlights && !currentSelected) {
-          if (isQueryHighlighted) {
-            res.color = GRAPH_HIGHLIGHT_COLORS.query;
-            res.size = (data.size || 8) * 1.6;
-            res.zIndex = 2;
-            res.highlighted = true;
-          } else {
-            res.color = dimColor(data.color, 0.2);
-            res.size = (data.size || 8) * 0.5;
-            res.zIndex = 0;
-          }
-          return res;
-        }
-
-        if (currentSelected) {
-          const graph = graphRef.current;
-          if (graph) {
-            const isSelected = node === currentSelected;
-            const isNeighbor =
-              graph.hasEdge(node, currentSelected) || graph.hasEdge(currentSelected, node);
-
-            if (isSelected) {
-              res.color = data.color;
-              res.size = (data.size || 8) * 1.8;
-              res.zIndex = 2;
-              res.highlighted = true;
-            } else if (isNeighbor) {
-              res.color = data.color;
-              res.size = (data.size || 8) * 1.3;
-              res.zIndex = 1;
-            } else {
-              res.color = dimColor(data.color, 0.25);
-              res.size = (data.size || 8) * 0.6;
-              res.zIndex = 0;
-            }
-          }
-        }
+        res.color = visual.color;
+        res.size = visual.size;
+        res.zIndex = visual.zIndex;
+        res.highlighted = visual.highlighted;
 
         return res;
       },
@@ -575,58 +444,23 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
-        const hasHighlights = highlighted.size > 0 || blastRadius.size > 0; // Check BOTH sets
 
-        if (hasHighlights && !currentSelected) {
-          const graph = graphRef.current;
-          if (graph) {
-            const [source, target] = graph.extremities(edge);
+        const graph = graphRef.current;
+        if (graph) {
+          const [source, target] = graph.extremities(edge);
+          const visual = resolveGraphEdgeVisual({
+            sourceId: source,
+            targetId: target,
+            color: data.color || GRAPH_SURFACE_COLORS.fallbackEdge,
+            size: data.size || 1,
+            selectedNodeId: currentSelected,
+            highlightedNodeIds: highlighted,
+            blastRadiusNodeIds: blastRadius,
+          });
 
-            // Check if nodes are in EITHER set
-            const isSourceActive = highlighted.has(source) || blastRadius.has(source);
-            const isTargetActive = highlighted.has(target) || blastRadius.has(target);
-
-            const bothHighlighted = isSourceActive && isTargetActive;
-            const oneHighlighted = isSourceActive || isTargetActive;
-
-            if (bothHighlighted) {
-              // If both nodes are in blast radius, use red edge
-              if (blastRadius.has(source) && blastRadius.has(target)) {
-                res.color = GRAPH_HIGHLIGHT_COLORS.blast;
-              } else {
-                res.color = GRAPH_HIGHLIGHT_COLORS.query;
-              }
-              res.size = Math.max(2, (data.size || 1) * 3);
-              res.zIndex = 2;
-            } else if (oneHighlighted) {
-              res.color = dimColor(GRAPH_HIGHLIGHT_COLORS.query, 0.4);
-              res.size = 1;
-              res.zIndex = 1;
-            } else {
-              res.color = dimColor(data.color, 0.08);
-              res.size = 0.2;
-              res.zIndex = 0;
-            }
-          }
-          return res;
-        }
-
-        if (currentSelected) {
-          const graph = graphRef.current;
-          if (graph) {
-            const [source, target] = graph.extremities(edge);
-            const isConnected = source === currentSelected || target === currentSelected;
-
-            if (isConnected) {
-              res.color = brightenColor(data.color, 1.5);
-              res.size = Math.max(3, (data.size || 1) * 4);
-              res.zIndex = 2;
-            } else {
-              res.color = dimColor(data.color, 0.1);
-              res.size = 0.3;
-              res.zIndex = 0;
-            }
-          }
+          res.color = visual.color;
+          res.size = visual.size;
+          res.zIndex = visual.zIndex;
         }
 
         return res;

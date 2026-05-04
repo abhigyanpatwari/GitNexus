@@ -24,15 +24,6 @@
   --color-accent: #7c3aed;
   --color-accent-dim: #5b21b6;
 
-  /* Node colors */
-  --color-node-file: #3b82f6;
-  --color-node-folder: #6366f1;
-  --color-node-class: #f59e0b;
-  --color-node-function: #10b981;
-  --color-node-interface: #ec4899;
-  --color-node-import: #6b7280;
-  --color-node-method: #14b8a6;
-
   /* Fonts */
   --font-sans: 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;

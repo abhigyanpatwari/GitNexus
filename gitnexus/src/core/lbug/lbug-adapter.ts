@@ -285,10 +285,23 @@ export const withLbugDb = async <T>(
         continue;
       }
       if (options.readOnly && isReadOnlyRecoveryError(err)) {
-        return await runWithSessionLock(async () => {
-          await ensureLbugInitialized(dbPath, { readOnly: false });
-          return operation();
-        });
+        try {
+          return await runWithSessionLock(async () => {
+            await ensureLbugInitialized(dbPath, { readOnly: false });
+            return operation();
+          });
+        } catch (recoveryErr) {
+          lastError = recoveryErr;
+          if (isStaleShadowFileError(recoveryErr) && !staleShadowRecoveryAttempted) {
+            staleShadowRecoveryAttempted = true;
+            await runWithSessionLock(async () => {
+              await closeLbugUnlocked();
+              await removeStaleShadowFile(dbPath);
+            });
+            continue;
+          }
+          throw recoveryErr;
+        }
       }
       if (!isDbBusyError(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
         throw err;

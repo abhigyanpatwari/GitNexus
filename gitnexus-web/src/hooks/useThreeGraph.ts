@@ -17,7 +17,13 @@ import {
   type SimulationNodeDatum,
 } from 'd3-force-3d';
 import { SigmaEdgeAttributes, SigmaNodeAttributes } from '../lib/graph-adapter';
-import { GRAPH_HIGHLIGHT_COLORS, GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
+import { GRAPH_SURFACE_COLORS, type EdgeType } from '../lib/constants';
+import {
+  brightenColor,
+  mixColor,
+  resolveGraphEdgeVisual,
+  resolveGraphNodeVisual,
+} from '../lib/graph-visual-state';
 import type { NodeAnimation } from './useAppState';
 
 export type ThreeGraphCameraMode = 'arcball' | 'firstPerson';
@@ -84,7 +90,6 @@ type NodeVisual = {
   shellColor: string;
 };
 
-const EDGE_DIM_COLOR = GRAPH_SURFACE_COLORS.dimEdge;
 const BACKGROUND_COLOR = GRAPH_SURFACE_COLORS.background;
 const EDGE_CURVE_SEGMENTS = 5;
 const WHITE_COLOR = new THREE.Color('#ffffff');
@@ -96,55 +101,6 @@ const SCRATCH_BEND = new THREE.Vector3();
 const SCRATCH_CONTROL = new THREE.Vector3();
 const SCRATCH_POINT_A = new THREE.Vector3();
 const SCRATCH_POINT_B = new THREE.Vector3();
-
-const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16),
-      }
-    : { r: 100, g: 100, b: 100 };
-};
-
-const rgbToHex = (r: number, g: number, b: number): string => {
-  return (
-    '#' +
-    [r, g, b]
-      .map((x) => {
-        const hex = Math.max(0, Math.min(255, Math.round(x))).toString(16);
-        return hex.length === 1 ? '0' + hex : hex;
-      })
-      .join('')
-  );
-};
-
-const dimColor = (hex: string, amount: number): string => {
-  const rgb = hexToRgb(hex);
-  const darkBg = hexToRgb(GRAPH_SURFACE_COLORS.dimMix);
-  return rgbToHex(
-    darkBg.r + (rgb.r - darkBg.r) * amount,
-    darkBg.g + (rgb.g - darkBg.g) * amount,
-    darkBg.b + (rgb.b - darkBg.b) * amount,
-  );
-};
-
-const brightenColor = (hex: string, factor: number): string => {
-  const rgb = hexToRgb(hex);
-  return rgbToHex(
-    rgb.r + ((255 - rgb.r) * (factor - 1)) / factor,
-    rgb.g + ((255 - rgb.g) * (factor - 1)) / factor,
-    rgb.b + ((255 - rgb.b) * (factor - 1)) / factor,
-  );
-};
-
-const mixColor = (from: string, to: string, amount: number): string => {
-  const a = hexToRgb(from);
-  const b = hexToRgb(to);
-  const t = Math.max(0, Math.min(1, amount));
-  return rgbToHex(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t);
-};
 
 const createRadialTexture = (stops: Array<[number, string]>): THREE.CanvasTexture => {
   const size = 96;
@@ -195,11 +151,6 @@ const getRelationCurveMultiplier = (relationType?: string): number => {
   if (relationType === 'EXTENDS' || relationType === 'IMPLEMENTS') return 0.2;
   return 0.15;
 };
-
-const getThreeEdgeColor = (
-  _relationType?: string,
-  fallback: string = GRAPH_SURFACE_COLORS.fallbackEdge,
-): string => fallback;
 
 const setQuadraticPoint = (
   target: THREE.Vector3,
@@ -356,120 +307,31 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
       const graph = graphRef.current;
       const currentSelected = selectedNodeRef.current;
       const currentHovered = hoveredNodeRef.current;
-      const highlighted = highlightedRef.current;
-      const blastRadius = blastRadiusRef.current;
-      const animatedNodes = animatedNodesRef.current;
-      const hasHighlights = highlighted.size > 0;
-      const hasBlastRadius = blastRadius.size > 0;
-      const isQueryHighlighted = highlighted.has(nodeId);
-      const isBlastRadiusNode = blastRadius.has(nodeId);
       const baseSize = Math.max(2.4, (attributes.size || 4) * 1.9);
-      const isHovered = nodeId === currentHovered;
-      const hoveredScale = isHovered ? 1.22 : 1;
+      const visual = resolveGraphNodeVisual({
+        nodeId,
+        color: attributes.color,
+        size: baseSize,
+        selectedNodeId: currentSelected,
+        hoveredNodeId: currentHovered,
+        highlightedNodeIds: highlightedRef.current,
+        blastRadiusNodeIds: blastRadiusRef.current,
+        animatedNodes: animatedNodesRef.current,
+        isNeighbor: currentSelected
+          ? Boolean(
+              graph?.hasEdge(nodeId, currentSelected) || graph?.hasEdge(currentSelected, nodeId),
+            )
+          : false,
+        now,
+      });
 
-      const animation = animatedNodes.get(nodeId);
-      if (animation) {
-        const elapsed = now - animation.startTime;
-        const progress = Math.min(elapsed / animation.duration, 1);
-        const phase = (Math.sin(progress * Math.PI * 4) + 1) / 2;
-
-        if (animation.type === 'pulse') {
-          return createNodeVisual(
-            phase > 0.5
-              ? GRAPH_HIGHLIGHT_COLORS.query
-              : brightenColor(GRAPH_HIGHLIGHT_COLORS.query, 1.3),
-            baseSize * (1.45 + phase * 0.8),
-            1,
-            true,
-            GRAPH_HIGHLIGHT_COLORS.querySoft,
-          );
-        }
-        if (animation.type === 'ripple') {
-          return createNodeVisual(
-            phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.blast : GRAPH_HIGHLIGHT_COLORS.blastPulse,
-            baseSize * (1.3 + phase * 1.1),
-            1,
-            true,
-            GRAPH_HIGHLIGHT_COLORS.blastSoft,
-          );
-        }
-        return createNodeVisual(
-          phase > 0.5 ? GRAPH_HIGHLIGHT_COLORS.change : GRAPH_HIGHLIGHT_COLORS.changePulse,
-          baseSize * (1.35 + phase * 0.6),
-          1,
-          true,
-          GRAPH_HIGHLIGHT_COLORS.changeSoft,
-        );
-      }
-
-      if (hasBlastRadius && !currentSelected) {
-        if (isBlastRadiusNode) {
-          return createNodeVisual(
-            GRAPH_HIGHLIGHT_COLORS.blast,
-            baseSize * 1.75 * hoveredScale,
-            1,
-            true,
-            GRAPH_HIGHLIGHT_COLORS.blastSoft,
-          );
-        }
-        if (isQueryHighlighted) {
-          return createNodeVisual(
-            GRAPH_HIGHLIGHT_COLORS.query,
-            baseSize * 1.35 * hoveredScale,
-            0.8,
-            true,
-            GRAPH_HIGHLIGHT_COLORS.querySoft,
-          );
-        }
-        return createNodeVisual(dimColor(attributes.color, 0.18), baseSize * 0.46, 0.08);
-      }
-
-      if (hasHighlights && !currentSelected) {
-        if (isQueryHighlighted) {
-          return createNodeVisual(
-            GRAPH_HIGHLIGHT_COLORS.query,
-            baseSize * 1.55 * hoveredScale,
-            0.9,
-            true,
-            GRAPH_HIGHLIGHT_COLORS.querySoft,
-          );
-        }
-        return createNodeVisual(dimColor(attributes.color, 0.24), baseSize * 0.54, 0.1);
-      }
-
-      if (currentSelected && graph) {
-        const isSelected = nodeId === currentSelected;
-        const isNeighbor =
-          graph.hasEdge(nodeId, currentSelected) || graph.hasEdge(currentSelected, nodeId);
-
-        if (isSelected) {
-          const selectedColor = brightenColor(attributes.color, 1.4);
-          return createNodeVisual(
-            selectedColor,
-            baseSize * 1.9,
-            1,
-            true,
-            brightenColor(selectedColor, 1.55),
-          );
-        }
-        if (isNeighbor) {
-          return createNodeVisual(
-            attributes.color,
-            baseSize * 1.25 * hoveredScale,
-            0.55,
-            isHovered,
-            '#e0f2fe',
-          );
-        }
-        return createNodeVisual(dimColor(attributes.color, 0.28), baseSize * 0.62, 0.1);
-      }
-
-      if (isHovered) {
-        const hoverColor = mixColor(brightenColor(attributes.color, 1.25), '#ffffff', 0.08);
-        return createNodeVisual(hoverColor, baseSize * 1.24, 0.82, true, '#e0f2fe');
-      }
-
-      return createNodeVisual(mixColor(attributes.color, '#ffffff', 0.03), baseSize, 0.46);
+      return createNodeVisual(
+        visual.color,
+        visual.size,
+        visual.emphasis,
+        visual.shell,
+        visual.shellColor,
+      );
     },
     [createNodeVisual],
   );
@@ -560,7 +422,6 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
     const visibleTypes = visibleEdgeTypesRef.current;
     const highlighted = highlightedRef.current;
     const blastRadius = blastRadiusRef.current;
-    const hasHighlights = highlighted.size > 0 || blastRadius.size > 0;
     const currentSelected = selectedNodeRef.current;
 
     for (let i = 0; i < linksRef.current.length; i += 1) {
@@ -587,27 +448,16 @@ export const useThreeGraph = (options: UseThreeGraphOptions = {}): UseThreeGraph
         continue;
       }
 
-      let edgeColor = getThreeEdgeColor(link.attributes.relationType, link.attributes.color);
-      if (hasHighlights && !currentSelected) {
-        const sourceActive = highlighted.has(link.sourceId) || blastRadius.has(link.sourceId);
-        const targetActive = highlighted.has(link.targetId) || blastRadius.has(link.targetId);
-
-        if (sourceActive && targetActive) {
-          edgeColor =
-            blastRadius.has(link.sourceId) && blastRadius.has(link.targetId)
-              ? GRAPH_HIGHLIGHT_COLORS.blast
-              : GRAPH_HIGHLIGHT_COLORS.query;
-        } else if (sourceActive || targetActive) {
-          edgeColor = dimColor(GRAPH_HIGHLIGHT_COLORS.query, 0.4);
-        } else {
-          edgeColor = EDGE_DIM_COLOR;
-        }
-      } else if (currentSelected) {
-        edgeColor =
-          link.sourceId === currentSelected || link.targetId === currentSelected
-            ? brightenColor(edgeColor, 1.7)
-            : EDGE_DIM_COLOR;
-      }
+      const edgeVisual = resolveGraphEdgeVisual({
+        sourceId: link.sourceId,
+        targetId: link.targetId,
+        color: link.attributes.color || GRAPH_SURFACE_COLORS.fallbackEdge,
+        size: link.attributes.size || 1,
+        selectedNodeId: currentSelected,
+        highlightedNodeIds: highlighted,
+        blastRadiusNodeIds: blastRadius,
+      });
+      const edgeColor = edgeVisual.color;
 
       color.set(edgeColor);
       edgeHighlightColor.copy(color).lerp(WHITE_COLOR, 0.34);

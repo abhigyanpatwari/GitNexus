@@ -32,6 +32,23 @@ const appendNodeMarker = (
   return formatted ? `${body}\n\n${formatted}` : body;
 };
 
+const getResultNodeIds = (result: Pick<EnrichedSearchResult, 'nodeId' | 'nodeIds'>): string[] => {
+  const ids = new Set<string>();
+  if (result.nodeId) ids.add(result.nodeId);
+  for (const id of result.nodeIds ?? []) {
+    if (id) ids.add(id);
+  }
+  return [...ids];
+};
+
+const getSearchMarkerIds = (
+  results: Array<Pick<EnrichedSearchResult, 'nodeId' | 'nodeIds' | 'filePath'>>,
+): string[] =>
+  results.flatMap((result) => {
+    const ids = getResultNodeIds(result);
+    return ids.length > 0 ? ids : result.filePath ? [`File:${result.filePath}`] : [];
+  });
+
 const rowValue = (row: any, idx: number, key: string): unknown =>
   Array.isArray(row) ? row[idx] : row?.[key];
 
@@ -46,6 +63,12 @@ const collectNodeIdsFromRows = (rows: Record<string, unknown>[]): string[] => {
       if (typeof value === 'string' && value.trim()) {
         nodeIds.add(value);
       }
+    }
+    const nodeIdsValue = row.nodeIds;
+    if (Array.isArray(nodeIdsValue)) {
+      nodeIdsValue.forEach((value) => {
+        if (typeof value === 'string' && value.trim()) nodeIds.add(value);
+      });
     }
   }
 
@@ -142,6 +165,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       type ResultInfo = {
         idx: number;
         nodeId: string;
+        nodeIds: string[];
         name: string;
         label: string;
         filePath: string;
@@ -154,7 +178,8 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       };
 
       const results: ResultInfo[] = searchResults.slice(0, k).map((r, i) => {
-        const nodeId = r.nodeId || '';
+        const nodeIds = getResultNodeIds(r);
+        const nodeId = nodeIds[0] || (r.filePath ? `File:${r.filePath}` : '');
         const name = r.name || r.filePath?.split('/').pop() || 'Unknown';
         const label = r.label || 'File';
         const filePath = r.filePath || '';
@@ -189,6 +214,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
         return {
           idx: i + 1,
           nodeId,
+          nodeIds,
           name,
           label,
           filePath,
@@ -212,7 +238,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
         return appendNodeMarker(
           `Found ${searchResults.length} matches:\n\n${results.map((r) => formatResult(r)).join('\n\n')}`,
           'HIGHLIGHT_NODES',
-          results.map((r) => r.nodeId),
+          results.flatMap((r) => (r.nodeIds.length > 0 ? r.nodeIds : [r.nodeId])),
         );
       }
 
@@ -273,7 +299,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
       return appendNodeMarker(
         lines.join('\n').trim(),
         'HIGHLIGHT_NODES',
-        results.map((r) => r.nodeId),
+        results.flatMap((r) => (r.nodeIds.length > 0 ? r.nodeIds : [r.nodeId])),
       );
     },
     {
@@ -326,7 +352,7 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
             return appendNodeMarker(
               `Semantic search for "${query}" (${semanticResults.length} results):\n\n${formatted}`,
               'HIGHLIGHT_NODES',
-              semanticResults.map((r) => r.nodeId),
+              getSearchMarkerIds(semanticResults),
             );
           } catch {
             return 'Semantic search not available. Embeddings may not be generated. Use a non-vector Cypher query instead.';

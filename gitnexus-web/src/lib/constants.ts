@@ -1,4 +1,4 @@
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, RelationshipType } from 'gitnexus-shared';
 
 export type GraphColorMode =
   | 'type'
@@ -94,8 +94,8 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Import: 1.5, // Very small - usually hidden anyway
   Type: 3, // Type alias - small
   CodeElement: 2, // Generic small
-  Community: 0, // Hidden by default - metadata node
-  Process: 0, // Hidden by default - metadata node
+  Community: 6, // Hidden by default, visible when the user enables metadata nodes
+  Process: 7, // Hidden by default, visible when the user enables process nodes
   Section: 8, // Structural section - similar to Folder
   Struct: 8, // Like Class
   Trait: 7, // Like Interface
@@ -276,7 +276,51 @@ export const GRAPH_COLOR_MODE_LEGENDS: Record<GraphColorMode, LegendItem[]> = {
   ],
 };
 
-// Labels to show by default (hide imports and variables by default as they clutter)
+export const ALL_NODE_LABELS: NodeLabel[] = [
+  'Project',
+  'Package',
+  'Module',
+  'Folder',
+  'File',
+  'Class',
+  'Function',
+  'Method',
+  'Variable',
+  'Interface',
+  'Enum',
+  'Decorator',
+  'Import',
+  'Type',
+  'CodeElement',
+  'Community',
+  'Process',
+  'Section',
+  'Struct',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Namespace',
+  'Union',
+  'Typedef',
+  'Macro',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Route',
+  'Tool',
+  'RuntimeService',
+  'RuntimeSpan',
+  'RuntimeRoute',
+  'RuntimeError',
+  'RuntimeLogPattern',
+];
+
+// Labels to show by default (hide imports, metadata, and leaf details by default as they clutter)
 export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Project',
   'Package',
@@ -297,66 +341,27 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
 ];
 
 // All filterable labels (in display order)
-export const FILTERABLE_LABELS: NodeLabel[] = [
-  'Folder',
-  'File',
-  'Class',
-  'Interface',
-  'Enum',
-  'Type',
-  'Function',
-  'Method',
-  'Variable',
-  'Decorator',
-  'Import',
-  'Route',
-  'Tool',
-  'RuntimeService',
-  'RuntimeSpan',
-  'RuntimeRoute',
-  'RuntimeError',
-  'RuntimeLogPattern',
-];
+export const FILTERABLE_LABELS: NodeLabel[] = ALL_NODE_LABELS;
 
 // Edge/Relation types
-export type EdgeType =
-  | 'CONTAINS'
-  | 'DEFINES'
-  | 'IMPORTS'
-  | 'CALLS'
-  | 'EXTENDS'
-  | 'IMPLEMENTS'
-  | 'HAS_METHOD'
-  | 'HAS_PROPERTY'
-  | 'ACCESSES'
-  | 'METHOD_OVERRIDES'
-  | 'OVERRIDES'
-  | 'METHOD_IMPLEMENTS'
-  | 'MEMBER_OF'
-  | 'STEP_IN_PROCESS'
-  | 'HANDLES_ROUTE'
-  | 'FETCHES'
-  | 'HANDLES_TOOL'
-  | 'ENTRY_POINT_OF'
-  | 'WRAPS'
-  | 'QUERIES'
-  | 'RUNTIME_MAPS_TO'
-  | 'RUNTIME_OBSERVED_IN'
-  | 'RUNTIME_HAS_SIGNAL';
+export type EdgeType = RelationshipType | 'OVERRIDES';
 
 export const ALL_EDGE_TYPES: EdgeType[] = [
   'CONTAINS',
-  'DEFINES',
-  'IMPORTS',
   'CALLS',
-  'EXTENDS',
+  'INHERITS',
+  'METHOD_OVERRIDES',
+  'METHOD_IMPLEMENTS',
+  'IMPORTS',
+  'USES',
+  'DEFINES',
+  'DECORATES',
   'IMPLEMENTS',
+  'EXTENDS',
   'HAS_METHOD',
   'HAS_PROPERTY',
   'ACCESSES',
-  'METHOD_OVERRIDES',
   'OVERRIDES',
-  'METHOD_IMPLEMENTS',
   'MEMBER_OF',
   'STEP_IN_PROCESS',
   'HANDLES_ROUTE',
@@ -375,9 +380,12 @@ export const DEFAULT_VISIBLE_EDGES: EdgeType[] = [
   'CONTAINS',
   'DEFINES',
   'IMPORTS',
+  'INHERITS',
   'EXTENDS',
   'IMPLEMENTS',
   'CALLS',
+  'USES',
+  'DECORATES',
   'HAS_METHOD',
   'HAS_PROPERTY',
   'MEMBER_OF',
@@ -393,17 +401,20 @@ export type EdgeStyle = { color: string; label: string; sizeMultiplier: number }
 
 export const EDGE_STYLES: Record<EdgeType, EdgeStyle> = {
   CONTAINS: { color: '#86efac', label: 'Contains', sizeMultiplier: 0.4 },
-  DEFINES: { color: '#67e8f9', label: 'Defines', sizeMultiplier: 0.5 },
-  IMPORTS: { color: '#93c5fd', label: 'Imports', sizeMultiplier: 0.6 },
   CALLS: { color: '#e879f9', label: 'Calls', sizeMultiplier: 0.8 },
+  INHERITS: { color: '#fb923c', label: 'Inherits', sizeMultiplier: 1.0 },
+  METHOD_OVERRIDES: { color: '#fed7aa', label: 'Method Overrides', sizeMultiplier: 0.85 },
+  METHOD_IMPLEMENTS: { color: '#f0abfc', label: 'Method Implements', sizeMultiplier: 0.75 },
+  IMPORTS: { color: '#93c5fd', label: 'Imports', sizeMultiplier: 0.6 },
+  USES: { color: '#a7f3d0', label: 'Uses', sizeMultiplier: 0.55 },
+  DEFINES: { color: '#67e8f9', label: 'Defines', sizeMultiplier: 0.5 },
+  DECORATES: { color: '#fde68a', label: 'Decorates', sizeMultiplier: 0.6 },
   EXTENDS: { color: '#fdba74', label: 'Extends', sizeMultiplier: 1.0 },
   IMPLEMENTS: { color: '#f9a8d4', label: 'Implements', sizeMultiplier: 0.9 },
   HAS_METHOD: { color: '#5eead4', label: 'Has Method', sizeMultiplier: 0.55 },
   HAS_PROPERTY: { color: '#cbd5e1', label: 'Has Property', sizeMultiplier: 0.45 },
   ACCESSES: { color: '#fcd34d', label: 'Accesses', sizeMultiplier: 0.55 },
-  METHOD_OVERRIDES: { color: '#fed7aa', label: 'Method Overrides', sizeMultiplier: 0.85 },
   OVERRIDES: { color: '#ffedd5', label: 'Overrides', sizeMultiplier: 0.85 },
-  METHOD_IMPLEMENTS: { color: '#f0abfc', label: 'Method Implements', sizeMultiplier: 0.75 },
   MEMBER_OF: { color: '#a5b4fc', label: 'Member Of', sizeMultiplier: 0.3 },
   STEP_IN_PROCESS: { color: '#fb7185', label: 'Process Step', sizeMultiplier: 0.65 },
   HANDLES_ROUTE: { color: '#be123c', label: 'Handles Route', sizeMultiplier: 0.8 },

@@ -9,6 +9,7 @@ interface GraphStateContextValue {
   selectedNode: GraphNode | null;
   setSelectedNode: (node: GraphNode | null) => void;
   visibleLabels: NodeLabel[];
+  setVisibleLabels: (labels: NodeLabel[]) => void;
   toggleLabelVisibility: (label: NodeLabel) => void;
   visibleEdgeTypes: EdgeType[];
   setVisibleEdgeTypes: (edgeTypes: EdgeType[]) => void;
@@ -48,6 +49,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       selectedNode,
       setSelectedNode,
       visibleLabels,
+      setVisibleLabels,
       toggleLabelVisibility,
       visibleEdgeTypes,
       setVisibleEdgeTypes,

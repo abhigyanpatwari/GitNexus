@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph';
-import { formatNodeMarker, parseNodeMarker, stripNodeMarkers } from '../../src/lib/agent-tracking';
+import {
+  formatNodeMarker,
+  parseNodeMarker,
+  resolveTrackedNodeIds,
+  stripNodeMarkers,
+} from '../../src/lib/agent-tracking';
 import { knowledgeGraphToGraphology } from '../../src/lib/graph-adapter';
 import { createFileNode, createFunctionNode } from '../fixtures/graph';
 
@@ -25,6 +30,18 @@ describe('agent tracking node markers', () => {
     const text = 'Result body\n[HIGHLIGHT_NODES:File%3Asrc%2Fapp.ts]\n[IMPACT:node%3Aa]';
 
     expect(stripNodeMarkers(text)).toBe('Result body');
+  });
+
+  it('resolves marker fallbacks against graph node metadata', () => {
+    const file = createFileNode('app.ts', 'src/app.ts');
+    const fn = createFunctionNode('main', 'src/app.ts', 12);
+
+    expect(
+      resolveTrackedNodeIds(
+        ['Function:main', 'src/app.ts:15', 'main', 'app.ts', 'missing'],
+        [file, fn],
+      ),
+    ).toEqual([fn.id, file.id]);
   });
 });
 

@@ -24,7 +24,12 @@ import {
   type BackendRepo,
   type IndexEventsSnapshot,
 } from './services/backend-client';
-import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
+import { DEFAULT_BACKEND_URL, ERROR_RESET_DELAY_MS } from './config/ui-constants';
+
+const getImplicitServerUrl = (): string => {
+  if (typeof window === 'undefined') return DEFAULT_BACKEND_URL;
+  return window.location.port === '4747' ? window.location.origin : DEFAULT_BACKEND_URL;
+};
 
 const AppContent = () => {
   const {
@@ -175,7 +180,7 @@ const AppContent = () => {
       setGraphSyncMessage('Refreshing UI');
 
       try {
-        const url = serverBaseUrl ?? window.location.origin;
+        const url = serverBaseUrl ?? getImplicitServerUrl();
         const result = await connectToServer(url, undefined, undefined, repoName, {
           awaitAnalysis: true,
         });
@@ -232,7 +237,7 @@ const AppContent = () => {
     });
     setViewMode('loading');
 
-    const serverUrl = serverUrlParam || window.location.origin;
+    const serverUrl = serverUrlParam || getImplicitServerUrl();
     const baseUrl = normalizeServerUrl(serverUrl);
 
     const tryConnect = async () => {

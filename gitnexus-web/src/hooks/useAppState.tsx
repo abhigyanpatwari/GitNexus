@@ -37,7 +37,7 @@ import {
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
-import { parseNodeMarker } from '../lib/agent-tracking';
+import { parseNodeMarker, resolveTrackedNodeIds } from '../lib/agent-tracking';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
@@ -78,28 +78,40 @@ export interface CodeReferenceFocus {
   ts: number;
 }
 
-const resolveTrackedNodeIds = (rawIds: string[], graph: KnowledgeGraph | null): Set<string> => {
-  if (rawIds.length === 0) return new Set();
-  if (!graph) return new Set(rawIds);
+const resolveTrackedNodeIdSet = (
+  rawIds: Iterable<string | null | undefined>,
+  graph: KnowledgeGraph | null,
+): Set<string> => new Set(resolveTrackedNodeIds(rawIds, graph?.nodes ?? []));
 
-  const matchedIds = new Set<string>();
-  const graphNodeIdSet = new Set(graph.nodes.map((n) => n.id));
+const collectToolCallNodeHints = (toolCall: ToolCallInfo): string[] => {
+  const hintKeys = new Set([
+    'filePath',
+    'path',
+    'nodeId',
+    'id',
+    'target',
+    'targetId',
+    'sourceId',
+    'symbol',
+    'symbolName',
+    'name',
+  ]);
+  const hints: string[] = [];
 
-  for (const rawId of rawIds) {
-    if (graphNodeIdSet.has(rawId)) {
-      matchedIds.add(rawId);
-      continue;
+  Object.entries(toolCall.args ?? {}).forEach(([key, value]) => {
+    if (!hintKeys.has(key)) return;
+    if (typeof value === 'string') {
+      hints.push(value);
+      return;
     }
-
-    const found = graph.nodes.find(
-      (n) => n.id.endsWith(rawId) || n.id.endsWith(':' + rawId),
-    )?.id;
-    if (found) {
-      matchedIds.add(found);
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (typeof item === 'string') hints.push(item);
+      });
     }
-  }
+  });
 
-  return matchedIds;
+  return hints.slice(0, 40);
 };
 
 interface AppState {
@@ -127,6 +139,7 @@ interface AppState {
 
   // Filters
   visibleLabels: NodeLabel[];
+  setVisibleLabels: (labels: NodeLabel[]) => void;
   toggleLabelVisibility: (label: NodeLabel) => void;
   visibleEdgeTypes: EdgeType[];
   setVisibleEdgeTypes: (edgeTypes: EdgeType[]) => void;
@@ -238,6 +251,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     selectedNode,
     setSelectedNode,
     visibleLabels,
+    setVisibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
     setVisibleEdgeTypes,
@@ -446,8 +460,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     // Track AI highlights separately so they can be toggled off in the UI
     if (ref.nodeId && ref.source === 'ai') {
       setAICitationHighlightedNodeIds((prev) => new Set([...prev, ref.nodeId!]));
+      triggerNodeAnimation([ref.nodeId], 'pulse');
     }
-  }, []);
+  }, [triggerNodeAnimation]);
 
   // Remove ONLY AI-provided refs so each new chat response refreshes the Code panel
   const clearAICodeReferences = useCallback(() => {
@@ -864,6 +879,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                   toolCall: tc,
                 });
                 setCurrentToolCalls((prev) => [...prev, tc]);
+                const runningNodeIds = resolveTrackedNodeIdSet(collectToolCallNodeHints(tc), graph);
+                if (runningNodeIds.size > 0) {
+                  setAIToolHighlightedNodeIds((prev) => new Set([...prev, ...runningNodeIds]));
+                  triggerNodeAnimation([...runningNodeIds], 'pulse');
+                }
                 scheduleMessageUpdate();
               }
               break;
@@ -929,22 +949,24 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
                 // Parse highlight marker from tool results
                 if (tc.result) {
-                  const highlightIds = resolveTrackedNodeIds(
+                  const highlightIds = resolveTrackedNodeIdSet(
                     parseNodeMarker(tc.result, 'HIGHLIGHT_NODES'),
                     graph,
                   );
                   if (highlightIds.size > 0) {
                     setAIToolHighlightedNodeIds(highlightIds);
+                    triggerNodeAnimation([...highlightIds], 'pulse');
                   }
 
-                  const impactIds = resolveTrackedNodeIds(
+                  const impactIds = resolveTrackedNodeIdSet(
                     parseNodeMarker(tc.result, 'IMPACT'),
                     graph,
                   );
                   if (impactIds.size > 0) {
                     setBlastRadiusNodeIds(impactIds);
+                    triggerNodeAnimation([...impactIds], 'ripple');
                   } else if (tc.name === 'impact') {
-                    const fallbackImpactIds = resolveTrackedNodeIds(
+                    const fallbackImpactIds = resolveTrackedNodeIdSet(
                       Array.from(tc.result.matchAll(/^\s+[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^%\n]+/gm))
                         .map((match) => {
                           const parts = match[0].trim().split('|');
@@ -955,6 +977,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                     );
                     if (fallbackImpactIds.size > 0) {
                       setBlastRadiusNodeIds(fallbackImpactIds);
+                      triggerNodeAnimation([...fallbackImpactIds], 'ripple');
                     }
                   }
                 }
@@ -998,6 +1021,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       addCodeReference,
       clearAICodeReferences,
       clearAIToolHighlights,
+      triggerNodeAnimation,
       graph,
       embeddingStatus,
     ],
@@ -1214,6 +1238,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     helpDialogBoxOpen,
     setHelpDialogBoxOpen,
     visibleLabels,
+    setVisibleLabels,
     toggleLabelVisibility,
     visibleEdgeTypes,
     setVisibleEdgeTypes,

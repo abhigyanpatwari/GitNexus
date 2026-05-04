@@ -103,6 +103,12 @@ describe('FILTERABLE_LABELS', () => {
 });
 
 describe('edge types', () => {
+  it('includes every shared relationship type the graph can emit', () => {
+    expect(ALL_EDGE_TYPES).toContain('INHERITS');
+    expect(ALL_EDGE_TYPES).toContain('USES');
+    expect(ALL_EDGE_TYPES).toContain('DECORATES');
+  });
+
   it('ALL_EDGE_TYPES contains all EDGE_INFO keys', () => {
     const edgeInfoKeys = Object.keys(EDGE_INFO).sort();
     const allEdgeTypes = [...ALL_EDGE_TYPES].sort();

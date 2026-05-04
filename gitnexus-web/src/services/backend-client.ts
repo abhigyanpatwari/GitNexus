@@ -121,6 +121,7 @@ export interface EnrichedSearchResult {
     outgoing: Array<{ name: string; type: string; confidence?: number }>;
     incoming: Array<{ name: string; type: string; confidence?: number }>;
   };
+  nodeIds?: string[];
   cluster?: string;
   processes?: Array<{ id: string; label: string; step?: number; stepCount?: number }>;
 }
@@ -373,6 +374,30 @@ const assertOk = async (response: Response): Promise<void> => {
   throw new BackendError(message, response.status, code);
 };
 
+const readJsonResponse = async <T>(response: Response): Promise<T> => {
+  const contentType = response.headers.get('Content-Type') || '';
+  const text = await response.text();
+
+  if (!contentType.toLowerCase().includes('json')) {
+    const preview = text.trim().slice(0, 80).replace(/\s+/g, ' ');
+    throw new BackendError(
+      `Expected JSON from ${response.url}, but received ${contentType || 'an unknown content type'}${preview ? `: ${preview}` : ''}. Check that the backend URL points to GitNexus on port 4747, not the frontend dev server.`,
+      response.status || 200,
+      'server',
+    );
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new BackendError(
+      `Invalid JSON from ${response.url}: ${error instanceof Error ? error.message : String(error)}`,
+      response.status || 200,
+      'server',
+    );
+  }
+};
+
 const repoParam = (repo?: string): string => (repo ? `repo=${encodeURIComponent(repo)}` : '');
 
 // ── API Methods ────────────────────────────────────────────────────────────
@@ -388,7 +413,7 @@ export interface ServerInfo {
 export const fetchServerInfo = async (): Promise<ServerInfo> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
   await assertOk(response);
-  return response.json() as Promise<ServerInfo>;
+  return readJsonResponse<ServerInfo>(response);
 };
 
 /**
@@ -514,7 +539,10 @@ export const deleteRepo = async (repoName: string): Promise<void> => {
 export const probeBackend = async (): Promise<boolean> => {
   try {
     const response = await fetchWithTimeout(`${_backendUrl}/api/repos`, {}, PROBE_TIMEOUT_MS);
-    return response.status === 200;
+    return (
+      response.status === 200 &&
+      (response.headers.get('Content-Type') || '').toLowerCase().includes('json')
+    );
   } catch {
     return false;
   }
@@ -524,7 +552,7 @@ export const probeBackend = async (): Promise<boolean> => {
 export const fetchRepos = async (): Promise<BackendRepo[]> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/repos`);
   await assertOk(response);
-  return response.json() as Promise<BackendRepo[]>;
+  return readJsonResponse<BackendRepo[]>(response);
 };
 
 /** Fetch repo-group staleness summaries, optionally limited to groups containing a repo. */
@@ -532,7 +560,7 @@ export const fetchGroupStatuses = async (repo?: string): Promise<GroupStatus[]> 
   const params = repo ? `?repo=${encodeURIComponent(repo)}` : '';
   const response = await fetchWithTimeout(`${_backendUrl}/api/groups${params}`);
   await assertOk(response);
-  const body = await response.json();
+  const body = await readJsonResponse<{ groups?: GroupStatus[] }>(response);
   return Array.isArray(body?.groups) ? (body.groups as GroupStatus[]) : [];
 };
 
@@ -553,7 +581,7 @@ export const fetchRepoInfo = async (
   const timeout = opts?.awaitAnalysis ? HOLD_QUEUE_TIMEOUT_MS : undefined;
   const response = await fetchWithTimeout(url, {}, timeout);
   await assertOk(response);
-  const data = await response.json();
+  const data = await readJsonResponse<BackendRepo>(response);
   return { ...data, repoPath: data.repoPath ?? data.path };
 };
 
@@ -578,9 +606,17 @@ export const fetchGraph = async (
   if (contentType.includes('application/x-ndjson')) {
     return parseNdjsonGraphResponse(response, opts?.onProgress);
   }
+  if (!contentType.toLowerCase().includes('json')) {
+    const preview = (await response.text()).trim().slice(0, 80).replace(/\s+/g, ' ');
+    throw new BackendError(
+      `Expected graph JSON from ${response.url}, but received ${contentType || 'an unknown content type'}${preview ? `: ${preview}` : ''}. Check that the backend URL points to GitNexus on port 4747, not the frontend dev server.`,
+      response.status || 200,
+      'server',
+    );
+  }
 
   if (!opts?.onProgress || !response.body) {
-    return response.json() as Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }>;
+    return readJsonResponse<{ nodes: GraphNode[]; relationships: GraphRelationship[] }>(response);
   }
 
   // Streaming download with progress
@@ -678,8 +714,10 @@ export const runQuery = async (
     body: JSON.stringify({ cypher, repo }),
   });
   await assertOk(response);
-  const body = await response.json();
-  return (body.result ?? body) as Record<string, unknown>[];
+  const body = await readJsonResponse<{ result?: Record<string, unknown>[] } | Record<string, unknown>[]>(
+    response,
+  );
+  return (Array.isArray(body) ? body : (body.result ?? [])) as Record<string, unknown>[];
 };
 
 /** Search with optional enrichment and mode selection. */
@@ -699,7 +737,7 @@ export const search = async (
     }),
   });
   await assertOk(response);
-  const body = await response.json();
+  const body = await readJsonResponse<{ results?: EnrichedSearchResult[] }>(response);
   return (body.results ?? []) as EnrichedSearchResult[];
 };
 
@@ -718,7 +756,7 @@ export const grep = async (
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = await response.json();
+  const body = await readJsonResponse<{ results?: GrepResult[] }>(response);
   return (body.results ?? []) as GrepResult[];
 };
 
@@ -745,7 +783,7 @@ export const readFile = async (
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/file?${params}`);
   await assertOk(response);
-  return response.json() as Promise<ReadFileResult>;
+  return readJsonResponse<ReadFileResult>(response);
 };
 
 /** Fetch all processes for a repo. */
@@ -754,7 +792,7 @@ export const fetchProcesses = async (repo?: string): Promise<unknown> => {
     `${_backendUrl}/api/processes${repo ? `?${repoParam(repo)}` : ''}`,
   );
   await assertOk(response);
-  return response.json();
+  return readJsonResponse<unknown>(response);
 };
 
 /** Fetch detail for a single process. */
@@ -763,7 +801,7 @@ export const fetchProcessDetail = async (repo: string, name: string): Promise<un
     `${_backendUrl}/api/process?${repoParam(repo)}&name=${encodeURIComponent(name)}`,
   );
   await assertOk(response);
-  return response.json();
+  return readJsonResponse<unknown>(response);
 };
 
 /** Fetch all clusters for a repo. */
@@ -772,7 +810,7 @@ export const fetchClusters = async (repo?: string): Promise<unknown> => {
     `${_backendUrl}/api/clusters${repo ? `?${repoParam(repo)}` : ''}`,
   );
   await assertOk(response);
-  return response.json();
+  return readJsonResponse<unknown>(response);
 };
 
 /** Fetch detail for a single cluster. */
@@ -781,7 +819,7 @@ export const fetchClusterDetail = async (repo: string, name: string): Promise<un
     `${_backendUrl}/api/cluster?${repoParam(repo)}&name=${encodeURIComponent(name)}`,
   );
   await assertOk(response);
-  return response.json();
+  return readJsonResponse<unknown>(response);
 };
 
 // ── Analyze API ────────────────────────────────────────────────────────────
@@ -804,7 +842,7 @@ export const startAnalyze = async (request: {
     ANALYZE_START_TIMEOUT_MS,
   );
   await assertOk(response);
-  return response.json() as Promise<{ jobId: string; status: string }>;
+  return readJsonResponse<{ jobId: string; status: string }>(response);
 };
 
 /** Poll analysis job status. */
@@ -813,7 +851,7 @@ export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
     `${_backendUrl}/api/analyze/${encodeURIComponent(jobId)}`,
   );
   await assertOk(response);
-  return response.json() as Promise<JobStatus>;
+  return readJsonResponse<JobStatus>(response);
 };
 
 /** Cancel a running analysis job. */
@@ -856,14 +894,14 @@ export const startEmbeddings = async (repo: string): Promise<{ jobId: string; st
     30_000,
   );
   await assertOk(response);
-  return response.json() as Promise<{ jobId: string; status: string }>;
+  return readJsonResponse<{ jobId: string; status: string }>(response);
 };
 
 /** Poll embedding job status. */
 export const getEmbedStatus = async (jobId: string): Promise<JobStatus> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/embed/${encodeURIComponent(jobId)}`);
   await assertOk(response);
-  return response.json() as Promise<JobStatus>;
+  return readJsonResponse<JobStatus>(response);
 };
 
 /** Cancel a running embedding job. */

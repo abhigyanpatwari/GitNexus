@@ -284,7 +284,7 @@ export const knowledgeGraphToGraphology = (
   communityMemberships?: Map<string, number>,
   options: GraphologyOptions = {},
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
-  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>({ multi: true });
   const nodeCount = knowledgeGraph.nodes.length;
   const colorMode = options.colorMode ?? 'type';
   const dependencyCounts = new Map<string, number>();
@@ -566,25 +566,40 @@ export const knowledgeGraphToGraphology = (
 
   // Add edges using the shared relationship palette so renderers and legends agree.
   const edgeBaseSize = nodeCount > 20000 ? 0.4 : nodeCount > 5000 ? 0.6 : 1.0;
+  const usedEdgeKeys = new Set<string>();
+  const getUniqueEdgeKey = (baseKey: string): string => {
+    if (!usedEdgeKeys.has(baseKey)) {
+      usedEdgeKeys.add(baseKey);
+      return baseKey;
+    }
+
+    let index = 2;
+    let key = `${baseKey}#${index}`;
+    while (usedEdgeKeys.has(key)) {
+      index += 1;
+      key = `${baseKey}#${index}`;
+    }
+    usedEdgeKeys.add(key);
+    return key;
+  };
 
   knowledgeGraph.relationships.forEach((rel) => {
     if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        const style = getEdgeStyle(rel.type);
-        const curvature = 0.12 + Math.random() * 0.08;
+      const style = getEdgeStyle(rel.type);
+      const curvature = 0.12 + Math.random() * 0.08;
+      const edgeKey = getUniqueEdgeKey(rel.id || `${rel.sourceId}-${rel.type}-${rel.targetId}`);
 
-        graph.addEdge(rel.sourceId, rel.targetId, {
-          size: edgeBaseSize * style.sizeMultiplier,
-          color: style.color,
-          relationType: rel.type,
-          sourceId: rel.sourceId,
-          targetId: rel.targetId,
-          confidence: rel.confidence,
-          reason: rel.reason,
-          type: 'curved',
-          curvature: curvature,
-        });
-      }
+      graph.addDirectedEdgeWithKey(edgeKey, rel.sourceId, rel.targetId, {
+        size: edgeBaseSize * style.sizeMultiplier,
+        color: style.color,
+        relationType: rel.type,
+        sourceId: rel.sourceId,
+        targetId: rel.targetId,
+        confidence: rel.confidence,
+        reason: rel.reason,
+        type: 'curved',
+        curvature: curvature,
+      });
     }
   });
 
