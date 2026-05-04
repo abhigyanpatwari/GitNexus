@@ -505,7 +505,7 @@ describe('worker pool integration', () => {
     );
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    // Use 2 workers but only 1 job so the second worker is always idle.
+    // 2 workers but subBatchSize=4 means all 4 items form 1 job; second worker stays idle.
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
       subBatchSize: 4,
       subBatchIdleTimeoutMs: 150,
