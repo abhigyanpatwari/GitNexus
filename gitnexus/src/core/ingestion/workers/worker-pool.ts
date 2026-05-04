@@ -338,7 +338,13 @@ export const createWorkerPool = (
                 activeWorkers--;
                 return;
               }
-              await replaceWorker(workerIndex);
+              try {
+                await replaceWorker(workerIndex);
+              } catch (err) {
+                activeWorkers--;
+                void fail(err instanceof Error ? err : new Error(`Worker replacement failed: ${err}`));
+                return;
+              }
               activeWorkers--;
               reportProgress();
               runWorker(workerIndex);
