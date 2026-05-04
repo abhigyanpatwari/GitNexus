@@ -1109,7 +1109,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       if (err.code === 'ENOENT') {
         res.status(404).json({ error: 'File not found' });
       } else {
-        res.status(500).json({ error: err.message || 'Failed to read file' });
+        // statusFromError returns err.status for BadRequestError / ForbiddenError
+        // (assertString → 400 on array-form ?path=a&path=b; ForbiddenError → 403
+        // on traversal). Falls back to 500 for unrecognized failures.
+        res.status(statusFromError(err)).json({ error: err.message || 'Failed to read file' });
       }
     }
   });
