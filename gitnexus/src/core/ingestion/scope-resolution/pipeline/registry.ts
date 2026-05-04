@@ -14,6 +14,7 @@ import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { pythonScopeResolver } from '../../languages/python/scope-resolver.js';
 import { csharpScopeResolver } from '../../languages/csharp/scope-resolver.js';
 import { typescriptScopeResolver } from '../../languages/typescript/scope-resolver.js';
+import { goScopeResolver } from '../../languages/go/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
  *  this map intersected with `MIGRATED_LANGUAGES` (the per-language
@@ -26,4 +27,5 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Python, pythonScopeResolver],
   [SupportedLanguages.CSharp, csharpScopeResolver],
   [SupportedLanguages.TypeScript, typescriptScopeResolver],
+  [SupportedLanguages.Go, goScopeResolver],
 ]);

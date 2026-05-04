@@ -36,6 +36,7 @@ export function emitFreeCallFallback(
   handledSites: Set<string>,
   model: SemanticModel,
   workspaceIndex: WorkspaceResolutionIndex,
+  options: { readonly allowGlobalFallback?: boolean } = {},
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
@@ -67,6 +68,13 @@ export function emitFreeCallFallback(
       if (fnDef === undefined) {
         fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
       }
+      // V1: pickUniqueGlobalCallable ignores import context — resolves to any
+      // globally-unique callable. False cross-package edges are possible when
+      // the caller does not import the target package. Same-package calls are
+      // caught by findCallableBindingInScope above before reaching here.
+      if (fnDef === undefined && options.allowGlobalFallback === true) {
+        fnDef = pickUniqueGlobalCallable(site.name, model, scopes);
+      }
       if (fnDef === undefined) continue;
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
       if (callerGraphId === undefined) continue;
@@ -93,6 +101,51 @@ export function emitFreeCallFallback(
     }
   }
   return emitted;
+}
+
+function pickUniqueGlobalCallable(
+  name: string,
+  model: SemanticModel,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const scopeDefs: SymbolDefinition[] = [];
+  const scopeSeen = new Set<string>();
+  for (const def of scopes.defs.byId.values()) {
+    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
+    if (simple !== name) continue;
+    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    const key = logicalCallableKey(def);
+    if (scopeSeen.has(key)) continue;
+    scopeSeen.add(key);
+    scopeDefs.push(def);
+  }
+  if (scopeDefs.length === 1) return scopeDefs[0];
+
+  const defs: SymbolDefinition[] = [];
+  const seen = new Set<string>();
+  const push = (pool: readonly SymbolDefinition[]): void => {
+    for (const def of pool) {
+      const key = logicalCallableKey(def);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      defs.push(def);
+    }
+  };
+
+  push(model.symbols.lookupCallableByName(name));
+  push(model.methods.lookupMethodByName(name));
+
+  return defs.length === 1 ? defs[0] : undefined;
+}
+
+function logicalCallableKey(def: SymbolDefinition): string {
+  return [
+    def.filePath,
+    def.qualifiedName ?? '',
+    def.type,
+    def.parameterCount ?? '',
+    def.parameterTypes?.join(',') ?? '',
+  ].join('\0');
 }
 
 /** For a constructor call `new X(...)`, return the X class's explicit

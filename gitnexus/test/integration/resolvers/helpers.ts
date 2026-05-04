@@ -12,6 +12,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
   ]),
+  go: new Set([
+    // The legacy DAG path does not resolve method calls when the method is
+    // defined in a different file from the receiver type (go-split-method-owner
+    // fixture). This requires scope-based cross-file package-sibling resolution
+    // which is only available in the registry-primary path.
+    'resolves user.Save() to the method whose receiver type is declared in another package file',
+  ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
     // resolver's deterministic sort. The legacy resolver returns the

@@ -18,6 +18,7 @@ import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
 import { extractKotlinNamedBindings } from '../named-bindings/kotlin.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
@@ -105,6 +106,47 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const kotlinProvider = defineLanguage({
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
+  entryPointPatterns: [
+    /^on(Create|Start|Resume|Pause|Stop|Destroy)$/,
+    /^do[A-Z]/,
+    /^create[A-Z]/,
+    /^build[A-Z]/,
+    /ViewModel$/,
+    /^module$/,
+    /Service$/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'spring-kotlin',
+      entryPointMultiplier: 3.2,
+      reason: 'spring-kotlin-annotation',
+      patterns: [
+        '@RestController',
+        '@Controller',
+        '@GetMapping',
+        '@PostMapping',
+        '@RequestMapping',
+      ],
+    },
+    {
+      framework: 'jaxrs',
+      entryPointMultiplier: 3.0,
+      reason: 'jaxrs-annotation',
+      patterns: ['@Path', '@GET', '@POST', '@PUT', '@DELETE'],
+    },
+    {
+      framework: 'ktor',
+      entryPointMultiplier: 2.8,
+      reason: 'ktor-routing',
+      patterns: ['routing', 'embeddedServer', 'Application.module'],
+    },
+    {
+      framework: 'android-kotlin',
+      entryPointMultiplier: 2.5,
+      reason: 'android-annotation',
+      patterns: ['@AndroidEntryPoint', 'AppCompatActivity', 'Fragment('],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: KOTLIN_QUERIES,
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,

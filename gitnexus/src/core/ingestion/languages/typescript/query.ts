@@ -214,6 +214,95 @@ const TYPESCRIPT_SCOPE_QUERY = `
   key: (string (string_fragment) @declaration.name)
   value: (function_expression) @declaration.function)
 
+;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
+;;
+;; Covers the dominant React UI idiom (\`React.forwardRef\`, \`React.memo\`,
+;; bare \`forwardRef\` / \`memo\` / \`observer\`), Hook callbacks
+;; (\`useCallback\`, \`useMemo\`), and library-wrapper factories (\`debounce\`,
+;; \`throttle\`, user-defined \`withErrorBoundary\` / \`createHook\`, etc.).
+;; All produce the same AST shape:
+;;
+;;   lexical_declaration
+;;     variable_declarator
+;;       name: identifier "X"                          ← we want this name
+;;       value: call_expression
+;;         function: identifier | member_expression    ← any callee
+;;         arguments: arguments
+;;           arrow_function | function_expression      ← the actual code
+;;
+;; The pre-fix \`tsExtractFunctionName\` only handled \`variable_declarator\`
+;; and \`pair\` parents, so HOC-wrapped arrows fell through anonymous. The
+;; registry-primary \`query.ts\` had no pattern for this shape either —
+;; \`const Button = forwardRef((p, r) => { ... })\` registered as a
+;; \`Variable\` with no \`Function\` def, and every call inside the arrow
+;; body lost caller attribution: \`resolveCallerGraphId\` walked up past
+;; the empty arrow scope to the module's File fallback. Sourcerer-fe alone
+;; has ~296 such declarations (57 forwardRef + 21 memo + 161 useCallback
+;; + 57 useMemo) — all invisible to \`gitnexus_context\` /
+;; \`gitnexus_impact\` for outgoing edges before this fix.
+;;
+;; Anchor discipline: same as the \`lexical_declaration\` / \`pair\` blocks
+;; above — on the INNER \`arrow_function\` / \`function_expression\`, NOT
+;; the outer \`call_expression\`. The arrow's range matches its own
+;; \`@scope.function\` range, so \`pass2AttachDeclarations.atPosition\`
+;; resolves \`innermost\` to the arrow's own scope and
+;; \`rangesEqual(anchor.range, innermost.range)\` triggers the auto-hoist
+;; that promotes the binding to the parent scope (where \`const X\`
+;; lives).
+;;
+;; Trade-off — chained array-method form: \`const x = arr.find((y) => p(y))\`
+;; has the same syntactic shape and would also match, naming the
+;; \`.find\` callback as \`x\`. The resulting \`Function:x\` is mostly
+;; harmless: \`x\` is consumed as a value (\`if (x) { ... }\`), never
+;; invoked as a function, so it gets zero incoming \`CALLS\` edges. The
+;; one outgoing edge \`Function:x → p\` is a minor mis-attribution that
+;; could in principle be fixed by adding a \`function: [(identifier)
+;; (member_expression)]\` predicate that excludes property-identifiers
+;; matching a known array-method blocklist (\`map\` / \`filter\` / \`find\`
+;; / \`reduce\` / \`forEach\` / \`some\` / \`every\`). We don't do that here
+;; because (a) the false-positive cost is negligible, (b) the blocklist
+;; would need maintenance, and (c) any user-defined fluent-API method
+;; with a callback argument would still false-positive — there's no
+;; clean syntactic line.
+;;
+;; Trade-off — multi-arrow arguments: \`const x = call(arrow1, arrow2)\`
+;; would emit TWO matches with the same name \`x\`. tree-sitter-query
+;; iterates all arrow_function direct children of \`arguments\`, so each
+;; emits its own \`(name=x, function=...)\` pair. \`pass2AttachDeclarations\`
+;; pushes both \`Function:x\` defs into the same arrow scopes (each in
+;; its own arrow's \`ownedDefs\`) and hoists both bindings to the parent.
+;; The downstream registry's qualified-name dedup then collapses them
+;; via \`(filePath, type, qualifiedName)\` — second wins. Acceptable;
+;; multi-arrow-callback APIs are rare (\`new Promise(executor)\` is the
+;; main one and takes a single executor).
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      arguments: (arguments
+        (arrow_function) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      arguments: (arguments
+        (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      arguments: (arguments
+        (arrow_function) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      arguments: (arguments
+        (function_expression) @declaration.function))))
+
 ;; Method definitions — regular + private (#field) methods.
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method

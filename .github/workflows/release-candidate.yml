@@ -137,8 +137,11 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
+          # Hermetic install — release-candidate produces shipped artifacts.
+          # setup-node v5+ caches by default when a packageManager field is
+          # present in package.json; explicit opt-out is required to clear
+          # the zizmor cache-poisoning audit. See cache-poisoning audit.
+          package-manager-cache: false
 
       - name: Build gitnexus-shared
         run: npm install && npm run build

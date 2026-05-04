@@ -393,3 +393,195 @@ describe('issue #1166 — regression guards', () => {
     expect(findCall(sites, 'persist')?.attributedTo).toBeNull();
   });
 });
+
+// ─── HOC-wrapped variable declarations (issue #1166 follow-up) ──────────────
+
+describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
+  // The third `tsExtractFunctionName` branch: `arguments → call_expression →
+  // variable_declarator`. Covers React.forwardRef / memo / useCallback /
+  // useMemo / observer / debounce — every HOC factory whose result is bound
+  // to a const. Without this branch, the wrapped arrow had no name and calls
+  // inside attributed to the file. See `languages/typescript.ts` for the
+  // resolution logic and `tree-sitter-queries.ts` for the @definition.function
+  // capture mirror.
+
+  it('attributes call inside `const X = forwardRef((p, r) => fn())` to "X"', () => {
+    // Bare-identifier callee form. The arrow's parent is `arguments`; the
+    // walker climbs to `call_expression` then to `variable_declarator` and
+    // returns the const's name.
+    const sites = collectCallAttributions(`
+      const Button = forwardRef((props, ref) => {
+        return doSomething(props);
+      });
+    `);
+    const call = findCall(sites, 'doSomething');
+    expect(call, 'doSomething call should be captured').toBeDefined();
+    expect(call!.attributedTo).toBe('Button');
+  });
+
+  it('attributes call inside `const X = React.forwardRef((p, r) => fn())` to "X" (member-expression callee)', () => {
+    // Member-expression callee form (`React.forwardRef`). The `arguments`-
+    // parent walk doesn't constrain the function field, so this resolves
+    // identically to the bare-identifier form.
+    const sites = collectCallAttributions(`
+      const Card = React.forwardRef((props, ref) => {
+        return doStuff(props);
+      });
+    `);
+    expect(findCall(sites, 'doStuff')?.attributedTo).toBe('Card');
+  });
+
+  it('attributes call inside `const X = useCallback(() => fn(), [])` to "X"', () => {
+    // useCallback / useMemo are the most common HOC-wrapped form in real
+    // React codebases. The trailing `[deps]` array doesn't affect the walk
+    // — the arrow is still the first `arguments` child.
+    const sites = collectCallAttributions(`
+      const handleClick = useCallback(() => {
+        sendEvent('click');
+      }, []);
+    `);
+    expect(findCall(sites, 'sendEvent')?.attributedTo).toBe('handleClick');
+  });
+
+  it('attributes call inside `const X = memo((props) => fn())` to "X"', () => {
+    const sites = collectCallAttributions(`
+      const Item = memo((props) => {
+        return render(props);
+      });
+    `);
+    expect(findCall(sites, 'render')?.attributedTo).toBe('Item');
+  });
+
+  it('does NOT name the HOC callback after its sibling (no first-sibling-wins regression)', () => {
+    // Two HOC-wrapped consts in the same module — each must take its own
+    // name, not bleed into the first declared. Mirrors the multi-action
+    // Zustand regression from PR #1175 review applied to HOC patterns.
+    const sites = collectCallAttributions(`
+      const handleClick = useCallback(() => {
+        doA();
+      }, []);
+
+      const handleSubmit = useCallback((value) => {
+        doB(value);
+      }, []);
+    `);
+    expect(findCall(sites, 'doA')?.attributedTo).toBe('handleClick');
+    expect(findCall(sites, 'doB')?.attributedTo).toBe('handleSubmit');
+  });
+
+  it('does NOT name a bare statement-level HOC call (unbound result)', () => {
+    // `useCallback(() => doStuff(), [])` at statement level (result thrown
+    // away). The walk climbs `arguments → call_expression → expression_statement`,
+    // which is NOT `variable_declarator`, so the branch returns null and the
+    // arrow stays anonymous. Calls inside attribute to no enclosing function.
+    const sites = collectCallAttributions(`
+      useCallback(() => {
+        doSomething();
+      }, []);
+    `);
+    // The `useCallback` call itself is module-level → null. The `doSomething`
+    // call is inside an unnamed arrow → null. Both must NOT borrow a name.
+    expect(findCall(sites, 'doSomething')?.attributedTo).toBeNull();
+    expect(findCall(sites, 'useCallback')?.attributedTo).toBeNull();
+  });
+
+  // ─── Definition-phase: HOC-wrapped consts must register as @definition.function ───
+
+  function definedFunctionNames(code: string): string[] {
+    const { parser, query } = makeParserAndQuery();
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'definition.function') isFn = true;
+        if (c.name === 'name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  it('captures `const X = HOC((args) => ...)` as @definition.function in TYPESCRIPT_QUERIES', () => {
+    // The query mirror of the resolver fix. Without these patterns,
+    // `Function:X` would never enter the registry on the legacy DAG and
+    // any CALLS edge claiming `Function:X` as source would dangle.
+    const names = definedFunctionNames(`
+      const Button = forwardRef((p, r) => render(p));
+      const Card = React.memo((p) => layout(p));
+      const handleClick = useCallback(() => doStuff(), []);
+      const computed = useMemo(() => result(), []);
+      const debounced = debounce((q) => search(q), 250);
+      export const Exported = forwardRef((p, r) => render(p));
+    `);
+    expect(names).toContain('Button');
+    expect(names).toContain('Card');
+    expect(names).toContain('handleClick');
+    expect(names).toContain('computed');
+    expect(names).toContain('debounced');
+    expect(names).toContain('Exported');
+  });
+
+  it('captures `const X = HOC(function (args) { ... })` (function-expression form)', () => {
+    // Pre-arrow legacy code uses `function () { ... }` instead of `() => ...`.
+    // The mirror pattern uses `(function_expression)` and must trigger.
+    const names = definedFunctionNames(`
+      const Legacy = wrap(function (x) { return doStuff(x); });
+    `);
+    expect(names).toContain('Legacy');
+  });
+
+  // ─── Documented trade-offs: pin behaviour so future readers aren't surprised ───
+
+  it('accepted false-positive: `const x = arr.find((y) => p(y))` attributes p to "x"', () => {
+    // The HOC-wrapped pattern (arrow's parent is `arguments`, grandparent is
+    // `call_expression`, great-grandparent is `variable_declarator`) is broad
+    // enough to also match chained array-method callbacks like Array#find /
+    // Array#some / Array#every — where `x` is a *value* (the result of the
+    // method), not a function. The arrow inside borrows the const's name and
+    // its inner calls attribute to it.
+    //
+    // This is documented in `languages/typescript/query.ts` as an accepted
+    // trade-off because:
+    //   1. `x` is never invoked as a function, so no incoming CALLS edge is
+    //      ever created — the spurious `Function:x` is graph-isolated on the
+    //      incoming side.
+    //   2. The outgoing edge `Function:x → predicate` is a minor mis-attribution
+    //      (the call IS happening, just not from a "function called x"), and
+    //      the alternative — narrowing the pattern to known HOC names — would
+    //      require maintaining a wrapper allowlist that breaks for every new
+    //      HOC factory.
+    //
+    // We pin this here so a future change that tightens the pattern is forced
+    // to update this test and re-evaluate the trade-off explicitly.
+    const sites = collectCallAttributions(`
+      const found = items.find((item) => predicate(item));
+    `);
+    expect(findCall(sites, 'predicate')?.attributedTo).toBe('found');
+  });
+
+  it('multi-arrow argument: both arrows resolve to the same const name (legacy DAG path)', () => {
+    // `const x = call(() => first(), () => second())` — both arrows share the
+    // same `arguments → call_expression → variable_declarator` ancestor chain,
+    // so `tsExtractFunctionName`'s third branch returns "x" for each. Calls
+    // inside both arrows therefore attribute to "x" on the legacy DAG path.
+    //
+    // In the registry-primary pipeline the two arrows produce two candidate
+    // `Function:x` defs that the qualified-name dedup collapses into one
+    // (last-write-wins by symbol range). The end result is the same set of
+    // CALLS edges sourced from "x"; only the def's range changes. We pin the
+    // legacy attribution here because that's what the unit harness exercises.
+    //
+    // The pattern is rare in real code (few APIs take two callbacks both
+    // worth tracking), but it does exist in some `register(setup, teardown)`
+    // / `addEventListener('event', handler, { once })` shaped helpers. If a
+    // future change drops one of the calls or attributes it elsewhere, we
+    // want to know.
+    const sites = collectCallAttributions(`
+      const x = call(() => first(), () => second());
+    `);
+    expect(findCall(sites, 'first')?.attributedTo).toBe('x');
+    expect(findCall(sites, 'second')?.attributedTo).toBe('x');
+  });
+});

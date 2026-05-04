@@ -68,6 +68,8 @@ const vueClassExtractor = createClassExtractor(vueClassConfig);
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,
   extensions: ['.vue'],
+  entryPointPatterns: [],
+  astFrameworkPatterns: [],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,

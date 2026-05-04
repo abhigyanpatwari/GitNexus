@@ -29,7 +29,7 @@
     "@tailwindcss/vite": "^4.2.4",
     "axios": "^1.13.2",
     "d3": "^7.9.0",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.2",
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-layout-force": "^0.2.4",

@@ -1,11 +1,12 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('go');
 
 // ---------------------------------------------------------------------------
 // Heritage: package imports + cross-package calls (exercises PackageMap)
@@ -607,6 +610,30 @@ describe('Go return type inference via explicit function return type', () => {
         c.targetFilePath.includes('user.go'),
     );
     expect(saveCall).toBeDefined();
+  });
+});
+
+describe('Go same-package factory return type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-same-package-factory'), () => {});
+  }, 60000);
+
+  it('resolves user.Save() through same-package NewUser() return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'processUser' && c.targetFilePath === 'user.go',
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does not resolve user.Save() to Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'processUser' && c.targetFilePath === 'repo.go',
+    );
+    expect(repoSave).toBeUndefined();
   });
 });
 
@@ -1258,6 +1285,47 @@ describe('Go cross-file binding propagation', () => {
     const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'GetName');
     expect(saveEdge).toBeDefined();
     expect(getNameEdge).toBeDefined();
+  });
+});
+
+describe('Go aliased package selector resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-aliased-package-import'), () => {});
+  }, 60000);
+
+  it('resolves util.Log() through an aliased package import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(
+      (c) =>
+        c.target === 'Log' && c.source === 'main' && c.targetFilePath === 'internal/util/log.go',
+    );
+    expect(logCall).toBeDefined();
+  });
+});
+
+describe('Go method owner resolution across package files', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-split-method-owner'), () => {});
+  }, 60000);
+
+  it('resolves user.Save() to the method whose receiver type is declared in another package file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'process' && c.targetFilePath === 'save.go',
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does not resolve user.Save() to Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'process' && c.targetFilePath === 'repo.go',
+    );
+    expect(repoSave).toBeUndefined();
   });
 });
 

@@ -13,7 +13,7 @@ const DEFAULT_DETECT = {
   topics: true,
   shared_libs: true,
   embedding_fallback: true,
-  workspace_deps: true,
+  workspace_deps: false,
 };
 
 const DEFAULT_MATCHING = {

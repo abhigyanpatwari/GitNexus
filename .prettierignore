@@ -2,6 +2,7 @@ dist/
 coverage/
 gitnexus/vendor/
 gitnexus/test/fixtures/
+gitnexus-web/test/fixtures/
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/
 *.d.ts
