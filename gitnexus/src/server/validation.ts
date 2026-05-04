@@ -19,6 +19,8 @@
  */
 
 import path from 'node:path';
+import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
+import type { RequestHandler } from 'express';
 
 /**
  * Thrown by validation helpers when user input is rejected.
@@ -94,4 +96,39 @@ export function assertSafePath(rawPath: string, root: string): string {
  */
 export function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Default rate-limit policy for FS-touching API routes (CodeQL
+ * js/missing-rate-limiting). Tuned for the local-bound HTTP server's expected
+ * traffic — interactive web UI use stays well under the limit; abusive loops
+ * trip 429.
+ */
+export const DEFAULT_RATE_LIMIT_RPM = 60;
+
+/**
+ * Build a per-route rate-limit middleware with project-uniform defaults.
+ *
+ * Each call returns a NEW limiter instance — independent counters per route,
+ * so /api/file traffic doesn't push /api/grep into 429.
+ *
+ * Defaults:
+ *   - 60 requests per IP per minute (DEFAULT_RATE_LIMIT_RPM)
+ *   - draft-7 RateLimit-* response headers (no legacy X-RateLimit-* headers)
+ *   - 429 with a JSON body matching the project's `{ error: '...' }` shape
+ *   - keyGenerator: req.ip (caller must wire `app.set('trust proxy', ...)`
+ *     correctly — see createServer in api.ts)
+ *
+ * Tests pass `{ windowMs: 100, max: 3 }` to keep limiter tests fast and
+ * deterministic.
+ */
+export function createRouteLimiter(opts?: Partial<RateLimitOptions>): RequestHandler {
+  return rateLimit({
+    windowMs: 60 * 1000,
+    max: DEFAULT_RATE_LIMIT_RPM,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' },
+    ...opts,
+  });
 }

@@ -33,7 +33,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
-import { assertString, escapeRegExp, BadRequestError } from './validation.js';
+import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
@@ -217,7 +217,11 @@ export const registerWebUI = (app: express.Express, staticDir: string | null): v
     // The regex excludes /api paths AND paths with file extensions (.js, .css, etc.)
     // so missing assets get real 404s instead of the SPA HTML.
     // Adding routes below this will be unreachable for non-API, non-asset paths.
-    app.get(SPA_FALLBACK_REGEX, (_req, res) => {
+    // Rate-limited (CodeQL js/missing-rate-limiting #180): the SPA fallback
+    // serves a constant index.html, but the FS access from a route handler
+    // is enough to trip the analyzer. The limit is permissive (60 rpm/IP)
+    // since browser navigation legitimately fires this often.
+    app.get(SPA_FALLBACK_REGEX, createRouteLimiter(), (_req, res) => {
       res.sendFile(path.join(staticDir, 'index.html'));
     });
   } else {
@@ -612,6 +616,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
+  // Trust X-Forwarded-* headers only when the connection comes from the
+  // local loopback or RFC1918 private/link-local addresses — exactly the
+  // origins the CORS allowlist accepts. Without this, every request behind
+  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
+  // single user can trip the per-IP rate limiter for everyone (residual
+  // review F5 on PR #1322 plan).
+  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
   // Disallowed origins get the response without Access-Control-Allow-Origin,
@@ -829,7 +841,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Delete a repo — removes index, clone dir (if any), and unregisters it
-  app.delete('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting #181): destructive operation
+  // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
+  // delete; tighten if abuse is observed.
+  app.delete('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1142,7 +1157,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Read file — with path traversal guard
-  app.get('/api/file', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting #444): per-request fs.readFile.
+  app.get('/api/file', createRouteLimiter(), async (req, res) => {
     const entry = await resolveRepo(requestedRepo(req));
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
@@ -1153,7 +1169,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
-  app.get('/api/grep', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting #183): scans every file in
+  // the indexed repo per request — heaviest I/O endpoint. Same default 60
+  // rpm/IP for now; consider tightening if real-world load shows abuse.
+  app.get('/api/grep', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
