@@ -4,7 +4,7 @@
  * Tests isGitRepo, getCurrentCommit, getGitRoot, and the newly added
  * hasGitDir helper introduced for issue #384 (indexing non-git folders).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -94,6 +94,26 @@ describe('getCurrentCommit', () => {
     try {
       expect(getCurrentCommit(tmpDir)).toBe('');
     } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression: #1172 — without explicit stdio on execSync, Node forwards
+  // the child's stderr to the parent process, printing "fatal: not a git
+  // repository" to the user's terminal even though the error is caught.
+  it('does not leak git stderr to process.stderr (#1172)', async () => {
+    const { getCurrentCommit } = await import('../../src/storage/git.js');
+    // git-init a dir without commits so `git rev-parse HEAD` fails with a
+    // "fatal:" message — the exact class of error that leaked before the fix.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    execSync('git init -q', { cwd: tmpDir, stdio: 'ignore' });
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(getCurrentCommit(tmpDir)).toBe('');
+      const stderrOutput = spy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrOutput).not.toContain('fatal');
+    } finally {
+      spy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
