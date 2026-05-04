@@ -257,6 +257,14 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps
       await runWithSessionLock(async () => {
+        // CHECKPOINT before close to flush WAL contents (same rationale as closeLbug)
+        if (conn) {
+          try {
+            await conn.query('CHECKPOINT');
+          } catch {
+            /* best-effort */
+          }
+        }
         try {
           if (conn) await conn.close();
         } catch {
@@ -294,6 +302,14 @@ const ensureLbugInitialized = async (dbPath: string) => {
 const doInitLbug = async (dbPath: string) => {
   // Different database requested — close the old one first
   if (conn || db) {
+    // CHECKPOINT before close to flush WAL contents (same rationale as closeLbug)
+    if (conn) {
+      try {
+        await conn.query('CHECKPOINT');
+      } catch {
+        /* ignore — older LadybugDB or schemaless DB may not accept it */
+      }
+    }
     try {
       if (conn) await conn.close();
     } catch {}
@@ -1048,6 +1064,21 @@ export const fetchExistingEmbeddingHashes = async (
 };
 
 export const closeLbug = async (): Promise<void> => {
+  // CHECKPOINT before close so the WAL/.shadow contents are flushed into
+  // the main database file. Without this, LadybugDB 0.16.0's non-blocking
+  // checkpoint thread can outlive the close call and leave sidecar pages
+  // pending on disk, which makes a subsequent read-side open either race
+  // with the WAL replay or trip the database-id check on the sidecars.
+  // This is especially critical after embedding writes, which generate
+  // large amounts of WAL data. CHECKPOINT is a no-op when there's nothing
+  // pending, so it's cheap on the happy path.
+  if (conn) {
+    try {
+      await conn.query('CHECKPOINT');
+    } catch {
+      /* ignore — older LadybugDB or schemaless DB may not accept it */
+    }
+  }
   if (conn) {
     try {
       await conn.close();
