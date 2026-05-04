@@ -42,9 +42,7 @@ afterAll(async () => {
 // Minimal express-shaped mock that captures status() / json() calls in a
 // shape compatible with the handler's expected interface. Returns the
 // final status (default 200 for naked res.json) and JSON body.
-const invoke = async (
-  query: Record<string, unknown>,
-): Promise<{ status: number; body: any }> => {
+const invoke = async (query: Record<string, unknown>): Promise<{ status: number; body: any }> => {
   let capturedStatus = 200;
   let capturedBody: any = undefined;
   const res = {
