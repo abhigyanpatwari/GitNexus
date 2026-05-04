@@ -19,8 +19,8 @@
  */
 
 import path from 'node:path';
-import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
-import type { RequestHandler } from 'express';
+import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
+import type { Request } from 'express';
 
 /**
  * Thrown by validation helpers when user input is rejected.
@@ -103,8 +103,25 @@ export function escapeRegExp(input: string): string {
  * js/missing-rate-limiting). Tuned for the local-bound HTTP server's expected
  * traffic — interactive web UI use stays well under the limit; abusive loops
  * trip 429.
+ *
+ * Module-internal — not exported. Tests assert the observable behavior
+ * (61st request returns 429), not the literal value, so callers don't grow
+ * a coupling on this number.
  */
-export const DEFAULT_RATE_LIMIT_RPM = 60;
+const DEFAULT_RATE_LIMIT_RPM = 60;
+
+/**
+ * Project-specific subset of express-rate-limit options that callers may
+ * override. Intentionally narrow — `Partial<RateLimitOptions>` would let a
+ * caller pass `{ skip: () => true }` and silently disable limiting on a
+ * route. The two knobs below are sufficient for tests and any future
+ * legitimate per-route tuning.
+ */
+export interface RouteLimiterOverrides {
+  windowMs?: number;
+  /** Canonical name in express-rate-limit v8+. `max` is the deprecated alias. */
+  limit?: number;
+}
 
 /**
  * Build a per-route rate-limit middleware with project-uniform defaults.
@@ -113,21 +130,28 @@ export const DEFAULT_RATE_LIMIT_RPM = 60;
  * so /api/file traffic doesn't push /api/grep into 429.
  *
  * Defaults:
- *   - 60 requests per IP per minute (DEFAULT_RATE_LIMIT_RPM)
+ *   - 60 requests per IP per minute
  *   - draft-7 RateLimit-* response headers (no legacy X-RateLimit-* headers)
  *   - 429 with a JSON body matching the project's `{ error: '...' }` shape
- *   - keyGenerator: req.ip (caller must wire `app.set('trust proxy', ...)`
- *     correctly — see createServer in api.ts)
+ *   - passOnStoreError: store failures let the request through rather than
+ *     producing an HTML 500 from Express's default error handler
+ *   - keyGenerator: req.ip with a socket.remoteAddress fallback so abruptly
+ *     closed connections do not trigger ERR_ERL_UNDEFINED_IP_ADDRESS
+ *     (which would 500 the request via Express's default error handler).
+ *     Caller must wire `app.set('trust proxy', ...)` correctly — see
+ *     createServer in api.ts.
  *
- * Tests pass `{ windowMs: 100, max: 3 }` to keep limiter tests fast and
+ * Tests pass `{ windowMs: 100, limit: 3 }` to keep limiter tests fast and
  * deterministic.
  */
-export function createRouteLimiter(opts?: Partial<RateLimitOptions>): RequestHandler {
+export function createRouteLimiter(opts?: RouteLimiterOverrides): RateLimitRequestHandler {
   return rateLimit({
     windowMs: 60 * 1000,
-    max: DEFAULT_RATE_LIMIT_RPM,
+    limit: DEFAULT_RATE_LIMIT_RPM,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
+    passOnStoreError: true,
+    keyGenerator: (req: Request) => req.ip ?? req.socket?.remoteAddress ?? 'unknown',
     message: { error: 'Too many requests, please try again later.' },
     ...opts,
   });

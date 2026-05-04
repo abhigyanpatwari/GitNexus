@@ -72,7 +72,19 @@ export class BackendError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly code: 'network' | 'server' | 'client' | 'not_found' | 'timeout',
+    public readonly code:
+      | 'network'
+      | 'server'
+      | 'client'
+      | 'not_found'
+      | 'timeout'
+      | 'rate_limited',
+    /**
+     * Milliseconds until the caller should retry. Populated for rate-limited
+     * responses (HTTP 429) from the server's `Retry-After` header. `undefined`
+     * for every other code, including `client` errors that aren't 429.
+     */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'BackendError';
@@ -279,10 +291,32 @@ const assertOk = async (response: Response): Promise<void> => {
   const code =
     response.status === 404
       ? 'not_found'
-      : response.status >= 400 && response.status < 500
-        ? 'client'
-        : 'server';
-  throw new BackendError(message, response.status, code);
+      : response.status === 429
+        ? 'rate_limited'
+        : response.status >= 400 && response.status < 500
+          ? 'client'
+          : 'server';
+
+  // Retry-After is the standard HTTP signal for when the client may try again.
+  // express-rate-limit emits it on 429 with seconds (integer) or HTTP-date.
+  // We accept both shapes; an unparseable header yields undefined retryAfterMs.
+  let retryAfterMs: number | undefined;
+  if (response.status === 429) {
+    const header = response.headers.get('retry-after');
+    if (header) {
+      const seconds = Number(header);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        retryAfterMs = seconds * 1000;
+      } else {
+        const dateMs = Date.parse(header);
+        if (Number.isFinite(dateMs)) {
+          retryAfterMs = Math.max(0, dateMs - Date.now());
+        }
+      }
+    }
+  }
+
+  throw new BackendError(message, response.status, code, retryAfterMs);
 };
 
 const repoParam = (repo?: string): string => (repo ? `repo=${encodeURIComponent(repo)}` : '');
