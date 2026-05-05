@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -69,8 +69,19 @@ const supportedTargetHosts = {
   '--mac': 'darwin',
   '--win': 'win32',
 };
+const allowedBuilderArgs = new Set([
+  '--dir',
+  '--linux',
+  '--mac',
+  '--win',
+  'AppImage',
+  'dmg',
+  'nsis',
+]);
 const artifactFileExtensions = new Set(['.AppImage', '.dmg', '.exe', '.msi', '.zip']);
 const gitnexusRuntimeDependencyNames = Object.keys(gitnexusPackageJson.dependencies ?? {});
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const packagedResourceEntries = [
   {
     from: path.join(gitnexusWebRoot, 'dist'),
@@ -138,6 +149,12 @@ const getRuntimeDependencyClosure = () => {
 const packagedRuntimeNodeModules = getRuntimeDependencyClosure();
 
 const builderArgs = process.argv.slice(2);
+const unsupportedBuilderArgs = builderArgs.filter((argument) => !allowedBuilderArgs.has(argument));
+
+if (unsupportedBuilderArgs.length > 0) {
+  throw new Error(`Unsupported electron-builder arguments: ${unsupportedBuilderArgs.join(', ')}`);
+}
+
 const requestedTargets = builderArgs.filter((argument) => argument in supportedTargetHosts);
 
 const builderEnvironment = {
@@ -154,32 +171,63 @@ const builderEnvironment = {
   GITNEXUS_DESKTOP_WEB_DIST: toBuilderRelativePath(path.join(gitnexusWebRoot, 'dist')),
 };
 
-const builderCommand = [
-  `node "${electronBuilderCliPath}"`,
-  `--config "${electronBuilderConfigPath}"`,
+const builderCliArgs = [
+  electronBuilderCliPath,
+  '--config',
+  electronBuilderConfigPath,
   `-c.electronVersion=${electronVersion}`,
-  `-c.directories.output="${outputDir}"`,
-  '--publish never',
+  `-c.directories.output=${outputDir}`,
+  '--publish',
+  'never',
   ...builderArgs,
-].join(' ');
+];
 
-const runCommand = (command, cwd, extraEnv = {}) => {
-  execSync(command, {
+const runCommand = (command, args, cwd, extraEnv = {}) => {
+  execFileSync(command, args, {
     cwd,
     env: {
       ...process.env,
       ...extraEnv,
     },
     stdio: 'inherit',
+    windowsHide: true,
   });
 };
 
-const tryRunCommand = (command, cwd, extraEnv = {}) => {
+const patchBindingGypInPlace = (gypPath) => {
+  let descriptor;
+
   try {
-    runCommand(command, cwd, extraEnv);
+    descriptor = fs.openSync(gypPath, 'r+');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return false;
+    }
+
+    throw error;
+  }
+
+  try {
+    const original = fs.readFileSync(descriptor, 'utf8');
+
+    if (!original.includes('c++17')) {
+      return false;
+    }
+
+    const patched = original
+      .replaceAll('-std=c++17', '-std=c++20')
+      .replaceAll('/std:c++17', '/std:c++20')
+      .replaceAll('"c++17"', '"c++20"');
+
+    if (patched === original) {
+      return false;
+    }
+
+    fs.ftruncateSync(descriptor, 0);
+    fs.writeSync(descriptor, patched, 0, 'utf8');
     return true;
-  } catch {
-    return false;
+  } finally {
+    fs.closeSync(descriptor);
   }
 };
 
@@ -188,11 +236,13 @@ const mirrorDirectory = (sourceDirectory, destinationDirectory) => {
     fs.mkdirSync(destinationDirectory, { recursive: true });
 
     try {
-      execSync(
-        `robocopy "${sourceDirectory}" "${destinationDirectory}" /MIR /NFL /NDL /NJH /NJS /NP`,
+      execFileSync(
+        'robocopy',
+        [sourceDirectory, destinationDirectory, '/MIR', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'],
         {
           cwd: packageRoot,
           stdio: 'inherit',
+          windowsHide: true,
         },
       );
     } catch (error) {
@@ -310,16 +360,20 @@ const rebuildPackagedNativeModules = () => {
       continue;
     }
 
-    const rebuildCommand = [
-      `npx --yes -p @electron/rebuild@${electronRebuildVersion} electron-rebuild`,
+    const rebuildCommandArgs = [
+      '--yes',
+      '-p',
+      `@electron/rebuild@${electronRebuildVersion}`,
+      'electron-rebuild',
       '--force',
-      '--types prod,optional',
-      `--version "${electronVersion}"`,
-      `--module-dir "${packagedRuntimeRoot}"`,
-      process.platform === 'win32' ? '--sequential' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
+      '--types',
+      'prod,optional',
+      '--version',
+      electronVersion,
+      '--module-dir',
+      packagedRuntimeRoot,
+      ...(process.platform === 'win32' ? ['--sequential'] : []),
+    ];
 
     console.log(
       `[build] rebuilding packaged native modules for Electron ${electronVersion} in ${packagedRuntimeRoot}`,
@@ -333,17 +387,11 @@ const rebuildPackagedNativeModules = () => {
     for (const entry of fs.readdirSync(packagedNodeModulesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const gypPath = path.join(packagedNodeModulesRoot, entry.name, 'binding.gyp');
-      if (!fs.existsSync(gypPath)) continue;
-      const original = fs.readFileSync(gypPath, 'utf8');
-      if (!original.includes('c++17')) continue;
-      const patched = original
-        .replaceAll('-std=c++17', '-std=c++20')
-        .replaceAll('/std:c++17', '/std:c++20')
-        .replaceAll('"c++17"', '"c++20"');
-      fs.writeFileSync(gypPath, patched);
-      console.log(`[build] patched ${gypPath}: c++17 → c++20 for Electron ${electronVersion}`);
+      if (patchBindingGypInPlace(gypPath)) {
+        console.log(`[build] patched ${gypPath}: c++17 → c++20 for Electron ${electronVersion}`);
+      }
     }
-    runCommand(rebuildCommand, packagedRuntimeRoot);
+    runCommand(npxCommand, rebuildCommandArgs, packagedRuntimeRoot);
   }
 };
 
@@ -359,10 +407,11 @@ const repairAppBuilderLibPackage = () => {
     const installedPackageRoot = path.join(packageRoot, 'node_modules', 'app-builder-lib');
 
     runCommand(
-      `npm pack app-builder-lib@${appBuilderLibVersion} --pack-destination "${repairDirectory}"`,
+      npmCommand,
+      ['pack', `app-builder-lib@${appBuilderLibVersion}`, '--pack-destination', repairDirectory],
       packageRoot,
     );
-    runCommand(`tar -xzf "${tarballPath}" -C "${repairDirectory}"`, packageRoot);
+    runCommand('tar', ['-xzf', tarballPath, '-C', repairDirectory], packageRoot);
     overlayDirectoryContents(extractedPackageRoot, installedPackageRoot);
   } finally {
     fs.rmSync(repairDirectory, { force: true, recursive: true });
@@ -434,7 +483,7 @@ const ensureDesktopToolchainHealthy = () => {
   console.warn(
     '[build] electron-builder installation is incomplete. Restoring desktop dependencies with npm ci...',
   );
-  runCommand('npm ci', packageRoot);
+  runCommand(npmCommand, ['ci'], packageRoot);
 
   const unresolvedBuilderRuntimeModules = requiredBuilderRuntimeModules.filter(
     (moduleName) => !canResolveBuilderRuntimeModule(moduleName),
@@ -485,13 +534,13 @@ fs.writeFileSync(latestReleasePointerPath, `${outputDir}\n`);
 assertSupportedHostForRequestedTargets();
 ensureDesktopToolchainHealthy();
 
-runCommand('node scripts/ensure-gitnexus-runtime.mjs', packageRoot);
+runCommand(process.execPath, ['scripts/ensure-gitnexus-runtime.mjs'], packageRoot);
 
-runCommand('npm run bundle', packageRoot);
+runCommand(npmCommand, ['run', 'bundle'], packageRoot);
 
-runCommand('npm run build', gitnexusWebRoot);
+runCommand(npmCommand, ['run', 'build'], gitnexusWebRoot);
 
-runCommand(builderCommand, packageRoot, builderEnvironment);
+runCommand(process.execPath, builderCliArgs, packageRoot, builderEnvironment);
 syncPackagedRuntimeResources();
 rebuildPackagedNativeModules();
 
