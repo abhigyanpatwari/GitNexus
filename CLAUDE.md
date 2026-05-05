@@ -52,3 +52,67 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 ## GitNexus rules
 
 See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.md](AGENTS.md)** for the canonical MCP tools, impact analysis rules, and index instructions.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **GitNexus** (23330 symbols, 30865 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/GitNexus/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/GitNexus/clusters` | All functional areas |
+| `gitnexus://repo/GitNexus/processes` | All execution flows |
+| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Work in the Ingestion area (222 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
+| Work in the Components area (108 symbols) | `.claude/skills/generated/components/SKILL.md` |
+| Work in the Extractors area (107 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
+| Work in the Type-extractors area (90 symbols) | `.claude/skills/generated/type-extractors/SKILL.md` |
+| Work in the Group area (89 symbols) | `.claude/skills/generated/group/SKILL.md` |
+| Work in the Cli area (85 symbols) | `.claude/skills/generated/cli/SKILL.md` |
+| Work in the Configs area (85 symbols) | `.claude/skills/generated/configs/SKILL.md` |
+| Work in the Unit area (78 symbols) | `.claude/skills/generated/unit/SKILL.md` |
+| Work in the Lbug area (74 symbols) | `.claude/skills/generated/lbug/SKILL.md` |
+| Work in the Scope-resolution area (72 symbols) | `.claude/skills/generated/scope-resolution/SKILL.md` |
+| Work in the Hooks area (71 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
+| Work in the Server area (65 symbols) | `.claude/skills/generated/server/SKILL.md` |
+| Work in the Local area (60 symbols) | `.claude/skills/generated/local/SKILL.md` |
+| Work in the Workers area (57 symbols) | `.claude/skills/generated/workers/SKILL.md` |
+| Work in the Wiki area (51 symbols) | `.claude/skills/generated/wiki/SKILL.md` |
+| Work in the Typescript area (50 symbols) | `.claude/skills/generated/typescript/SKILL.md` |
+| Work in the Embeddings area (50 symbols) | `.claude/skills/generated/embeddings/SKILL.md` |
+| Work in the Services area (45 symbols) | `.claude/skills/generated/services/SKILL.md` |
+| Work in the Llm area (44 symbols) | `.claude/skills/generated/llm/SKILL.md` |
+| Work in the Storage area (42 symbols) | `.claude/skills/generated/storage/SKILL.md` |
+
+<!-- gitnexus:end -->
