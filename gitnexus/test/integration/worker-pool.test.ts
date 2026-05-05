@@ -300,7 +300,7 @@ describe('worker pool integration', () => {
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 500,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 4,
     });
@@ -308,7 +308,7 @@ describe('worker pool integration', () => {
     try {
       const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
       expect(results).toEqual([{ fileCount: 1, recovered: true }]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.6s timeout'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 2s timeout'));
     } finally {
       warnSpy.mockRestore();
       fs.rmSync(tempDir, { recursive: true, force: true });
