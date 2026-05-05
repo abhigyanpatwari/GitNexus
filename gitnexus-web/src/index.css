@@ -1,5 +1,11 @@
 @import 'tailwindcss';
 
+/* `dark:` modifier follows our explicit theme attribute, not the OS
+   media query. The boot script and `useTheme` hook always write a
+   resolved value (`light` | `dark`) to `<html data-theme>`, so this
+   keeps the variant consistent with the runtime preference. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
 /* ═══════════════════════════════════════════════════════════════
    TAILWIND V4 THEME CONFIGURATION
 ═══════════════════════════════════════════════════════════════ */
@@ -19,6 +25,8 @@
   --color-text-primary: #e4e4ed;
   --color-text-secondary: #8888a0;
   --color-text-muted: #5a5a70;
+  /* Higher-contrast text used for emphasis (h1–h4, strong) */
+  --color-text-strong: #ffffff;
 
   /* Accent */
   --color-accent: #7c3aed;
@@ -49,16 +57,44 @@
   --shadow-glow-soft: 0 0 40px rgba(124, 58, 237, 0.15);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   LIGHT THEME — overrides applied when html[data-theme='light'].
+   `@theme` above defines defaults (dark); these win by cascade.
+   Only chrome tokens flip; node colors and accent stay constant
+   so graph and brand identity are preserved across themes.
+═══════════════════════════════════════════════════════════════ */
+[data-theme='light'] {
+  --color-void: #ffffff;
+  --color-deep: #f8f9fb;
+  --color-surface: #ffffff;
+  --color-elevated: #f3f4f7;
+  --color-hover: #e9ebf0;
+
+  --color-border-subtle: #e5e7eb;
+  --color-border-default: #d1d5db;
+
+  --color-text-primary: #1a1a23;
+  --color-text-secondary: #525266;
+  --color-text-muted: #80809a;
+  --color-text-strong: #0a0a14;
+
+  --color-accent: #7c3aed;
+  --color-accent-dim: #a78bfa;
+
+  --shadow-glow: 0 0 20px rgba(124, 58, 237, 0.18);
+  --shadow-glow-soft: 0 0 40px rgba(124, 58, 237, 0.1);
+}
+
 /* Keyframes */
 @keyframes breathe {
   0%,
   100% {
-    border-color: #2a2a3a;
+    border-color: var(--color-border-default);
     box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.3);
   }
 
   50% {
-    border-color: #7c3aed;
+    border-color: var(--color-accent);
     box-shadow: 0 0 40px 10px rgba(124, 58, 237, 0.3);
   }
 }
@@ -149,7 +185,7 @@ body {
 ═══════════════════════════════════════════════════════════════ */
 .scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: #2a2a3a #0a0a10;
+  scrollbar-color: var(--color-border-default) var(--color-deep);
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -200,7 +236,7 @@ body {
 
 .chat-prose strong {
   font-weight: 600;
-  color: #fff;
+  color: var(--color-text-strong);
 }
 
 .chat-prose em {
@@ -214,7 +250,7 @@ body {
 .chat-prose h3,
 .chat-prose h4 {
   font-weight: 600;
-  color: #fff;
+  color: var(--color-text-strong);
   margin-top: 1.5em;
   margin-bottom: 0.5em;
   line-height: 1.3;

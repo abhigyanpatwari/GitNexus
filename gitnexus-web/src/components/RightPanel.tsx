@@ -269,7 +269,7 @@ export const RightPanel = () => {
           <div className="flex items-center gap-2.5 border-b border-border-subtle bg-elevated/50 px-4 py-3">
             <div className="ml-auto flex items-center gap-2">
               {!isAgentReady && (
-                <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-300">
+                <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
                   Configure AI
                 </span>
               )}
@@ -283,7 +283,7 @@ export const RightPanel = () => {
 
           {/* Status / errors */}
           {agentError && (
-            <div className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            <div className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-100">
               <AlertTriangle className="h-4 w-4" />
               <span>{agentError}</span>
             </div>
@@ -445,7 +445,7 @@ export const RightPanel = () => {
               )}
             </div>
             {!isAgentReady && !isAgentInitializing && (
-              <div className="mt-2 flex items-center gap-2 text-xs text-amber-200">
+              <div className="mt-2 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-200">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 <span>
                   {isProviderConfigured()
