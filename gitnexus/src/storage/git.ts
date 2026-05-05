@@ -17,7 +17,7 @@ export const getCurrentCommit = (repoPath: string): string => {
   try {
     return execSync('git rev-parse HEAD', {
       cwd: repoPath,
-      // Suppress stderr — without an explicit stdio option, Node's execSync
+      // Suppress stderr -- without an explicit stdio option, Node's execSync
       // forwards the child's stderr to the parent process (documented behaviour).
       // When repoPath is not inside a git worktree, git prints
       // "fatal: not a git repository" to stderr, which leaks to the user's
@@ -98,7 +98,7 @@ export const getGitRoot = (fromPath: string): string | null => {
   try {
     const raw = execSync('git rev-parse --show-toplevel', {
       cwd: fromPath,
-      // Suppress stderr — see getCurrentCommit comment and #1172.
+      // Suppress stderr -- see getCurrentCommit comment and #1172.
       stdio: ['ignore', 'pipe', 'ignore'],
     })
       .toString()

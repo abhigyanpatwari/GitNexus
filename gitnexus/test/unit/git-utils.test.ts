@@ -131,6 +131,21 @@ describe('getGitRoot', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  // Regression: #1172 -- mirrors the getCurrentCommit stderr test above.
+  it('does not leak git stderr to process.stderr (#1172)', async () => {
+    const { getGitRoot } = await import('../../src/storage/git.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      getGitRoot(tmpDir);
+      const stderrOutput = spy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrOutput).not.toContain('fatal');
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── getRemoteUrl ─────────────────────────────────────────────────────────
