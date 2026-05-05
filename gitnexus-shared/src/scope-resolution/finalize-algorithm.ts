@@ -412,22 +412,6 @@ function extractLocalName(parsed: ParsedImport): string {
   }
 }
 
-function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
-  if (parsed.kind === 'wildcard') return 'wildcard-expanded';
-  return parsed.kind;
-}
-
-function extractLocalName(parsed: ParsedImport): string {
-  switch (parsed.kind) {
-    case 'wildcard':
-    case 'side-effect':
-    case 'dynamic-resolved':
-      return '';
-    default:
-      return parsed.localName;
-  }
-}
-
 function extractExportedName(parsed: ParsedImport): string {
   switch (parsed.kind) {
     case 'named':
