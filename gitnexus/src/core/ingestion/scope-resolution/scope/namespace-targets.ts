@@ -38,8 +38,8 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 export function collectNamespaceTargets(
   parsed: ParsedFile,
   scopes: ScopeResolutionIndexes,
-): Map<string, string> {
-  const out = new Map<string, string>();
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
   const moduleEdges = scopes.imports.get(parsed.moduleScope);
   if (moduleEdges === undefined) return out;
 
@@ -51,7 +51,12 @@ export function collectNamespaceTargets(
   for (const edge of moduleEdges) {
     if (edge.targetFile === null) continue;
     if (!namespaceLocals.has(edge.localName)) continue;
-    out.set(edge.localName, edge.targetFile);
+    let targets = out.get(edge.localName);
+    if (targets === undefined) {
+      targets = [];
+      out.set(edge.localName, targets);
+    }
+    if (!targets.includes(edge.targetFile)) targets.push(edge.targetFile);
   }
   return out;
 }

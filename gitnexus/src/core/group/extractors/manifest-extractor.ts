@@ -269,17 +269,19 @@ export class ManifestExtractor {
           { contract: link.contract },
         );
       } else if (link.type === 'custom') {
-        // V1: exact name-only match on code-definition nodes.
-        // Positive allowlist mirrors other contract types. If multiple code
-        // symbols share the same name, ORDER BY filePath ASC LIMIT 1 picks
-        // the alphabetically-first occurrence deterministically.
+        // Workspace extractors produce qualified contracts like "mathlex::Expression".
+        // Graph nodes store the unqualified symbol name ("Expression"), so strip
+        // the "provider::" prefix before querying.
+        const symbolName = link.contract.includes('::')
+          ? link.contract.split('::').pop()!
+          : link.contract;
         rows = await executor(
           `MATCH (n:Function|Method|Class|Interface|Struct|Enum|Trait|Constructor|TypeAlias|Impl|Macro|Union|Typedef|Property|Record|Delegate|Annotation|Template|Const|Static|CodeElement)
-           WHERE n.name = $contract
+           WHERE n.name = $symbolName
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
-          { contract: link.contract },
+          { symbolName },
         );
       } else {
         return null;

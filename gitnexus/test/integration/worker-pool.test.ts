@@ -155,7 +155,7 @@ describe('worker pool integration', () => {
     }).toThrow(/Worker script not found/);
   });
 
-  // ─── Unhappy paths ──────────────────────────────────────────────────
+  // --- Unhappy paths -----------------------------------------------------
 
   it.skipIf(!hasDistWorker)('dispatch after terminate rejects', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
@@ -472,6 +472,63 @@ describe('worker pool integration', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('completes split-and-retry when the timed-out worker is the only active worker', async () => {
+    // Regression test for: the split-and-retry path resolving early when no other
+    // workers are active (activeWorkers === 0 during await replaceWorker).
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-sole-active-'));
+    const markerPath = path.join(tempDir, 'stalled-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          if (current.length > 1 && !fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'stall once');
+            return;
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: current.length, paths: current } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // 2 workers but subBatchSize=4 means all 4 items form 1 job; second worker stays idle.
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
+      subBatchSize: 4,
+      subBatchIdleTimeoutMs: 300,
+      maxTimeoutRetries: 0,
+      timeoutBackoffFactor: 3,
+    });
+
+    try {
+      const results = await pool.dispatch<any, any>([
+        { path: 'a.ts', content: '' },
+        { path: 'b.ts', content: '' },
+        { path: 'c.ts', content: '' },
+        { path: 'd.ts', content: '' },
+      ]);
+
+      const allPaths = results.flatMap((r: any) => r.paths);
+      expect(allPaths.sort()).toEqual(['a.ts', 'b.ts', 'c.ts', 'd.ts']);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into'));
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it('fails fast on a result message that violates the worker protocol', async () => {
     const { tempDir, workerPath } = writeTempWorker(

@@ -30,7 +30,13 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import {
+  getCurrentCommit,
+  getRemoteUrl,
+  hasGitDir,
+  getInferredRepoName,
+  resolveRepoIdentityRoot,
+} from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
@@ -168,7 +174,13 @@ export async function runFullAnalysis(
     if (currentCommit !== '') {
       await ensureGitNexusIgnored(repoPath);
       return {
-        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+        // `resolveRepoIdentityRoot` collapses worktree roots to the
+        // canonical repo basename (#1259) but leaves arbitrary subdirs
+        // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
+        repoName:
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath)),
         repoPath,
         stats: existingMeta.stats ?? {},
         alreadyUpToDate: true,
@@ -345,7 +357,19 @@ export async function runFullAnalysis(
       }
 
       const { readServerMapping } = await import('./embeddings/server-mapping.js');
-      const projectName = path.basename(repoPath);
+      // Mirror the registry's name-resolution chain so the server-mapping
+      // lookup key stays aligned with the final registry name (#1259):
+      //   --name → remote-derived → canonical-root basename
+      // (preserved-alias is intentionally NOT consulted here — server
+      // mappings are addressed by the operationally-meaningful name the
+      // user configures, not by a sticky registry-only alias they may not
+      // know about. The previous canonical-only logic ignored both --name
+      // and remote-derived names, silently breaking server-mapping for
+      // anyone with a `--name` alias or remote-named repo.)
+      const projectName =
+        options.registryName ??
+        getInferredRepoName(repoPath) ??
+        path.basename(resolveRepoIdentityRoot(repoPath));
       const serverName = await readServerMapping(projectName);
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,

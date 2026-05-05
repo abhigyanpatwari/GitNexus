@@ -1,0 +1,71 @@
+name: CodeQL
+
+# Static analysis (SAST) for TypeScript/JavaScript and Python sources.
+# Findings upload to the GitHub Security tab as SARIF.
+#
+# Advisory only on first introduction — see docs/plans/2026-05-03-001-feat-automated-security-scans-plan.md.
+# Promote to a required check after baseline triage (operator decision).
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 06:00 UTC — catches advisories newly published against
+    # already-merged code without waiting for the next PR.
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      # security-events:write is what enables SARIF upload to the Security tab.
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Don't leave GITHUB_TOKEN in .git/config for downstream steps to read.
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3.35.3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+          # Exclude generated/vendored code; tune after first-run signal.
+          # gitnexus/vendor/ holds tree-sitter-proto sources (regenerated, not authored).
+          # CodeQL path filters use .gitignore-style globs and do NOT support
+          # brace expansion — list each generated parser file separately.
+          config: |
+            paths-ignore:
+              - '**/dist/**'
+              - '**/node_modules/**'
+              - 'gitnexus/vendor/**'
+              - 'gitnexus/src/core/parsing/**/parser.c'
+              - 'gitnexus/src/core/parsing/**/parser.js'
+              # Test fixtures are intentionally synthetic inputs (broken/unused
+              # code, malformed samples) used to exercise the analyzer. CodeQL
+              # findings here are noise, not real bugs.
+              - '**/test/fixtures/**'
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3.35.3
+        with:
+          category: '/language:${{ matrix.language }}'
