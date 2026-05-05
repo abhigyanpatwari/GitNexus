@@ -242,6 +242,10 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.get\(SPA_FALLBACK_REGEX,\s*createRouteLimiter\(/);
   });
 
+  it('GET /api/health is registered (Docker healthcheck, #1147)', () => {
+    expect(apiSource).toMatch(/app\.get\('\/api\/health',\s*\(_req,\s*res\)\s*=>/);
+  });
+
   it('createServer wires trust proxy to loopback/linklocal/uniquelocal', () => {
     expect(apiSource).toMatch(
       /app\.set\(\s*'trust proxy'\s*,\s*'loopback,\s*linklocal,\s*uniquelocal'\s*\)/,
