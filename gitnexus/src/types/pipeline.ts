@@ -1,6 +1,7 @@
 import type { KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
+import type { CoverageGap } from '../core/coverage-gaps.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
@@ -17,4 +18,11 @@ export interface PipelineResult {
    * so regression suites can prove which path executed.
    */
   usedWorkerPool: boolean;
+  /**
+   * Languages with a meaningful presence in the repo (≥ 10 files by default)
+   * that GitNexus cannot index because no LanguageProvider exists. Surfaced
+   * by the CLI so callers see when "analyze succeeded" actually means
+   * "analyzed only a minority of the source tree."
+   */
+  coverageGaps: CoverageGap[];
 }
