@@ -777,6 +777,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     return found;
   };
 
+  // Lightweight healthcheck for Docker/orchestrator probes (#1147).
+  // Returns immediately so container managers do not confuse a long-lived
+  // SSE stream with an unhealthy server.
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
   // SSE heartbeat — clients connect to detect server liveness instantly.
   // When the server shuts down, the TCP connection drops and the client's
   // EventSource fires onerror immediately (no polling delay).
