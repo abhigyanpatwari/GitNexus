@@ -19,7 +19,7 @@
  */
 
 import path from 'node:path';
-import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator, type RateLimitRequestHandler } from 'express-rate-limit';
 import type { Request } from 'express';
 
 /**
@@ -151,7 +151,7 @@ export function createRouteLimiter(opts?: RouteLimiterOverrides): RateLimitReque
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     passOnStoreError: true,
-    keyGenerator: (req: Request) => req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+    keyGenerator: (req: Request) => ipKeyGenerator(req.ip ?? req.socket?.remoteAddress ?? ''),
     message: { error: 'Too many requests, please try again later.' },
     ...opts,
   });

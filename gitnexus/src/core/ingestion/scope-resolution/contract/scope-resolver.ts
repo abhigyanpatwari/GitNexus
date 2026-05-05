@@ -347,25 +347,6 @@ export interface ScopeResolver {
   loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
 
   /**
-   * Optional one-shot loader for cross-file import-resolution config
-   * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
-   * composer.json autoload for PHP). The orchestrator calls this once
-   * per workspace pass with the repo root and threads the result into
-   * every subsequent `resolveImportTarget` call as the
-   * `resolutionConfig` parameter.
-   *
-   * Languages that don't need any per-workspace config leave this
-   * undefined; the orchestrator threads `undefined` to
-   * `resolveImportTarget` in that case. Returning `null` is also
-   * supported and equivalent to "no config available".
-   *
-   * May be sync or async — the orchestrator awaits the result. The
-   * shape is opaque to the orchestrator (`unknown`); the per-language
-   * `resolveImportTarget` casts it to the language's expected shape.
-   */
-  loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
-
-  /**
    * Per-scope binding-merge precedence. The shared finalize pass
    * collects bindings from multiple sources (local declarations,
    * imports, namespace, wildcard, reexport) and asks the language
