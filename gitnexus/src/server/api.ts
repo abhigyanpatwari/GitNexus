@@ -1702,6 +1702,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               undefined, // context
               existingEmbeddings,
             );
+
+            // Flush WAL so subsequent /api/search requests see the new
+            // embeddings immediately (#1149). In the CLI path closeLbug()
+            // handles this during process exit, but the server keeps the
+            // connection open for other routes -- a CHECKPOINT is enough.
+            try {
+              await executeQuery('CHECKPOINT');
+            } catch {
+              /* best-effort -- older LadybugDB may not support it */
+            }
           });
 
           clearTimeout(embedTimeout);
