@@ -29,7 +29,6 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
@@ -37,6 +36,10 @@ import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+
+export const shouldEnableMcpHttp = (): boolean => {
+  return process.env.GITNEXUS_DISABLE_MCP_HTTP !== '1';
+};
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -560,7 +563,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  let cleanupMcp: () => Promise<void> = async () => {};
+
+  // Desktop packaged runtime disables MCP HTTP because the SDK import tree
+  // currently trips Electron's embedded Node resolver during server startup.
+  if (shouldEnableMcpHttp()) {
+    const { mountMCPEndpoints } = await import('./mcp-http.js');
+    cleanupMcp = mountMCPEndpoints(app, backend);
+  }
+
   const jobManager = new JobManager();
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,

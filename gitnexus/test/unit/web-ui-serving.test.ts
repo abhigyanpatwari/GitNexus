@@ -1,7 +1,7 @@
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const { accessMock } = vi.hoisted(() => ({
   accessMock: vi.fn(),
@@ -17,6 +17,7 @@ import {
   resolveWebDistDir,
   landingPageHtml,
   SPA_FALLBACK_REGEX,
+  shouldEnableMcpHttp,
   staticCacheControlSetHeaders,
 } from '../../src/server/api.js';
 
@@ -91,6 +92,22 @@ describe('landingPageHtml', () => {
 
   it('contains the Web UI not found message', () => {
     expect(html).toContain('Web UI not found');
+  });
+});
+
+describe('shouldEnableMcpHttp', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('enables MCP HTTP by default', () => {
+    expect(shouldEnableMcpHttp()).toBe(true);
+  });
+
+  it('disables MCP HTTP when requested by desktop runtime', () => {
+    vi.stubEnv('GITNEXUS_DISABLE_MCP_HTTP', '1');
+
+    expect(shouldEnableMcpHttp()).toBe(false);
   });
 });
 

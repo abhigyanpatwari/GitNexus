@@ -270,7 +270,7 @@ const spawnGitNexusServer = (): ChildProcess => {
     [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST],
     {
       cwd: getGitNexusRuntimeDir(),
-      env: getNodeProcessEnvironment(),
+      env: getNodeProcessEnvironment(app.isPackaged ? { GITNEXUS_DISABLE_MCP_HTTP: '1' } : {}),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     },
