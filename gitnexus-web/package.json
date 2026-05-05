@@ -27,7 +27,7 @@
     "@langchain/openai": "^1.4.5",
     "@sigma/edge-curve": "^3.1.0",
     "@tailwindcss/vite": "^4.2.4",
-    "axios": "^1.13.2",
+    "axios": "^1.16.0",
     "d3": "^7.9.0",
     "dompurify": "^3.4.2",
     "graphology": "^0.26.0",
