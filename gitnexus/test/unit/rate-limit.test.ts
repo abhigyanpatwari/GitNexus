@@ -78,6 +78,16 @@ describe('createRouteLimiter — defaults', () => {
     // express middleware signature is (req, res, next) — 3 args.
     expect(limiter.length).toBe(3);
   });
+
+  // Regression guard for #1360 — createRouteLimiter must not throw
+  // ERR_ERL_KEY_GEN_IPV6.  The validation fires at construction time
+  // (inside `rateLimit()`), so a simple `createRouteLimiter()` call is
+  // the canary: if the keyGenerator references `req.ip` without using
+  // `ipKeyGenerator`, the `rateLimit()` constructor throws before the
+  // middleware is ever invoked.
+  it('does not throw ERR_ERL_KEY_GEN_IPV6 on construction (#1360)', () => {
+    expect(() => createRouteLimiter()).not.toThrow();
+  });
 });
 
 describe('createRouteLimiter — integration with a real route', () => {
@@ -250,5 +260,30 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(
       /app\.set\(\s*'trust proxy'\s*,\s*'loopback,\s*linklocal,\s*uniquelocal'\s*\)/,
     );
+  });
+});
+
+// Structural guard for #1360 — validates that the validation module uses
+// `ipKeyGenerator` so IPv6 addresses are normalised to their /56 subnet.
+// Without this, each IPv6 address gets an independent counter and the
+// rate-limit is trivially bypassed. The construction-time test above
+// catches the same regression behaviourally; this source-grep test catches
+// it structurally so the failure message is immediately obvious.
+describe('validation.ts — IPv6 key normalisation (#1360)', () => {
+  let validationSource: string;
+
+  beforeAll(async () => {
+    validationSource = await fs.readFile(
+      path.join(__dirname, '..', '..', 'src', 'server', 'validation.ts'),
+      'utf-8',
+    );
+  });
+
+  it('imports ipKeyGenerator from express-rate-limit', () => {
+    expect(validationSource).toMatch(/import.*ipKeyGenerator.*from\s+'express-rate-limit'/);
+  });
+
+  it('keyGenerator body calls ipKeyGenerator', () => {
+    expect(validationSource).toMatch(/ipKeyGenerator\(ip\)/);
   });
 });
