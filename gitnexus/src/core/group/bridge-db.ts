@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
@@ -24,7 +24,7 @@ import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
  * - `.shadow` — non-blocking concurrent checkpoint sidecar (added in
  *   LadybugDB 0.15.4); same pairing constraint as `.wal`.
  *
- * `bridge-db` writes to a `bridge.lbug.tmp` file and then atomically renames
+ * `bridge-db` writes to a `bridge.lbug.tmp.<random>` file and then atomically renames
  * it into place. The rename only moves the main file; sidecars must be
  * cleaned up explicitly or the next writer trips the database-id check.
  */
@@ -276,7 +276,7 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
-  const tmp = `${target}.tmp.${Date.now()}`;
+  const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
   await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), 'utf-8');
   // Use retryRename for consistency with writeBridge's atomic swap — on
   // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
@@ -346,7 +346,7 @@ export async function writeBridge(
   const crossLinks = dedupeCrossLinks(input.crossLinks);
 
   const finalPath = path.join(groupDir, 'bridge.lbug');
-  const tmpPath = path.join(groupDir, 'bridge.lbug.tmp');
+  const tmpPath = path.join(groupDir, `bridge.lbug.tmp.${randomBytes(8).toString('hex')}`);
   const bakPath = path.join(groupDir, 'bridge.lbug.bak');
 
   const report: WriteBridgeReport = {
