@@ -114,14 +114,15 @@ export interface AnalyzeResult {
   pipelineResult?: any;
 }
 
-/** Default threshold: auto-skip embeddings for repos with more nodes than this */
-const DEFAULT_EMBEDDING_NODE_LIMIT = 50_000;
-
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
-export { deriveEmbeddingMode } from './embedding-mode.js';
+export { deriveEmbeddingMode, DEFAULT_EMBEDDING_NODE_LIMIT } from './embedding-mode.js';
 export type { EmbeddingMode } from './embedding-mode.js';
-import { deriveEmbeddingMode as _deriveEmbeddingMode } from './embedding-mode.js';
+import {
+  deriveEmbeddingMode as _deriveEmbeddingMode,
+  deriveEmbeddingCap,
+  DEFAULT_EMBEDDING_NODE_LIMIT,
+} from './embedding-mode.js';
 
 export const PHASE_LABELS: Record<string, string> = {
   extracting: 'Scanning files',
@@ -340,10 +341,11 @@ export async function runFullAnalysis(
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
 
     if (shouldGenerateEmbeddings) {
-      // 0 = user explicitly disabled the cap (`--embeddings 0`).
-      const nodeLimit = options.embeddingsNodeLimit ?? DEFAULT_EMBEDDING_NODE_LIMIT;
-      const capDisabled = nodeLimit === 0;
-      if (capDisabled || stats.nodes <= nodeLimit) {
+      const { skipForCap, capDisabled, nodeLimit } = deriveEmbeddingCap(
+        stats.nodes,
+        options.embeddingsNodeLimit,
+      );
+      if (!skipForCap) {
         embeddingSkipped = false;
         if (capDisabled && stats.nodes > DEFAULT_EMBEDDING_NODE_LIMIT) {
           log(

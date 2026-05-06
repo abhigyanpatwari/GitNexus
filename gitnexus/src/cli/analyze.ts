@@ -174,6 +174,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
   }
 
+  // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
+  // (0 disables the cap entirely). Validated up here so failures match the
+  // sibling-validation pattern (exit before bar.start() — otherwise
+  // process.exit() leaves the progress bar's hidden cursor uncleared).
+  let embeddingsNodeLimit: number | undefined;
+  if (typeof options?.embeddings === 'string') {
+    const parsed = Number(options.embeddings);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error(
+        `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
+          `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    embeddingsNodeLimit = parsed;
+  }
+  const embeddingsEnabled = !!options?.embeddings;
+
   const setPositiveEnv = (
     optionName: string,
     envName: string,
@@ -337,23 +356,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   const t0 = Date.now();
 
   // ── Run shared analysis orchestrator ───────────────────────────────
-  // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
-  // (0 disables the cap entirely). Validation lives here so the CLI fails
-  // fast before runFullAnalysis spins up the pipeline.
-  let embeddingsNodeLimit: number | undefined;
-  if (typeof options?.embeddings === 'string') {
-    const parsed = Number(options.embeddings);
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      console.error(
-        `Error: --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
-          `Pass 0 to disable the safety cap, or omit the value to keep the default.`,
-      );
-      process.exit(1);
-    }
-    embeddingsNodeLimit = parsed;
-  }
-  const embeddingsEnabled = !!options?.embeddings;
-
   try {
     const result = await runFullAnalysis(
       repoPath,
