@@ -22,6 +22,14 @@ describe('resolveEmbeddingConfig', () => {
     expect(config.device).toBe('cpu');
   });
 
+  it('accepts macOS accelerated devices from env', () => {
+    process.env.GITNEXUS_EMBEDDING_DEVICE = 'webgpu';
+    expect(resolveEmbeddingConfig().device).toBe('webgpu');
+
+    process.env.GITNEXUS_EMBEDDING_DEVICE = 'coreml';
+    expect(resolveEmbeddingConfig().device).toBe('coreml');
+  });
+
   it('rejects invalid numeric env values', () => {
     process.env.GITNEXUS_EMBEDDING_THREADS = '0';
 

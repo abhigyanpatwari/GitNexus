@@ -398,32 +398,41 @@ export async function runFullAnalysis(
         getInferredRepoName(repoPath) ??
         path.basename(resolveRepoIdentityRoot(repoPath));
       const serverName = await readServerMapping(projectName);
-      const embeddingResult = await runEmbeddingPipeline(
-        executeQuery,
-        executeWithReusedStatement,
-        (p) => {
-          const scaled = 90 + Math.round((p.percent / 100) * 8);
-          const label =
-            p.phase === 'loading-model'
-              ? httpMode
-                ? 'Connecting to embedding endpoint...'
-                : 'Loading embedding model...'
-              : `Embedding ${p.nodesProcessed || 0}/${p.totalNodes || '?'}`;
-          progress('embeddings', scaled, label);
-        },
-        {},
-        cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
-        { repoName: projectName, serverName },
-        existingEmbeddings,
-      );
-      if (embeddingResult.semanticMode === 'exact-scan') {
-        semanticMode = 'exact-scan';
-        log(
-          'Semantic embeddings were generated without a VECTOR index; ' +
-            'queries will use exact-scan fallback within the configured limit.',
+      try {
+        const embeddingResult = await runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          (p) => {
+            const scaled = 90 + Math.round((p.percent / 100) * 8);
+            const label =
+              p.phase === 'loading-model'
+                ? httpMode
+                  ? 'Connecting to embedding endpoint...'
+                  : 'Loading embedding model...'
+                : `Embedding ${p.nodesProcessed || 0}/${p.totalNodes || '?'}`;
+            progress('embeddings', scaled, label);
+          },
+          {},
+          cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+          { repoName: projectName, serverName },
+          existingEmbeddings,
         );
-      } else {
-        semanticMode = 'vector-index';
+        if (embeddingResult.semanticMode === 'exact-scan') {
+          semanticMode = 'exact-scan';
+          log(
+            'Semantic embeddings were generated without a VECTOR index; ' +
+              'queries will use exact-scan fallback within the configured limit.',
+          );
+        } else {
+          semanticMode = 'vector-index';
+        }
+      } finally {
+        if (!httpMode) {
+          const { getCurrentDevice, disposeEmbedder } = await import('./embeddings/embedder.js');
+          if (getCurrentDevice() === 'webgpu') {
+            await disposeEmbedder();
+          }
+        }
       }
     }
 
