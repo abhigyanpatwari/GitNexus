@@ -18,6 +18,16 @@ describe('run-analyze module', () => {
     expect(mod.PHASE_LABELS.parsing).toBe('Parsing code');
   });
 
+  it('explains when requested embeddings are skipped by the node safety limit', async () => {
+    const { getEmbeddingSkipMessage } = await import('../../src/core/run-analyze.js');
+
+    expect(getEmbeddingSkipMessage(false, 75_000)).toBeUndefined();
+    expect(getEmbeddingSkipMessage(true, 50_000)).toBeUndefined();
+    expect(getEmbeddingSkipMessage(true, 50_001)).toContain(
+      'Skipping embeddings: graph has 50,001 nodes',
+    );
+  });
+
   it('creates .gitnexus/.gitignore on the already-up-to-date fast path (#1233)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-path-');
     try {
