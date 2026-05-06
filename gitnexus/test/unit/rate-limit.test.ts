@@ -252,10 +252,10 @@ describe('production routes — rate-limit middleware wiring', () => {
     );
   });
 
-  it('embed route flushes WAL via safeClose, not inline executeQuery (#1376)', () => {
+  it('embed route flushes WAL via flushWAL, not inline executeQuery (#1376)', () => {
     // The embed handler must call the consolidated helper, not hand-roll
     // its own try/catch around executeQuery('CHECKPOINT').
-    expect(apiSource).toMatch(/await safeClose\(\)/);
+    expect(apiSource).toMatch(/await flushWAL\(\)/);
     expect(apiSource).not.toMatch(/executeQuery\('CHECKPOINT'\)/);
   });
 });

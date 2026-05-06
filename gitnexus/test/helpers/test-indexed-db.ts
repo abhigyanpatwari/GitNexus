@@ -119,7 +119,7 @@ export function withTestLbugDB(
     //     adapter's read path. Without this, Windows CI intermittently
     //     fails FTS queries because the WAL hasn't been checkpointed
     //     before the pool adapter starts reading.
-    await adapter.safeClose();
+    await adapter.flushWAL();
 
     // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist

@@ -79,6 +79,27 @@ export default [
     },
   },
 
+  // Prevent direct conn.close() / db.close() in the LadybugDB adapter (#1376).
+  // All close operations must go through safeClose() so the WAL is always
+  // flushed before the connection is released. The sole authorised call site
+  // inside safeClose itself uses an eslint-disable-next-line override.
+  {
+    files: ['gitnexus/src/core/lbug/lbug-adapter.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.object.name='conn'][callee.property.name='close']",
+          message: 'Use safeClose() instead of calling conn.close() directly (#1376).',
+        },
+        {
+          selector: "CallExpression[callee.object.name='db'][callee.property.name='close']",
+          message: 'Use safeClose() instead of calling db.close() directly (#1376).',
+        },
+      ],
+    },
+  },
+
   // Disable formatting rules (prettier handles those)
   prettierConfig,
 ];

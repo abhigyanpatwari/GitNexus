@@ -19,7 +19,7 @@ import {
   executePrepared,
   executeWithReusedStatement,
   streamQuery,
-  safeClose,
+  flushWAL,
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
@@ -1708,7 +1708,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             // embeddings immediately (#1149). In the CLI path closeLbug()
             // handles this during process exit, but the server keeps the
             // connection open for other routes — a CHECKPOINT is enough.
-            await safeClose();
+            await flushWAL();
           });
 
           clearTimeout(embedTimeout);
