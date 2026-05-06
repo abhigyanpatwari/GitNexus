@@ -61,6 +61,13 @@ export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
   /**
+   * Override the auto-skip node-count cap for embedding generation.
+   * `undefined` (default) keeps the built-in 50,000-node safety limit;
+   * `0` disables the cap entirely; any positive integer sets a custom cap.
+   * Mapped from the CLI's `--embeddings [limit]` argument.
+   */
+  embeddingsNodeLimit?: number;
+  /**
    * Explicitly drop any embeddings present in the existing index instead of
    * preserving them. Only meaningful when `embeddings` is false/undefined:
    * the default behavior in that case is to load the previously generated
@@ -107,8 +114,8 @@ export interface AnalyzeResult {
   pipelineResult?: any;
 }
 
-/** Threshold: auto-skip embeddings for repos with more nodes than this */
-const EMBEDDING_NODE_LIMIT = 50_000;
+/** Default threshold: auto-skip embeddings for repos with more nodes than this */
+const DEFAULT_EMBEDDING_NODE_LIMIT = 50_000;
 
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
@@ -333,8 +340,26 @@ export async function runFullAnalysis(
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
 
     if (shouldGenerateEmbeddings) {
-      if (stats.nodes <= EMBEDDING_NODE_LIMIT) {
+      // 0 = user explicitly disabled the cap (`--embeddings 0`).
+      const nodeLimit = options.embeddingsNodeLimit ?? DEFAULT_EMBEDDING_NODE_LIMIT;
+      const capDisabled = nodeLimit === 0;
+      if (capDisabled || stats.nodes <= nodeLimit) {
         embeddingSkipped = false;
+        if (capDisabled && stats.nodes > DEFAULT_EMBEDDING_NODE_LIMIT) {
+          log(
+            `Embedding node-count cap disabled — generating embeddings for ` +
+              `${stats.nodes.toLocaleString()} nodes. Ensure sufficient memory; ` +
+              `the default ${DEFAULT_EMBEDDING_NODE_LIMIT.toLocaleString()}-node ` +
+              `cap exists to prevent OOM.`,
+          );
+        }
+      } else {
+        log(
+          `Embeddings skipped: ${stats.nodes.toLocaleString()} nodes exceeds ` +
+            `the ${nodeLimit.toLocaleString()}-node safety cap. ` +
+            `Override with \`--embeddings 0\` to disable the cap, or ` +
+            `\`--embeddings <n>\` to set a custom cap.`,
+        );
       }
     }
 
