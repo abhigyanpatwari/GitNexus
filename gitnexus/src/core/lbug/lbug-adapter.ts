@@ -257,14 +257,8 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps
       await runWithSessionLock(async () => {
-        // CHECKPOINT before close to flush WAL contents (same rationale as closeLbug)
-        if (conn) {
-          try {
-            await conn.query('CHECKPOINT');
-          } catch {
-            /* best-effort */
-          }
-        }
+        // Flush WAL before close (same rationale as closeLbug)
+        await safeClose();
         try {
           if (conn) await conn.close();
         } catch {
@@ -302,14 +296,8 @@ const ensureLbugInitialized = async (dbPath: string) => {
 const doInitLbug = async (dbPath: string) => {
   // Different database requested — close the old one first
   if (conn || db) {
-    // CHECKPOINT before close to flush WAL contents (same rationale as closeLbug)
-    if (conn) {
-      try {
-        await conn.query('CHECKPOINT');
-      } catch {
-        /* ignore — older LadybugDB or schemaless DB may not accept it */
-      }
-    }
+    // Flush WAL before close (same rationale as closeLbug)
+    await safeClose();
     try {
       if (conn) await conn.close();
     } catch {}
@@ -1063,6 +1051,27 @@ export const fetchExistingEmbeddingHashes = async (
   }
 };
 
+/**
+ * Flush the WAL so all pending writes are visible to subsequent readers.
+ *
+ * Best-effort: swallows errors from older LadybugDB versions or schemaless
+ * databases that do not support the CHECKPOINT command.  A no-op when there
+ * is nothing pending, so safe (and cheap) to call unconditionally after any
+ * write path.
+ *
+ * Extracted as a single source of truth for the WAL-flush contract (#1376)
+ * — previously the same try/catch pattern was duplicated in closeLbug() and
+ * the /api/embed handler in api.ts.
+ */
+export const safeClose = async (): Promise<void> => {
+  if (!conn) return;
+  try {
+    await conn.query('CHECKPOINT');
+  } catch {
+    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  }
+};
+
 export const closeLbug = async (): Promise<void> => {
   // CHECKPOINT before close so the WAL/.shadow contents are flushed into
   // the main database file. Without this, LadybugDB 0.16.0's non-blocking
@@ -1072,13 +1081,7 @@ export const closeLbug = async (): Promise<void> => {
   // This is especially critical after embedding writes, which generate
   // large amounts of WAL data. CHECKPOINT is a no-op when there's nothing
   // pending, so it's cheap on the happy path.
-  if (conn) {
-    try {
-      await conn.query('CHECKPOINT');
-    } catch {
-      /* ignore — older LadybugDB or schemaless DB may not accept it */
-    }
-  }
+  await safeClose();
   if (conn) {
     try {
       await conn.close();
