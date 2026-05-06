@@ -110,6 +110,21 @@ export interface AnalyzeResult {
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
 const EMBEDDING_NODE_LIMIT = 50_000;
 
+export const getEmbeddingSkipMessage = (
+  shouldGenerateEmbeddings: boolean,
+  nodeCount: number,
+): string | undefined => {
+  if (!shouldGenerateEmbeddings || nodeCount <= EMBEDDING_NODE_LIMIT) {
+    return undefined;
+  }
+
+  return (
+    `Skipping embeddings: graph has ${nodeCount.toLocaleString()} nodes, ` +
+    `above the ${EMBEDDING_NODE_LIMIT.toLocaleString()} node safety limit. ` +
+    'Run embeddings on a smaller repo or service path to enable semantic search.'
+  );
+};
+
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
 export { deriveEmbeddingMode } from './embedding-mode.js';
@@ -333,7 +348,10 @@ export async function runFullAnalysis(
     let semanticMode: 'vector-index' | 'exact-scan' | undefined;
 
     if (shouldGenerateEmbeddings) {
-      if (stats.nodes <= EMBEDDING_NODE_LIMIT) {
+      const skipMessage = getEmbeddingSkipMessage(shouldGenerateEmbeddings, stats.nodes);
+      if (skipMessage) {
+        log(skipMessage);
+      } else {
         embeddingSkipped = false;
       }
     }
