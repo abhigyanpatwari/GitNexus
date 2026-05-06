@@ -15,92 +15,27 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-import { existsSync } from 'fs';
-import { execFileSync } from 'child_process';
-import { join, dirname } from 'path';
-import { createRequire } from 'module';
-import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import {
+  DEFAULT_EMBEDDING_CONFIG,
+  type EmbeddingConfig,
+  type EmbeddingDevice,
+  type ModelProgress,
+} from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides } from './hf-env.js';
-
-/**
- * Check whether the onnxruntime-node package that @huggingface/transformers
- * will actually load at runtime ships the CUDA execution provider.
- *
- * Critical: we resolve from transformers' own module scope, NOT from ours.
- * npm may install two copies — a top-level 1.24.x (our dep) and a nested
- * 1.21.0 (transformers' pinned dep). The guard must inspect whichever copy
- * transformers.js will dlopen, otherwise the check is meaningless.
- */
-function hasOrtCudaProvider(): boolean {
-  try {
-    const require = createRequire(import.meta.url);
-    // Resolve from @huggingface/transformers' scope so we find the same
-    // onnxruntime-node binary that transformers.js will use at runtime
-    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
-    const ortRequire = createRequire(join(transformersDir, 'package.json'));
-    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
-    // ORT 1.24.x only ships CUDA binaries for linux/x64 (downloaded from NuGet
-    // at postinstall). arm64 will correctly return false here until ORT adds support.
-    const arch = process.arch;
-    return existsSync(
-      join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'),
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check whether CUDA libraries are actually available on this system.
- * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
- * without the required shared libraries, so we probe first.
- *
- * Checks both:
- * 1. That system CUDA libraries (libcublasLt) are present
- * 2. That onnxruntime-node ships the CUDA execution provider binary
- *
- * Both conditions must be true — system CUDA libs alone are not enough
- * if onnxruntime-node is a CPU-only build (versions < 1.24.0).
- */
-function isCudaAvailable(): boolean {
-  // First, verify onnxruntime-node has the CUDA provider binary.
-  // Without this, requesting CUDA causes an uncatchable native crash.
-  if (!hasOrtCudaProvider()) return false;
-
-  // Primary: query the dynamic linker cache — covers all architectures,
-  // distro layouts, and custom install paths registered with ldconfig
-  try {
-    const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
-    if (out.includes('libcublasLt.so.12')) return true;
-  } catch {
-    // ldconfig not available (e.g. non-standard container)
-  }
-
-  // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
-  // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
-  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
-    const val = process.env[envVar];
-    if (!val) continue;
-    for (const dir of val.split(':').filter(Boolean)) {
-      if (
-        existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'libcublasLt.so.12'))
-      )
-        return true;
-    }
-  }
-
-  return false;
-}
+import {
+  formatDeviceLabel,
+  getDeviceCandidates,
+  isAcceleratedDevice,
+  type ConcreteEmbeddingDevice,
+} from './devices.js';
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
-let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
+let currentDevice: ConcreteEmbeddingDevice | null = null;
 
 /**
  * Progress callback type for model loading
@@ -110,7 +45,7 @@ export type ModelProgressCallback = (progress: ModelProgress) => void;
 /**
  * Get the current device being used for inference
  */
-export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => currentDevice;
+export const getCurrentDevice = (): ConcreteEmbeddingDevice | null => currentDevice;
 
 /**
  * Initialize the embedding model
@@ -124,7 +59,7 @@ export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => cu
 export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
-  forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm',
+  forceDevice?: ConcreteEmbeddingDevice,
 ): Promise<FeatureExtractionPipeline> => {
   if (isHttpMode()) {
     throw new Error(
@@ -146,13 +81,7 @@ export const initEmbedder = async (
   isInitializing = true;
 
   const finalConfig = resolveEmbeddingConfig(config);
-  // CUDA is probe-gated because ONNX Runtime can crash in native code when
-  // provider libraries are missing. DirectML stays opt-in for the same reason.
-  // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
-  // if we attempt CUDA without the required shared libraries
-  const gpuDevice = isCudaAvailable() ? 'cuda' : 'cpu';
-  const requestedDevice =
-    forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
+  const requestedDevice: EmbeddingDevice = forceDevice || finalConfig.device;
 
   initPromise = (async () => {
     try {
@@ -182,23 +111,13 @@ export const initEmbedder = async (
           }
         : undefined;
 
-      // Try GPU first if auto, fall back to CPU
-      // Windows: dml (DirectML/DirectX12), Linux: cuda
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu' | 'wasm'> =
-        requestedDevice === 'dml' || requestedDevice === 'cuda'
-          ? [requestedDevice, 'cpu']
-          : [requestedDevice as 'cpu' | 'wasm'];
+      const devicesToTry = getDeviceCandidates(requestedDevice);
 
       for (const device of devicesToTry) {
         try {
-          if (isDev && device === 'dml') {
-            console.log('🔧 Trying DirectML (DirectX12) GPU backend...');
-          } else if (isDev && device === 'cuda') {
-            console.log('🔧 Trying CUDA GPU backend...');
-          } else if (isDev && device === 'cpu') {
-            console.log('🔧 Using CPU backend...');
-          } else if (isDev && device === 'wasm') {
-            console.log('🔧 Using WASM backend (slower)...');
+          if (isDev) {
+            const action = isAcceleratedDevice(device) ? 'Trying' : 'Using';
+            console.log(`🔧 ${action} ${formatDeviceLabel(device)} backend...`);
           }
 
           embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
@@ -215,21 +134,14 @@ export const initEmbedder = async (
           currentDevice = device;
 
           if (isDev) {
-            const label =
-              device === 'dml'
-                ? 'GPU (DirectML/DirectX12)'
-                : device === 'cuda'
-                  ? 'GPU (CUDA)'
-                  : device.toUpperCase();
-            console.log(`✅ Using ${label} backend`);
+            console.log(`✅ Using ${formatDeviceLabel(device)} backend`);
             console.log('✅ Embedding model loaded successfully');
           }
 
           return embedderInstance!;
         } catch (deviceError) {
-          if (isDev && (device === 'cuda' || device === 'dml')) {
-            const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
-            console.log(`⚠️  ${gpuType} not available, falling back to CPU...`);
+          if (isDev && isAcceleratedDevice(device)) {
+            console.log(`⚠️  ${formatDeviceLabel(device)} not available, trying next backend...`);
           }
           // Continue to next device in list
           if (device === devicesToTry[devicesToTry.length - 1]) {

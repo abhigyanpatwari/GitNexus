@@ -14,6 +14,8 @@ const parseDevice = (value: string | undefined): EmbeddingConfig['device'] | und
   if (value === undefined) return undefined;
   if (
     value === 'auto' ||
+    value === 'webgpu' ||
+    value === 'coreml' ||
     value === 'dml' ||
     value === 'cuda' ||
     value === 'cpu' ||
@@ -21,7 +23,9 @@ const parseDevice = (value: string | undefined): EmbeddingConfig['device'] | und
   ) {
     return value;
   }
-  throw new Error(`embedding device must be one of auto, dml, cuda, cpu, wasm; got "${value}"`);
+  throw new Error(
+    `embedding device must be one of auto, webgpu, coreml, dml, cuda, cpu, wasm; got "${value}"`,
+  );
 };
 
 export const resolveEmbeddingConfig = (

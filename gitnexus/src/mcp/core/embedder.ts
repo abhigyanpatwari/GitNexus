@@ -13,6 +13,11 @@ import {
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
 import { applyHfEnvOverrides } from '../../core/embeddings/hf-env.js';
+import {
+  formatDeviceLabel,
+  getDeviceCandidates,
+  type ConcreteEmbeddingDevice,
+} from '../../core/embeddings/devices.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
@@ -53,10 +58,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
 
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');
 
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
-        embeddingConfig.device === 'dml' || embeddingConfig.device === 'cuda'
-          ? [embeddingConfig.device, 'cpu']
-          : ['cpu'];
+      const devicesToTry: ConcreteEmbeddingDevice[] = getDeviceCandidates(embeddingConfig.device);
 
       for (const device of devicesToTry) {
         try {
@@ -82,7 +84,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
             restoreStdout();
             process.stderr.write = realStderrWrite;
           }
-          console.error(`GitNexus: Embedding model loaded (${device})`);
+          console.error(`GitNexus: Embedding model loaded (${formatDeviceLabel(device)})`);
           return embedderInstance!;
         } catch {
           if (device === 'cpu') throw new Error('Failed to load embedding model');

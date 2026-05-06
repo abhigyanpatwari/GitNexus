@@ -213,8 +213,8 @@ export interface EmbeddingConfig {
   threads: number;
   /** Embedding vector dimensions */
   dimensions: number;
-  /** Device to use for inference: 'auto' tries GPU first (DirectML on Windows, CUDA on Linux), falls back to CPU */
-  device: 'auto' | 'dml' | 'cuda' | 'cpu' | 'wasm';
+  /** Device to use for inference: 'auto' tries GPU first, falls back to CPU */
+  device: EmbeddingDevice;
   /** Maximum characters of code snippet to include */
   maxSnippetLength: number;
   /** Maximum code chunk size in characters (for chunking long code) */
@@ -224,6 +224,8 @@ export interface EmbeddingConfig {
   /** Maximum description length in characters */
   maxDescriptionLength: number;
 }
+
+export type EmbeddingDevice = 'auto' | 'webgpu' | 'coreml' | 'dml' | 'cuda' | 'cpu' | 'wasm';
 
 /**
  * Default embedding configuration
