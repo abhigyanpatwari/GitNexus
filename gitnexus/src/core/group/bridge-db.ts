@@ -41,6 +41,26 @@ async function removeLbugFile(basePath: string): Promise<void> {
   }
 }
 
+/**
+ * Remove all stale `bridge.lbug.tmp.*` files (and their sidecars) from a
+ * group directory.  With randomBytes-based temp names, a crashed writeBridge
+ * leaves behind a uniquely-named tmp file that no future run will target by
+ * name — so we glob for the prefix and clean up everything matching.
+ */
+async function cleanStaleBridgeTmpFiles(groupDir: string): Promise<void> {
+  try {
+    const entries = await fsp.readdir(groupDir);
+    const staleBases = entries.filter(
+      (e) => e.startsWith('bridge.lbug.tmp.') && !LBUG_SIDECAR_SUFFIXES.some((s) => e.endsWith(s)),
+    );
+    for (const name of staleBases) {
+      await removeLbugFile(path.join(groupDir, name));
+    }
+  } catch {
+    /* best-effort: directory may not exist yet */
+  }
+}
+
 export function contractNodeId(
   repo: string,
   contractId: string,
@@ -366,11 +386,12 @@ export async function writeBridge(
     }
   };
 
-  // Clean up any leftover tmp main file AND its `.wal` / `.shadow` sidecars.
-  // LadybugDB 0.16.0 rejects opening a database whose sidecars belong to a
-  // different database instance (database-id check), so any stale sidecar
-  // from a crashed previous run will fail the next writeBridge.
-  await removeLbugFile(tmpPath);
+  // Clean up stale tmp files left behind by previously crashed writeBridge
+  // runs.  With randomBytes-based names each run picks a unique path, so
+  // the old fixed-name `removeLbugFile(tmpPath)` was a no-op — stale
+  // artifacts accumulated.  The glob-based helper finds *all* leftover
+  // `bridge.lbug.tmp.*` entries and removes them (including sidecars).
+  await cleanStaleBridgeTmpFiles(groupDir);
 
   // 1. Create temp DB, insert all data.
   //
