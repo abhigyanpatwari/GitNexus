@@ -60,6 +60,9 @@ assets/
 # Generated files (should not be indexed)
 repomix-output*
 
+# Gource visualization output (large generated binaries)
+gource-output/
+
 # Playwright artifacts
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/
