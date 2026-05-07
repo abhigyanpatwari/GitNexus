@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -50,6 +50,21 @@ describe('setupCommand skills integration', () => {
     process.env.USERPROFILE = originalUserProfile;
     process.env.PATH = originalPath;
     await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('reports the OpenCode skills install path with the plural skills directory', async () => {
+    await fs.mkdir(path.join(tempHome, '.config', 'opencode'), { recursive: true });
+    await setupCommand();
+
+    const installedSkill = await fs.readFile(
+      path.join(tempHome, '.config', 'opencode', 'skills', 'gitnexus-cli', 'SKILL.md'),
+      'utf-8',
+    );
+
+    expect(installedSkill).toContain('GitNexus CLI Commands');
+    await expect(
+      fs.access(path.join(tempHome, '.config', 'opencode', 'skill', 'gitnexus-cli', 'SKILL.md')),
+    ).rejects.toThrow();
   });
 
   it('installs packaged, flat-file, and directory skills into cursor skills directory', async () => {
