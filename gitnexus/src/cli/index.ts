@@ -23,7 +23,11 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
-  .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option(
+    '--embeddings [limit]',
+    'Enable embedding generation for semantic search (off by default). ' +
+      'Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
+  )
   .option(
     '--drop-embeddings',
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
@@ -32,7 +36,10 @@ program
   .option('--skills', 'Generate repo-specific skill files from detected communities')
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
-  .option('--skip-git', 'Index a folder without requiring a .git directory')
+  .option(
+    '--skip-git',
+    'Treat the provided path/cwd as the index root and skip parent git-root discovery',
+  )
   .option(
     '--name <alias>',
     'Register this repo under a custom name in ~/.gitnexus/registry.json ' +

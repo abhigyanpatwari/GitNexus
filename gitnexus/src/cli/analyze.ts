@@ -17,11 +17,53 @@ import {
   getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
+  AnalysisNotFinalizedError,
+  assertAnalysisFinalized,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { glob } from 'glob';
 import fs from 'fs/promises';
+
+// Capture stderr.write at module load BEFORE anything (LadybugDB native
+// init, progress bar, console redirection) can monkey-patch it. The
+// fatal handlers below MUST reach the user even when the analyze path
+// has redirected console.* through the progress bar's bar.log() — the
+// previous behaviour silently swallowed stack traces and made #1169
+// indistinguishable from a no-op success on Windows.
+const realStderrWrite = process.stderr.write.bind(process.stderr);
+
+const writeFatalToStderr = (label: string, err: unknown): void => {
+  const isErr = err instanceof Error;
+  const message = isErr ? err.message : String(err);
+  realStderrWrite(`\n  ${label}: ${message}\n`);
+  if (isErr && err.stack) realStderrWrite(`${err.stack}\n`);
+};
+
+let fatalHandlersInstalled = false;
+
+/**
+ * Install one-shot `unhandledRejection` / `uncaughtException` handlers
+ * that surface the failure to the real stderr (bypassing any console
+ * redirection installed by the progress bar) and force a non-zero exit
+ * code. Without these, an async error escaping {@link analyzeCommand}'s
+ * try/catch was reported as exit 0 with no diagnostic — the silent
+ * failure mode tracked in #1169.
+ */
+const installFatalHandlers = (): void => {
+  if (fatalHandlersInstalled) return;
+  fatalHandlersInstalled = true;
+  process.on('unhandledRejection', (err) => {
+    writeFatalToStderr('Analysis failed (unhandled rejection)', err);
+    process.exit(1);
+  });
+  process.on('uncaughtException', (err) => {
+    writeFatalToStderr('Analysis failed (uncaught exception)', err);
+    process.exit(1);
+  });
+};
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -55,7 +97,14 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
-  embeddings?: boolean;
+  /**
+   * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
+   *   - `undefined` when the flag is omitted
+   *   - `true` when passed without an argument (use default 50K node cap)
+   *   - a string when passed with an argument (`--embeddings 0` disables the
+   *     cap, `--embeddings <n>` uses `<n>` as the cap)
+   */
+  embeddings?: boolean | string;
   /**
    * Explicitly drop existing embeddings on rebuild instead of preserving
    * them. Without this flag, a routine `analyze` keeps any embeddings
@@ -102,6 +151,11 @@ export interface AnalyzeOptions {
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
 
+  // Install fatal handlers immediately after re-exec resolution so any
+  // async error that escapes the try/catch below (#1169) surfaces with
+  // a stack trace and a non-zero exit code instead of a silent exit 0.
+  installFatalHandlers();
+
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -121,6 +175,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       Math.round(workerTimeoutSeconds * 1000),
     );
   }
+
+  // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
+  // (0 disables the cap entirely). Validated up here so failures match the
+  // sibling-validation pattern (exit before bar.start() — otherwise
+  // process.exit() leaves the progress bar's hidden cursor uncleared).
+  let embeddingsNodeLimit: number | undefined;
+  if (typeof options?.embeddings === 'string') {
+    const parsed = Number(options.embeddings);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error(
+        `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
+          `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    embeddingsNodeLimit = parsed;
+  }
+  const embeddingsEnabled = !!options?.embeddings;
 
   const setPositiveEnv = (
     optionName: string,
@@ -173,21 +246,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   let repoPath: string;
   if (inputPath) {
     repoPath = path.resolve(inputPath);
+  } else if (options?.skipGit) {
+    // --skip-git: treat cwd as the index root, do not walk up to a parent git repo.
+    repoPath = path.resolve(process.cwd());
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
-      if (!options?.skipGit) {
-        console.log(
-          '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      // --skip-git: fall back to cwd as the root
-      repoPath = path.resolve(process.cwd());
-    } else {
-      repoPath = gitRoot;
+      console.log(
+        '  Not inside a git repository.\n  Tip: pass --skip-git to index any folder without a .git directory.\n',
+      );
+      process.exitCode = 1;
+      return;
     }
+    repoPath = gitRoot;
   }
 
   const repoHasGit = hasGitDir(repoPath);
@@ -202,6 +273,30 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log(
       '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
     );
+  }
+
+  // If the target repo contains files an optional grammar would parse but
+  // that grammar's native binding is absent, warn before analysis so users
+  // learn why those files end up unparsed instead of silently getting a
+  // degraded index.
+  try {
+    const matches = await glob(['**/*.dart', '**/*.proto'], {
+      cwd: repoPath,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      dot: false,
+      nodir: true,
+      absolute: false,
+    });
+    if (matches.length > 0) {
+      const present = new Set<string>();
+      for (const m of matches) {
+        const ext = path.extname(m).toLowerCase();
+        if (ext) present.add(ext);
+      }
+      warnMissingOptionalGrammars({ context: 'analyze', relevantExtensions: present });
+    }
+  } catch {
+    // Best-effort warning \u2014 never block analyze on the precheck.
   }
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.
@@ -295,7 +390,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
-        embeddings: options?.embeddings,
+        embeddings: embeddingsEnabled,
+        embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
@@ -316,6 +412,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
 
     if (result.alreadyUpToDate) {
+      // Even the fast path must prove the repo is discoverable. A prior
+      // run can write meta.json and then fail before registerRepo(); in
+      // that half-finalized state, runFullAnalysis returns alreadyUpToDate
+      // on the next invocation unless we check the registry here too.
+      await assertAnalysisFinalized(repoPath);
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
@@ -327,6 +428,15 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
       return;
     }
+
+    // Post-finalize invariant (#1169): runFullAnalysis nominally writes
+    // meta.json and registers the repo, but on Windows it has been
+    // observed to return successfully with neither artifact present
+    // (banner-only output, exit 0). Verify both before declaring
+    // success so the silent-finalize state surfaces with a non-zero
+    // exit code and an actionable error instead of being mistaken for
+    // a healthy index.
+    await assertAnalysisFinalized(repoPath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis)
     if (options?.skills && result.pipelineResult) {
@@ -429,7 +539,29 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
 
-    console.error(`\n  Analysis failed: ${msg}\n`);
+    // Finalize invariant failure (#1169) — keep the rich actionable
+    // message intact and write through realStderrWrite so it can't be
+    // erased by a leftover bar refresh on slow terminals.
+    if (err instanceof AnalysisNotFinalizedError) {
+      writeFatalToStderr('Analysis did not finalize', err);
+      realStderrWrite(
+        `\n  Diagnostic checklist:\n` +
+          `    1. Re-run "gitnexus analyze" - transient native errors often clear on retry.\n` +
+          `    2. Inspect ${err.storagePath} - a leftover lbug.wal indicates an aborted write.\n` +
+          `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
+          `       and attach the trace to the GitNexus issue tracker.\n\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // Bypass the redirected console.error and write the full stack to
+    // the real stderr captured at module load. The redirected
+    // console.error wraps every line with `\\x1b[2K\\r` (ANSI clear-line)
+    // and forces a bar.update() afterwards, which on some Windows
+    // terminals visually erases the failure message — the canonical
+    // shape of the silent-exit symptom in #1169.
+    writeFatalToStderr('Analysis failed', err);
 
     // Provide helpful guidance for known failure modes
     if (

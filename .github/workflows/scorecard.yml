@@ -1,0 +1,58 @@
+name: Scorecard
+
+# OpenSSF Scorecard supply-chain posture check. Runs weekly + on main push +
+# branch_protection_rule changes. SARIF uploads to the Security tab; the public
+# badge URL resolves once the first scheduled run lands (see README badge wiring).
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '0 7 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Needed to upload SARIF results to the Security tab.
+      security-events: write
+      # Needed for the publish_results badge flow (OIDC).
+      id-token: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results enables the public Scorecard badge.
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to Security tab
+        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        with:
+          sarif_file: results.sarif

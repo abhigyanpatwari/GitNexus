@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
+import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
@@ -227,11 +228,16 @@ async function buildProtoContext(repoPath: string): Promise<{
   servicesByName: Map<string, ProtoServiceInfo[]>;
 }> {
   const servicesByName = new Map<string, ProtoServiceInfo[]>();
+  // `.gitnexusignore` / `.gitignore` honoured via the shared IgnoreService —
+  // see `filesystem-walker.ts` for the canonical pattern. Replaces a
+  // hardcoded `[node_modules, .git, vendor]` array; those names plus the
+  // rest of `DEFAULT_IGNORE_LIST` are still excluded by default (#1185).
+  const protoIgnoreFilter = await createIgnoreFilter(repoPath);
   const protoFiles = await glob('**/*.proto', {
     cwd: repoPath,
     absolute: false,
     nodir: true,
-    ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**'],
+    ignore: protoIgnoreFilter,
   });
   const contents = new Map<string, string>();
 
@@ -401,9 +407,14 @@ export class GrpcExtractor implements ContractExtractor {
     }
 
     // ─── Source files (+ .proto when plugin available) ────────────
+    // Honour `.gitnexusignore` / `.gitignore` via the shared IgnoreService —
+    // mirrors `filesystem-walker.ts`. Replaces a hardcoded
+    // `[node_modules, .git, vendor, dist, build]` array; those names are all
+    // in `DEFAULT_IGNORE_LIST`, so default behaviour is preserved (#1185).
+    const sourceIgnoreFilter = await createIgnoreFilter(repoPath);
     const sourceFiles = await glob(GRPC_SCAN_GLOB, {
       cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
+      ignore: sourceIgnoreFilter,
       nodir: true,
     });
 

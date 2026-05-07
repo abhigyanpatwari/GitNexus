@@ -6,14 +6,13 @@
  */
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-import os from 'os';
-import { join } from 'path';
 import {
   isHttpMode,
   getHttpDimensions,
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
+import { applyHfEnvOverrides } from '../../core/embeddings/hf-env.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
@@ -45,11 +44,11 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
   initPromise = (async () => {
     try {
       env.allowLocalModels = false;
-      // Default cache to user-writable location. transformers.js defaults to
-      // ./node_modules/.cache inside its own install dir, which is unwritable
-      // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).
-      // Respect HF_HOME if set, otherwise fall back to ~/.cache/huggingface.
-      env.cacheDir = process.env.HF_HOME ?? join(os.homedir(), '.cache', 'huggingface');
+      // Bridge user-controlled env vars to transformers.js: HF_HOME →
+      // env.cacheDir, HF_ENDPOINT → env.remoteHost (#1205). Centralised in
+      // applyHfEnvOverrides so this MCP entry point behaves identically to
+      // the analyze pipeline embedder.
+      applyHfEnvOverrides(env);
       const embeddingConfig = resolveEmbeddingConfig();
 
       console.error('GitNexus: Loading embedding model (first search may take a moment)...');

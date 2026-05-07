@@ -6,9 +6,11 @@ import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js'
 import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
+import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
-import { runExactMatch } from './matching.js';
+import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
+import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
@@ -84,15 +86,18 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   let autoContracts: StoredContract[] = [];
   let manifestCrossLinks: CrossLink[] = [];
   let dbExecutors: Map<string, CypherExecutor> | undefined;
+  let registryEntries: RegistryEntry[] | undefined;
 
   const eo = opts?.extractorOverride;
   if (eo && eo.length === 0) {
     autoContracts = await (eo as () => Promise<StoredContract[]>)();
   } else {
-    const entries = await readRegistry();
+    registryEntries = await readRegistry();
+    const entries = registryEntries;
     const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
     const httpEx = new HttpRouteExtractor();
     const grpcEx = new GrpcExtractor();
+    const thriftEx = new ThriftExtractor();
     const topicEx = new TopicExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
@@ -140,6 +145,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             }
           }
 
+          if (config.detect.thrift) {
+            const extracted = await thriftEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
           if (config.detect.topics) {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
@@ -177,18 +193,41 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
   }
 
-  // Process manifest links declared in group.yaml.
+  // Auto-discover workspace dependency contracts (Rust Cargo workspaces, etc.)
+  // and merge them with explicit manifest links. Discovered links use the same
+  // ManifestExtractor pipeline as hand-written links in group.yaml.
+  let allLinks = [...config.links];
+
+  if (config.detect.workspace_deps) {
+    const repoPaths = new Map<string, string>();
+    if (!registryEntries) registryEntries = await readRegistry();
+    for (const [groupPath, regName] of Object.entries(config.repos)) {
+      const e = registryEntries.find((en) => en.name === regName);
+      if (e) repoPaths.set(groupPath, e.path);
+    }
+
+    const wsResult = await discoverWorkspaceLinks(config.repos, repoPaths, dbExecutors);
+    if (wsResult.links.length > 0) {
+      allLinks = [...allLinks, ...wsResult.links];
+      if (opts?.verbose) {
+        for (const s of wsResult.stats) {
+          console.log(
+            `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
+          );
+        }
+      }
+    }
+  }
+
+  // Process manifest links declared in group.yaml (plus any auto-discovered).
   // ManifestExtractor is fully implemented but was never wired into this
   // pipeline — config.links were parsed and validated but silently dropped.
   // Placed after the DB try/finally: resolveSymbol falls back to synthetic
   // UIDs when dbExecutors is undefined or a pool is closed, so cross-links
   // are always generated regardless of whether real DB executors are available.
-  if (config.links.length > 0) {
-    // Warn about dangling links that reference repos not declared in config.repos.
-    // They still generate cross-links via synthetic UIDs (determinism is preserved),
-    // but the operator probably meant something that now silently does nothing useful.
+  if (allLinks.length > 0) {
     const knownRepos = new Set(Object.keys(config.repos));
-    for (const link of config.links) {
+    for (const link of allLinks) {
       const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
       if (dangling.length > 0) {
         console.warn(
@@ -198,23 +237,25 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
 
     const manifestEx = new ManifestExtractor();
-    const manifestResult = await manifestEx.extractFromManifest(config.links, dbExecutors);
+    const manifestResult = await manifestEx.extractFromManifest(allLinks, dbExecutors);
     autoContracts.push(...manifestResult.contracts);
     manifestCrossLinks = manifestResult.crossLinks;
     if (opts?.verbose) {
       console.log(
-        `  manifest: ${manifestCrossLinks.length} cross-links from ${config.links.length} declared links`,
+        `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
       );
     }
   }
 
-  const { matched, unmatched } = runExactMatch(autoContracts, undefined, config.matching);
+  const providerIndex = buildProviderIndex(autoContracts, config.matching);
+  const { matched, unmatched } = runExactMatch(autoContracts, providerIndex, config.matching);
+  const wildcard = runWildcardMatch(unmatched, providerIndex);
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
   // same endpoints. Prefer the manifest version — it reflects operator intent
   // and carries matchType:'manifest' which downstream consumers may rely on.
-  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched]);
+  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]);
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
@@ -233,7 +274,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   return {
     contracts: allContracts,
     crossLinks,
-    unmatched,
+    unmatched: wildcard.remaining,
     missingRepos,
     repoSnapshots,
   };

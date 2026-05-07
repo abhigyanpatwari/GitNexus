@@ -20,12 +20,37 @@
 import type { NodeLabel, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
-import {
-  isLinkableLabel,
-  qualifiedKey,
-  simpleKey,
-  type GraphNodeLookup,
-} from '../graph-bridge/node-lookup.js';
+import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+/**
+ * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
+ * source ("caller"). A Variable / Property can be the TARGET of an
+ * edge (e.g., a write-access to `user.name`), but it cannot be a
+ * caller — variables don't execute code, so attributing a call to a
+ * sibling Variable in the same scope produces nonsense edges like
+ * `Variable:create → Function:create` (which the simpleKey fallback
+ * in `resolveDefGraphId` then silently rewrites to
+ * `Function:create → Function:create`, a self-loop that doesn't exist
+ * in the source).
+ *
+ * Module-level call expressions inside a `const X = expr(args)`
+ * declaration are the canonical case where this used to fail: the
+ * walk-up over module scope's ownedDefs (only Variables) would land
+ * on the FIRST Variable, get name-aliased to its sibling Function
+ * with the same simple name, and emit a self-CALLS. With this label
+ * restricted to function/class-likes, those calls correctly fall
+ * through to the File-node fallback at the bottom of the walk.
+ */
+function isCallerAnchorLabel(label: NodeLabel): boolean {
+  return (
+    label === 'Function' ||
+    label === 'Method' ||
+    label === 'Constructor' ||
+    label === 'Class' ||
+    label === 'Interface' ||
+    label === 'Struct' ||
+    label === 'Enum'
+  );
+}
 
 /**
  * Look up a `SymbolDefinition` in the graph node lookup.
@@ -105,7 +130,9 @@ export function resolveCallerGraphId(
     if (scope === undefined) break;
     lastFilePath = scope.filePath;
 
-    // Prefer Function/Method anchors; fall back to Class.
+    // Prefer Function/Method/Constructor anchors; fall back to
+    // Class/Interface/Struct/Enum. Variable/Property are NOT valid
+    // caller anchors — see `isCallerAnchorLabel` for why.
     const fnDef = scope.ownedDefs.find(
       (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
     );
@@ -113,7 +140,7 @@ export function resolveCallerGraphId(
       const id = resolveDefGraphId(scope.filePath, fnDef, nodeLookup);
       if (id !== undefined) return id;
     }
-    const classDef = scope.ownedDefs.find((d) => isLinkableLabel(d.type));
+    const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type));
     if (classDef !== undefined) {
       const id = resolveDefGraphId(scope.filePath, classDef, nodeLookup);
       if (id !== undefined) return id;

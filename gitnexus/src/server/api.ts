@@ -19,6 +19,7 @@ import {
   executePrepared,
   executeWithReusedStatement,
   streamQuery,
+  flushWAL,
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
@@ -33,6 +34,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
+import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
@@ -182,6 +184,7 @@ a.ext:hover{text-decoration:underline}
   <div class="section-title">Endpoints</div>
   <p class="endpoint"><a href="/api/info">/api/info</a> <span style="color:#5a5a70">— Server version &amp; context</span></p>
   <p class="endpoint"><a href="/api/repos">/api/repos</a> <span style="color:#5a5a70">— Indexed repositories</span></p>
+  <p class="endpoint"><code>/api/health</code> <span style="color:#5a5a70">— Docker/orchestrator healthcheck</span></p>
   <p class="endpoint"><code>/api/heartbeat</code> <span style="color:#5a5a70">— SSE heartbeat</span></p>
   <p class="endpoint"><code>/api/graph</code> <code>/api/query</code> <code>/api/search</code> <span style="color:#5a5a70">— Data</span></p>
   <p class="endpoint"><code>/api/mcp</code> <span style="color:#5a5a70">— MCP over StreamableHTTP</span></p>
@@ -216,7 +219,19 @@ export const registerWebUI = (app: express.Express, staticDir: string | null): v
     // The regex excludes /api paths AND paths with file extensions (.js, .css, etc.)
     // so missing assets get real 404s instead of the SPA HTML.
     // Adding routes below this will be unreachable for non-API, non-asset paths.
-    app.get(SPA_FALLBACK_REGEX, (_req, res) => {
+    // Rate-limited (CodeQL js/missing-rate-limiting): the SPA fallback
+    // serves a constant index.html, but the FS access from a route handler
+    // is enough to trip the analyzer. The limit is generous (300 rpm/IP =
+    // 5 req/s sustained) so that multi-tab browser navigation, prefetch,
+    // and service-worker revalidation do not produce 429s for legitimate
+    // SPA users. At this rate, real browser navigation is extremely
+    // unlikely to hit the limit in practice, so the cosmetic issue of
+    // JSON-on-429 to a browser is a low-likelihood path. Content
+    // negotiation on the 429 (returning the SPA shell to HTML clients
+    // instead of `{ error: '...' }`) would require swapping
+    // express-rate-limit's `message` for a `handler` function and is
+    // deferred to keep this PR focused on closing the CodeQL alert.
+    app.get(SPA_FALLBACK_REGEX, createRouteLimiter({ limit: 300 }), (_req, res) => {
       res.sendFile(path.join(staticDir, 'index.html'));
     });
   } else {
@@ -506,6 +521,9 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
 };
 
 const statusFromError = (err: any): number => {
+  // Validation helpers throw BadRequestError / ForbiddenError with a typed
+  // .status field — honor it before falling back to message-string matching.
+  if (err instanceof BadRequestError) return err.status;
   const msg = String(err?.message ?? '');
   if (msg.includes('No indexed repositories') || msg.includes('not found')) return 404;
   if (msg.includes('Multiple repositories')) return 400;
@@ -523,9 +541,111 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+/**
+ * Handle a GET /api/file request body. Extracted from createServer's route
+ * registration so it can be unit-tested without spinning up an HTTP server
+ * — calling app.get(...) inside a test triggers CodeQL's
+ * js/missing-rate-limiting query, which is appropriate for production
+ * route handlers but a false positive for tests of the handler logic.
+ *
+ * The function takes the express req and res (typed loosely so test code
+ * can pass minimal mocks) plus the resolved repo path. All path-traversal
+ * containment is done inline at the readFile sink with the canonical
+ * path.relative idiom for CodeQL js/path-injection recognition.
+ */
+export const handleFileRequest = async (
+  req: { query: any },
+  res: {
+    status: (code: number) => { json: (body: any) => void };
+    json: (body: any) => void;
+  },
+  repoPath: string,
+): Promise<void> => {
+  try {
+    // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
+    // Without this, an attacker could pass `?path=a&path=b` to bypass the
+    // length-bound traversal check below (CodeQL js/type-confusion-through-
+    // parameter-tampering, same class as the /api/grep critical fix).
+    const rawFilePath = req.query.path;
+    if (rawFilePath === undefined || rawFilePath === '') {
+      res.status(400).json({ error: 'Missing path' });
+      return;
+    }
+    const filePath = assertString(rawFilePath, 'path');
+
+    // Path-injection containment — inline at the sink with the canonical
+    // path.relative idiom that CodeQL's js/path-injection sanitizer
+    // recognizes. assertSafePath in validation.ts performs the equivalent
+    // check, but cross-module helpers are not followed by CodeQL's
+    // interprocedural analysis for path-traversal sanitization in JS, so
+    // the barrier must be visible inline at the readFile sink.
+    const repoRoot = path.resolve(repoPath);
+    const fullPath = path.resolve(repoRoot, filePath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
+      res.status(403).json({ error: 'Path traversal denied' });
+      return;
+    }
+
+    const raw = await fs.readFile(fullPath, 'utf-8');
+
+    // Optional line-range support: ?startLine=10&endLine=50
+    // Returns only the requested slice (0-indexed), plus metadata.
+    const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
+    const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
+
+    if (startLine !== undefined && Number.isFinite(startLine)) {
+      const lines = raw.split('\n');
+      const start = Math.max(0, startLine);
+      const end =
+        endLine !== undefined && Number.isFinite(endLine)
+          ? Math.min(lines.length, endLine + 1)
+          : lines.length;
+      res.json({
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      });
+    } else {
+      res.json({ content: raw, totalLines: raw.split('\n').length });
+    }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      res.status(404).json({ error: 'File not found' });
+    } else {
+      // statusFromError returns err.status for BadRequestError / ForbiddenError
+      // (assertString → 400 on array-form ?path=a&path=b; ForbiddenError → 403
+      // on traversal). Falls back to 500 for unrecognized failures.
+      res.status(statusFromError(err)).json({ error: err.message || 'Failed to read file' });
+    }
+  }
+};
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
+
+  // Trust X-Forwarded-* headers only when the connection comes from the
+  // local loopback or RFC1918 private/link-local addresses — exactly the
+  // origins the CORS allowlist accepts. Without this, every request behind
+  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
+  // single user can trip the per-IP rate limiter for everyone.
+  //
+  // SCOPE: this setting is process-wide. Every middleware and route in this
+  // Express app sees req.ip resolved from X-Forwarded-For when the upstream
+  // hop is in the trusted set above — not just the rate-limited routes.
+  // Future IP-based middleware (audit logging, IP-bound authz) inherits this
+  // behavior.
+  //
+  // CLOUD-DEPLOY CAVEAT: a public cloud LB (AWS ALB, Cloudflare, Fly.io
+  // edge, CGNAT 100.64/10) is NOT in the trusted set. In those topologies
+  // req.ip will collapse to the LB hop IP for every request and the per-IP
+  // rate limiter degrades to per-server. Add an explicit env-var override
+  // and document the cloud-deploy story before binding to a non-loopback
+  // host in those topologies (tracked as a follow-up; not blocking for the
+  // local-bound default).
+  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
@@ -659,6 +779,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     return found;
   };
 
+  // Lightweight healthcheck for Docker/orchestrator probes (#1147).
+  // Returns immediately so container managers do not confuse a long-lived
+  // SSE stream with an unhealthy server.
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
   // SSE heartbeat — clients connect to detect server liveness instantly.
   // When the server shuts down, the TCP connection drops and the client's
   // EventSource fires onerror immediately (no polling delay).
@@ -744,7 +871,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Delete a repo — removes index, clone dir (if any), and unregisters it
-  app.delete('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
+  // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
+  // delete; tighten if abuse is observed.
+  app.delete('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -775,15 +905,26 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const storagePath = getStoragePath(entry.path);
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
-        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
-        const cloneDir = getCloneDir(entry.name);
+        // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
+        // getCloneDir now throws on names that are not filesystem-safe (e.g.
+        // local repos registered with names like "my project" or "org/repo").
+        // Such repos legitimately have no clone dir, so treat the rejection as
+        // "nothing to clean up" rather than letting it fail the delete handler.
+        let cloneDir: string | null = null;
         try {
-          const stat = await fs.stat(cloneDir);
-          if (stat.isDirectory()) {
-            await fs.rm(cloneDir, { recursive: true, force: true });
-          }
+          cloneDir = getCloneDir(entry.name);
         } catch {
-          /* clone dir may not exist (local repos) */
+          /* repo name not eligible for a clone dir (local repo) */
+        }
+        if (cloneDir) {
+          try {
+            const stat = await fs.stat(cloneDir);
+            if (stat.isDirectory()) {
+              await fs.rm(cloneDir, { recursive: true, force: true });
+            }
+          } catch {
+            /* clone dir may not exist */
+          }
         }
 
         // 3. Unregister from the global registry
@@ -1046,84 +1187,58 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Read file — with path traversal guard
-  app.get('/api/file', async (req, res) => {
-    try {
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-      const filePath = req.query.path as string;
-      if (!filePath) {
-        res.status(400).json({ error: 'Missing path' });
-        return;
-      }
-
-      // Prevent path traversal — resolve and verify the path stays within the repo root
-      const repoRoot = path.resolve(entry.path);
-      const fullPath = path.resolve(repoRoot, filePath);
-      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
-        res.status(403).json({ error: 'Path traversal denied' });
-        return;
-      }
-
-      const raw = await fs.readFile(fullPath, 'utf-8');
-
-      // Optional line-range support: ?startLine=10&endLine=50
-      // Returns only the requested slice (0-indexed), plus metadata.
-      const startLine = req.query.startLine !== undefined ? Number(req.query.startLine) : undefined;
-      const endLine = req.query.endLine !== undefined ? Number(req.query.endLine) : undefined;
-
-      if (startLine !== undefined && Number.isFinite(startLine)) {
-        const lines = raw.split('\n');
-        const start = Math.max(0, startLine);
-        const end =
-          endLine !== undefined && Number.isFinite(endLine)
-            ? Math.min(lines.length, endLine + 1)
-            : lines.length;
-        res.json({
-          content: lines.slice(start, end).join('\n'),
-          startLine: start,
-          endLine: end - 1,
-          totalLines: lines.length,
-        });
-      } else {
-        res.json({ content: raw, totalLines: raw.split('\n').length });
-      }
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        res.status(404).json({ error: 'File not found' });
-      } else {
-        res.status(500).json({ error: err.message || 'Failed to read file' });
-      }
+  // Rate-limited (CodeQL js/missing-rate-limiting): per-request fs.readFile.
+  app.get('/api/file', createRouteLimiter(), async (req, res) => {
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return;
     }
+    await handleFileRequest(req, res, entry.path);
   });
 
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
-  app.get('/api/grep', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): scans every file in
+  // the indexed repo per request — heaviest I/O endpoint. Same default 60
+  // rpm/IP for now; consider tightening if real-world load shows abuse.
+  app.get('/api/grep', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const pattern = req.query.pattern as string;
-      if (!pattern) {
+      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
+      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
+      // type check, the `.length` guard below counts array elements instead of
+      // characters, allowing arbitrarily long patterns through.
+      const rawPattern = req.query.pattern;
+      if (rawPattern === undefined) {
+        res.status(400).json({ error: 'Missing "pattern" query parameter' });
+        return;
+      }
+      const pattern = assertString(rawPattern, 'pattern');
+      if (pattern.length === 0) {
         res.status(400).json({ error: 'Missing "pattern" query parameter' });
         return;
       }
 
-      // ReDoS protection: reject overly long or dangerous patterns
+      // Length cap: applies to both literal and regex modes as a defense-in-depth
+      // bound against pathological input.
       if (pattern.length > 200) {
         res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
         return;
       }
 
-      // Validate regex syntax
+      // Treat user input as a literal substring in all cases to prevent
+      // regex-injection/ReDoS via attacker-controlled regex syntax.
+      const effectivePattern = escapeRegExp(pattern);
+
+      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
       let regex: RegExp;
       try {
-        regex = new RegExp(pattern, 'gim');
+        regex = new RegExp(effectivePattern, 'gim');
       } catch {
         res.status(400).json({ error: 'Invalid regex pattern' });
         return;
@@ -1171,7 +1286,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.json({ results });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Grep failed' });
+      res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }
   });
 
@@ -1242,7 +1357,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // ── Analyze API ──────────────────────────────────────────────────────
 
   // POST /api/analyze — start a new analysis job
-  app.post('/api/analyze', async (req, res) => {
+  app.post('/api/analyze', createRouteLimiter({ limit: 10 }), async (req, res) => {
     try {
       const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
 
@@ -1509,7 +1624,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const embedJobManager = new JobManager();
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', async (req, res) => {
+  app.post('/api/embed', createRouteLimiter({ limit: 20 }), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
@@ -1588,6 +1703,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               undefined, // context
               existingEmbeddings,
             );
+
+            // Flush WAL so subsequent /api/search requests see the new
+            // embeddings immediately (#1149). In the CLI path closeLbug()
+            // handles this during process exit, but the server keeps the
+            // connection open for other routes — a CHECKPOINT is enough.
+            await flushWAL();
           });
 
           clearTimeout(embedTimeout);

@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'module';
+
+// Match what setup.ts emits — read the version from the same package.json
+// so the test never goes stale on a release bump.
+const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version;
+const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -75,7 +82,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
 
@@ -90,7 +97,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', NPX_REF, 'mcp'],
     });
   });
 
@@ -182,7 +189,98 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', NPX_REF, 'mcp'],
+    });
+  });
+
+  it('picks .cmd wrapper from Windows where output (multiple lines)', async () => {
+    setPlatform('win32');
+    // `where gitnexus` on Windows returns the POSIX script first, then .cmd
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\nC:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.cmd\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.cmd',
+      args: ['mcp'],
+    });
+  });
+
+  it('handles CRLF line endings from Windows where output', async () => {
+    setPlatform('win32');
+    // Windows `where` produces CRLF line endings
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\r\nC:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.cmd\r\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.cmd',
+      args: ['mcp'],
+    });
+  });
+
+  it('picks .bat wrapper when .cmd is not present', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\nC:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.bat\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.bat',
+      args: ['mcp'],
+    });
+  });
+
+  it('handles uppercase .CMD extension (case-insensitive match)', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\nC:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.CMD\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.CMD',
+      args: ['mcp'],
+    });
+  });
+
+  it('falls back to first line on Windows when no .cmd/.bat wrapper found', async () => {
+    setPlatform('win32');
+    // Edge case: where returns only the POSIX script (no .cmd wrapper)
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus',
+      args: ['mcp'],
     });
   });
 });

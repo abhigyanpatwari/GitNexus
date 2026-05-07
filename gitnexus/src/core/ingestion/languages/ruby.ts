@@ -12,6 +12,7 @@ import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
@@ -151,6 +152,31 @@ const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
 export const rubyProvider = defineLanguage({
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
+  entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
+  astFrameworkPatterns: [
+    {
+      framework: 'rails',
+      entryPointMultiplier: 3.0,
+      reason: 'rails-pattern',
+      patterns: [
+        'ApplicationController',
+        'ApplicationRecord',
+        'ActiveRecord::Base',
+        'before_action',
+        'after_action',
+        'has_many',
+        'belongs_to',
+        'has_one',
+        'validates',
+      ],
+    },
+    {
+      framework: 'sinatra',
+      entryPointMultiplier: 2.8,
+      reason: 'sinatra-pattern',
+      patterns: ['Sinatra::Base', 'Sinatra::Application'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: RUBY_QUERIES,
   typeConfig: rubyConfig,
   exportChecker: rubyExportChecker,

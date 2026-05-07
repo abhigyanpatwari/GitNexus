@@ -1,0 +1,3 @@
+package util
+
+func Log() {}

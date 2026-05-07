@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
+import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
 
 const DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS = 15_000;
 const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -60,9 +61,12 @@ export const getExtensionInstallTimeoutMs = (): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS;
 };
 
-export const getExtensionInstallChildProcessArgs = (extensionName: string): string[] => {
+export const getExtensionInstallChildProcessArgs = (
+  extensionName: string,
+  maxDbSize: number = LBUG_MAX_DB_SIZE,
+): string[] => {
   const childScript = new URL('../../../scripts/install-duckdb-extension.mjs', import.meta.url);
-  return [fileURLToPath(childScript), extensionName];
+  return [fileURLToPath(childScript), extensionName, String(maxDbSize)];
 };
 
 /**
@@ -184,7 +188,7 @@ export class ExtensionManager {
     const policy = opts.policy ?? this.options.policy ?? resolvePolicyFromEnv();
     const timeoutMs =
       opts.installTimeoutMs ?? this.options.installTimeoutMs ?? getExtensionInstallTimeoutMs();
-    const warn = this.options.warn ?? console.warn;
+    const warn = this.options.warn ?? console.error;
 
     if (policy === 'never') {
       this.markUnavailable(name, label, 'extension install policy is "never"', warn);

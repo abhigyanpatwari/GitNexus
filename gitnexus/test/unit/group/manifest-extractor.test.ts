@@ -169,6 +169,90 @@ describe('ManifestExtractor', () => {
     expect(provider?.symbolUid).toBe('uid-correct-login');
   });
 
+  it('resolves grpc package-qualified service-only manifest by full service name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'platform/orders',
+        to: 'platform/auth',
+        type: 'grpc',
+        contract: 'auth.AuthService',
+        role: 'consumer',
+      },
+    ];
+
+    let seenServiceName: string | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'platform/auth',
+        async (_cypher, params) => {
+          seenServiceName = params?.serviceName as string;
+          if (params?.serviceName === 'auth.AuthService') {
+            return [
+              {
+                uid: 'uid-auth-service',
+                name: 'auth.AuthService',
+                filePath: 'src/auth.proto',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      ['platform/orders', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(seenServiceName).toBe('auth.AuthService');
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-auth-service');
+  });
+
+  it('resolves thrift package-qualified service-only manifest by simple service name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'gateway',
+        to: 'orders',
+        type: 'thrift',
+        contract: 'billing.v1.OrderService',
+        role: 'consumer',
+      },
+    ];
+
+    let seenServiceName: string | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'orders',
+        async (_cypher, params) => {
+          seenServiceName = params?.serviceName as string;
+          if (params?.serviceName === 'OrderService') {
+            return [
+              {
+                uid: 'uid-order-service',
+                name: 'OrderService',
+                filePath: 'idl/order.thrift',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      ['gateway', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(seenServiceName).toBe('OrderService');
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-order-service');
+  });
+
   it('resolves lib manifest links by exact name only', async () => {
     const links: GroupManifestLink[] = [
       {
@@ -576,6 +660,227 @@ describe('ManifestExtractor', () => {
     expect(lowerContractId).toBe('http::GET::/api/orders');
     expect(upperContractId).toBe('http::GET::/api/orders');
     expect(lowerContractId).toBe(upperContractId);
+  });
+
+  it('builds thrift manifest contracts with synthetic uids when unresolved', async () => {
+    const extractor = new ManifestExtractor();
+    const result = await extractor.extractFromManifest([
+      {
+        from: 'gateway',
+        to: 'orders',
+        type: 'thrift',
+        contract: 'billing.v1.OrderService/PlaceOrder',
+        role: 'consumer',
+      },
+    ]);
+
+    expect(result.contracts).toHaveLength(2);
+    expect(result.contracts.map((c) => c.contractId)).toEqual([
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'thrift::billing.v1.OrderService/PlaceOrder',
+    ]);
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].type).toBe('thrift');
+    expect(result.crossLinks[0].from.symbolUid).toBe(
+      'manifest::gateway::thrift::billing.v1.OrderService/PlaceOrder',
+    );
+    expect(result.crossLinks[0].to.symbolUid).toBe(
+      'manifest::orders::thrift::billing.v1.OrderService/PlaceOrder',
+    );
+  });
+
+  it('resolves custom manifest links by exact symbol name', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Expression',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'engine/thales',
+        async (_cypher, params) => {
+          if (params?.symbolName === 'Expression') {
+            return [
+              {
+                uid: 'uid-expression-struct',
+                name: 'Expression',
+                filePath: 'src/expression.rs',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          if (params?.symbolName === 'Expression') {
+            return [
+              {
+                uid: 'uid-expression-enum',
+                name: 'Expression',
+                filePath: 'src/ast.rs',
+              },
+            ];
+          }
+          return [];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+
+    expect(provider?.symbolUid).toBe('uid-expression-enum');
+    expect(provider?.symbolRef.filePath).toBe('src/ast.rs');
+
+    expect(consumer?.symbolUid).toBe('uid-expression-struct');
+    expect(consumer?.symbolRef.filePath).toBe('src/expression.rs');
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('manifest');
+  });
+
+  it('custom contract with qualified name (provider::Symbol) strips prefix before graph query', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'mathlex::Expression',
+        role: 'provider',
+      },
+    ];
+
+    let capturedParams: Record<string, unknown> | undefined;
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          capturedParams = params;
+          if (params?.symbolName === 'Expression') {
+            return [{ uid: 'uid-expr', name: 'Expression', filePath: 'src/ast.rs' }];
+          }
+          return [];
+        },
+      ],
+      ['engine/thales', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+    const provider = result.contracts.find((c) => c.role === 'provider');
+
+    expect(capturedParams?.symbolName).toBe('Expression');
+    expect(provider?.symbolUid).toBe('uid-expr');
+  });
+
+  it('falls back to synthetic uid when custom symbol not found in graph', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'core/units',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Dimension',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      ['engine/thales', async () => []],
+      ['core/units', async () => []],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('manifest::core/units::custom::Dimension');
+  });
+
+  it('custom contract query uses positive label allowlist (not negative exclusion)', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Route',
+        role: 'provider',
+      },
+    ];
+    let capturedCypher = '';
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (cypher) => {
+          capturedCypher = cypher;
+          return [];
+        },
+      ],
+      ['engine/thales', async () => []],
+    ]);
+
+    await extractor.extractFromManifest(links, dbExecutors);
+
+    expect(capturedCypher).toContain('Function|Method|Class|Interface|Struct|Enum|Trait');
+    expect(capturedCypher).not.toContain('NOT n:File');
+  });
+
+  it('custom contract with ambiguous name returns first-by-filePath deterministically', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'parser/mathlex',
+        to: 'engine/thales',
+        type: 'custom',
+        contract: 'Token',
+        role: 'provider',
+      },
+    ];
+
+    const dbExecutors = new Map<
+      string,
+      (cypher: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>[]>
+    >([
+      [
+        'parser/mathlex',
+        async (_cypher, params) => {
+          if (params?.symbolName === 'Token') {
+            return [{ uid: 'uid-token-first', name: 'Token', filePath: 'src/ast.rs' }];
+          }
+          return [];
+        },
+      ],
+      [
+        'engine/thales',
+        async (_cypher, params) => {
+          if (params?.symbolName === 'Token') {
+            return [{ uid: 'uid-token-consumer', name: 'Token', filePath: 'src/lexer.rs' }];
+          }
+          return [];
+        },
+      ],
+    ]);
+
+    const result = await extractor.extractFromManifest(links, dbExecutors);
+    const provider = result.contracts.find((c) => c.role === 'provider');
+    expect(provider?.symbolUid).toBe('uid-token-first');
   });
 
   it('returns empty for no links', async () => {

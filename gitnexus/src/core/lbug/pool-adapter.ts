@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
+import { createLbugDatabase } from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -83,9 +84,21 @@ const MAX_CONNS_PER_REPO = 8;
 
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Saved real stdout/stderr write — used to silence native module output without race conditions */
-export const realStdoutWrite = process.stdout.write.bind(process.stdout);
-export const realStderrWrite = process.stderr.write.bind(process.stderr);
+// Stdout-capture state lives in `gitnexus/src/mcp/stdio-capture.ts` — a leaf
+// module with zero non-`node:` imports. We re-export the same symbols here
+// so the existing test mock seam (`gitnexus/src/mcp/core/lbug-adapter.ts`
+// re-exports * from this file, and 8+ test files use that path with
+// `vi.mock(...)`) continues to work without churn. The source of truth is
+// the leaf module; this re-export is a compatibility shim.
+//
+// Why the leaf module exists: Codex's adversarial review on PR #1383 found
+// that putting this state in pool-adapter.ts pulled `@ladybugdb/core` into
+// `cli/mcp.ts`'s static-import closure (via stdio-context → pool-adapter →
+// @ladybugdb/core), corrupting stdout in the pre-sentinel window. Routing
+// through the leaf breaks that chain.
+export { realStdoutWrite, realStderrWrite, setActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+import { getActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
 let preWarmActive = false;
@@ -208,6 +221,7 @@ let activeQueryCount = 0;
  */
 export function silenceStdout(): void {
   if (stdoutSilenceCount++ === 0) {
+    // eslint-disable-next-line no-restricted-syntax -- silencing infrastructure; replacement is a no-op
     process.stdout.write = (() => true) as any;
   }
 }
@@ -215,7 +229,8 @@ export function silenceStdout(): void {
 export function restoreStdout(): void {
   if (--stdoutSilenceCount <= 0) {
     stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
+    // eslint-disable-next-line no-restricted-syntax -- restoring the active stdout-write handler is the silencing API contract
+    process.stdout.write = getActiveStdoutWrite();
   }
 }
 
@@ -226,7 +241,8 @@ export function restoreStdout(): void {
 setInterval(() => {
   if (stdoutSilenceCount > 0 && !preWarmActive && activeQueryCount === 0) {
     stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
+    // eslint-disable-next-line no-restricted-syntax -- watchdog recovery for stuck silencing
+    process.stdout.write = getActiveStdoutWrite();
   }
 }, 1000).unref();
 
@@ -305,12 +321,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
       try {
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize (default)
-          false, // enableCompression (default)
-          true, // readOnly
-        );
+        const db = createLbugDatabase(lbug, dbPath, { readOnly: true });
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);

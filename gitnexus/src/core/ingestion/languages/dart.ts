@@ -17,6 +17,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as dartConfig } from '../type-extractors/dart.js';
 import { dartExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -93,6 +94,42 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const dartProvider = defineLanguage({
   id: SupportedLanguages.Dart,
   extensions: ['.dart'],
+  entryPointPatterns: [
+    /^main$/,
+    /^build$/,
+    /^createState$/,
+    /^initState$/,
+    /^dispose$/,
+    /^didChangeDependencies$/,
+    /^didUpdateWidget$/,
+    /^runApp$/,
+    /^onEvent$/,
+    /^mapEventToState$/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'flutter',
+      entryPointMultiplier: 2.5,
+      reason: 'flutter-widget',
+      patterns: [
+        'StatelessWidget',
+        'StatefulWidget',
+        'BuildContext',
+        'Widget build',
+        'ChangeNotifier',
+        'GetxController',
+        'Cubit<',
+        'Bloc<',
+        'ConsumerWidget',
+      ],
+    },
+    {
+      framework: 'riverpod',
+      entryPointMultiplier: 2.8,
+      reason: 'riverpod-pattern',
+      patterns: ['@riverpod', 'ref.watch', 'ref.read', 'AsyncNotifier', 'Notifier'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: DART_QUERIES,
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
