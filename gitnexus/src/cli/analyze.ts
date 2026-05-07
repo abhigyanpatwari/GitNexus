@@ -26,6 +26,7 @@ import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-si
 import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
+import { isNetworkFetchError } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -602,14 +603,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('    1. Reinstall:   npm install -g gitnexus@latest');
       console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
       console.error('');
-    } else if (
-      msg.includes('fetch failed') ||
-      msg.includes('ECONNREFUSED') ||
-      msg.includes('ENOTFOUND') ||
-      msg.includes('ETIMEDOUT') ||
-      msg.includes('ECONNRESET') ||
-      msg.includes('Failed to download embedding model')
-    ) {
+    } else if (isNetworkFetchError(msg) || msg.includes('Failed to download embedding model')) {
       console.error('  The embedding model could not be downloaded.');
       console.error('  huggingface.co may be unreachable from your network');
       console.error('  (e.g. behind a corporate proxy or a regional firewall).');
