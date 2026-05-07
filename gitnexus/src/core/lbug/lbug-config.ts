@@ -42,10 +42,23 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
+/** Matches WAL corruption errors from the LadybugDB engine. */
+const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
+
+export const WAL_RECOVERY_SUGGESTION =
+  'WAL corruption detected. Run `gitnexus analyze` to rebuild the index.';
+
+export function isWalCorruptionError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return WAL_CORRUPTION_RE.test(msg);
+}
+
 type LbugModule = typeof lbug;
 
 export interface LbugDatabaseOptions {
   readOnly?: boolean;
+  throwOnWalReplayFailure?: boolean;
 }
 
 export interface LbugConnectionHandle {
@@ -58,13 +71,18 @@ export function createLbugDatabase(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): lbug.Database {
-  return new lbugModule.Database(
+  // .d.ts declares fewer args than the native constructor accepts.
+  return new (lbugModule.Database as any)(
     databasePath,
-    0,
-    false,
+    0, // bufferManagerSize
+    false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
-  );
+    true, // autoCheckpoint
+    -1, // checkpointThreshold
+    options.throwOnWalReplayFailure ?? true,
+    true, // enableChecksums
+  ) as lbug.Database;
 }
 
 export async function openLbugConnection(
