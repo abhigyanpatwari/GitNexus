@@ -300,7 +300,7 @@ describe('worker pool integration', () => {
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 500,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 4,
     });
@@ -308,7 +308,46 @@ describe('worker pool integration', () => {
     try {
       const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
       expect(results).toEqual([{ fileCount: 1, recovered: true }]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.6s timeout'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 2s timeout'));
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects dispatch when replacement worker crashes during startup', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-replace-fail-'));
+    const markerPath = path.join(tempDir, 'first-attempt.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      if (fs.existsSync(markerPath)) {
+        throw new Error('simulated startup crash');
+      }
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          fs.writeFileSync(markerPath, 'stalled');
+          return;
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 1,
+      timeoutBackoffFactor: 4,
+    });
+
+    try {
+      await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
+        /simulated startup crash|exited with code/,
+      );
     } finally {
       warnSpy.mockRestore();
       fs.rmSync(tempDir, { recursive: true, force: true });

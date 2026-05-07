@@ -24,7 +24,7 @@ import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
  * - `.shadow` — non-blocking concurrent checkpoint sidecar (added in
  *   LadybugDB 0.15.4); same pairing constraint as `.wal`.
  *
- * `bridge-db` writes to a `bridge.lbug.tmp` file and then atomically renames
+ * `bridge-db` writes to a `bridge.lbug.tmp.<random>` file and then atomically renames
  * it into place. The rename only moves the main file; sidecars must be
  * cleaned up explicitly or the next writer trips the database-id check.
  */
@@ -38,6 +38,26 @@ async function removeLbugFile(basePath: string): Promise<void> {
     } catch {
       /* best-effort: caller will surface real errors via the open path */
     }
+  }
+}
+
+/**
+ * Remove all stale `bridge.lbug.tmp.*` files (and their sidecars) from a
+ * group directory.  With randomBytes-based temp names, a crashed writeBridge
+ * leaves behind a uniquely-named tmp file that no future run will target by
+ * name — so we glob for the prefix and clean up everything matching.
+ */
+async function cleanStaleBridgeTmpFiles(groupDir: string): Promise<void> {
+  try {
+    const entries = await fsp.readdir(groupDir);
+    const staleBases = entries.filter(
+      (e) => e.startsWith('bridge.lbug.tmp.') && !LBUG_SIDECAR_SUFFIXES.some((s) => e.endsWith(s)),
+    );
+    for (const name of staleBases) {
+      await removeLbugFile(path.join(groupDir, name));
+    }
+  } catch {
+    /* best-effort: directory may not exist yet */
   }
 }
 

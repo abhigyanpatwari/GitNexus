@@ -22,6 +22,7 @@ describe('syncGroup', () => {
     detect: {
       http: true,
       grpc: false,
+      thrift: false,
       topics: false,
       shared_libs: false,
       embedding_fallback: false,
@@ -229,9 +230,11 @@ describe('syncGroup', () => {
       detect: {
         http: true,
         grpc: false,
+        thrift: false,
         topics: false,
         shared_libs: false,
         embedding_fallback: false,
+        workspace_deps: false,
       },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
@@ -264,6 +267,359 @@ describe('syncGroup', () => {
     expect(result.crossLinks).toHaveLength(1);
   });
 
+  it('runs thrift wildcard matching after exact matching and returns wildcard remaining', async () => {
+    const config = makeConfig({ 'app/provider': 'provider-repo', 'app/consumer': 'consumer-repo' });
+    const provider: StoredContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-provider-place-order',
+      symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.9,
+      meta: {},
+      repo: 'app/provider',
+    };
+    const consumer: StoredContract = {
+      contractId: 'thrift::OrderService/*',
+      type: 'thrift',
+      role: 'consumer',
+      symbolUid: 'uid-consumer-order-service',
+      symbolRef: { filePath: 'src/consumer.ts', name: 'OrderClient' },
+      symbolName: 'OrderClient',
+      confidence: 0.8,
+      meta: {},
+      repo: 'app/consumer',
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [provider, consumer],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('wildcard');
+    expect(result.crossLinks[0].contractId).toBe('thrift::OrderService/*');
+    expect(result.crossLinks[0].from.repo).toBe('app/consumer');
+    expect(result.crossLinks[0].to.repo).toBe('app/provider');
+    expect(result.unmatched).toEqual([provider]);
+  });
+
+  it('keeps wildcard thrift links to multiple extracted IDL provider methods', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-wildcard-'));
+    fs.mkdirSync(path.join(tmpDir, 'idl'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+  OrderResponse GetOrder(1: string orderId)
+}`,
+    );
+
+    try {
+      const { ThriftExtractor } =
+        await import('../../../src/core/group/extractors/thrift-extractor.js');
+      const extractedProviders = (
+        await new ThriftExtractor().extract(null, tmpDir, {
+          id: 'provider-repo',
+          path: 'app/provider',
+          repoPath: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        })
+      )
+        .filter((c) => c.role === 'provider')
+        .map(
+          (c): StoredContract => ({
+            ...c,
+            repo: 'app/provider',
+          }),
+        );
+
+      const consumer: StoredContract = {
+        contractId: 'thrift::OrderService/*',
+        type: 'thrift',
+        role: 'consumer',
+        symbolUid: 'manifest::app/consumer::thrift::OrderService/*',
+        symbolRef: { filePath: 'group.yaml', name: 'OrderService' },
+        symbolName: 'OrderService',
+        confidence: 1,
+        meta: {},
+        repo: 'app/consumer',
+      };
+
+      const result = await syncGroup(makeConfig({}), {
+        extractorOverride: async () => [...extractedProviders, consumer],
+        skipWrite: true,
+      });
+
+      expect(result.crossLinks).toHaveLength(2);
+      expect(result.crossLinks.map((cl) => cl.to.symbolRef.name).sort()).toEqual([
+        'OrderService.GetOrder',
+        'OrderService.PlaceOrder',
+      ]);
+      expect(new Set(result.crossLinks.map((cl) => cl.to.symbolUid)).size).toBe(2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('matches weak thrift method consumers to namespace-qualified providers during sync', async () => {
+    const config = makeConfig({ 'app/provider': 'provider-repo', 'app/consumer': 'consumer-repo' });
+    const provider: StoredContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-provider-place-order',
+      symbolRef: { filePath: 'idl/order.thrift', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.85,
+      meta: {},
+      repo: 'app/provider',
+    };
+    const consumer: StoredContract = {
+      contractId: 'thrift::OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'consumer',
+      symbolUid: 'uid-consumer-place-order',
+      symbolRef: { filePath: 'src/BillingWorkflow.java', name: 'orderService.PlaceOrder' },
+      symbolName: 'orderService.PlaceOrder',
+      confidence: 0.45,
+      meta: {},
+      repo: 'app/consumer',
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [provider, consumer],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('exact');
+    expect(result.crossLinks[0].contractId).toBe('thrift::OrderService/PlaceOrder');
+    expect(result.crossLinks[0].from.repo).toBe('app/consumer');
+    expect(result.crossLinks[0].to.repo).toBe('app/provider');
+    expect(result.unmatched).toHaveLength(0);
+  });
+
+  it('keeps exact thrift links to extracted IDL and Java providers for same method', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-exact-'));
+    fs.mkdirSync(path.join(tmpDir, 'idl'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'src', 'main', 'java', 'example'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'src', 'main', 'java', 'example', 'IfaceOrderHandler.java'),
+      `package example;
+
+class IfaceOrderHandler implements OrderService.Iface {
+  public PlaceOrderResponse PlaceOrder(PlaceOrderRequest request) {
+    return new PlaceOrderResponse();
+  }
+}`,
+    );
+
+    try {
+      const { ThriftExtractor } =
+        await import('../../../src/core/group/extractors/thrift-extractor.js');
+      const extractedProviders = (
+        await new ThriftExtractor().extract(null, tmpDir, {
+          id: 'provider-repo',
+          path: 'app/provider',
+          repoPath: tmpDir,
+          storagePath: path.join(tmpDir, '.gitnexus'),
+        })
+      )
+        .filter((c) => c.role === 'provider')
+        .map(
+          (c): StoredContract => ({
+            ...c,
+            repo: 'app/provider',
+          }),
+        );
+
+      const consumer: StoredContract = {
+        contractId: 'thrift::OrderService/PlaceOrder',
+        type: 'thrift',
+        role: 'consumer',
+        symbolUid: [
+          'source-scan::thrift',
+          'consumer',
+          'OrderService/PlaceOrder',
+          'src/BillingWorkflow.java',
+          'orderService.PlaceOrder',
+        ].join('::'),
+        symbolRef: { filePath: 'src/BillingWorkflow.java', name: 'orderService.PlaceOrder' },
+        symbolName: 'orderService.PlaceOrder',
+        confidence: 0.45,
+        meta: {},
+        repo: 'app/consumer',
+      };
+
+      const result = await syncGroup(makeConfig({}), {
+        extractorOverride: async () => [...extractedProviders, consumer],
+        skipWrite: true,
+      });
+
+      expect(result.crossLinks).toHaveLength(2);
+      expect(result.crossLinks.map((cl) => cl.to.symbolRef.filePath).sort()).toEqual([
+        'idl/order.thrift',
+        'src/main/java/example/IfaceOrderHandler.java',
+      ]);
+      expect(new Set(result.crossLinks.map((cl) => cl.to.symbolUid)).size).toBe(2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts thrift contracts during real sync when thrift detection is enabled', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-'));
+    const storageDir = path.join(tmpDir, '.gitnexus');
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'idl'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'src'), { recursive: true });
+    fs.mkdirSync(storageDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'services', 'billing', 'package.json'), '{}');
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'src', 'BillingWorkflow.java'),
+      'package example; class BillingWorkflow {}',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+
+    const config = makeConfig({ 'services/billing': 'billing-repo' });
+    config.detect.http = false;
+    config.detect.thrift = true;
+
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'billing-repo',
+          path: groupPath,
+          repoPath: tmpDir,
+          storagePath: storageDir,
+        }),
+        skipWrite: true,
+      });
+
+      expect(result.missingRepos).toHaveLength(0);
+      expect(result.contracts).toHaveLength(1);
+      expect(result.contracts[0]).toMatchObject({
+        contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+        type: 'thrift',
+        role: 'provider',
+        repo: 'services/billing',
+        service: 'services/billing',
+        symbolRef: {
+          filePath: 'services/billing/idl/order.thrift',
+          name: 'OrderService.PlaceOrder',
+        },
+      });
+      expect(initSpy).toHaveBeenCalledWith('billing-repo', path.join(storageDir, 'lbug'));
+      expect(closeSpy).toHaveBeenCalledWith('billing-repo');
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not extract thrift contracts during real sync when thrift detection is disabled', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-off-'));
+    const storageDir = path.join(tmpDir, '.gitnexus');
+    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'idl'), { recursive: true });
+    fs.mkdirSync(storageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'billing', 'idl', 'order.thrift'),
+      `namespace java billing.v1
+
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+    );
+
+    const config = makeConfig({ 'services/billing': 'billing-repo' });
+    config.detect.http = false;
+    config.detect.thrift = false;
+
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'billing-repo',
+          path: groupPath,
+          repoPath: tmpDir,
+          storagePath: storageDir,
+        }),
+        skipWrite: true,
+      });
+
+      expect(result.missingRepos).toHaveLength(0);
+      expect(result.contracts).toHaveLength(0);
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('dedupes duplicate wildcard cross-links during sync', async () => {
+    const config = makeConfig({ 'app/provider': 'provider-repo', 'app/consumer': 'consumer-repo' });
+    const provider: StoredContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-provider-place-order',
+      symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.9,
+      meta: {},
+      repo: 'app/provider',
+    };
+    const duplicateProvider: StoredContract = {
+      ...provider,
+      confidence: 0.7,
+    };
+    const consumer: StoredContract = {
+      contractId: 'thrift::OrderService/*',
+      type: 'thrift',
+      role: 'consumer',
+      symbolUid: 'uid-consumer-order-service',
+      symbolRef: { filePath: 'src/consumer.ts', name: 'OrderClient' },
+      symbolName: 'OrderClient',
+      confidence: 0.8,
+      meta: {},
+      repo: 'app/consumer',
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [provider, duplicateProvider, consumer],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('wildcard');
+  });
+
   it('manifest links referencing unknown repos still produce cross-links via synthetic UIDs', async () => {
     const links: GroupManifestLink[] = [
       {
@@ -285,9 +641,11 @@ describe('syncGroup', () => {
       detect: {
         http: true,
         grpc: false,
+        thrift: false,
         topics: false,
         shared_libs: false,
         embedding_fallback: false,
+        workspace_deps: false,
       },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
@@ -350,6 +708,7 @@ describe('syncGroup', () => {
         detect: {
           http: false,
           grpc: false,
+          thrift: false,
           topics: false,
           shared_libs: false,
           embedding_fallback: false,
@@ -506,6 +865,7 @@ describe('syncGroup', () => {
         detect: {
           http: false,
           grpc: false,
+          thrift: false,
           topics: false,
           shared_libs: false,
           embedding_fallback: false,

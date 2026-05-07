@@ -177,7 +177,7 @@ export class ManifestExtractor {
 
     // NOTE: All lookups use EXACT equality on the relevant name field and
     // deterministic ORDER BY before LIMIT 1. Previous versions used CONTAINS
-    // for fuzzy matching (plus an unconditional ".proto" fallback for gRPC)
+    // for fuzzy matching (plus an unconditional IDL file fallback for gRPC)
     // which produced silent false positives: e.g. manifest "/orders" would
     // match "/suborders", and a gRPC manifest entry in a repo with any
     // .proto file would attach to a random proto symbol.
@@ -225,16 +225,21 @@ export class ManifestExtractor {
            LIMIT 1`,
           { contract: link.contract },
         );
-      } else if (link.type === 'grpc') {
+      } else if (link.type === 'grpc' || link.type === 'thrift') {
         // Contract is "Service/Method" or just "Service" (or package.Service
         // variants). Prefer matching by method name when present, otherwise
-        // by service name. NO .proto path fallback — that's guaranteed to
-        // return a wrong symbol in any repo with more than one proto file.
+        // by service name. Thrift generated Java classes often use
+        // package.Service in manifests while graph Class/Interface names are
+        // stored as bare Service, so strip the package prefix for thrift
+        // service-name lookups. NO IDL path fallback — that's guaranteed to
+        // return a wrong symbol in any repo with more than one IDL file.
         // Label filters scope lookups: methods → Function|Method, services
         // → Class|Interface (no label match = no silent wrong hits on
         // File/Variable nodes that happen to share the name).
         const parts = link.contract.split('/');
-        const serviceName = parts[0]?.trim() ?? '';
+        const rawServiceName = parts[0]?.trim() ?? '';
+        const serviceName =
+          link.type === 'thrift' ? (rawServiceName.split('.').pop() ?? '') : rawServiceName;
         const methodName = parts[1]?.trim() ?? '';
         if (methodName) {
           rows = await executor(
@@ -344,6 +349,8 @@ export class ManifestExtractor {
       }
       case 'grpc':
         return `grpc::${contract}`;
+      case 'thrift':
+        return `thrift::${contract}`;
       case 'topic':
         return `topic::${contract}`;
       case 'lib':

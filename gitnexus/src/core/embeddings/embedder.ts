@@ -166,7 +166,7 @@ export const initEmbedder = async (
 
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
-        console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
+        console.error(`🧠 Loading embedding model: ${finalConfig.modelId}`);
       }
 
       const progressCallback = onProgress
@@ -192,13 +192,13 @@ export const initEmbedder = async (
       for (const device of devicesToTry) {
         try {
           if (isDev && device === 'dml') {
-            console.log('🔧 Trying DirectML (DirectX12) GPU backend...');
+            console.error('🔧 Trying DirectML (DirectX12) GPU backend...');
           } else if (isDev && device === 'cuda') {
-            console.log('🔧 Trying CUDA GPU backend...');
+            console.error('🔧 Trying CUDA GPU backend...');
           } else if (isDev && device === 'cpu') {
-            console.log('🔧 Using CPU backend...');
+            console.error('🔧 Using CPU backend...');
           } else if (isDev && device === 'wasm') {
-            console.log('🔧 Using WASM backend (slower)...');
+            console.error('🔧 Using WASM backend (slower)...');
           }
 
           embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
@@ -221,15 +221,15 @@ export const initEmbedder = async (
                 : device === 'cuda'
                   ? 'GPU (CUDA)'
                   : device.toUpperCase();
-            console.log(`✅ Using ${label} backend`);
-            console.log('✅ Embedding model loaded successfully');
+            console.error(`✅ Using ${label} backend`);
+            console.error('✅ Embedding model loaded successfully');
           }
 
           return embedderInstance!;
         } catch (deviceError) {
           if (isDev && (device === 'cuda' || device === 'dml')) {
             const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
-            console.log(`⚠️  ${gpuType} not available, falling back to CPU...`);
+            console.error(`⚠️  ${gpuType} not available, falling back to CPU...`);
           }
           // Continue to next device in list
           if (device === devicesToTry[devicesToTry.length - 1]) {

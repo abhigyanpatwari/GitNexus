@@ -2,7 +2,11 @@ import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
-import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
+import {
+  deriveEmbeddingMode,
+  deriveEmbeddingCap,
+  DEFAULT_EMBEDDING_NODE_LIMIT,
+} from '../../src/core/embedding-mode.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
@@ -134,5 +138,41 @@ describe('deriveEmbeddingMode', () => {
     expect(m.shouldLoadCache).toBe(false);
     expect(m.shouldGenerateEmbeddings).toBe(true);
     expect(m.preserveExistingEmbeddings).toBe(false);
+  });
+});
+
+describe('deriveEmbeddingCap', () => {
+  it('uses the default 50K cap when limit is undefined', () => {
+    const d = deriveEmbeddingCap(10_000, undefined);
+    expect(d.nodeLimit).toBe(DEFAULT_EMBEDDING_NODE_LIMIT);
+    expect(d.capDisabled).toBe(false);
+    expect(d.skipForCap).toBe(false);
+  });
+
+  it('skips when node count exceeds the default cap', () => {
+    const d = deriveEmbeddingCap(75_000, undefined);
+    expect(d.skipForCap).toBe(true);
+    expect(d.capDisabled).toBe(false);
+  });
+
+  it('does not skip when node count equals the default cap (boundary)', () => {
+    const d = deriveEmbeddingCap(DEFAULT_EMBEDDING_NODE_LIMIT, undefined);
+    expect(d.skipForCap).toBe(false);
+  });
+
+  it('limit=0 disables the cap regardless of node count', () => {
+    const d = deriveEmbeddingCap(1_000_000, 0);
+    expect(d.capDisabled).toBe(true);
+    expect(d.skipForCap).toBe(false);
+    expect(d.nodeLimit).toBe(0);
+  });
+
+  it('honors a custom positive cap', () => {
+    expect(deriveEmbeddingCap(99_999, 100_000).skipForCap).toBe(false);
+    expect(deriveEmbeddingCap(100_001, 100_000).skipForCap).toBe(true);
+  });
+
+  it('custom cap below default still applies', () => {
+    expect(deriveEmbeddingCap(15_000, 10_000).skipForCap).toBe(true);
   });
 });
