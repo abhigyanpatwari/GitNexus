@@ -7,7 +7,10 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
-export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'anthropic' | 'custom' | 'cursor';
+
+/** Anthropic API version sent in the `anthropic-version` header. */
+export const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 
 export interface LLMConfig {
   apiKey: string;
@@ -16,9 +19,11 @@ export interface LLMConfig {
   maxTokens: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  provider?: LLMProvider;
   /** Azure api-version query param (e.g. '2024-10-21'). Appended to URL when set. */
   apiVersion?: string;
+  /** Anthropic API version (e.g. '2023-06-01'). Sent as `anthropic-version` header when provider is 'anthropic'. */
+  anthropicVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
 }
@@ -64,6 +69,10 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
+    anthropicVersion:
+      overrides?.anthropicVersion ||
+      process.env.GITNEXUS_ANTHROPIC_VERSION ||
+      savedConfig.anthropicVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
   };
 }
@@ -102,10 +111,25 @@ export function isReasoningModel(model: string, override?: boolean): boolean {
 }
 
 /**
- * Build the full chat completions URL, appending ?api-version when provided.
+ * Build the full request URL.
+ *
+ * - For Anthropic: `${baseUrl}/v1/messages`. The `/v1` segment is auto-prepended when
+ *   the base URL lacks any `/vN` version segment, so a user can configure
+ *   `https://api.anthropic.com` and still hit the correct endpoint.
+ * - For OpenAI-compatible providers: `${baseUrl}/chat/completions`, with optional Azure
+ *   `?api-version=` query param when provided.
  */
-export function buildRequestUrl(baseUrl: string, apiVersion: string | undefined): string {
-  const base = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+export function buildRequestUrl(
+  baseUrl: string,
+  apiVersion: string | undefined,
+  provider?: LLMProvider,
+): string {
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  if (provider === 'anthropic') {
+    const versioned = /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
+    return `${versioned}/messages`;
+  }
+  const base = `${trimmed}/chat/completions`;
   return apiVersion ? `${base}?api-version=${encodeURIComponent(apiVersion)}` : base;
 }
 
@@ -124,14 +148,9 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
-  const messages: Array<{ role: string; content: string }> = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-  messages.push({ role: 'user', content: prompt });
-
-  // Detect Azure endpoint (by provider field or URL pattern)
-  const azure = config.provider === 'azure' || isAzureProvider(config.baseUrl);
+  const anthropic = config.provider === 'anthropic';
+  // Detect Azure endpoint (by provider field or URL pattern). Anthropic short-circuits Azure.
+  const azure = !anthropic && (config.provider === 'azure' || isAzureProvider(config.baseUrl));
 
   // Warn when using Azure legacy deployment URL without api-version
   if (azure && !config.apiVersion && config.baseUrl.includes('/deployments/')) {
@@ -143,29 +162,56 @@ export async function callLLM(
   // Detect reasoning model (o1, o3, o4-mini etc.) or explicit override
   const reasoning = isReasoningModel(config.model, config.isReasoningModel);
 
-  const url = buildRequestUrl(config.baseUrl, azure ? config.apiVersion : undefined);
+  const url = buildRequestUrl(
+    config.baseUrl,
+    azure ? config.apiVersion : undefined,
+    config.provider,
+  );
   const useStream = !!options?.onChunk;
 
-  // Build request body — reasoning models reject temperature and use max_completion_tokens
-  const body: Record<string, unknown> = {
-    model: config.model,
-    messages,
-  };
+  // Build request body — Anthropic uses a different shape than OpenAI-compatible APIs.
+  let body: Record<string, unknown>;
+  if (anthropic) {
+    body = {
+      model: config.model,
+      max_tokens: config.maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    };
+    if (systemPrompt) body.system = systemPrompt;
+    if (config.temperature !== undefined) body.temperature = config.temperature;
+    if (useStream) body.stream = true;
+  } else {
+    const messages: Array<{ role: string; content: string }> = [];
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    messages.push({ role: 'user', content: prompt });
 
-  // max_tokens is deprecated; use max_completion_tokens for all models
-  body.max_completion_tokens = config.maxTokens;
+    body = {
+      model: config.model,
+      messages,
+    };
 
-  // Only send temperature for non-Azure providers — some Azure models reject non-default values
-  if (!reasoning && !azure && config.temperature !== undefined) {
-    body.temperature = config.temperature;
+    // max_tokens is deprecated; use max_completion_tokens for all OpenAI-compatible models
+    body.max_completion_tokens = config.maxTokens;
+
+    // Only send temperature for non-Azure providers — some Azure models reject non-default values
+    if (!reasoning && !azure && config.temperature !== undefined) {
+      body.temperature = config.temperature;
+    }
+
+    if (useStream) body.stream = true;
   }
 
-  if (useStream) body.stream = true;
-
-  // Build auth headers — Azure uses api-key header, everyone else uses Authorization: Bearer
-  const authHeaders: Record<string, string> = azure
-    ? { 'api-key': config.apiKey }
-    : { Authorization: `Bearer ${config.apiKey}` };
+  // Build auth headers — provider determines header style.
+  const authHeaders: Record<string, string> = anthropic
+    ? {
+        'x-api-key': config.apiKey,
+        'anthropic-version': config.anthropicVersion || DEFAULT_ANTHROPIC_VERSION,
+      }
+    : azure
+      ? { 'api-key': config.apiKey }
+      : { Authorization: `Bearer ${config.apiKey}` };
 
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
@@ -213,13 +259,32 @@ export async function callLLM(
         throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
       }
 
-      // Streaming path
+      // Streaming path — same reader, provider-specific event parser
       if (useStream && response.body) {
-        return await readSSEStream(response.body, options!.onChunk!);
+        const parse = anthropic ? parseAnthropicSSEEvent : parseOpenAISSEEvent;
+        return await readSSEStream(response.body, options!.onChunk!, parse);
       }
 
       // Non-streaming path
       const json = (await response.json()) as any;
+
+      if (anthropic) {
+        const text = Array.isArray(json.content)
+          ? json.content
+              .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+              .map((b: { text: string }) => b.text)
+              .join('')
+          : '';
+        if (!text) {
+          throw new Error('LLM returned empty response');
+        }
+        return {
+          content: text,
+          promptTokens: json.usage?.input_tokens,
+          completionTokens: json.usage?.output_tokens,
+        };
+      }
+
       const choice = json.choices?.[0];
       if (!choice?.message?.content) {
         throw new Error('LLM returned empty response');
@@ -250,17 +315,90 @@ export async function callLLM(
 }
 
 /**
- * Read an SSE stream from an OpenAI-compatible streaming response.
+ * Outcome a provider-specific parser may report for one SSE event.
+ *
+ * The shared {@link readSSEStream} loop accumulates `delta` text, tracks token
+ * counts, throws immediately on `error`, and throws after stream end if a
+ * `refusalReason` was set — independent of the wire format.
+ */
+interface SSEEventResult {
+  /** Text fragment to append to the accumulated content. */
+  delta?: string;
+  /** Prompt/input token count, when reported in this event. */
+  inputTokens?: number;
+  /** Completion/output token count, when reported in this event. */
+  outputTokens?: number;
+  /**
+   * If set, the stream is treated as refused/blocked: any `delta` on this event
+   * is dropped and the reader throws this message after the stream finishes.
+   */
+  refusalReason?: string;
+  /** If set, the reader throws this message immediately. */
+  error?: string;
+}
+
+type SSEEventParser = (event: any) => SSEEventResult;
+
+/** Parse one OpenAI-compatible streaming event (`choices[].delta.content`). */
+function parseOpenAISSEEvent(event: any): SSEEventResult {
+  const choice = event?.choices?.[0];
+  if (choice?.finish_reason === 'content_filter') {
+    return {
+      refusalReason:
+        'content filter triggered mid-stream. The generated content was blocked by content policy. Adjust your prompt and retry.',
+    };
+  }
+  const delta = choice?.delta?.content;
+  return delta ? { delta } : {};
+}
+
+/** Parse one Anthropic Messages streaming event (`message_start`/`content_block_delta`/`message_delta`/`error`). */
+function parseAnthropicSSEEvent(event: any): SSEEventResult {
+  switch (event?.type) {
+    case 'message_start':
+      return { inputTokens: event.message?.usage?.input_tokens };
+    case 'content_block_delta':
+      if (event.delta?.type === 'text_delta' && typeof event.delta.text === 'string') {
+        return { delta: event.delta.text };
+      }
+      return {};
+    case 'message_delta': {
+      const result: SSEEventResult = {};
+      if (event.usage?.output_tokens !== undefined) {
+        result.outputTokens = event.usage.output_tokens;
+      }
+      if (event.delta?.stop_reason === 'refusal') {
+        result.refusalReason =
+          'Anthropic refused to generate content for this prompt. Adjust your prompt and retry.';
+      }
+      return result;
+    }
+    case 'error':
+      return {
+        error: `Anthropic streaming error: ${event.error?.message || JSON.stringify(event.error)}`,
+      };
+    default:
+      return {};
+  }
+}
+
+/**
+ * Read an SSE stream and accumulate `delta` text returned by the provider-specific
+ * `parse` function. Provider differences live entirely in `parse`; the loop, buffer
+ * handling, refusal/error semantics, and final response shape are shared.
  */
 async function readSSEStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (charsReceived: number) => void,
+  parse: SSEEventParser,
 ): Promise<LLMResponse> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
   let content = '';
   let buffer = '';
-  let contentFilterTriggered = false;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let refusalReason: string | undefined;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -276,38 +414,41 @@ async function readSSEStream(
       const data = trimmed.slice(6);
       if (data === '[DONE]') continue;
 
+      let event: unknown;
       try {
-        const parsed = JSON.parse(data);
-        const choice = parsed.choices?.[0];
-
-        // Detect content filter finish reason — skip delta from this chunk
-        if (choice?.finish_reason === 'content_filter') {
-          contentFilterTriggered = true;
-          continue;
-        }
-
-        const delta = choice?.delta?.content;
-        if (delta) {
-          content += delta;
-          onChunk(content.length);
-        }
+        event = JSON.parse(data);
       } catch {
         // Skip malformed SSE chunks
+        continue;
+      }
+
+      const result = parse(event);
+
+      if (result.error) throw new Error(result.error);
+
+      if (result.refusalReason) {
+        // Latch the first refusal; drop any delta on this event
+        refusalReason = refusalReason || result.refusalReason;
+        continue;
+      }
+
+      if (result.inputTokens !== undefined) inputTokens = result.inputTokens;
+      if (result.outputTokens !== undefined) outputTokens = result.outputTokens;
+
+      if (result.delta) {
+        content += result.delta;
+        onChunk(content.length);
       }
     }
   }
 
-  if (contentFilterTriggered) {
-    throw new Error(
-      'content filter triggered mid-stream. The generated content was blocked by content policy. Adjust your prompt and retry.',
-    );
-  }
+  if (refusalReason) throw new Error(refusalReason);
 
   if (!content) {
     throw new Error('LLM returned empty streaming response');
   }
 
-  return { content };
+  return { content, promptTokens: inputTokens, completionTokens: outputTokens };
 }
 
 function sleep(ms: number): Promise<void> {

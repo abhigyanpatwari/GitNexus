@@ -133,11 +133,14 @@ program
   .command('wiki [path]')
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')
-  .option('--provider <provider>', 'LLM provider: openai or cursor (default: openai)')
+  .option(
+    '--provider <provider>',
+    'LLM provider: openai, openrouter, azure, anthropic, custom, or cursor (default: openai)',
+  )
   .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
   .option(
     '--base-url <url>',
-    'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
+    'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1. Anthropic: https://api.anthropic.com',
   )
   .option('--api-key <key>', 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)')
   .option(

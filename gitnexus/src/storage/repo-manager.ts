@@ -11,6 +11,7 @@ import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import type { LLMProvider } from '../core/wiki/llm-client.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -849,10 +850,12 @@ export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  provider?: LLMProvider;
   cursorModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
+  /** Anthropic API version (e.g. '2023-06-01'). Only used when provider is 'anthropic'. */
+  anthropicVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */
   isReasoningModel?: boolean;
 }

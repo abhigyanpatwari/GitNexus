@@ -88,6 +88,27 @@ describe('buildRequestUrl', () => {
       'https://myres.openai.azure.com/openai/v1/chat/completions',
     );
   });
+
+  it('auto-prepends /v1 for Anthropic when base URL has no version segment', () => {
+    expect(buildRequestUrl('https://api.anthropic.com', undefined, 'anthropic')).toBe(
+      'https://api.anthropic.com/v1/messages',
+    );
+  });
+
+  it('strips trailing slash and auto-prepends /v1 for Anthropic', () => {
+    expect(buildRequestUrl('https://api.anthropic.com/', undefined, 'anthropic')).toBe(
+      'https://api.anthropic.com/v1/messages',
+    );
+  });
+
+  it('keeps existing /v1 segment for Anthropic without doubling', () => {
+    expect(buildRequestUrl('https://api.anthropic.com/v1', undefined, 'anthropic')).toBe(
+      'https://api.anthropic.com/v1/messages',
+    );
+    expect(buildRequestUrl('https://api.anthropic.com/v1/', undefined, 'anthropic')).toBe(
+      'https://api.anthropic.com/v1/messages',
+    );
+  });
 });
 
 describe('callLLM — auth header', () => {
@@ -328,5 +349,215 @@ describe('readSSEStream — content_filter handling', () => {
         { onChunk: () => {} },
       ),
     ).rejects.toThrow('content filter');
+  });
+});
+
+describe('callLLM — Anthropic provider', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses x-api-key + anthropic-version headers and hits /v1/messages', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'hi from claude' }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    const res = await callLLM(
+      'hello',
+      {
+        apiKey: 'sk-ant-test',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-sonnet-4-5',
+        maxTokens: 256,
+        temperature: 0,
+        provider: 'anthropic',
+      },
+      'be helpful',
+    );
+
+    const [url, init] = fetchSpy.mock.calls[0] as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    expect((init.headers as any)['x-api-key']).toBe('sk-ant-test');
+    expect((init.headers as any)['anthropic-version']).toBe('2023-06-01');
+    expect(init.headers['Authorization']).toBeUndefined();
+
+    const body = JSON.parse(init.body as string);
+    expect(body.model).toBe('claude-sonnet-4-5');
+    expect(body.max_tokens).toBe(256);
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.system).toBe('be helpful');
+    expect(body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+
+    expect(res.content).toBe('hi from claude');
+    expect(res.promptTokens).toBe(10);
+    expect(res.completionTokens).toBe(5);
+  });
+
+  it('honours configured anthropicVersion override', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ content: [{ type: 'text', text: 'ok' }], usage: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await callLLM('test', {
+      apiKey: 'sk-ant-test',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-sonnet-4-5',
+      maxTokens: 100,
+      temperature: 0,
+      provider: 'anthropic',
+      anthropicVersion: '2024-10-22',
+    });
+
+    const [url, init] = fetchSpy.mock.calls[0] as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    expect((init.headers as any)['anthropic-version']).toBe('2024-10-22');
+  });
+
+  it('streams Anthropic typed events and accumulates text deltas', async () => {
+    const streamContent = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}\n\n',
+      'data: {"type":"message_delta","usage":{"output_tokens":3},"delta":{"stop_reason":"end_turn"}}\n\n',
+    ].join('');
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(streamContent));
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+
+    const chunks: number[] = [];
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    const res = await callLLM(
+      'hi',
+      {
+        apiKey: 'sk-ant-test',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-sonnet-4-5',
+        maxTokens: 100,
+        temperature: 0,
+        provider: 'anthropic',
+      },
+      undefined,
+      { onChunk: (n) => chunks.push(n) },
+    );
+
+    expect(res.content).toBe('Hello world');
+    expect(res.promptTokens).toBe(7);
+    expect(res.completionTokens).toBe(3);
+    expect(chunks).toEqual([5, 11]);
+  });
+
+  it('throws when Anthropic stream stop_reason is refusal', async () => {
+    const streamContent = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n',
+      'data: {"type":"message_delta","usage":{"output_tokens":1},"delta":{"stop_reason":"refusal"}}\n\n',
+    ].join('');
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(streamContent));
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await expect(
+      callLLM(
+        'test',
+        {
+          apiKey: 'sk-ant-test',
+          baseUrl: 'https://api.anthropic.com',
+          model: 'claude-sonnet-4-5',
+          maxTokens: 100,
+          temperature: 0,
+          provider: 'anthropic',
+        },
+        undefined,
+        { onChunk: () => {} },
+      ),
+    ).rejects.toThrow('Anthropic refused');
+  });
+
+  it('throws immediately on Anthropic error event', async () => {
+    const streamContent = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}\n\n',
+      'data: {"type":"error","error":{"type":"overloaded_error","message":"Service busy"}}\n\n',
+    ].join('');
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(streamContent));
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await expect(
+      callLLM(
+        'test',
+        {
+          apiKey: 'sk-ant-test',
+          baseUrl: 'https://api.anthropic.com',
+          model: 'claude-sonnet-4-5',
+          maxTokens: 100,
+          temperature: 0,
+          provider: 'anthropic',
+        },
+        undefined,
+        { onChunk: () => {} },
+      ),
+    ).rejects.toThrow('Anthropic streaming error: Service busy');
   });
 });

@@ -192,7 +192,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
       console.log(
-        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, or Cursor CLI.\n',
+        '  Supports OpenAI, OpenRouter, Azure, Anthropic, any OpenAI-compatible API, or Cursor CLI.\n',
       );
 
       // Check if Cursor CLI is available
@@ -203,12 +203,14 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
       console.log('  [2] OpenRouter (openrouter.ai)');
       console.log('  [3] Azure OpenAI');
       console.log('  [4] Custom endpoint');
+      const anthropicChoice = hasCursor ? '6' : '5';
       if (hasCursor) {
         console.log('  [5] Cursor CLI (local, uses your Cursor subscription)');
       }
+      console.log(`  [${anthropicChoice}] Anthropic (api.anthropic.com)`);
       console.log('');
 
-      const maxChoice = hasCursor ? '5' : '4';
+      const maxChoice = anthropicChoice;
       const choice = await prompt(`  Select provider (1/${maxChoice}): `);
 
       let baseUrl: string;
@@ -291,6 +293,54 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
           baseUrl: azureBaseUrl,
           model: deploymentName,
           provider: 'azure',
+        };
+      } else if (choice === anthropicChoice) {
+        // Anthropic — fixed base URL, prompt for model + key
+        const anthropicBaseUrl = 'https://api.anthropic.com';
+        const defaultAnthropicModel = 'claude-sonnet-4-5';
+
+        const modelInput = await prompt(`  Model (default: ${defaultAnthropicModel}): `);
+        const model = modelInput || defaultAnthropicModel;
+
+        // API key — prefer ANTHROPIC_API_KEY, fall back to generic GitNexus/OpenAI vars
+        const envKey =
+          process.env.ANTHROPIC_API_KEY ||
+          process.env.GITNEXUS_API_KEY ||
+          process.env.OPENAI_API_KEY ||
+          '';
+        let anthropicKey: string;
+        if (envKey) {
+          const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
+          const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);
+          if (!useEnv || useEnv.toLowerCase() === 'y' || useEnv.toLowerCase() === 'yes') {
+            anthropicKey = envKey;
+          } else {
+            anthropicKey = await prompt('  API key: ', true);
+          }
+        } else {
+          anthropicKey = await prompt('  API key: ', true);
+        }
+
+        if (!anthropicKey) {
+          console.log('\n  No key provided. Aborting.\n');
+          process.exitCode = 1;
+          return;
+        }
+
+        await saveCLIConfig({
+          apiKey: anthropicKey,
+          baseUrl: anthropicBaseUrl,
+          model,
+          provider: 'anthropic',
+        });
+        console.log('  Config saved to ~/.gitnexus/config.json\n');
+
+        llmConfig = {
+          ...llmConfig,
+          apiKey: anthropicKey,
+          baseUrl: anthropicBaseUrl,
+          model,
+          provider: 'anthropic',
         };
       } else {
         // OpenAI-compatible provider (OpenAI, OpenRouter, Custom)

@@ -707,7 +707,7 @@ gitnexus wiki
 
 # Use a custom model or provider
 gitnexus wiki --model gpt-4o
-gitnexus wiki --base-url https://api.anthropic.com/v1
+gitnexus wiki --provider anthropic --base-url https://api.anthropic.com --model claude-sonnet-4-5
 
 # Force full regeneration
 gitnexus wiki --force
