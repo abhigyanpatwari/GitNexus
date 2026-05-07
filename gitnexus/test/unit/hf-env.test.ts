@@ -229,10 +229,7 @@ describe('withHfDownloadRetry', () => {
   });
 
   it('retries on network errors and succeeds on second attempt', async () => {
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('fetch failed'))
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(new Error('fetch failed')).mockResolvedValue('ok');
     const cb = new HfDownloadCircuitBreaker();
     const result = await withHfDownloadRetry(fn, {
       circuit: cb,
@@ -289,8 +286,18 @@ describe('withHfDownloadRetry', () => {
     const onRetry = vi.fn();
     await withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 3, baseDelayMs: 0, onRetry });
     expect(onRetry).toHaveBeenCalledTimes(2);
-    expect(onRetry).toHaveBeenNthCalledWith(1, 1, 3, expect.objectContaining({ message: 'fetch failed' }));
-    expect(onRetry).toHaveBeenNthCalledWith(2, 2, 3, expect.objectContaining({ message: 'fetch failed' }));
+    expect(onRetry).toHaveBeenNthCalledWith(
+      1,
+      1,
+      3,
+      expect.objectContaining({ message: 'fetch failed' }),
+    );
+    expect(onRetry).toHaveBeenNthCalledWith(
+      2,
+      2,
+      3,
+      expect.objectContaining({ message: 'fetch failed' }),
+    );
   });
 
   it('resets the circuit on success', async () => {

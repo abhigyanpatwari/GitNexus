@@ -12,7 +12,11 @@ import {
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
-import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from '../../core/embeddings/hf-env.js';
+import {
+  applyHfEnvOverrides,
+  isHfDownloadFailure,
+  withHfDownloadRetry,
+} from '../../core/embeddings/hf-env.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
