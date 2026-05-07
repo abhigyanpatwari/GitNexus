@@ -17,6 +17,7 @@ import type { ParseOutput } from './parse.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
+import { extractAxumRoutes } from '../route-extractors/axum.js';
 import {
   extractResponseShapes,
   extractPHPResponseShapes,
@@ -129,6 +130,20 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
       });
+    }
+
+    const rustRouteCandidates = allPaths.filter((p) => p.endsWith('.rs'));
+    if (rustRouteCandidates.length > 0) {
+      const rustContents = await readFileContents(ctx.repoPath, rustRouteCandidates);
+      for (const [filePath, content] of rustContents) {
+        if (!content.includes('.route(')) continue;
+        for (const route of extractAxumRoutes(content)) {
+          addRoute(ensureSlash(route.routePath), {
+            filePath,
+            source: 'rust-axum-route',
+          });
+        }
+      }
     }
 
     let handlerContents: Map<string, string> | undefined;
