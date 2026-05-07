@@ -19,7 +19,7 @@
  */
 
 import path from 'node:path';
-import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
+import rateLimit, { type RateLimitRequestHandler, ipKeyGenerator } from 'express-rate-limit';
 import type { Request } from 'express';
 
 /**
@@ -138,6 +138,9 @@ export interface RouteLimiterOverrides {
  *   - keyGenerator: req.ip with a socket.remoteAddress fallback so abruptly
  *     closed connections do not trigger ERR_ERL_UNDEFINED_IP_ADDRESS
  *     (which would 500 the request via Express's default error handler).
+ *     The IP is passed through `ipKeyGenerator` so IPv6 addresses are
+ *     normalised to their /56 subnet — without this, each IPv6 address
+ *     gets its own counter and the limit is trivially bypassed (#1360).
  *     Caller must wire `app.set('trust proxy', ...)` correctly — see
  *     createServer in api.ts.
  *
@@ -151,7 +154,10 @@ export function createRouteLimiter(opts?: RouteLimiterOverrides): RateLimitReque
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     passOnStoreError: true,
-    keyGenerator: (req: Request) => req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+    keyGenerator: (req: Request) => {
+      const ip = req.ip ?? req.socket?.remoteAddress;
+      return ip ? ipKeyGenerator(ip) : 'unknown';
+    },
     message: { error: 'Too many requests, please try again later.' },
     ...opts,
   });

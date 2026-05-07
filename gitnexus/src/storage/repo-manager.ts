@@ -10,7 +10,7 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { getInferredRepoName } from './git.js';
+import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -389,6 +389,17 @@ export class RegistryNameCollisionError extends Error {
 const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): boolean => {
   const resolved = path.resolve(entry.path);
   if (entry.name === path.basename(resolved)) return false;
+  // Canonical-root-derived names are not user aliases either (#1259):
+  // a worktree registered under the canonical repo's basename
+  // (e.g. `{name: 'repo', path: '/repo/wt-feature'}`) must re-register
+  // cleanly without firing the duplicate-name collision guard. Without
+  // this check `entry.name = 'repo'` !== `path.basename('/repo/wt-feature') = 'wt-feature'`,
+  // so the prior check returns true → `isPreservedAlias = true` → guard
+  // throws `RegistryNameCollisionError` against the also-registered
+  // canonical checkout entry. The Claude-Code per-task worktree workflow
+  // — analyze canonical, then analyze worktree, then re-analyze worktree
+  // — would break on the third call.
+  if (entry.name === path.basename(resolveRepoIdentityRoot(resolved))) return false;
   if (inferredName && entry.name === inferredName) return false;
   return true;
 };
@@ -470,7 +481,13 @@ export const registerRepo = async (
       name = existing.name;
       isPreservedAlias = true;
     } else {
-      name = inferred ?? path.basename(resolved);
+      // Canonical-root fallback: when `resolved` is a worktree root,
+      // derive the registry name from the canonical repo's basename, not
+      // the worktree slug — see #1259. `resolveRepoIdentityRoot` confines
+      // the collapse to canonical checkouts and linked worktree roots only,
+      // so `--skip-git` subdirs of unrelated parent git repos keep using
+      // their own basename (preserves the #1232/#1233 fix's intent).
+      name = inferred ?? path.basename(resolveRepoIdentityRoot(resolved));
     }
   }
 

@@ -23,6 +23,8 @@ import {
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { glob } from 'glob';
 import fs from 'fs/promises';
 import { logger } from '../core/logger.js';
 
@@ -96,7 +98,14 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
-  embeddings?: boolean;
+  /**
+   * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
+   *   - `undefined` when the flag is omitted
+   *   - `true` when passed without an argument (use default 50K node cap)
+   *   - a string when passed with an argument (`--embeddings 0` disables the
+   *     cap, `--embeddings <n>` uses `<n>` as the cap)
+   */
+  embeddings?: boolean | string;
   /**
    * Explicitly drop existing embeddings on rebuild instead of preserving
    * them. Without this flag, a routine `analyze` keeps any embeddings
@@ -167,6 +176,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       Math.round(workerTimeoutSeconds * 1000),
     );
   }
+
+  // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
+  // (0 disables the cap entirely). Validated up here so failures match the
+  // sibling-validation pattern (exit before bar.start() — otherwise
+  // process.exit() leaves the progress bar's hidden cursor uncleared).
+  let embeddingsNodeLimit: number | undefined;
+  if (typeof options?.embeddings === 'string') {
+    const parsed = Number(options.embeddings);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error(
+        `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
+          `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    embeddingsNodeLimit = parsed;
+  }
+  const embeddingsEnabled = !!options?.embeddings;
 
   const setPositiveEnv = (
     optionName: string,
@@ -246,6 +274,30 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log(
       '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
     );
+  }
+
+  // If the target repo contains files an optional grammar would parse but
+  // that grammar's native binding is absent, warn before analysis so users
+  // learn why those files end up unparsed instead of silently getting a
+  // degraded index.
+  try {
+    const matches = await glob(['**/*.dart', '**/*.proto'], {
+      cwd: repoPath,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      dot: false,
+      nodir: true,
+      absolute: false,
+    });
+    if (matches.length > 0) {
+      const present = new Set<string>();
+      for (const m of matches) {
+        const ext = path.extname(m).toLowerCase();
+        if (ext) present.add(ext);
+      }
+      warnMissingOptionalGrammars({ context: 'analyze', relevantExtensions: present });
+    }
+  } catch {
+    // Best-effort warning \u2014 never block analyze on the precheck.
   }
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.
@@ -347,7 +399,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
-        embeddings: options?.embeddings,
+        embeddings: embeddingsEnabled,
+        embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,

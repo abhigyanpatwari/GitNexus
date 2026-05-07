@@ -301,7 +301,7 @@ describe('worker pool integration', () => {
 
     const cap = _captureLogger();
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 500,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 4,
     });
@@ -309,9 +309,52 @@ describe('worker pool integration', () => {
     try {
       const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
       expect(results).toEqual([{ fileCount: 1, recovered: true }]);
+      // 500ms idle timeout × 4 backoff factor = 2000ms = "2s" in the retry log.
       expect(
-        cap.records().some((r) => String(r.msg ?? '').includes('Retrying with 0.6s timeout')),
+        cap.records().some((r) => String(r.msg ?? '').includes('Retrying with 2s timeout')),
       ).toBe(true);
+    } finally {
+      cap.restore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects dispatch when replacement worker crashes during startup', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-replace-fail-'));
+    const markerPath = path.join(tempDir, 'first-attempt.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      if (fs.existsSync(markerPath)) {
+        throw new Error('simulated startup crash');
+      }
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          fs.writeFileSync(markerPath, 'stalled');
+          return;
+        }
+      });
+    `,
+    );
+
+    // Capture pino output to keep test runner output clean. The test only
+    // asserts the dispatch rejects — it does not need to match a specific
+    // log line, so the captured records are discarded on cleanup.
+    const cap = _captureLogger();
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 1,
+      timeoutBackoffFactor: 4,
+    });
+
+    try {
+      await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
+        /simulated startup crash|exited with code/,
+      );
     } finally {
       cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });

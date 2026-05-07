@@ -176,8 +176,14 @@ const logFailure = (key: string, result: LoadResult): void => {
   logged.add(key);
   const message = `[gitnexus] ${result.note} (${result.error.message})`;
 
-  logger.error(message);
-  logger.warn(message);
+  // Severity routes to the correct pino level. Both go to stderr (pino's
+  // default destination), so MCP stdio framing is preserved either way —
+  // the level tag drives log filtering, not channel selection.
+  if (result.severity === 'error') {
+    logger.error(message);
+  } else {
+    logger.warn(message);
+  }
 };
 
 export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>

@@ -3,6 +3,17 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// Opt-out: skip the native rebuild entirely. Dart parsing becomes
+// unavailable but `npm install gitnexus` finishes much faster on machines
+// without a C++ toolchain. Strict `=== '1'` only — '=true', '=yes', '=0'
+// (read as a string), and any other value all fall through to the rebuild.
+if (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1') {
+  console.warn(
+    '[tree-sitter-dart] Skipping build (GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1). Dart parsing will be unavailable until reinstalled without the env var.',
+  );
+  process.exit(0);
+}
+
 const dartDir = path.join(__dirname, '..', 'node_modules', 'tree-sitter-dart');
 const bindingGyp = path.join(dartDir, 'binding.gyp');
 const bindingNode = path.join(dartDir, 'build', 'Release', 'tree_sitter_dart_binding.node');

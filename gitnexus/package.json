@@ -44,6 +44,7 @@
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
+    "pretest:integration": "node scripts/build.js",
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

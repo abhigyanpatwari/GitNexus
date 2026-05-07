@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { randomBytes } from 'node:crypto';
 import type { ContractRegistry } from './types.js';
 
 const CONTRACTS_FILE = 'contracts.json';
@@ -34,7 +35,7 @@ export async function writeContractRegistry(
   registry: ContractRegistry,
 ): Promise<void> {
   const targetPath = path.join(groupDir, CONTRACTS_FILE);
-  const tmpPath = `${targetPath}.tmp.${Date.now()}`;
+  const tmpPath = `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
 
   await fsp.writeFile(tmpPath, JSON.stringify(registry, null, 2), 'utf-8');
   await fsp.rename(tmpPath, targetPath);
