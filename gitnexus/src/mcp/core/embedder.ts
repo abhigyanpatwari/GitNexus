@@ -12,7 +12,7 @@ import {
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
-import { applyHfEnvOverrides, isNetworkFetchError } from '../../core/embeddings/hf-env.js';
+import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from '../../core/embeddings/hf-env.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
@@ -69,16 +69,18 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           silenceStdout();
           process.stderr.write = (() => true) as any;
           try {
-            embedderInstance = await (pipeline as any)('feature-extraction', MODEL_ID, {
-              device: device,
-              dtype: 'fp32',
-              session_options: {
-                logSeverityLevel: 3,
-                intraOpNumThreads: embeddingConfig.threads,
-                interOpNumThreads: 1,
-                executionMode: 'sequential',
-              },
-            });
+            embedderInstance = await withHfDownloadRetry(() =>
+              (pipeline as any)('feature-extraction', MODEL_ID, {
+                device: device,
+                dtype: 'fp32',
+                session_options: {
+                  logSeverityLevel: 3,
+                  intraOpNumThreads: embeddingConfig.threads,
+                  interOpNumThreads: 1,
+                  executionMode: 'sequential',
+                },
+              }),
+            );
           } finally {
             restoreStdout();
             process.stderr.write = realStderrWrite;
@@ -86,12 +88,12 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           logger.info({ device }, 'GitNexus: Embedding model loaded');
           return embedderInstance!;
         } catch (deviceError) {
-          // Network errors (e.g. huggingface.co unreachable) are not
-          // device-specific and will fail the same way on every device.
-          // Rethrow immediately with actionable guidance rather than
-          // silently falling back to the next device.
+          // Network errors and circuit-open errors are not device-specific —
+          // they will fail the same way on every device. Rethrow immediately
+          // with actionable HF_ENDPOINT guidance rather than silently falling
+          // back to the next device.
           const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
-          if (isNetworkFetchError(errMsg)) {
+          if (isHfDownloadFailure(errMsg)) {
             const endpointHint = process.env.HF_ENDPOINT
               ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
               : `huggingface.co may be unreachable from your network.\n` +

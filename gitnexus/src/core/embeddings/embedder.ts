@@ -22,7 +22,7 @@ import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
-import { applyHfEnvOverrides, isNetworkFetchError } from './hf-env.js';
+import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import { logger } from '../logger.js';
 
 /**
@@ -202,17 +202,29 @@ export const initEmbedder = async (
             logger.info('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
-            device: device,
-            dtype: 'fp32',
-            progress_callback: progressCallback,
-            session_options: {
-              logSeverityLevel: 3,
-              intraOpNumThreads: finalConfig.threads,
-              interOpNumThreads: 1,
-              executionMode: 'sequential',
+          embedderInstance = await withHfDownloadRetry(
+            () =>
+              (pipeline as any)('feature-extraction', finalConfig.modelId, {
+                device: device,
+                dtype: 'fp32',
+                progress_callback: progressCallback,
+                session_options: {
+                  logSeverityLevel: 3,
+                  intraOpNumThreads: finalConfig.threads,
+                  interOpNumThreads: 1,
+                  executionMode: 'sequential',
+                },
+              }),
+            {
+              onRetry: isDev
+                ? (attempt, max, err) =>
+                    logger.warn(
+                      { attempt, max, err: err.message },
+                      `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
+                    )
+                : undefined,
             },
-          });
+          );
           currentDevice = device;
 
           if (isDev) {
@@ -228,12 +240,12 @@ export const initEmbedder = async (
 
           return embedderInstance!;
         } catch (deviceError) {
-          // Network errors (e.g. huggingface.co unreachable) are not
-          // device-specific and will fail the same way on every device.
-          // Rethrow immediately with actionable guidance rather than
-          // silently falling back to the next device.
+          // Network errors and circuit-open errors are not device-specific —
+          // they will fail the same way on every device. Rethrow immediately
+          // with actionable HF_ENDPOINT guidance rather than silently falling
+          // back to the next device.
           const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
-          if (isNetworkFetchError(errMsg)) {
+          if (isHfDownloadFailure(errMsg)) {
             const endpointHint = process.env.HF_ENDPOINT
               ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
               : `huggingface.co may be unreachable from your network.\n` +

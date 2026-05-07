@@ -27,7 +27,7 @@ import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
-import { isNetworkFetchError } from '../core/embeddings/hf-env.js';
+import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -630,7 +630,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze\n`,
         { recoveryHint: 'module-not-found' },
       );
-    } else if (isNetworkFetchError(msg) || msg.includes('Failed to download embedding model')) {
+    } else if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
       cliError(
         `  The embedding model could not be downloaded.\n` +
           `  huggingface.co may be unreachable from your network\n` +
