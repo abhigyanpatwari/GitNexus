@@ -577,6 +577,26 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
 
+    // HF download failure — show clean guidance without the raw stack trace.
+    // Checked before writeFatalToStderr so the user sees one focused message
+    // rather than a stack-trace dump followed by a second remediation block.
+    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+      cliError(
+        `  The embedding model could not be downloaded.\n` +
+          `  huggingface.co may be unreachable from your network\n` +
+          `  (e.g. behind a corporate proxy or a regional firewall).\n` +
+          `  Suggestions:\n` +
+          `    1. Set HF_ENDPOINT to a mirror and retry:\n` +
+          `         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+          `         (Windows: set HF_ENDPOINT=https://hf-mirror.com && npx gitnexus analyze --embeddings)\n` +
+          `    2. Check your proxy / VPN settings.\n` +
+          `    3. Once downloaded the model is cached — future runs work offline.\n`,
+        { recoveryHint: 'hf-endpoint-unreachable' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     // Bypass the redirected console.error and write the full stack to
     // the real stderr captured at module load. The redirected
     // console.error wraps every line with `\\x1b[2K\\r` (ANSI clear-line)
@@ -629,18 +649,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `    1. Reinstall:   npm install -g gitnexus@latest\n` +
           `    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze\n`,
         { recoveryHint: 'module-not-found' },
-      );
-    } else if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
-      cliError(
-        `  The embedding model could not be downloaded.\n` +
-          `  huggingface.co may be unreachable from your network\n` +
-          `  (e.g. behind a corporate proxy or a regional firewall).\n` +
-          `  Suggestions:\n` +
-          `    1. Set HF_ENDPOINT to a mirror and retry:\n` +
-          `         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
-          `    2. Check your proxy / VPN settings.\n` +
-          `    3. Once downloaded the model is cached — future runs work offline.\n`,
-        { recoveryHint: 'hf-endpoint-unreachable' },
       );
     }
 

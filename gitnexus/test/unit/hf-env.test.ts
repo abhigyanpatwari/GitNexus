@@ -199,6 +199,36 @@ describe('HfDownloadCircuitBreaker', () => {
     expect(cb.isOpen()).toBe(false);
     expect(cb.state).toBe('closed');
   });
+
+  it('re-opens when a failure is recorded in half-open state', () => {
+    vi.useFakeTimers();
+    try {
+      const cb = new HfDownloadCircuitBreaker(1, 100 /* 100ms */);
+      cb.recordFailure(); // opens the circuit
+      vi.advanceTimersByTime(200); // advance past reset timeout
+      expect(cb.state).toBe('half-open'); // getter transitions _state to half-open
+      cb.recordFailure(); // failure in half-open → re-opens
+      expect(cb.isOpen()).toBe(true);
+      expect(cb.state).toBe('open');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the circuit when success is recorded in half-open state', () => {
+    vi.useFakeTimers();
+    try {
+      const cb = new HfDownloadCircuitBreaker(1, 100 /* 100ms */);
+      cb.recordFailure(); // opens the circuit
+      vi.advanceTimersByTime(200); // advance past reset timeout
+      expect(cb.state).toBe('half-open');
+      cb.recordSuccess(); // success in half-open → closes
+      expect(cb.isOpen()).toBe(false);
+      expect(cb.state).toBe('closed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('withDownloadTimeout', () => {
@@ -208,8 +238,15 @@ describe('withDownloadTimeout', () => {
   });
 
   it('rejects with ETIMEDOUT when fn takes too long', async () => {
-    const neverResolves = () => new Promise<never>(() => {});
-    await expect(withDownloadTimeout(neverResolves, 20)).rejects.toThrow('ETIMEDOUT');
+    vi.useFakeTimers();
+    try {
+      const neverResolves = () => new Promise<never>(() => {});
+      const promise = withDownloadTimeout(neverResolves, 20);
+      vi.advanceTimersByTime(30);
+      await expect(promise).rejects.toThrow('ETIMEDOUT');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates non-timeout errors from fn', async () => {

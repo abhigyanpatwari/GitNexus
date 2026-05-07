@@ -261,14 +261,28 @@ export interface HfRetryOptions {
  */
 export async function withHfDownloadRetry<T>(
   fn: () => Promise<T>,
-  {
-    maxAttempts = HF_MAX_ATTEMPTS,
+  options: HfRetryOptions = {},
+): Promise<T> {
+  // Resolve effective values — explicit options take precedence over env vars,
+  // which take precedence over built-in defaults. This lets users lower the
+  // per-attempt timeout without rebuilding (e.g.
+  //   HF_DOWNLOAD_TIMEOUT_MS=60000 npx gitnexus analyze --embeddings
+  // reduces the worst-case wait from 15 minutes to ~3 minutes).
+  const envTimeout =
+    process.env.HF_DOWNLOAD_TIMEOUT_MS !== undefined
+      ? Number(process.env.HF_DOWNLOAD_TIMEOUT_MS)
+      : NaN;
+  const envMaxAttempts =
+    process.env.HF_MAX_ATTEMPTS !== undefined ? Number(process.env.HF_MAX_ATTEMPTS) : NaN;
+  const {
+    maxAttempts = Number.isFinite(envMaxAttempts) && envMaxAttempts > 0
+      ? envMaxAttempts
+      : HF_MAX_ATTEMPTS,
     baseDelayMs = HF_BASE_DELAY_MS,
-    timeoutMs = HF_DOWNLOAD_TIMEOUT_MS,
+    timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : HF_DOWNLOAD_TIMEOUT_MS,
     circuit = hfDownloadCircuit,
     onRetry,
-  }: HfRetryOptions = {},
-): Promise<T> {
+  } = options;
   if (circuit.isOpen()) {
     const secsUntilReset = Math.ceil(
       (circuit.resetTimeoutMs - (Date.now() - circuit.lastFailureAt)) / 1000,
