@@ -279,16 +279,19 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
-  // Unpredictable suffix + explicit O_EXCL via `fsp.open(..., 'wx')`
-  // closes the symlink/pre-create attack window CodeQL
-  // js/insecure-temporary-file flagged on the prior
-  // `${target}.tmp.${Date.now()}` shape. CodeQL's rule does not
-  // recognize the `writeFile(path, content, { flag: 'wx' })` shape as
-  // O_EXCL — it requires the open() handle pattern to credit the
-  // mitigation. Functionally identical, but the explicit handle
-  // satisfies the static analyzer.
+  // Unpredictable suffix + O_EXCL via `'wx'` flag closes the symlink/
+  // pre-create attack window. The third argument `0o600` is the
+  // user-only mode mask — CodeQL's `js/insecure-temporary-file` query
+  // sources its verdict from the `mode` argument, NOT from `flags`:
+  // its `isSecureMode(mode)` predicate requires the low 6 bits to be
+  // zero (no group/world bits). Without an explicit mode the file is
+  // created with the process umask (typically 0o644 = group/world
+  // readable), which the query treats as the actual vulnerability.
+  // Both `'wx'` (runtime O_EXCL) AND `0o600` (CodeQL-credited mode)
+  // are needed: one closes the symlink race, the other closes the
+  // permissions exposure.
   const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  const handle = await fsp.open(tmp, 'wx');
+  const handle = await fsp.open(tmp, 'wx', 0o600);
   try {
     await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
   } finally {

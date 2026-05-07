@@ -46,16 +46,14 @@ export async function writeContractRegistry(
   const targetPath = path.join(groupDir, CONTRACTS_FILE);
   const tmpPath = `${targetPath}.tmp.${tmpSuffix()}`;
 
-  // Explicit `fsp.open(..., 'wx')` opens the tmp file with O_EXCL —
-  // refuses to overwrite an existing path, closing the symlink/pre-create
-  // attack window CodeQL js/insecure-temporary-file flags. The
-  // unpredictable suffix above means collisions are negligible; if one
-  // happens (extremely unlikely) the caller sees an EEXIST error and
-  // can retry. Note: CodeQL's rule does NOT recognize the
-  // `writeFile(path, content, { flag: 'wx' })` shape as O_EXCL — the
-  // explicit open()-handle pattern below is required to satisfy the
-  // static analyzer (the runtime semantics are identical).
-  const handle = await fsp.open(tmpPath, 'wx');
+  // O_EXCL via `'wx'` flag + explicit `0o600` mode — closes both halves
+  // of the CodeQL js/insecure-temporary-file finding: `'wx'` rejects a
+  // pre-planted symlink at the path, and `0o600` (user-only) prevents
+  // the file from being created group/world readable while it briefly
+  // contains contract data en route to the rename. The query's
+  // `isSecureMode` predicate inspects ONLY the mode argument, not the
+  // flags, so the explicit mode is what credits the fix.
+  const handle = await fsp.open(tmpPath, 'wx', 0o600);
   try {
     await handle.writeFile(JSON.stringify(registry, null, 2), 'utf-8');
   } finally {
@@ -151,7 +149,13 @@ matching:
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
   }
-  const handle = await fsp.open(yamlPath, 'wx');
+  // `'wx'` rejects a pre-planted symlink at the path; `0o600` is
+  // user-only (no group/world bits) — gitnexus storage is per-user
+  // (`~/.gitnexus/...`), so any "other user wants to read this" case is
+  // a misconfiguration, not a feature. Keeping the file user-only also
+  // satisfies CodeQL's `isSecureMode` predicate (low 6 bits == 0) and
+  // closes the js/insecure-temporary-file alert at this site.
+  const handle = await fsp.open(yamlPath, 'wx', 0o600);
   try {
     await handle.writeFile(template, 'utf-8');
   } finally {

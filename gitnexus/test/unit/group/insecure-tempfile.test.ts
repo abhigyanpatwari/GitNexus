@@ -57,14 +57,14 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     expect(bridgeSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
   });
 
-  it('bridge-db.ts opens meta.json tmp file via fsp.open(..., "wx")', () => {
-    // Explicit O_EXCL via `fsp.open(tmp, 'wx')` — closes the symlink/pre-
-    // create attack window CodeQL js/insecure-temporary-file flagged on
-    // top of the random suffix. The explicit open()-handle pattern is
-    // required: CodeQL does not recognize the `writeFile(path, content,
-    // { flag: 'wx' })` shape as O_EXCL even though the runtime semantics
-    // are identical.
-    expect(bridgeSource).toMatch(/fsp\.open\(tmp,\s*['"]wx['"]\)/);
+  it('bridge-db.ts opens meta.json tmp file via fsp.open(..., "wx", 0o600)', () => {
+    // O_EXCL via `'wx'` flag closes the symlink-race; explicit `0o600`
+    // mode closes the permissions exposure CodeQL's
+    // `isSecureMode` predicate inspects (low 6 bits must be zero).
+    // Both arguments are required to fully clear the
+    // `js/insecure-temporary-file` alert — flags alone are ignored by
+    // the analyzer, mode alone leaves the symlink window open.
+    expect(bridgeSource).toMatch(/fsp\.open\(tmp,\s*['"]wx['"],\s*0o600\)/);
   });
 
   it('bridge-db.ts does not use Date.now() in any active temp path', () => {
