@@ -52,6 +52,21 @@ describe('setupCommand skills integration', () => {
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
+  it('reports the OpenCode skills install path with the plural skills directory', async () => {
+    await fs.mkdir(path.join(tempHome, '.config', 'opencode'), { recursive: true });
+    await setupCommand();
+
+    const installedSkill = await fs.readFile(
+      path.join(tempHome, '.config', 'opencode', 'skills', 'gitnexus-cli', 'SKILL.md'),
+      'utf-8',
+    );
+
+    expect(installedSkill).toContain('GitNexus CLI Commands');
+    await expect(
+      fs.access(path.join(tempHome, '.config', 'opencode', 'skill', 'gitnexus-cli', 'SKILL.md')),
+    ).rejects.toThrow();
+  });
+
   it('installs packaged, flat-file, and directory skills into cursor skills directory', async () => {
     await setupCommand();
 
