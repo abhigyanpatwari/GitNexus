@@ -1757,9 +1757,9 @@ export class LocalBackend {
         // Run incoming-ref queries in parallel — they are independent.
         const [ctorIncoming, fileIncoming, typedPropertyIncoming, typedProperties] =
           await Promise.all([
-          executeParameterized(
-            repo.id,
-            `
+            executeParameterized(
+              repo.id,
+              `
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
@@ -1767,11 +1767,11 @@ export class LocalBackend {
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
-            { symId },
-          ),
-          executeParameterized(
-            repo.id,
-            `
+              { symId },
+            ),
+            executeParameterized(
+              repo.id,
+              `
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
@@ -1779,11 +1779,11 @@ export class LocalBackend {
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
-            { symId },
-          ),
-          executeParameterized(
-            repo.id,
-            `
+              { symId },
+            ),
+            executeParameterized(
+              repo.id,
+              `
             MATCH (p:\`Property\`)
             WHERE p.declaredType = $name
                OR p.declaredType STARTS WITH $genericPrefix
@@ -1793,15 +1793,15 @@ export class LocalBackend {
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
-            {
-              name: sym.name,
-              genericPrefix: `${sym.name}<`,
-              genericArg: `<${sym.name}>`,
-            },
-          ),
-          executeParameterized(
-            repo.id,
-            `
+              {
+                name: sym.name,
+                genericPrefix: `${sym.name}<`,
+                genericArg: `<${sym.name}>`,
+              },
+            ),
+            executeParameterized(
+              repo.id,
+              `
             MATCH (p:\`Property\`)
             WHERE p.declaredType = $name
                OR p.declaredType STARTS WITH $genericPrefix
@@ -1810,13 +1810,13 @@ export class LocalBackend {
                    p.declaredType AS declaredType
             LIMIT 30
           `,
-            {
-              name: sym.name,
-              genericPrefix: `${sym.name}<`,
-              genericArg: `<${sym.name}>`,
-            },
-          ),
-        ]);
+              {
+                name: sym.name,
+                genericPrefix: `${sym.name}<`,
+                genericArg: `<${sym.name}>`,
+              },
+            ),
+          ]);
         typedPropertyRows = typedProperties;
 
         // Deduplicate by (relType, uid) — a caller can have multiple relation

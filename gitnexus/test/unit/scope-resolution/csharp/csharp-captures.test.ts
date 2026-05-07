@@ -453,4 +453,16 @@ describe('emitCsharpScopeCaptures — references', () => {
     expect(names).toContain('USER_INFO');
     expect(names).not.toContain('string');
   });
+
+  it('captures call-site generic type arguments as type references', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class A { void M(IRepo repo) { repo.Get<USER_INFO>(); } }',
+      'test.cs',
+    );
+    const names = matches
+      .filter((m) => '@reference.type' in m)
+      .map((m) => m['@reference.name'].text);
+
+    expect(names).toContain('USER_INFO');
+  });
 });

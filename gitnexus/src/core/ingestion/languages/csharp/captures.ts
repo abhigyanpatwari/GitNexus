@@ -17,11 +17,7 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import {
-  findNodeAtRange,
-  nodeToCapture,
-  syntheticCapture,
-} from '../../utils/ast-helpers.js';
+import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
@@ -261,6 +257,8 @@ export function emitCsharpScopeCaptures(
 
 function synthesizeGenericTypeArgumentReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
+  // Treat all generic type arguments as static type references, including
+  // declaration signatures and call-site generic instantiations.
   visit(root, (node) => {
     if (node.type !== 'generic_name') return;
     const args = findNamedChild(node, 'type_argument_list');
