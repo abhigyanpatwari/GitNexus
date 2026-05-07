@@ -279,11 +279,21 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
-  // Unpredictable suffix + exclusive-create flag closes the symlink/pre-
-  // create attack window CodeQL js/insecure-temporary-file flagged on the
-  // prior `${target}.tmp.${Date.now()}` shape.
+  // Unpredictable suffix + explicit O_EXCL via `fsp.open(..., 'wx')`
+  // closes the symlink/pre-create attack window CodeQL
+  // js/insecure-temporary-file flagged on the prior
+  // `${target}.tmp.${Date.now()}` shape. CodeQL's rule does not
+  // recognize the `writeFile(path, content, { flag: 'wx' })` shape as
+  // O_EXCL — it requires the open() handle pattern to credit the
+  // mitigation. Functionally identical, but the explicit handle
+  // satisfies the static analyzer.
   const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), { encoding: 'utf-8', flag: 'wx' });
+  const handle = await fsp.open(tmp, 'wx');
+  try {
+    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
+  } finally {
+    await handle.close();
+  }
   // Use retryRename for consistency with writeBridge's atomic swap — on
   // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
   // meta.json, and we don't want meta write to be less robust than the

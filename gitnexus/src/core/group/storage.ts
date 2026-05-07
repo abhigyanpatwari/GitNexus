@@ -46,15 +46,21 @@ export async function writeContractRegistry(
   const targetPath = path.join(groupDir, CONTRACTS_FILE);
   const tmpPath = `${targetPath}.tmp.${tmpSuffix()}`;
 
-  // `flag: 'wx'` opens the tmp file with O_EXCL — refuses to overwrite an
-  // existing path, closing the symlink/pre-create attack window CodeQL
-  // js/insecure-temporary-file flags. The unpredictable suffix above means
-  // collisions are negligible; if one happens (extremely unlikely) the
-  // caller sees an EEXIST error and can retry.
-  await fsp.writeFile(tmpPath, JSON.stringify(registry, null, 2), {
-    encoding: 'utf-8',
-    flag: 'wx',
-  });
+  // Explicit `fsp.open(..., 'wx')` opens the tmp file with O_EXCL —
+  // refuses to overwrite an existing path, closing the symlink/pre-create
+  // attack window CodeQL js/insecure-temporary-file flags. The
+  // unpredictable suffix above means collisions are negligible; if one
+  // happens (extremely unlikely) the caller sees an EEXIST error and
+  // can retry. Note: CodeQL's rule does NOT recognize the
+  // `writeFile(path, content, { flag: 'wx' })` shape as O_EXCL — the
+  // explicit open()-handle pattern below is required to satisfy the
+  // static analyzer (the runtime semantics are identical).
+  const handle = await fsp.open(tmpPath, 'wx');
+  try {
+    await handle.writeFile(JSON.stringify(registry, null, 2), 'utf-8');
+  } finally {
+    await handle.close();
+  }
   await fsp.rename(tmpPath, targetPath);
 }
 
@@ -124,15 +130,32 @@ matching:
   # exclude_links_paths: [/ping, /health, /healthcheck]
   # exclude_links_param_only_paths: false
 `;
-  // Writing group.yaml with `flag: 'wx'` is exclusive-create — refuses to
-  // overwrite an existing file. Combined with the existence check above
-  // (line ~80) this closes the TOCTOU window between check and write that
-  // CodeQL js/insecure-temporary-file flags. When `force=true` we
-  // explicitly switch to default write semantics so the function still
-  // overwrites as documented.
-  await fsp.writeFile(path.join(groupDir, 'group.yaml'), template, {
-    encoding: 'utf-8',
-    flag: force ? 'w' : 'wx',
-  });
+  // Always write group.yaml with O_EXCL via `fsp.open(..., 'wx')` —
+  // refuses to follow a pre-planted symlink at the target path, closing
+  // the TOCTOU window between the existence check (line ~98) and the
+  // write that CodeQL js/insecure-temporary-file flags. Under
+  // `force=true` we unlink the existing file first (best-effort, no-op
+  // when absent) so the subsequent O_EXCL open succeeds AND the same
+  // symlink-rejection guarantee holds — this is strictly safer than
+  // the previous `flag: force ? 'w' : 'wx'` shape, which silently
+  // followed symlinks under force. CodeQL's rule does not recognize
+  // the `writeFile(path, content, { flag: 'wx' })` shape as O_EXCL;
+  // the explicit open() handle below is what credits the mitigation.
+  const yamlPath = path.join(groupDir, 'group.yaml');
+  if (force) {
+    try {
+      await fsp.unlink(yamlPath);
+    } catch (err) {
+      // ENOENT (file absent) is expected on first run; rethrow anything
+      // else so we don't silently mask permission/EBUSY failures.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+  const handle = await fsp.open(yamlPath, 'wx');
+  try {
+    await handle.writeFile(template, 'utf-8');
+  } finally {
+    await handle.close();
+  }
   return groupDir;
 }
