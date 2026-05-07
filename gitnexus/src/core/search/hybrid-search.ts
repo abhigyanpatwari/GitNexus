@@ -160,7 +160,7 @@ export const hybridSearch = async (
   ) => Promise<SemanticSearchResult[]>,
 ): Promise<HybridSearchResult[]> => {
   // Use LadybugDB FTS for always-fresh BM25 results
-  const bm25Results = await searchFTSFromLbug(query, limit);
+  const { results: bm25Results } = await searchFTSFromLbug(query, limit);
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

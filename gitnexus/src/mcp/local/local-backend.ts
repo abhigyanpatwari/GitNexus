@@ -986,15 +986,16 @@ export class LocalBackend {
     limit: number,
   ): Promise<{ results: any[]; ftsUsed: boolean }> {
     const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
-    let bm25Results;
+    let ftsResponse;
     try {
-      bm25Results = await searchFTSFromLbug(query, limit, repo.id);
+      ftsResponse = await searchFTSFromLbug(query, limit, repo.id);
     } catch (err: any) {
       console.error('GitNexus: BM25/FTS search failed (FTS indexes may not exist) -', err.message);
       return { results: [], ftsUsed: false };
     }
 
-    const ftsUsed = bm25Results.length === 0 || bm25Results[0]?.ftsUsed !== false;
+    const bm25Results = ftsResponse.results;
+    const ftsUsed = ftsResponse.ftsAvailable;
 
     const results: any[] = [];
 

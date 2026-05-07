@@ -1078,7 +1078,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             sources: ['semantic'],
           }));
         } else if (mode === 'bm25') {
-          searchResults = await searchFTSFromLbug(query, limit);
+          searchResults = (await searchFTSFromLbug(query, limit)).results;
           searchResults = searchResults.map((r: any, i: number) => ({
             ...r,
             rank: i + 1,
@@ -1092,7 +1092,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               await import('../core/embeddings/embedding-pipeline.js');
             searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
           } else {
-            searchResults = await searchFTSFromLbug(query, limit);
+            searchResults = (await searchFTSFromLbug(query, limit)).results;
           }
         }
 
