@@ -268,18 +268,16 @@ export async function withHfDownloadRetry<T>(
   // per-attempt timeout without rebuilding (e.g.
   //   HF_DOWNLOAD_TIMEOUT_MS=60000 npx gitnexus analyze --embeddings
   // reduces the worst-case wait from 15 minutes to ~3 minutes).
-  const envTimeout =
-    process.env.HF_DOWNLOAD_TIMEOUT_MS !== undefined
-      ? Number(process.env.HF_DOWNLOAD_TIMEOUT_MS)
-      : NaN;
-  const envMaxAttempts =
-    process.env.HF_MAX_ATTEMPTS !== undefined ? Number(process.env.HF_MAX_ATTEMPTS) : NaN;
+  const envTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
+  const envMaxAttempts = Number(process.env.HF_MAX_ATTEMPTS);
+  const resolvedTimeout =
+    Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : HF_DOWNLOAD_TIMEOUT_MS;
+  const resolvedMaxAttempts =
+    Number.isFinite(envMaxAttempts) && envMaxAttempts > 0 ? envMaxAttempts : HF_MAX_ATTEMPTS;
   const {
-    maxAttempts = Number.isFinite(envMaxAttempts) && envMaxAttempts > 0
-      ? envMaxAttempts
-      : HF_MAX_ATTEMPTS,
+    maxAttempts = resolvedMaxAttempts,
     baseDelayMs = HF_BASE_DELAY_MS,
-    timeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : HF_DOWNLOAD_TIMEOUT_MS,
+    timeoutMs = resolvedTimeout,
     circuit = hfDownloadCircuit,
     onRetry,
   } = options;
