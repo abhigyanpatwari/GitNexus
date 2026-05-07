@@ -79,8 +79,10 @@ const REQUESTS_GENERIC_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-
 // ─── Consumer: httpx.AsyncClient assignments ────────────────────────
+// NOTE: This targeted detector only tracks explicit `httpx.AsyncClient(...)`
+// construction. Direct imports (`from httpx import AsyncClient`) and module
+// aliases (`import httpx as hx`) are intentionally left for a follow-up.
 const HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS = compilePatterns({
   name: 'python-httpx-async-client-assign',
   language: Python,

@@ -446,8 +446,14 @@ class TopicClient:
     async def publish(self):
         return await self._client.request("POST", "/questions/import")
 
+    async def delete_topic(self):
+        return await self._client.delete("/topic")
+
 async def check_duplicate():
     async with httpx.AsyncClient() as client:
+        data = {}
+        data.get("/nope")
+        service.request("POST", "/nope")
         return await client.post("https://svc.local/questions/duplicate-check")
 `,
       );
@@ -455,14 +461,22 @@ async def check_duplicate():
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
-      expect(consumers.find((c) => c.contractId === 'http::GET::/topic')).toBeDefined();
-      expect(consumers.find((c) => c.contractId === 'http::POST::/questions/import')).toBeDefined();
-      expect(
-        consumers.find((c) => c.contractId === 'http::POST::/questions/duplicate-check'),
-      ).toBeDefined();
-      expect(consumers.every((c) => c.meta.framework === 'python-httpx')).toBe(true);
-    });
+      const expected = [
+        'http::GET::/topic',
+        'http::POST::/questions/import',
+        'http::DELETE::/topic',
+        'http::POST::/questions/duplicate-check',
+      ];
 
+      for (const contractId of expected) {
+        const consumer = consumers.find((c) => c.contractId === contractId);
+        expect(consumer).toBeDefined();
+        expect(consumer?.meta.framework).toBe('python-httpx');
+      }
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/nope')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/nope')).toBeUndefined();
+    });
 
     it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {
       const dir = path.join(tmpDir, 'java-consumer');
