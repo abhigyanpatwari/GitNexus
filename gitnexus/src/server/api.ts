@@ -19,6 +19,7 @@ import {
   executePrepared,
   executeWithReusedStatement,
   streamQuery,
+  flushWAL,
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
@@ -33,7 +34,7 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork, spawn } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager, type IndexingWarning, type IndexingCounts } from './analyze-job.js';
-import { assertString, escapeRegExp, BadRequestError } from './validation.js';
+import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
@@ -474,6 +475,7 @@ a.ext:hover{text-decoration:underline}
   <div class="section-title">Endpoints</div>
   <p class="endpoint"><a href="/api/info">/api/info</a> <span style="color:#5a5a70">— Server version &amp; context</span></p>
   <p class="endpoint"><a href="/api/repos">/api/repos</a> <span style="color:#5a5a70">— Indexed repositories</span></p>
+  <p class="endpoint"><code>/api/health</code> <span style="color:#5a5a70">— Docker/orchestrator healthcheck</span></p>
   <p class="endpoint"><code>/api/heartbeat</code> <span style="color:#5a5a70">— SSE heartbeat</span></p>
   <p class="endpoint"><code>/api/graph</code> <code>/api/query</code> <code>/api/search</code> <span style="color:#5a5a70">— Data</span></p>
   <p class="endpoint"><code>/api/mcp</code> <span style="color:#5a5a70">— MCP over StreamableHTTP</span></p>
@@ -508,7 +510,19 @@ export const registerWebUI = (app: express.Express, staticDir: string | null): v
     // The regex excludes /api paths AND paths with file extensions (.js, .css, etc.)
     // so missing assets get real 404s instead of the SPA HTML.
     // Adding routes below this will be unreachable for non-API, non-asset paths.
-    app.get(SPA_FALLBACK_REGEX, (_req, res) => {
+    // Rate-limited (CodeQL js/missing-rate-limiting): the SPA fallback
+    // serves a constant index.html, but the FS access from a route handler
+    // is enough to trip the analyzer. The limit is generous (300 rpm/IP =
+    // 5 req/s sustained) so that multi-tab browser navigation, prefetch,
+    // and service-worker revalidation do not produce 429s for legitimate
+    // SPA users. At this rate, real browser navigation is extremely
+    // unlikely to hit the limit in practice, so the cosmetic issue of
+    // JSON-on-429 to a browser is a low-likelihood path. Content
+    // negotiation on the 429 (returning the SPA shell to HTML clients
+    // instead of `{ error: '...' }`) would require swapping
+    // express-rate-limit's `message` for a `handler` function and is
+    // deferred to keep this PR focused on closing the CodeQL alert.
+    app.get(SPA_FALLBACK_REGEX, createRouteLimiter({ limit: 300 }), (_req, res) => {
       res.sendFile(path.join(staticDir, 'index.html'));
     });
   } else {
@@ -1206,6 +1220,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
+  // Trust X-Forwarded-* headers only when the connection comes from the
+  // local loopback or RFC1918 private/link-local addresses — exactly the
+  // origins the CORS allowlist accepts. Without this, every request behind
+  // any reverse proxy / Docker bridge counts as the same `req.ip` and a
+  // single user can trip the per-IP rate limiter for everyone.
+  //
+  // SCOPE: this setting is process-wide. Every middleware and route in this
+  // Express app sees req.ip resolved from X-Forwarded-For when the upstream
+  // hop is in the trusted set above — not just the rate-limited routes.
+  // Future IP-based middleware (audit logging, IP-bound authz) inherits this
+  // behavior.
+  //
+  // CLOUD-DEPLOY CAVEAT: a public cloud LB (AWS ALB, Cloudflare, Fly.io
+  // edge, CGNAT 100.64/10) is NOT in the trusted set. In those topologies
+  // req.ip will collapse to the LB hop IP for every request and the per-IP
+  // rate limiter degrades to per-server. Add an explicit env-var override
+  // and document the cloud-deploy story before binding to a non-loopback
+  // host in those topologies (tracked as a follow-up; not blocking for the
+  // local-bound default).
+  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
   // Disallowed origins get the response without Access-Control-Allow-Origin,
@@ -1341,6 +1376,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
     return found;
   };
+
+  // Lightweight healthcheck for Docker/orchestrator probes (#1147).
+  // Returns immediately so container managers do not confuse a long-lived
+  // SSE stream with an unhealthy server.
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
 
   // SSE heartbeat — clients connect to detect server liveness instantly.
   // When the server shuts down, the TCP connection drops and the client's
@@ -1527,7 +1569,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Delete a repo — removes index, clone dir (if any), and unregisters it
-  app.delete('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): destructive operation
+  // doing fs.rm of clone + storage dirs. Default 60 rpm/IP is generous for
+  // delete; tighten if abuse is observed.
+  app.delete('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const repoName = requestedRepo(req);
       if (!repoName) {
@@ -1860,7 +1905,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Read file — with path traversal guard
-  app.get('/api/file', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): per-request fs.readFile.
+  app.get('/api/file', createRouteLimiter(), async (req, res) => {
     const entry = await resolveRepo(requestedRepo(req));
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
@@ -1871,7 +1917,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
-  app.get('/api/grep', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): scans every file in
+  // the indexed repo per request — heaviest I/O endpoint. Same default 60
+  // rpm/IP for now; consider tightening if real-world load shows abuse.
+  app.get('/api/grep', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
@@ -2039,7 +2088,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // ── Analyze API ──────────────────────────────────────────────────────
 
   // POST /api/analyze — start a new analysis job
-  app.post('/api/analyze', async (req, res) => {
+  app.post('/api/analyze', createRouteLimiter({ limit: 10 }), async (req, res) => {
     try {
       const {
         url: repoUrl,
@@ -2388,7 +2437,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // ── Embedding endpoints ────────────────────────────────────────────
 
   // POST /api/embed — trigger server-side embedding generation
-  app.post('/api/embed', async (req, res) => {
+  app.post('/api/embed', createRouteLimiter({ limit: 20 }), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
@@ -2471,6 +2520,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               undefined, // context
               existingEmbeddings,
             );
+
+            // Flush WAL so subsequent /api/search requests see the new
+            // embeddings immediately (#1149). In the CLI path closeLbug()
+            // handles this during process exit, but the server keeps the
+            // connection open for other routes — a CHECKPOINT is enough.
+            await flushWAL();
           });
 
           clearTimeout(embedTimeout);

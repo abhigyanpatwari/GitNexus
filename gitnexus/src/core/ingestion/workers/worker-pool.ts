@@ -94,6 +94,31 @@ export function resolveWorkerPoolOptions(
   };
 }
 
+function waitForWorkerOnline(worker: Worker): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      worker.removeListener('online', onOnline);
+      worker.removeListener('error', onError);
+      worker.removeListener('exit', onExit);
+    };
+    const onOnline = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const onExit = (code: number) => {
+      cleanup();
+      reject(new Error(`Replacement worker exited with code ${code} before coming online`));
+    };
+    worker.once('online', onOnline);
+    worker.once('error', onError);
+    worker.once('exit', onExit);
+  });
+}
+
 function estimateItemBytes(item: unknown): number {
   if (typeof item !== 'object' || item === null) return 0;
   const content = (item as { content?: unknown }).content;
@@ -217,7 +242,21 @@ export const createWorkerPool = (
         } else {
           worker?.unref();
         }
-        if (!stopped) workers[workerIndex] = new Worker(workerUrl);
+        if (stopped) return;
+        const replacement = new Worker(workerUrl);
+        try {
+          await waitForWorkerOnline(replacement);
+        } catch (err) {
+          await replacement.terminate().catch(() => undefined);
+          throw new Error(
+            `Replacement worker ${workerIndex} failed to start: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (stopped) {
+          await replacement.terminate().catch(() => undefined);
+          return;
+        }
+        workers[workerIndex] = replacement;
       };
 
       const fail = async (err: Error, terminateWorkers = true) => {
@@ -354,9 +393,7 @@ export const createWorkerPool = (
               try {
                 await replaceWorker(workerIndex, shouldTerminateTimedOutWorkers);
               } catch (err) {
-                void fail(
-                  err instanceof Error ? err : new Error(`Worker replacement failed: ${err}`),
-                );
+                void fail(err instanceof Error ? err : new Error(String(err)));
                 return;
               } finally {
                 activeWorkers--;

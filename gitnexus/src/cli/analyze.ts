@@ -113,7 +113,14 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
-  embeddings?: boolean;
+  /**
+   * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
+   *   - `undefined` when the flag is omitted
+   *   - `true` when passed without an argument (use default 50K node cap)
+   *   - a string when passed with an argument (`--embeddings 0` disables the
+   *     cap, `--embeddings <n>` uses `<n>` as the cap)
+   */
+  embeddings?: boolean | string;
   /**
    * Explicitly drop existing embeddings on rebuild instead of preserving
    * them. Without this flag, a routine `analyze` keeps any embeddings
@@ -192,6 +199,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       Math.round(workerTimeoutSeconds * 1000),
     );
   }
+
+  // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
+  // (0 disables the cap entirely). Validated up here so failures match the
+  // sibling-validation pattern (exit before bar.start() — otherwise
+  // process.exit() leaves the progress bar's hidden cursor uncleared).
+  let embeddingsNodeLimit: number | undefined;
+  if (typeof options?.embeddings === 'string') {
+    const parsed = Number(options.embeddings);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      console.error(
+        `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
+          `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    embeddingsNodeLimit = parsed;
+  }
+  const embeddingsEnabled = !!options?.embeddings;
 
   const setPositiveEnv = (
     optionName: string,
@@ -388,7 +414,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
-        embeddings: options?.embeddings,
+        embeddings: embeddingsEnabled,
+        embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
