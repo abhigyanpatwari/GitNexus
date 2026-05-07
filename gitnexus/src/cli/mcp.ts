@@ -43,18 +43,18 @@ export const mcpCommand = async () => {
 
   // Now safe to dynamically import the heavy backend modules. Anything
   // they emit to stdout during evaluation will route through the sentinel.
-  const [{ startMCPServer }, { LocalBackend }, { warnMissingOptionalGrammars }] = await Promise.all(
-    [
-      import('../mcp/server.js'),
-      import('../mcp/local/local-backend.js'),
-      import('./optional-grammars.js'),
-    ],
-  );
+  const [{ startMCPServer }, { LocalBackend }] = await Promise.all([
+    import('../mcp/server.js'),
+    import('../mcp/local/local-backend.js'),
+  ]);
 
-  // Surface missing optional grammars at startup so users learn why
-  // .dart/.proto files won't be parsed instead of silently getting a
-  // degraded index.
-  warnMissingOptionalGrammars({ context: 'mcp' });
+  // Note: missing-optional-grammar warnings are emitted by `gitnexus analyze`
+  // (with `relevantExtensions` filtered to the repo's actual file types) at
+  // index time. A repo can only be served by MCP after it has been analyzed,
+  // so the user has already been warned through the path that knows whether
+  // the repo even contains .dart/.proto files. Repeating an unconditional
+  // warning at every MCP startup would be pure noise on machines whose
+  // indexed repos don't use those grammars.
 
   // Initialize multi-repo backend from registry.
   // The server starts even with 0 repos — tools call refreshRepos() lazily,

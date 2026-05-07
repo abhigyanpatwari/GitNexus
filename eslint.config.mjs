@@ -99,12 +99,11 @@ export default [
             'Direct process.stdout.write is forbidden in MCP-reachable code. Route diagnostics through console.error or process.stderr.write — the MCP stdio transport owns stdout for JSON-RPC frames.',
         },
         {
-          selector:
-            "VariableDeclarator > ObjectPattern > Property[key.name='write'].properties:has(MemberExpression[object.name='process'][property.name='stdout'])",
-          message:
-            'Destructuring write off process.stdout is forbidden in MCP-reachable code — bypasses the sentinel. Use process.stderr.write for diagnostics.',
-        },
-        {
+          // Catches the canonical destructuring shape:
+          //   const { write } = process.stdout;
+          // (and any other ObjectPattern destructure rooted at process.stdout)
+          // which would otherwise capture a reference to the original write
+          // and bypass the sentinel.
           selector:
             "VariableDeclarator[init.type='MemberExpression'][init.object.name='process'][init.property.name='stdout'] > ObjectPattern",
           message:
