@@ -21,6 +21,10 @@ import type lbug from '@ladybugdb/core';
  *
  * Putting both in one shared module guarantees every `new lbug.Database(...)`
  * call site agrees on the same ceiling and behaviour.
+ *
+ * 3. Auto-checkpointing starts native background work that can outlive close()
+ *    on Windows. GitNexus owns explicit CHECKPOINT calls on write paths, so keep
+ *    the background checkpointer disabled to make teardown deterministic.
  */
 
 /**
@@ -64,6 +68,8 @@ export function createLbugDatabase(
     false,
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
+    false,
+    -1,
   );
 }
 

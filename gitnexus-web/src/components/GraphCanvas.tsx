@@ -43,6 +43,7 @@ import {
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
 } from '../lib/graph-adapter';
+import { resolveAgentLensFocus, type AgentLensFocusSource } from '../lib/agent-lens-focus';
 import { describeGraphDiff, diffKnowledgeGraphs, type GraphDiff } from '../lib/graph-diff';
 import {
   ALL_EDGE_TYPES,
@@ -66,6 +67,32 @@ export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
 }
 
+type SigmaCameraSnapshot = {
+  x: number;
+  y: number;
+  ratio: number;
+};
+
+type GraphCanvasPlaywrightState = {
+  selectedNodeId: string | null;
+  agentLensFocusNodeId: string | null;
+  agentLensFocusSource: AgentLensFocusSource | null;
+  agentLensSignature: string | null;
+  graphViewMode: GraphViewMode;
+  availableNodeIds: string[];
+  isAIHighlightsEnabled: boolean;
+  impactNodeIds: string[];
+  toolNodeIds: string[];
+  citationNodeIds: string[];
+  agentActivityTotal: number;
+  sigmaCamera: SigmaCameraSnapshot | null;
+};
+
+type GraphCanvasPlaywrightWindow = Window & {
+  __gitnexusE2EGetGraphCanvasState?: () => GraphCanvasPlaywrightState;
+  __gitnexusE2ESelectGraphNode?: (nodeId: string) => boolean;
+};
+
 type GraphViewMode = '2d' | '3d';
 type GraphDetailMode = 'structural' | 'callFlow' | 'apiRuntime' | 'changeRisk' | 'agent';
 
@@ -86,6 +113,13 @@ type GraphDetailModeConfig = {
   colorMode: GraphColorMode;
   edgeTypes: EdgeType[];
 };
+
+const isPlaywrightRuntime = (): boolean =>
+  (typeof navigator !== 'undefined' && navigator.webdriver) ||
+  (typeof import.meta !== 'undefined' &&
+    typeof import.meta.env !== 'undefined' &&
+    import.meta.env.VITE_PLAYWRIGHT_TEST) ||
+  (typeof process !== 'undefined' && process.env.PLAYWRIGHT_TEST);
 
 const GRAPH_DETAIL_MODES: Record<GraphDetailMode, GraphDetailModeConfig> = {
   structural: {
@@ -289,6 +323,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   const renderGraph3DRef = useRef<Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null>(null);
   const previousKnowledgeGraphRef = useRef<typeof graph>(null);
   const graphChangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const agentLensFocusSignatureRef = useRef<string | null>(null);
+  const agentLensFocusedNodeIdRef = useRef<string | null>(null);
+  const agentLensFocusSourceRef = useRef<AgentLensFocusSource | null>(null);
 
   useEffect(() => {
     graphViewModeRef.current = graphViewMode;
@@ -356,6 +393,28 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     if (!graph) return new Map<string, GraphNode>();
     return new Map(graph.nodes.map((n) => [n.id, n]));
   }, [graph]);
+  const agentLensFocusState = useMemo(
+    () =>
+      resolveAgentLensFocus({
+        isEnabled: isAIHighlightsEnabled,
+        impactNodeIds: effectiveBlastRadiusNodeIds,
+        toolNodeIds: activeAIToolNodeIds,
+        citationNodeIds: activeAICitationNodeIds,
+        currentToolCalls: currentToolCalls.map((toolCall) => ({
+          id: toolCall.id,
+          name: toolCall.name,
+        })),
+        nodeById,
+      }),
+    [
+      activeAICitationNodeIds,
+      activeAIToolNodeIds,
+      currentToolCalls,
+      effectiveBlastRadiusNodeIds,
+      isAIHighlightsEnabled,
+      nodeById,
+    ],
+  );
 
   const activeVisibleEdgeTypes = visibleEdgeTypes;
   const nodeTypeCounts = useMemo(() => {
@@ -565,6 +624,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
   const {
     containerRef: sigmaContainerRef,
+    sigmaRef,
     setGraph: setSigmaGraph,
     zoomIn: sigmaZoomIn,
     zoomOut: sigmaZoomOut,
@@ -621,6 +681,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   const startLayout = is3DMode ? startThreeLayout : startSigmaLayout;
   const stopLayout = is3DMode ? stopThreeLayout : stopSigmaLayout;
   const rendererSelectedNode = is3DMode ? threeSelectedNode : sigmaSelectedNode;
+  const selectNodeInGraph = useCallback(
+    (nodeId: string, shouldFocusCamera = false) => {
+      if (!graph) return false;
+
+      const node = nodeById.get(nodeId);
+      if (!node) return false;
+
+      if (shouldFocusCamera) {
+        setSelectedNode(node);
+        focusNode(nodeId);
+        return true;
+      }
+
+      setSelectedNode(node);
+      return true;
+    },
+    [focusNode, graph, nodeById, setSelectedNode],
+  );
 
   const handleToggleAIHighlights = useCallback(() => {
     if (isAIHighlightsEnabled) {
@@ -648,18 +726,12 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     ref,
     () => ({
       focusNode: (nodeId: string) => {
-        // Also update app state so the selection syncs properly
-        if (graph) {
-          const node = nodeById.get(nodeId);
-          if (node) {
-            setSelectedNode(node);
-            openCodePanel();
-          }
+        if (selectNodeInGraph(nodeId, true)) {
+          openCodePanel();
         }
-        focusNode(nodeId);
       },
     }),
-    [focusNode, graph, nodeById, setSelectedNode, openCodePanel],
+    [openCodePanel, selectNodeInGraph],
   );
 
   // Update Sigma graph when KnowledgeGraph changes
@@ -807,6 +879,37 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     }
   }, [graphViewMode, stopSigmaLayout, stopThreeLayout, startThreeLayout, setCameraMode]);
 
+  useEffect(() => {
+    if (
+      !isAIHighlightsEnabled ||
+      !agentLensFocusState.signature ||
+      !agentLensFocusState.focalNodeId
+    ) {
+      agentLensFocusSignatureRef.current = null;
+      agentLensFocusedNodeIdRef.current = null;
+      agentLensFocusSourceRef.current = null;
+      return;
+    }
+
+    if (agentLensFocusSignatureRef.current === agentLensFocusState.signature) {
+      return;
+    }
+
+    if (!selectNodeInGraph(agentLensFocusState.focalNodeId, true)) {
+      return;
+    }
+
+    agentLensFocusSignatureRef.current = agentLensFocusState.signature;
+    agentLensFocusedNodeIdRef.current = agentLensFocusState.focalNodeId;
+    agentLensFocusSourceRef.current = agentLensFocusState.focalSource;
+  }, [
+    agentLensFocusState.focalNodeId,
+    agentLensFocusState.focalSource,
+    agentLensFocusState.signature,
+    isAIHighlightsEnabled,
+    selectNodeInGraph,
+  ]);
+
   // Focus on selected node
   const handleFocusSelected = useCallback(() => {
     if (appSelectedNode) {
@@ -821,6 +924,54 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     setThreeSelectedNode(null);
     resetZoom();
   }, [setSelectedNode, setSigmaSelectedNode, setThreeSelectedNode, resetZoom]);
+
+  useEffect(() => {
+    if (!isPlaywrightRuntime() || typeof window === 'undefined') return;
+
+    const playwrightWindow = window as GraphCanvasPlaywrightWindow;
+    playwrightWindow.__gitnexusE2EGetGraphCanvasState = () => {
+      const camera = sigmaRef.current?.getCamera();
+      return {
+        selectedNodeId: appSelectedNode?.id ?? null,
+        agentLensFocusNodeId: agentLensFocusedNodeIdRef.current,
+        agentLensFocusSource: agentLensFocusSourceRef.current,
+        agentLensSignature: agentLensFocusSignatureRef.current,
+        graphViewMode,
+        availableNodeIds: graph?.nodes.slice(0, 16).map((node) => node.id) ?? [],
+        isAIHighlightsEnabled,
+        impactNodeIds: agentLensFocusState.impactNodeIds,
+        toolNodeIds: agentLensFocusState.toolNodeIds,
+        citationNodeIds: agentLensFocusState.citationNodeIds,
+        agentActivityTotal,
+        sigmaCamera:
+          graphViewMode === '2d' && camera
+            ? {
+                x: Number(camera.x.toFixed(4)),
+                y: Number(camera.y.toFixed(4)),
+                ratio: Number(camera.ratio.toFixed(4)),
+              }
+            : null,
+      };
+    };
+    playwrightWindow.__gitnexusE2ESelectGraphNode = (nodeId: string) =>
+      selectNodeInGraph(nodeId, false);
+
+    return () => {
+      delete playwrightWindow.__gitnexusE2EGetGraphCanvasState;
+      delete playwrightWindow.__gitnexusE2ESelectGraphNode;
+    };
+  }, [
+    agentActivityTotal,
+    agentLensFocusState.citationNodeIds,
+    agentLensFocusState.impactNodeIds,
+    agentLensFocusState.toolNodeIds,
+    appSelectedNode?.id,
+    graph,
+    graphViewMode,
+    isAIHighlightsEnabled,
+    selectNodeInGraph,
+    sigmaRef,
+  ]);
 
   const buildContextClip = useCallback(
     (format: 'markdown' | 'jsonl' = 'markdown') => {

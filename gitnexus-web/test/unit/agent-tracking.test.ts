@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph';
 import {
   formatNodeMarker,
+  getToolResultText,
   parseNodeMarker,
   resolveTrackedNodeIds,
   stripNodeMarkers,
@@ -24,10 +25,47 @@ describe('agent tracking node markers', () => {
     expect(parseNodeMarker(marker, 'IMPACT')).toEqual(['node:a', 'node:b']);
   });
 
+  it('parses multiple markers from nested tool result content blocks', () => {
+    const result = {
+      content: [
+        { type: 'text', text: 'Found graph nodes\n[HIGHLIGHT_NODES:File%3Asrc%2Fapp.ts]' },
+        {
+          type: 'text',
+          text: '[HIGHLIGHT_NODES:Function%3Asrc%2Fapp.ts%3Amain%3A12,File%3Asrc%2Fapp.ts]',
+        },
+      ],
+    };
+
+    expect(parseNodeMarker(result, 'HIGHLIGHT_NODES')).toEqual([
+      'File:src/app.ts',
+      'Function:src/app.ts:main:12',
+    ]);
+  });
+
+  it('ignores absent or malformed marker text without throwing', () => {
+    const result = {
+      content: [
+        { type: 'text', text: 'No graph marker here.' },
+        { type: 'text', text: '[IMPACT:node%ZZ,node%ZZ,node%3Ab]' },
+        { type: 'text', text: '[IMPACT:unfinished' },
+      ],
+    };
+
+    expect(parseNodeMarker({ content: 'plain result' }, 'HIGHLIGHT_NODES')).toEqual([]);
+    expect(parseNodeMarker(result, 'IMPACT')).toEqual(['node%ZZ', 'node:b']);
+  });
+
   it('strips tracking markers from display text', () => {
     const text = 'Result body\n[HIGHLIGHT_NODES:File%3Asrc%2Fapp.ts]\n[IMPACT:node%3Aa]';
 
     expect(stripNodeMarkers(text)).toBe('Result body');
+  });
+
+  it('normalizes nested tool results before display or graph tracking', () => {
+    const result = { content: [{ type: 'text', text: 'Result body\n[IMPACT:node%3Aa]' }] };
+
+    expect(getToolResultText(result)).toBe('Result body\n[IMPACT:node%3Aa]');
+    expect(stripNodeMarkers(result)).toBe('Result body');
   });
 
   it('resolves marker fallbacks against graph node metadata', () => {

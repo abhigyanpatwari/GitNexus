@@ -15,6 +15,7 @@ import { detectServiceBoundaries, assignService } from './service-boundary-detec
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
+import { writeBridge, type WriteBridgeReport } from './bridge-db.js';
 
 export interface SyncOptions {
   extractorOverride?:
@@ -35,6 +36,7 @@ export interface SyncResult {
   unmatched: StoredContract[];
   missingRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
+  bridge?: WriteBridgeReport;
 }
 
 export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry[]): string {
@@ -273,6 +275,21 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
   if (opts?.groupDir && !opts.skipWrite) {
     await writeContractRegistry(opts.groupDir, registry);
+    const bridge = await writeBridge(opts.groupDir, {
+      contracts: allContracts,
+      crossLinks,
+      repoSnapshots,
+      missingRepos,
+    });
+
+    return {
+      contracts: allContracts,
+      crossLinks,
+      unmatched,
+      missingRepos,
+      repoSnapshots,
+      bridge,
+    };
   }
 
   return {

@@ -246,6 +246,37 @@ async function releaseBackendDbAfterRequest(backend: LocalBackend): Promise<void
   }
 }
 
+type BackendRequestQueue = {
+  run<T>(fn: () => Promise<T>): Promise<T>;
+};
+
+function createBackendRequestQueue(backend: LocalBackend): BackendRequestQueue {
+  let tail: Promise<void> = Promise.resolve();
+
+  return {
+    run<T>(fn: () => Promise<T>): Promise<T> {
+      const previous = tail;
+      let releaseTail: () => void = () => {};
+      tail = new Promise<void>((resolve) => {
+        releaseTail = resolve;
+      });
+
+      return previous
+        .catch(() => {
+          /* keep later requests moving after an earlier failure */
+        })
+        .then(async () => {
+          try {
+            return await fn();
+          } finally {
+            await releaseBackendDbAfterRequest(backend);
+            releaseTail();
+          }
+        });
+    },
+  };
+}
+
 /**
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
@@ -266,6 +297,7 @@ export function createMCPServer(backend: LocalBackend): Server {
       },
     },
   );
+  const backendQueue = createBackendRequestQueue(backend);
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -298,7 +330,7 @@ export function createMCPServer(backend: LocalBackend): Server {
     const { uri } = request.params;
 
     try {
-      const content = await readResource(uri, backend);
+      const content = await backendQueue.run(() => readResource(uri, backend));
       return {
         contents: [
           {
@@ -318,8 +350,6 @@ export function createMCPServer(backend: LocalBackend): Server {
           },
         ],
       };
-    } finally {
-      await releaseBackendDbAfterRequest(backend);
     }
   });
 
@@ -341,7 +371,7 @@ export function createMCPServer(backend: LocalBackend): Server {
     try {
       const result = isolated
         ? await callToolInChildProcess(name, args)
-        : await backend.callTool(name, args);
+        : await backendQueue.run(() => backend.callTool(name, args));
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined);
 
@@ -364,10 +394,6 @@ export function createMCPServer(backend: LocalBackend): Server {
         ],
         isError: true,
       };
-    } finally {
-      if (!isolated) {
-        await releaseBackendDbAfterRequest(backend);
-      }
     }
   });
 

@@ -337,6 +337,29 @@ describe('readResource', () => {
     expect(result).toContain('validate');
   });
 
+  it('decodes encoded process names with arrows and spaces', async () => {
+    const backend = createMockBackend({
+      processDetail: {
+        process: {
+          heuristicLabel: 'StartMCPServer -> CallToolInChildProcess',
+          processType: 'intra_community',
+          stepCount: 0,
+        },
+        steps: [],
+      },
+    });
+
+    await readResource(
+      'gitnexus://repo/test/process/StartMCPServer%20%E2%86%92%20CallToolInChildProcess',
+      backend,
+    );
+
+    expect(backend.queryProcessDetail).toHaveBeenCalledWith(
+      'StartMCPServer \u2192 CallToolInChildProcess',
+      'test',
+    );
+  });
+
   it('handles process detail error', async () => {
     const backend = createMockBackend({
       processDetail: { error: 'Process not found' },

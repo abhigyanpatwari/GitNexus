@@ -77,6 +77,45 @@ describe('createMCPServer', () => {
       await server.close();
     }
   });
+
+  it('serializes shared backend resource reads before releasing LadybugDB handles', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const backend = createMockBackend({
+      releaseConnections: vi.fn().mockResolvedValue(undefined),
+      queryProcessDetail: vi.fn().mockImplementation(async (name: string) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return {
+          process: { heuristicLabel: name, processType: 'test', stepCount: 0 },
+          steps: [],
+        };
+      }),
+    });
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      await Promise.all([
+        client.readResource({
+          uri: 'gitnexus://repo/test/process/StartMCPServer%20%E2%86%92%20CallToolInChildProcess',
+        }),
+        client.readResource({ uri: 'gitnexus://repo/test/process/OtherFlow' }),
+      ]);
+
+      expect(maxActive).toBe(1);
+      expect(backend.queryProcessDetail).toHaveBeenCalledTimes(2);
+      expect(backend.releaseConnections).toHaveBeenCalledTimes(2);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
 
 // ─── getNextStepHint (tested indirectly via server tool handler) ──────

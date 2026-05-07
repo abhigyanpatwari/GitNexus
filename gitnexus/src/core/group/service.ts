@@ -263,6 +263,15 @@ export class GroupService {
       crossLinks: result.crossLinks.length,
       unmatched: result.unmatched.length,
       missingRepos: result.missingRepos,
+      bridge: result.bridge
+        ? {
+            contractsInserted: result.bridge.contractsInserted,
+            linksInserted: result.bridge.linksInserted,
+            linksDroppedMissingNode: result.bridge.linksDroppedMissingNode,
+            contractsFailed: result.bridge.contractsFailed,
+            linksFailed: result.bridge.linksFailed,
+          }
+        : undefined,
     };
   }
 

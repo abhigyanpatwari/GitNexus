@@ -5,12 +5,109 @@
 
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
+const WINDOWS_NATIVE_CRASH_EXIT_CODE = 3221225477;
+const ANALYZE_WORKER_ENV = 'GITNEXUS_ANALYZE_WORKER';
+
+const analyzeOptionsWithValues = new Set([
+  '--llm-anchor-limit',
+  '--name',
+  '--max-file-size',
+  '--worker-timeout',
+  '--embedding-threads',
+  '--embedding-batch-size',
+  '--embedding-sub-batch-size',
+  '--embedding-device',
+]);
+
+function resolveGitRootFallback(cwd: string): string {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (result.status === 0 && result.stdout.trim()) {
+      return path.resolve(cwd, result.stdout.trim());
+    }
+  } catch {
+    /* best-effort fallback */
+  }
+  return cwd;
+}
+
+function resolveAnalyzeRootFromArgv(argv: string[]): string {
+  const analyzeIndex = argv.indexOf('analyze');
+  const args = analyzeIndex >= 0 ? argv.slice(analyzeIndex + 1) : [];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!;
+    if (token === '--') {
+      const explicitPath = args[i + 1];
+      if (explicitPath) return path.resolve(explicitPath);
+      break;
+    }
+    if (token.startsWith('--')) {
+      const [optionName] = token.split('=', 1);
+      if (!token.includes('=') && analyzeOptionsWithValues.has(optionName)) i++;
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+    return path.resolve(token);
+  }
+
+  return resolveGitRootFallback(process.cwd());
+}
+
+function analysisFinalized(repoPath: string, startedAtMs: number): boolean {
+  try {
+    const meta = fs.statSync(path.join(repoPath, '.gitnexus', 'meta.json'));
+    return meta.mtimeMs >= startedAtMs - 5000;
+  } catch {
+    return false;
+  }
+}
+
+function runAnalyzeInWorkerOnWindows(): boolean {
+  if (process.platform !== 'win32') return false;
+  if (process.env[ANALYZE_WORKER_ENV] === '1') return false;
+
+  const startedAtMs = Date.now();
+  const worker = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+    cwd: process.cwd(),
+    env: { ...process.env, [ANALYZE_WORKER_ENV]: '1' },
+    encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+
+  if (worker.stdout) process.stdout.write(worker.stdout);
+  if (worker.stderr) process.stderr.write(worker.stderr);
+
+  if (worker.status === 0) {
+    process.exitCode = 0;
+    return true;
+  }
+
+  const repoPath = resolveAnalyzeRootFromArgv(process.argv.slice(2));
+  if (
+    worker.status === WINDOWS_NATIVE_CRASH_EXIT_CODE &&
+    analysisFinalized(repoPath, startedAtMs)
+  ) {
+    process.exitCode = 0;
+    return true;
+  }
+
+  process.exitCode = worker.status ?? 1;
+  return true;
+}
 
 program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
@@ -30,7 +127,10 @@ program
       'preserves any embeddings already present in the index.',
   )
   .option('--skills', 'Generate repo-specific skill files from detected communities')
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-agents-md',
+    'Skip updating AGENTS.md, CLAUDE.md, and bundled GitNexus skill files',
+  )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option('--skip-group-sync', 'Skip auto-syncing repo groups after analysis')
   .option(
@@ -81,7 +181,11 @@ program
       '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
-  .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+  .action(async (inputPath: string | undefined, options) => {
+    if (runAnalyzeInWorkerOnWindows()) return;
+    const { analyzeCommand } = await import('./analyze.js');
+    return analyzeCommand(inputPath, options);
+  });
 
 program
   .command('watch [path]')
@@ -206,6 +310,7 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-k, --kind <kind>', 'Symbol kind to disambiguate common names')
   .option('--content', 'Include full symbol source code')
   .option('--backend <backend>', 'Snapshot backend for push/pull: local or s3', 'local')
   .option('-o, --output <path>', 'Output file/folder for context pull')
@@ -240,6 +345,16 @@ program
     const { contextCommand } = await import('./tool.js');
     return contextCommand(mode, options);
   });
+
+program
+  .command('rename [symbol]')
+  .description('Preview or apply a graph-assisted multi-file rename')
+  .requiredOption('--new-name <name>', 'New symbol name')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
+  .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('--apply', 'Apply edits. Defaults to a dry-run preview.')
+  .action(createLazyAction(() => import('./tool.js'), 'renameCommand'));
 
 program
   .command('impact-score [target]')

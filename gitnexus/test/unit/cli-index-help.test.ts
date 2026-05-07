@@ -32,6 +32,17 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('context [options] [name]');
     expect(result.stdout).toContain('--uid <uid>');
     expect(result.stdout).toContain('--file <path>');
+    expect(result.stdout).toContain('--kind <kind>');
+  });
+
+  it('rename help exposes safe dry-run default and apply flag', () => {
+    const result = runHelp('rename');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('rename [options] [symbol]');
+    expect(result.stdout).toContain('--new-name <name>');
+    expect(result.stdout).toContain('--apply');
+    expect(result.stdout).toContain('--repo <name>');
   });
 
   it('impact help keeps repo and include-tests flags', () => {

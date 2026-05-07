@@ -8,6 +8,7 @@ const LS_URL_KEY = 'gitnexus-backend-url';
 
 const getSameOriginBackendUrl = (): string | null => {
   if (typeof window === 'undefined') return null;
+  if (import.meta.env.DEV) return null;
   const { hostname, origin, protocol } = window.location;
   const isLocalHost =
     hostname === 'localhost' ||

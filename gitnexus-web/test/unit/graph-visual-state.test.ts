@@ -72,4 +72,29 @@ describe('graph visual state', () => {
     expect(spotlight.color).toBe(GRAPH_HIGHLIGHT_COLORS.query);
     expect(spotlight.size).toBe(3);
   });
+
+  it('keeps the active agent subgraph visible when one touched node is selected', () => {
+    const nodeVisual = resolveGraphNodeVisual({
+      nodeId: 'node:b',
+      color: '#10b981',
+      size: 10,
+      selectedNodeId: 'node:a',
+      highlightedNodeIds: new Set(['node:b']),
+    });
+
+    expect(nodeVisual.color).toBe(GRAPH_HIGHLIGHT_COLORS.query);
+    expect(nodeVisual.size).toBeCloseTo(14.2);
+
+    const edgeVisual = resolveGraphEdgeVisual({
+      sourceId: 'node:b',
+      targetId: 'node:c',
+      color: '#93c5fd',
+      size: 1,
+      selectedNodeId: 'node:a',
+      highlightedNodeIds: new Set(['node:b', 'node:c']),
+    });
+
+    expect(edgeVisual.color).toBe(GRAPH_HIGHLIGHT_COLORS.query);
+    expect(edgeVisual.size).toBe(3);
+  });
 });

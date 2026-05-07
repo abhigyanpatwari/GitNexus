@@ -66,6 +66,21 @@ const installFatalHandlers = (): void => {
 const invokedViaGitNexusCli = (): boolean =>
   /(?:^|[\\/])cli[\\/]index\.(?:ts|js)$/.test(process.argv[1] ?? '');
 
+const flushStdout = async (): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    process.stdout.write('', () => resolve());
+  }).catch(() => {});
+};
+
+const exitSuccessfulCliProcess = async (): Promise<void> => {
+  await flushStdout();
+  const proc = process as NodeJS.Process & { reallyExit?: (code?: number) => never };
+  if (process.platform === 'win32' && typeof proc.reallyExit === 'function') {
+    proc.reallyExit(0);
+  }
+  process.exit(0);
+};
+
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
@@ -500,7 +515,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
     console.log('');
     if (invokedViaGitNexusCli()) {
-      process.exit(0);
+      await exitSuccessfulCliProcess();
+      return;
     }
   } catch (err: any) {
     clearInterval(elapsedTimer);
@@ -599,8 +615,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     return;
   }
 
-  // LadybugDB's native module holds open handles that prevent Node from exiting.
-  // ONNX Runtime also registers native atexit hooks that segfault on some
-  // platforms (#38, #40). Force-exit to ensure clean termination.
-  process.exit(0);
+  // Success path for direct calls: all analysis handles have been closed by
+  // runFullAnalysis. The CLI entry path exits above after flushing stdout.
+  process.exitCode = 0;
 };

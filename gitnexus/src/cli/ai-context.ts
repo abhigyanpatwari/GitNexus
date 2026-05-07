@@ -336,10 +336,14 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
-  if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  if (!options?.skipAgentsMd) {
+    // Install bundled GitNexus skills alongside AGENTS.md / CLAUDE.md context.
+    const installedSkills = await installSkills(repoPath);
+    if (installedSkills.length > 0) {
+      createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    }
+  } else {
+    createdFiles.push('.claude/skills/gitnexus/ (skipped via --skip-agents-md)');
   }
 
   return { files: createdFiles };

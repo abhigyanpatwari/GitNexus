@@ -37,7 +37,7 @@ import {
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
-import { parseNodeMarker, resolveTrackedNodeIds } from '../lib/agent-tracking';
+import { getToolResultText, parseNodeMarker, resolveTrackedNodeIds } from '../lib/agent-tracking';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
@@ -82,6 +82,52 @@ const resolveTrackedNodeIdSet = (
   rawIds: Iterable<string | null | undefined>,
   graph: KnowledgeGraph | null,
 ): Set<string> => new Set(resolveTrackedNodeIds(rawIds, graph?.nodes ?? []));
+
+const isPlaywrightRuntime = (): boolean =>
+  (typeof navigator !== 'undefined' && navigator.webdriver) ||
+  (typeof import.meta !== 'undefined' &&
+    typeof import.meta.env !== 'undefined' &&
+    import.meta.env.VITE_PLAYWRIGHT_TEST) ||
+  (typeof process !== 'undefined' && process.env.PLAYWRIGHT_TEST);
+
+type ToolCallResultLike = Pick<ToolCallInfo, 'name'> & { result?: unknown };
+type PlaywrightWindow = Window & {
+  __gitnexusE2EGetAgentActivity?: () => {
+    currentToolCalls: Array<Pick<ToolCallInfo, 'id' | 'name' | 'status'>>;
+    aiToolHighlightCount: number;
+    blastRadiusCount: number;
+  };
+};
+
+const resolveToolResultActivity = (
+  toolCall: ToolCallResultLike,
+  graph: KnowledgeGraph | null,
+): { highlightIds: Set<string>; impactIds: Set<string> } => {
+  if (!toolCall.result) {
+    return { highlightIds: new Set<string>(), impactIds: new Set<string>() };
+  }
+
+  const resultText = getToolResultText(toolCall.result);
+  const highlightIds = resolveTrackedNodeIdSet(
+    parseNodeMarker(resultText, 'HIGHLIGHT_NODES'),
+    graph,
+  );
+
+  let impactIds = resolveTrackedNodeIdSet(parseNodeMarker(resultText, 'IMPACT'), graph);
+  if (impactIds.size === 0 && toolCall.name === 'impact') {
+    impactIds = resolveTrackedNodeIdSet(
+      Array.from(resultText.matchAll(/^\s+[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^%\n]+/gm))
+        .map((match) => {
+          const parts = match[0].trim().split('|');
+          return parts.length >= 2 ? parts[1] : '';
+        })
+        .filter(Boolean),
+      graph,
+    );
+  }
+
+  return { highlightIds, impactIds };
+};
 
 const collectToolCallNodeHints = (toolCall: ToolCallInfo): string[] => {
   const hintKeys = new Set([
@@ -379,6 +425,64 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([]);
 
+  useEffect(() => {
+    if (!isPlaywrightRuntime() || typeof window === 'undefined') return;
+
+    const handleE2EToolResult = (event: Event) => {
+      const detail = (event as CustomEvent<{ toolCall?: ToolCallInfo & { result?: unknown } }>)
+        .detail;
+      const toolCall = detail?.toolCall;
+      if (!toolCall) return;
+
+      const toolCallState: ToolCallInfo = {
+        ...toolCall,
+        result:
+          toolCall.result === undefined
+            ? undefined
+            : typeof toolCall.result === 'string'
+              ? toolCall.result
+              : getToolResultText(toolCall.result),
+      };
+
+      setCurrentToolCalls([toolCallState]);
+
+      const { highlightIds, impactIds } = resolveToolResultActivity(toolCall, graph);
+      setAIToolHighlightedNodeIds(highlightIds);
+      setBlastRadiusNodeIds(impactIds);
+
+      if (highlightIds.size > 0) {
+        triggerNodeAnimation([...highlightIds], 'pulse');
+      }
+      if (impactIds.size > 0) {
+        triggerNodeAnimation([...impactIds], 'ripple');
+      }
+    };
+
+    window.addEventListener('gitnexus:e2e-tool-result', handleE2EToolResult);
+    return () => {
+      window.removeEventListener('gitnexus:e2e-tool-result', handleE2EToolResult);
+    };
+  }, [graph, triggerNodeAnimation]);
+
+  useEffect(() => {
+    if (!isPlaywrightRuntime() || typeof window === 'undefined') return;
+
+    const playwrightWindow = window as PlaywrightWindow;
+    playwrightWindow.__gitnexusE2EGetAgentActivity = () => ({
+      currentToolCalls: currentToolCalls.map((toolCall) => ({
+        id: toolCall.id,
+        name: toolCall.name,
+        status: toolCall.status,
+      })),
+      aiToolHighlightCount: aiToolHighlightedNodeIds.size,
+      blastRadiusCount: blastRadiusNodeIds.size,
+    });
+
+    return () => {
+      delete playwrightWindow.__gitnexusE2EGetAgentActivity;
+    };
+  }, [aiToolHighlightedNodeIds, blastRadiusNodeIds, currentToolCalls]);
+
   // Code References Panel state
   const [codeReferences, setCodeReferences] = useState<CodeReference[]>([]);
   const [isCodePanelOpen, setCodePanelOpen] = useState(false);
@@ -566,13 +670,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const startEmbeddingsWithFallback = useCallback(() => {
-    const isPlaywright =
-      (typeof navigator !== 'undefined' && navigator.webdriver) ||
-      (typeof import.meta !== 'undefined' &&
-        typeof import.meta.env !== 'undefined' &&
-        import.meta.env.VITE_PLAYWRIGHT_TEST) ||
-      (typeof process !== 'undefined' && process.env.PLAYWRIGHT_TEST);
-    if (isPlaywright) {
+    if (isPlaywrightRuntime()) {
       setEmbeddingStatus('idle');
       return;
     }
@@ -954,36 +1052,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
                 // Parse highlight marker from tool results
                 if (tc.result) {
-                  const highlightIds = resolveTrackedNodeIdSet(
-                    parseNodeMarker(tc.result, 'HIGHLIGHT_NODES'),
-                    graph,
-                  );
+                  const { highlightIds, impactIds } = resolveToolResultActivity(tc, graph);
                   if (highlightIds.size > 0) {
                     setAIToolHighlightedNodeIds(highlightIds);
                     triggerNodeAnimation([...highlightIds], 'pulse');
                   }
-
-                  const impactIds = resolveTrackedNodeIdSet(
-                    parseNodeMarker(tc.result, 'IMPACT'),
-                    graph,
-                  );
                   if (impactIds.size > 0) {
                     setBlastRadiusNodeIds(impactIds);
                     triggerNodeAnimation([...impactIds], 'ripple');
-                  } else if (tc.name === 'impact') {
-                    const fallbackImpactIds = resolveTrackedNodeIdSet(
-                      Array.from(tc.result.matchAll(/^\s+[^|]+\|[^|]+\|[^|]+\|[^|]+\|[^%\n]+/gm))
-                        .map((match) => {
-                          const parts = match[0].trim().split('|');
-                          return parts.length >= 2 ? parts[1] : '';
-                        })
-                        .filter(Boolean),
-                      graph,
-                    );
-                    if (fallbackImpactIds.size > 0) {
-                      setBlastRadiusNodeIds(fallbackImpactIds);
-                      triggerNodeAnimation([...fallbackImpactIds], 'ripple');
-                    }
                   }
                 }
               }

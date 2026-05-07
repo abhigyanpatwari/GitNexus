@@ -111,6 +111,8 @@ export const resolveGraphNodeVisual = ({
   const isHovered = nodeId === hoveredNodeId;
   const hoveredScale = isHovered ? 1.22 : 1;
   const animation = animatedNodes.get(nodeId);
+  const isHighlighted = highlightedNodeIds.has(nodeId);
+  const isBlastRadius = blastRadiusNodeIds.has(nodeId);
 
   if (animation) {
     const elapsed = now - animation.startTime;
@@ -172,6 +174,26 @@ export const resolveGraphNodeVisual = ({
       });
     }
 
+    if (isBlastRadius) {
+      return createNodeVisual(GRAPH_HIGHLIGHT_COLORS.blast, baseSize * 1.64 * hoveredScale, {
+        zIndex: 3,
+        highlighted: true,
+        emphasis: 0.94,
+        shell: true,
+        shellColor: GRAPH_HIGHLIGHT_COLORS.blastSoft,
+      });
+    }
+
+    if (isHighlighted) {
+      return createNodeVisual(GRAPH_HIGHLIGHT_COLORS.query, baseSize * 1.42 * hoveredScale, {
+        zIndex: 2,
+        highlighted: true,
+        emphasis: 0.8,
+        shell: true,
+        shellColor: GRAPH_HIGHLIGHT_COLORS.querySoft,
+      });
+    }
+
     if (isNeighbor) {
       return createNodeVisual(color, baseSize * 1.25 * hoveredScale, {
         zIndex: 2,
@@ -187,7 +209,7 @@ export const resolveGraphNodeVisual = ({
   }
 
   if (blastRadiusNodeIds.size > 0) {
-    if (blastRadiusNodeIds.has(nodeId)) {
+    if (isBlastRadius) {
       return createNodeVisual(GRAPH_HIGHLIGHT_COLORS.blast, baseSize * 1.8 * hoveredScale, {
         zIndex: 3,
         highlighted: true,
@@ -197,7 +219,7 @@ export const resolveGraphNodeVisual = ({
       });
     }
 
-    if (highlightedNodeIds.has(nodeId)) {
+    if (isHighlighted) {
       return createNodeVisual(GRAPH_HIGHLIGHT_COLORS.query, baseSize * 1.42 * hoveredScale, {
         zIndex: 2,
         highlighted: true,
@@ -213,7 +235,7 @@ export const resolveGraphNodeVisual = ({
   }
 
   if (highlightedNodeIds.size > 0) {
-    if (highlightedNodeIds.has(nodeId)) {
+    if (isHighlighted) {
       return createNodeVisual(GRAPH_HIGHLIGHT_COLORS.query, baseSize * 1.58 * hoveredScale, {
         zIndex: 2,
         highlighted: true,
@@ -262,32 +284,58 @@ export const resolveGraphEdgeVisual = ({
   blastRadiusNodeIds?: Set<string>;
 }): ResolvedGraphEdgeVisual => {
   const baseSize = size || 1;
+  const sourceHighlighted = highlightedNodeIds.has(sourceId);
+  const targetHighlighted = highlightedNodeIds.has(targetId);
+  const sourceBlast = blastRadiusNodeIds.has(sourceId);
+  const targetBlast = blastRadiusNodeIds.has(targetId);
+  const sourceActive = sourceHighlighted || sourceBlast;
+  const targetActive = targetHighlighted || targetBlast;
 
   if (selectedNodeId) {
     const isConnected = sourceId === selectedNodeId || targetId === selectedNodeId;
-    return isConnected
-      ? {
-          color: brightenColor(color, 1.5),
-          size: Math.max(3, baseSize * 4),
-          zIndex: 2,
-        }
-      : {
-          color: dimColor(color, 0.1),
-          size: 0.3,
-          zIndex: 0,
-        };
+    const isSelectedSubgraph = isConnected || (sourceActive && targetActive);
+
+    if (isSelectedSubgraph) {
+      return {
+        color:
+          sourceBlast && targetBlast
+            ? GRAPH_HIGHLIGHT_COLORS.blast
+            : sourceActive && targetActive
+              ? GRAPH_HIGHLIGHT_COLORS.query
+              : brightenColor(color, 1.5),
+        size:
+          sourceBlast && targetBlast
+            ? Math.max(2.6, baseSize * 3.4)
+            : sourceActive && targetActive
+              ? Math.max(2.2, baseSize * 3)
+              : Math.max(3, baseSize * 4),
+        zIndex: isConnected ? 3 : 2,
+      };
+    }
+
+    if (sourceActive || targetActive) {
+      return {
+        color: dimColor(
+          sourceBlast || targetBlast ? GRAPH_HIGHLIGHT_COLORS.blast : GRAPH_HIGHLIGHT_COLORS.query,
+          0.52,
+        ),
+        size: Math.max(0.9, baseSize * 1.3),
+        zIndex: 1,
+      };
+    }
+
+    return {
+      color: dimColor(color, 0.1),
+      size: 0.3,
+      zIndex: 0,
+    };
   }
 
   if (highlightedNodeIds.size > 0 || blastRadiusNodeIds.size > 0) {
-    const sourceActive = highlightedNodeIds.has(sourceId) || blastRadiusNodeIds.has(sourceId);
-    const targetActive = highlightedNodeIds.has(targetId) || blastRadiusNodeIds.has(targetId);
-
     if (sourceActive && targetActive) {
       return {
         color:
-          blastRadiusNodeIds.has(sourceId) && blastRadiusNodeIds.has(targetId)
-            ? GRAPH_HIGHLIGHT_COLORS.blast
-            : GRAPH_HIGHLIGHT_COLORS.query,
+          sourceBlast && targetBlast ? GRAPH_HIGHLIGHT_COLORS.blast : GRAPH_HIGHLIGHT_COLORS.query,
         size: Math.max(2, baseSize * 3),
         zIndex: 2,
       };

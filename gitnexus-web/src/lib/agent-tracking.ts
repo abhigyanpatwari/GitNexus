@@ -3,6 +3,9 @@ import type { GraphNode } from 'gitnexus-shared';
 export type AgentNodeMarker = 'HIGHLIGHT_NODES' | 'IMPACT';
 
 const MARKER_NODE_LIMIT = 250;
+const MARKER_TEXT_DEPTH_LIMIT = 8;
+const MARKER_TEXT_KEYS = ['text', 'content', 'output', 'result', 'message', 'messages', 'data'];
+const MARKER_TEXT_IGNORED_KEYS = new Set(['type', 'name', 'id', 'tool_call_id']);
 
 const uniqueNodeIds = (nodeIds: Iterable<string | null | undefined>): string[] => {
   const seen = new Set<string>();
@@ -29,13 +32,49 @@ export const formatNodeMarker = (
   return `[${marker}:${ids.map((id) => encodeURIComponent(id)).join(',')}]`;
 };
 
-export const parseNodeMarker = (text: string, marker: AgentNodeMarker): string[] => {
+const collectMarkerTextParts = (
+  value: unknown,
+  seenObjects: Set<object> = new Set(),
+  depth = 0,
+): string[] => {
+  if (value === null || value === undefined || depth > MARKER_TEXT_DEPTH_LIMIT) return [];
+  if (typeof value === 'string') return [value];
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectMarkerTextParts(item, seenObjects, depth + 1));
+  }
+  if (typeof value !== 'object') return [];
+  if (seenObjects.has(value)) return [];
+  seenObjects.add(value);
+
+  const record = value as Record<string, unknown>;
+  const preferredParts = MARKER_TEXT_KEYS.flatMap((key) =>
+    Object.prototype.hasOwnProperty.call(record, key)
+      ? collectMarkerTextParts(record[key], seenObjects, depth + 1)
+      : [],
+  );
+  if (preferredParts.length > 0) return preferredParts;
+
+  return Object.entries(record).flatMap(([key, nestedValue]) =>
+    MARKER_TEXT_IGNORED_KEYS.has(key)
+      ? []
+      : collectMarkerTextParts(nestedValue, seenObjects, depth + 1),
+  );
+};
+
+export const getToolResultText = (value: unknown): string =>
+  collectMarkerTextParts(value).filter(Boolean).join('\n');
+
+export const parseNodeMarker = (text: unknown, marker: AgentNodeMarker): string[] => {
+  const markerText = getToolResultText(text);
   const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(`\\[${escapedMarker}:([^\\]]+)\\]`, 'g');
   const ids: string[] = [];
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = regex.exec(markerText)) !== null) {
     for (const rawId of match[1].split(',')) {
       const trimmed = rawId.trim();
       if (!trimmed) continue;
@@ -50,8 +89,10 @@ export const parseNodeMarker = (text: string, marker: AgentNodeMarker): string[]
   return uniqueNodeIds(ids);
 };
 
-export const stripNodeMarkers = (text: string): string =>
-  text.replace(/\n?\[(?:HIGHLIGHT_NODES|IMPACT):[^\]]+\]/g, '').trimEnd();
+export const stripNodeMarkers = (text: unknown): string =>
+  getToolResultText(text)
+    .replace(/\n?\[(?:HIGHLIGHT_NODES|IMPACT):[^\]]+\]/g, '')
+    .trimEnd();
 
 const normalizeLookupValue = (value: unknown): string =>
   String(value ?? '')

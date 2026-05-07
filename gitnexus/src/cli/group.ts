@@ -181,6 +181,16 @@ export function registerGroupCommands(program: Command): void {
         console.log(
           `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
         );
+        if (result.bridge) {
+          console.log(
+            `Wrote bridge.lbug (${result.bridge.contractsInserted} contracts, ${result.bridge.linksInserted} links inserted)`,
+          );
+          if (result.bridge.linksDroppedMissingNode > 0) {
+            console.log(
+              `  skipped ${result.bridge.linksDroppedMissingNode} links whose endpoint contracts were not inserted`,
+            );
+          }
+        }
       }
     });
 

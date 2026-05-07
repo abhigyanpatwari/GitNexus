@@ -89,6 +89,7 @@ export async function contextCommand(
     repo?: string;
     file?: string;
     uid?: string;
+    kind?: string;
     content?: boolean;
   },
 ): Promise<void> {
@@ -102,7 +103,39 @@ export async function contextCommand(
     name: name || undefined,
     uid: options?.uid,
     file_path: options?.file,
+    kind: options?.kind,
     include_content: options?.content ?? false,
+    repo: options?.repo,
+  });
+  output(result);
+}
+
+export async function renameCommand(
+  symbol: string,
+  options?: {
+    repo?: string;
+    uid?: string;
+    file?: string;
+    newName?: string;
+    apply?: boolean;
+  },
+): Promise<void> {
+  if (!symbol?.trim() && !options?.uid) {
+    console.error('Usage: gitnexus rename <symbol_name> --new-name <newName> [--uid <uid>]');
+    process.exit(1);
+  }
+  if (!options?.newName?.trim()) {
+    console.error('Usage: gitnexus rename <symbol_name> --new-name <newName>');
+    process.exit(1);
+  }
+
+  const backend = await getBackend();
+  const result = await backend.callTool('rename', {
+    symbol_name: symbol || undefined,
+    symbol_uid: options?.uid,
+    file_path: options?.file,
+    new_name: options.newName,
+    dry_run: !options?.apply,
     repo: options?.repo,
   });
   output(result);

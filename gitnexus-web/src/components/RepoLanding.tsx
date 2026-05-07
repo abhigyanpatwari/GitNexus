@@ -34,7 +34,19 @@ function formatRelativeTime(dateStr: string): string {
 
 // ── Repo card ────────────────────────────────────────────────────────────────
 
-function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void }) {
+function repoLocation(repo: BackendRepo): string {
+  return repo.repoPath ?? repo.path;
+}
+
+function RepoCard({
+  repo,
+  onClick,
+  showPath,
+}: {
+  repo: BackendRepo;
+  onClick: () => void;
+  showPath?: boolean;
+}) {
   const stats = repo.stats;
 
   return (
@@ -55,6 +67,9 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
             <p className="mt-1 pl-6 text-xs text-text-muted">
               Indexed {formatRelativeTime(repo.indexedAt)}
             </p>
+          )}
+          {showPath && (
+            <p className="mt-1 truncate pl-6 text-xs text-text-muted">{repoLocation(repo)}</p>
           )}
         </div>
         <ArrowRight className="h-4 w-4 shrink-0 text-text-muted opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-accent group-hover:opacity-100" />
@@ -92,6 +107,12 @@ interface RepoLandingProps {
 }
 
 export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLandingProps) => {
+  const nameCounts = new Map<string, number>();
+  for (const repo of repos) {
+    const key = repo.name.toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+
   return (
     <div className="relative animate-fade-in overflow-hidden rounded-3xl border border-border-default bg-surface p-7">
       {/* Ambient glows — mirrors OnboardingGuide aesthetic */}
@@ -119,8 +140,17 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
 
       {/* Repo list */}
       <div className="relative mb-5 space-y-2">
-        {repos.map((repo) => (
-          <RepoCard key={repo.name} repo={repo} onClick={() => onSelectRepo(repo.name)} />
+        {repos.map((repo, index) => (
+          <RepoCard
+            key={`${repo.name}:${repoLocation(repo)}:${index}`}
+            repo={repo}
+            showPath={(nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1}
+            onClick={() =>
+              onSelectRepo(
+                (nameCounts.get(repo.name.toLowerCase()) ?? 0) > 1 ? repoLocation(repo) : repo.name,
+              )
+            }
+          />
         ))}
       </div>
 

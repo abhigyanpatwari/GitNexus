@@ -379,6 +379,10 @@ paths:
       const registry = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
       expect(registry.version).toBe(1);
       expect(registry.contracts).toHaveLength(0);
+
+      expect(fs.existsSync(path.join(tmpDir, 'bridge.lbug'))).toBe(true);
+      expect(result.bridge?.contractsInserted).toBe(0);
+      expect(result.bridge?.linksInserted).toBe(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
