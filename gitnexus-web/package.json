@@ -18,7 +18,8 @@
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@langchain/anthropic": "^1.3.27",
+    "gitnexus-shared": "file:../gitnexus-shared",
+    "@langchain/anthropic": "^1.3.28",
     "@langchain/core": "^1.1.44",
     "@langchain/google-genai": "^2.1.28",
     "@langchain/langgraph": "^1.2.9",
@@ -30,7 +31,6 @@
     "d3": "^7.9.0",
     "d3-force-3d": "^3.0.6",
     "dompurify": "^3.4.2",
-    "gitnexus-shared": "file:../gitnexus-shared",
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-layout-force": "^0.2.4",

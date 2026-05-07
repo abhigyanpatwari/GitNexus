@@ -188,7 +188,7 @@ export class ExtensionManager {
     const policy = opts.policy ?? this.options.policy ?? resolvePolicyFromEnv();
     const timeoutMs =
       opts.installTimeoutMs ?? this.options.installTimeoutMs ?? getExtensionInstallTimeoutMs();
-    const warn = this.options.warn ?? console.warn;
+    const warn = this.options.warn ?? console.error;
 
     if (policy === 'never') {
       this.markUnavailable(name, label, 'extension install policy is "never"', warn);

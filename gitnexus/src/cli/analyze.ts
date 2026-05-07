@@ -23,6 +23,8 @@ import {
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import { warnMissingOptionalGrammars } from './optional-grammars.js';
+import { glob } from 'glob';
 import fs from 'fs/promises';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -308,6 +310,30 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log(
       '  Warning: no .git directory found \u2014 commit-tracking and incremental updates disabled.\n',
     );
+  }
+
+  // If the target repo contains files an optional grammar would parse but
+  // that grammar's native binding is absent, warn before analysis so users
+  // learn why those files end up unparsed instead of silently getting a
+  // degraded index.
+  try {
+    const matches = await glob(['**/*.dart', '**/*.proto'], {
+      cwd: repoPath,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      dot: false,
+      nodir: true,
+      absolute: false,
+    });
+    if (matches.length > 0) {
+      const present = new Set<string>();
+      for (const m of matches) {
+        const ext = path.extname(m).toLowerCase();
+        if (ext) present.add(ext);
+      }
+      warnMissingOptionalGrammars({ context: 'analyze', relevantExtensions: present });
+    }
+  } catch {
+    // Best-effort warning \u2014 never block analyze on the precheck.
   }
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.

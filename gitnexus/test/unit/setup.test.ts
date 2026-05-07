@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'module';
+
+// Match what setup.ts emits — read the version from the same package.json
+// so the test never goes stale on a release bump.
+const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version;
+const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -75,7 +82,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
 
@@ -90,7 +97,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', NPX_REF, 'mcp'],
     });
   });
 
@@ -182,7 +189,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', NPX_REF, 'mcp'],
     });
   });
 

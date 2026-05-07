@@ -420,7 +420,7 @@ const doInitLbug = async (dbPath: string, options: LbugSessionOptions = {}) => {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes('already exists')) {
-          console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+          console.error(`[gitnexus:lbug] schema creation warning: ${msg.slice(0, 120)}`);
         }
       }
     }
@@ -1265,15 +1265,15 @@ export const fetchExistingEmbeddingHashes = async (
           const nodeId = r.nodeId ?? r[0];
           if (nodeId) map.set(nodeId, STALE_HASH_SENTINEL);
         }
-        console.log(
-          `[embed] ${map.size} nodes in legacy DB (missing chunk-aware columns) — all treated as stale`,
+        console.error(
+          `[gitnexus:embed] ${map.size} nodes in legacy DB (missing chunk-aware columns) — all treated as stale`,
         );
         return map;
       } catch (fallbackErr: any) {
         const fallbackMsg = fallbackErr?.message ?? '';
         if (isMissingColumnOrTableError(fallbackMsg)) {
-          console.log(
-            `[embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
+          console.error(
+            `[gitnexus:embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
           );
           return undefined;
         }

@@ -157,7 +157,7 @@ const queryEmbeddableNodes = async (
       }
     } catch (error) {
       if (isDev) {
-        console.warn(`Query for ${label} nodes failed:`, error);
+        console.error(`Query for ${label} nodes failed:`, error);
       }
     }
   }
@@ -212,7 +212,7 @@ const createVectorIndex = async (
     return true;
   } catch (error) {
     if (isDev) {
-      console.warn('Vector index creation warning:', error);
+      console.error('Vector index creation warning:', error);
     }
     return false;
   }
@@ -256,7 +256,7 @@ export const runEmbeddingPipeline = async (
 
   try {
     const vectorAvailable = await ensureVectorExtensionAvailable();
-    if (!vectorAvailable && isDev) console.warn(vectorUnavailableMessage);
+    if (!vectorAvailable && isDev) console.error(vectorUnavailableMessage);
 
     // Phase 1: Load embedding model
     onProgress({
@@ -283,7 +283,7 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log('🔍 Querying embeddable nodes...');
+      console.error('🔍 Querying embeddable nodes...');
     }
 
     // Phase 2: Query embeddable nodes
@@ -325,7 +325,7 @@ export const runEmbeddingPipeline = async (
       // (Kuzu forbids SET on vector-indexed properties; DELETE-then-INSERT is the sanctioned pattern)
       if (staleNodeIds.length > 0) {
         if (isDev) {
-          console.log(`🔄 Deleting ${staleNodeIds.length} stale embedding rows for re-embed`);
+          console.error(`🔄 Deleting ${staleNodeIds.length} stale embedding rows for re-embed`);
         }
         try {
           await executeWithReusedStatement(
@@ -346,7 +346,7 @@ export const runEmbeddingPipeline = async (
       }
 
       if (isDev) {
-        console.log(
+        console.error(
           `📦 Incremental embeddings: ${beforeCount} total, ${existingEmbeddings.size} cached, ${staleNodeIds.length} stale, ${nodes.length} to embed`,
         );
       }
@@ -355,7 +355,7 @@ export const runEmbeddingPipeline = async (
     const totalNodes = nodes.length;
 
     if (isDev) {
-      console.log(`📊 Found ${totalNodes} embeddable nodes`);
+      console.error(`📊 Found ${totalNodes} embeddable nodes`);
     }
 
     if (totalNodes === 0) {
@@ -442,7 +442,7 @@ export const runEmbeddingPipeline = async (
             );
           } catch (chunkErr) {
             if (isDev) {
-              console.warn(
+              console.error(
                 `⚠️ AST chunking failed for ${node.label} "${node.name}" (${node.filePath}), falling back to character-based chunking:`,
                 chunkErr,
               );
@@ -520,7 +520,7 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log('📇 Creating vector index...');
+      console.error('📇 Creating vector index...');
     }
 
     const vectorIndexReady = await createVectorIndex(executeQuery);
@@ -533,7 +533,7 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log(
+      console.error(
         `✅ Embedding pipeline complete! (${totalChunks} chunks from ${totalNodes} nodes)`,
       );
     }

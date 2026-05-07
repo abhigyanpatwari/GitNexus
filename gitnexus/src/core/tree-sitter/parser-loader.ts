@@ -175,8 +175,10 @@ const logFailure = (key: string, result: LoadResult): void => {
   logged.add(key);
   const message = `[gitnexus] ${result.note} (${result.error.message})`;
 
-  if (result.severity === 'error') console.error(message);
-  else console.warn(message);
+  // Both severities go to stderr — console.warn writes to stderr too, but
+  // console.error is the stdout-safe channel we standardize on across
+  // MCP-reachable code so the ESLint rule covers this directory.
+  console.error(message);
 };
 
 export const resolveLanguageKey = (language: SupportedLanguages, filePath?: string): string =>

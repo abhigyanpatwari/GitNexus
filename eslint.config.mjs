@@ -67,6 +67,52 @@ export default [
     },
   },
 
+  // MCP-reachable code: forbid stdout-corrupting writes. The MCP stdio
+  // transport writes JSON-RPC frames to stdout; per the spec, the server
+  // MUST NOT write anything to stdout that is not a valid MCP message.
+  // Diagnostics must go to stderr (console.error). Direct process.stdout.write
+  // bypasses the gate and is also forbidden in these dirs.
+  // cli/mcp.ts is included here even though it lives under cli/ — it is the
+  // MCP entrypoint and inherits stricter discipline than the rest of cli/.
+  {
+    files: [
+      'gitnexus/src/mcp/**/*.ts',
+      'gitnexus/src/core/lbug/**/*.ts',
+      'gitnexus/src/core/embeddings/**/*.ts',
+      'gitnexus/src/core/tree-sitter/**/*.ts',
+      'gitnexus/src/cli/mcp.ts',
+    ],
+    rules: {
+      'no-console': ['error', { allow: ['error'] }],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "MemberExpression[object.type='MemberExpression'][object.object.name='process'][object.property.name='stdout'][property.name='write']",
+          message:
+            'Direct process.stdout.write is forbidden in MCP-reachable code. Route diagnostics through console.error or process.stderr.write — the MCP stdio transport owns stdout for JSON-RPC frames.',
+        },
+        {
+          selector:
+            "CallExpression[callee.type='MemberExpression'][callee.object.type='MemberExpression'][callee.object.object.name='process'][callee.object.property.name='stdout'][callee.property.name='write']",
+          message:
+            'Direct process.stdout.write is forbidden in MCP-reachable code. Route diagnostics through console.error or process.stderr.write — the MCP stdio transport owns stdout for JSON-RPC frames.',
+        },
+        {
+          // Catches the canonical destructuring shape:
+          //   const { write } = process.stdout;
+          // (and any other ObjectPattern destructure rooted at process.stdout)
+          // which would otherwise capture a reference to the original write
+          // and bypass the sentinel.
+          selector:
+            "VariableDeclarator[init.type='MemberExpression'][init.object.name='process'][init.property.name='stdout'] > ObjectPattern",
+          message:
+            'Destructuring process.stdout is forbidden in MCP-reachable code — bypasses the sentinel. Use process.stderr.write for diagnostics.',
+        },
+      ],
+    },
+  },
+
   // React-specific rules for gitnexus-web
   {
     files: ['gitnexus-web/src/**/*.{ts,tsx}'],
