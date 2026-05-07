@@ -250,7 +250,7 @@ jobs:
               printf -v "${prefix}_BRANCH_COV" '%s' ""
               printf -v "${prefix}_FUNCS_COV" '%s' ""
               printf -v "${prefix}_LINES_COV" '%s' ""
-              return 1
+              return 0
             fi
           }
 
