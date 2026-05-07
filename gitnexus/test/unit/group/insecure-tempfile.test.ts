@@ -68,9 +68,7 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     // "prior `${target}.tmp.${Date.now()}` shape." explanation does not
     // register as an active call site. Block strip runs first so a future
     // multi-line `/* ...Date.now()... */` doc comment is also handled.
-    const codeOnly = bridgeSource
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/[^\n]*/g, '');
+    const codeOnly = bridgeSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });
@@ -79,7 +77,9 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     // Whether writeBridge succeeds or throws, the random staging dir
     // must be cleaned up — otherwise the group dir accumulates
     // bridge-tmp-* directories. The removal is idempotent (force: true).
-    expect(bridgeSource).toMatch(/fsp\.rm\(stagingDir,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/);
+    expect(bridgeSource).toMatch(
+      /fsp\.rm\(stagingDir,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/,
+    );
   });
 
   it('storage.ts imports randomBytes from node:crypto', () => {
@@ -96,9 +96,7 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
 
   it('storage.ts does not use Date.now() in any active temp path', () => {
     // Same comment-strip trick as bridge-db.ts above (block + line).
-    const codeOnly = storageSource
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/[^\n]*/g, '');
+    const codeOnly = storageSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });
