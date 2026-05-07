@@ -64,9 +64,13 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
   });
 
   it('bridge-db.ts does not use Date.now() in any active temp path', () => {
-    // Strip line comments first so the historical "prior `${target}.tmp.${Date.now()}` shape."
-    // explanation in writeBridgeMeta does not register as an active call site.
-    const codeOnly = bridgeSource.replace(/\/\/[^\n]*/g, '');
+    // Strip block AND line comments first so the historical
+    // "prior `${target}.tmp.${Date.now()}` shape." explanation does not
+    // register as an active call site. Block strip runs first so a future
+    // multi-line `/* ...Date.now()... */` doc comment is also handled.
+    const codeOnly = bridgeSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
     const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });
@@ -91,8 +95,10 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
   });
 
   it('storage.ts does not use Date.now() in any active temp path', () => {
-    // Same comment-strip trick as bridge-db.ts above.
-    const codeOnly = storageSource.replace(/\/\/[^\n]*/g, '');
+    // Same comment-strip trick as bridge-db.ts above (block + line).
+    const codeOnly = storageSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
     const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });

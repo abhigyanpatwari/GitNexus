@@ -41,26 +41,6 @@ async function removeLbugFile(basePath: string): Promise<void> {
   }
 }
 
-/**
- * Remove all stale `bridge.lbug.tmp.*` files (and their sidecars) from a
- * group directory.  With randomBytes-based temp names, a crashed writeBridge
- * leaves behind a uniquely-named tmp file that no future run will target by
- * name — so we glob for the prefix and clean up everything matching.
- */
-async function cleanStaleBridgeTmpFiles(groupDir: string): Promise<void> {
-  try {
-    const entries = await fsp.readdir(groupDir);
-    const staleBases = entries.filter(
-      (e) => e.startsWith('bridge.lbug.tmp.') && !LBUG_SIDECAR_SUFFIXES.some((s) => e.endsWith(s)),
-    );
-    for (const name of staleBases) {
-      await removeLbugFile(path.join(groupDir, name));
-    }
-  } catch {
-    /* best-effort: directory may not exist yet */
-  }
-}
-
 export function contractNodeId(
   repo: string,
   contractId: string,

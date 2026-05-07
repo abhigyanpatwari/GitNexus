@@ -13,6 +13,25 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { writeContractRegistry, createGroupDir } from '../../../src/core/group/storage.js';
 import { writeBridgeMeta } from '../../../src/core/group/bridge-db.js';
+import type { ContractRegistry } from '../../../src/core/group/types.js';
+
+/**
+ * Build a minimal `ContractRegistry` literal with overridable fields.
+ * Replaces the `as never` cast that bypassed the type entirely — keeps
+ * the test free of unrelated boilerplate while still type-checking the
+ * fields under test.
+ */
+function makeRegistry(overrides: Partial<ContractRegistry> = {}): ContractRegistry {
+  return {
+    version: 1,
+    generatedAt: '2026-05-07T00:00:00Z',
+    repoSnapshots: {},
+    missingRepos: [],
+    contracts: [],
+    crossLinks: [],
+    ...overrides,
+  };
+}
 
 let tmpRoot: string;
 let groupDir: string;
@@ -35,8 +54,8 @@ describe('writeContractRegistry — tempfile hardening', () => {
     // property without depending on Windows-specific concurrent-rename
     // behavior (which has its own pre-existing retry pattern in the
     // sibling `writeBridge` function and is out of scope for this test).
-    await writeContractRegistry(groupDir, { contracts: [], version: 1 } as never);
-    await writeContractRegistry(groupDir, { contracts: [], version: 2 } as never);
+    await writeContractRegistry(groupDir, makeRegistry({ version: 1 }));
+    await writeContractRegistry(groupDir, makeRegistry({ version: 2 }));
     const written = await fs.readFile(path.join(groupDir, 'contracts.json'), 'utf-8');
     const parsed = JSON.parse(written);
     expect(parsed.version).toBe(2);
