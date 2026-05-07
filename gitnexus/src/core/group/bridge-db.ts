@@ -11,6 +11,9 @@ import {
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { createLogger } from '../logger.js';
+
+const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE' });
 
 /**
  * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
@@ -706,21 +709,15 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  if (process.env.GITNEXUS_DEBUG_BRIDGE) {
-    // Sanitize the error message before logging — closes CodeQL
-    // js/log-injection. Without the CRLF strip an attacker who can
-    // influence the underlying lbug error (e.g. via a crafted db path
-    // that ends up in stderr) can inject fake log lines.
-    const sanitizedErr = (lastErr instanceof Error ? lastErr.message : String(lastErr)).replace(
-      /[\r\n]/g,
-      ' ',
-    );
-    const sanitizedDir = String(groupDir).replace(/[\r\n]/g, ' ');
-    console.warn(
-      `[bridge-db] openBridgeDbReadOnly(${sanitizedDir}) gave up after ` +
-        `${LBUG_OPEN_RETRY_ATTEMPTS} attempts: ${sanitizedErr}`,
-    );
-  }
+  // Pino's NDJSON serialization is structurally injection-resistant
+  // (CodeQL js/log-injection): groupDir and err.message are JSON-escaped
+  // by the serializer, so no manual CRLF / U+2028 / ANSI sanitization is
+  // needed. Demoted to debug — only fires when the bridge truly gave up
+  // after retries, and operators only need it at debug verbosity.
+  bridgeLogger.debug(
+    { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    'openBridgeDbReadOnly gave up',
+  );
   return null;
 }
 
