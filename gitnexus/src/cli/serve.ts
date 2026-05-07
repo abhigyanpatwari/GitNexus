@@ -44,10 +44,11 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
         { code: err.code, port, host },
       );
     } else {
-      cliError(
-        `\nFailed to start GitNexus server:\n  ${err.message || err}\n`,
-        { code: err.code, port, host },
-      );
+      cliError(`\nFailed to start GitNexus server:\n  ${err.message || err}\n`, {
+        code: err.code,
+        port,
+        host,
+      });
     }
     if (err.stack && process.env.DEBUG) {
       logger.debug({ stack: err.stack }, 'serve start error stack');

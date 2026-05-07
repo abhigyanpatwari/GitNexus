@@ -356,9 +356,7 @@ describe('worker pool integration', () => {
       await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
         /simulated startup crash|exited with code/,
       );
-      const warnRecords = cap
-        .records()
-        .filter((r) => Number(r.level) >= 40 /* warn or above */);
+      const warnRecords = cap.records().filter((r) => Number(r.level) >= 40 /* warn or above */);
       expect(warnRecords.length).toBeGreaterThan(0);
     } finally {
       cap.restore();

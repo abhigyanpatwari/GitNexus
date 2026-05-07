@@ -222,9 +222,7 @@ describe('_tryBuildPrettyTransport — pino-pretty availability probe', () => {
         colorize: true,
       });
     } else {
-      throw new Error(
-        'expected single-target transport options shape with target=pino-pretty',
-      );
+      throw new Error('expected single-target transport options shape with target=pino-pretty');
     }
   });
 

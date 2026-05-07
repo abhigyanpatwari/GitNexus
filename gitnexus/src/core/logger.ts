@@ -232,10 +232,7 @@ export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
   if (base.transport) {
     root = pino({ ...base, level: debugRequested ? 'debug' : base.level });
   } else {
-    root = pino(
-      { ...base, level: debugRequested ? 'debug' : base.level },
-      defaultDestination(),
-    );
+    root = pino({ ...base, level: debugRequested ? 'debug' : base.level }, defaultDestination());
     // The default destination is buffered (`sync: false`); register the
     // graceful-exit flush hook now that we know the destination will be
     // used. Idempotent — runs at most once per process. Skipped under
@@ -257,7 +254,10 @@ function _getInner(): Logger {
   // Always go through createLogger so future defaults (serializers, redaction,
   // formatters) apply uniformly. The destination override is honored when set
   // by `_captureLogger()` below.
-  _cached = createLogger('gitnexus', _activeDestination ? { destination: _activeDestination } : undefined);
+  _cached = createLogger(
+    'gitnexus',
+    _activeDestination ? { destination: _activeDestination } : undefined,
+  );
   return _cached;
 }
 
@@ -278,7 +278,6 @@ export const logger = new Proxy({} as Logger, {
     return value;
   },
 }) as Logger;
-
 
 /**
  * Shape of a parsed pino record. `level`, `time`, and `msg` are always

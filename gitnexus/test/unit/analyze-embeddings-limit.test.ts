@@ -48,9 +48,7 @@ describe('analyzeCommand --embeddings [limit] parsing', () => {
       // writes plain text directly to process.stderr. Spy on the raw
       // stderr handle rather than `console.error`, since the migration
       // bypasses console entirely.
-      const stderrSpy = vi
-        .spyOn(process.stderr, 'write')
-        .mockImplementation(() => true);
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
       await analyzeCommand(undefined, { embeddings });
