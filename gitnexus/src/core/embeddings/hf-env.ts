@@ -60,3 +60,24 @@ export function applyHfEnvOverrides(env: HfEnvSubset): void {
     env.remoteHost = endpoint.endsWith('/') ? endpoint : endpoint + '/';
   }
 }
+
+/**
+ * @internal Exported for unit tests and the two embedder entry points.
+ *
+ * Returns true when an error message indicates a network-level fetch failure
+ * during HuggingFace model download (e.g. `TypeError: fetch failed`,
+ * `ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `ECONNRESET`).
+ *
+ * These errors are not device-specific and cannot be fixed by falling back to
+ * a different ONNX device — the caller should rethrow immediately with
+ * guidance about `HF_ENDPOINT`.
+ */
+export function isNetworkFetchError(message: string): boolean {
+  return (
+    message.includes('fetch failed') ||
+    message.includes('ECONNREFUSED') ||
+    message.includes('ENOTFOUND') ||
+    message.includes('ETIMEDOUT') ||
+    message.includes('ECONNRESET')
+  );
+}

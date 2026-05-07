@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import os from 'node:os';
 import { join } from 'node:path';
-import { applyHfEnvOverrides, type HfEnvSubset } from '../../src/core/embeddings/hf-env.js';
+import {
+  applyHfEnvOverrides,
+  isNetworkFetchError,
+  type HfEnvSubset,
+} from '../../src/core/embeddings/hf-env.js';
 
 describe('applyHfEnvOverrides', () => {
   let envStub: HfEnvSubset;
@@ -80,5 +84,39 @@ describe('applyHfEnvOverrides', () => {
     process.env.HF_ENDPOINT = '  https://hf-mirror.com  ';
     applyHfEnvOverrides(envStub);
     expect(envStub.remoteHost).toBe('https://hf-mirror.com/');
+  });
+});
+
+describe('isNetworkFetchError', () => {
+  it('returns true for "fetch failed" (the undici error seen on macOS/Node 24)', () => {
+    expect(isNetworkFetchError('fetch failed')).toBe(true);
+  });
+
+  it('returns true for ECONNREFUSED', () => {
+    expect(isNetworkFetchError('connect ECONNREFUSED 13.45.67.89:443')).toBe(true);
+  });
+
+  it('returns true for ENOTFOUND (DNS failure)', () => {
+    expect(isNetworkFetchError('getaddrinfo ENOTFOUND huggingface.co')).toBe(true);
+  });
+
+  it('returns true for ETIMEDOUT', () => {
+    expect(isNetworkFetchError('connect ETIMEDOUT 13.45.67.89:443')).toBe(true);
+  });
+
+  it('returns true for ECONNRESET', () => {
+    expect(isNetworkFetchError('read ECONNRESET')).toBe(true);
+  });
+
+  it('returns false for generic model-load errors (ONNX device failure)', () => {
+    expect(isNetworkFetchError('Failed to initialize CUDA backend')).toBe(false);
+  });
+
+  it('returns false for empty string', () => {
+    expect(isNetworkFetchError('')).toBe(false);
+  });
+
+  it('returns false for module-not-found errors', () => {
+    expect(isNetworkFetchError('Cannot find module onnxruntime-node')).toBe(false);
   });
 });

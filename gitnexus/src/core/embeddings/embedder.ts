@@ -22,7 +22,7 @@ import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
-import { applyHfEnvOverrides } from './hf-env.js';
+import { applyHfEnvOverrides, isNetworkFetchError } from './hf-env.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -227,6 +227,19 @@ export const initEmbedder = async (
 
           return embedderInstance!;
         } catch (deviceError) {
+          // Network errors (e.g. huggingface.co unreachable) are not
+          // device-specific and will fail the same way on every device.
+          // Rethrow immediately with actionable guidance rather than
+          // silently falling back to the next device.
+          const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
+          if (isNetworkFetchError(errMsg)) {
+            const endpointHint = process.env.HF_ENDPOINT
+              ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
+              : `huggingface.co may be unreachable from your network.\n` +
+                `  Set HF_ENDPOINT to a mirror and retry:\n` +
+                `    HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings`;
+            throw new Error(`Failed to download embedding model: ${errMsg}\n  ${endpointHint}`);
+          }
           if (isDev && (device === 'cuda' || device === 'dml')) {
             const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
             console.error(`⚠️  ${gpuType} not available, falling back to CPU...`);

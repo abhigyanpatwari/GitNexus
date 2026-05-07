@@ -602,6 +602,23 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error('    1. Reinstall:   npm install -g gitnexus@latest');
       console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
       console.error('');
+    } else if (
+      msg.includes('fetch failed') ||
+      msg.includes('ECONNREFUSED') ||
+      msg.includes('ENOTFOUND') ||
+      msg.includes('ETIMEDOUT') ||
+      msg.includes('ECONNRESET') ||
+      msg.includes('Failed to download embedding model')
+    ) {
+      console.error('  The embedding model could not be downloaded.');
+      console.error('  huggingface.co may be unreachable from your network');
+      console.error('  (e.g. behind a corporate proxy or a regional firewall).');
+      console.error('  Suggestions:');
+      console.error('    1. Set HF_ENDPOINT to a mirror and retry:');
+      console.error('         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings');
+      console.error('    2. Check your proxy / VPN settings.');
+      console.error('    3. Once downloaded the model is cached — future runs work offline.');
+      console.error('');
     }
 
     process.exitCode = 1;

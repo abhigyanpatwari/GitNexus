@@ -12,7 +12,7 @@ import {
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
-import { applyHfEnvOverrides } from '../../core/embeddings/hf-env.js';
+import { applyHfEnvOverrides, isNetworkFetchError } from '../../core/embeddings/hf-env.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
@@ -84,7 +84,20 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           }
           console.error(`GitNexus: Embedding model loaded (${device})`);
           return embedderInstance!;
-        } catch {
+        } catch (deviceError) {
+          // Network errors (e.g. huggingface.co unreachable) are not
+          // device-specific and will fail the same way on every device.
+          // Rethrow immediately with actionable guidance rather than
+          // silently falling back to the next device.
+          const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
+          if (isNetworkFetchError(errMsg)) {
+            const endpointHint = process.env.HF_ENDPOINT
+              ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
+              : `huggingface.co may be unreachable from your network.\n` +
+                `  Set HF_ENDPOINT to a mirror and retry:\n` +
+                `    HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings`;
+            throw new Error(`Failed to download embedding model: ${errMsg}\n  ${endpointHint}`);
+          }
           if (device === 'cpu') throw new Error('Failed to load embedding model');
         }
       }
