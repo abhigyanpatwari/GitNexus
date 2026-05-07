@@ -28,6 +28,7 @@
 
 import fs from 'fs/promises';
 import { logger } from '../core/logger.js';
+import { cliError } from './cli-message.js';
 import {
   readRegistry,
   resolveRegistryEntry,
@@ -59,7 +60,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
       // Duplicate aliases are allowed via --allow-duplicate-name (#829);
       // refuse to guess which one the user meant — surface the full list
       // and exit non-zero so scripts don't silently pick the wrong repo.
-      logger.error(`Error: ${err.message}`);
+      cliError(`Error: ${err.message}`);
       process.exit(1);
     }
     throw err;
@@ -87,7 +88,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     assertSafeStoragePath(entry);
   } catch (err) {
     if (err instanceof UnsafeStoragePathError) {
-      logger.error(`Error: ${err.message}`);
+      cliError(`Error: ${err.message}`);
       process.exit(1);
     }
     throw err;
@@ -105,7 +106,8 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     console.log(`   Path:    ${entry.path}`);
     console.log(`   Storage: ${entry.storagePath}`);
   } catch (err) {
-    logger.error({ err }, `Failed to remove ${entry.name}:`);
+    const msg = err instanceof Error ? err.message : String(err);
+    cliError(`Failed to remove ${entry.name}: ${msg}`, { err });
     process.exit(1);
   }
 };

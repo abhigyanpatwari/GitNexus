@@ -28,7 +28,7 @@ import http from 'http';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
-import { cliInfo } from './cli-message.js';
+import { cliInfo, cliWarn } from './cli-message.js';
 
 export interface EvalServerOptions {
   port?: string;
@@ -335,8 +335,11 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
 
   if (!ok) {
     // Operator-actionable but the server cannot start; warn-level so log
-    // aggregators don't trip error alerts on a configuration miss.
-    logger.warn('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
+    // aggregators don't trip error alerts on a configuration miss. Use
+    // cliWarn so the diagnostic reaches stderr synchronously before
+    // process.exit() — direct logger.warn would be lost to the buffered
+    // pino destination on hard exit (skips beforeExit flush).
+    cliWarn('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
     process.exit(1);
   }
 
