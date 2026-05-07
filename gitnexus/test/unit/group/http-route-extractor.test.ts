@@ -428,6 +428,41 @@ def create_order():
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
       ).toBeDefined();
     });
+    it('extracts Python httpx.AsyncClient calls assigned to attributes or aliases', async () => {
+      const dir = path.join(tmpDir, 'python-httpx-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import httpx
+
+class TopicClient:
+    def __init__(self):
+        self._client = httpx.AsyncClient(base_url="https://svc.local")
+
+    async def list_topics(self):
+        return await self._client.get("/topic")
+
+    async def publish(self):
+        return await self._client.request("POST", "/questions/import")
+
+async def check_duplicate():
+    async with httpx.AsyncClient() as client:
+        return await client.post("https://svc.local/questions/duplicate-check")
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/topic')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/questions/import')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/questions/duplicate-check'),
+      ).toBeDefined();
+      expect(consumers.every((c) => c.meta.framework === 'python-httpx')).toBe(true);
+    });
+
 
     it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {
       const dir = path.join(tmpDir, 'java-consumer');
