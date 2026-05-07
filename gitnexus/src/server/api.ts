@@ -34,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
-import { logger } from '../core/logger.js';
+import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -1803,7 +1803,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     });
     server.on('error', (err) => reject(err));
 
-    // Graceful shutdown — close Express + LadybugDB cleanly
+    // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default
+    // destination is `sync: false` (buffered); `flushLoggerSync()` before
+    // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
       console.log('\nShutting down...');
       server.close();
@@ -1812,23 +1814,33 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
+      const { flushLoggerSync } = await import('../core/logger.js');
+      flushLoggerSync();
       process.exit(0);
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
 
-    // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts)
+    // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts).
+    // Pino v10's default destination is buffered (`sync: false`) — call
+    // `flushLoggerSync()` after logging and before triggering shutdown
+    // so the crash record reaches stderr regardless of how cleanup goes.
+    // Worker-thread transports (pino-pretty under TTY) handle their own
+    // flush on process exit in v10. `pino.final` was removed in v10
+    // because the new transport architecture made it unnecessary.
     let shuttingDown = false;
     process.on('uncaughtException', (err) => {
-      // Pass the Error itself; pino's err serializer captures type/message/stack.
       logger.error({ err }, 'GitNexus uncaughtException');
+      flushLoggerSync();
       if (!shuttingDown) {
         shuttingDown = true;
         shutdown().catch(() => {});
       }
     });
-    process.on('unhandledRejection', (reason: any) => {
-      logger.error({ detail: reason?.stack || reason }, 'GitNexus unhandledRejection:');
+    process.on('unhandledRejection', (reason: unknown) => {
+      // Availability-first: log the rejection without exiting.
+      const err = reason instanceof Error ? reason : new Error(String(reason));
+      logger.error({ err }, 'GitNexus unhandledRejection');
     });
   });
 };

@@ -31,6 +31,7 @@
  */
 import pino, { type Logger, type LoggerOptions, type DestinationStream } from 'pino';
 import { Writable } from 'node:stream';
+import { createRequire } from 'node:module';
 
 export interface CreateLoggerOptions {
   /** When set, this env var (truthy at construction time) bumps level to 'debug'. */
@@ -59,28 +60,126 @@ function shouldUsePretty(): boolean {
  * Default pino destination — writes to stderr (fd 2) so CLI commands can
  * keep stdout (fd 1) clean for tool data output (#324). Pino defaults to
  * stdout; we override here.
+ *
+ * `sync: false` (SonicBoom buffered writes) so logger calls don't issue a
+ * blocking `write(2)` syscall on every record. Hot paths (parse-impl,
+ * ingestion phases, per-query backend calls) pay the cost without it.
+ *
+ * The buffered-write trade-off is record loss on hard exit. We mitigate via:
+ *   - A `process.on('beforeExit')` hook below that calls `flushSync()` on
+ *     normal exits.
+ *   - The exported `flushLoggerSync()` helper, which entry-point shutdown
+ *     handlers (SIGINT/SIGTERM) MUST call before `process.exit(N)` so
+ *     in-flight buffered records still reach stderr.
+ *   - `pino.final(...)` integration in `uncaughtException` / `unhandledRejection`
+ *     handlers (see `gitnexus/src/cli/serve.ts` and `gitnexus/src/server/api.ts`).
+ *
+ * Skipped under `VITEST` so vitest's between-test cleanup doesn't fight
+ * `_captureLogger()`'s lifecycle. Tests use an in-memory destination via
+ * `_captureLogger()` and never reach this branch.
  */
+let _dest: ReturnType<typeof pino.destination> | undefined;
+
 function defaultDestination(): DestinationStream {
-  return pino.destination({ dest: 2, sync: true });
+  if (_dest) return _dest;
+  _dest = pino.destination({ dest: 2, sync: false });
+  return _dest;
 }
 
-function tryBuildPrettyTransport(): LoggerOptions['transport'] | undefined {
+/**
+ * Flush any buffered records on the default destination. Entry-point
+ * shutdown handlers (`SIGINT` / `SIGTERM`) MUST call this before
+ * `process.exit(N)` — otherwise async-buffered records are lost on hard
+ * exit. No-op when the destination hasn't been constructed yet (logger
+ * module imported but never emitted) or when called from `_captureLogger`
+ * test mode (tests use an in-memory destination).
+ */
+export function flushLoggerSync(): void {
+  if (!_dest) return;
   try {
-    return {
-      target: 'pino-pretty',
-      options: {
-        // Route to stderr (fd 2) so pretty output doesn't contaminate
-        // CLI tool data on stdout (fd 1). pino-pretty's default is fd 1,
-        // which would interleave with `gitnexus query | jq` output.
-        destination: 2,
-        colorize: true,
-        translateTime: 'SYS:HH:MM:ss.l',
-        ignore: 'pid,hostname',
-      },
-    };
+    _dest.flushSync();
   } catch {
-    return undefined;
+    // Defend against a destination that has already been closed (e.g.,
+    // double-flush on rapid shutdown). Losing the flush attempt is the
+    // correct trade-off vs. throwing during shutdown.
   }
+}
+
+/**
+ * Idempotent registration: `process.on('beforeExit')` flushes the buffered
+ * destination before normal exit. Skipped under VITEST to avoid interfering
+ * with `_captureLogger()`'s lifecycle and vitest's per-worker cleanup.
+ */
+let _flushHookInstalled = false;
+function installFlushHook(): void {
+  if (_flushHookInstalled) return;
+  if (isTruthyEnv(process.env.VITEST)) return;
+  _flushHookInstalled = true;
+  process.on('beforeExit', () => {
+    flushLoggerSync();
+  });
+}
+
+/**
+ * Probe whether `pino-pretty` is resolvable from this module. Cached for
+ * the lifetime of the process — the resolve cost only happens once, and
+ * the one-time stderr warning on miss only fires once.
+ *
+ * Production installs ship pino-pretty as a runtime dependency (see
+ * gitnexus/package.json). The probe is the safety net for `--omit=optional`,
+ * `--no-package-lock` style installs and for any environment where the
+ * module turns out to be missing for reasons we can't predict — pino's
+ * own transport-resolution path resolves the target lazily at FIRST log
+ * write, so without this probe a missing module would throw deep inside
+ * the pino call site rather than at logger construction.
+ */
+let _prettyAvailable: boolean | null = null;
+const _require = createRequire(import.meta.url);
+
+function isPrettyAvailable(): boolean {
+  if (_prettyAvailable !== null) return _prettyAvailable;
+  try {
+    _require.resolve('pino-pretty');
+    _prettyAvailable = true;
+  } catch {
+    _prettyAvailable = false;
+    // One-time stderr warning so operators learn why TTY output is plain
+    // NDJSON instead of pretty-printed. Use realStderrWrite-style direct
+    // write — going through `logger` here would recurse.
+    process.stderr.write(
+      '[gitnexus:logger] pino-pretty unavailable; falling back to NDJSON on stderr\n',
+    );
+  }
+  return _prettyAvailable;
+}
+
+/**
+ * @internal Test-only reset for the pino-pretty availability cache. Lets
+ * unit tests exercise both resolve outcomes within the same vitest worker.
+ */
+export function _resetPrettyAvailableCache(): void {
+  _prettyAvailable = null;
+}
+
+/**
+ * Build the pino-pretty transport options. Internal — exported only so unit
+ * tests can exercise the probe path without going through `shouldUsePretty()`
+ * (which is structurally false under vitest).
+ */
+export function _tryBuildPrettyTransport(): LoggerOptions['transport'] | undefined {
+  if (!isPrettyAvailable()) return undefined;
+  return {
+    target: 'pino-pretty',
+    options: {
+      // Route to stderr (fd 2) so pretty output doesn't contaminate
+      // CLI tool data on stdout (fd 1). pino-pretty's default is fd 1,
+      // which would interleave with `gitnexus query | jq` output.
+      destination: 2,
+      colorize: true,
+      translateTime: 'SYS:HH:MM:ss.l',
+      ignore: 'pid,hostname',
+    },
+  };
 }
 
 /**
@@ -104,7 +203,7 @@ function buildBaseOptions(): LoggerOptions {
     base: undefined,
   };
   if (shouldUsePretty()) {
-    const transport = tryBuildPrettyTransport();
+    const transport = _tryBuildPrettyTransport();
     if (transport) opts.transport = transport;
   }
   return opts;
@@ -129,9 +228,20 @@ export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
   // When using a transport (pino-pretty), pino manages the destination
   // internally and we cannot pass one explicitly. When transport is absent,
   // route to stderr so stdout stays clean for CLI data output.
-  const root = base.transport
-    ? pino({ ...base, level: debugRequested ? 'debug' : base.level })
-    : pino({ ...base, level: debugRequested ? 'debug' : base.level }, defaultDestination());
+  let root: Logger;
+  if (base.transport) {
+    root = pino({ ...base, level: debugRequested ? 'debug' : base.level });
+  } else {
+    root = pino(
+      { ...base, level: debugRequested ? 'debug' : base.level },
+      defaultDestination(),
+    );
+    // The default destination is buffered (`sync: false`); register the
+    // graceful-exit flush hook now that we know the destination will be
+    // used. Idempotent — runs at most once per process. Skipped under
+    // VITEST so test cleanup doesn't fight `_captureLogger`.
+    installFlushHook();
+  }
   return root.child({ name });
 }
 
@@ -168,6 +278,7 @@ export const logger = new Proxy({} as Logger, {
     return value;
   },
 }) as Logger;
+
 
 /**
  * Shape of a parsed pino record. `level`, `time`, and `msg` are always

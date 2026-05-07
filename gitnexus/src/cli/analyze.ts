@@ -26,7 +26,7 @@ import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-si
 import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
-import { logger } from '../core/logger.js';
+import { cliError } from './cli-message.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -168,7 +168,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.workerTimeout) {
     const workerTimeoutSeconds = Number(options.workerTimeout);
     if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
-      logger.error('  --worker-timeout must be at least 1 second.\n');
+      cliError('  --worker-timeout must be at least 1 second.\n');
       process.exitCode = 1;
       return;
     }
@@ -185,7 +185,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (typeof options?.embeddings === 'string') {
     const parsed = Number(options.embeddings);
     if (!Number.isInteger(parsed) || parsed < 0) {
-      console.error(
+      cliError(
         `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
           `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
       );
@@ -204,7 +204,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     if (value === undefined) return true;
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      logger.error(`  ${optionName} must be a positive integer.\n`);
+      cliError(`  ${optionName} must be a positive integer.\n`);
       process.exitCode = 1;
       return false;
     }
@@ -235,7 +235,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
-      logger.error('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
+      cliError('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
       process.exitCode = 1;
       return;
     }
@@ -331,7 +331,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
-  // Graceful SIGINT handling
+  // Graceful SIGINT handling. Pino's default destination is `sync: false`
+  // (buffered) — flush before exit so in-flight records reach stderr.
+  // See `gitnexus/src/core/logger.ts:flushLoggerSync`.
   let aborted = false;
   const sigintHandler = () => {
     if (aborted) process.exit(1);
@@ -340,7 +342,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log('\n  Interrupted — cleaning up...');
     closeLbug()
       .catch(() => {})
-      .finally(() => process.exit(130));
+      .finally(async () => {
+        const { flushLoggerSync } = await import('../core/logger.js');
+        flushLoggerSync();
+        process.exit(130);
+      });
   };
   process.on('SIGINT', sigintHandler);
 
@@ -542,14 +548,14 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // Registry name-collision from --name (#829) — surface as an
     // actionable error rather than a generic stack-trace.
     if (err instanceof RegistryNameCollisionError) {
-      logger.error(`\n  Registry name collision:\n`);
-      logger.error(`    "${err.registryName}" is already used by "${err.existingPath}".\n`);
-      logger.error(`  Options:`);
-      logger.error(`    • Pick a different alias:  gitnexus analyze --name <alias>`);
-      logger.error(
-        `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)`,
+      cliError(
+        `\n  Registry name collision:\n` +
+          `    "${err.registryName}" is already used by "${err.existingPath}".\n\n` +
+          `  Options:\n` +
+          `    • Pick a different alias:  gitnexus analyze --name <alias>\n` +
+          `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)\n`,
+        { registryName: err.registryName, existingPath: err.existingPath },
       );
-      logger.error('');
       process.exitCode = 1;
       return;
     }
@@ -589,34 +595,40 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       msg.includes('heap out of memory') ||
       msg.includes('JavaScript heap')
     ) {
-      logger.error('  This error typically occurs on very large repositories.');
-      logger.error('  Suggestions:');
-      logger.error('    1. Add large vendored/generated directories to .gitnexusignore');
-      logger.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
-      logger.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
-      logger.error('');
+      cliError(
+        `  This error typically occurs on very large repositories.\n` +
+          `  Suggestions:\n` +
+          `    1. Add large vendored/generated directories to .gitnexusignore\n` +
+          `    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"\n` +
+          `    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"\n`,
+        { recoveryHint: 'large-repo' },
+      );
     } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
       // Note: the original arborist "Cannot destructure property 'package' of
       // 'node.target'" crash happens inside npm *before* gitnexus code runs,
       // so it can't be caught here.  This branch handles dependency-resolution
       // errors that surface at runtime (e.g. dynamic require failures).
-      logger.error('  This looks like an npm dependency resolution issue.');
-      logger.error('  Suggestions:');
-      logger.error('    1. Clear the npm cache:    npm cache clean --force');
-      logger.error('    2. Update npm:             npm install -g npm@latest');
-      logger.error('    3. Reinstall gitnexus:     npm install -g gitnexus@latest');
-      logger.error('    4. Or try npx directly:    npx gitnexus@latest analyze');
-      logger.error('');
+      cliError(
+        `  This looks like an npm dependency resolution issue.\n` +
+          `  Suggestions:\n` +
+          `    1. Clear the npm cache:    npm cache clean --force\n` +
+          `    2. Update npm:             npm install -g npm@latest\n` +
+          `    3. Reinstall gitnexus:     npm install -g gitnexus@latest\n` +
+          `    4. Or try npx directly:    npx gitnexus@latest analyze\n`,
+        { recoveryHint: 'npm-resolution' },
+      );
     } else if (
       msg.includes('MODULE_NOT_FOUND') ||
       msg.includes('Cannot find module') ||
       msg.includes('ERR_MODULE_NOT_FOUND')
     ) {
-      logger.error('  A required module could not be loaded. The installation may be corrupt.');
-      logger.error('  Suggestions:');
-      logger.error('    1. Reinstall:   npm install -g gitnexus@latest');
-      logger.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
-      logger.error('');
+      cliError(
+        `  A required module could not be loaded. The installation may be corrupt.\n` +
+          `  Suggestions:\n` +
+          `    1. Reinstall:   npm install -g gitnexus@latest\n` +
+          `    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze\n`,
+        { recoveryHint: 'module-not-found' },
+      );
     }
 
     process.exitCode = 1;

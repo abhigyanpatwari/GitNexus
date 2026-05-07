@@ -28,6 +28,7 @@ import http from 'http';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
+import { cliInfo } from './cli-message.js';
 
 export interface EvalServerOptions {
   port?: string;
@@ -423,22 +424,34 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   });
 
   server.listen(port, '127.0.0.1', () => {
-    logger.info(
-      {
-        port,
-        host: '127.0.0.1',
-        idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
-        endpoints: [
-          'POST /tool/query',
-          'POST /tool/context',
-          'POST /tool/impact',
-          'POST /tool/cypher',
-          'GET  /health',
-          'POST /shutdown',
-        ],
-      },
+    // Plain-text banner for the human watching stderr; structured record
+    // for log aggregation (split into two so the user sees a real banner
+    // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
+    const bannerLines = [
       `GitNexus eval-server: listening on http://127.0.0.1:${port}`,
-    );
+      `  POST /tool/query    — search execution flows`,
+      `  POST /tool/context  — 360-degree symbol view`,
+      `  POST /tool/impact   — blast radius analysis`,
+      `  POST /tool/cypher   — raw Cypher query`,
+      `  GET  /health        — health check`,
+      `  POST /shutdown      — graceful shutdown`,
+    ];
+    if (idleTimeoutSec > 0) {
+      bannerLines.push(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
+    }
+    cliInfo(bannerLines.join('\n'), {
+      port,
+      host: '127.0.0.1',
+      idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
+      endpoints: [
+        'POST /tool/query',
+        'POST /tool/context',
+        'POST /tool/impact',
+        'POST /tool/cypher',
+        'GET  /health',
+        'POST /shutdown',
+      ],
+    });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
       writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
