@@ -11,6 +11,9 @@ import {
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { createLogger } from '../logger.js';
+
+const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE' });
 
 /**
  * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
@@ -702,14 +705,10 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  if (process.env.GITNEXUS_DEBUG_BRIDGE) {
-    console.warn(
-      `[bridge-db] openBridgeDbReadOnly(${groupDir}) gave up after ` +
-        `${LBUG_OPEN_RETRY_ATTEMPTS} attempts: ${
-          lastErr instanceof Error ? lastErr.message : String(lastErr)
-        }`,
-    );
-  }
+  bridgeLogger.debug(
+    { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    'openBridgeDbReadOnly gave up',
+  );
   return null;
 }
 

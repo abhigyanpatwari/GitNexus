@@ -26,6 +26,7 @@ import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-si
 import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
+import { cliError } from './cli-message.js';
 import { isNetworkFetchError } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -168,7 +169,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.workerTimeout) {
     const workerTimeoutSeconds = Number(options.workerTimeout);
     if (!Number.isFinite(workerTimeoutSeconds) || workerTimeoutSeconds < 1) {
-      console.error('  --worker-timeout must be at least 1 second.\n');
+      cliError('  --worker-timeout must be at least 1 second.\n');
       process.exitCode = 1;
       return;
     }
@@ -185,7 +186,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (typeof options?.embeddings === 'string') {
     const parsed = Number(options.embeddings);
     if (!Number.isInteger(parsed) || parsed < 0) {
-      console.error(
+      cliError(
         `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
           `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
       );
@@ -204,7 +205,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     if (value === undefined) return true;
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      console.error(`  ${optionName} must be a positive integer.\n`);
+      cliError(`  ${optionName} must be a positive integer.\n`);
       process.exitCode = 1;
       return false;
     }
@@ -235,7 +236,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
-      console.error('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
+      cliError('  --embedding-device must be one of: auto, cpu, dml, cuda, wasm.\n');
       process.exitCode = 1;
       return;
     }
@@ -331,7 +332,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
-  // Graceful SIGINT handling
+  // Graceful SIGINT handling. Pino's default destination is `sync: false`
+  // (buffered) — flush before exit so in-flight records reach stderr.
+  // See `gitnexus/src/core/logger.ts:flushLoggerSync`.
   let aborted = false;
   const sigintHandler = () => {
     if (aborted) process.exit(1);
@@ -340,13 +343,23 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.log('\n  Interrupted — cleaning up...');
     closeLbug()
       .catch(() => {})
-      .finally(() => process.exit(130));
+      .finally(async () => {
+        const { flushLoggerSync } = await import('../core/logger.js');
+        flushLoggerSync();
+        process.exit(130);
+      });
   };
   process.on('SIGINT', sigintHandler);
 
-  // Route console output through bar.log() to prevent progress bar corruption
+  // Route console output through bar.log() to prevent progress bar corruption.
+  // This is a deliberate UI pattern (not a logging concern): analyze runs a
+  // long-lived progress bar on stdout; any concurrent console.* write would
+  // overwrite the bar mid-render. We capture originals, swap to barLog for
+  // the lifetime of the run, and restore on completion/error/SIGINT.
   const origLog = console.log.bind(console);
+  // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   const origWarn = console.warn.bind(console);
+  // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   const origError = console.error.bind(console);
   let barCurrentValue = 0;
   const barLog = (...args: any[]) => {
@@ -355,7 +368,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     bar.update(barCurrentValue);
   };
   console.log = barLog;
+  // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   console.warn = barLog;
+  // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   console.error = barLog;
 
   // Track elapsed time per phase
@@ -421,7 +436,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       clearInterval(elapsedTimer);
       process.removeListener('SIGINT', sigintHandler);
       console.log = origLog;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
       console.warn = origWarn;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
@@ -494,7 +511,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     process.removeListener('SIGINT', sigintHandler);
 
     console.log = origLog;
+    // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
     console.warn = origWarn;
+    // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
     console.error = origError;
 
     bar.update(100, { phase: 'Done' });
@@ -519,7 +538,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);
     console.log = origLog;
+    // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
     console.warn = origWarn;
+    // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
     console.error = origError;
     bar.stop();
 
@@ -528,14 +549,14 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // Registry name-collision from --name (#829) — surface as an
     // actionable error rather than a generic stack-trace.
     if (err instanceof RegistryNameCollisionError) {
-      console.error(`\n  Registry name collision:\n`);
-      console.error(`    "${err.registryName}" is already used by "${err.existingPath}".\n`);
-      console.error(`  Options:`);
-      console.error(`    • Pick a different alias:  gitnexus analyze --name <alias>`);
-      console.error(
-        `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)`,
+      cliError(
+        `\n  Registry name collision:\n` +
+          `    "${err.registryName}" is already used by "${err.existingPath}".\n\n` +
+          `  Options:\n` +
+          `    • Pick a different alias:  gitnexus analyze --name <alias>\n` +
+          `    • Allow the duplicate:     gitnexus analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)\n`,
+        { registryName: err.registryName, existingPath: err.existingPath },
       );
-      console.error('');
       process.exitCode = 1;
       return;
     }
@@ -575,44 +596,52 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       msg.includes('heap out of memory') ||
       msg.includes('JavaScript heap')
     ) {
-      console.error('  This error typically occurs on very large repositories.');
-      console.error('  Suggestions:');
-      console.error('    1. Add large vendored/generated directories to .gitnexusignore');
-      console.error('    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"');
-      console.error('    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"');
-      console.error('');
+      cliError(
+        `  This error typically occurs on very large repositories.\n` +
+          `  Suggestions:\n` +
+          `    1. Add large vendored/generated directories to .gitnexusignore\n` +
+          `    2. Increase Node.js heap: NODE_OPTIONS="--max-old-space-size=16384"\n` +
+          `    3. Increase stack size: NODE_OPTIONS="--stack-size=4096"\n`,
+        { recoveryHint: 'large-repo' },
+      );
     } else if (msg.includes('ERESOLVE') || msg.includes('Could not resolve dependency')) {
       // Note: the original arborist "Cannot destructure property 'package' of
       // 'node.target'" crash happens inside npm *before* gitnexus code runs,
       // so it can't be caught here.  This branch handles dependency-resolution
       // errors that surface at runtime (e.g. dynamic require failures).
-      console.error('  This looks like an npm dependency resolution issue.');
-      console.error('  Suggestions:');
-      console.error('    1. Clear the npm cache:    npm cache clean --force');
-      console.error('    2. Update npm:             npm install -g npm@latest');
-      console.error('    3. Reinstall gitnexus:     npm install -g gitnexus@latest');
-      console.error('    4. Or try npx directly:    npx gitnexus@latest analyze');
-      console.error('');
+      cliError(
+        `  This looks like an npm dependency resolution issue.\n` +
+          `  Suggestions:\n` +
+          `    1. Clear the npm cache:    npm cache clean --force\n` +
+          `    2. Update npm:             npm install -g npm@latest\n` +
+          `    3. Reinstall gitnexus:     npm install -g gitnexus@latest\n` +
+          `    4. Or try npx directly:    npx gitnexus@latest analyze\n`,
+        { recoveryHint: 'npm-resolution' },
+      );
     } else if (
       msg.includes('MODULE_NOT_FOUND') ||
       msg.includes('Cannot find module') ||
       msg.includes('ERR_MODULE_NOT_FOUND')
     ) {
-      console.error('  A required module could not be loaded. The installation may be corrupt.');
-      console.error('  Suggestions:');
-      console.error('    1. Reinstall:   npm install -g gitnexus@latest');
-      console.error('    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze');
-      console.error('');
+      cliError(
+        `  A required module could not be loaded. The installation may be corrupt.\n` +
+          `  Suggestions:\n` +
+          `    1. Reinstall:   npm install -g gitnexus@latest\n` +
+          `    2. Clear cache: npm cache clean --force && npx gitnexus@latest analyze\n`,
+        { recoveryHint: 'module-not-found' },
+      );
     } else if (isNetworkFetchError(msg) || msg.includes('Failed to download embedding model')) {
-      console.error('  The embedding model could not be downloaded.');
-      console.error('  huggingface.co may be unreachable from your network');
-      console.error('  (e.g. behind a corporate proxy or a regional firewall).');
-      console.error('  Suggestions:');
-      console.error('    1. Set HF_ENDPOINT to a mirror and retry:');
-      console.error('         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings');
-      console.error('    2. Check your proxy / VPN settings.');
-      console.error('    3. Once downloaded the model is cached — future runs work offline.');
-      console.error('');
+      cliError(
+        `  The embedding model could not be downloaded.\n` +
+          `  huggingface.co may be unreachable from your network\n` +
+          `  (e.g. behind a corporate proxy or a regional firewall).\n` +
+          `  Suggestions:\n` +
+          `    1. Set HF_ENDPOINT to a mirror and retry:\n` +
+          `         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+          `    2. Check your proxy / VPN settings.\n` +
+          `    3. Once downloaded the model is cached — future runs work offline.\n`,
+        { recoveryHint: 'hf-endpoint-unreachable' },
+      );
     }
 
     process.exitCode = 1;
