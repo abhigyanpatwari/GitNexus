@@ -1448,7 +1448,7 @@ const processFileGroup = (
       file.path,
       (message) => {
         if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        logger.warn(message);
+        else logger.warn(message);
       },
       tree,
     );

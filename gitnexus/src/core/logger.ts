@@ -83,9 +83,24 @@ function tryBuildPrettyTransport(): LoggerOptions['transport'] | undefined {
   }
 }
 
+/**
+ * Pino accepts `'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent'`.
+ * Anything else is silently ignored at runtime; we narrow here so a typo in
+ * the env var produces the documented default rather than masking the issue.
+ */
+const PINO_LEVELS = new Set(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']);
+
+function resolveBaseLevel(): string {
+  const fromEnv = process.env.GITNEXUS_LOG_LEVEL;
+  if (fromEnv && PINO_LEVELS.has(fromEnv.toLowerCase())) {
+    return fromEnv.toLowerCase();
+  }
+  return 'info';
+}
+
 function buildBaseOptions(): LoggerOptions {
   const opts: LoggerOptions = {
-    level: 'info',
+    level: resolveBaseLevel(),
     base: undefined,
   };
   if (shouldUsePretty()) {
@@ -129,13 +144,10 @@ let _cached: Logger | undefined;
 
 function _getInner(): Logger {
   if (_cached) return _cached;
-  if (_activeDestination) {
-    _cached = pino({ level: 'info', base: undefined, name: 'gitnexus' }, _activeDestination);
-  } else {
-    // Use createLogger so the singleton honors the same stderr-by-default
-    // routing as named child loggers (CLI data on stdout stays clean).
-    _cached = createLogger('gitnexus');
-  }
+  // Always go through createLogger so future defaults (serializers, redaction,
+  // formatters) apply uniformly. The destination override is honored when set
+  // by `_captureLogger()` below.
+  _cached = createLogger('gitnexus', _activeDestination ? { destination: _activeDestination } : undefined);
   return _cached;
 }
 
@@ -147,7 +159,9 @@ function _getInner(): Logger {
 export const logger = new Proxy({} as Logger, {
   get(_target, prop) {
     const inner = _getInner();
-    const value = (inner as unknown as Record<string | symbol, unknown>)[prop as string];
+    // Reflect.get keeps symbol-keyed lookups (e.g. Symbol.toPrimitive) intact;
+    // a `prop as string` cast would silently coerce them to the wrong key.
+    const value = Reflect.get(inner as object, prop, inner);
     if (typeof value === 'function') {
       return (value as (...a: unknown[]) => unknown).bind(inner);
     }
@@ -156,11 +170,61 @@ export const logger = new Proxy({} as Logger, {
 }) as Logger;
 
 /**
+ * Shape of a parsed pino record. `level`, `time`, and `msg` are always
+ * present; `name` is set when emitted from a named child logger; arbitrary
+ * additional fields appear when callers pass a structured first arg.
+ *
+ * Exported so test helpers and downstream skills can type-narrow capture
+ * results without inline `Record<string, unknown>` casts.
+ */
+export interface PinoLogRecord {
+  level: number;
+  time: number;
+  msg: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * In-memory Writable used by `_captureLogger()` and by tests that build
+ * their own pino destination. Exported so the shape lives in one place
+ * (previously duplicated between this module and `logger.test.ts`).
+ *
+ * `text()` and `records()` are convenience helpers test code calls. They
+ * don't appear in production hot paths — only test destinations capture
+ * here — so the surface is intentionally small.
+ */
+export class MemoryWritable extends Writable {
+  chunks: string[] = [];
+  _write(chunk: Buffer | string, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
+    this.chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
+    cb();
+  }
+  /** Concatenate every captured write back into a single string. */
+  text(): string {
+    return this.chunks.join('');
+  }
+  /** Parse captured writes as one NDJSON record per non-empty line. */
+  records(): PinoLogRecord[] {
+    return this.text()
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as PinoLogRecord);
+  }
+}
+
+export interface LoggerCapture {
+  records(): PinoLogRecord[];
+  text(): string;
+  restore(): void;
+}
+
+/**
  * Test helper. Redirects the default `logger` singleton to an in-memory
  * stream and returns a capture object plus a restore function.
  *
  * Pattern:
- *   let cap: ReturnType<typeof _captureLogger>;
+ *   let cap: LoggerCapture;
  *   beforeEach(() => { cap = _captureLogger(); });
  *   afterEach(() => { cap.restore(); });
  *   it('warns', () => {
@@ -169,18 +233,18 @@ export const logger = new Proxy({} as Logger, {
  *   });
  *
  * Not a public API; underscore-prefixed and called only from test code.
+ * Throws if a previous capture is still active — see the body for context.
  */
-export function _captureLogger(): {
-  records(): Array<Record<string, unknown>>;
-  text(): string;
-  restore(): void;
-} {
-  class MemoryWritable extends Writable {
-    chunks: string[] = [];
-    _write(chunk: Buffer | string, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
-      this.chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
-      cb();
-    }
+export function _captureLogger(): LoggerCapture {
+  // Guard against double-capture: forgetting `restore()` between two
+  // `_captureLogger()` calls silently abandoned the previous capture and
+  // corrupted logger state for the rest of the vitest worker. Throwing here
+  // surfaces the bug at the moment of misuse instead of as inscrutable
+  // missing-records assertions in unrelated tests.
+  if (_activeDestination !== undefined) {
+    throw new Error(
+      '_captureLogger: a previous capture is still active — call restore() before starting a new one.',
+    );
   }
   const w = new MemoryWritable();
   _activeDestination = w;
@@ -191,7 +255,7 @@ export function _captureLogger(): {
         .join('')
         .split('\n')
         .filter((l) => l.length > 0)
-        .map((l) => JSON.parse(l) as Record<string, unknown>),
+        .map((l) => JSON.parse(l) as PinoLogRecord),
     text: () => w.chunks.join(''),
     restore: () => {
       _activeDestination = undefined;

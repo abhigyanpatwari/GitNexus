@@ -1,15 +1,17 @@
 import { createServer } from '../server/api.js';
 import { logger } from '../core/logger.js';
 
-// Catch anything that would cause a silent exit
+// Catch anything that would cause a silent exit. Pass the Error itself in
+// `{ err }` so pino's built-in err serializer captures `type`, `message`,
+// AND `stack` as structured fields — passing `err.message` (a string) loses
+// the stack and shape; setting GITNEXUS_LOG_LEVEL=debug bumps verbosity.
 process.on('uncaughtException', (err) => {
-  logger.error({ err: err.message }, '\n[gitnexus serve] Uncaught exception:');
-  if (process.env.DEBUG) logger.error(err.stack);
+  logger.error({ err }, '[gitnexus serve] Uncaught exception');
   process.exit(1);
 });
-process.on('unhandledRejection', (reason: any) => {
-  logger.error({ err: reason?.message || reason }, '\n[gitnexus serve] Unhandled rejection:');
-  if (process.env.DEBUG) logger.error(reason?.stack);
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error({ err }, '[gitnexus serve] Unhandled rejection');
   process.exit(1);
 });
 

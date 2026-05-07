@@ -584,7 +584,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     } else {
       console.log(`\n  Error: ${err.message}\n`);
       if (process.env.GITNEXUS_VERBOSE) {
-        logger.error(err);
+        logger.error({ err }, 'wiki command failed');
       }
     }
     process.exitCode = 1;

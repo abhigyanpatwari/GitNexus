@@ -1820,7 +1820,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts)
     let shuttingDown = false;
     process.on('uncaughtException', (err) => {
-      logger.error({ err: err?.stack || err }, 'GitNexus uncaughtException:');
+      // Pass the Error itself; pino's err serializer captures type/message/stack.
+      logger.error({ err }, 'GitNexus uncaughtException');
       if (!shuttingDown) {
         shuttingDown = true;
         shutdown().catch(() => {});

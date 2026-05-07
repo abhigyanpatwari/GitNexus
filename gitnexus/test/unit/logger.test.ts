@@ -13,25 +13,12 @@
  * tests run with raw NDJSON — exactly the operator-CI behavior.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Writable } from 'node:stream';
-import { createLogger, logger } from '../../src/core/logger.js';
-
-class MemoryWritable extends Writable {
-  chunks: string[] = [];
-  _write(chunk: Buffer | string, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
-    this.chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
-    cb();
-  }
-  text(): string {
-    return this.chunks.join('');
-  }
-  records(): unknown[] {
-    return this.text()
-      .split('\n')
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l));
-  }
-}
+import {
+  createLogger,
+  logger,
+  MemoryWritable,
+  _captureLogger,
+} from '../../src/core/logger.js';
 
 describe('createLogger — API surface', () => {
   it('returns an object with the standard level methods', () => {
@@ -156,5 +143,54 @@ describe('createLogger — structured output safety', () => {
     const ansi = '[31mRED[0m';
     log.warn({ msg2: ansi }, 'msg');
     expect(dest.records().length).toBe(1);
+  });
+});
+
+describe('_captureLogger — lifecycle', () => {
+  it('captures records emitted via the default logger singleton', () => {
+    const cap = _captureLogger();
+    try {
+      logger.warn({ k: 'v' }, 'captured');
+      const recs = cap.records();
+      expect(recs.length).toBe(1);
+      expect(recs[0].msg).toBe('captured');
+      expect(recs[0].k).toBe('v');
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('restore() stops further writes from reaching the captured stream', () => {
+    const cap = _captureLogger();
+    logger.warn('first');
+    cap.restore();
+    // After restore, the singleton routes back to the real (stderr)
+    // destination. The captured stream should still hold only the first
+    // record — the second logger.warn must not show up here.
+    logger.warn('second');
+    const recs = cap.records();
+    expect(recs.length).toBe(1);
+    expect(recs[0].msg).toBe('first');
+  });
+
+  it('throws when called twice without restore() — guards against silent state corruption', () => {
+    const cap = _captureLogger();
+    try {
+      expect(() => _captureLogger()).toThrow(/previous capture is still active/);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('can re-capture after restore()', () => {
+    const cap1 = _captureLogger();
+    cap1.restore();
+    const cap2 = _captureLogger();
+    try {
+      logger.warn('after-recapture');
+      expect(cap2.records().some((r) => r.msg === 'after-recapture')).toBe(true);
+    } finally {
+      cap2.restore();
+    }
   });
 });

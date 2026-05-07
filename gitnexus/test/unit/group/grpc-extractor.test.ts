@@ -582,7 +582,6 @@ service AuthService {
 import type { ClientGrpc } from '@nestjs/microservices';
 import { AuthServiceClient } from './generated/auth';
 
-import { _captureLogger } from '../../../src/core/logger.js';
 export class AuthGateway {
   constructor(private readonly client: ClientGrpc) {}
 

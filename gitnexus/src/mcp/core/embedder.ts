@@ -52,7 +52,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       applyHfEnvOverrides(env);
       const embeddingConfig = resolveEmbeddingConfig();
 
-      logger.error('GitNexus: Loading embedding model (first search may take a moment)...');
+      logger.info('GitNexus: Loading embedding model (first search may take a moment)...');
 
       const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> =
         embeddingConfig.device === 'dml' || embeddingConfig.device === 'cuda'
@@ -83,7 +83,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
             restoreStdout();
             process.stderr.write = realStderrWrite;
           }
-          logger.error(`GitNexus: Embedding model loaded (${device})`);
+          logger.info({ device }, 'GitNexus: Embedding model loaded');
           return embedderInstance!;
         } catch {
           if (device === 'cpu') throw new Error('Failed to load embedding model');

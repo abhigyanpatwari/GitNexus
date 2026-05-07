@@ -333,13 +333,16 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const ok = await backend.init();
 
   if (!ok) {
-    logger.error('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
+    // Operator-actionable but the server cannot start; warn-level so log
+    // aggregators don't trip error alerts on a configuration miss.
+    logger.warn('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
     process.exit(1);
   }
 
   const repos = await backend.listRepos();
-  logger.error(
-    `GitNexus eval-server: ${repos.length} repo(s) loaded: ${repos.map((r) => r.name).join(', ')}`,
+  logger.info(
+    { repoCount: repos.length, repos: repos.map((r) => r.name) },
+    'GitNexus eval-server: repos loaded',
   );
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -348,7 +351,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     if (idleTimeoutSec <= 0) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(async () => {
-      logger.error('GitNexus eval-server: Idle timeout reached, shutting down');
+      logger.info({ idleTimeoutSec }, 'GitNexus eval-server: idle timeout reached, shutting down');
       await backend.disconnect();
       process.exit(0);
     }, idleTimeoutSec * 1000);
@@ -420,16 +423,22 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   });
 
   server.listen(port, '127.0.0.1', () => {
-    logger.error(`GitNexus eval-server: listening on http://127.0.0.1:${port}`);
-    logger.error(`  POST /tool/query    — search execution flows`);
-    logger.error(`  POST /tool/context  — 360-degree symbol view`);
-    logger.error(`  POST /tool/impact   — blast radius analysis`);
-    logger.error(`  POST /tool/cypher   — raw Cypher query`);
-    logger.error(`  GET  /health        — health check`);
-    logger.error(`  POST /shutdown      — graceful shutdown`);
-    if (idleTimeoutSec > 0) {
-      logger.error(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
-    }
+    logger.info(
+      {
+        port,
+        host: '127.0.0.1',
+        idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
+        endpoints: [
+          'POST /tool/query',
+          'POST /tool/context',
+          'POST /tool/impact',
+          'POST /tool/cypher',
+          'GET  /health',
+          'POST /shutdown',
+        ],
+      },
+      `GitNexus eval-server: listening on http://127.0.0.1:${port}`,
+    );
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
       writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
@@ -441,7 +450,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   resetIdleTimer();
 
   const shutdown = async () => {
-    logger.error('GitNexus eval-server: shutting down...');
+    logger.info('GitNexus eval-server: shutting down...');
     await backend.disconnect();
     server.close();
     process.exit(0);

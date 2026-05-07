@@ -1116,7 +1116,7 @@ export class LocalBackend {
         // policy. Emitted once per `LocalBackend` instance lifetime to avoid
         // noisy stderr on hot semantic-search paths (DoD §2.8).
         this.warnedVectorUnsupported = true;
-        logger.error(
+        logger.warn(
           'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
         );
       }

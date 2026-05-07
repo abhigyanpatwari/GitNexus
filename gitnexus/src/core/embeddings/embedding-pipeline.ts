@@ -257,7 +257,9 @@ export const runEmbeddingPipeline = async (
 
   try {
     const vectorAvailable = await ensureVectorExtensionAvailable();
-    logger.warn(vectorUnavailableMessage);
+    if (!vectorAvailable && isDev) {
+      logger.warn(vectorUnavailableMessage);
+    }
 
     // Phase 1: Load embedding model
     onProgress({

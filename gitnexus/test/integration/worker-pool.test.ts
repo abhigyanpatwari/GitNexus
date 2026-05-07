@@ -341,9 +341,10 @@ describe('worker pool integration', () => {
     `,
     );
 
-    // Capture pino output to keep test runner output clean. The test only
-    // asserts the dispatch rejects — it does not need to match a specific
-    // log line, so the captured records are discarded on cleanup.
+    // Capture pino output AND assert on it: the worker pool should emit a
+    // warn-level record naming the crash before rejecting, so an operator
+    // can tell a startup-crash from a stalled-worker rejection. Asserting
+    // here keeps coverage parity with the prior console.warn spy version.
     const cap = _captureLogger();
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
       subBatchIdleTimeoutMs: 150,
@@ -355,6 +356,10 @@ describe('worker pool integration', () => {
       await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
         /simulated startup crash|exited with code/,
       );
+      const warnRecords = cap
+        .records()
+        .filter((r) => Number(r.level) >= 40 /* warn or above */);
+      expect(warnRecords.length).toBeGreaterThan(0);
     } finally {
       cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
