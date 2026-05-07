@@ -69,7 +69,7 @@ const MOCK_REPO_ENTRY = {
 };
 
 async function makeBackend(): Promise<LocalBackend> {
-  const backend = new LocalBackend({ registryPath: '/tmp/test-registry.json' });
+  const backend = new LocalBackend();
   await backend.init();
   return backend;
 }
