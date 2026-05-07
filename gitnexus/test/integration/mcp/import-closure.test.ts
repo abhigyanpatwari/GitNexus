@@ -96,9 +96,12 @@ describe('MCP CLI static-import closure', () => {
     }
 
     const newlyLoaded = JSON.parse(result.stdout) as string[];
-    // tree-sitter parsers only load when warnMissingOptionalGrammars runs (which
-    // require()s each one). That call now lives inside mcpCommand, after the
-    // sentinel install — so static-import time should not trigger any of them.
+    // No tree-sitter parser should load at cli/mcp.js static-import time.
+    // The analyze path is the only caller of warnMissingOptionalGrammars
+    // (which require()s each grammar); cli/mcp.ts itself does not invoke
+    // it, and its static-import closure is leaf-only — so importing
+    // dist/cli/mcp.js without invoking mcpCommand must not trigger any
+    // native grammar binding load.
     const treeSitterNative = newlyLoaded.filter((p) => /tree-sitter-[a-z]+[\\/]build/.test(p));
     expect(
       treeSitterNative,

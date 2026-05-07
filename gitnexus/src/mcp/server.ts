@@ -298,14 +298,14 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // the Proxy or process.stdout get redirected to stderr with the
   // [mcp:stdout-redirect] prefix. See stdio-context.ts.
   const sentinel = installGlobalStdoutSentinel();
-  const _safeStdout = new Proxy(process.stdout, {
+  const safeStdout = new Proxy(process.stdout, {
     get(target, prop, receiver) {
       if (prop === 'write') return sentinel.write;
       const val = Reflect.get(target, prop, receiver);
       return typeof val === 'function' ? val.bind(target) : val;
     },
   });
-  const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
+  const transport = new CompatibleStdioServerTransport(process.stdin, safeStdout);
   await server.connect(transport);
 
   // Surface the redirect counter on shutdown so users see the volume of
