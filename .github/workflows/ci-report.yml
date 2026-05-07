@@ -138,14 +138,15 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            // Find the latest successful CI run on main
+            // Find recent successful CI runs on main (check several in case
+            // the most recent artifact has expired).
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'ci.yml',
               branch: 'main',
               status: 'success',
-              per_page: 1,
+              per_page: 5,
             });
 
             if (runs.data.workflow_runs.length === 0) {
@@ -154,32 +155,47 @@ jobs:
               return;
             }
 
-            const mainRunId = runs.data.workflow_runs[0].id;
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: mainRunId,
-            });
+            // Try each run until we find a downloadable test-reports artifact
+            for (const run of runs.data.workflow_runs) {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+              });
 
-            const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
-            if (!testReports) {
-              core.setOutput('found', 'false');
-              core.info('No test-reports artifact on main branch');
-              return;
+              const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
+              if (!testReports) {
+                core.info(`Run ${run.id}: no test-reports artifact, trying next`);
+                continue;
+              }
+
+              try {
+                const zip = await github.rest.actions.downloadArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: testReports.id,
+                  archive_format: 'zip',
+                });
+
+                const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
+                fs.mkdirSync(dest, { recursive: true });
+                fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
+                core.setOutput('found', 'true');
+                core.setOutput('dir', dest);
+                return;
+              } catch (err) {
+                // 410 Gone means the artifact expired; try the next run
+                if (err.status === 410 || err.response?.status === 410) {
+                  core.info(`Run ${run.id}: artifact expired, trying next`);
+                  continue;
+                }
+                throw err;
+              }
             }
 
-            const zip = await github.rest.actions.downloadArtifact({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              artifact_id: testReports.id,
-              archive_format: 'zip',
-            });
-
-            const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
-            fs.mkdirSync(dest, { recursive: true });
-            fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
-            core.setOutput('found', 'true');
-            core.setOutput('dir', dest);
+            // All attempts exhausted — no usable base coverage
+            core.setOutput('found', 'false');
+            core.info('No downloadable test-reports artifact found on main (all expired or missing)');
 
       - name: Extract base coverage
         if: steps.meta.outputs.skip != 'true' && steps.base-coverage.outputs.found == 'true'
