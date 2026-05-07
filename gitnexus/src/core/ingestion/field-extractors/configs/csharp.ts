@@ -9,6 +9,11 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const CSHARP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected', 'internal']);
 
+const extractCsharpDeclaredType = (typeNode: SyntaxNode): string | undefined => {
+  if (typeNode.type === 'generic_name') return typeNode.text.trim();
+  return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+};
+
 /**
  * C# field extraction config.
  *
@@ -53,17 +58,17 @@ export const csharpConfig: FieldExtractionConfig = {
       const child = node.namedChild(i);
       if (child?.type === 'variable_declaration') {
         const typeNode = child.childForFieldName('type');
-        if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+        if (typeNode) return extractCsharpDeclaredType(typeNode);
         // fallback: first child that is a type
         const first = child.firstNamedChild;
         if (first && first.type !== 'variable_declarator') {
-          return extractSimpleTypeName(first) ?? first.text?.trim();
+          return extractCsharpDeclaredType(first);
         }
       }
     }
     // property_declaration: type is first named child
     const typeNode = node.childForFieldName('type');
-    if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
+    if (typeNode) return extractCsharpDeclaredType(typeNode);
     return undefined;
   },
 
