@@ -1330,13 +1330,6 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name))) @definition.property
 
-; ── Nullable field declarations (String? name) ──────────────────────────────
-(declaration
-  (nullable_type)
-  (initialized_identifier_list
-    (initialized_identifier
-      (identifier) @name))) @definition.property
-
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
   (getter_signature
