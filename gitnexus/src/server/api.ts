@@ -1077,6 +1077,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             sources: ['semantic'],
           }));
         } else if (mode === 'bm25') {
+          // TODO(#1403): propagate ftsAvailable to API response so server
+          // users get the same "indexes missing" warning as MCP/CLI callers.
           searchResults = (await searchFTSFromLbug(query, limit)).results;
           searchResults = searchResults.map((r: any, i: number) => ({
             ...r,
@@ -1091,6 +1093,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               await import('../core/embeddings/embedding-pipeline.js');
             searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
           } else {
+            // TODO(#1403): propagate ftsAvailable to API response (see bm25 branch above).
             searchResults = (await searchFTSFromLbug(query, limit)).results;
           }
         }
