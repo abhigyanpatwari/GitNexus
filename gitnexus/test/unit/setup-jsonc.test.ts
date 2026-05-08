@@ -3,6 +3,11 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { createRequire } from 'module';
+
+const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version;
+const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -232,7 +237,7 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     expect(config.mcp.gitnexus).toEqual({
       type: 'local',
-      command: ['npx', '-y', 'gitnexus@latest', 'mcp'],
+      command: ['npx', '-y', NPX_REF, 'mcp'],
     });
   });
 

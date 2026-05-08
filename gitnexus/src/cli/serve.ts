@@ -1,14 +1,26 @@
 import { createServer } from '../server/api.js';
+import { logger, flushLoggerSync } from '../core/logger.js';
+import { cliError } from './cli-message.js';
 
-// Catch anything that would cause a silent exit
+// Catch anything that would cause a silent exit. Pino v10's default
+// destination is `sync: false` (SonicBoom buffered) — call
+// `flushLoggerSync()` between the log and `process.exit(1)` so the crash
+// record is not lost to the unflushed buffer. Worker-thread transports
+// (pino-pretty under TTY) handle their own flush on process exit in v10,
+// so no separate `pino.final` integration is needed (the API was removed
+// in v10 because the transport architecture made it unnecessary).
+//
+// We pass the Error itself in `{ err }` so pino's built-in err serializer
+// captures `type`, `message`, and `stack` as structured fields.
 process.on('uncaughtException', (err) => {
-  console.error('\n[gitnexus serve] Uncaught exception:', err.message);
-  if (process.env.DEBUG) console.error(err.stack);
+  logger.error({ err }, '[gitnexus serve] Uncaught exception');
+  flushLoggerSync();
   process.exit(1);
 });
-process.on('unhandledRejection', (reason: any) => {
-  console.error('\n[gitnexus serve] Unhandled rejection:', reason?.message || reason);
-  if (process.env.DEBUG) console.error(reason?.stack);
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error({ err }, '[gitnexus serve] Unhandled rejection');
+  flushLoggerSync();
   process.exit(1);
 });
 
@@ -22,16 +34,26 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
   try {
     await createServer(port, host);
   } catch (err: any) {
-    console.error(`\nFailed to start GitNexus server:\n`);
-    console.error(`  ${err.message || err}\n`);
     if (err.code === 'EADDRINUSE') {
-      console.error(`  Port ${port} is already in use. Either:`);
-      console.error(`    1. Stop the other process using port ${port}`);
-      console.error(`    2. Use a different port: gitnexus serve --port 4748\n`);
+      cliError(
+        `\nFailed to start GitNexus server:\n` +
+          `  ${err.message || err}\n\n` +
+          `  Port ${port} is already in use. Either:\n` +
+          `    1. Stop the other process using port ${port}\n` +
+          `    2. Use a different port: gitnexus serve --port 4748\n`,
+        { code: err.code, port, host },
+      );
+    } else {
+      cliError(`\nFailed to start GitNexus server:\n  ${err.message || err}\n`, {
+        code: err.code,
+        port,
+        host,
+      });
     }
     if (err.stack && process.env.DEBUG) {
-      console.error(err.stack);
+      logger.debug({ stack: err.stack }, 'serve start error stack');
     }
+    flushLoggerSync();
     process.exit(1);
   }
 };

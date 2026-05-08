@@ -11,6 +11,9 @@ import {
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { createLogger } from '../logger.js';
+
+const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE' });
 
 /**
  * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
@@ -24,7 +27,7 @@ import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
  * - `.shadow` — non-blocking concurrent checkpoint sidecar (added in
  *   LadybugDB 0.15.4); same pairing constraint as `.wal`.
  *
- * `bridge-db` writes to a `bridge.lbug.tmp` file and then atomically renames
+ * `bridge-db` writes to a `bridge.lbug.tmp.<random>` file and then atomically renames
  * it into place. The rename only moves the main file; sidecars must be
  * cleaned up explicitly or the next writer trips the database-id check.
  */
@@ -276,11 +279,24 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
-  // Unpredictable suffix + exclusive-create flag closes the symlink/pre-
-  // create attack window CodeQL js/insecure-temporary-file flagged on the
-  // prior `${target}.tmp.${Date.now()}` shape.
+  // Unpredictable suffix + O_EXCL via `'wx'` flag closes the symlink/
+  // pre-create attack window. The third argument `0o600` is the
+  // user-only mode mask — CodeQL's `js/insecure-temporary-file` query
+  // sources its verdict from the `mode` argument, NOT from `flags`:
+  // its `isSecureMode(mode)` predicate requires the low 6 bits to be
+  // zero (no group/world bits). Without an explicit mode the file is
+  // created with the process umask (typically 0o644 = group/world
+  // readable), which the query treats as the actual vulnerability.
+  // Both `'wx'` (runtime O_EXCL) AND `0o600` (CodeQL-credited mode)
+  // are needed: one closes the symlink race, the other closes the
+  // permissions exposure.
   const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), { encoding: 'utf-8', flag: 'wx' });
+  const handle = await fsp.open(tmp, 'wx', 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
+  } finally {
+    await handle.close();
+  }
   // Use retryRename for consistency with writeBridge's atomic swap — on
   // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
   // meta.json, and we don't want meta write to be less robust than the
@@ -706,21 +722,15 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  if (process.env.GITNEXUS_DEBUG_BRIDGE) {
-    // Sanitize the error message before logging — closes CodeQL
-    // js/log-injection. Without the CRLF strip an attacker who can
-    // influence the underlying lbug error (e.g. via a crafted db path
-    // that ends up in stderr) can inject fake log lines.
-    const sanitizedErr = (lastErr instanceof Error ? lastErr.message : String(lastErr)).replace(
-      /[\r\n]/g,
-      ' ',
-    );
-    const sanitizedDir = String(groupDir).replace(/[\r\n]/g, ' ');
-    console.warn(
-      `[bridge-db] openBridgeDbReadOnly(${sanitizedDir}) gave up after ` +
-        `${LBUG_OPEN_RETRY_ATTEMPTS} attempts: ${sanitizedErr}`,
-    );
-  }
+  // Pino's NDJSON serialization is structurally injection-resistant
+  // (CodeQL js/log-injection): groupDir and err.message are JSON-escaped
+  // by the serializer, so no manual CRLF / U+2028 / ANSI sanitization is
+  // needed. Demoted to debug — only fires when the bridge truly gave up
+  // after retries, and operators only need it at debug verbosity.
+  bridgeLogger.debug(
+    { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    'openBridgeDbReadOnly gave up',
+  );
   return null;
 }
 

@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { logger } from '../../logger.js';
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into bounded jobs, each job
@@ -92,6 +93,31 @@ export function resolveWorkerPoolOptions(
     timeoutBackoffFactor:
       positiveInteger(options.timeoutBackoffFactor) ?? DEFAULT_TIMEOUT_BACKOFF_FACTOR,
   };
+}
+
+function waitForWorkerOnline(worker: Worker): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      worker.removeListener('online', onOnline);
+      worker.removeListener('error', onError);
+      worker.removeListener('exit', onExit);
+    };
+    const onOnline = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const onExit = (code: number) => {
+      cleanup();
+      reject(new Error(`Replacement worker exited with code ${code} before coming online`));
+    };
+    worker.once('online', onOnline);
+    worker.once('error', onError);
+    worker.once('exit', onExit);
+  });
 }
 
 function estimateItemBytes(item: unknown): number {
@@ -209,7 +235,21 @@ export const createWorkerPool = (
       const replaceWorker = async (workerIndex: number) => {
         const worker = workers[workerIndex];
         await worker?.terminate().catch(() => undefined);
-        if (!stopped) workers[workerIndex] = new Worker(workerUrl);
+        if (stopped) return;
+        const replacement = new Worker(workerUrl);
+        try {
+          await waitForWorkerOnline(replacement);
+        } catch (err) {
+          await replacement.terminate().catch(() => undefined);
+          throw new Error(
+            `Replacement worker ${workerIndex} failed to start: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (stopped) {
+          await replacement.terminate().catch(() => undefined);
+          return;
+        }
+        workers[workerIndex] = replacement;
       };
 
       const fail = async (err: Error) => {
@@ -258,11 +298,18 @@ export const createWorkerPool = (
             splitDepth: job.splitDepth + 1,
             timeoutMs: nextTimeout,
           };
-          console.warn(
-            `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
-              `(${job.items.length} items, ${job.estimatedBytes} bytes, last progress: ${lastProgress}). ` +
-              `Splitting into ${first.items.length}/${second.items.length} item jobs with ` +
-              `${nextTimeout / 1000}s timeout.`,
+          logger.warn(
+            {
+              workerIndex,
+              timeoutSec: job.timeoutMs / 1000,
+              items: job.items.length,
+              estimatedBytes: job.estimatedBytes,
+              lastProgress,
+              firstSplitItems: first.items.length,
+              secondSplitItems: second.items.length,
+              nextTimeoutSec: nextTimeout / 1000,
+            },
+            `Worker ${workerIndex} parse job idle timeout. Splitting into ${first.items.length}/${second.items.length} item jobs.`,
           );
           // Preserve intuitive retry order; final result order is still enforced by startIndex sort.
           jobs.unshift(first, second);
@@ -271,10 +318,15 @@ export const createWorkerPool = (
 
         const nextAttempt = job.attempt + 1;
         if (nextAttempt <= poolOptions.maxTimeoutRetries) {
-          console.warn(
-            `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
-              `(single item, attempt ${nextAttempt}/${poolOptions.maxTimeoutRetries + 1}). ` +
-              `Retrying with ${nextTimeout / 1000}s timeout.`,
+          logger.warn(
+            {
+              workerIndex,
+              timeoutSec: job.timeoutMs / 1000,
+              attempt: nextAttempt,
+              maxAttempts: poolOptions.maxTimeoutRetries + 1,
+              nextTimeoutSec: nextTimeout / 1000,
+            },
+            `Worker ${workerIndex} parse job idle timeout (single item). Retrying with ${nextTimeout / 1000}s timeout.`,
           );
           jobs.unshift({
             ...job,
@@ -341,9 +393,7 @@ export const createWorkerPool = (
               try {
                 await replaceWorker(workerIndex);
               } catch (err) {
-                void fail(
-                  err instanceof Error ? err : new Error(`Worker replacement failed: ${err}`),
-                );
+                void fail(err instanceof Error ? err : new Error(String(err)));
                 return;
               } finally {
                 activeWorkers--;
@@ -365,7 +415,7 @@ export const createWorkerPool = (
             reportProgress();
           } else if (msg.type === 'warning') {
             resetIdleTimer();
-            console.warn(msg.message);
+            logger.warn(msg.message);
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();

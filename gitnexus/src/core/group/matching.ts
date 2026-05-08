@@ -10,8 +10,8 @@ export interface WildcardMatchResult {
   remaining: StoredContract[];
 }
 
-function isGrpcWildcard(cid: string): boolean {
-  return cid.startsWith('grpc::') && cid.endsWith('/*');
+function isServiceWildcard(cid: string): boolean {
+  return (cid.startsWith('grpc::') || cid.startsWith('thrift::')) && cid.endsWith('/*');
 }
 
 /**
@@ -69,8 +69,9 @@ export function normalizeContractId(id: string): string {
       }
       return id;
     }
-    case 'grpc': {
-      // Canonical form: `grpc::<lowercased-package-or-service>[/<method>]`.
+    case 'grpc':
+    case 'thrift': {
+      // Canonical form: `<type>::<lowercased-package-or-service>[/<method>]`.
       //
       // The package/service segment is lowercased because gRPC package
       // names are effectively case-insensitive across language bindings
@@ -84,22 +85,23 @@ export function normalizeContractId(id: string): string {
       // as DISTINCT canonical forms: `grpc::userservice` does not match
       // `grpc::userservice/Login`. That's by design — callers that want
       // service-level manifest matching against method-level providers
-      // should use the gRPC wildcard form `grpc::UserService/*` which is
+      // should use the service wildcard form `grpc::UserService/*` or
+      // `thrift::UserService/*` which is
       // handled by runWildcardMatch below.
       const slashIdx = rest.indexOf('/');
       if (slashIdx > 0) {
         const pkg = rest.substring(0, slashIdx).toLowerCase();
         const method = rest.substring(slashIdx);
-        return `grpc::${pkg}${method}`;
+        return `${type}::${pkg}${method}`;
       }
       if (slashIdx === 0) {
         // Malformed "/method" with leading slash — keep as-is so two
         // equally malformed ids can still match each other.
-        return `grpc::${rest}`;
+        return `${type}::${rest}`;
       }
       // No slash: package/service only. Lowercase to match the package
       // segment produced by the pkg/method branch above.
-      return `grpc::${rest.toLowerCase()}`;
+      return `${type}::${rest.toLowerCase()}`;
     }
     case 'topic':
       return `topic::${rest.trim().toLowerCase()}`;
@@ -123,6 +125,32 @@ function findMatchingKeys(contractId: string, index: Map<string, StoredContract[
       }
     }
     return matches;
+  }
+
+  if (normalized.startsWith('thrift::')) {
+    const rest = normalized.substring('thrift::'.length);
+    const slashIdx = rest.indexOf('/');
+    if (slashIdx > 0) {
+      const service = rest.substring(0, slashIdx);
+      const method = rest.substring(slashIdx + 1);
+      if (!service.includes('.') && method && method !== '*') {
+        const matches: string[] = [];
+        for (const key of index.keys()) {
+          if (!key.startsWith('thrift::') || key.endsWith('/*')) continue;
+          const providerRest = key.substring('thrift::'.length);
+          const providerSlashIdx = providerRest.indexOf('/');
+          if (providerSlashIdx < 0) continue;
+          const providerService = providerRest.substring(0, providerSlashIdx);
+          const providerMethod = providerRest.substring(providerSlashIdx + 1);
+          if (providerMethod !== method) continue;
+          if (providerService === service || providerService.endsWith('.' + service)) {
+            matches.push(key);
+          }
+        }
+        matches.sort();
+        return matches.length === 1 ? matches : [];
+      }
+    }
   }
 
   return [];
@@ -152,8 +180,9 @@ export function runExactMatch(
   const isNoisy = buildNoisyContractFilter(matchingConfig);
   const index = providerIndex ?? buildProviderIndex(contracts, matchingConfig);
 
+  // Skip service wildcard consumers — they go to wildcard pass only
   const consumers = contracts.filter(
-    (c) => c.role === 'consumer' && !isGrpcWildcard(c.contractId) && !isNoisy(c.contractId),
+    (c) => c.role === 'consumer' && !isServiceWildcard(c.contractId) && !isNoisy(c.contractId),
   );
 
   const matched: CrossLink[] = [];
@@ -198,15 +227,15 @@ export function runExactMatch(
 
   // normalUnmatched: contracts that weren't matched in exact pass
   const normalUnmatched = contracts.filter((c) => {
-    if (isGrpcWildcard(c.contractId)) return false; // excluded from exact, handled separately
+    if (isServiceWildcard(c.contractId)) return false; // excluded from exact, handled separately
     if (isNoisy(c.contractId)) return false; // excluded from matching — don't surface as unmatched
     const id = `${c.repo}::${c.contractId}`;
     return c.role === 'provider' ? !matchedProviderIds.has(id) : !matchedConsumerIds.has(id);
   });
 
-  // Re-add gRPC wildcard contracts — they were never in exact matching
-  const grpcWildcards = contracts.filter((c) => isGrpcWildcard(c.contractId));
-  const unmatched = [...normalUnmatched, ...grpcWildcards];
+  // Re-add service wildcard contracts — they were never in exact matching
+  const serviceWildcards = contracts.filter((c) => isServiceWildcard(c.contractId));
+  const unmatched = [...normalUnmatched, ...serviceWildcards];
 
   return { matched, unmatched };
 }
@@ -216,21 +245,28 @@ export function runWildcardMatch(
   providerIndex: Map<string, StoredContract[]>,
 ): WildcardMatchResult {
   const wildcardConsumers = unmatched.filter(
-    (c) => c.role === 'consumer' && isGrpcWildcard(c.contractId),
+    (c) => c.role === 'consumer' && isServiceWildcard(c.contractId),
   );
   const matched: CrossLink[] = [];
   const matchedConsumerIds = new Set<string>();
 
   for (const consumer of wildcardConsumers) {
     const normalized = normalizeContractId(consumer.contractId);
+    const typeEnd = normalized.indexOf('::');
+    const consumerType = normalized.slice(0, typeEnd);
     // "grpc::com.example.userservice/*" → "com.example.userservice"
-    // "grpc::userservice/*" → "userservice"
-    const fqService = normalized.slice(normalized.indexOf('::') + 2, -2); // strip "grpc::" and "/*"
+    // "thrift::userservice/*" → "userservice"
+    const fqService = normalized.slice(typeEnd + 2, -2); // strip "<type>::" and "/*"
+    const candidateProviders: StoredContract[] = [];
+    const matchedProviderServices = new Set<string>();
 
     for (const [key, providers] of providerIndex) {
-      // Only match against non-wildcard gRPC providers (method-level IDs)
-      if (!key.startsWith('grpc::') || key.endsWith('/*')) continue;
-      const afterPrefix = key.slice(6); // strip "grpc::"
+      // Only match against non-wildcard same-type providers (method-level IDs).
+      const keyTypeEnd = key.indexOf('::');
+      if (keyTypeEnd < 0 || key.endsWith('/*')) continue;
+      const providerType = key.slice(0, keyTypeEnd);
+      if (providerType !== consumerType) continue;
+      const afterPrefix = key.slice(keyTypeEnd + 2); // strip "<type>::"
       const slashIdx = afterPrefix.indexOf('/');
       if (slashIdx < 0) continue;
       const providerFqService = afterPrefix.slice(0, slashIdx);
@@ -242,39 +278,46 @@ export function runWildcardMatch(
 
       if (!isMatch) continue;
 
-      for (const provider of providers) {
-        // Skip same-repo same-service (same logic as runExactMatch)
-        if (provider.repo === consumer.repo) {
-          if (!provider.service || !consumer.service || provider.service === consumer.service) {
-            continue;
-          }
-        }
+      matchedProviderServices.add(providerFqService);
+      candidateProviders.push(...providers);
+    }
 
-        matched.push({
-          from: {
-            repo: consumer.repo,
-            service: consumer.service,
-            symbolUid: consumer.symbolUid,
-            symbolRef: consumer.symbolRef,
-          },
-          to: {
-            repo: provider.repo,
-            service: provider.service,
-            symbolUid: provider.symbolUid,
-            symbolRef: provider.symbolRef,
-          },
-          type: consumer.type,
-          contractId: consumer.contractId, // consumer's wildcard ID
-          matchType: 'wildcard',
-          confidence: Math.min(provider.confidence, consumer.confidence),
-        });
-        matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
+    if (consumerType === 'thrift' && !fqService.includes('.') && matchedProviderServices.size > 1) {
+      continue;
+    }
+
+    for (const provider of candidateProviders) {
+      // Skip same-repo same-service (same logic as runExactMatch)
+      if (provider.repo === consumer.repo) {
+        if (!provider.service || !consumer.service || provider.service === consumer.service) {
+          continue;
+        }
       }
+
+      matched.push({
+        from: {
+          repo: consumer.repo,
+          service: consumer.service,
+          symbolUid: consumer.symbolUid,
+          symbolRef: consumer.symbolRef,
+        },
+        to: {
+          repo: provider.repo,
+          service: provider.service,
+          symbolUid: provider.symbolUid,
+          symbolRef: provider.symbolRef,
+        },
+        type: consumer.type,
+        contractId: consumer.contractId, // consumer's wildcard ID
+        matchType: 'wildcard',
+        confidence: Math.min(provider.confidence, consumer.confidence),
+      });
+      matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
     }
   }
 
   const remaining = unmatched.filter((c) => {
-    if (c.role !== 'consumer' || !isGrpcWildcard(c.contractId)) return true;
+    if (c.role !== 'consumer' || !isServiceWildcard(c.contractId)) return true;
     return !matchedConsumerIds.has(`${c.repo}::${c.contractId}`);
   });
 

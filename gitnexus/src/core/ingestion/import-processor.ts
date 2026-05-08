@@ -27,6 +27,7 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 import { isDev } from './utils/env.js';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 
+import { logger } from '../logger.js';
 // Type: Map<FilePath, Set<ResolvedFilePath>>
 // Stores all files that a given file imports from
 export type ImportMap = Map<string, Set<string>>;
@@ -324,14 +325,18 @@ export const processImports = async (
       matches = query.matches(tree.rootNode);
     } catch (queryError: any) {
       if (isDev) {
-        console.group(`🔴 Query Error: ${file.path}`);
-        console.log('Language:', language);
-        console.log('Query (first 200 chars):', queryStr.substring(0, 200) + '...');
-        console.log('Error:', queryError?.message || queryError);
-        console.log('File content (first 300 chars):', file.content.substring(0, 300));
-        console.log('AST root type:', tree.rootNode?.type);
-        console.log('AST has errors:', tree.rootNode?.hasError);
-        console.groupEnd();
+        logger.error(
+          {
+            file: file.path,
+            language,
+            err: queryError?.message || queryError,
+            queryPreview: queryStr.substring(0, 200) + '...',
+            contentPreview: file.content.substring(0, 300),
+            astRootType: tree.rootNode?.type,
+            astHasError: tree.rootNode?.hasError,
+          },
+          'tree-sitter query error',
+        );
       }
 
       if (wasReparsed) (tree as unknown as { delete?: () => void }).delete?.();
@@ -346,7 +351,7 @@ export const processImports = async (
         const sourceNode = captureMap['import.source'];
         if (!sourceNode) {
           if (isDev) {
-            console.log(`⚠️ Import captured but no source node in ${file.path}`);
+            logger.info(`⚠️ Import captured but no source node in ${file.path}`);
           }
           return;
         }
@@ -399,14 +404,14 @@ export const processImports = async (
 
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
-      console.warn(
+      logger.warn(
         `[ingestion] Skipped ${count} ${lang} file(s) in import processing — ${lang} parser not available.`,
       );
     }
   }
 
   if (isDev) {
-    console.log(
+    logger.info(
       `📊 Import processing complete: ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`,
     );
   }
@@ -498,7 +503,7 @@ export const processImportsFromExtracted = async (
   );
 
   if (isDev) {
-    console.log(
+    logger.info(
       `📊 Import processing (fast path): ${getResolvedCount()}/${totalImportsFound} imports resolved to graph edges`,
     );
   }

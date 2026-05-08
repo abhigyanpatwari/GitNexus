@@ -186,3 +186,55 @@ const x = 1;
     expect(components).toEqual(['MyComponent']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case-insensitive script-tag matching (CodeQL js/bad-tag-filter, PR #1330)
+// ---------------------------------------------------------------------------
+
+describe('extractVueScript — case-insensitive script-tag matching', () => {
+  it('extracts content from <SCRIPT> ... </SCRIPT> (uppercase)', () => {
+    // HTML tag names are case-insensitive per the spec; browsers and
+    // Vue's SFC parser accept any case. The extractor MUST mirror that
+    // — a strict lowercase regex would miss valid SFC content and
+    // re-open the CodeQL js/bad-tag-filter alert PR #1330 closed.
+    const vue = `<template>
+  <div>Hello</div>
+</template>
+
+<SCRIPT setup lang="ts">
+const greeting = 'hi';
+</SCRIPT>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.scriptContent).toContain("const greeting = 'hi'");
+  });
+
+  it('extracts content from mixed-case <Script> ... </Script>', () => {
+    const vue = `<template>
+  <div>Hello</div>
+</template>
+
+<Script lang="ts">
+export default { name: 'Mixed' };
+</Script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.scriptContent).toContain("name: 'Mixed'");
+  });
+
+  it('handles whitespace AND uppercase together: </SCRIPT >', () => {
+    const vue = `<template>
+  <div>Hi</div>
+</template>
+
+<SCRIPT setup>
+const x = 1;
+</SCRIPT >
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.scriptContent).toContain('const x = 1');
+  });
+});
