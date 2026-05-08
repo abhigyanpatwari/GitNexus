@@ -151,6 +151,7 @@ export {
   buildUqDispatchPayload,
   isValidOwnerRepo,
   parseOwnerRepoFromRemote,
+  stripGitSuffix,
 } from './integrations/understand-quickly.js';
 export type { UqDispatchPayload } from './integrations/understand-quickly.js';
 

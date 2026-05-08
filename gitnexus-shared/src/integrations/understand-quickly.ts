@@ -64,9 +64,37 @@ export function buildUqDispatchPayload(id: string): UqDispatchPayload {
  * `owner/repo` validation. Conservative on purpose: GitHub's actual
  * naming rules are looser, but we want to catch local paths
  * (`/Users/...`), bare slugs (`my-repo`), and accidental whitespace.
+ *
+ * Tightened (LOW 8) to match GitHub's published slug rules:
+ *   owner: starts with alnum, then alnum/hyphen only — no underscore,
+ *          no dot. Length cap 39.
+ *   repo:  any of alnum/dot/hyphen/underscore. Length cap 100.
  */
 export function isValidOwnerRepo(id: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(id);
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/.test(id);
+}
+
+/**
+ * Strip a single trailing `.git` (case-insensitive) and any trailing
+ * slashes from a URL-ish string. Bounded linear: each character is
+ * visited at most twice, no backtracking.
+ *
+ * Replaces `s.replace(/\.git\/*$/i, '').replace(/\/+$/, '')` which
+ * CodeQL's polynomial-regex check (codeql/js/polynomial-redos) flags as
+ * a worst-case O(n²) on adversarial input like "////.../x".
+ */
+export function stripGitSuffix(input: string): string {
+  let end = input.length;
+  // Trim trailing '/'.
+  while (end > 0 && input.charCodeAt(end - 1) === 0x2f) end--;
+  // Drop one trailing '.git' (case-insensitive).
+  if (end >= 4) {
+    const tail = input.slice(end - 4, end).toLowerCase();
+    if (tail === '.git') end -= 4;
+  }
+  // Trim trailing '/' that may have sat between '.git' and the rest.
+  while (end > 0 && input.charCodeAt(end - 1) === 0x2f) end--;
+  return input.slice(0, end);
 }
 
 /**
@@ -86,16 +114,32 @@ export function parseOwnerRepoFromRemote(url: string | null | undefined): string
   if (!trimmed) return null;
   // Strip a trailing `.git` (case-insensitive) and any trailing slashes
   // so https://h/o/r and https://h/o/r.git collapse to the same id.
-  const stripped = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
+  // Bounded-linear helper avoids the polynomial-regex CodeQL alert.
+  const stripped = stripGitSuffix(trimmed);
 
-  // SCP-form SSH (`git@host:owner/repo`).
-  const ssh = stripped.match(/^[^@]+@[^:]+:([^/]+)\/([^/]+)$/);
-  if (ssh) return `${ssh[1]}/${ssh[2]}`;
+  // SCP-form SSH (`git@host:owner/repo`). Capture host so we can reject
+  // non-GitHub remotes — a GitLab origin like
+  // `https://gitlab.example.com/group/sub/project.git` would otherwise
+  // silently dispatch the wrong id (LOW 9).
+  const ssh = stripped.match(/^[^@]+@([^:]+):([^/]+)\/([^/]+)$/);
+  if (ssh) {
+    const host = ssh[1].toLowerCase();
+    if (host !== 'github.com' && host !== 'www.github.com') return null;
+    return `${ssh[2]}/${ssh[3]}`;
+  }
 
   // URL forms (https://, ssh://, git://, file://) — last two path segments.
-  const url2 = stripped.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+\/(.+)$/);
+  const url2 = stripped.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/]+)\/(.+)$/);
   if (url2) {
-    const segments = url2[1].split('/').filter(Boolean);
+    // Strip optional `userinfo@` (e.g. `ssh://git@github.com/...`).
+    const authority = url2[1];
+    const atIdx = authority.lastIndexOf('@');
+    const hostAndPort = atIdx >= 0 ? authority.slice(atIdx + 1) : authority;
+    // Strip `:port` suffix if present.
+    const colonIdx = hostAndPort.indexOf(':');
+    const host = (colonIdx >= 0 ? hostAndPort.slice(0, colonIdx) : hostAndPort).toLowerCase();
+    if (host !== 'github.com' && host !== 'www.github.com') return null;
+    const segments = url2[2].split('/').filter(Boolean);
     if (segments.length >= 2) {
       const [owner, repo] = segments.slice(-2);
       return `${owner}/${repo}`;

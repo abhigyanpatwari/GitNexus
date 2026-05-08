@@ -44,10 +44,34 @@ const REGISTER_HINT =
   'Register your repo once with: npx @understand-quickly/cli add\n' +
   'Or use the wizard: https://looptech-ai.github.io/understand-quickly/add.html';
 
+/**
+ * Hard cap on the dispatch fetch to keep CI publish steps from stalling
+ * for the OS TCP timeout (~2 min) when api.github.com is unreachable.
+ * Matches the pattern used in `src/core/embeddings/http-client.ts`.
+ */
+const DISPATCH_TIMEOUT_MS = 15_000;
+
 export const publishCommand = async (
   inputPath?: string,
   options: PublishOptions = {},
 ): Promise<void> => {
+  // ── 0. Token gate FIRST — guarantees true no-op without the token. ──
+  // The README, CLI --help, and PR body all promise "exit 0 without
+  // UNDERSTAND_QUICKLY_TOKEN". Doing the index/repo-root checks before
+  // the token gate would make those promises false for users who haven't
+  // run `gitnexus analyze` yet but want to verify the command is wired.
+  const token = process.env[UNDERSTAND_QUICKLY_TOKEN_ENV];
+  if (!token) {
+    cliInfo(
+      `[understand-quickly] ${UNDERSTAND_QUICKLY_TOKEN_ENV} is not set — skipping dispatch.\n` +
+        `Set it to a fine-grained PAT with "Repository dispatches: write" on ` +
+        `looptech-ai/understand-quickly to enable instant resync.\n` +
+        `(Without the token, the registry's nightly sync still picks up your entry.)`,
+      { skipped: 'no-token' },
+    );
+    return;
+  }
+
   // ── 1. Resolve the repo root (same precedence as `analyze`) ──────────
   let repoPath: string;
   if (inputPath) {
@@ -93,22 +117,8 @@ export const publishCommand = async (
     return;
   }
 
-  // ── 4. Token gate: no token → informational no-op (exit 0) ───────────
-  const token = process.env[UNDERSTAND_QUICKLY_TOKEN_ENV];
-  if (!token) {
-    cliInfo(
-      `[understand-quickly] ${UNDERSTAND_QUICKLY_TOKEN_ENV} is not set — skipping dispatch.\n` +
-        `Set it to a fine-grained PAT with "Repository dispatches: write" on ` +
-        `looptech-ai/understand-quickly to enable instant resync.\n` +
-        `(Without the token, the registry's nightly sync still picks up ${id}.)`,
-      { id, skipped: 'no-token' },
-    );
-    return;
-  }
-
-  // ── 5. Fire the dispatch ─────────────────────────────────────────────
+  // ── 4. Fire the dispatch ─────────────────────────────────────────────
   const payload = buildUqDispatchPayload(id);
-  const commit = getCurrentCommit(repoPath);
   let response: Response;
   try {
     response = await fetch(UNDERSTAND_QUICKLY_DISPATCH_URL, {
@@ -118,43 +128,94 @@ export const publishCommand = async (
         Authorization: `Bearer ${token}`,
         'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type': 'application/json',
+        'User-Agent': 'gitnexus-cli',
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    cliError(`[understand-quickly] dispatch network error: ${msg}`, { id });
+    if (err instanceof Error && err.name === 'AbortError') {
+      cliError(
+        `[understand-quickly] dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms. ` +
+          `Check network access to api.github.com and retry.`,
+        { id },
+      );
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      cliError(`[understand-quickly] dispatch network error: ${msg}`, { id });
+    }
     process.exitCode = 1;
     return;
   }
 
-  // GitHub returns 204 on success, 404 when the token can't reach the
-  // registry repo, 401 when the token is invalid. Surface these
-  // distinctly so users debug without checking the docs.
+  // GitHub returns 204 on success. Distinct branches for 401/403/404/422
+  // so users debug without checking the docs.
   if (response.status === 204) {
+    await response.body?.cancel().catch(() => {});
+    // `getCurrentCommit` is only meaningful in the success path — moving
+    // it inside this branch removes a wasted child-process spawn on every
+    // error response (LOW 7).
+    const commit = getCurrentCommit(repoPath);
     cliInfo(
       `[understand-quickly] dispatched sync-entry for ${id}` +
         (commit ? ` @ ${commit.slice(0, 7)}` : '') +
         '.\n' +
-        `View the workflow run: ` +
+        `Note: a 204 only confirms GitHub accepted the dispatch. Whether the ` +
+        `registry workflow finds an entry for "${id}" is logged at ` +
         `https://github.com/looptech-ai/understand-quickly/actions/workflows/sync.yml`,
       { id, commit, status: response.status },
     );
     return;
   }
 
-  if (response.status === 404) {
+  if (response.status === 401) {
     cliError(
-      `[understand-quickly] dispatch returned 404 — the token cannot reach ` +
-        `looptech-ai/understand-quickly. Verify the PAT has Repository access ` +
-        `to that repo and the "Repository dispatches: write" permission.`,
+      `[understand-quickly] dispatch returned 401 — the ${UNDERSTAND_QUICKLY_TOKEN_ENV} value is invalid or expired.\n` +
+        `Regenerate a fine-grained PAT at https://github.com/settings/personal-access-tokens ` +
+        `with Repository access scoped to looptech-ai/understand-quickly and the ` +
+        `"Repository dispatches: write" permission, then retry.`,
       { id, status: response.status },
     );
     process.exitCode = 1;
     return;
   }
 
-  // 401, 403, 422, 5xx → bubble up the body so the user can act.
+  if (response.status === 403) {
+    cliError(
+      `[understand-quickly] dispatch returned 403 — the token authenticated but ` +
+        `lacks the "Repository dispatches: write" permission on ` +
+        `looptech-ai/understand-quickly. Edit the PAT scopes and retry.`,
+      { id, status: response.status },
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (response.status === 404) {
+    cliError(
+      `[understand-quickly] dispatch returned 404 — the token cannot reach ` +
+        `looptech-ai/understand-quickly. Verify the PAT has Repository access to ` +
+        `that exact repo (not just your own org).`,
+      { id, status: response.status },
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (response.status === 422) {
+    // Malformed event_type / client_payload — a code bug in this CLI,
+    // not a user mistake. Surface so we get bug reports.
+    const body422 = await response.text().catch(() => '');
+    cliError(
+      `[understand-quickly] dispatch returned 422 (this is a CLI bug; please report).\n` +
+        `Body: ${body422 || '(empty)'}`,
+      { id, status: response.status },
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // 5xx and anything else → bubble the body so the user has something to act on.
   const body = await response.text().catch(() => '');
   cliError(
     `[understand-quickly] dispatch failed with HTTP ${response.status}: ${body || '(empty body)'}`,
