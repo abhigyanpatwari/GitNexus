@@ -1539,18 +1539,24 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-    console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
-    console.log(
-      `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
-    );
-    if (s.parserCoverage && s.parserCoverage.unsupportedFiles > 0) {
-      const pc = s.parserCoverage;
-      const topExts = pc.unsupportedByExtension.slice(0, 5).map((e) => `${e.extension}: ${e.count}`);
+    if (options?.json) {
+      console.log(JSON.stringify({ repoPath, totalTime, ...s }, null, 2));
+    } else {
+      console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
       console.log(
-        `  Skipped ${pc.unsupportedFiles} files with unsupported extensions (${topExts.join(', ')}${pc.unsupportedByExtension.length > 5 ? ', ...' : ''})`,
+        `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
       );
+      if (s.parserCoverage && s.parserCoverage.unsupportedFiles > 0) {
+        const pc = s.parserCoverage;
+        const topExts = pc.unsupportedByExtension
+          .slice(0, 5)
+          .map((e) => `${e.extension}: ${e.count}`);
+        console.log(
+          `  Skipped ${pc.unsupportedFiles} files with unsupported extensions (${topExts.join(', ')}${pc.unsupportedByExtension.length > 5 ? ', ...' : ''})`,
+        );
+      }
+      console.log(`  ${repoPath}`);
     }
-    console.log(`  ${repoPath}`);
 
     // Persistent (non-scrolling) warning when FTS indexing was skipped — the
     // progress-bar log() that fired mid-run has already scrolled away, so the

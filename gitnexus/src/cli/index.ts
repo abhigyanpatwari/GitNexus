@@ -141,6 +141,7 @@ program
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
+  .option('--json', 'Output analysis result as JSON (includes parserCoverage stats)')
   .option(
     '--embedding-base-url <url>',
     'OpenAI-compatible embeddings base URL including the /v1 suffix ' +

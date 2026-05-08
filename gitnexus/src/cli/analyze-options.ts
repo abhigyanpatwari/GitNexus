@@ -128,4 +128,6 @@ export interface AnalyzeOptions {
   embeddingAuthToken?: string;
   /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
   embeddingDims?: string;
+  /** Emit analysis result as machine-readable JSON instead of the human-readable summary. */
+  json?: boolean;
 }
