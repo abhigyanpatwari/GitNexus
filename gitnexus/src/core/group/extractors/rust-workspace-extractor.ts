@@ -32,6 +32,32 @@ interface ImportedSymbol {
 }
 
 /**
+ * Linear-time `[package].name = "..."` lookup. The previous regex
+ * `^\[package\]\s*\n(?:[^\[]*?\n)*?name\s*=\s*"([^"]+)"` had a nested
+ * lazy quantifier on `\n` that CodeQL js/redos flagged as exponential
+ * on inputs like `[package]\n` + many bare `\n`. We walk lines
+ * explicitly: scan from the first `[package]` header until we hit the
+ * next `[...]` section header, looking for the `name = "..."` line.
+ * O(n) with the line count.
+ *
+ * Exported so the U8 ReDoS regression test can drive the production
+ * line-walk directly with adversarial fixtures (multi-line strings,
+ * trailing sections, etc.) instead of duplicating it inline.
+ */
+export function parseCargoPackageName(content: string): string | null {
+  const lines = content.split('\n');
+  const packageStart = lines.findIndex((l) => l.trim() === '[package]');
+  if (packageStart < 0) return null;
+  for (let i = packageStart + 1; i < lines.length; i++) {
+    const line = lines[i].trimStart();
+    if (line.startsWith('[')) break; // hit the next section header
+    const m = /^name\s*=\s*"([^"]+)"/.exec(line);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/**
  * Parse a Cargo.toml to extract the crate name and workspace dependency
  * names. Uses simple line-based parsing — no TOML library needed for
  * the subset we care about.
@@ -47,11 +73,8 @@ async function parseCrateManifest(
     return null;
   }
 
-  let name = '';
+  const name = parseCargoPackageName(content) ?? '';
   const workspaceDeps: string[] = [];
-
-  const nameMatch = content.match(/^\[package\]\s*\n(?:[^\[]*?\n)*?name\s*=\s*"([^"]+)"/m);
-  if (nameMatch) name = nameMatch[1];
 
   // Match dependencies that use workspace = true, which indicates they
   // are workspace-internal deps:

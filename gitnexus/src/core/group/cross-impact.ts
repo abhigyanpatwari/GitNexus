@@ -91,6 +91,25 @@ function clampCrossDepth(raw: unknown): { depth: number; warning?: string } {
   return { depth: d };
 }
 
+/**
+ * Clamp the impact timeout to a sane bounded range. Callers can feed this
+ * via tool params, so an unclamped value lets a single request hold a
+ * timer slot for an arbitrarily long duration (CodeQL js/resource-
+ * exhaustion). 100ms lower bound preserves test-suite scenarios that
+ * exercise tight timeouts; 5min upper bound is well above any legitimate
+ * single-impact compute. Applied at the validate boundary so the
+ * downstream `deadline` (Date.now() + timeoutMs) and the local-leg
+ * `setTimeout` see the same clamped value — earlier shapes had a 1hr
+ * outer cap and a 5min inner clamp that disagreed.
+ */
+export const IMPACT_TIMEOUT_MIN_MS = 100;
+export const IMPACT_TIMEOUT_MAX_MS = 5 * 60 * 1_000;
+
+export function clampTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return IMPACT_TIMEOUT_MIN_MS;
+  return Math.min(IMPACT_TIMEOUT_MAX_MS, Math.max(IMPACT_TIMEOUT_MIN_MS, Math.trunc(timeoutMs)));
+}
+
 export function validateGroupImpactParams(params: Record<string, unknown>):
   | {
       ok: true;
@@ -143,13 +162,19 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
-  let timeoutMs =
+  // Clamp at the validate boundary so the downstream `deadline` (line
+  // ~366) and `safeLocalImpact`'s `setTimeout` both see a single
+  // bounded value. Without this, the outer deadline budgeted Phase-2
+  // cross-repo fanout up to 1hr while only the inner setTimeout was
+  // capped to 5min — the two halves of CodeQL #184's mitigation
+  // disagreed.
+  const rawTimeoutMs =
     typeof params.timeoutMs === 'number' && params.timeoutMs > 0
       ? params.timeoutMs
       : typeof params.timeout === 'number' && params.timeout > 0
         ? params.timeout
         : DEFAULT_LOCAL_IMPACT_TIMEOUT_MS;
-  if (timeoutMs > 3_600_000) timeoutMs = 3_600_000;
+  const timeoutMs = clampTimeout(rawTimeoutMs);
 
   return {
     ok: true,
@@ -191,12 +216,13 @@ async function safeLocalImpact(
   impactParams: Parameters<GroupToolPort['impact']>[1],
   timeoutMs: number,
 ): Promise<{ value: unknown; timedOut: boolean }> {
+  const safeTimeoutMs = clampTimeout(timeoutMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const impactP = port.impact(repo, impactParams).catch((err) => ({
     error: err instanceof Error ? err.message : String(err),
   }));
   const timeoutP = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    timer = setTimeout(() => resolve('timeout'), safeTimeoutMs);
   });
   const won = await Promise.race([
     impactP.then((v) => ({ tag: 'impact' as const, v })),
@@ -208,6 +234,65 @@ async function safeLocalImpact(
       value: { error: 'Local impact timed out', partial: true },
       timedOut: true,
     };
+  }
+  return { value: won.v, timedOut: false };
+}
+
+/**
+ * Race a single Phase-2 `impactByUid` call against a remaining-budget
+ * timer. The Codex adversarial review on PR #1331 surfaced that the
+ * fanout loop only checked `Date.now() > deadline` *between* neighbor
+ * calls — once `await port.impactByUid(...)` was reached, a hung
+ * neighbor could pin the request indefinitely, and slow neighbors
+ * could compound past the 5-min `IMPACT_TIMEOUT_MAX_MS` cap.
+ *
+ * This helper wraps each call: a `setTimeout(remainingMs)` aborts an
+ * `AbortController` whose signal is forwarded to `impactByUid`, and a
+ * `Promise.race` resolves to `{ timedOut: true }` when the timer
+ * fires before the call completes. Implementors that ignore the
+ * signal (current local backend) still see their await resolved by
+ * the race; full cooperative cancellation inside the BFS is a future
+ * follow-up. On rejection, the value is `null` (matching the
+ * fanout's existing `if (fan == null)` truncation contract).
+ *
+ * Exported for direct unit testing — the helper IS the load-bearing
+ * mitigation surface, so the U3 regression test pins it directly
+ * rather than driving the full `runGroupImpact` path.
+ */
+export async function safeNeighborImpact(
+  port: GroupToolPort,
+  repoId: string,
+  uid: string,
+  direction: string,
+  opts: {
+    maxDepth: number;
+    relationTypes: string[];
+    minConfidence: number;
+    includeTests: boolean;
+  },
+  remainingMs: number,
+): Promise<{ value: unknown; timedOut: boolean }> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const callP = port
+    .impactByUid(repoId, uid, direction, { ...opts, signal: controller.signal })
+    .catch(() => null);
+  const timeoutP = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(
+      () => {
+        controller.abort();
+        resolve('timeout');
+      },
+      Math.max(0, remainingMs),
+    );
+  });
+  const won = await Promise.race([
+    callP.then((v) => ({ tag: 'impact' as const, v })),
+    timeoutP.then(() => ({ tag: 'timeout' as const })),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (won.tag === 'timeout') {
+    return { value: null, timedOut: true };
   }
   return { value: won.v, timedOut: false };
 }
@@ -476,7 +561,8 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (Date.now() > deadline) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -492,13 +578,25 @@ export async function runGroupImpact(
         continue;
       }
 
-      const fan = await deps.port.impactByUid(neighborHandle.id, n.neighborUid, direction, {
-        maxDepth,
-        relationTypes: relationTypes ?? [],
-        minConfidence,
-        includeTests,
-      });
-      if (fan == null) {
+      // Phase-2 hardening: race each impactByUid against a per-call
+      // timeout derived from the remaining budget. Without this wrap a
+      // single hung neighbor would pin the request past the clamped
+      // timeout, which Codex's adversarial review on PR #1331 flagged
+      // as the still-open half of CodeQL #184 / js/resource-exhaustion.
+      const { value: fan, timedOut: neighborTimedOut } = await safeNeighborImpact(
+        deps.port,
+        neighborHandle.id,
+        n.neighborUid,
+        direction,
+        {
+          maxDepth,
+          relationTypes: relationTypes ?? [],
+          minConfidence,
+          includeTests,
+        },
+        remainingMs,
+      );
+      if (neighborTimedOut || fan == null) {
         truncatedRepos.push(n.neighborRepo);
         continue;
       }

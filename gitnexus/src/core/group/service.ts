@@ -65,6 +65,15 @@ export interface GroupToolPort {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      // Optional cancellation signal. Callers (notably the cross-impact
+      // Phase-2 fanout) wrap this call in a Promise.race against a
+      // setTimeout-driven AbortController so a single hung neighbor
+      // cannot exceed the request's clamped timeout budget. Implementors
+      // may honor the signal cooperatively or simply let the caller's
+      // race resolve the await — the latter is sufficient for the
+      // resource-exhaustion mitigation. When the signal is absent or
+      // already aborted at call time, behavior is unchanged.
+      signal?: AbortSignal;
     },
   ): Promise<unknown | null>;
   context(
