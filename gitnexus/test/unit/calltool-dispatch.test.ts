@@ -71,6 +71,7 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import { _captureLogger } from '../../src/core/logger.js';
 import {
   initLbug,
   executeQuery,
@@ -194,7 +195,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('skips vector index query when VECTOR is unsupported by the platform', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
@@ -217,13 +218,17 @@ describe('LocalBackend.callTool', () => {
             cypher.includes('e.embedding AS embedding'),
         ),
       ).toBe(true);
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'GitNexus [query:vector]: VECTOR extension not supported on this platform',
-        ),
-      );
+      expect(
+        cap
+          .records()
+          .some((r) =>
+            String(r.msg ?? '').includes(
+              'GitNexus [query:vector]: VECTOR extension not supported on this platform',
+            ),
+          ),
+      ).toBe(true);
     } finally {
-      consoleError.mockRestore();
+      cap.restore();
     }
   });
 
@@ -835,7 +840,7 @@ describe('LocalBackend.resolveRepo', () => {
       hint: '⚠️ stale sibling clone',
     });
 
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cap = _captureLogger();
     try {
       await backend.init();
 
@@ -846,13 +851,15 @@ describe('LocalBackend.resolveRepo', () => {
       await backend.resolveRepo();
       await backend.resolveRepo();
 
-      const drift = errSpy.mock.calls.filter((c) => String(c[0]).includes('stale sibling clone'));
+      const drift = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('stale sibling clone'));
       expect(drift).toHaveLength(1);
       // checkCwdMatch should also only run once — the cache check
       // happens BEFORE the shellout-heavy match call.
       expect(checkCwdMatch).toHaveBeenCalledTimes(1);
     } finally {
-      errSpy.mockRestore();
+      cap.restore();
       (checkCwdMatch as any).mockResolvedValue({ match: 'none' });
     }
   });

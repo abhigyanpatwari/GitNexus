@@ -85,6 +85,7 @@ import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
 
+import { logger } from '../../logger.js';
 // ============================================================================
 // Types for serializable results
 // ============================================================================
@@ -1385,7 +1386,7 @@ const processFileGroup = (
     if (parentPort) {
       parentPort.postMessage({ type: 'warning', message });
     } else {
-      console.warn(message);
+      logger.warn(message);
     }
     return;
   }
@@ -1414,7 +1415,7 @@ const processFileGroup = (
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
-      console.warn(
+      logger.warn(
         `Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1427,7 +1428,7 @@ const processFileGroup = (
     try {
       matches = query.matches(tree.rootNode);
     } catch (err) {
-      console.warn(
+      logger.warn(
         `Query execution failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1447,7 +1448,7 @@ const processFileGroup = (
       file.path,
       (message) => {
         if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else console.warn(message);
+        else logger.warn(message);
       },
       tree,
     );

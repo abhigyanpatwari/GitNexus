@@ -109,6 +109,8 @@ That's it. This indexes the codebase, installs agent skills, registers Claude Co
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
+> **Faster install (no C++ toolchain needed):** set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip the native `tree-sitter-dart` and `tree-sitter-proto` builds. Dart/Proto files won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. Strict `=1` only — any other value falls through to the rebuild.
+
 ### MCP Setup
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
@@ -137,6 +139,8 @@ Built by the community — not officially maintained, but worth checking out.
 > Have a project built on GitNexus? Open a PR to add it here!
 
 If you prefer manual configuration:
+
+> **Recommended for fastest startup:** install gitnexus globally (`npm i -g gitnexus`) and run `gitnexus setup` — this writes an absolute-path MCP config that bypasses `npx` entirely. The pinned-`npx` snippets below are a quickstart fallback; on a cold cache the `npx` install can exceed Claude Code's `MCP_TIMEOUT` default (~30s).
 
 **Claude Code** (full support — MCP + skills + hooks):
 

@@ -75,6 +75,7 @@ import { extractReturnTypeName, stripNullable } from './type-extractors/shared.j
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
+import { logger } from '../logger.js';
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
@@ -784,7 +785,7 @@ export const processCalls = async (
       const query = new Parser.Query(lang, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
-      console.warn(`Query error for ${file.path}:`, queryError);
+      logger.warn({ queryError }, `Query error for ${file.path}:`);
       continue;
     }
 
@@ -1391,7 +1392,7 @@ export const processCalls = async (
 
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
-      console.warn(
+      logger.warn(
         `[ingestion] Skipped ${count} ${lang} file(s) in call processing — ${lang} parser not available.`,
       );
     }

@@ -16,6 +16,7 @@ import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
 
+import { logger } from '../logger.js';
 export interface SyncOptions {
   extractorOverride?:
     | ((repo: RepoHandle) => Promise<StoredContract[]>)
@@ -211,7 +212,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       allLinks = [...allLinks, ...wsResult.links];
       if (opts?.verbose) {
         for (const s of wsResult.stats) {
-          console.log(
+          logger.info(
             `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
           );
         }
@@ -230,7 +231,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     for (const link of allLinks) {
       const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
       if (dangling.length > 0) {
-        console.warn(
+        logger.warn(
           `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
         );
       }
@@ -241,7 +242,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     autoContracts.push(...manifestResult.contracts);
     manifestCrossLinks = manifestResult.crossLinks;
     if (opts?.verbose) {
-      console.log(
+      logger.info(
         `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
       );
     }
