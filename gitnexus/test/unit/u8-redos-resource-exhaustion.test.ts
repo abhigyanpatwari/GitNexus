@@ -48,21 +48,58 @@ function timeFn<T>(fn: () => T): number {
 // 2× input takes ~4× as long, well outside this bound.
 const LINEAR_RATIO_BOUND = 3.0;
 
+/**
+ * Minimum elapsed time (in ms) below which `performance.now()` ratios
+ * are dominated by scheduler jitter and become meaningless. When both
+ * timed runs come in below this floor, we skip the ratio assertion —
+ * the absolute <500ms bound still catches catastrophic backtracking,
+ * and the next CI run will measure higher absolute times that the
+ * ratio assertion can evaluate reliably.
+ *
+ * Calibrated empirically: a flake on macOS reported ratio 5.29×
+ * between two sub-millisecond measurements (~0.5ms vs ~2.6ms), both
+ * genuinely linear but indistinguishable from noise. 5ms is a
+ * comfortable floor where individual measurements are well-separated
+ * from the ~10-100µs `performance.now()` resolution band.
+ */
+const RATIO_MEASUREMENT_FLOOR_MS = 5;
+
+/**
+ * Assert linear scaling between two timed runs on inputs that differ
+ * by 2×. When measurements are too small to be reliable, the ratio
+ * assertion is skipped (the absolute bound still fires elsewhere).
+ */
+function assertSubLinearRatio(elapsedSmall: number, elapsedLarge: number, label: string): void {
+  if (elapsedSmall < RATIO_MEASUREMENT_FLOOR_MS && elapsedLarge < RATIO_MEASUREMENT_FLOOR_MS) {
+    // Both runs completed faster than the noise floor — the ratio is
+    // not meaningful. The absolute <500ms bound elsewhere in this
+    // describe block still pins linearity; we skip rather than risk a
+    // flake on a genuinely-linear implementation.
+    return;
+  }
+  const ratio = elapsedLarge / Math.max(elapsedSmall, 0.001);
+  if (ratio >= LINEAR_RATIO_BOUND) {
+    throw new Error(
+      `${label}: ratio ${ratio.toFixed(2)}× exceeds bound ${LINEAR_RATIO_BOUND}× ` +
+        `(small=${elapsedSmall.toFixed(2)}ms, large=${elapsedLarge.toFixed(2)}ms)`,
+    );
+  }
+}
+
 describe('cobol-preprocessor RE_SET_TO_TRUE — linear time on pathological input', () => {
-  it('matches in <500ms on 5k repetitions of "A OF A " AND 10k/5k ratio is sub-linear', () => {
-    const input5k = 'SET ' + 'A OF A '.repeat(5000) + 'TO TRUE';
-    const input10k = 'SET ' + 'A OF A '.repeat(10000) + 'TO TRUE';
-    const elapsed5k = timeRegex(RE_SET_TO_TRUE, input5k);
-    const elapsed10k = timeRegex(RE_SET_TO_TRUE, input10k);
-    // Re-run to confirm matches; the timed runs above already exec'd
-    // but we rebuild here to assert correctness without conflating it
-    // with the timing measurement.
-    expect(RE_SET_TO_TRUE.exec(input5k)).not.toBeNull();
-    expect(elapsed5k).toBeLessThan(500);
-    expect(elapsed10k).toBeLessThan(500);
-    // Ratio check: pre-fix nested-quantifier shape would be exponential
-    // here; the post-fix `.+?` shape is linear (~2×).
-    expect(elapsed10k / Math.max(elapsed5k, 0.001)).toBeLessThan(LINEAR_RATIO_BOUND);
+  it('matches in <500ms on 50k repetitions of "A OF A " AND 100k/50k ratio is sub-linear when measurable', () => {
+    // 50k/100k repetitions chosen so timings exceed the
+    // RATIO_MEASUREMENT_FLOOR_MS noise floor on typical CI hardware.
+    // Pre-fix nested-quantifier shape would be exponential here; the
+    // post-fix `.+?` shape is linear (~2× when input doubles).
+    const inputSmall = 'SET ' + 'A OF A '.repeat(50_000) + 'TO TRUE';
+    const inputLarge = 'SET ' + 'A OF A '.repeat(100_000) + 'TO TRUE';
+    const elapsedSmall = timeRegex(RE_SET_TO_TRUE, inputSmall);
+    const elapsedLarge = timeRegex(RE_SET_TO_TRUE, inputLarge);
+    expect(RE_SET_TO_TRUE.exec(inputSmall)).not.toBeNull();
+    expect(elapsedSmall).toBeLessThan(500);
+    expect(elapsedLarge).toBeLessThan(500);
+    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_TO_TRUE');
   });
 
   it('still matches a normal SET ... TO TRUE statement', () => {
@@ -73,17 +110,17 @@ describe('cobol-preprocessor RE_SET_TO_TRUE — linear time on pathological inpu
 });
 
 describe('cobol-preprocessor RE_SET_INDEX — linear time on pathological input', () => {
-  it('rejects in <500ms on 5k tokens with no valid suffix AND 10k/5k ratio is sub-linear', () => {
+  it('rejects in <500ms on 50k tokens with no valid suffix AND 100k/50k ratio is sub-linear when measurable', () => {
     // Forces backtracking against the (TO|UP\s+BY|DOWN\s+BY) alternation
     // — the richer pathological surface of the two regexes.
-    const input5k = 'SET ' + 'A '.repeat(5000) + 'X';
-    const input10k = 'SET ' + 'A '.repeat(10000) + 'X';
-    const elapsed5k = timeRegex(RE_SET_INDEX, input5k);
-    const elapsed10k = timeRegex(RE_SET_INDEX, input10k);
-    expect(RE_SET_INDEX.exec(input5k)).toBeNull();
-    expect(elapsed5k).toBeLessThan(500);
-    expect(elapsed10k).toBeLessThan(500);
-    expect(elapsed10k / Math.max(elapsed5k, 0.001)).toBeLessThan(LINEAR_RATIO_BOUND);
+    const inputSmall = 'SET ' + 'A '.repeat(50_000) + 'X';
+    const inputLarge = 'SET ' + 'A '.repeat(100_000) + 'X';
+    const elapsedSmall = timeRegex(RE_SET_INDEX, inputSmall);
+    const elapsedLarge = timeRegex(RE_SET_INDEX, inputLarge);
+    expect(RE_SET_INDEX.exec(inputSmall)).toBeNull();
+    expect(elapsedSmall).toBeLessThan(500);
+    expect(elapsedLarge).toBeLessThan(500);
+    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_INDEX');
   });
 
   it('still matches a normal SET INDEX statement', () => {
@@ -96,17 +133,22 @@ describe('cobol-preprocessor RE_SET_INDEX — linear time on pathological input'
 });
 
 describe('rust-workspace parseCargoPackageName — linear-time line walk', () => {
-  it('extracts the package name in <500ms on 10k blank lines AND 20k/10k ratio is sub-linear', () => {
-    const cargoToml10k =
-      '[package]\n' + '\n'.repeat(10000) + 'name = "myrepo"\nversion = "0.1.0"\n';
-    const cargoToml20k =
-      '[package]\n' + '\n'.repeat(20000) + 'name = "myrepo"\nversion = "0.1.0"\n';
-    const elapsed10k = timeFn(() => parseCargoPackageName(cargoToml10k));
-    const elapsed20k = timeFn(() => parseCargoPackageName(cargoToml20k));
-    expect(parseCargoPackageName(cargoToml10k)).toBe('myrepo');
-    expect(elapsed10k).toBeLessThan(500);
-    expect(elapsed20k).toBeLessThan(500);
-    expect(elapsed20k / Math.max(elapsed10k, 0.001)).toBeLessThan(LINEAR_RATIO_BOUND);
+  it('extracts the package name in <500ms on 100k blank lines AND 200k/100k ratio is sub-linear when measurable', () => {
+    // 100k/200k blank lines chosen so timings exceed the
+    // RATIO_MEASUREMENT_FLOOR_MS noise floor. Earlier 10k/20k pairing
+    // produced sub-millisecond measurements where scheduler jitter
+    // dominated and the ratio became meaningless (a real macOS run
+    // saw 5.29× between two genuinely-linear sub-ms measurements).
+    const cargoTomlSmall =
+      '[package]\n' + '\n'.repeat(100_000) + 'name = "myrepo"\nversion = "0.1.0"\n';
+    const cargoTomlLarge =
+      '[package]\n' + '\n'.repeat(200_000) + 'name = "myrepo"\nversion = "0.1.0"\n';
+    const elapsedSmall = timeFn(() => parseCargoPackageName(cargoTomlSmall));
+    const elapsedLarge = timeFn(() => parseCargoPackageName(cargoTomlLarge));
+    expect(parseCargoPackageName(cargoTomlSmall)).toBe('myrepo');
+    expect(elapsedSmall).toBeLessThan(500);
+    expect(elapsedLarge).toBeLessThan(500);
+    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'parseCargoPackageName');
   });
 
   it('returns null when [package] section is absent', () => {
