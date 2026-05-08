@@ -190,6 +190,11 @@ describe('git utilities', () => {
       expect(sanitizeRepoName('NUL')).toBe('unknown');
       expect(sanitizeRepoName('COM1')).toBe('unknown');
       expect(sanitizeRepoName('LPT9')).toBe('unknown');
+
+      // Reserved names with extensions
+      expect(sanitizeRepoName('CON.txt')).toBe('unknown');
+      expect(sanitizeRepoName('NUL.tar.gz')).toBe('unknown');
+      expect(sanitizeRepoName('AUX.local')).toBe('unknown');
     });
 
     it('returns unknown for empty or invalid input', () => {

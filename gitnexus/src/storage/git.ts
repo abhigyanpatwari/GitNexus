@@ -273,7 +273,7 @@ export const sanitizeRepoName = (name: string): string => {
   // 3. Block path traversal segments and Windows reserved names.
   // Windows reserved names like CON, PRN, AUX, NUL, COM1-9, LPT1-9 cannot
   // be used as directory names on Windows even if they have an extension.
-  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
   if (!sanitized || sanitized === '.' || sanitized === '..' || reserved.test(sanitized)) {
     return 'unknown';
   }
