@@ -14,7 +14,12 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import {
+  pipeline,
+  env,
+  type FeatureExtractionPipeline,
+  type ProgressInfo,
+} from '@huggingface/transformers';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -171,13 +176,13 @@ export const initEmbedder = async (
       }
 
       const progressCallback = onProgress
-        ? (data: any) => {
+        ? (data: ProgressInfo) => {
             const progress: ModelProgress = {
-              status: data.status || 'progress',
-              file: data.file,
-              progress: data.progress,
-              loaded: data.loaded,
-              total: data.total,
+              status: data.status === 'progress_total' ? 'progress' : data.status,
+              file: 'file' in data ? data.file : undefined,
+              progress: 'progress' in data ? data.progress : undefined,
+              loaded: 'loaded' in data ? data.loaded : undefined,
+              total: 'total' in data ? data.total : undefined,
             };
             onProgress(progress);
           }
@@ -204,7 +209,7 @@ export const initEmbedder = async (
 
           embedderInstance = await withHfDownloadRetry(
             () =>
-              (pipeline as any)('feature-extraction', finalConfig.modelId, {
+              pipeline('feature-extraction', finalConfig.modelId, {
                 device: device,
                 dtype: 'fp32',
                 progress_callback: progressCallback,

@@ -74,7 +74,7 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           process.stderr.write = (() => true) as any;
           try {
             embedderInstance = await withHfDownloadRetry(() =>
-              (pipeline as any)('feature-extraction', MODEL_ID, {
+              pipeline('feature-extraction', MODEL_ID, {
                 device: device,
                 dtype: 'fp32',
                 session_options: {

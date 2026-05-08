@@ -10,7 +10,6 @@ import {
   withDownloadTimeout,
   withHfDownloadRetry,
   CIRCUIT_OPEN_TAG,
-  HF_DOWNLOAD_TIMEOUT_MS,
   HF_MAX_ATTEMPTS,
   HF_MAX_TIMEOUT_MS,
   HF_MAX_ATTEMPTS_CAP,
