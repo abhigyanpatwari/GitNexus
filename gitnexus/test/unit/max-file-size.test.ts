@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   DEFAULT_MAX_FILE_SIZE_BYTES,
   MAX_FILE_SIZE_UPPER_BOUND_BYTES,
@@ -6,15 +6,16 @@ import {
   getMaxFileSizeBannerMessage,
   _resetMaxFileSizeWarnings,
 } from '../../src/core/ingestion/utils/max-file-size.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 describe('getMaxFileSizeBytes', () => {
   const ORIGINAL = process.env.GITNEXUS_MAX_FILE_SIZE;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let cap: ReturnType<typeof _captureLogger>;
 
   beforeEach(() => {
     delete process.env.GITNEXUS_MAX_FILE_SIZE;
     _resetMaxFileSizeWarnings();
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    cap = _captureLogger();
   });
 
   afterEach(() => {
@@ -23,43 +24,43 @@ describe('getMaxFileSizeBytes', () => {
     } else {
       process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL;
     }
-    warnSpy.mockRestore();
+    cap.restore();
   });
 
   it('returns the default when the env var is unset', () => {
     expect(getMaxFileSizeBytes()).toBe(DEFAULT_MAX_FILE_SIZE_BYTES);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(cap.records().length).toBe(0);
   });
 
   it('parses a positive integer value as KB', () => {
     process.env.GITNEXUS_MAX_FILE_SIZE = '1024';
     expect(getMaxFileSizeBytes()).toBe(1024 * 1024);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(cap.records().length).toBe(0);
   });
 
   it('clamps values above the tree-sitter ceiling', () => {
-    // One KB above the 32 MB ceiling.
     const aboveCeilingKb = MAX_FILE_SIZE_UPPER_BOUND_BYTES / 1024 + 1;
     process.env.GITNEXUS_MAX_FILE_SIZE = String(aboveCeilingKb);
     expect(getMaxFileSizeBytes()).toBe(MAX_FILE_SIZE_UPPER_BOUND_BYTES);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toContain('clamping');
+    const records = cap.records();
+    expect(records.length).toBe(1);
+    expect(String(records[0].msg)).toContain('clamping');
   });
 
   it.each(['abc', '0', '-512', '1.5', 'NaN', ''])(
     'falls back to the default and warns on invalid value %s',
     (raw) => {
       if (raw === '') {
-        // Empty string is treated as unset by the util (raw falsy check).
         process.env.GITNEXUS_MAX_FILE_SIZE = raw;
         expect(getMaxFileSizeBytes()).toBe(DEFAULT_MAX_FILE_SIZE_BYTES);
-        expect(warnSpy).not.toHaveBeenCalled();
+        expect(cap.records().length).toBe(0);
         return;
       }
       process.env.GITNEXUS_MAX_FILE_SIZE = raw;
       expect(getMaxFileSizeBytes()).toBe(DEFAULT_MAX_FILE_SIZE_BYTES);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toContain('must be a positive integer');
+      const records = cap.records();
+      expect(records.length).toBe(1);
+      expect(String(records[0].msg)).toContain('must be a positive integer');
     },
   );
 
@@ -68,7 +69,7 @@ describe('getMaxFileSizeBytes', () => {
     getMaxFileSizeBytes();
     getMaxFileSizeBytes();
     getMaxFileSizeBytes();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(cap.records().length).toBe(1);
   });
 
   it('warns separately for distinct invalid values', () => {
@@ -76,20 +77,20 @@ describe('getMaxFileSizeBytes', () => {
     getMaxFileSizeBytes();
     process.env.GITNEXUS_MAX_FILE_SIZE = 'xyz';
     getMaxFileSizeBytes();
-    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(cap.records().length).toBe(2);
   });
 
   it('_resetMaxFileSizeWarnings re-enables warnings after reset', () => {
     process.env.GITNEXUS_MAX_FILE_SIZE = 'abc';
     getMaxFileSizeBytes();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(cap.records().length).toBe(1);
 
     getMaxFileSizeBytes();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(cap.records().length).toBe(1);
 
     _resetMaxFileSizeWarnings();
     getMaxFileSizeBytes();
-    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(cap.records().length).toBe(2);
   });
 
   it('DEFAULT_MAX_FILE_SIZE_BYTES is 512 KB', () => {
@@ -99,12 +100,12 @@ describe('getMaxFileSizeBytes', () => {
 
 describe('getMaxFileSizeBannerMessage', () => {
   const ORIGINAL = process.env.GITNEXUS_MAX_FILE_SIZE;
-  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let cap: ReturnType<typeof _captureLogger>;
 
   beforeEach(() => {
     delete process.env.GITNEXUS_MAX_FILE_SIZE;
     _resetMaxFileSizeWarnings();
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    cap = _captureLogger();
   });
 
   afterEach(() => {
@@ -113,7 +114,7 @@ describe('getMaxFileSizeBannerMessage', () => {
     } else {
       process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL;
     }
-    warnSpy.mockRestore();
+    cap.restore();
   });
 
   it('returns null when the env var is unset (default threshold)', () => {

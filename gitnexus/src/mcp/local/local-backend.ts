@@ -16,6 +16,7 @@ import {
   isLbugReady,
   isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -40,7 +41,8 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
-import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
+import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import { logger } from '../../core/logger.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -164,29 +166,27 @@ const confidenceForRelType = (relType: string | undefined): number =>
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  console.error(`GitNexus [${context}]: ${msg}`);
+  logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
 /**
- * Structured per-query latency log for production aggregation (#553).
+ * Per-query latency telemetry for production aggregation (#553).
  *
- * Emitted on stderr — NOT stdout — because the MCP stdio transport uses
- * stdout exclusively for JSON-RPC responses (#324), and the CLI e2e test
- * `tool output goes to stdout via fd 1` asserts that stdout parses cleanly
- * as JSON. Any `console.log` from inside a tool handler would corrupt the
- * protocol. Matches the existing `logQueryError` convention above, which
- * uses stderr for the same reason.
+ * Logged at `debug` level — timing is observability/telemetry, not an
+ * error. Operators wanting per-query timing set `GITNEXUS_LOG_LEVEL=debug`
+ * (or equivalent). Emitting at `error` level (the original migration
+ * artifact) caused alerting rules to fire on every successful query and
+ * inflated stderr noise for every MCP/CLI invocation.
  *
- * The `GitNexus [query:timing] …` prefix keeps lines greppable; the
- * `phases` payload is JSON so log-scraping pipelines can parse it
- * without custom format knowledge.
+ * Emitted via the project logger which routes to stderr — never stdout —
+ * because the MCP stdio transport uses stdout exclusively for JSON-RPC
+ * responses (#324) and the CLI e2e test `tool output goes to stdout via
+ * fd 1` asserts stdout parses cleanly as JSON.
  */
 function logQueryTiming(query: string, phases: Record<string, number>): void {
   const totalMs = phases.wall ?? Object.values(phases).reduce((a, b) => a + b, 0);
   const truncated = query.length > 80 ? `${query.slice(0, 80)}…` : query;
-  console.error(
-    `GitNexus [query:timing] query=${JSON.stringify(truncated)} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
-  );
+  logger.debug({ query: truncated, totalMs, phases }, 'GitNexus query timing');
 }
 
 export interface CodebaseContext {
@@ -287,7 +287,7 @@ export class LocalBackend {
       // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
       const kuzu = await cleanupOldKuzuFiles(storagePath);
       if (kuzu.found && kuzu.needsReindex) {
-        console.error(
+        logger.error(
           `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
         );
       }
@@ -555,8 +555,15 @@ export class LocalBackend {
       byRemote.set(h.remoteUrl, list);
     }
 
-    return handles.map((h) => {
-      const stale = checkStaleness(h.repoPath, h.lastCommit);
+    // Check staleness for all repos in parallel instead of sequentially.
+    // Each check spawns an async `git rev-list` — with 200 repos the sync
+    // variant took ~50 s; parallel async brings it under a second (#1363).
+    const stalenessResults = await Promise.all(
+      handles.map((h) => checkStalenessAsync(h.repoPath, h.lastCommit)),
+    );
+
+    return handles.map((h, i) => {
+      const stale = stalenessResults[i];
       const selfNorm = norm(h.repoPath);
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
@@ -637,7 +644,7 @@ export class LocalBackend {
     }
 
     this.warnedSiblingDrift.add(cacheKey);
-    console.error(`GitNexus: ${match.hint}`);
+    logger.error(`GitNexus: ${match.hint}`);
   }
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
@@ -990,7 +997,10 @@ export class LocalBackend {
     try {
       bm25Results = await searchFTSFromLbug(query, limit, repo.id);
     } catch (err: any) {
-      console.error('GitNexus: BM25/FTS search failed (FTS indexes may not exist) -', err.message);
+      logger.error(
+        { err: err.message },
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+      );
       return { results: [], ftsUsed: false };
     }
 
@@ -1114,7 +1124,7 @@ export class LocalBackend {
         // policy. Emitted once per `LocalBackend` instance lifetime to avoid
         // noisy stderr on hot semantic-search paths (DoD §2.8).
         this.warnedVectorUnsupported = true;
-        console.error(
+        logger.warn(
           'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
         );
       }
@@ -1216,7 +1226,14 @@ export class LocalBackend {
       const result = await executeQuery(repo.id, params.query);
       return result;
     } catch (err: any) {
-      return { error: err.message || 'Query failed' };
+      const msg = err.message || 'Query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      return { error: msg };
     }
   }
 
@@ -1662,6 +1679,30 @@ export class LocalBackend {
    * UID-based direct lookup. No cluster in output.
    */
   private async context(
+    repo: RepoHandle,
+    params: {
+      name?: string;
+      uid?: string;
+      file_path?: string;
+      kind?: string;
+      include_content?: boolean;
+    },
+  ): Promise<any> {
+    try {
+      return await this._contextImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      throw err;
+    }
+  }
+
+  private async _contextImpl(
     repo: RepoHandle,
     params: {
       name?: string;
@@ -2431,6 +2472,7 @@ export class LocalBackend {
         impactedCount: 0,
         risk: 'UNKNOWN',
         suggestion: 'The graph query failed — try gitnexus context <symbol> as a fallback',
+        ...(isWalCorruptionError(err) ? { recoverySuggestion: WAL_RECOVERY_SUGGESTION } : {}),
       };
     }
   }
@@ -2982,8 +3024,14 @@ export class LocalBackend {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<any | null> {
+    // Honor an already-aborted signal at the entry boundary as a fast
+    // path. Cooperative cancellation inside _runImpactBFS is out of
+    // scope — the caller's Promise.race against the same signal
+    // resolves the await regardless of how long this body runs.
+    if (opts.signal?.aborted) return null;
     try {
       await this.refreshRepos();
       await this.ensureInitialized(repoId);

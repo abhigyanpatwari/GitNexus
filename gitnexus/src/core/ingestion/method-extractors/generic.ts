@@ -8,6 +8,7 @@
  */
 
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { logger } from '../../logger.js';
 import type {
   MethodExtractor,
   MethodExtractorContext,
@@ -158,7 +159,7 @@ function findBodies(node: SyntaxNode, bodyNodeSet: Set<string>): SyntaxNode[] {
     // Fallback: body field exists but its type is not in bodyNodeTypes.
     // This may indicate a config typo — log for debugging if NODE_ENV is development.
     if (process.env.NODE_ENV === 'development') {
-      console.warn(
+      logger.warn(
         `[MethodExtractor] body field type '${bodyField.type}' not in bodyNodeTypes for node '${node.type}'`,
       );
     }

@@ -24,7 +24,7 @@ import {
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import { realStdoutWrite } from './core/lbug-adapter.js';
+import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 
@@ -287,20 +287,36 @@ Follow these steps:
 export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = createMCPServer(backend);
 
-  // Use the shared stdout reference captured at module-load time by the
-  // lbug-adapter.  Avoids divergence if anything patches stdout between
-  // module load and server start.
-  const _safeStdout = new Proxy(process.stdout, {
+  // Idempotent global sentinel install. cli/mcp.ts calls this first thing
+  // (before warnMissingOptionalGrammars / backend.init can emit to stdout);
+  // calling again here is a safety net for direct callers of startMCPServer
+  // (tests, future entry points). The transport's _safeStdout Proxy is a
+  // second layer that guarantees transport writes reach the sentinel even
+  // if anything else re-replaces process.stdout.write later. Tagged
+  // transport writes (wrapped in withMcpWrite by compatible-stdio-transport.send)
+  // pass through to the captured realStdoutWrite; untagged writes reaching
+  // the Proxy or process.stdout get redirected to stderr with the
+  // [mcp:stdout-redirect] prefix. See stdio-context.ts.
+  const sentinel = installGlobalStdoutSentinel();
+  const safeStdout = new Proxy(process.stdout, {
     get(target, prop, receiver) {
-      if (prop === 'write') return realStdoutWrite;
+      if (prop === 'write') return sentinel.write;
       const val = Reflect.get(target, prop, receiver);
       return typeof val === 'function' ? val.bind(target) : val;
     },
   });
-  const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
+  const transport = new CompatibleStdioServerTransport(process.stdin, safeStdout);
   await server.connect(transport);
 
-  // Graceful shutdown helper
+  // Surface the redirect counter on shutdown so users see the volume of
+  // stray writes even when individual payloads were truncated/suppressed.
+  process.on('exit', () => sentinel.flushSummary());
+
+  // Graceful shutdown helper. Pino's default destination is `sync: false`
+  // (buffered), so we must `flushLoggerSync()` before `process.exit` —
+  // otherwise records emitted during disconnect/close are lost. The flush
+  // is a no-op when the singleton was never used or when running under
+  // vitest. See `gitnexus/src/core/logger.ts`.
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
@@ -311,6 +327,8 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     try {
       await server.close();
     } catch {}
+    const { flushLoggerSync } = await import('../core/logger.js');
+    flushLoggerSync();
     process.exit(exitCode);
   };
 
