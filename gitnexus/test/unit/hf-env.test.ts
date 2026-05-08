@@ -372,7 +372,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=1 gives exactly 1 attempt', async () => {
     process.env.HF_MAX_ATTEMPTS = '1';
     const fn = vi.fn().mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:443'));
-    const cb = new HfDownloadCircuitBreaker(99 /* high threshold */);
+    const cb = new HfDownloadCircuitBreaker(99_999 /* high threshold */);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'ECONNREFUSED',
     );
@@ -382,7 +382,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=2 gives exactly 2 attempts', async () => {
     process.env.HF_MAX_ATTEMPTS = '2';
     const fn = vi.fn().mockRejectedValue(new Error('ENOTFOUND huggingface.co'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new HfDownloadCircuitBreaker(99_999);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'ENOTFOUND',
     );
@@ -392,7 +392,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=abc falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = 'abc';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new HfDownloadCircuitBreaker(99_999);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -402,7 +402,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=0 falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = '0';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new HfDownloadCircuitBreaker(99_999);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -412,7 +412,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=-1 falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = '-1';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new HfDownloadCircuitBreaker(99_999);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -432,7 +432,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=2.9 is floored to 2', async () => {
     process.env.HF_MAX_ATTEMPTS = '2.9';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new HfDownloadCircuitBreaker(99_999);
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
