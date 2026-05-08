@@ -54,6 +54,8 @@ export async function checkStalenessAsync(
   lastCommit: string,
 ): Promise<StalenessInfo> {
   try {
+    // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
+    // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
     const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
       cwd: repoPath,
       encoding: 'utf-8',

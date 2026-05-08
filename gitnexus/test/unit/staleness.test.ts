@@ -109,6 +109,12 @@ describe('checkStalenessAsync', () => {
     expect(result.commitsBehind).toBe(0);
   });
 
+  it('fails open with invalid commit hash', async () => {
+    const result = await checkStalenessAsync(process.cwd(), 'not-a-real-commit-hash');
+    expect(result.isStale).toBe(false);
+    expect(result.commitsBehind).toBe(0);
+  });
+
   it('parallel calls complete faster than sequential', async () => {
     let headCommit: string;
     try {
