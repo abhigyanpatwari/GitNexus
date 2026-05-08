@@ -15,6 +15,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createMCPServer } from '../mcp/server.js';
 import type { LocalBackend } from '../mcp/local/local-backend.js';
 import { randomUUID } from 'crypto';
+import { logger } from '../core/logger.js';
 
 interface MCPSession {
   server: Server;
@@ -87,7 +88,7 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
 
   app.all('/api/mcp', (req: Request, res: Response) => {
     void handleMcpRequest(req, res).catch((err: any) => {
-      console.error('MCP HTTP request failed:', err);
+      logger.error({ err }, 'MCP HTTP request failed:');
       if (res.headersSent) return;
       res.status(500).json({
         jsonrpc: '2.0',

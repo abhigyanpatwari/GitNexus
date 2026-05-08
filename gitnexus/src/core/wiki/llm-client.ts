@@ -1,3 +1,4 @@
+import { logger } from '../logger.js';
 /**
  * LLM Client for Wiki Generation
  *
@@ -135,7 +136,7 @@ export async function callLLM(
 
   // Warn when using Azure legacy deployment URL without api-version
   if (azure && !config.apiVersion && config.baseUrl.includes('/deployments/')) {
-    console.warn(
+    logger.warn(
       '[gitnexus] Warning: Azure legacy deployment URL detected but no api-version set. Add --api-version 2024-10-21 or use the v1 API format.',
     );
   }

@@ -23,7 +23,11 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
-  .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option(
+    '--embeddings [limit]',
+    'Enable embedding generation for semantic search (off by default). ' +
+      'Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
+  )
   .option(
     '--drop-embeddings',
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +

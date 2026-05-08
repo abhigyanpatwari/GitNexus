@@ -4,6 +4,7 @@ import type { ImportConfigs } from './import-resolvers/types.js';
 
 import { isDev } from './utils/env.js';
 
+import { logger } from '../logger.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
 // ============================================================================
@@ -82,7 +83,7 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
 
       if (aliases.size > 0) {
         if (isDev) {
-          console.log(`📦 Loaded ${aliases.size} path aliases from ${filename}`);
+          logger.info(`📦 Loaded ${aliases.size} path aliases from ${filename}`);
         }
         return { aliases, baseUrl };
       }
@@ -104,7 +105,7 @@ export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig
     const match = content.match(/^module\s+(\S+)/m);
     if (match) {
       if (isDev) {
-        console.log(`📦 Loaded Go module path: ${match[1]}`);
+        logger.info(`📦 Loaded Go module path: ${match[1]}`);
       }
       return { modulePath: match[1] };
     }
@@ -132,7 +133,7 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
     }
 
     if (isDev) {
-      console.log(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
+      logger.info(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
     }
     return { psr4 };
   } catch {
@@ -178,7 +179,7 @@ export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpP
             const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
             configs.push({ rootNamespace, projectDir });
             if (isDev) {
-              console.log(
+              logger.info(
                 `📦 Loaded C# project: ${entry.name} (namespace: ${rootNamespace}, dir: ${projectDir})`,
               );
             }
@@ -217,7 +218,7 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 
   if (targets.size > 0) {
     if (isDev) {
-      console.log(`📦 Loaded ${targets.size} Swift package targets`);
+      logger.info(`📦 Loaded ${targets.size} Swift package targets`);
     }
     return { targets };
   }

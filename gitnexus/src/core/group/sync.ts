@@ -6,15 +6,17 @@ import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js'
 import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
+import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
-import { runExactMatch } from './matching.js';
+import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
 
+import { logger } from '../logger.js';
 export interface SyncOptions {
   extractorOverride?:
     | ((repo: RepoHandle) => Promise<StoredContract[]>)
@@ -96,6 +98,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
     const httpEx = new HttpRouteExtractor();
     const grpcEx = new GrpcExtractor();
+    const thriftEx = new ThriftExtractor();
     const topicEx = new TopicExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
@@ -134,6 +137,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.grpc) {
             const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.thrift) {
+            const extracted = await thriftEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
                 ...c,
@@ -198,7 +212,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       allLinks = [...allLinks, ...wsResult.links];
       if (opts?.verbose) {
         for (const s of wsResult.stats) {
-          console.log(
+          logger.info(
             `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
           );
         }
@@ -217,7 +231,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     for (const link of allLinks) {
       const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
       if (dangling.length > 0) {
-        console.warn(
+        logger.warn(
           `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
         );
       }
@@ -228,19 +242,21 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     autoContracts.push(...manifestResult.contracts);
     manifestCrossLinks = manifestResult.crossLinks;
     if (opts?.verbose) {
-      console.log(
+      logger.info(
         `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
       );
     }
   }
 
-  const { matched, unmatched } = runExactMatch(autoContracts, undefined, config.matching);
+  const providerIndex = buildProviderIndex(autoContracts, config.matching);
+  const { matched, unmatched } = runExactMatch(autoContracts, providerIndex, config.matching);
+  const wildcard = runWildcardMatch(unmatched, providerIndex);
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
   // same endpoints. Prefer the manifest version — it reflects operator intent
   // and carries matchType:'manifest' which downstream consumers may rely on.
-  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched]);
+  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]);
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
@@ -259,7 +275,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   return {
     contracts: allContracts,
     crossLinks,
-    unmatched,
+    unmatched: wildcard.remaining,
     missingRepos,
     repoSnapshots,
   };

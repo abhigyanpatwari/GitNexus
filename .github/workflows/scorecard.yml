@@ -53,6 +53,6 @@ jobs:
           retention-days: 5
 
       - name: Upload to Security tab
-        uses: github/codeql-action/upload-sarif@0daab03d71ff584ef619d027a3fd9146679c5d84 # v3.35.3
+        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
         with:
           sarif_file: results.sarif

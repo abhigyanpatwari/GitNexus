@@ -2,6 +2,7 @@ import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { _captureLogger } from '../../src/core/logger.js';
 
 const { accessMock } = vi.hoisted(() => ({
   accessMock: vi.fn(),
@@ -213,7 +214,7 @@ describe('resolveWebDistDir', () => {
   });
 
   it('warns on non-ENOENT errors but continues', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     accessMock.mockImplementation(async (p: string) => {
       if (p.includes('primary'))
         throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
@@ -222,11 +223,16 @@ describe('resolveWebDistDir', () => {
     });
     const result = await resolveWebDistDir('/primary', '/fallback');
     expect(result).toBe('/fallback');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('could not access web UI dir /primary'),
-      'permission denied',
-    );
-    warnSpy.mockRestore();
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            String(r.msg ?? '').includes('could not access web UI dir /primary') &&
+            r.err === 'permission denied',
+        ),
+    ).toBe(true);
+    cap.restore();
   });
 
   it('prefers GITNEXUS_WEB_DIST env var when set', async () => {

@@ -4,6 +4,7 @@ import type {
   TransportSendOptions,
 } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { JSONRPCMessageSchema, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import { withMcpWrite } from './stdio-context.js';
 
 export type StdioFraming = 'content-length' | 'newline';
 
@@ -232,7 +233,12 @@ export class CompatibleStdioServerTransport implements Transport {
 
       this._stdout.on('error', onError);
 
-      if (this._stdout.write(payload)) {
+      // Tag the write with the MCP transport context so the sentinel
+      // (server.ts createStdoutSentinel Proxy) recognizes it as a legitimate
+      // JSON-RPC frame and passes it through to the real stdout instead of
+      // redirecting to stderr.
+      const writeOk = withMcpWrite(() => this._stdout.write(payload));
+      if (writeOk) {
         this._stdout.removeListener('error', onError);
         resolve();
       } else {

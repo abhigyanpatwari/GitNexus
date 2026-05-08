@@ -10,6 +10,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
+import { logger } from '../core/logger.js';
 
 /** Root directory for all cloned repositories. Targets must resolve inside this. */
 const CLONE_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
@@ -446,7 +447,7 @@ function runGit(args: string[], cwd?: string): Promise<void> {
       if (code === 0) resolve();
       else {
         // Log full stderr internally but don't expose it to API callers (SSRF mitigation)
-        if (stderr.trim()) console.error(`git ${args[0]} stderr: ${stderr.trim()}`);
+        if (stderr.trim()) logger.error(`git ${args[0]} stderr: ${stderr.trim()}`);
         reject(new Error(`git ${args[0]} failed (exit code ${code})`));
       }
     });

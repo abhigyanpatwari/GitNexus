@@ -6,13 +6,14 @@
  * This is critical for cross-platform CI where vitest runs from src/
  * but workers need compiled .js files.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { createWorkerPool, WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 
+import { _captureLogger } from '../../src/core/logger.js';
 const DIST_WORKER = path.resolve(
   __dirname,
   '..',
@@ -211,7 +212,7 @@ describe('worker pool integration', () => {
     `,
     );
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     const workerUrl = pathToFileURL(workerPath) as URL;
     pool = createWorkerPool(workerUrl, 1);
 
@@ -221,9 +222,9 @@ describe('worker pool integration', () => {
       ]);
       expect(results).toHaveLength(1);
       expect(results[0].fileCount).toBe(1);
-      expect(warnSpy).toHaveBeenCalledWith('warning before result');
+      expect(cap.records().some((r) => r.msg === 'warning before result')).toBe(true);
     } finally {
-      warnSpy.mockRestore();
+      cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -298,9 +299,9 @@ describe('worker pool integration', () => {
     `,
     );
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 150,
+      subBatchIdleTimeoutMs: 500,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 4,
     });
@@ -308,9 +309,57 @@ describe('worker pool integration', () => {
     try {
       const results = await pool.dispatch<any, any>([{ path: 'retry.ts', content: '' }]);
       expect(results).toEqual([{ fileCount: 1, recovered: true }]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Retrying with 0.6s timeout'));
+      // 500ms idle timeout × 4 backoff factor = 2000ms = "2s" in the retry log.
+      expect(
+        cap.records().some((r) => String(r.msg ?? '').includes('Retrying with 2s timeout')),
+      ).toBe(true);
     } finally {
-      warnSpy.mockRestore();
+      cap.restore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects dispatch when replacement worker crashes during startup', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-replace-fail-'));
+    const markerPath = path.join(tempDir, 'first-attempt.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      if (fs.existsSync(markerPath)) {
+        throw new Error('simulated startup crash');
+      }
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          fs.writeFileSync(markerPath, 'stalled');
+          return;
+        }
+      });
+    `,
+    );
+
+    // Capture pino output AND assert on it: the worker pool should emit a
+    // warn-level record naming the crash before rejecting, so an operator
+    // can tell a startup-crash from a stalled-worker rejection. Asserting
+    // here keeps coverage parity with the prior console.warn spy version.
+    const cap = _captureLogger();
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 150,
+      maxTimeoutRetries: 1,
+      timeoutBackoffFactor: 4,
+    });
+
+    try {
+      await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
+        /simulated startup crash|exited with code/,
+      );
+      const warnRecords = cap.records().filter((r) => Number(r.level) >= 40 /* warn or above */);
+      expect(warnRecords.length).toBeGreaterThan(0);
+    } finally {
+      cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -344,7 +393,7 @@ describe('worker pool integration', () => {
     `,
     );
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
       subBatchSize: 2,
       subBatchIdleTimeoutMs: 150,
@@ -372,9 +421,11 @@ describe('worker pool integration', () => {
       ]);
       expect(progressCalls).toEqual([...progressCalls].sort((a, b) => a - b));
       expect(progressCalls.at(-1)).toBe(4);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into 1/1 item jobs'));
+      expect(
+        cap.records().some((r) => String(r.msg ?? '').includes('Splitting into 1/1 item jobs')),
+      ).toBe(true);
     } finally {
-      warnSpy.mockRestore();
+      cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -440,7 +491,7 @@ describe('worker pool integration', () => {
     `,
     );
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
       subBatchSize: 2,
       subBatchIdleTimeoutMs: 150,
@@ -466,9 +517,11 @@ describe('worker pool integration', () => {
         'tail-a.ts',
         'tail-b.ts',
       ]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into 1/1 item jobs'));
+      expect(
+        cap.records().some((r) => String(r.msg ?? '').includes('Splitting into 1/1 item jobs')),
+      ).toBe(true);
     } finally {
-      warnSpy.mockRestore();
+      cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -504,7 +557,7 @@ describe('worker pool integration', () => {
     `,
     );
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     // 2 workers but subBatchSize=4 means all 4 items form 1 job; second worker stays idle.
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
       subBatchSize: 4,
@@ -523,9 +576,9 @@ describe('worker pool integration', () => {
 
       const allPaths = results.flatMap((r: any) => r.paths);
       expect(allPaths.sort()).toEqual(['a.ts', 'b.ts', 'c.ts', 'd.ts']);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Splitting into'));
+      expect(cap.records().some((r) => String(r.msg ?? '').includes('Splitting into'))).toBe(true);
     } finally {
-      warnSpy.mockRestore();
+      cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }, 15_000);

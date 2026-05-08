@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
+import { logger } from '../core/logger.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -293,7 +294,7 @@ Use GitNexus tools to accomplish this task.
       installedSkills.push(skill.name);
     } catch (err) {
       // Skip on error, don't fail the whole process
-      console.warn(`Warning: Could not install skill ${skill.name}:`, err);
+      logger.warn({ err }, `Warning: Could not install skill ${skill.name}:`);
     }
   }
 

@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
@@ -11,6 +11,9 @@ import {
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { createLogger } from '../logger.js';
+
+const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE' });
 
 /**
  * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
@@ -24,7 +27,7 @@ import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
  * - `.shadow` — non-blocking concurrent checkpoint sidecar (added in
  *   LadybugDB 0.15.4); same pairing constraint as `.wal`.
  *
- * `bridge-db` writes to a `bridge.lbug.tmp` file and then atomically renames
+ * `bridge-db` writes to a `bridge.lbug.tmp.<random>` file and then atomically renames
  * it into place. The rename only moves the main file; sidecars must be
  * cleaned up explicitly or the next writer trips the database-id check.
  */
@@ -38,6 +41,26 @@ async function removeLbugFile(basePath: string): Promise<void> {
     } catch {
       /* best-effort: caller will surface real errors via the open path */
     }
+  }
+}
+
+/**
+ * Remove all stale `bridge.lbug.tmp.*` files (and their sidecars) from a
+ * group directory.  With randomBytes-based temp names, a crashed writeBridge
+ * leaves behind a uniquely-named tmp file that no future run will target by
+ * name — so we glob for the prefix and clean up everything matching.
+ */
+async function cleanStaleBridgeTmpFiles(groupDir: string): Promise<void> {
+  try {
+    const entries = await fsp.readdir(groupDir);
+    const staleBases = entries.filter(
+      (e) => e.startsWith('bridge.lbug.tmp.') && !LBUG_SIDECAR_SUFFIXES.some((s) => e.endsWith(s)),
+    );
+    for (const name of staleBases) {
+      await removeLbugFile(path.join(groupDir, name));
+    }
+  } catch {
+    /* best-effort: directory may not exist yet */
   }
 }
 
@@ -276,7 +299,7 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
-  const tmp = `${target}.tmp.${Date.now()}`;
+  const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
   await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), 'utf-8');
   // Use retryRename for consistency with writeBridge's atomic swap — on
   // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
@@ -346,7 +369,7 @@ export async function writeBridge(
   const crossLinks = dedupeCrossLinks(input.crossLinks);
 
   const finalPath = path.join(groupDir, 'bridge.lbug');
-  const tmpPath = path.join(groupDir, 'bridge.lbug.tmp');
+  const tmpPath = path.join(groupDir, `bridge.lbug.tmp.${randomBytes(8).toString('hex')}`);
   const bakPath = path.join(groupDir, 'bridge.lbug.bak');
 
   const report: WriteBridgeReport = {
@@ -366,11 +389,12 @@ export async function writeBridge(
     }
   };
 
-  // Clean up any leftover tmp main file AND its `.wal` / `.shadow` sidecars.
-  // LadybugDB 0.16.0 rejects opening a database whose sidecars belong to a
-  // different database instance (database-id check), so any stale sidecar
-  // from a crashed previous run will fail the next writeBridge.
-  await removeLbugFile(tmpPath);
+  // Clean up stale tmp files left behind by previously crashed writeBridge
+  // runs.  With randomBytes-based names each run picks a unique path, so
+  // the old fixed-name `removeLbugFile(tmpPath)` was a no-op — stale
+  // artifacts accumulated.  The glob-based helper finds *all* leftover
+  // `bridge.lbug.tmp.*` entries and removes them (including sidecars).
+  await cleanStaleBridgeTmpFiles(groupDir);
 
   // 1. Create temp DB, insert all data.
   //
@@ -681,14 +705,10 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  if (process.env.GITNEXUS_DEBUG_BRIDGE) {
-    console.warn(
-      `[bridge-db] openBridgeDbReadOnly(${groupDir}) gave up after ` +
-        `${LBUG_OPEN_RETRY_ATTEMPTS} attempts: ${
-          lastErr instanceof Error ? lastErr.message : String(lastErr)
-        }`,
-    );
-  }
+  bridgeLogger.debug(
+    { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    'openBridgeDbReadOnly gave up',
+  );
   return null;
 }
 
