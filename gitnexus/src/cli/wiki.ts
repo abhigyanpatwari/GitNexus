@@ -19,6 +19,7 @@ import {
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
+import { logger } from '../core/logger.js';
 
 export interface WikiCommandOptions {
   force?: boolean;
@@ -583,7 +584,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     } else {
       console.log(`\n  Error: ${err.message}\n`);
       if (process.env.GITNEXUS_VERBOSE) {
-        console.error(err);
+        logger.error({ err }, 'wiki command failed');
       }
     }
     process.exitCode = 1;

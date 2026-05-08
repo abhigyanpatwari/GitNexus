@@ -622,7 +622,7 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
       result.configured.push(
-        `OpenCode skills (${installed.length} skills → ~/.config/opencode/skill/)`,
+        `OpenCode skills (${installed.length} skills → ~/.config/opencode/skills/)`,
       );
     }
   } catch (err: any) {

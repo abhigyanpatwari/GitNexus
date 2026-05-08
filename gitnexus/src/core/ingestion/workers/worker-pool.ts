@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { logger } from '../../logger.js';
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into bounded jobs, each job
@@ -297,11 +298,18 @@ export const createWorkerPool = (
             splitDepth: job.splitDepth + 1,
             timeoutMs: nextTimeout,
           };
-          console.warn(
-            `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
-              `(${job.items.length} items, ${job.estimatedBytes} bytes, last progress: ${lastProgress}). ` +
-              `Splitting into ${first.items.length}/${second.items.length} item jobs with ` +
-              `${nextTimeout / 1000}s timeout.`,
+          logger.warn(
+            {
+              workerIndex,
+              timeoutSec: job.timeoutMs / 1000,
+              items: job.items.length,
+              estimatedBytes: job.estimatedBytes,
+              lastProgress,
+              firstSplitItems: first.items.length,
+              secondSplitItems: second.items.length,
+              nextTimeoutSec: nextTimeout / 1000,
+            },
+            `Worker ${workerIndex} parse job idle timeout. Splitting into ${first.items.length}/${second.items.length} item jobs.`,
           );
           // Preserve intuitive retry order; final result order is still enforced by startIndex sort.
           jobs.unshift(first, second);
@@ -310,10 +318,15 @@ export const createWorkerPool = (
 
         const nextAttempt = job.attempt + 1;
         if (nextAttempt <= poolOptions.maxTimeoutRetries) {
-          console.warn(
-            `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
-              `(single item, attempt ${nextAttempt}/${poolOptions.maxTimeoutRetries + 1}). ` +
-              `Retrying with ${nextTimeout / 1000}s timeout.`,
+          logger.warn(
+            {
+              workerIndex,
+              timeoutSec: job.timeoutMs / 1000,
+              attempt: nextAttempt,
+              maxAttempts: poolOptions.maxTimeoutRetries + 1,
+              nextTimeoutSec: nextTimeout / 1000,
+            },
+            `Worker ${workerIndex} parse job idle timeout (single item). Retrying with ${nextTimeout / 1000}s timeout.`,
           );
           jobs.unshift({
             ...job,
@@ -402,7 +415,7 @@ export const createWorkerPool = (
             reportProgress();
           } else if (msg.type === 'warning') {
             resetIdleTimer();
-            console.warn(msg.message);
+            logger.warn(msg.message);
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();

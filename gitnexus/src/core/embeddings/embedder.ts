@@ -23,6 +23,7 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides } from './hf-env.js';
+import { logger } from '../logger.js';
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -166,7 +167,7 @@ export const initEmbedder = async (
 
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {
-        console.error(`🧠 Loading embedding model: ${finalConfig.modelId}`);
+        logger.info(`🧠 Loading embedding model: ${finalConfig.modelId}`);
       }
 
       const progressCallback = onProgress
@@ -192,13 +193,13 @@ export const initEmbedder = async (
       for (const device of devicesToTry) {
         try {
           if (isDev && device === 'dml') {
-            console.error('🔧 Trying DirectML (DirectX12) GPU backend...');
+            logger.info('🔧 Trying DirectML (DirectX12) GPU backend...');
           } else if (isDev && device === 'cuda') {
-            console.error('🔧 Trying CUDA GPU backend...');
+            logger.info('🔧 Trying CUDA GPU backend...');
           } else if (isDev && device === 'cpu') {
-            console.error('🔧 Using CPU backend...');
+            logger.info('🔧 Using CPU backend...');
           } else if (isDev && device === 'wasm') {
-            console.error('🔧 Using WASM backend (slower)...');
+            logger.info('🔧 Using WASM backend (slower)...');
           }
 
           embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
@@ -221,15 +222,15 @@ export const initEmbedder = async (
                 : device === 'cuda'
                   ? 'GPU (CUDA)'
                   : device.toUpperCase();
-            console.error(`✅ Using ${label} backend`);
-            console.error('✅ Embedding model loaded successfully');
+            logger.info(`✅ Using ${label} backend`);
+            logger.info('✅ Embedding model loaded successfully');
           }
 
           return embedderInstance!;
         } catch (deviceError) {
           if (isDev && (device === 'cuda' || device === 'dml')) {
             const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
-            console.error(`⚠️  ${gpuType} not available, falling back to CPU...`);
+            logger.info(`⚠️  ${gpuType} not available, falling back to CPU...`);
           }
           // Continue to next device in list
           if (device === devicesToTry[devicesToTry.length - 1]) {

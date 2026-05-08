@@ -15,6 +15,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 /**
  * Validate that the phases form a valid dependency graph (no cycles, all deps present).
  * Returns phases in topological execution order.
@@ -176,7 +177,7 @@ export async function runPipeline(
     const start = Date.now();
 
     if (isDev) {
-      console.log(`▶ Phase: ${phase.name}`);
+      logger.info(`▶ Phase: ${phase.name}`);
     }
 
     // Only expose declared dependencies — prevents hidden coupling to undeclared phases.
@@ -220,7 +221,7 @@ export async function runPipeline(
     });
 
     if (isDev) {
-      console.log(`✓ Phase: ${phase.name} (${durationMs}ms)`);
+      logger.info(`✓ Phase: ${phase.name} (${durationMs}ms)`);
     }
   }
 

@@ -5,6 +5,7 @@ import type { GroupManifestLink, ContractRole } from '../types.js';
 import { shouldIgnorePath } from '../../../config/ignore-service.js';
 import { loadIgnoreRules } from '../../../config/ignore-service.js';
 
+import { logger } from '../../logger.js';
 /**
  * Discover cross-crate contracts in a Rust workspace by reading each
  * member's `Cargo.toml` dependencies and scanning source files for
@@ -224,7 +225,7 @@ export async function extractRustWorkspaceLinks(
     };
     const existing = cratesByName.get(manifest.name);
     if (existing) {
-      console.warn(
+      logger.warn(
         `[rust-workspace-extractor] duplicate crate name "${manifest.name}" in "${groupPath}" and "${existing.groupPath}" — skipping "${groupPath}"`,
       );
       continue;
