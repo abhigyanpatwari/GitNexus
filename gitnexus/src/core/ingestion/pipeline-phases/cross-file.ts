@@ -36,6 +36,7 @@ import type { ParseOutput } from './parse.js';
 import { runCrossFileBindingPropagation } from './cross-file-impl.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface CrossFileOutput {
   /** Number of files re-processed during cross-file propagation. */
   filesReprocessed: number;
@@ -59,11 +60,11 @@ export const crossFilePhase: PipelinePhase<CrossFileOutput> = {
       if (isDev) {
         if (bindingAccumulator.totalBindings > 0) {
           const memKB = Math.round(bindingAccumulator.estimateMemoryBytes() / 1024);
-          console.log(
+          logger.info(
             `📦 BindingAccumulator: ${bindingAccumulator.totalBindings} bindings across ${bindingAccumulator.fileCount} files (~${memKB} KB)`,
           );
         } else if (totalFiles > 0) {
-          console.log(
+          logger.info(
             `📦 BindingAccumulator: EMPTY — 0 bindings across 0 files despite ${totalFiles} parsed files. If the codebase has typed bindings, this indicates an upstream regression.`,
           );
         }

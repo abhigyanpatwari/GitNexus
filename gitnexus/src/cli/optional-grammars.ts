@@ -13,6 +13,7 @@
  */
 
 import { createRequire } from 'module';
+import { cliWarn } from './cli-message.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -65,9 +66,14 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
         /could not find|no native build|prebuilds/i.test(msg);
       if (!looksMissing) {
         // Present but broken — surface so the user doesn't get a misleading
-        // "reinstall" recovery message that wouldn't actually help.
-        console.error(
+        // "reinstall" recovery message that wouldn't actually help. cliWarn
+        // writes plain text to stderr AND tees a structured logger.warn
+        // record; the merged repo-wide ESLint pino-migration rule forbids
+        // direct `console.error` in CLI code (only `console.log` is allowed
+        // there for tool-data stdout output).
+        cliWarn(
           `GitNexus: optional grammar "${g.name}" is installed but failed to load (${msg.slice(0, 200)}). ${g.extensions.join('/')} files will not be parsed.`,
+          { grammar: g.name, extensions: g.extensions, error: msg },
         );
       }
       missing.push({ name: g.name, extensions: g.extensions });
@@ -92,12 +98,17 @@ export function warnMissingOptionalGrammars(opts?: {
   const missing = detectMissingOptionalGrammars();
   if (missing.length === 0) return;
   const ctx = opts?.context ? ` [${opts.context}]` : '';
+  // Hoist the optional set into a local so the closure below can narrow
+  // its type; references to `opts?.relevantExtensions` inside `.some()`
+  // lose the outer null-check narrowing and require a non-null assertion.
+  const relevantExtensions = opts?.relevantExtensions;
   for (const g of missing) {
-    if (opts?.relevantExtensions && !g.extensions.some((e) => opts.relevantExtensions!.has(e))) {
+    if (relevantExtensions && !g.extensions.some((e) => relevantExtensions.has(e))) {
       continue;
     }
-    console.error(
+    cliWarn(
       `GitNexus${ctx}: optional grammar "${g.name}" is unavailable — ${g.extensions.join('/')} files will not be parsed. Reinstall without GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (and ensure python3, make, g++) to enable.`,
+      { grammar: g.name, extensions: g.extensions, context: opts?.context },
     );
   }
 }

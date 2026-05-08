@@ -278,8 +278,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
                 const val = row[col];
                 if (val === null || val === undefined) return '';
                 if (typeof val === 'object') return JSON.stringify(val);
-                // Truncate long values and escape pipe characters
-                const str = String(val).replace(/\|/g, '\\|');
+                // Truncate long values and escape pipe characters. Escape
+                // backslashes FIRST so the subsequent pipe escape isn't
+                // unescaped by a trailing backslash (CodeQL
+                // js/incomplete-sanitization).
+                const str = String(val).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
                 return str.length > 60 ? str.slice(0, 57) + '...' : str;
               });
               return `| ${values.join(' | ')} |`;

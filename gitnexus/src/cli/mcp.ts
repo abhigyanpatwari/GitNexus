@@ -41,11 +41,17 @@ export const mcpCommand = async () => {
   // path runs cleanly with full stack traces. Registering duplicates here
   // would only produce noisy double-logging on the same exception.
 
-  // Now safe to dynamically import the heavy backend modules. Anything
-  // they emit to stdout during evaluation will route through the sentinel.
-  const [{ startMCPServer }, { LocalBackend }] = await Promise.all([
+  // Dynamically import heavy backend modules AND the pino logger AFTER
+  // the sentinel installs. The logger is dynamic-imported (rather than
+  // static) to preserve the leaf-only static-import closure documented at
+  // the top of this file — `core/logger.js` itself doesn't write to
+  // stdout at module init, but transitive deps (pino, pino-pretty, the
+  // worker-thread transport) could in theory, and the import-closure
+  // regression test enforces the leaf invariant.
+  const [{ startMCPServer }, { LocalBackend }, { logger }] = await Promise.all([
     import('../mcp/server.js'),
     import('../mcp/local/local-backend.js'),
+    import('../core/logger.js'),
   ]);
 
   // Missing-optional-grammar warnings are intentionally NOT emitted here.
@@ -62,12 +68,15 @@ export const mcpCommand = async () => {
 
   const repos = await backend.listRepos();
   if (repos.length === 0) {
-    console.error(
+    // Operator-actionable but the server still starts and serves; warn-level,
+    // not error. Tools will discover newly-analyzed repos via lazy refresh.
+    logger.warn(
       'GitNexus: No indexed repos yet. Run `gitnexus analyze` in a git repo — the server will pick it up automatically.',
     );
   } else {
-    console.error(
-      `GitNexus: MCP server starting with ${repos.length} repo(s): ${repos.map((r) => r.name).join(', ')}`,
+    logger.info(
+      { repoCount: repos.length, repos: repos.map((r) => r.name) },
+      'GitNexus: MCP server starting',
     );
   }
 
