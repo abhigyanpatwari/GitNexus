@@ -23,10 +23,6 @@ export interface FTSSearchResponse {
 
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
- * Returns the same shape as core queryFTS (from LadybugDB adapter).
- */
-/**
- * Execute a single FTS query via a custom executor (for MCP connection pool).
  * Returns `null` when the query fails (e.g. FTS index does not exist) so the
  * caller can distinguish "zero matches" from "index missing".
  */
