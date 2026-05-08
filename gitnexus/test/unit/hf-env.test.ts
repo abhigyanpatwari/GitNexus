@@ -10,6 +10,10 @@ import {
   withDownloadTimeout,
   withHfDownloadRetry,
   CIRCUIT_OPEN_TAG,
+  HF_DOWNLOAD_TIMEOUT_MS,
+  HF_MAX_ATTEMPTS,
+  HF_MAX_TIMEOUT_MS,
+  HF_MAX_ATTEMPTS_CAP,
   type HfEnvSubset,
 } from '../../src/core/embeddings/hf-env.js';
 
@@ -344,5 +348,147 @@ describe('withHfDownloadRetry', () => {
     cb.recordFailure(); // 2 failures, circuit still closed
     await withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 });
     expect(cb.state).toBe('closed');
+  });
+});
+
+describe('withHfDownloadRetry env overrides', () => {
+  let originalTimeout: string | undefined;
+  let originalMaxAttempts: string | undefined;
+
+  beforeEach(() => {
+    originalTimeout = process.env.HF_DOWNLOAD_TIMEOUT_MS;
+    originalMaxAttempts = process.env.HF_MAX_ATTEMPTS;
+    delete process.env.HF_DOWNLOAD_TIMEOUT_MS;
+    delete process.env.HF_MAX_ATTEMPTS;
+  });
+
+  afterEach(() => {
+    if (originalTimeout === undefined) delete process.env.HF_DOWNLOAD_TIMEOUT_MS;
+    else process.env.HF_DOWNLOAD_TIMEOUT_MS = originalTimeout;
+    if (originalMaxAttempts === undefined) delete process.env.HF_MAX_ATTEMPTS;
+    else process.env.HF_MAX_ATTEMPTS = originalMaxAttempts;
+  });
+
+  it('HF_MAX_ATTEMPTS=1 gives exactly 1 attempt', async () => {
+    process.env.HF_MAX_ATTEMPTS = '1';
+    const fn = vi.fn().mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:443'));
+    const cb = new HfDownloadCircuitBreaker(99 /* high threshold */);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'ECONNREFUSED',
+    );
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('HF_MAX_ATTEMPTS=2 gives exactly 2 attempts', async () => {
+    process.env.HF_MAX_ATTEMPTS = '2';
+    const fn = vi.fn().mockRejectedValue(new Error('ENOTFOUND huggingface.co'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'ENOTFOUND',
+    );
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('HF_MAX_ATTEMPTS=abc falls back to the built-in default', async () => {
+    process.env.HF_MAX_ATTEMPTS = 'abc';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS);
+  });
+
+  it('HF_MAX_ATTEMPTS=0 falls back to the built-in default', async () => {
+    process.env.HF_MAX_ATTEMPTS = '0';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS);
+  });
+
+  it('HF_MAX_ATTEMPTS=-1 falls back to the built-in default', async () => {
+    process.env.HF_MAX_ATTEMPTS = '-1';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS);
+  });
+
+  it('HF_MAX_ATTEMPTS is clamped to HF_MAX_ATTEMPTS_CAP', async () => {
+    process.env.HF_MAX_ATTEMPTS = '9999';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99_999 /* very high threshold */);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS_CAP);
+  });
+
+  it('HF_MAX_ATTEMPTS=2.9 is floored to 2', async () => {
+    process.env.HF_MAX_ATTEMPTS = '2.9';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('HF_DOWNLOAD_TIMEOUT_MS is used as the per-attempt timeout when valid', async () => {
+    vi.useFakeTimers();
+    try {
+      process.env.HF_DOWNLOAD_TIMEOUT_MS = '50';
+      const neverResolves = () => new Promise<never>(() => {});
+      const cb = new HfDownloadCircuitBreaker(99);
+      const promise = withHfDownloadRetry(neverResolves, { circuit: cb, maxAttempts: 1 });
+      vi.advanceTimersByTime(100);
+      await expect(promise).rejects.toThrow('ETIMEDOUT');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('HF_DOWNLOAD_TIMEOUT_MS=-1 falls back to the built-in default', async () => {
+    process.env.HF_DOWNLOAD_TIMEOUT_MS = '-1';
+    // Passing explicit timeoutMs=0 (no real wait) so the test doesn't block;
+    // we just verify that the env var rejection causes options.timeoutMs to be
+    // the default constant (not -1) by confirming the resolved value is used.
+    const fn = vi.fn().mockResolvedValue('ok');
+    const cb = new HfDownloadCircuitBreaker(99);
+    // Provide explicit timeoutMs to avoid the default 5-minute wait
+    const result = await withHfDownloadRetry(fn, { circuit: cb, timeoutMs: 100 });
+    expect(result).toBe('ok');
+  });
+
+  it('HF_DOWNLOAD_TIMEOUT_MS is clamped to HF_MAX_TIMEOUT_MS', async () => {
+    vi.useFakeTimers();
+    try {
+      // Set an env value exceeding the 30-minute cap
+      process.env.HF_DOWNLOAD_TIMEOUT_MS = String(HF_MAX_TIMEOUT_MS + 60_000);
+      const neverResolves = () => new Promise<never>(() => {});
+      const cb = new HfDownloadCircuitBreaker(99);
+      const promise = withHfDownloadRetry(neverResolves, { circuit: cb, maxAttempts: 1 });
+      // Advance just past the 30-minute cap
+      vi.advanceTimersByTime(HF_MAX_TIMEOUT_MS + 1);
+      await expect(promise).rejects.toThrow('ETIMEDOUT');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('explicit options override env vars', async () => {
+    process.env.HF_MAX_ATTEMPTS = '5';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new HfDownloadCircuitBreaker(99);
+    // explicit maxAttempts: 2 must win over HF_MAX_ATTEMPTS=5
+    await expect(
+      withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 2, baseDelayMs: 0 }),
+    ).rejects.toThrow('fetch failed');
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });

@@ -15,6 +15,10 @@ export const HF_BASE_DELAY_MS = 2_000;
 export const CB_FAILURE_THRESHOLD = 3;
 /** How long the circuit stays open before transitioning to half-open. */
 export const CB_RESET_TIMEOUT_MS = 60_000;
+/** Upper bound clamped on the env-override per-attempt timeout (30 minutes). */
+export const HF_MAX_TIMEOUT_MS = 30 * 60 * 1_000;
+/** Upper bound clamped on the env-override attempt count. */
+export const HF_MAX_ATTEMPTS_CAP = 10;
 
 /**
  * @internal Exported only for unit tests and the two embedder entry points
@@ -268,12 +272,22 @@ export async function withHfDownloadRetry<T>(
   // per-attempt timeout without rebuilding (e.g.
   //   HF_DOWNLOAD_TIMEOUT_MS=60000 npx gitnexus analyze --embeddings
   // reduces the worst-case wait from 15 minutes to ~3 minutes).
+  //
+  // Upper bounds are clamped to prevent accidental runaway configuration:
+  //   - timeoutMs is capped at HF_MAX_TIMEOUT_MS (30 min)
+  //   - maxAttempts is floored (fractional values → integer) and capped at
+  //     HF_MAX_ATTEMPTS_CAP (10).  Values ≤ 0, NaN, or Infinity fall back to
+  //     the built-in defaults.
   const envTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
   const envMaxAttempts = Number(process.env.HF_MAX_ATTEMPTS);
   const resolvedTimeout =
-    Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : HF_DOWNLOAD_TIMEOUT_MS;
+    Number.isFinite(envTimeout) && envTimeout > 0
+      ? Math.min(envTimeout, HF_MAX_TIMEOUT_MS)
+      : HF_DOWNLOAD_TIMEOUT_MS;
   const resolvedMaxAttempts =
-    Number.isFinite(envMaxAttempts) && envMaxAttempts > 0 ? envMaxAttempts : HF_MAX_ATTEMPTS;
+    Number.isFinite(envMaxAttempts) && envMaxAttempts > 0
+      ? Math.min(Math.floor(envMaxAttempts), HF_MAX_ATTEMPTS_CAP)
+      : HF_MAX_ATTEMPTS;
   const {
     maxAttempts = resolvedMaxAttempts,
     baseDelayMs = HF_BASE_DELAY_MS,
