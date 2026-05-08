@@ -14,7 +14,12 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import {
+  pipeline,
+  env,
+  type FeatureExtractionPipeline,
+  type ProgressInfo,
+} from '@huggingface/transformers';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, dirname } from 'path';
@@ -22,7 +27,7 @@ import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
-import { applyHfEnvOverrides } from './hf-env.js';
+import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import { logger } from '../logger.js';
 
 /**
@@ -171,13 +176,18 @@ export const initEmbedder = async (
       }
 
       const progressCallback = onProgress
-        ? (data: any) => {
+        ? (data: ProgressInfo) => {
             const progress: ModelProgress = {
-              status: data.status || 'progress',
-              file: data.file,
-              progress: data.progress,
-              loaded: data.loaded,
-              total: data.total,
+              // Map the `progress_total` aggregate event (not in ModelProgress.status)
+              // back to 'progress' so callers don't need to handle it separately.
+              status:
+                data.status === 'progress_total'
+                  ? 'progress'
+                  : ((data.status as ModelProgress['status']) ?? 'progress'),
+              file: 'file' in data ? data.file : undefined,
+              progress: 'progress' in data ? data.progress : undefined,
+              loaded: 'loaded' in data ? data.loaded : undefined,
+              total: 'total' in data ? data.total : undefined,
             };
             onProgress(progress);
           }
@@ -202,17 +212,29 @@ export const initEmbedder = async (
             logger.info('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
-            device: device,
-            dtype: 'fp32',
-            progress_callback: progressCallback,
-            session_options: {
-              logSeverityLevel: 3,
-              intraOpNumThreads: finalConfig.threads,
-              interOpNumThreads: 1,
-              executionMode: 'sequential',
+          embedderInstance = await withHfDownloadRetry(
+            () =>
+              pipeline('feature-extraction', finalConfig.modelId, {
+                device: device,
+                dtype: 'fp32',
+                progress_callback: progressCallback,
+                session_options: {
+                  logSeverityLevel: 3,
+                  intraOpNumThreads: finalConfig.threads,
+                  interOpNumThreads: 1,
+                  executionMode: 'sequential',
+                },
+              }),
+            {
+              onRetry: isDev
+                ? (attempt, max, err) =>
+                    logger.warn(
+                      { attempt, max, err: err.message },
+                      `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
+                    )
+                : undefined,
             },
-          });
+          );
           currentDevice = device;
 
           if (isDev) {
@@ -228,6 +250,20 @@ export const initEmbedder = async (
 
           return embedderInstance!;
         } catch (deviceError) {
+          // Network errors and circuit-open errors are not device-specific —
+          // they will fail the same way on every device. Rethrow immediately
+          // with actionable HF_ENDPOINT guidance rather than silently falling
+          // back to the next device.
+          const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
+          if (isHfDownloadFailure(errMsg)) {
+            const endpointHint = process.env.HF_ENDPOINT
+              ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
+              : `huggingface.co may be unreachable from your network.\n` +
+                `  Set HF_ENDPOINT to a mirror and retry:\n` +
+                `    HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+                `    (Windows: set HF_ENDPOINT=https://hf-mirror.com && npx gitnexus analyze --embeddings)`;
+            throw new Error(`Failed to download embedding model: ${errMsg}\n  ${endpointHint}`);
+          }
           if (isDev && (device === 'cuda' || device === 'dml')) {
             const gpuType = device === 'dml' ? 'DirectML' : 'CUDA';
             logger.info(`⚠️  ${gpuType} not available, falling back to CPU...`);
