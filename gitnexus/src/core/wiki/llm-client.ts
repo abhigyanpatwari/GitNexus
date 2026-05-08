@@ -86,8 +86,10 @@ export function isAzureProvider(baseUrl: string): boolean {
     const { hostname } = new URL(baseUrl);
     return hostname.endsWith('.openai.azure.com') || hostname.endsWith('.services.ai.azure.com');
   } catch {
-    // If URL is malformed, fall back to substring check
-    return baseUrl.includes('.openai.azure.com') || baseUrl.includes('.services.ai.azure.com');
+    // Malformed URL — refuse to call this Azure rather than fall back to a
+    // substring check, which is bypassable by `https://evil.com/?u=.openai.azure.com`
+    // (CodeQL js/incomplete-url-substring-sanitization).
+    return false;
   }
 }
 

@@ -44,26 +44,6 @@ async function removeLbugFile(basePath: string): Promise<void> {
   }
 }
 
-/**
- * Remove all stale `bridge.lbug.tmp.*` files (and their sidecars) from a
- * group directory.  With randomBytes-based temp names, a crashed writeBridge
- * leaves behind a uniquely-named tmp file that no future run will target by
- * name — so we glob for the prefix and clean up everything matching.
- */
-async function cleanStaleBridgeTmpFiles(groupDir: string): Promise<void> {
-  try {
-    const entries = await fsp.readdir(groupDir);
-    const staleBases = entries.filter(
-      (e) => e.startsWith('bridge.lbug.tmp.') && !LBUG_SIDECAR_SUFFIXES.some((s) => e.endsWith(s)),
-    );
-    for (const name of staleBases) {
-      await removeLbugFile(path.join(groupDir, name));
-    }
-  } catch {
-    /* best-effort: directory may not exist yet */
-  }
-}
-
 export function contractNodeId(
   repo: string,
   contractId: string,
@@ -299,8 +279,24 @@ export async function retryRename(src: string, dst: string, attempts = 3): Promi
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
   const target = path.join(groupDir, 'meta.json');
+  // Unpredictable suffix + O_EXCL via `'wx'` flag closes the symlink/
+  // pre-create attack window. The third argument `0o600` is the
+  // user-only mode mask — CodeQL's `js/insecure-temporary-file` query
+  // sources its verdict from the `mode` argument, NOT from `flags`:
+  // its `isSecureMode(mode)` predicate requires the low 6 bits to be
+  // zero (no group/world bits). Without an explicit mode the file is
+  // created with the process umask (typically 0o644 = group/world
+  // readable), which the query treats as the actual vulnerability.
+  // Both `'wx'` (runtime O_EXCL) AND `0o600` (CodeQL-credited mode)
+  // are needed: one closes the symlink race, the other closes the
+  // permissions exposure.
   const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  await fsp.writeFile(tmp, JSON.stringify(meta, null, 2), 'utf-8');
+  const handle = await fsp.open(tmp, 'wx', 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
+  } finally {
+    await handle.close();
+  }
   // Use retryRename for consistency with writeBridge's atomic swap — on
   // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
   // meta.json, and we don't want meta write to be less robust than the
@@ -369,7 +365,19 @@ export async function writeBridge(
   const crossLinks = dedupeCrossLinks(input.crossLinks);
 
   const finalPath = path.join(groupDir, 'bridge.lbug');
-  const tmpPath = path.join(groupDir, `bridge.lbug.tmp.${randomBytes(8).toString('hex')}`);
+  // Stage the temp database inside a unique mkdtemp directory rather than
+  // a fixed `bridge.lbug.tmp` name. The previous shape was flagged by
+  // CodeQL js/insecure-temporary-file as a predictable path: a co-located
+  // attacker (or a parallel writeBridge call into the same group) could
+  // pre-create or symlink that path before this writer opens it. mkdtemp
+  // returns a directory whose suffix is filled with cryptographically
+  // random bytes, so the staging path is unguessable AND collision-free
+  // across parallel callers. We anchor the staging directory inside
+  // `groupDir` so the subsequent rename of `bridge.lbug` (and its
+  // `.wal` / `.shadow` sidecars) into place stays on the same filesystem
+  // and remains atomic — moving across `os.tmpdir()` could trip EXDEV.
+  const stagingDir = await fsp.mkdtemp(path.join(groupDir, 'bridge-tmp-'));
+  const tmpPath = path.join(stagingDir, 'bridge.lbug');
   const bakPath = path.join(groupDir, 'bridge.lbug.bak');
 
   const report: WriteBridgeReport = {
@@ -389,43 +397,42 @@ export async function writeBridge(
     }
   };
 
-  // Clean up stale tmp files left behind by previously crashed writeBridge
-  // runs.  With randomBytes-based names each run picks a unique path, so
-  // the old fixed-name `removeLbugFile(tmpPath)` was a no-op — stale
-  // artifacts accumulated.  The glob-based helper finds *all* leftover
-  // `bridge.lbug.tmp.*` entries and removes them (including sidecars).
-  await cleanStaleBridgeTmpFiles(groupDir);
+  // The mkdtemp staging directory above is freshly created with a unique
+  // random suffix, so there are no leftover `bridge.lbug.tmp` / `.wal` /
+  // `.shadow` sidecars from a previous crashed run to clean up here — the
+  // directory is empty by construction.
 
-  // 1. Create temp DB, insert all data.
-  //
-  // Everything after `openBridgeDb` must run inside a try/finally so that
-  // if ANY step before the explicit `closeBridgeDb` throws — schema
-  // creation, a contract insert loop that rethrows, a snapshot write, the
-  // cross-link loop, or anything else — the handle is still released. A
-  // leaked handle holds the native LadybugDB file lock on tmpPath, which
-  // (a) leaks a FD and (b) prevents the next writeBridge call from
-  // reusing the same tmp slot.
-  const handle = await openBridgeDb(tmpPath);
-  let handleClosed = false;
   try {
-    await ensureBridgeSchema(handle);
+    // 1. Create temp DB, insert all data.
+    //
+    // Everything after `openBridgeDb` must run inside a try/finally so that
+    // if ANY step before the explicit `closeBridgeDb` throws — schema
+    // creation, a contract insert loop that rethrows, a snapshot write, the
+    // cross-link loop, or anything else — the handle is still released. A
+    // leaked handle holds the native LadybugDB file lock on tmpPath, which
+    // (a) leaks a FD and (b) prevents the next writeBridge call from
+    // reusing the same tmp slot.
+    const handle = await openBridgeDb(tmpPath);
+    let handleClosed = false;
+    try {
+      await ensureBridgeSchema(handle);
 
-    // Build the lookup index incrementally as contracts are inserted, so
-    // failed inserts are never in the index (and therefore never resolved
-    // by the cross-link loop below). This replaces a previous N+1 query
-    // pattern where each link made up to 6 DB round-trips to find its
-    // endpoints — see ContractLookupIndex.
-    const lookupIndex = createContractLookupIndex();
+      // Build the lookup index incrementally as contracts are inserted, so
+      // failed inserts are never in the index (and therefore never resolved
+      // by the cross-link loop below). This replaces a previous N+1 query
+      // pattern where each link made up to 6 DB round-trips to find its
+      // endpoints — see ContractLookupIndex.
+      const lookupIndex = createContractLookupIndex();
 
-    // Insert contracts — tolerate individual failures (e.g., a corrupt meta
-    // that can't be serialized). The whole sync must not fail because one
-    // contract is broken.
-    for (const c of contracts) {
-      const id = contractNodeId(c.repo, c.contractId, c.role, c.symbolRef.filePath);
-      try {
-        await queryBridge(
-          handle,
-          `CREATE (n:Contract {
+      // Insert contracts — tolerate individual failures (e.g., a corrupt meta
+      // that can't be serialized). The whole sync must not fail because one
+      // contract is broken.
+      for (const c of contracts) {
+        const id = contractNodeId(c.repo, c.contractId, c.role, c.symbolRef.filePath);
+        try {
+          await queryBridge(
+            handle,
+            `CREATE (n:Contract {
       id: $id,
       contractId: $contractId,
       type: $type,
@@ -438,91 +445,91 @@ export async function writeBridge(
       confidence: $confidence,
       meta: $meta
     })`,
-          {
-            id,
-            contractId: c.contractId,
-            type: c.type,
-            role: c.role,
-            repo: c.repo,
-            service: c.service ?? '',
-            symbolUid: c.symbolUid,
-            filePath: c.symbolRef.filePath,
-            symbolName: c.symbolName,
-            confidence: c.confidence,
-            meta: JSON.stringify(c.meta),
-          },
-        );
-        report.contractsInserted++;
-        // Only index on successful insert — the cross-link loop must never
-        // resolve to a row that isn't actually in the DB.
-        indexContract(lookupIndex, c, id);
-      } catch (err) {
-        report.contractsFailed++;
-        recordError('contract', id, err);
+            {
+              id,
+              contractId: c.contractId,
+              type: c.type,
+              role: c.role,
+              repo: c.repo,
+              service: c.service ?? '',
+              symbolUid: c.symbolUid,
+              filePath: c.symbolRef.filePath,
+              symbolName: c.symbolName,
+              confidence: c.confidence,
+              meta: JSON.stringify(c.meta),
+            },
+          );
+          report.contractsInserted++;
+          // Only index on successful insert — the cross-link loop must never
+          // resolve to a row that isn't actually in the DB.
+          indexContract(lookupIndex, c, id);
+        } catch (err) {
+          report.contractsFailed++;
+          recordError('contract', id, err);
+        }
       }
-    }
 
-    // Insert repo snapshots
-    for (const [repoId, snap] of Object.entries(input.repoSnapshots)) {
-      try {
-        await queryBridge(
-          handle,
-          `CREATE (s:RepoSnapshot {
+      // Insert repo snapshots
+      for (const [repoId, snap] of Object.entries(input.repoSnapshots)) {
+        try {
+          await queryBridge(
+            handle,
+            `CREATE (s:RepoSnapshot {
       id: $id,
       indexedAt: $indexedAt,
       lastCommit: $lastCommit
     })`,
-          {
-            id: repoId,
-            indexedAt: snap.indexedAt,
-            lastCommit: snap.lastCommit,
-          },
-        );
-        report.snapshotsInserted++;
-      } catch (err) {
-        report.snapshotsFailed++;
-        recordError('snapshot', repoId, err);
-      }
-    }
-
-    // Insert cross-links (tolerating missing nodes).
-    //
-    // `findContractNode` consults the in-memory lookup index built above,
-    // not the DB — that's an O(1) pure-function lookup per endpoint instead
-    // of the previous 2-3 DB queries. For M cross-links, the previous code
-    // issued up to 6M round-trips; this version issues zero.
-    //
-    // `link.contractId` may differ between the consumer and provider sides
-    // (e.g. wildcard consumer `grpc::Service/*` → method-level provider
-    // `grpc::Service/Method`) — that's why we resolve each endpoint
-    // independently via its own `(repo, role, symbolUid, filePath, symbolName)`
-    // tuple rather than matching on contractId.
-    for (const link of crossLinks) {
-      const linkId = `${link.from.repo}::${link.contractId}->${link.to.repo}::${link.contractId}`;
-      try {
-        const fromId = findContractNode(
-          lookupIndex,
-          link.from.repo,
-          'consumer',
-          link.from.symbolUid,
-          link.from.symbolRef.filePath,
-          link.from.symbolRef.name,
-        );
-        const toId = findContractNode(
-          lookupIndex,
-          link.to.repo,
-          'provider',
-          link.to.symbolUid,
-          link.to.symbolRef.filePath,
-          link.to.symbolRef.name,
-        );
-        if (!fromId || !toId) {
-          report.linksDroppedMissingNode++;
-          continue;
+            {
+              id: repoId,
+              indexedAt: snap.indexedAt,
+              lastCommit: snap.lastCommit,
+            },
+          );
+          report.snapshotsInserted++;
+        } catch (err) {
+          report.snapshotsFailed++;
+          recordError('snapshot', repoId, err);
         }
-        await queryBridge(
-          handle,
-          `
+      }
+
+      // Insert cross-links (tolerating missing nodes).
+      //
+      // `findContractNode` consults the in-memory lookup index built above,
+      // not the DB — that's an O(1) pure-function lookup per endpoint instead
+      // of the previous 2-3 DB queries. For M cross-links, the previous code
+      // issued up to 6M round-trips; this version issues zero.
+      //
+      // `link.contractId` may differ between the consumer and provider sides
+      // (e.g. wildcard consumer `grpc::Service/*` → method-level provider
+      // `grpc::Service/Method`) — that's why we resolve each endpoint
+      // independently via its own `(repo, role, symbolUid, filePath, symbolName)`
+      // tuple rather than matching on contractId.
+      for (const link of crossLinks) {
+        const linkId = `${link.from.repo}::${link.contractId}->${link.to.repo}::${link.contractId}`;
+        try {
+          const fromId = findContractNode(
+            lookupIndex,
+            link.from.repo,
+            'consumer',
+            link.from.symbolUid,
+            link.from.symbolRef.filePath,
+            link.from.symbolRef.name,
+          );
+          const toId = findContractNode(
+            lookupIndex,
+            link.to.repo,
+            'provider',
+            link.to.symbolUid,
+            link.to.symbolRef.filePath,
+            link.to.symbolRef.name,
+          );
+          if (!fromId || !toId) {
+            report.linksDroppedMissingNode++;
+            continue;
+          }
+          await queryBridge(
+            handle,
+            `
       MATCH (a:Contract), (b:Contract)
       WHERE a.id = $fromId AND b.id = $toId
       CREATE (a)-[:ContractLink {
@@ -533,83 +540,93 @@ export async function writeBridge(
         toRepo: $toRepo
       }]->(b)
     `,
-          {
-            fromId,
-            toId,
-            matchType: link.matchType,
-            confidence: link.confidence,
-            contractId: link.contractId,
-            fromRepo: link.from.repo,
-            toRepo: link.to.repo,
-          },
-        );
-        report.linksInserted++;
-      } catch (err) {
-        report.linksFailed++;
-        recordError('link', linkId, err);
+            {
+              fromId,
+              toId,
+              matchType: link.matchType,
+              confidence: link.confidence,
+              contractId: link.contractId,
+              fromRepo: link.from.repo,
+              toRepo: link.to.repo,
+            },
+          );
+          report.linksInserted++;
+        } catch (err) {
+          report.linksFailed++;
+          recordError('link', linkId, err);
+        }
+      }
+
+      // 2. Close temp DB (happy path). The finally block also calls
+      //    closeBridgeDb if we threw above; `handleClosed` prevents a
+      //    double-close on the native handle.
+      await closeBridgeDb(handle);
+      handleClosed = true;
+    } finally {
+      if (!handleClosed) {
+        await closeBridgeDb(handle).catch(() => {
+          /* ignore: cleanup path, best effort */
+        });
       }
     }
 
-    // 2. Close temp DB (happy path). The finally block also calls
-    //    closeBridgeDb if we threw above; `handleClosed` prevents a
-    //    double-close on the native handle.
-    await closeBridgeDb(handle);
-    handleClosed = true;
-  } finally {
-    if (!handleClosed) {
-      await closeBridgeDb(handle).catch(() => {
-        /* ignore: cleanup path, best effort */
-      });
+    // 3. Atomic swap: old→.bak, tmp→final, rm .bak
+    //
+    // The current database file (with its `.wal` / `.shadow` sidecars) is
+    // moved aside, then the freshly built tmp database takes its place.
+    // We move the sidecars together with the main file so the open below
+    // and any external readers see a consistent set; orphan sidecars from
+    // the tmp namespace are then removed because LadybugDB looks for them
+    // under the renamed-to base name and would reject mismatching IDs.
+    try {
+      await fsp.access(finalPath);
+      await retryRename(finalPath, bakPath);
+      for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+        try {
+          await fsp.access(`${finalPath}${suffix}`);
+          await retryRename(`${finalPath}${suffix}`, `${bakPath}${suffix}`);
+        } catch {
+          /* sidecar absent — nothing to move */
+        }
+      }
+    } catch {
+      /* no existing db */
     }
-  }
-
-  // 3. Atomic swap: old→.bak, tmp→final, rm .bak
-  //
-  // The current database file (with its `.wal` / `.shadow` sidecars) is
-  // moved aside, then the freshly built tmp database takes its place.
-  // We move the sidecars together with the main file so the open below
-  // and any external readers see a consistent set; orphan sidecars from
-  // the tmp namespace are then removed because LadybugDB looks for them
-  // under the renamed-to base name and would reject mismatching IDs.
-  try {
-    await fsp.access(finalPath);
-    await retryRename(finalPath, bakPath);
+    await retryRename(tmpPath, finalPath);
     for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+      // Rename — not delete — so the WAL (which may carry uncommitted-at-
+      // close-time pages on a graceful close, depending on
+      // `autoCheckpoint` / `checkpointThreshold`) and the `.shadow`
+      // checkpoint snapshot stay paired with the database file under its
+      // final name. LadybugDB 0.16.0's database-id check rejects an open
+      // when the sidecars belong to a different base name.
       try {
-        await fsp.access(`${finalPath}${suffix}`);
-        await retryRename(`${finalPath}${suffix}`, `${bakPath}${suffix}`);
+        await fsp.access(`${tmpPath}${suffix}`);
+        await retryRename(`${tmpPath}${suffix}`, `${finalPath}${suffix}`);
       } catch {
         /* sidecar absent — nothing to move */
       }
     }
-  } catch {
-    /* no existing db */
-  }
-  await retryRename(tmpPath, finalPath);
-  for (const suffix of LBUG_SIDECAR_SUFFIXES) {
-    // Rename — not delete — so the WAL (which may carry uncommitted-at-
-    // close-time pages on a graceful close, depending on
-    // `autoCheckpoint` / `checkpointThreshold`) and the `.shadow`
-    // checkpoint snapshot stay paired with the database file under its
-    // final name. LadybugDB 0.16.0's database-id check rejects an open
-    // when the sidecars belong to a different base name.
-    try {
-      await fsp.access(`${tmpPath}${suffix}`);
-      await retryRename(`${tmpPath}${suffix}`, `${finalPath}${suffix}`);
-    } catch {
-      /* sidecar absent — nothing to move */
-    }
-  }
-  await removeLbugFile(bakPath);
+    await removeLbugFile(bakPath);
 
-  // 4. Write meta.json
-  await writeBridgeMeta(groupDir, {
-    version: BRIDGE_SCHEMA_VERSION,
-    generatedAt: new Date().toISOString(),
-    missingRepos: input.missingRepos,
-  });
+    // 4. Write meta.json
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      missingRepos: input.missingRepos,
+    });
 
-  return report;
+    return report;
+  } finally {
+    // Always remove the mkdtemp staging directory. On the happy path the
+    // main file and sidecars have been renamed out of it, so it's empty;
+    // on any error path it may still contain a partial database — either
+    // way `recursive: true, force: true` removes it without surfacing
+    // "directory not empty" or ENOENT.
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {
+      /* best-effort cleanup */
+    });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -705,6 +722,11 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
+  // Pino's NDJSON serialization is structurally injection-resistant
+  // (CodeQL js/log-injection): groupDir and err.message are JSON-escaped
+  // by the serializer, so no manual CRLF / U+2028 / ANSI sanitization is
+  // needed. Demoted to debug — only fires when the bridge truly gave up
+  // after retries, and operators only need it at debug verbosity.
   bridgeLogger.debug(
     { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
     'openBridgeDbReadOnly gave up',
