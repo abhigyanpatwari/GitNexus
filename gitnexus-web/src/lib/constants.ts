@@ -38,6 +38,31 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Template: '#a78bfa', // Violet light - like Type
   Route: '#f43f5e', // Rose - like Process
   Tool: '#a855f7', // Purple - like Project
+  Bean: '#10b981', // Emerald - like Function
+  ConfigProperty: '#64748b', // Slate - like Variable
+  KafkaTopic: '#f97316', // Orange - like Enum
+  KafkaConsumer: '#14b8a6', // Teal - like Method
+  KafkaProducer: '#14b8a6', // Teal - like Method
+  // Plugin-extensible node types
+  KafkaConfig: '#f97316', // Orange - like KafkaTopic
+  KafkaTopics: '#f97316', // Orange - like KafkaTopic
+  JpaEntity: '#10b981', // Emerald - like Class
+  JpaRepository: '#14b8a6', // Teal - like Method
+  JpaField: '#64748b', // Slate - like Variable
+  MyBatisMapper: '#8b5cf6', // Violet - like Interface
+  MyBatisXmlMapper: '#8b5cf6', // Violet - like Interface
+  MyBatisSql: '#f59e0b', // Amber - like CodeElement
+  MyBatisMethod: '#14b8a6', // Teal - like Method
+  // Markdown node types
+  MarkdownDoc: '#3b82f6', // Blue - like File
+  MarkdownHeading: '#8b5cf6', // Violet - like Package
+  CodeBlock: '#1e293b', // Slate darker - code
+  Link: '#06b6d4', // Cyan
+  Image: '#ec4899', // Pink
+  Todo: '#f59e0b', // Amber - attention
+  Table: '#64748b', // Slate - like Variable
+  Blockquote: '#6366f1', // Indigo
+  List: '#64748b', // Slate - like Variable
 };
 
 // Node sizes by type - clear visual hierarchy with dramatic size differences
@@ -79,6 +104,31 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Template: 3, // Like Type
   Route: 5, // Like Enum
   Tool: 5, // Like Enum
+  Bean: 4, // Like Function
+  ConfigProperty: 2, // Like Variable
+  KafkaTopic: 5, // Like Enum
+  KafkaConsumer: 3, // Like Method
+  KafkaProducer: 3, // Like Method
+  // Plugin-extensible node types
+  KafkaConfig: 5, // Like KafkaTopic
+  KafkaTopics: 5, // Like KafkaTopic
+  JpaEntity: 8, // Like Class
+  JpaRepository: 3, // Like Method
+  JpaField: 2, // Like Variable
+  MyBatisMapper: 7, // Like Interface
+  MyBatisXmlMapper: 7, // Like Interface
+  MyBatisSql: 3, // Like CodeElement
+  MyBatisMethod: 3, // Like Method
+  // Markdown node types
+  MarkdownDoc: 6, // Like File
+  MarkdownHeading: 8, // Like Folder - structure
+  CodeBlock: 3, // Like CodeElement
+  Link: 2, // Like Variable
+  Image: 2, // Like Variable
+  Todo: 2, // Like Variable
+  Table: 3, // Like CodeElement
+  Blockquote: 2, // Like Variable
+  List: 2, // Like Variable
 };
 
 // Community color palette for cluster-based coloring

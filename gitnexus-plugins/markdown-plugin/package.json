@@ -1,0 +1,16 @@
+{
+  "name": "gitnexus-markdown-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Markdown plugin for GitNexus with Profile-based customizable parsing",
+  "main": "dist/index.js",
+  "gitnexus": {
+    "plugin": true
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "gitnexus-shared": "file:../../../gitnexus-shared"
+  }
+}

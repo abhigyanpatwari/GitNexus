@@ -11,16 +11,15 @@
 ## 第一步：创建插件项目
 
 ```bash
+# 进入插件目录
+cd gitnexus-plugins/
+
 # 创建插件目录
 mkdir gitnexus-hello-plugin
 cd gitnexus-hello-plugin
 
 # 初始化 npm 项目
 npm init -y
-
-# 安装 GitNexus 共享库
-npm install gitnexus-shared
-npm install -D typescript @types/node
 ```
 
 ## 第二步：创建项目配置
@@ -31,18 +30,15 @@ npm install -D typescript @types/node
 {
   "name": "gitnexus-hello-plugin",
   "version": "1.0.0",
+  "type": "module",
+  "description": "Hello World plugin for GitNexus",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "gitnexus": { "plugin": true },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch"
-  },
-  "gitnexus": {
-    "plugin": true,
-    "type": "parser"
+    "build": "tsc"
   },
   "dependencies": {
-    "gitnexus-shared": "^1.0.0"
+    "gitnexus-shared": "file:../gitnexus-shared"
   }
 }
 ```
@@ -53,15 +49,17 @@ npm install -D typescript @types/node
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "node",
-    "declaration": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "outDir": "./dist",
+    "rootDir": "./src",
     "strict": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "sourceMap": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"]
 }
 ```
 
@@ -75,7 +73,9 @@ import {
   ParseResult, 
   ParserRegistry,
   createNode,
-  createEdge
+  createEdge,
+  GraphNode,
+  GraphRelationship 
 } from 'gitnexus-shared';
 
 /**
@@ -89,11 +89,11 @@ export class HelloParserPlugin implements ParserPlugin {
   extensions = ['.hello'];
   
   async parse(content: string, filePath: string): Promise<ParseResult> {
-    const nodes = [];
-    const edges = [];
+    const nodes: GraphNode[] = [];
+    const edges: GraphRelationship[] = [];
     
     // 解析简单的键值对格式
-    // 格式: key=value
+    // 格式：key=value
     const lines = content.split('\n');
     let lineNumber = 0;
     
@@ -111,13 +111,13 @@ export class HelloParserPlugin implements ParserPlugin {
         const value = trimmed.substring(equalIndex + 1).trim();
         
         // 创建节点
-        const nodeId = `hello:${filePath}:${key}`;
-        nodes.push(createNode('HelloKey', {
+        const node = createNode('HelloKey', {
           name: key,
-          value: value,
+          value,
           filePath,
           line: lineNumber
-        }));
+        });
+        nodes.push(node);
         
         // 如果是配置类型，创建一个分类节点
         if (key.startsWith('config.')) {
@@ -155,6 +155,12 @@ export default new HelloParserPlugin();
 ## 第四步：构建插件
 
 ```bash
+# 安装依赖（使用 npm link 或 file: 协议）
+cd ../gitnexus-shared && npm run build && npm link
+cd ../gitnexus-hello-plugin
+npm link gitnexus-shared
+
+# 构建插件
 npm run build
 ```
 
@@ -176,13 +182,13 @@ database.port=5432
 
 ```bash
 # 进入 GitNexus CLI 目录
-cd /path/to/gitnexus
+cd gitnexus/
 
-# 加载插件
-npx gitnexus plugin load /path/to/your/gitnexus-hello-plugin
+# 扫描并加载插件
+gitnexus plugin scan ../gitnexus-plugins/
 
 # 列出插件，确认已加载
-npx gitnexus plugin list
+gitnexus plugin list
 ```
 
 ## 完整示例：JSON 解析插件
@@ -195,7 +201,9 @@ import {
   ParseResult, 
   ParserRegistry,
   createNode,
-  createEdge
+  createEdge,
+  GraphNode,
+  GraphRelationship 
 } from 'gitnexus-shared';
 
 export class JsonParserPlugin implements ParserPlugin {
@@ -205,8 +213,8 @@ export class JsonParserPlugin implements ParserPlugin {
   extensions = ['.json'];
   
   async parse(content: string, filePath: string): Promise<ParseResult> {
-    const nodes = [];
-    const edges = [];
+    const nodes: GraphNode[] = [];
+    const edges: GraphRelationship[] = [];
     
     try {
       const data = JSON.parse(content);
@@ -235,11 +243,9 @@ export class JsonParserPlugin implements ParserPlugin {
     value: any, 
     filePath: string, 
     parentId: string | null,
-    nodes: any[],
-    edges: any[]
+    nodes: GraphNode[],
+    edges: GraphRelationship[]
   ): void {
-    const nodeId = `json:${filePath}:${key}`;
-    
     const node = createNode('JsonProperty', {
       name: key,
       value: typeof value === 'object' ? null : String(value),
@@ -249,7 +255,7 @@ export class JsonParserPlugin implements ParserPlugin {
     nodes.push(node);
     
     if (parentId) {
-      edges.push(createEdge('HAS_PROPERTY', parentId, nodeId, {
+      edges.push(createEdge('HAS_PROPERTY', parentId, node.id, {
         confidence: 1.0,
         reason: 'JSON property'
       }));
@@ -257,7 +263,7 @@ export class JsonParserPlugin implements ParserPlugin {
     
     if (typeof value === 'object' && value !== null) {
       for (const [childKey, childValue] of Object.entries(value)) {
-        this.processValue(childKey, childValue, filePath, nodeId, nodes, edges);
+        this.processValue(childKey, childValue, filePath, node.id, nodes, edges);
       }
     }
   }
@@ -276,10 +282,10 @@ export default new JsonParserPlugin();
 
 ## 下一步
 
-- 阅读 [完整开发指南](development-guide.md) 了解更高级的特性
+- 阅读 [完整开发指南](../gitnexus-plugins/README.md) 了解更高级的特性
 - 阅读 [API 参考](api-reference.md) 查看所有可用的接口
 - 阅读 [LLM 开发指南](llm-guide.md) 了解如何使用 AI 辅助开发插件
-- 查看 [示例插件](examples/) 获取更多参考
+- 查看 [插件目录](../gitnexus-plugins/) 获取更多参考
 
 ## 常见问题
 
@@ -290,4 +296,7 @@ A: 确保插件已启用：`gitnexus plugin enable <plugin-name>`
 A: 设置环境变量 `GITNEXUS_DEBUG=1` 并查看日志
 
 **Q: 插件可以依赖其他 npm 包吗？**
-A: 可以，只需在 package.json 的 dependencies 中添加即可
+A: 可以，只需在 package.json 的 dependencies 中添加即可。
+
+**Q: 如何引用 gitnexus-shared？**
+A: 在 `gitnexus-plugins/` 目录下，使用 `"gitnexus-shared": "file:../gitnexus-shared"`，或先 `cd gitnexus-shared && npm link`，然后在插件目录 `npm link gitnexus-shared`。

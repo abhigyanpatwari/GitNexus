@@ -6,6 +6,7 @@ export type {
   GraphNode,
   GraphRelationship,
 } from './graph/types.js';
+export { createNode, createEdge } from './graph/types.js';
 
 // Schema constants
 export {
@@ -152,3 +153,16 @@ export type {
 } from './scope-resolution/shadow/diff.js';
 export { aggregateDiffs } from './scope-resolution/shadow/aggregate.js';
 export type { LanguageParityRow, ShadowParityReport } from './scope-resolution/shadow/aggregate.js';
+
+// ─── Plugin SDK types ──────────────────────────────────────────────────────
+export type {
+  Plugin,
+  ParserPlugin,
+  AnalyzerPlugin,
+  ParserRegistry,
+  AnalyzerRegistry,
+  ParseResult,
+  AnalysisResult,
+  AnalysisResultItem,
+  AnalysisContext,
+} from './plugins/index.js';

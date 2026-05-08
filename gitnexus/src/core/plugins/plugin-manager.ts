@@ -2,8 +2,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 import {
   Plugin,
   ParserPlugin,
@@ -18,7 +16,7 @@ import {
   PluginStatus,
   PluginLoadOptions,
   EventEmitter,
-  PluginEvent
+  PluginEvent,
 } from './types.js';
 
 /**
@@ -97,7 +95,7 @@ class DefaultAnalyzerRegistry implements AnalyzerRegistry {
 
   getAnalyzers(language?: string): AnalyzerPlugin[] {
     if (language) {
-      return Array.from(this.analyzers.values()).filter(analyzer => analyzer.supports(language));
+      return Array.from(this.analyzers.values()).filter((analyzer) => analyzer.supports(language));
     }
     return Array.from(this.analyzers.values());
   }
@@ -121,7 +119,7 @@ class DefaultProcessorRegistry implements ProcessorRegistry {
     let processors = Array.from(this.processors.values());
     if (phase) {
       processors = processors
-        .filter(processor => processor.phase === phase)
+        .filter((processor) => processor.phase === phase)
         .sort((a, b) => (b.priority || 0) - (a.priority || 0));
     }
     return processors;
@@ -143,7 +141,9 @@ class DefaultIntegrationRegistry implements IntegrationRegistry {
   }
 
   getIntegration(target: string): IntegrationPlugin | undefined {
-    return Array.from(this.integrations.values()).find(integration => integration.target === target);
+    return Array.from(this.integrations.values()).find(
+      (integration) => integration.target === target,
+    );
   }
 
   getIntegrations(): IntegrationPlugin[] {
@@ -156,13 +156,51 @@ class DefaultIntegrationRegistry implements IntegrationRegistry {
 }
 
 /**
+ * 解析插件入口文件
+ */
+function resolvePluginEntry(pluginPath: string): string {
+  // 如果是文件，直接返回
+  const stat = fs.statSync(pluginPath);
+  if (!stat.isDirectory()) return pluginPath;
+
+  // 检查 package.json 的 main 字段
+  const packageJsonPath = path.join(pluginPath, 'package.json');
+  let mainEntry: string | undefined;
+  if (fs.existsSync(packageJsonPath)) {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    mainEntry = packageJson.main;
+  }
+
+  if (mainEntry) {
+    const resolvedMain = path.join(pluginPath, mainEntry);
+    if (fs.existsSync(resolvedMain)) {
+      return resolvedMain;
+    }
+    // main 指向的文件不存在，回退到源码
+  }
+
+  // 尝试 index.mjs, index.js, index.ts
+  for (const entry of ['index.mjs', 'index.js', 'src/index.ts', 'src/index.mjs']) {
+    const fullPath = path.join(pluginPath, entry);
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  throw new Error(
+    `Cannot find plugin entry in directory: ${pluginPath}. ` +
+      `Add a "main" field to package.json pointing to a built file, or create index.js/index.mjs`,
+  );
+}
+
+/**
  * 插件管理器
  */
 export class PluginManager implements PluginRegistry {
   private plugins: Map<string, Plugin> = new Map();
   private pluginStatuses: Map<string, PluginStatus> = new Map();
   private eventEmitter: EventEmitter = new PluginEventEmitter();
-  
+
   // 注册表
   public parserRegistry: ParserRegistry = new DefaultParserRegistry();
   public analyzerRegistry: AnalyzerRegistry = new DefaultAnalyzerRegistry();
@@ -174,7 +212,7 @@ export class PluginManager implements PluginRegistry {
    */
   registerPlugin(plugin: Plugin): void {
     this.plugins.set(plugin.name, plugin);
-    
+
     // 注册到相应的注册表
     if (this.isParserPlugin(plugin)) {
       plugin.register(this.parserRegistry);
@@ -185,15 +223,15 @@ export class PluginManager implements PluginRegistry {
     } else if (this.isIntegrationPlugin(plugin)) {
       plugin.register(this.integrationRegistry);
     }
-    
+
     // 设置默认状态
     this.pluginStatuses.set(plugin.name, {
       name: plugin.name,
       version: plugin.version,
       enabled: true,
-      type: this.getPluginType(plugin)
+      type: this.getPluginType(plugin),
     });
-    
+
     // 触发事件
     this.eventEmitter.emit('plugin.loaded', { pluginName: plugin.name });
   }
@@ -222,7 +260,7 @@ export class PluginManager implements PluginRegistry {
       if (plugin.dispose) {
         plugin.dispose().catch(console.error);
       }
-      
+
       // 从注册表中移除
       if (this.isParserPlugin(plugin)) {
         this.parserRegistry.unregisterParser(name);
@@ -233,11 +271,11 @@ export class PluginManager implements PluginRegistry {
       } else if (this.isIntegrationPlugin(plugin)) {
         this.integrationRegistry.unregisterIntegration(name);
       }
-      
+
       // 从插件列表中移除
       this.plugins.delete(name);
       this.pluginStatuses.delete(name);
-      
+
       // 触发事件
       this.eventEmitter.emit('plugin.unloaded', { pluginName: name });
     }
@@ -278,41 +316,43 @@ export class PluginManager implements PluginRegistry {
   async loadPlugin(options: PluginLoadOptions): Promise<Plugin> {
     try {
       const { pluginPath, config = {}, enabled = true } = options;
-      
+
       // 加载插件模块
       let pluginModule;
       if (pluginPath.startsWith('.')) {
         // 相对路径
         const resolvedPath = path.resolve(process.cwd(), pluginPath);
-        pluginModule = await import(`file://${resolvedPath}`);
+        const entryPath = resolvePluginEntry(resolvedPath);
+        pluginModule = await import(`file://${entryPath}`);
       } else if (pluginPath.startsWith('gitnexus-')) {
         // npm 包
         pluginModule = await import(pluginPath);
       } else {
         // 绝对路径
-        pluginModule = await import(`file://${pluginPath}`);
+        const entryPath = resolvePluginEntry(pluginPath);
+        pluginModule = await import(`file://${entryPath}`);
       }
-      
+
       // 获取插件实例
       const plugin = pluginModule.default || pluginModule;
-      
+
       if (!plugin || typeof plugin !== 'object') {
         throw new Error('Invalid plugin: must export a plugin instance');
       }
-      
+
       // 初始化插件
       if (plugin.init) {
         await plugin.init(config);
       }
-      
+
       // 注册插件
       this.registerPlugin(plugin);
-      
+
       // 设置启用状态
       if (!enabled) {
         this.disablePlugin(plugin.name);
       }
-      
+
       return plugin;
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -326,7 +366,7 @@ export class PluginManager implements PluginRegistry {
    */
   async loadPlugins(pluginPaths: string[]): Promise<Plugin[]> {
     const plugins: Plugin[] = [];
-    
+
     for (const pluginPath of pluginPaths) {
       try {
         const plugin = await this.loadPlugin({ pluginPath });
@@ -335,11 +375,11 @@ export class PluginManager implements PluginRegistry {
         console.error(`Failed to load plugin ${pluginPath}:`, error);
         this.eventEmitter.emit('plugin.error', {
           pluginName: pluginPath,
-          error: (error as Error).message
+          error: (error as Error).message,
         });
       }
     }
-    
+
     return plugins;
   }
 
@@ -350,14 +390,14 @@ export class PluginManager implements PluginRegistry {
     if (!fs.existsSync(pluginsDir)) {
       return [];
     }
-    
+
     const pluginPaths: string[] = [];
     const files = fs.readdirSync(pluginsDir);
-    
+
     for (const file of files) {
       const filePath = path.join(pluginsDir, file);
       const stat = fs.statSync(filePath);
-      
+
       if (stat.isDirectory()) {
         // 检查是否是插件目录
         const packageJsonPath = path.join(filePath, 'package.json');
@@ -372,7 +412,7 @@ export class PluginManager implements PluginRegistry {
         pluginPaths.push(filePath);
       }
     }
-    
+
     return this.loadPlugins(pluginPaths);
   }
 

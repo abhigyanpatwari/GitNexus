@@ -1,5 +1,8 @@
 // src/core/plugins/index.ts
 
+import { pluginManager as _pm } from './plugin-manager.js';
+import { loadPluginsFromConfig as _loadPlugins } from './plugin-loader.js';
+
 /**
  * GitNexus 插件系统
  */
@@ -35,16 +38,15 @@ export interface PluginSystemStatus {
  */
 export function getPluginSystemStatus(): PluginSystemStatus {
   try {
-    const { pluginManager } = require('./plugin-manager.js');
-    const plugins = pluginManager.getPlugins();
-    const statuses = plugins.map(plugin => pluginManager.getPluginStatus(plugin.name));
-    const enabledPlugins = statuses.filter(status => status?.enabled).length;
-    
+    const plugins = _pm.getPlugins();
+    const statuses = plugins.map((plugin) => _pm.getPluginStatus(plugin.name));
+    const enabledPlugins = statuses.filter((status) => status?.enabled).length;
+
     return {
       version: PLUGIN_SYSTEM_VERSION,
       loadedPlugins: plugins.length,
       enabledPlugins,
-      status: 'active'
+      status: 'active',
     };
   } catch (error) {
     return {
@@ -52,7 +54,7 @@ export function getPluginSystemStatus(): PluginSystemStatus {
       loadedPlugins: 0,
       enabledPlugins: 0,
       status: 'error',
-      error: (error as Error).message
+      error: (error as Error).message,
     };
   }
 }
@@ -62,16 +64,13 @@ export function getPluginSystemStatus(): PluginSystemStatus {
  */
 export async function initializePluginSystem() {
   try {
-    const { pluginManager } = require('./plugin-manager.js');
-    const { loadPluginsFromConfig } = require('./plugin-loader.js');
-    
     // 加载配置文件中的插件
-    await loadPluginsFromConfig();
-    
+    await _loadPlugins();
+
     // 加载默认插件
     await loadDefaultPlugins();
-    
-    console.log(`Plugin system initialized with ${pluginManager.getPlugins().length} plugins`);
+
+    console.log(`Plugin system initialized with ${_pm.getPlugins().length} plugins`);
   } catch (error) {
     console.error('Failed to initialize plugin system:', error);
     throw error;
@@ -91,13 +90,12 @@ async function loadDefaultPlugins() {
  */
 export async function shutdownPluginSystem() {
   try {
-    const { pluginManager } = require('./plugin-manager.js');
-    const plugins = pluginManager.getPlugins();
-    
+    const plugins = _pm.getPlugins();
+
     for (const plugin of plugins) {
-      pluginManager.unregisterPlugin(plugin.name);
+      _pm.unregisterPlugin(plugin.name);
     }
-    
+
     console.log('Plugin system shutdown');
   } catch (error) {
     console.error('Failed to shutdown plugin system:', error);

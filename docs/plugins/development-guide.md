@@ -1,28 +1,28 @@
-# GitNexus 插件开发指南
+# GitNexus 插件开发指南#
 
-## 1. 概述
+## 1. 概述#
 
 GitNexus 插件系统允许开发者扩展解析能力，支持更多文件类型和语言特性。本指南将详细介绍如何开发 GitNexus 插件。
 
-## 2. 插件架构
+## 2. 插件架构#
 
-### 2.1 核心组件
+### 2.1 核心组件#
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────┐
 │                     GitNexus Core                     │
-├─────────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
 │  │ Parser API  │  │ Analyzer API│  │ Processor API│   │
 │  └─────────────┘  └─────────────┘  └─────────────┘    │
-├─────────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
 │  │ Plugin A    │  │ Plugin B    │  │ Plugin C    │   │
 │  └─────────────┘  └─────────────┘  └─────────────┘    │
-└─────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────┘
 ```
 
-### 2.2 插件类型
+### 2.2 插件类型#
 
 | 插件类型 | 作用 | 接口 |
 |---------|------|------|
@@ -31,24 +31,23 @@ GitNexus 插件系统允许开发者扩展解析能力，支持更多文件类�
 | **处理器插件** | 处理特定语言特性 | `ProcessorPlugin` |
 | **集成插件** | 集成外部工具 | `IntegrationPlugin` |
 
-## 3. 环境设置
+## 3. 环境设置#
 
-### 3.1 创建插件项目
+### 3.1 创建插件项目#
 
 ```bash
+# 进入插件目录
+cd gitnexus-plugins/
+
 # 创建插件目录
 mkdir gitnexus-my-plugin
-cd gitnexus-my-plugin
+cd gitnexus-my-plugin/
 
 # 初始化项目
 npm init -y
-
-# 安装依赖
-npm install gitnexus-shared
-npm install -D typescript @types/node
 ```
 
-### 3.2 项目结构
+### 3.2 项目结构#
 
 ```
 gitnexus-my-plugin/
@@ -59,54 +58,66 @@ gitnexus-my-plugin/
 └── README.md
 ```
 
-### 3.3 package.json 配置
+### 3.3 package.json 配置#
 
 ```json
 {
   "name": "gitnexus-my-plugin",
   "version": "1.0.0",
+  "type": "module",
+  "description": "My custom plugin for GitNexus",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "gitnexus": { "plugin": true },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest"
-  },
-  "gitnexus": {
-    "plugin": true,
-    "type": "parser"
+    "build": "tsc"
   },
   "dependencies": {
-    "gitnexus-shared": "^1.0.0"
+    "gitnexus-shared": "file:../gitnexus-shared"
   }
 }
 ```
 
-### 3.4 tsconfig.json 配置
+**注意**：从 `gitnexus-plugins/` 目录，使用 `"file:../gitnexus-shared"` 指向同级目录的 `gitnexus-shared`。
+
+或者使用 `npm link` 方式：
+
+```bash
+# 先在 gitnexus-shared 目录
+cd gitnexus-shared
+npm run build
+npm link
+
+# 然后在插件目录
+cd ../gitnexus-plugins/your-plugin
+npm link gitnexus-shared
+```
+
+### 3.4 tsconfig.json 配置#
 
 ```json
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "node",
-    "declaration": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "outDir": "./dist",
+    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "declaration": true,
+    "sourceMap": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"]
 }
 ```
 
-## 4. 开发解析器插件
+## 4. 开发解析器插件#
 
-### 4.1 解析器插件接口
+### 4.1 解析器插件接口#
 
 ```typescript
-import { ParserPlugin, ParseResult, ParserRegistry, Node, Edge } from 'gitnexus-shared';
+import { ParserPlugin, ParseResult, ParserRegistry, GraphNode, GraphRelationship, createNode, createEdge } from 'gitnexus-shared';
 
 export interface MyPluginConfig {
   strictMode?: boolean;
@@ -125,39 +136,28 @@ export class MyParserPlugin implements ParserPlugin {
   }
   
   async parse(content: string, filePath: string): Promise<ParseResult> {
-    const nodes: Node[] = [];
-    const edges: Edge[] = [];
+    const nodes: GraphNode[] = [];
+    const edges: GraphRelationship[] = [];
     
     try {
       // 解析内容
-      const parsed = this.parseContent(content);
+      const parsed = this.parseContent(content, filePath);
       
       // 生成节点
       for (const item of parsed.items) {
-        const nodeId = `my:${filePath}:${item.name}`;
-        nodes.push({
-          id: nodeId,
-          label: item.type,
-          properties: {
-            name: item.name,
-            value: item.value,
-            filePath
-          },
+        const node = createNode('MyNode', {
+          name: item.name,
+          value: item.value,
           filePath
         });
+        nodes.push(node);
         
         // 生成边（如果有父节点）
         if (item.parent) {
-          edges.push({
-            id: `edge:${item.parent}:${nodeId}`,
-            type: 'CONTAINS',
-            source: item.parent,
-            target: nodeId,
-            properties: {
-              confidence: 1.0,
-              reason: 'parent-child relationship'
-            }
-          });
+          edges.push(createEdge('CONTAINS', item.parent, node.id, {
+            confidence: 1.0,
+            reason: 'parent-child relationship'
+          }));
         }
       }
       
@@ -179,7 +179,7 @@ export class MyParserPlugin implements ParserPlugin {
     }
   }
   
-  private parseContent(content: string): any {
+  private parseContent(content: string, filePath: string): any {
     // 实现解析逻辑
     return { items: [] };
   }
@@ -200,15 +200,15 @@ export class MyParserPlugin implements ParserPlugin {
 export default new MyParserPlugin();
 ```
 
-### 4.2 解析结果格式
+### 4.2 解析结果格式#
 
 ```typescript
 interface ParseResult {
   /** 解析生成的节点 */
-  nodes: Node[];
+  nodes: GraphNode[];
   
   /** 解析生成的边 */
-  edges: Edge[];
+  edges: GraphRelationship[];
   
   /** 元数据 */
   metadata: Record<string, any>;
@@ -217,29 +217,29 @@ interface ParseResult {
   error?: string;
 }
 
-interface Node {
+interface GraphNode {
   id: string;
-  label: string;
-  properties: Record<string, any>;
+  label: NodeLabel;
+  properties: NodeProperties;
   filePath: string;
   startLine?: number;
   endLine?: number;
 }
 
-interface Edge {
+interface GraphRelationship {
   id: string;
-  type: string;
-  source: string;
-  target: string;
-  properties: Record<string, any>;
-  confidence?: number;
-  reason?: string;
+  sourceId: string;
+  targetId: string;
+  type: RelationshipType;
+  confidence: number;
+  reason: string;
+  properties?: Record<string, any>;
 }
 ```
 
-## 5. 开发分析器插件
+## 5. 开发分析器插件#
 
-### 5.1 分析器插件接口
+### 5.1 分析器插件接口#
 
 ```typescript
 import { 
@@ -295,7 +295,7 @@ export class MyAnalyzerPlugin implements AnalyzerPlugin {
 export default new MyAnalyzerPlugin();
 ```
 
-### 5.2 分析上下文
+### 5.2 分析上下文#
 
 ```typescript
 interface AnalysisContext {
@@ -314,9 +314,9 @@ interface AnalysisConfig {
 }
 ```
 
-## 6. 开发处理器插件
+## 6. 开发处理器插件#
 
-### 6.1 处理器插件接口
+### 6.1 处理器插件接口#
 
 ```typescript
 import { 
@@ -371,7 +371,7 @@ export class MyProcessorPlugin implements ProcessorPlugin {
 export default new MyProcessorPlugin();
 ```
 
-### 6.2 处理上下文
+### 6.2 处理上下文#
 
 ```typescript
 interface ProcessContext {
@@ -389,9 +389,9 @@ interface ProcessConfig {
 }
 ```
 
-## 7. 开发集成插件
+## 7. 开发集成插件#
 
-### 7.1 集成插件接口
+### 7.1 集成插件接口#
 
 ```typescript
 import { 
@@ -441,9 +441,83 @@ export class MyIntegrationPlugin implements IntegrationPlugin {
 export default new MyIntegrationPlugin();
 ```
 
-## 8. 测试插件
+## 8. Markdown 插件（Profile 系统）#
 
-### 8.1 单元测试
+GitNexus 提供了一个强大的 Markdown 插件，支持通过 **Profile** 对不同类型文档进行定制化解析。
+
+### 8.1 内置 Profile#
+
+| Profile | 匹配条件 | 解析内容 |
+|---------|-----------|----------|
+| `generic` | 默认匹配所有 Markdown 文件 | 标题、代码块、链接、图片、TODO、表格 |
+| `api-docs` | 包含 `@api`/`## API`/`swagger` | 同上 + API 特定解析 |
+| `adr` | 包含 `## Status`/`Architecture Decision Record` | 同上 + ADR 结构 |
+
+### 8.2 自定义 Profile#
+
+创建 `my-profile.ts`：
+
+```typescript
+import { MarkdownProfile, SectionParser, createNode, GraphNode } from 'gitnexus-shared';
+
+// 自定义解析器：提取特定章节
+class MySectionParser implements SectionParser {
+  name = 'my-section';
+  
+  parse(lines: string[], startIndex: number, filePath: string, context: any) {
+    const line = lines[startIndex];
+    const match = line.match(/^## My Special Section$/);
+    if (!match) return null;
+    
+    // 提取章节内容
+    const contentLines: string[] = [];
+    let j = startIndex + 1;
+    while (j < lines.length && !lines[j].startsWith('## ')) {
+      contentLines.push(lines[j]);
+      j++;
+    }
+    
+    const sectionNode = createNode('MySection', {
+      name: 'My Special Section',
+      filePath,
+      content: contentLines.join('\n'),
+      startLine: startIndex + 1
+    });
+    
+    const nodes: GraphNode[] = [sectionNode];
+    const edges = [];
+    
+    if (context.currentHeadingId) {
+      edges.push(createEdge('HAS_SECTION', context.currentHeadingId, sectionNode.id, {}));
+    }
+    
+    return { nodes, edges, nextIndex: j };
+  }
+}
+
+// 自定义 Profile
+export const myDocProfile: MarkdownProfile = {
+  name: 'my-doc',
+  detect: (content: string) => content.includes('## My Special Section'),
+  parsers: [new MySectionParser()],
+  priority: 20 // 高优先级
+};
+```
+
+### 8.3 加载自定义 Profile#
+
+```bash
+# 方式 1：通过插件配置加载
+gitnexus plugin load ../gitnexus-plugins/markdown-plugin \
+  --config '{"customProfiles":["./my-profile.js"]}'
+
+# 方式 2：使用已提供的 Profile
+# （api-docs、adr 等会自动检测）
+```
+
+## 9. 测试插件#
+
+### 9.1 单元测试#
 
 ```typescript
 import { describe, it, expect, beforeEach } from 'jest';
@@ -483,7 +557,7 @@ describe('MyParserPlugin', () => {
 });
 ```
 
-### 8.2 集成测试
+### 9.2 集成测试#
 
 ```typescript
 import { describe, it, expect } from 'jest';
@@ -513,15 +587,15 @@ describe('Plugin Integration', () => {
 });
 ```
 
-## 9. 调试技巧
+## 10. 调试技巧#
 
-### 9.1 启用调试模式
+### 10.1 启用调试模式#
 
 ```bash
 GITNEXUS_DEBUG=1 gitnexus analyze
 ```
 
-### 9.2 查看日志
+### 10.2 查看日志#
 
 ```bash
 # 查看插件日志
@@ -531,11 +605,11 @@ cat ~/.gitnexus/logs/plugin.log
 tail -f ~/.gitnexus/logs/plugin.log
 ```
 
-### 9.3 测试单个插件
+### 10.3 测试单个插件#
 
 ```bash
 # 加载插件
-gitnexus plugin load ./my-plugin
+gitnexus plugin load ../gitnexus-plugins/my-plugin/
 
 # 测试插件
 gitnexus analyze --verbose
@@ -544,22 +618,23 @@ gitnexus analyze --verbose
 gitnexus plugin status
 ```
 
-## 10. 发布插件
+## 11. 发布插件#
 
-### 10.1 发布到 npm
+### 11.1 发布到 npm#
 
 ```bash
 # 登录 npm
 npm login
 
 # 发布
+cd gitnexus-plugins/my-plugin/
 npm publish
 
 # 发布到特定标签
 npm publish --tag beta
 ```
 
-### 10.2 插件命名规范
+### 11.2 插件命名规范#
 
 - 解析器插件：`gitnexus-[format]-plugin`
 - 分析器插件：`gitnexus-[language]-plugin`
@@ -572,16 +647,16 @@ npm publish --tag beta
 - `gitnexus-spring-plugin`
 - `gitnexus-github-integration`
 
-## 11. 最佳实践
+## 12. 最佳实践#
 
-### 11.1 性能优化
+### 12.1 性能优化#
 
 - **缓存解析结果**：避免重复解析相同内容
 - **流式处理**：处理大文件时使用流式解析
 - **并行处理**：利用 Worker 线程并行处理
 - **懒加载**：按需加载插件功能
 
-### 11.2 错误处理
+### 12.2 错误处理#
 
 ```typescript
 async parse(content: string, filePath: string): Promise<ParseResult> {
@@ -602,7 +677,7 @@ async parse(content: string, filePath: string): Promise<ParseResult> {
 }
 ```
 
-### 11.3 配置管理
+### 12.3 配置管理#
 
 ```typescript
 interface PluginConfig {
@@ -622,7 +697,7 @@ async init(config: PluginConfig = {}): Promise<void> {
 }
 ```
 
-### 11.4 资源清理
+### 12.4 资源清理#
 
 ```typescript
 private resources: any[] = [];
@@ -644,9 +719,9 @@ async dispose(): Promise<void> {
 }
 ```
 
-## 12. 常见问题
+## 13. 常见问题#
 
-### 12.1 插件加载失败
+### 13.1 插件加载失败#
 
 **问题**：插件加载时出现 `Module not found` 错误
 
@@ -654,8 +729,9 @@ async dispose(): Promise<void> {
 - 检查插件依赖是否安装
 - 确保插件路径正确
 - 验证 Node.js 版本兼容性
+- 使用 `npm link` 或 `file:` 协议正确引用 `gitnexus-shared`
 
-### 12.2 解析性能问题
+### 13.2 解析性能问题#
 
 **问题**：解析大文件时性能不佳
 
@@ -664,7 +740,7 @@ async dispose(): Promise<void> {
 - 使用 Worker 线程并行处理
 - 启用缓存机制
 
-### 12.3 插件冲突
+### 13.3 插件冲突#
 
 **问题**：多个插件处理相同文件类型
 
@@ -673,20 +749,22 @@ async dispose(): Promise<void> {
 - 明确插件处理范围
 - 使用 `supports` 方法进行精确匹配
 
-## 13. 相关文档
+## 14. 相关文档#
 
+- [插件系统总览](../gitnexus-plugins/README.md) - 查看所有可用插件
 - [API 参考](api-reference.md) - 完整的插件 API 文档
 - [LLM 开发指南](llm-guide.md) - 如何使用 LLM 辅助开发插件
-- [示例插件](../plugins/examples/) - 完整的插件示例代码
+- [快速开始](quickstart.md) - 5分钟创建第一个插件
+- [故障排除](troubleshooting.md) - 常见问题解决
 
-## 14. 联系方式
+## 15. 联系方式#
 
-- **GitHub Issues**：https://github.com/gitnexus/gitnexus/issues
+- **GitHub Issues**：https://github.com/abhigyanpatwari/GitNexus/issues
 - **Discord**：https://discord.gg/gitnexus
 - **Email**：support@gitnexus.io
 
 ---
 
-**版本**：1.0.0
-**最后更新**：2026-04-26
+**版本**：1.1.0
+**最后更新**：2026-05-07
 **维护者**：GitNexus 团队

@@ -1,0 +1,16 @@
+{
+  "name": "gitnexus-jpa-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "JPA plugin for GitNexus",
+  "main": "dist/index.js",
+  "gitnexus": {
+    "plugin": true
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "gitnexus-shared": "file:../../../gitnexus-shared"
+  }
+}

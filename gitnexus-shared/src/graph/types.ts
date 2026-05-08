@@ -50,7 +50,27 @@ export type NodeLabel =
   | 'ConfigProperty'
   | 'KafkaTopic'
   | 'KafkaConsumer'
-  | 'KafkaProducer';
+  | 'KafkaProducer'
+  // Plugin-extensible node types
+  | 'KafkaConfig'
+  | 'KafkaTopics'
+  | 'JpaEntity'
+  | 'JpaRepository'
+  | 'JpaField'
+  | 'MyBatisMapper'
+  | 'MyBatisXmlMapper'
+  | 'MyBatisSql'
+  | 'MyBatisMethod'
+  // Markdown node types
+  | 'MarkdownDoc'
+  | 'MarkdownHeading'
+  | 'CodeBlock'
+  | 'Link'
+  | 'Image'
+  | 'Todo'
+  | 'Table'
+  | 'Blockquote'
+  | 'List';
 
 export type NodeProperties = {
   name: string;
@@ -100,7 +120,14 @@ export type NodeProperties = {
   middleware?: string[];
   // Spring Boot / Enterprise Java properties
   beanName?: string;
-  beanType?: 'component' | 'service' | 'repository' | 'controller' | 'restController' | 'configuration' | 'beanMethod';
+  beanType?:
+    | 'component'
+    | 'service'
+    | 'repository'
+    | 'controller'
+    | 'restController'
+    | 'configuration'
+    | 'beanMethod';
   beanScope?: 'singleton' | 'prototype' | 'request' | 'session' | 'application' | 'websocket';
   isPrimary?: boolean;
   isLazy?: boolean;
@@ -191,7 +218,20 @@ export type RelationshipType =
   | 'SUBSCRIBES_TO'
   | 'CONSUMES_FROM'
   | 'PRODUCES_TO'
-  | 'HAS_BEAN';
+  | 'HAS_BEAN'
+  // Plugin-extensible relationship types
+  | 'HAS_CONFIG'
+  | 'HAS_SQL'
+  // Markdown relationship types
+  | 'HAS_HEADING'
+  | 'HAS_CODE_BLOCK'
+  | 'LINKS_TO'
+  | 'HAS_IMAGE'
+  | 'HAS_TODO'
+  | 'HAS_TABLE'
+  | 'HAS_BLOCKQUOTE'
+  | 'HAS_LIST'
+  | 'HAS_SECTION';
 
 export interface GraphNode {
   id: string;
@@ -224,7 +264,12 @@ export interface GraphRelationship {
     roles?: string[];
     eventType?: string;
     isAsync?: boolean;
-    listenerType?: 'eventListener' | 'transactionalEventListener' | 'kafkaListener' | 'rabbitListener' | 'jmsListener';
+    listenerType?:
+      | 'eventListener'
+      | 'transactionalEventListener'
+      | 'kafkaListener'
+      | 'rabbitListener'
+      | 'jmsListener';
     phase?: string;
     order?: number;
     destination?: string;
@@ -236,4 +281,39 @@ export interface GraphRelationship {
     readonly weight: number;
     readonly note?: string;
   }[];
+}
+
+/**
+ * Create a GraphNode with auto-generated id.
+ */
+export function createNode(label: NodeLabel, properties: NodeProperties): GraphNode {
+  const id = `${label.toLowerCase()}:${properties.name || 'unknown'}@${properties.filePath || 'unknown'}`;
+  return { id, label, properties };
+}
+
+/**
+ * Create a GraphRelationship with auto-generated id.
+ */
+export function createEdge(
+  type: RelationshipType,
+  sourceId: string,
+  targetId: string,
+  extra?: {
+    confidence?: number;
+    reason?: string;
+    step?: number;
+    properties?: Record<string, unknown>;
+  },
+): GraphRelationship {
+  const id = `${sourceId}-${type}-${targetId}`;
+  return {
+    id,
+    sourceId,
+    targetId,
+    type,
+    confidence: extra?.confidence ?? 1.0,
+    reason: extra?.reason ?? '',
+    step: extra?.step,
+    properties: extra?.properties as GraphRelationship['properties'],
+  };
 }

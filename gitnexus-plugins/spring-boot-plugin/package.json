@@ -1,0 +1,21 @@
+{
+  "name": "gitnexus-spring-boot-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Spring Boot plugin for GitNexus",
+  "main": "dist/index.js",
+  "gitnexus": {
+    "plugin": true
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "gitnexus-shared": "file:../../../gitnexus-shared",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

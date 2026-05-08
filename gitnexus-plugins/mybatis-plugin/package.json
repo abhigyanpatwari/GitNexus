@@ -1,0 +1,16 @@
+{
+  "name": "gitnexus-mybatis-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MyBatis plugin for GitNexus",
+  "main": "dist/index.js",
+  "gitnexus": {
+    "plugin": true
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "gitnexus-shared": "file:../../../gitnexus-shared"
+  }
+}

@@ -71,7 +71,7 @@
     "jsonc-parser": "^3.3.1",
     "lru-cache": "^11.0.0",
     "mnemonist": "^0.40.3",
-    "onnxruntime-node": "^1.24.0",
+    "onnxruntime-node": "^1.25.1",
     "pandemonium": "^2.4.0",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

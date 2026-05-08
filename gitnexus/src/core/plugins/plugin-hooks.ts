@@ -1,7 +1,7 @@
 // src/core/plugins/plugin-hooks.ts
 
 import { pluginManager } from './plugin-manager.js';
-import { PipelinePhase, PipelineContext } from '../ingestion/pipeline-phases/types.js';
+import { PipelineContext } from '../ingestion/pipeline-phases/types.js';
 import { Node, Edge } from './types.js';
 
 /**
@@ -21,7 +21,11 @@ export class PluginHooks {
   /**
    * 在解析文件后调用
    */
-  static async afterParse(filePath: string, nodes: Node[], edges: Edge[]): Promise<{ nodes: Node[]; edges: Edge[] }> {
+  static async afterParse(
+    filePath: string,
+    nodes: Node[],
+    edges: Edge[],
+  ): Promise<{ nodes: Node[]; edges: Edge[] }> {
     // 调用解析器插件
     const parser = pluginManager.parserRegistry.getParser(filePath);
     if (parser && pluginManager.getPluginStatus(parser.name)?.enabled) {
@@ -48,7 +52,12 @@ export class PluginHooks {
   /**
    * 在分析代码后调用
    */
-  static async afterAnalyze(filePath: string, language: string, node: any, result: any): Promise<any> {
+  static async afterAnalyze(
+    filePath: string,
+    language: string,
+    node: any,
+    result: any,
+  ): Promise<any> {
     // 调用分析器插件
     const analyzers = pluginManager.analyzerRegistry.getAnalyzers(language);
     for (const analyzer of analyzers) {
@@ -59,7 +68,7 @@ export class PluginHooks {
             language,
             semanticModel: {},
             parser: {},
-            config: {}
+            config: {},
           });
           if (analysisResult.results && analysisResult.results.length > 0) {
             // 合并分析结果
@@ -86,7 +95,7 @@ export class PluginHooks {
             phase,
             projectPath: context.repoPath,
             knowledgeGraph: context.graph,
-            config: {}
+            config: {},
           });
         } catch (error) {
           console.error(`Error in processor plugin ${processor.name}:`, error);
@@ -109,7 +118,7 @@ export class PluginHooks {
    */
   static async beforePipeline(repoPath: string): Promise<void> {
     // 初始化插件系统
-    const { initializePluginSystem } = require('./index.js');
+    const { initializePluginSystem } = await import('./index.js');
     await initializePluginSystem();
   }
 
@@ -133,7 +142,7 @@ export class PluginHooks {
           target,
           projectPath: context.repoPath || process.cwd(),
           knowledgeGraph: context.graph,
-          config: {}
+          config: {},
         });
         return result;
       } catch (error) {
@@ -156,7 +165,7 @@ export function registerPluginHooks() {
 /**
  * 插件钩子类型
  */
-export type PluginHookType = 
+export type PluginHookType =
   | 'beforeParse'
   | 'afterParse'
   | 'beforeAnalyze'

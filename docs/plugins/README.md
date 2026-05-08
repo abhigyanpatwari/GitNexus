@@ -19,152 +19,74 @@ GitNexus 插件系统是一个可扩展的架构，允许开发者通过插件�
 | **处理器插件** | 处理特定语言特性 | `ProcessorPlugin` |
 | **集成插件** | 集成外部工具 | `IntegrationPlugin` |
 
+## 可用插件
+
+| 插件 | 目录 | 描述 |
+|-------|------|---------|
+| JPA Plugin | `gitnexus-plugins/jpa-plugin/` | 解析 JPA 实体、仓库、字段注解，生成 `JpaEntity`、`JpaRepository`、`JpaField` 节点 |
+| Kafka Plugin | `gitnexus-plugins/kafka-plugin/` | 解析 Kafka 消费者/生产者代码和配置，生成 `KafkaConfig`、`KafkaTopics`、`KafkaConsumer`、`KafkaProducer` 节点 |
+| MyBatis Plugin | `gitnexus-plugins/mybatis-plugin/` | 解析 MyBatis Mapper 接口和 XML 映射文件，生成 `MyBatisMapper`、`MyBatisSql`、`MyBatisMethod` 节点 |
+| Spring Boot Plugin | `gitnexus-plugins/spring-boot-plugin/` | 解析 Spring Boot 组件、Bean、DI、AOP、事务等，生成 `Bean`、`ConfigProperty`、`KafkaTopic` 等节点 |
+| Markdown Plugin | `gitnexus-plugins/markdown-plugin/` | 解析 Markdown 文档，支持 Profile 定制（generic、api-docs、adr），生成 `MarkdownDoc`、`MarkdownHeading`、`CodeBlock`、`Link`、`Image`、`Todo`、`Table` 节点 |
+
 ## 快速开始
 
-### 安装插件
+### 扫描和加载插件
 
 ```bash
-# 从本地路径安装
-gitnexus plugin load ./my-plugin
-
-# 从 npm 包安装
-gitnexus plugin load gitnexus-xml-plugin
-
-# 启用插件
-gitnexus plugin enable gitnexus-xml-plugin
+cd gitnexus
+gitnexus plugin scan ../gitnexus-plugins/
 ```
 
-### 列出插件
+### 列出已加载插件
 
 ```bash
 gitnexus plugin list
 ```
 
-### 分析项目
-
-插件会在 `gitnexus analyze` 时自动生效：
+### 分析项目（插件自动生效）
 
 ```bash
-gitnexus analyze
+gitnexus analyze /path/to/repo
 ```
 
-## 文档结构
+## 示例插件
 
-```
-docs/plugins/
-├── README.md              # 本文档 - 插件系统总览
-├── development-guide.md   # 插件开发指南
-├── api-reference.md       # 插件 API 参考
-├── llm-guide.md           # LLM 辅助开发指南
-└── examples/
-    ├── README.md          # 示例插件总览
-    ├── parser-plugins/    # 解析器插件示例
-    │   └── xml-parser/    # XML 解析插件
-    └── analyzer-plugins/  # 分析器插件示例
-        └── spring-analyzer/ # Spring 分析器插件
-```
+### JPA 插件
+路径：`gitnexus-plugins/jpa-plugin/`
 
-## 开发工作流
+解析 JPA 实体类、Repository 接口、字段注解。
+- 节点类型：`JpaEntity`、`JpaRepository`、`JpaField`
+- 支持：`@Entity`、`@Table`、`@Id`、`@Column`、`@OneToMany` 等
 
-1. **创建插件项目**
-   ```bash
-   mkdir gitnexus-my-plugin
-   cd gitnexus-my-plugin
-   npm init -y
-   ```
+### Kafka 插件
+路径：`gitnexus-plugins/kafka-plugin/`
 
-2. **实现插件接口**
-   ```typescript
-   import { ParserPlugin, ParseResult, ParserRegistry } from 'gitnexus-shared';
-   
-   export class MyPlugin implements ParserPlugin {
-     name = 'gitnexus-my-plugin';
-     extensions = ['.myext'];
-     
-     async parse(content: string, filePath: string): Promise<ParseResult> {
-       // 解析逻辑
-       return { nodes: [], edges: [], metadata: {} };
-     }
-     
-     register(registry: ParserRegistry): void {
-       registry.registerParser(this);
-     }
-     
-     supports(filePath: string): boolean {
-       return filePath.endsWith('.myext');
-     }
-   }
-   
-   export default new MyPlugin();
-   ```
+解析 Kafka 配置、消费者/生产者代码。
+- 节点类型：`KafkaConfig`、`KafkaTopics`、`KafkaConsumer`、`KafkaProducer`
+- 支持：`@KafkaListener`、`KafkaTemplate` 等
 
-3. **测试插件**
-   ```bash
-   npm run build
-   gitnexus plugin load ./my-plugin
-   gitnexus analyze
-   ```
+### MyBatis 插件
+路径：`gitnexus-plugins/mybatis-plugin/`
 
-4. **发布插件**
-   ```bash
-   npm publish
-   ```
+解析 MyBatis Mapper 接口和 XML 映射文件。
+- 节点类型：`MyBatisMapper`、`MyBatisXmlMapper`、`MyBatisSql`、`MyBatisMethod`
+- 支持：`@Select`、`@Insert`、`@Update`、`<select>`、`<insert>` 等
 
-## LLM 辅助开发
+### Spring Boot 插件
+路径：`gitnexus-plugins/spring-boot-plugin/`
 
-使用 LLM 可以快速生成插件代码：
+解析 Spring Boot 组件、Bean、DI、AOP、事务、缓存等。
+- 节点类型：`Bean`、`ConfigProperty`、`KafkaTopic`、`KafkaConsumer`、`KafkaProducer`
+- 支持：`@Component`、`@Service`、`@Transactional`、`@Cacheable` 等
 
-```
-请为 GitNexus 创建一个解析器插件，用于解析 YAML 配置文件。
+### Markdown 插件
+路径：`gitnexus-plugins/markdown-plugin/`
 
-要求：
-1. 插件名称：gitnexus-yaml-plugin
-2. 支持扩展名：.yml, .yaml
-3. 使用 js-yaml 库进行解析
-4. 提取 YAML 中的键值对作为节点
-5. 生成 HAS_PROPERTY 边关系
-6. 遵循 GitNexus 插件接口规范
-
-请生成完整的 TypeScript 代码。
-```
-
-详见 [LLM 开发指南](llm-guide.md)。
-
-## 配置文件
-
-### 全局配置
-
-在 `~/.gitnexus/plugins.json` 中配置：
-
-```json
-{
-  "plugins": [
-    {
-      "name": "gitnexus-xml-plugin",
-      "enabled": true,
-      "config": {
-        "strictMode": false
-      }
-    }
-  ]
-}
-```
-
-### 项目级配置
-
-在项目 `.gitnexus/plugins.json` 中配置：
-
-```json
-{
-  "plugins": [
-    {
-      "name": "gitnexus-spring-plugin",
-      "enabled": true,
-      "config": {}
-    }
-  ]
-}
-```
+解析 Markdown 文档，支持 Profile 定制。
+- 节点类型：`MarkdownDoc`、`MarkdownHeading`、`CodeBlock`、`Link`、`Image`、`Todo`、`Table`
+- 内置 Profile：`generic`（通用）、`api-docs`（API 文档）、`adr`（架构决策记录）
+- 支持自定义 Profile（见 `gitnexus-plugins/README.md`）
 
 ## CLI 命令
 
@@ -176,47 +98,24 @@ docs/plugins/
 | `gitnexus plugin enable <name>` | 启用插件 |
 | `gitnexus plugin disable <name>` | 禁用插件 |
 | `gitnexus plugin status` | 显示插件系统状态 |
-| `gitnexus plugin scan [dir]` | 扫描插件目录 |
-
-## 示例插件
-
-### XML 解析插件
-
-解析 XML 文件，提取元素、属性和文本内容。
-
-详见 [XML 解析插件示例](examples/parser-plugins/xml-parser/)。
-
-### Spring 分析器插件
-
-分析 Spring 框架代码，识别组件和注解。
-
-详见 [Spring 分析器插件示例](examples/analyzer-plugins/spring-analyzer/)。
+| `gitnexus plugin scan [dir]` | 扫描插件目录并自动加载 |
 
 ## 相关文档
 
 - [开发指南](development-guide.md) - 详细的插件开发流程
 - [API 参考](api-reference.md) - 完整的插件 API 文档
 - [LLM 开发指南](llm-guide.md) - 如何使用 LLM 辅助开发插件
+- [快速开始](quickstart.md) - 5分钟创建第一个插件
+- [故障排除](troubleshooting.md) - 常见问题解决
 
-## 常见问题
+## 联系方式
 
-**Q: 如何创建新的插件类型？**
-A: 参考 `src/core/plugins/types.ts` 中的接口定义，实现相应的接口并注册到对应的注册表。
-
-**Q: 插件之间有冲突怎么办？**
-A: 使用 `priority` 属性调整处理器插件的执行顺序，使用 `supports` 方法进行精确的文件匹配。
-
-**Q: 如何调试插件？**
-A: 设置 `GITNEXUS_DEBUG=1` 环境变量，查看 `~/.gitnexus/logs/plugin.log` 日志文件。
-
-## 联系我们
-
-- **GitHub Issues**：https://github.com/gitnexus/gitnexus/issues
+- **GitHub Issues**：https://github.com/abhigyanpatwari/GitNexus/issues
 - **Discord**：https://discord.gg/gitnexus
 - **Email**：support@gitnexus.io
 
 ---
 
-**版本**：1.0.0
-**最后更新**：2026-04-26
+**版本**：1.1.0
+**最后更新**：2026-05-07
 **维护者**：GitNexus 团队

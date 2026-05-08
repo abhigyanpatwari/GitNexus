@@ -8,7 +8,7 @@ import {
   removePluginFromConfig,
   enablePluginInConfig,
   disablePluginInConfig,
-  getPluginsConfig
+  getPluginPaths,
 } from '../core/plugins/plugin-loader.js';
 
 /**
@@ -27,15 +27,21 @@ pluginCommand
   .action(async () => {
     try {
       await loadPluginsFromConfig();
-      
+
       const plugins = pluginManager.getPlugins();
-      const statuses = plugins.map(plugin => pluginManager.getPluginStatus(plugin.name));
-      
+      const statuses = plugins.map((plugin) => pluginManager.getPluginStatus(plugin.name));
+
       console.log('Installed plugins:');
-      console.log('┌──────────────────────────────────────────────────────────────────────────────┐');
-      console.log('│ Name                │ Version │ Type        │ Status │ Description          │');
-      console.log('├──────────────────────────────────────────────────────────────────────────────┤');
-      
+      console.log(
+        '┌──────────────────────────────────────────────────────────────────────────────┐',
+      );
+      console.log(
+        '│ Name                │ Version │ Type        │ Status │ Description          │',
+      );
+      console.log(
+        '├──────────────────────────────────────────────────────────────────────────────┤',
+      );
+
       plugins.forEach((plugin, index) => {
         const status = statuses[index];
         const name = plugin.name.padEnd(20);
@@ -43,12 +49,14 @@ pluginCommand
         const type = (status?.type || 'unknown').padEnd(12);
         const enabled = (status?.enabled ? 'enabled' : 'disabled').padEnd(8);
         const description = (plugin.description || '').padEnd(24);
-        
+
         console.log(`│ ${name} │ ${version} │ ${type} │ ${enabled} │ ${description} │`);
       });
-      
-      console.log('└──────────────────────────────────────────────────────────────────────────────┘');
-      
+
+      console.log(
+        '└──────────────────────────────────────────────────────────────────────────────┘',
+      );
+
       if (plugins.length === 0) {
         console.log('No plugins installed.');
       }
@@ -68,22 +76,22 @@ pluginCommand
   .action(async (pluginPath, options) => {
     try {
       const config = options.config ? JSON.parse(options.config) : {};
-      
+
       console.log(`Loading plugin from: ${pluginPath}`);
       const plugin = await pluginManager.loadPlugin({
         pluginPath,
         config,
-        enabled: options.enabled
+        enabled: options.enabled,
       });
-      
+
       // 添加到配置
       addPluginToConfig({
         name: plugin.name,
         enabled: options.enabled,
         config,
-        path: pluginPath
+        path: pluginPath,
       });
-      
+
       console.log(`✓ Plugin ${plugin.name} v${plugin.version} loaded successfully`);
     } catch (error) {
       console.error('Error loading plugin:', error);
@@ -100,10 +108,10 @@ pluginCommand
     try {
       console.log(`Unloading plugin: ${pluginName}`);
       pluginManager.unregisterPlugin(pluginName);
-      
+
       // 从配置中移除
       removePluginFromConfig(pluginName);
-      
+
       console.log(`✓ Plugin ${pluginName} unloaded successfully`);
     } catch (error) {
       console.error('Error unloading plugin:', error);
@@ -120,10 +128,10 @@ pluginCommand
     try {
       console.log(`Enabling plugin: ${pluginName}`);
       pluginManager.enablePlugin(pluginName);
-      
+
       // 更新配置
       enablePluginInConfig(pluginName);
-      
+
       console.log(`✓ Plugin ${pluginName} enabled successfully`);
     } catch (error) {
       console.error('Error enabling plugin:', error);
@@ -140,10 +148,10 @@ pluginCommand
     try {
       console.log(`Disabling plugin: ${pluginName}`);
       pluginManager.disablePlugin(pluginName);
-      
+
       // 更新配置
       disablePluginInConfig(pluginName);
-      
+
       console.log(`✓ Plugin ${pluginName} disabled successfully`);
     } catch (error) {
       console.error('Error disabling plugin:', error);
@@ -159,9 +167,9 @@ pluginCommand
   .action(async () => {
     try {
       await loadPluginsFromConfig();
-      
+
       const status = getPluginSystemStatus();
-      
+
       console.log('Plugin system status:');
       console.log('┌──────────────────────────────────────────────────────────────┐');
       console.log(`│ Version:          ${status.version}                      │`);
@@ -186,11 +194,42 @@ pluginCommand
   .action(async (pluginsDir = './plugins') => {
     try {
       console.log(`Scanning for plugins in: ${pluginsDir}`);
-      const plugins = await pluginManager.scanAndLoadPlugins(pluginsDir);
-      
-      console.log(`✓ Scanned ${pluginsDir} and loaded ${plugins.length} plugins`);
-      
-      plugins.forEach(plugin => {
+
+      // 扫描目录拿到插件路径
+      const pluginPaths = getPluginPaths(pluginsDir);
+
+      if (pluginPaths.length === 0) {
+        console.log(`No plugins found in ${pluginsDir}`);
+        return;
+      }
+
+      // 加载每个插件并保存到配置
+      const loadedPlugins: any[] = [];
+      for (const pluginPath of pluginPaths) {
+        try {
+          const plugin = await pluginManager.loadPlugin({
+            pluginPath,
+            config: {},
+            enabled: true,
+          });
+
+          // 保存到配置
+          addPluginToConfig({
+            name: plugin.name,
+            enabled: true,
+            config: {},
+            path: pluginPath,
+          });
+
+          loadedPlugins.push(plugin);
+        } catch (err) {
+          console.error(`Failed to load plugin ${pluginPath}:`, err);
+        }
+      }
+
+      console.log(`✓ Scanned ${pluginsDir} and loaded ${loadedPlugins.length} plugins`);
+
+      loadedPlugins.forEach((plugin) => {
         console.log(`  - ${plugin.name} v${plugin.version}`);
       });
     } catch (error) {
