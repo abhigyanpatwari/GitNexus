@@ -91,6 +91,25 @@ function clampCrossDepth(raw: unknown): { depth: number; warning?: string } {
   return { depth: d };
 }
 
+/**
+ * Clamp the impact timeout to a sane bounded range. Callers can feed this
+ * via tool params, so an unclamped value lets a single request hold a
+ * timer slot for an arbitrarily long duration (CodeQL js/resource-
+ * exhaustion). 100ms lower bound preserves test-suite scenarios that
+ * exercise tight timeouts; 5min upper bound is well above any legitimate
+ * single-impact compute. Applied at the validate boundary so the
+ * downstream `deadline` (Date.now() + timeoutMs) and the local-leg
+ * `setTimeout` see the same clamped value — earlier shapes had a 1hr
+ * outer cap and a 5min inner clamp that disagreed.
+ */
+export const IMPACT_TIMEOUT_MIN_MS = 100;
+export const IMPACT_TIMEOUT_MAX_MS = 5 * 60 * 1_000;
+
+export function clampTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return IMPACT_TIMEOUT_MIN_MS;
+  return Math.min(IMPACT_TIMEOUT_MAX_MS, Math.max(IMPACT_TIMEOUT_MIN_MS, Math.trunc(timeoutMs)));
+}
+
 export function validateGroupImpactParams(params: Record<string, unknown>):
   | {
       ok: true;
@@ -143,13 +162,19 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
-  let timeoutMs =
+  // Clamp at the validate boundary so the downstream `deadline` (line
+  // ~366) and `safeLocalImpact`'s `setTimeout` both see a single
+  // bounded value. Without this, the outer deadline budgeted Phase-2
+  // cross-repo fanout up to 1hr while only the inner setTimeout was
+  // capped to 5min — the two halves of CodeQL #184's mitigation
+  // disagreed.
+  const rawTimeoutMs =
     typeof params.timeoutMs === 'number' && params.timeoutMs > 0
       ? params.timeoutMs
       : typeof params.timeout === 'number' && params.timeout > 0
         ? params.timeout
         : DEFAULT_LOCAL_IMPACT_TIMEOUT_MS;
-  if (timeoutMs > 3_600_000) timeoutMs = 3_600_000;
+  const timeoutMs = clampTimeout(rawTimeoutMs);
 
   return {
     ok: true,
@@ -183,22 +208,6 @@ async function resolveGroupRepo(
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-}
-
-/**
- * Clamp the impact timeout to a sane bounded range. Callers can feed this
- * via tool params, so an unclamped value lets a single request hold a
- * timer slot for an arbitrarily long duration (CodeQL js/resource-
- * exhaustion). 100ms lower bound preserves test-suite scenarios that
- * exercise tight timeouts; 5min upper bound is well above any legitimate
- * single-impact compute.
- */
-const IMPACT_TIMEOUT_MIN_MS = 100;
-const IMPACT_TIMEOUT_MAX_MS = 5 * 60 * 1_000;
-
-function clampTimeout(timeoutMs: number): number {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return IMPACT_TIMEOUT_MIN_MS;
-  return Math.min(IMPACT_TIMEOUT_MAX_MS, Math.max(IMPACT_TIMEOUT_MIN_MS, Math.trunc(timeoutMs)));
 }
 
 async function safeLocalImpact(
