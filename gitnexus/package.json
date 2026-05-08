@@ -95,6 +95,7 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.1.0",
+    "@tree-sitter-grammars/tree-sitter-zig": "1.1.2",
     "onnxruntime-node": "^1.24.0"
   },
   "trustedDependencies": [
@@ -124,6 +125,9 @@
     "sharp": ">=0.35.0",
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
+    },
+    "@tree-sitter-grammars/tree-sitter-zig": {
+      "tree-sitter": "$tree-sitter"
     }
   },
   "engines": {

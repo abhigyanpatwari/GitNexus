@@ -166,6 +166,13 @@ function findBodies(node: SyntaxNode, bodyNodeSet: Set<string>): SyntaxNode[] {
     result.push(bodyField);
     addNestedBodies(bodyField, bodyNodeSet, result);
   }
+  // Last resort: when no body wrapper exists (e.g. tree-sitter-zig's
+  // struct_declaration directly contains its function_declaration children),
+  // use the type-declaration node itself as the body. The downstream walk
+  // filters by `methodNodeTypes`, so unrelated children are ignored.
+  if (result.length === 0 && bodyNodeSet.size === 0) {
+    result.push(node);
+  }
   return result;
 }
 

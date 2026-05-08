@@ -680,6 +680,35 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Zig', () => {
+    it('parses functions, structs, enums, and imports if tree-sitter-zig is available', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Zig);
+      } catch {
+        // @tree-sitter-grammars/tree-sitter-zig not installed — skip
+        return;
+      }
+
+      const content = readFixture('simple.zig');
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const defTypes = defs.map((d) => d.type);
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.struct');
+      expect(defTypes).toContain('definition.enum');
+    });
+
+    it('gracefully handles missing tree-sitter-zig', async () => {
+      try {
+        await loadLanguage(SupportedLanguages.Zig);
+      } catch (e: any) {
+        expect(e.message).toContain('Unsupported language');
+      }
+    });
+  });
+
   describe('unhappy path', () => {
     it('returns null/undefined for unsupported file extensions', () => {
       expect(getLanguageFromFilename('archive.xyz')).toBeNull();
@@ -891,7 +920,7 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
-        // Dart and Swift are excluded — they are optionalDependencies that may not be installed
+        // Dart, Swift, and Zig are excluded — they are optionalDependencies that may not be installed
       ];
 
       for (const [lang, fixture, filePath] of langFixtures) {

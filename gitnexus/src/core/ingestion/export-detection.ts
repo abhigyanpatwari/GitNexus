@@ -242,3 +242,34 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/** Zig declaration node types whose `pub` keyword child marks the symbol public. */
+const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration']);
+
+/**
+ * Zig: walk to the enclosing decl, scan its direct children for an unnamed `pub`
+ * keyword token (tree-sitter-zig models `pub` as an anonymous keyword child of
+ * function_declaration / variable_declaration). Container fields (struct/enum
+ * variants) are public if their enclosing variable_declaration is public.
+ */
+export const zigExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (ZIG_DECL_TYPES.has(current.type)) {
+      for (let i = 0; i < current.childCount; i++) {
+        const child = current.child(i);
+        if (child?.type === 'pub') return true;
+      }
+      // For nested function_declaration (a method inside a struct), keep walking
+      // up to the outer variable_declaration — it's the binding that carries
+      // module-level visibility.
+      if (current.type === 'function_declaration') {
+        current = current.parent;
+        continue;
+      }
+      return false;
+    }
+    current = current.parent;
+  }
+  return false;
+};

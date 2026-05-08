@@ -148,6 +148,13 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       if (result.length === 0 && bodyField) {
         result.push(bodyField);
       }
+      // Last resort: when no body wrapper exists (e.g. tree-sitter-zig's
+      // struct_declaration directly contains its container_field children),
+      // use the type-declaration node itself as the body. The downstream
+      // walk filters by `fieldNodeTypes`, so unrelated children are ignored.
+      if (result.length === 0 && bodyNodeSet.size === 0) {
+        result.push(node);
+      }
       return result;
     }
 

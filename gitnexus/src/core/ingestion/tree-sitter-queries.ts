@@ -2447,6 +2447,58 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
+// ── Zig ──────────────────────────────────────────────────────────────────────
+// Verified against @tree-sitter-grammars/tree-sitter-zig 1.1.2.
+// Container declarations (struct/enum/union) are anonymous in the grammar; the
+// binding name lives on the parent variable_declaration's first identifier
+// child. Heritage queries are intentionally absent — Zig has no inheritance.
+export const ZIG_QUERIES = `
+; Functions (top-level + methods inside struct/enum/union containers)
+(function_declaration
+  name: (identifier) @name) @definition.function
+
+; Struct: const Foo = struct { ... }
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @definition.struct
+
+; Enum: const Foo = enum { ... }
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @definition.enum
+
+; Union: const Foo = union { ... } (and tagged-union union(enum) { ... })
+; Labeled as @definition.struct because CONTAINER_TYPE_TO_LABEL has no Union
+; label by default; the CONTAINER_TYPE_TO_LABEL update for union_declaration
+; lives in ast-helpers.ts.
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @definition.struct
+
+; Container fields (struct fields, enum variants, union variants).
+(container_field
+  name: (identifier) @name) @definition.property
+
+; @import("path") — capture the string argument as @import.source.
+; The #eq? predicate restricts the match to the @import builtin (other
+; builtins like @sizeOf, @TypeOf, @as are not import statements).
+(variable_declaration
+  (builtin_function
+    (builtin_identifier) @builtin
+    (arguments
+      (string) @import.source))
+  (#eq? @builtin "@import")) @import
+
+; Free calls: foo(...)
+(call_expression
+  function: (identifier) @call.name) @call
+
+; Member calls: obj.method(...) and namespace.fn(...) (e.g. std.debug.print).
+(call_expression
+  function: (field_expression
+    member: (identifier) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -2466,4 +2518,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Zig]: ZIG_QUERIES,
 };

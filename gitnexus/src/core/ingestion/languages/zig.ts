@@ -1,0 +1,51 @@
+/**
+ * Zig Language Provider.
+ *
+ * Key Zig traits:
+ *   - mroStrategy: default 'first-wins' is irrelevant — Zig has no inheritance,
+ *     and no heritage hooks are provided (Zig queries never produce
+ *     `@heritage.*` captures).
+ *   - exportChecker: walks to the enclosing variable_declaration /
+ *     function_declaration and looks for a `pub` keyword child.
+ *   - importResolver: only resolves local `@import("./foo.zig")` paths;
+ *     `@import("std")` and external packages are deliberately external.
+ *   - namedBindingExtractor: omitted — `const Foo = @import("x").Foo` is a
+ *     const declaration, not import-statement syntax.
+ *   - scope-resolution hooks (emitScopeCaptures, interpretImport, …) are
+ *     omitted — Zig is classified `experimental` and uses the generic
+ *     fallback resolution path.
+ */
+
+import { SupportedLanguages } from 'gitnexus-shared';
+import { defineLanguage } from '../language-provider.js';
+import { ZIG_QUERIES } from '../tree-sitter-queries.js';
+import { zigExportChecker } from '../export-detection.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { zigImportConfig } from '../import-resolvers/configs/zig.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { zigCallConfig } from '../call-extractors/configs/zig.js';
+import { createClassExtractor } from '../class-extractors/generic.js';
+import { zigClassConfig } from '../class-extractors/configs/zig.js';
+import { createFieldExtractor } from '../field-extractors/generic.js';
+import { zigFieldConfig } from '../field-extractors/configs/zig.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { zigMethodConfig } from '../method-extractors/configs/zig.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
+import { zigTypeConfig } from '../type-extractors/zig.js';
+
+export const zigProvider = defineLanguage({
+  id: SupportedLanguages.Zig,
+  extensions: ['.zig'],
+  entryPointPatterns: [/^main$/],
+  astFrameworkPatterns: [],
+  treeSitterQueries: ZIG_QUERIES,
+  typeConfig: zigTypeConfig,
+  exportChecker: zigExportChecker,
+  importResolver: createImportResolver(zigImportConfig),
+  callExtractor: createCallExtractor(zigCallConfig),
+  classExtractor: createClassExtractor(zigClassConfig),
+  fieldExtractor: createFieldExtractor(zigFieldConfig),
+  methodExtractor: createMethodExtractor(zigMethodConfig),
+  variableExtractor: createVariableExtractor(zigVariableConfig),
+});

@@ -117,6 +117,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'fun main() {}\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.Zig]: {
+    language: SupportedLanguages.Zig,
+    snippet: 'pub fn main() void {}\n',
+    rootType: 'source_file',
+  },
 };
 
 describe('parser-loader ABI load-smoke (#1922)', () => {

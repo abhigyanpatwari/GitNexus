@@ -41,6 +41,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Dart]: 'production',
     [SupportedLanguages.Vue]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
+    [SupportedLanguages.Zig]: 'experimental',
   };
 
 /** Convenience predicate: is this language gating Ring 4 retirement? */
