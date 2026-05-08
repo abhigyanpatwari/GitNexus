@@ -15,6 +15,7 @@ import type { StructureOutput } from './structure.js';
 import { computeMRO } from '../mro-processor.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface MROOutput {
   entries: number;
   ambiguityCount: number;
@@ -42,7 +43,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
     const mroResult = computeMRO(ctx.graph);
 
     if (isDev && mroResult.entries.length > 0) {
-      console.log(
+      logger.info(
         `🔀 MRO: ${mroResult.entries.length} classes analyzed, ${mroResult.ambiguityCount} ambiguities, ${mroResult.overrideEdges} METHOD_OVERRIDES, ${mroResult.methodImplementsEdges} METHOD_IMPLEMENTS`,
       );
     }

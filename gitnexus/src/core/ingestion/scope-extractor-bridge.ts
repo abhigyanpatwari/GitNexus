@@ -28,6 +28,7 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { extract as extractScope } from './scope-extractor.js';
 import type { LanguageProvider } from './language-provider.js';
 
+import { logger } from '../logger.js';
 /** Callback used to report scope-extraction warnings to the host (worker or direct). */
 export type ScopeBridgeWarn = (message: string) => void;
 
@@ -53,7 +54,7 @@ export function extractParsedFile(
       err instanceof Error ? err.message : String(err)
     }`;
     if (onWarn !== undefined) onWarn(message);
-    else console.warn(message);
+    logger.warn(message);
     return undefined;
   }
 }

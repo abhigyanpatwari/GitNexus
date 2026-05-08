@@ -23,6 +23,7 @@ import { topologicalLevelSort } from '../utils/graph-sort.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 /** Max AST trees to keep in LRU cache for cross-file binding propagation. */
 const AST_CACHE_CAP = 50;
 
@@ -60,7 +61,7 @@ export async function runCrossFileBindingPropagation(
   const { levels, cycleCount } = topologicalLevelSort(ctx.importMap);
 
   if (isDev && cycleCount > 0) {
-    console.log(`🔄 ${cycleCount} files in import cycles (processed last in undefined order)`);
+    logger.info(`🔄 ${cycleCount} files in import cycles (processed last in undefined order)`);
   }
 
   let filesWithGaps = 0;
@@ -88,7 +89,7 @@ export async function runCrossFileBindingPropagation(
   const gapRatio = totalFiles > 0 ? filesWithGaps / totalFiles : 0;
   if (gapRatio < CROSS_FILE_SKIP_THRESHOLD && filesWithGaps < gapThreshold) {
     if (isDev) {
-      console.log(
+      logger.info(
         `⏭️ Cross-file re-resolution skipped (${filesWithGaps}/${totalFiles} files, ${(gapRatio * 100).toFixed(1)}% < ${CROSS_FILE_SKIP_THRESHOLD * 100}% threshold)`,
       );
     }
@@ -193,7 +194,7 @@ export async function runCrossFileBindingPropagation(
 
     if (crossFileResolved >= MAX_CROSS_FILE_REPROCESS) {
       if (isDev)
-        console.log(`⚠️ Cross-file re-resolution capped at ${MAX_CROSS_FILE_REPROCESS} files`);
+        logger.info(`⚠️ Cross-file re-resolution capped at ${MAX_CROSS_FILE_REPROCESS} files`);
       break;
     }
   }
@@ -204,7 +205,7 @@ export async function runCrossFileBindingPropagation(
     const elapsed = Date.now() - crossFileStart;
     const totalElapsed = Date.now() - pipelineStart;
     const reResolutionPct = totalElapsed > 0 ? ((elapsed / totalElapsed) * 100).toFixed(1) : '0';
-    console.log(
+    logger.info(
       `🔗 Cross-file re-resolution: ${crossFileResolved} candidates re-processed` +
         ` in ${elapsed}ms (${reResolutionPct}% of total ingestion time so far)`,
     );
