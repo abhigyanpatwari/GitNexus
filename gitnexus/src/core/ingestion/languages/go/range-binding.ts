@@ -30,10 +30,10 @@ export function populateGoRangeBindings(
 
     for (const rangeNode of tree.rootNode.descendantsOfType('for_statement')) {
       const rangeClause = rangeNode.namedChildren.find((c) => c.type === 'range_clause');
-      if (rangeClause === null) continue;
+      if (rangeClause === undefined) continue;
 
       const left = rangeClause.namedChildren.find((c) => c.type === 'expression_list');
-      if (left === null) continue;
+      if (left === undefined) continue;
 
       const rangeExpr = rangeClause.namedChildren.find(
         (c, idx) => c.type !== 'expression_list' && idx > rangeClause.namedChildren.indexOf(left),

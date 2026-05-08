@@ -115,6 +115,12 @@ export function withTestLbugDB(
       }
     }
 
+    // 5b. Flush WAL so seed data + FTS indexes are visible to the pool
+    //     adapter's read path. Without this, Windows CI intermittently
+    //     fails FTS queries because the WAL hasn't been checkpointed
+    //     before the pool adapter starts reading.
+    await adapter.flushWAL();
+
     // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API

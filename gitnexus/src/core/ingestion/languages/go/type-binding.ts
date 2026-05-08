@@ -50,7 +50,7 @@ export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
           const typeArg = args.namedChildren.find((c) =>
             ['type_identifier', 'qualified_type'].includes(c.type),
           );
-          if (typeArg !== null) {
+          if (typeArg !== undefined) {
             const typeName = extractSimpleTypeNameText(typeArg);
             const nameNodes = lhs.namedChildren.filter((c) => c.type === 'identifier');
             if (nameNodes.length > 0) {
@@ -71,13 +71,13 @@ export function synthesizeGoTypeBindings(rootNode: SyntaxNode): CaptureMatch[] {
             // V1: channel_type not handled — make(chan T) produces no typeBinding.
             ['slice_type', 'map_type'].includes(c.type),
           );
-          if (sliceOrMap !== null) {
+          if (sliceOrMap !== undefined) {
             let typeName = '';
             if (sliceOrMap.type === 'slice_type') {
               const elem = sliceOrMap.namedChildren.find((c) =>
                 ['type_identifier', 'qualified_type'].includes(c.type),
               );
-              if (elem !== null) typeName = extractSimpleTypeNameText(elem);
+              if (elem !== undefined) typeName = extractSimpleTypeNameText(elem);
             } else if (sliceOrMap.type === 'map_type') {
               const typeChildren = sliceOrMap.namedChildren.filter((c) =>
                 ['type_identifier', 'qualified_type'].includes(c.type),

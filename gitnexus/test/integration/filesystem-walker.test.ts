@@ -8,6 +8,7 @@ import {
 } from '../../src/core/ingestion/filesystem-walker.js';
 import { _resetMaxFileSizeWarnings } from '../../src/core/ingestion/utils/max-file-size.js';
 
+import { _captureLogger } from '../../src/core/logger.js';
 describe('filesystem-walker', () => {
   let tmpDir: string;
 
@@ -328,7 +329,7 @@ describe('filesystem-walker', () => {
     const BIG_FILE = 'src/big.ts';
     const BIG_FILE_BYTES = 600 * 1024;
     const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
-    let warnSpy: ReturnType<typeof vi.spyOn>;
+    let cap: ReturnType<typeof _captureLogger>;
 
     beforeAll(async () => {
       sizeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-test-'));
@@ -344,7 +345,7 @@ describe('filesystem-walker', () => {
     beforeEach(() => {
       delete process.env.GITNEXUS_MAX_FILE_SIZE;
       _resetMaxFileSizeWarnings();
-      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      cap = _captureLogger();
     });
 
     afterEach(() => {
@@ -353,7 +354,7 @@ describe('filesystem-walker', () => {
       } else {
         process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL_ENV;
       }
-      warnSpy.mockRestore();
+      cap.restore();
     });
 
     it('skips a 600KB file by default', async () => {
@@ -375,27 +376,27 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(sizeDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths).not.toContain(BIG_FILE);
-      const invalidWarnings = warnSpy.mock.calls.filter((c) =>
-        String(c[0]).includes('must be a positive integer'),
-      );
+      const invalidWarnings = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('must be a positive integer'));
       expect(invalidWarnings).toHaveLength(1);
     });
 
     it('omits the "generated/vendored" suffix when threshold is overridden', async () => {
       process.env.GITNEXUS_MAX_FILE_SIZE = '1';
       await walkRepositoryPaths(sizeDir);
-      const skipWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('Skipped '));
+      const skipWarnings = cap.records().filter((r) => String(r.msg ?? '').includes('Skipped '));
       expect(skipWarnings.length).toBeGreaterThan(0);
-      for (const call of skipWarnings) {
-        expect(String(call[0])).not.toContain('generated/vendored');
+      for (const r of skipWarnings) {
+        expect(String(r.msg ?? '')).not.toContain('generated/vendored');
       }
     });
 
     it('keeps the "generated/vendored" suffix under the default threshold', async () => {
       await walkRepositoryPaths(sizeDir);
-      const skipWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('Skipped '));
+      const skipWarnings = cap.records().filter((r) => String(r.msg ?? '').includes('Skipped '));
       expect(skipWarnings.length).toBeGreaterThan(0);
-      expect(String(skipWarnings[0][0])).toContain('generated/vendored');
+      expect(String(skipWarnings[0].msg ?? '')).toContain('generated/vendored');
     });
   });
 });

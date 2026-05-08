@@ -24,6 +24,7 @@ import {
 } from './lbug-config.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
+import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
@@ -257,18 +258,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps
       await runWithSessionLock(async () => {
-        try {
-          if (conn) await conn.close();
-        } catch {
-          /* best-effort */
-        }
-        try {
-          if (db) await db.close();
-        } catch {
-          /* best-effort */
-        }
-        conn = null;
-        db = null;
+        await safeClose();
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
@@ -294,14 +284,7 @@ const ensureLbugInitialized = async (dbPath: string) => {
 const doInitLbug = async (dbPath: string) => {
   // Different database requested — close the old one first
   if (conn || db) {
-    try {
-      if (conn) await conn.close();
-    } catch {}
-    try {
-      if (db) await db.close();
-    } catch {}
-    conn = null;
-    db = null;
+    await safeClose();
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
@@ -348,7 +331,7 @@ const doInitLbug = async (dbPath: string) => {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('already exists')) {
-        console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+        logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
     }
   }
@@ -701,7 +684,7 @@ export const insertNodeToLbug = async (
     return false;
   } catch (e: any) {
     // Node may already exist or other error
-    console.error(`Failed to insert ${label} node:`, e.message);
+    logger.error({ err: e.message }, `Failed to insert ${label} node:`);
     return false;
   }
 };
@@ -1028,14 +1011,14 @@ export const fetchExistingEmbeddingHashes = async (
           const nodeId = r.nodeId ?? r[0];
           if (nodeId) map.set(nodeId, STALE_HASH_SENTINEL);
         }
-        console.log(
+        logger.info(
           `[embed] ${map.size} nodes in legacy DB (missing chunk-aware columns) — all treated as stale`,
         );
         return map;
       } catch (fallbackErr: any) {
         const fallbackMsg = fallbackErr?.message ?? '';
         if (isMissingColumnOrTableError(fallbackMsg)) {
-          console.log(
+          logger.info(
             `[embed] CodeEmbedding table not yet present — full embedding run (${fallbackMsg})`,
           );
           return undefined;
@@ -1047,19 +1030,62 @@ export const fetchExistingEmbeddingHashes = async (
   }
 };
 
-export const closeLbug = async (): Promise<void> => {
+/**
+ * Flush the WAL so all pending writes are visible to subsequent readers.
+ *
+ * Best-effort: swallows errors from older LadybugDB versions or schemaless
+ * databases that do not support the CHECKPOINT command.  A no-op when there
+ * is nothing pending, so safe (and cheap) to call unconditionally after any
+ * write path.
+ *
+ * Use this instead of safeClose when the connection must stay open
+ * (e.g. the /api/embed handler that keeps serving queries after flushing).
+ *
+ * @see safeClose — CHECKPOINT + connection/database close
+ */
+export const flushWAL = async (): Promise<void> => {
+  if (!conn) return;
+  try {
+    await conn.query('CHECKPOINT');
+  } catch {
+    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  }
+};
+
+/**
+ * Flush the WAL and close the connection and database handles.
+ *
+ * Consolidates the CHECKPOINT + close pattern into a single function so
+ * callers never call conn.close() or db.close() directly (#1376).
+ * An ESLint no-restricted-syntax rule enforces this — see eslint.config.mjs.
+ *
+ * @see flushWAL — CHECKPOINT-only (connection stays open)
+ * @see closeLbug — safeClose + module state reset (full teardown)
+ */
+export const safeClose = async (): Promise<void> => {
+  await flushWAL();
   if (conn) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- sole authorised close site
       await conn.close();
-    } catch {}
+    } catch {
+      /* best-effort */
+    }
     conn = null;
   }
   if (db) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- sole authorised close site
       await db.close();
-    } catch {}
+    } catch {
+      /* best-effort */
+    }
     db = null;
   }
+};
+
+export const closeLbug = async (): Promise<void> => {
+  await safeClose();
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;

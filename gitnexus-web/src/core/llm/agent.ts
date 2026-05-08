@@ -277,8 +277,10 @@ const extractInstanceName = (endpoint: string): string => {
   try {
     const url = new URL(endpoint);
     const hostname = url.hostname;
-    // Extract the first part before .openai.azure.com
-    const match = hostname.match(/^([^.]+)\.openai\.azure\.com/);
+    // Extract the first part before .openai.azure.com. The trailing `$`
+    // anchor is required (CodeQL js/regex/missing-regexp-anchor): without
+    // it `evil.openai.azure.com.attacker.tld` would match.
+    const match = hostname.match(/^([^.]+)\.openai\.azure\.com$/);
     if (match) {
       return match[1];
     }

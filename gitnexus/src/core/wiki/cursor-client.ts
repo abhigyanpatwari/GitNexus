@@ -10,6 +10,7 @@
 import { spawn, execSync } from 'child_process';
 import type { LLMResponse, CallLLMOptions } from './llm-client.js';
 
+import { logger } from '../logger.js';
 export interface CursorConfig {
   model?: string;
   workingDirectory?: string;
@@ -21,7 +22,7 @@ function isVerbose(): boolean {
 
 function verboseLog(...args: unknown[]): void {
   if (isVerbose()) {
-    console.log('[cursor-cli]', ...args);
+    logger.info({ args }, '[cursor-cli]');
   }
 }
 
