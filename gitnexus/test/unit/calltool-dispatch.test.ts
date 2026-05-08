@@ -48,6 +48,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 // tests don't shell out to git.
 vi.mock('../../src/core/git-staleness.js', () => ({
   checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
+  checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
 
