@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { syncGroup, stableRepoPoolId } from '../../../src/core/group/sync.js';
+import { _captureLogger } from '../../../src/core/logger.js';
 import type {
   GroupConfig,
   StoredContract,
@@ -650,9 +651,7 @@ service OrderService {
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
 
-    const warnings: string[] = [];
-    const origWarn = console.warn;
-    console.warn = (msg: string) => warnings.push(String(msg));
+    const cap = _captureLogger();
     try {
       const result = await syncGroup(config, {
         extractorOverride: async () => [],
@@ -664,9 +663,9 @@ service OrderService {
       expect(result.crossLinks[0].to.symbolUid).toBe(
         'manifest::app/dangling::http::POST::/api/missing',
       );
-      expect(warnings.some((w) => w.includes('app/dangling'))).toBe(true);
+      expect(cap.records().some((r) => String(r.msg ?? '').includes('app/dangling'))).toBe(true);
     } finally {
-      console.warn = origWarn;
+      cap.restore();
     }
   });
 

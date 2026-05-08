@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -8,6 +8,7 @@ import {
   loadIgnoreRules,
   createIgnoreFilter,
 } from '../../src/config/ignore-service.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 describe('shouldIgnorePath', () => {
   describe('version control directories', () => {
@@ -574,13 +575,13 @@ describe('loadIgnoreRules — error handling', () => {
       await fs.writeFile(gitignorePath, 'data/\n');
       await fs.chmod(gitignorePath, 0o000);
 
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const cap = _captureLogger();
       const result = await loadIgnoreRules(tmpDir);
       // Should still return (null or partial), not throw
       expect(result).toBeNull();
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('.gitignore'));
+      expect(cap.records().some((r) => String(r.msg ?? '').includes('.gitignore'))).toBe(true);
 
-      warnSpy.mockRestore();
+      cap.restore();
       await fs.chmod(gitignorePath, 0o644);
       await fs.unlink(gitignorePath);
     },

@@ -19,6 +19,7 @@ import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.j
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
 
+import { _captureLogger } from '../../src/core/logger.js';
 describe('sequential native parser availability', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -43,7 +44,7 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processImports skips files in verbose mode', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
@@ -58,11 +59,17 @@ describe('sequential native parser availability', () => {
       ['App.swift'],
     );
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[ingestion] Skipped 1 swift file(s) in import processing — swift parser not available.',
-    );
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.msg ===
+            '[ingestion] Skipped 1 swift file(s) in import processing — swift parser not available.',
+        ),
+    ).toBe(true);
 
-    warnSpy.mockRestore();
+    cap.restore();
     if (previous === undefined) {
       delete process.env.GITNEXUS_VERBOSE;
     } else {
@@ -86,7 +93,7 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processCalls skips files in verbose mode', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
@@ -98,11 +105,17 @@ describe('sequential native parser availability', () => {
       createResolutionContext(),
     );
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[ingestion] Skipped 1 swift file(s) in call processing — swift parser not available.',
-    );
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.msg ===
+            '[ingestion] Skipped 1 swift file(s) in call processing — swift parser not available.',
+        ),
+    ).toBe(true);
 
-    warnSpy.mockRestore();
+    cap.restore();
     if (previous === undefined) {
       delete process.env.GITNEXUS_VERBOSE;
     } else {
@@ -126,7 +139,7 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processHeritage skips files in verbose mode', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
@@ -138,11 +151,17 @@ describe('sequential native parser availability', () => {
       createResolutionContext(),
     );
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[ingestion] Skipped 1 swift file(s) in heritage processing — swift parser not available.',
-    );
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.msg ===
+            '[ingestion] Skipped 1 swift file(s) in heritage processing — swift parser not available.',
+        ),
+    ).toBe(true);
 
-    warnSpy.mockRestore();
+    cap.restore();
     if (previous === undefined) {
       delete process.env.GITNEXUS_VERBOSE;
     } else {
@@ -166,7 +185,7 @@ describe('sequential native parser availability', () => {
   });
 
   it('warns when processParsing skips files in verbose mode', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const cap = _captureLogger();
     const previous = process.env.GITNEXUS_VERBOSE;
     process.env.GITNEXUS_VERBOSE = '1';
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
@@ -178,11 +197,17 @@ describe('sequential native parser availability', () => {
       createASTCache(),
     );
 
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[ingestion] Skipped 1 swift file(s) in parsing processing — swift parser not available.',
-    );
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.msg ===
+            '[ingestion] Skipped 1 swift file(s) in parsing processing — swift parser not available.',
+        ),
+    ).toBe(true);
 
-    warnSpy.mockRestore();
+    cap.restore();
     if (previous === undefined) {
       delete process.env.GITNEXUS_VERBOSE;
     } else {

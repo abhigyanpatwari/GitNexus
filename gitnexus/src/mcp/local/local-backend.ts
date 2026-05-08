@@ -41,6 +41,7 @@ import {
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
+import { logger } from '../../core/logger.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -164,29 +165,27 @@ const confidenceForRelType = (relType: string | undefined): number =>
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  console.error(`GitNexus [${context}]: ${msg}`);
+  logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
 /**
- * Structured per-query latency log for production aggregation (#553).
+ * Per-query latency telemetry for production aggregation (#553).
  *
- * Emitted on stderr — NOT stdout — because the MCP stdio transport uses
- * stdout exclusively for JSON-RPC responses (#324), and the CLI e2e test
- * `tool output goes to stdout via fd 1` asserts that stdout parses cleanly
- * as JSON. Any `console.log` from inside a tool handler would corrupt the
- * protocol. Matches the existing `logQueryError` convention above, which
- * uses stderr for the same reason.
+ * Logged at `debug` level — timing is observability/telemetry, not an
+ * error. Operators wanting per-query timing set `GITNEXUS_LOG_LEVEL=debug`
+ * (or equivalent). Emitting at `error` level (the original migration
+ * artifact) caused alerting rules to fire on every successful query and
+ * inflated stderr noise for every MCP/CLI invocation.
  *
- * The `GitNexus [query:timing] …` prefix keeps lines greppable; the
- * `phases` payload is JSON so log-scraping pipelines can parse it
- * without custom format knowledge.
+ * Emitted via the project logger which routes to stderr — never stdout —
+ * because the MCP stdio transport uses stdout exclusively for JSON-RPC
+ * responses (#324) and the CLI e2e test `tool output goes to stdout via
+ * fd 1` asserts stdout parses cleanly as JSON.
  */
 function logQueryTiming(query: string, phases: Record<string, number>): void {
   const totalMs = phases.wall ?? Object.values(phases).reduce((a, b) => a + b, 0);
   const truncated = query.length > 80 ? `${query.slice(0, 80)}…` : query;
-  console.error(
-    `GitNexus [query:timing] query=${JSON.stringify(truncated)} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
-  );
+  logger.debug({ query: truncated, totalMs, phases }, 'GitNexus query timing');
 }
 
 export interface CodebaseContext {
@@ -287,7 +286,7 @@ export class LocalBackend {
       // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
       const kuzu = await cleanupOldKuzuFiles(storagePath);
       if (kuzu.found && kuzu.needsReindex) {
-        console.error(
+        logger.error(
           `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
         );
       }
@@ -637,7 +636,7 @@ export class LocalBackend {
     }
 
     this.warnedSiblingDrift.add(cacheKey);
-    console.error(`GitNexus: ${match.hint}`);
+    logger.error(`GitNexus: ${match.hint}`);
   }
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
@@ -990,7 +989,10 @@ export class LocalBackend {
     try {
       bm25Results = await searchFTSFromLbug(query, limit, repo.id);
     } catch (err: any) {
-      console.error('GitNexus: BM25/FTS search failed (FTS indexes may not exist) -', err.message);
+      logger.error(
+        { err: err.message },
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+      );
       return { results: [], ftsUsed: false };
     }
 
@@ -1114,7 +1116,7 @@ export class LocalBackend {
         // policy. Emitted once per `LocalBackend` instance lifetime to avoid
         // noisy stderr on hot semantic-search paths (DoD §2.8).
         this.warnedVectorUnsupported = true;
-        console.error(
+        logger.warn(
           'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
         );
       }

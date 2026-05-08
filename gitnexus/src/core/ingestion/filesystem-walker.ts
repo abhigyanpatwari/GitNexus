@@ -5,6 +5,7 @@ import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
 
+import { logger } from '../logger.js';
 export interface FileEntry {
   path: string;
   content: string;
@@ -74,10 +75,10 @@ export const walkRepositoryPaths = async (
   if (skippedLarge > 0) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
     const suffix = isDefault ? ', likely generated/vendored' : '';
-    console.warn(`  Skipped ${skippedLarge} large files (>${maxFileSizeBytes / 1024}KB${suffix})`);
+    logger.warn(`  Skipped ${skippedLarge} large files (>${maxFileSizeBytes / 1024}KB${suffix})`);
     if (isVerboseIngestionEnabled()) {
       for (const p of skippedLargePaths) {
-        console.warn(`  - ${p}`);
+        logger.warn(`  - ${p}`);
       }
     }
   }

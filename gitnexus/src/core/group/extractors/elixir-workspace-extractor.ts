@@ -4,6 +4,7 @@ import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { shouldIgnorePath, loadIgnoreRules } from '../../../config/ignore-service.js';
 
+import { logger } from '../../logger.js';
 interface ElixirAppMeta {
   appName: string;
   modulePrefix: string;
@@ -202,7 +203,7 @@ export async function extractElixirWorkspaceLinks(
     };
     const existing = appsByName.get(manifest.appName);
     if (existing) {
-      console.warn(
+      logger.warn(
         `[elixir-workspace-extractor] duplicate app "${manifest.appName}" in "${groupPath}" and "${existing.groupPath}" — skipping "${groupPath}"`,
       );
       continue;

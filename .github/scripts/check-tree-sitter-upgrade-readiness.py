@@ -32,6 +32,7 @@ import pathlib
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -190,7 +191,17 @@ def fetch_text(url: str, timeout: int = 8) -> str | None:
     set (raises the rate limit from 60 to 5 000 requests/hour).
     """
     headers: dict[str, str] = {}
-    if _GITHUB_TOKEN and ("github.com" in url or "githubusercontent.com" in url):
+    # Parse the URL and check the hostname rather than substring-matching
+    # on the full URL string (CodeQL py/incomplete-url-substring-sanitization).
+    # `https://evil.com/?u=github.com` would have passed the substring check.
+    try:
+        parsed_host = urllib.parse.urlparse(url).hostname or ""
+    except ValueError:
+        parsed_host = ""
+    is_github_host = parsed_host == "github.com" or parsed_host.endswith(
+        (".github.com", ".githubusercontent.com")
+    ) or parsed_host == "githubusercontent.com"
+    if _GITHUB_TOKEN and is_github_host:
         headers["Authorization"] = f"Bearer {_GITHUB_TOKEN}"
     try:
         req = urllib.request.Request(url, headers=headers)

@@ -44,17 +44,23 @@ describe('analyzeCommand --embeddings [limit] parsing', () => {
   it.each(['abc', '-1', '1.5', 'NaN', 'Infinity'])(
     'rejects invalid --embeddings value %s before analysis starts',
     async (embeddings) => {
-      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      // The validator routes through cli-message (`cliError`), which
+      // writes plain text directly to process.stderr. Spy on the raw
+      // stderr handle rather than `console.error`, since the migration
+      // bypasses console entirely.
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
       await analyzeCommand(undefined, { embeddings });
 
       expect(process.exitCode).toBe(1);
       expect(runFullAnalysisMock).not.toHaveBeenCalled();
-      const msg = errorSpy.mock.calls[0]?.[0] ?? '';
-      expect(msg).toContain('--embeddings expects a non-negative integer');
-      expect(msg).toContain(`got "${embeddings}"`);
-      errorSpy.mockRestore();
+      const allWrites = stderrSpy.mock.calls
+        .map(([chunk]) => (typeof chunk === 'string' ? chunk : chunk.toString()))
+        .join('');
+      expect(allWrites).toContain('--embeddings expects a non-negative integer');
+      expect(allWrites).toContain(`got "${embeddings}"`);
+      stderrSpy.mockRestore();
     },
   );
 
