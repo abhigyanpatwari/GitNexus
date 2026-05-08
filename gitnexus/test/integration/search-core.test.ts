@@ -19,7 +19,7 @@ withTestLbugDB(
   (_handle) => {
     describe('searchFTSFromLbug — core adapter (no repoId)', () => {
       it('returns ranked results for a matching query', async () => {
-        const results = await searchFTSFromLbug('user authentication', 10);
+        const { results } = await searchFTSFromLbug('user authentication', 10);
 
         expect(results.length).toBeGreaterThan(0);
 
@@ -40,7 +40,7 @@ withTestLbugDB(
       });
 
       it('results are ordered by descending score', async () => {
-        const results = await searchFTSFromLbug('user authentication', 10);
+        const { results } = await searchFTSFromLbug('user authentication', 10);
 
         for (let i = 1; i < results.length; i++) {
           expect(results[i - 1].score).toBeGreaterThanOrEqual(results[i].score);
@@ -48,7 +48,7 @@ withTestLbugDB(
       });
 
       it('auth-related files rank higher than unrelated files', async () => {
-        const results = await searchFTSFromLbug('user authentication', 10);
+        const { results } = await searchFTSFromLbug('user authentication', 10);
         const filePaths = results.map((r) => r.filePath);
 
         expect(filePaths).toContain('src/auth.ts');
@@ -61,7 +61,7 @@ withTestLbugDB(
       });
 
       it('merges scores from multiple node types for the same filePath', async () => {
-        const results = await searchFTSFromLbug('user authentication', 20);
+        const { results } = await searchFTSFromLbug('user authentication', 20);
 
         const authResult = results.find((r) => r.filePath === 'src/auth.ts');
         expect(authResult).toBeDefined();
@@ -73,12 +73,12 @@ withTestLbugDB(
       });
 
       it('respects limit parameter', async () => {
-        const results = await searchFTSFromLbug('user authentication', 2);
+        const { results } = await searchFTSFromLbug('user authentication', 2);
         expect(results.length).toBeLessThanOrEqual(2);
       });
 
       it('returns empty array for a non-matching query', async () => {
-        const results = await searchFTSFromLbug('xyzzyplughtwisty', 10);
+        const { results } = await searchFTSFromLbug('xyzzyplughtwisty', 10);
         expect(results).toEqual([]);
       });
     });
@@ -87,32 +87,32 @@ withTestLbugDB(
 
     describe('unhappy paths', () => {
       it('returns empty array for empty query string', async () => {
-        const results = await searchFTSFromLbug('', 10);
+        const { results } = await searchFTSFromLbug('', 10);
         expect(results).toEqual([]);
       });
 
       it('returns empty array for whitespace-only query', async () => {
-        const results = await searchFTSFromLbug('   ', 10);
+        const { results } = await searchFTSFromLbug('   ', 10);
         expect(results).toEqual([]);
       });
 
       it('handles special characters in query gracefully', async () => {
-        const results = await searchFTSFromLbug('user* OR auth+', 10);
+        const { results } = await searchFTSFromLbug('user* OR auth+', 10);
         expect(Array.isArray(results)).toBe(true);
       });
 
       it('handles limit of 0', async () => {
-        const results = await searchFTSFromLbug('user authentication', 0);
+        const { results } = await searchFTSFromLbug('user authentication', 0);
         expect(results).toEqual([]);
       });
 
       it('handles negative limit gracefully', async () => {
-        const results = await searchFTSFromLbug('user authentication', -1);
+        const { results } = await searchFTSFromLbug('user authentication', -1);
         expect(Array.isArray(results)).toBe(true);
       });
 
       it('handles very large limit', async () => {
-        const results = await searchFTSFromLbug('user authentication', 100000);
+        const { results } = await searchFTSFromLbug('user authentication', 100000);
         expect(results.length).toBeLessThanOrEqual(100000);
         expect(results.length).toBeGreaterThan(0);
       });
