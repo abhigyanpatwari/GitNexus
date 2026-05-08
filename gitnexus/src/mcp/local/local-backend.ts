@@ -40,7 +40,7 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
-import { checkStaleness, checkCwdMatch } from '../../core/git-staleness.js';
+import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
@@ -554,8 +554,15 @@ export class LocalBackend {
       byRemote.set(h.remoteUrl, list);
     }
 
-    return handles.map((h) => {
-      const stale = checkStaleness(h.repoPath, h.lastCommit);
+    // Check staleness for all repos in parallel instead of sequentially.
+    // Each check spawns an async `git rev-list` — with 200 repos the sync
+    // variant took ~50 s; parallel async brings it under a second (#1363).
+    const stalenessResults = await Promise.all(
+      handles.map((h) => checkStalenessAsync(h.repoPath, h.lastCommit)),
+    );
+
+    return handles.map((h, i) => {
+      const stale = stalenessResults[i];
       const selfNorm = norm(h.repoPath);
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
