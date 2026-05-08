@@ -12,7 +12,11 @@ import {
   httpEmbedQuery,
 } from '../../core/embeddings/http-client.js';
 import { resolveEmbeddingConfig } from '../../core/embeddings/config.js';
-import { applyHfEnvOverrides } from '../../core/embeddings/hf-env.js';
+import {
+  applyHfEnvOverrides,
+  isHfDownloadFailure,
+  withHfDownloadRetry,
+} from '../../core/embeddings/hf-env.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
@@ -69,23 +73,39 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           silenceStdout();
           process.stderr.write = (() => true) as any;
           try {
-            embedderInstance = await (pipeline as any)('feature-extraction', MODEL_ID, {
-              device: device,
-              dtype: 'fp32',
-              session_options: {
-                logSeverityLevel: 3,
-                intraOpNumThreads: embeddingConfig.threads,
-                interOpNumThreads: 1,
-                executionMode: 'sequential',
-              },
-            });
+            embedderInstance = await withHfDownloadRetry(() =>
+              pipeline('feature-extraction', MODEL_ID, {
+                device: device,
+                dtype: 'fp32',
+                session_options: {
+                  logSeverityLevel: 3,
+                  intraOpNumThreads: embeddingConfig.threads,
+                  interOpNumThreads: 1,
+                  executionMode: 'sequential',
+                },
+              }),
+            );
           } finally {
             restoreStdout();
             process.stderr.write = realStderrWrite;
           }
           logger.info({ device }, 'GitNexus: Embedding model loaded');
           return embedderInstance!;
-        } catch {
+        } catch (deviceError) {
+          // Network errors and circuit-open errors are not device-specific —
+          // they will fail the same way on every device. Rethrow immediately
+          // with actionable HF_ENDPOINT guidance rather than silently falling
+          // back to the next device.
+          const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
+          if (isHfDownloadFailure(errMsg)) {
+            const endpointHint = process.env.HF_ENDPOINT
+              ? `The configured endpoint (${process.env.HF_ENDPOINT}) may be unreachable.`
+              : `huggingface.co may be unreachable from your network.\n` +
+                `  Set HF_ENDPOINT to a mirror and retry:\n` +
+                `    HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+                `    (Windows: set HF_ENDPOINT=https://hf-mirror.com && npx gitnexus analyze --embeddings)`;
+            throw new Error(`Failed to download embedding model: ${errMsg}\n  ${endpointHint}`);
+          }
           if (device === 'cpu') throw new Error('Failed to load embedding model');
         }
       }
