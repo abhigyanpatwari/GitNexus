@@ -2984,8 +2984,14 @@ export class LocalBackend {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<any | null> {
+    // Honor an already-aborted signal at the entry boundary as a fast
+    // path. Cooperative cancellation inside _runImpactBFS is out of
+    // scope — the caller's Promise.race against the same signal
+    // resolves the await regardless of how long this body runs.
+    if (opts.signal?.aborted) return null;
     try {
       await this.refreshRepos();
       await this.ensureInitialized(repoId);

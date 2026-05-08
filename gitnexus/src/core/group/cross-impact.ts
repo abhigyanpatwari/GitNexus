@@ -238,6 +238,65 @@ async function safeLocalImpact(
   return { value: won.v, timedOut: false };
 }
 
+/**
+ * Race a single Phase-2 `impactByUid` call against a remaining-budget
+ * timer. The Codex adversarial review on PR #1331 surfaced that the
+ * fanout loop only checked `Date.now() > deadline` *between* neighbor
+ * calls — once `await port.impactByUid(...)` was reached, a hung
+ * neighbor could pin the request indefinitely, and slow neighbors
+ * could compound past the 5-min `IMPACT_TIMEOUT_MAX_MS` cap.
+ *
+ * This helper wraps each call: a `setTimeout(remainingMs)` aborts an
+ * `AbortController` whose signal is forwarded to `impactByUid`, and a
+ * `Promise.race` resolves to `{ timedOut: true }` when the timer
+ * fires before the call completes. Implementors that ignore the
+ * signal (current local backend) still see their await resolved by
+ * the race; full cooperative cancellation inside the BFS is a future
+ * follow-up. On rejection, the value is `null` (matching the
+ * fanout's existing `if (fan == null)` truncation contract).
+ *
+ * Exported for direct unit testing — the helper IS the load-bearing
+ * mitigation surface, so the U3 regression test pins it directly
+ * rather than driving the full `runGroupImpact` path.
+ */
+export async function safeNeighborImpact(
+  port: GroupToolPort,
+  repoId: string,
+  uid: string,
+  direction: string,
+  opts: {
+    maxDepth: number;
+    relationTypes: string[];
+    minConfidence: number;
+    includeTests: boolean;
+  },
+  remainingMs: number,
+): Promise<{ value: unknown; timedOut: boolean }> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const callP = port
+    .impactByUid(repoId, uid, direction, { ...opts, signal: controller.signal })
+    .catch(() => null);
+  const timeoutP = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(
+      () => {
+        controller.abort();
+        resolve('timeout');
+      },
+      Math.max(0, remainingMs),
+    );
+  });
+  const won = await Promise.race([
+    callP.then((v) => ({ tag: 'impact' as const, v })),
+    timeoutP.then(() => ({ tag: 'timeout' as const })),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (won.tag === 'timeout') {
+    return { value: null, timedOut: true };
+  }
+  return { value: won.v, timedOut: false };
+}
+
 export function collectImpactSymbolUids(
   local: unknown,
   servicePrefix: string | undefined,
@@ -502,7 +561,8 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      if (Date.now() > deadline) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -518,13 +578,25 @@ export async function runGroupImpact(
         continue;
       }
 
-      const fan = await deps.port.impactByUid(neighborHandle.id, n.neighborUid, direction, {
-        maxDepth,
-        relationTypes: relationTypes ?? [],
-        minConfidence,
-        includeTests,
-      });
-      if (fan == null) {
+      // Phase-2 hardening: race each impactByUid against a per-call
+      // timeout derived from the remaining budget. Without this wrap a
+      // single hung neighbor would pin the request past the clamped
+      // timeout, which Codex's adversarial review on PR #1331 flagged
+      // as the still-open half of CodeQL #184 / js/resource-exhaustion.
+      const { value: fan, timedOut: neighborTimedOut } = await safeNeighborImpact(
+        deps.port,
+        neighborHandle.id,
+        n.neighborUid,
+        direction,
+        {
+          maxDepth,
+          relationTypes: relationTypes ?? [],
+          minConfidence,
+          includeTests,
+        },
+        remainingMs,
+      );
+      if (neighborTimedOut || fan == null) {
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
