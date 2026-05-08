@@ -178,7 +178,12 @@ export const initEmbedder = async (
       const progressCallback = onProgress
         ? (data: ProgressInfo) => {
             const progress: ModelProgress = {
-              status: data.status === 'progress_total' ? 'progress' : data.status,
+              // Map the `progress_total` aggregate event (not in ModelProgress.status)
+              // back to 'progress' so callers don't need to handle it separately.
+              status:
+                data.status === 'progress_total'
+                  ? 'progress'
+                  : ((data.status as ModelProgress['status']) ?? 'progress'),
               file: 'file' in data ? data.file : undefined,
               progress: 'progress' in data ? data.progress : undefined,
               loaded: 'loaded' in data ? data.loaded : undefined,
