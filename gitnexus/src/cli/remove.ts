@@ -27,6 +27,8 @@
  */
 
 import fs from 'fs/promises';
+import { logger } from '../core/logger.js';
+import { cliError } from './cli-message.js';
 import {
   readRegistry,
   resolveRegistryEntry,
@@ -51,14 +53,14 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
       // Idempotent: missing target is a no-op warning, not an error.
       // The `availableNames` hint comes from the error itself so users
       // can see what they might have meant.
-      console.warn(`Nothing to remove: ${err.message}`);
+      logger.warn(`Nothing to remove: ${err.message}`);
       return;
     }
     if (err instanceof RegistryAmbiguousTargetError) {
       // Duplicate aliases are allowed via --allow-duplicate-name (#829);
       // refuse to guess which one the user meant — surface the full list
       // and exit non-zero so scripts don't silently pick the wrong repo.
-      console.error(`Error: ${err.message}`);
+      cliError(`Error: ${err.message}`);
       process.exit(1);
     }
     throw err;
@@ -86,7 +88,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     assertSafeStoragePath(entry);
   } catch (err) {
     if (err instanceof UnsafeStoragePathError) {
-      console.error(`Error: ${err.message}`);
+      cliError(`Error: ${err.message}`);
       process.exit(1);
     }
     throw err;
@@ -104,7 +106,8 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     console.log(`   Path:    ${entry.path}`);
     console.log(`   Storage: ${entry.storagePath}`);
   } catch (err) {
-    console.error(`Failed to remove ${entry.name}:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    cliError(`Failed to remove ${entry.name}: ${msg}`, { err });
     process.exit(1);
   }
 };
