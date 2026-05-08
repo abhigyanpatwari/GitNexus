@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import * as path from 'node:path';
@@ -11,6 +11,7 @@ import {
 } from '../../../src/core/group/extractors/grpc-extractor.js';
 import type { ProtoServiceInfo } from '../../../src/core/group/extractors/grpc-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
+import { _captureLogger } from '../../../src/core/logger.js';
 
 describe('GrpcExtractor', () => {
   let tmpDir: string;
@@ -797,18 +798,18 @@ describe('resolveProtoConflict', () => {
   });
 
   it('test_all_zero_tie_returns_null', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     const candidates = [
       makeInfo('pkgA', 'totally/unrelated/a/svc.proto'),
       makeInfo('pkgB', 'completely/different/b/svc.proto'),
     ];
     const result = resolveProtoConflict('Svc', 'src/main.go', candidates);
     expect(result).toBeNull();
-    warnSpy.mockRestore();
+    cap.restore();
   });
 
   it('test_positive_score_tie_returns_null', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     // Both candidates share `src/proto` with the source dir — equal shared runs.
     const candidates = [
       makeInfo('pkgA', 'src/proto/a/svc.proto'),
@@ -816,11 +817,11 @@ describe('resolveProtoConflict', () => {
     ];
     const result = resolveProtoConflict('Svc', 'src/proto/main.go', candidates);
     expect(result).toBeNull();
-    warnSpy.mockRestore();
+    cap.restore();
   });
 
   it('test_three_way_zero_tie_returns_null', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     const candidates = [
       makeInfo('pkgA', 'aaa/svc.proto'),
       makeInfo('pkgB', 'bbb/svc.proto'),
@@ -828,7 +829,7 @@ describe('resolveProtoConflict', () => {
     ];
     const result = resolveProtoConflict('Svc', 'src/main.go', candidates);
     expect(result).toBeNull();
-    warnSpy.mockRestore();
+    cap.restore();
   });
 
   it('test_unique_winner_among_ties', () => {
@@ -843,19 +844,19 @@ describe('resolveProtoConflict', () => {
   });
 
   it('test_ambiguous_emits_single_warn_with_service_and_paths', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     const candidates = [
       makeInfo('pkgA', 'totally/unrelated/a/svc.proto'),
       makeInfo('pkgB', 'completely/different/b/svc.proto'),
     ];
     resolveProtoConflict('MyService', 'src/main.go', candidates);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(cap.records().length).toBe(1);
+    const msg = String(String(cap.records()[0]?.msg ?? ''));
     expect(msg).toContain('MyService');
     expect(msg).toContain('src/main.go');
     expect(msg).toContain('totally/unrelated/a/svc.proto');
     expect(msg).toContain('completely/different/b/svc.proto');
-    warnSpy.mockRestore();
+    cap.restore();
   });
 });
 
@@ -879,7 +880,7 @@ describe('GrpcExtractor.extract ambiguous proto resolution', () => {
   });
 
   it('test_ambiguous_short_name_across_unrelated_protos_yields_no_source_contract', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     // Two unrelated proto files defining the same short name `UserService` in
     // unrelated directories, neither sharing path segments with the Go source.
     await fsp.mkdir(path.join(tmpDir, 'billing-team', 'proto'), { recursive: true });
@@ -906,8 +907,8 @@ describe('GrpcExtractor.extract ambiguous proto resolution', () => {
       (c) => c.meta.source === 'go_client' && c.meta.service === 'UserService',
     );
     expect(sourceContracts).toHaveLength(0);
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(cap.records().length).toBeGreaterThan(0);
+    cap.restore();
   });
 });
 

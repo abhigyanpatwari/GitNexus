@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { extractRustWorkspaceLinks } from '../../../src/core/group/extractors/rust-workspace-extractor.js';
+import { _captureLogger } from '../../../src/core/logger.js';
 
 describe('RustWorkspaceExtractor', () => {
   let tmpDir: string;
@@ -229,19 +230,17 @@ describe('RustWorkspaceExtractor', () => {
       ['consumer', path.join(tmpDir, 'consumer')],
     ]);
 
-    const warnings: string[] = [];
-    const origWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(String(args[0]));
-    };
+    const cap = _captureLogger();
     try {
       const result = await extractRustWorkspaceLinks(repos, repoPaths);
 
-      expect(warnings.some((w) => w.includes('duplicate crate name "shared"'))).toBe(true);
+      expect(
+        cap.records().some((r) => String(r.msg ?? '').includes('duplicate crate name "shared"')),
+      ).toBe(true);
       expect(result.links).toHaveLength(1);
       expect(result.links[0].from).toBe('a');
     } finally {
-      console.warn = origWarn;
+      cap.restore();
     }
   });
 

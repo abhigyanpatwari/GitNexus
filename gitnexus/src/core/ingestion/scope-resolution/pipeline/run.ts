@@ -41,6 +41,7 @@ import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
+import { logger } from '../../../logger.js';
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   /**
@@ -279,7 +280,7 @@ export function runScopeResolution(
   if (PROF) {
     const tEnd = process.hrtime.bigint();
     const ns = (a: bigint, b: bigint): number => Number(b - a) / 1_000_000;
-    console.warn(
+    logger.warn(
       `[scope-resolution prof] extract=${ns(tStart, tExtract).toFixed(0)}ms` +
         ` finalize=${ns(tExtract, tFinalize).toFixed(0)}ms` +
         ` propagate=${ns(tFinalize, tPropagate).toFixed(0)}ms` +

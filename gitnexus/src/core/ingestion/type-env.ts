@@ -24,6 +24,7 @@ import {
 import type { SemanticModel } from './model/index.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
+import { logger } from '../logger.js';
 /**
  * Per-file scoped type environment: maps (scope, variableName) → typeName.
  * Scope-aware: variables inside functions are keyed by function name,
@@ -769,7 +770,7 @@ const resolveFixpointBindings = (
     if (iter === MAX_FIXPOINT_ITERATIONS - 1 && process.env.GITNEXUS_DEBUG) {
       const unresolved = pendingItems.length - resolved.size;
       if (unresolved > 0) {
-        console.warn(
+        logger.warn(
           `[type-env] fixpoint hit iteration cap (${MAX_FIXPOINT_ITERATIONS}), ${unresolved} items unresolved`,
         );
       }

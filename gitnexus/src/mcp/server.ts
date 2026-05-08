@@ -312,7 +312,11 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // stray writes even when individual payloads were truncated/suppressed.
   process.on('exit', () => sentinel.flushSummary());
 
-  // Graceful shutdown helper
+  // Graceful shutdown helper. Pino's default destination is `sync: false`
+  // (buffered), so we must `flushLoggerSync()` before `process.exit` —
+  // otherwise records emitted during disconnect/close are lost. The flush
+  // is a no-op when the singleton was never used or when running under
+  // vitest. See `gitnexus/src/core/logger.ts`.
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
@@ -323,6 +327,8 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     try {
       await server.close();
     } catch {}
+    const { flushLoggerSync } = await import('../core/logger.js');
+    flushLoggerSync();
     process.exit(exitCode);
   };
 
