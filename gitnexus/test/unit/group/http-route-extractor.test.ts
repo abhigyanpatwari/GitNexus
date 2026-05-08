@@ -6,12 +6,12 @@ import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-rout
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
 describe('HttpRouteExtractor', () => {
-  const tmpDir = path.join(os.tmpdir(), `gitnexus-http-extract-${Date.now()}`);
+  let tmpDir: string;
   let extractor: HttpRouteExtractor;
 
   beforeEach(() => {
     extractor = new HttpRouteExtractor();
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-http-extract-'));
   });
 
   afterEach(() => {
