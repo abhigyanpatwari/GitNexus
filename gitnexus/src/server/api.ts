@@ -1060,11 +1060,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       const results = await withLbugDb(lbugPath, async () => {
         let searchResults: any[];
+        let ftsAvailable: boolean | undefined;
 
         if (mode === 'semantic') {
           const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
           if (!isEmbedderReady()) {
-            return [] as any[];
+            return { searchResults: [] as any[], ftsAvailable: undefined };
           }
           const { semanticSearch: semSearch } =
             await import('../core/embeddings/embedding-pipeline.js');
@@ -1077,10 +1078,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             sources: ['semantic'],
           }));
         } else if (mode === 'bm25') {
-          // TODO(#1403): propagate ftsAvailable to API response so server
-          // users get the same "indexes missing" warning as MCP/CLI callers.
-          searchResults = (await searchFTSFromLbug(query, limit)).results;
-          searchResults = searchResults.map((r: any, i: number) => ({
+          const ftsResponse = await searchFTSFromLbug(query, limit);
+          ftsAvailable = ftsResponse.ftsAvailable;
+          searchResults = ftsResponse.results.map((r: any, i: number) => ({
             ...r,
             rank: i + 1,
             sources: ['bm25'],
@@ -1093,12 +1093,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               await import('../core/embeddings/embedding-pipeline.js');
             searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
           } else {
-            // TODO(#1403): propagate ftsAvailable to API response (see bm25 branch above).
-            searchResults = (await searchFTSFromLbug(query, limit)).results;
+            const ftsResponse = await searchFTSFromLbug(query, limit);
+            ftsAvailable = ftsResponse.ftsAvailable;
+            searchResults = ftsResponse.results;
           }
         }
 
-        if (!enrich) return searchResults;
+        if (!enrich) return { searchResults, ftsAvailable };
 
         // Server-side enrichment: add connections, cluster, processes per result
         // Uses parameterized queries to prevent Cypher injection via nodeId
@@ -1180,9 +1181,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }),
         );
 
-        return enriched;
+        return { searchResults: enriched, ftsAvailable };
       });
-      res.json({ results });
+      const response: any = { results: results.searchResults ?? results };
+      if (results.ftsAvailable === false) {
+        response.warning =
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.';
+      }
+      res.json(response);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Search failed' });
     }
