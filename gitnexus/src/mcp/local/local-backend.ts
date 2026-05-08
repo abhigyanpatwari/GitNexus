@@ -16,6 +16,7 @@ import {
   isLbugReady,
   isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -1226,7 +1227,14 @@ export class LocalBackend {
       const result = await executeQuery(repo.id, params.query);
       return result;
     } catch (err: any) {
-      return { error: err.message || 'Query failed' };
+      const msg = err.message || 'Query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      return { error: msg };
     }
   }
 
@@ -1672,6 +1680,30 @@ export class LocalBackend {
    * UID-based direct lookup. No cluster in output.
    */
   private async context(
+    repo: RepoHandle,
+    params: {
+      name?: string;
+      uid?: string;
+      file_path?: string;
+      kind?: string;
+      include_content?: boolean;
+    },
+  ): Promise<any> {
+    try {
+      return await this._contextImpl(repo, params);
+    } catch (err: any) {
+      const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (isWalCorruptionError(err)) {
+        return {
+          error: msg,
+          recoverySuggestion: WAL_RECOVERY_SUGGESTION,
+        };
+      }
+      throw err;
+    }
+  }
+
+  private async _contextImpl(
     repo: RepoHandle,
     params: {
       name?: string;
@@ -2441,6 +2473,7 @@ export class LocalBackend {
         impactedCount: 0,
         risk: 'UNKNOWN',
         suggestion: 'The graph query failed — try gitnexus context <symbol> as a fallback',
+        ...(isWalCorruptionError(err) ? { recoverySuggestion: WAL_RECOVERY_SUGGESTION } : {}),
       };
     }
   }
