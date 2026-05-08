@@ -27,6 +27,7 @@ import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -571,6 +572,26 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `    2. Inspect ${err.storagePath} - a leftover lbug.wal indicates an aborted write.\n` +
           `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
           `       and attach the trace to the GitNexus issue tracker.\n\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // HF download failure — show clean guidance without the raw stack trace.
+    // Checked before writeFatalToStderr so the user sees one focused message
+    // rather than a stack-trace dump followed by a second remediation block.
+    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+      cliError(
+        `  The embedding model could not be downloaded.\n` +
+          `  huggingface.co may be unreachable from your network\n` +
+          `  (e.g. behind a corporate proxy or a regional firewall).\n` +
+          `  Suggestions:\n` +
+          `    1. Set HF_ENDPOINT to a mirror and retry:\n` +
+          `         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+          `         (Windows: set HF_ENDPOINT=https://hf-mirror.com && npx gitnexus analyze --embeddings)\n` +
+          `    2. Check your proxy / VPN settings.\n` +
+          `    3. Once downloaded the model is cached — future runs work offline.\n`,
+        { recoveryHint: 'hf-endpoint-unreachable' },
       );
       process.exitCode = 1;
       return;
