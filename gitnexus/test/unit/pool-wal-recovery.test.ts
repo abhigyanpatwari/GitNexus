@@ -6,6 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { stderrWriteMock } = vi.hoisted(() => ({
+  stderrWriteMock: vi.fn(),
+}));
+
 vi.mock('fs/promises', () => ({
   default: {
     stat: vi.fn().mockResolvedValue({}),
@@ -34,6 +38,13 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
     const msg = err instanceof Error ? err.message : String(err ?? '');
     return /corrupt(ed)?\s+wal|invalid\s+wal\s+record/i.test(msg);
   }),
+}));
+
+vi.mock('../../src/mcp/stdio-capture.js', () => ({
+  realStdoutWrite: vi.fn(),
+  realStderrWrite: stderrWriteMock,
+  setActiveStdoutWrite: vi.fn(),
+  getActiveStdoutWrite: vi.fn(() => vi.fn()),
 }));
 
 import fs from 'fs/promises';
@@ -91,6 +102,9 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     expect(fs.rename).toHaveBeenCalledWith(
       dbPath + '.wal',
       expect.stringContaining('.wal.corrupt.'),
+    );
+    expect(stderrWriteMock).toHaveBeenCalledWith(
+      expect.stringContaining('WAL quarantined for test-repo-init'),
     );
   });
 

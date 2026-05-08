@@ -117,6 +117,19 @@ describe('WAL corruption feedback in MCP responses (#1402)', () => {
     expect(result.recoverySuggestion).toBeDefined();
   });
 
+  it('context returns WAL recoverySuggestion on corrupted WAL error', async () => {
+    const backend = await makeBackend();
+    lbugMocks.executeParameterized.mockRejectedValueOnce(new Error('Corrupted wal file'));
+
+    const result = await backend.callTool('context', {
+      repo: 'test-repo',
+      name: 'MyClass',
+    });
+
+    expect(result.error).toBe('Corrupted wal file');
+    expect(result.recoverySuggestion).toBeDefined();
+  });
+
   it('non-WAL errors do not include WAL suggestion', async () => {
     const backend = await makeBackend();
     lbugMocks.executeParameterized.mockRejectedValueOnce(new Error('Some other error'));

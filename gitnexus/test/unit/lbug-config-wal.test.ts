@@ -20,6 +20,8 @@ describe('isWalCorruptionError', () => {
     ['generic', 'Query failed'],
     ['not found', 'LadybugDB not found at /path'],
     ['checksum without WAL', 'Checksum verification failed for parquet file'],
+    ['permission path with WAL', "EACCES: permission denied '/path/to/wal'"],
+    ['schema mismatch WAL', 'schema version mismatch in WAL'],
   ])('does not match non-WAL error: %s', (_label, msg) => {
     expect(isWalCorruptionError(msg)).toBe(false);
   });

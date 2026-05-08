@@ -97,7 +97,7 @@ let idleTimer: ReturnType<typeof setInterval> | null = null;
 // @ladybugdb/core), corrupting stdout in the pre-sentinel window. Routing
 // through the leaf breaks that chain.
 export { realStdoutWrite, realStderrWrite, setActiveStdoutWrite } from '../../mcp/stdio-capture.js';
-import { getActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+import { getActiveStdoutWrite, realStderrWrite } from '../../mcp/stdio-capture.js';
 
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
@@ -287,7 +287,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
  */
 async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<lbug.Database> {
   const walPath = dbPath + '.wal';
-  const quarantineName = `${walPath}.corrupt.${Date.now()}`;
+  const quarantineName = `${walPath}.corrupt.${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
     await fs.rename(walPath, quarantineName);
   } catch {
@@ -296,6 +296,10 @@ async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<l
         `Run \`gitnexus analyze\` to rebuild the index. (quarantine failed)`,
     );
   }
+  realStderrWrite(
+    `GitNexus: LadybugDB WAL quarantined for ${repoId}; graph may be stale. ` +
+      `Run \`gitnexus analyze\` to rebuild the index.\n`,
+  );
   return await openReadOnlyDatabase(dbPath);
 }
 
