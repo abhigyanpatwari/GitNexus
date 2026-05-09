@@ -100,20 +100,55 @@ jobs:
           fi
 
           # Repo permission lookup. admin/write/maintain are sufficient.
-          permission=$(gh api "repos/${GH_REPO}/collaborators/${COMMENTER}/permission" \
-            --jq '.permission' 2>/dev/null || echo "none")
-          echo "Commenter permission: ${permission}"
-          case "${permission}" in
-            admin|write|maintain)
-              echo "allowed=true" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
+          # Distinguish API failure (5xx, 429, network) from genuine
+          # permission denial (404 = not a collaborator). Conflating them
+          # would silently refuse a legitimate maintainer with a public
+          # 👎 every time GitHub blips.
+          perm_stderr=$(mktemp)
+          if permission=$(gh api "repos/${GH_REPO}/collaborators/${COMMENTER}/permission" \
+                --jq '.permission' 2>"$perm_stderr"); then
+            echo "Commenter permission: ${permission}"
+            case "${permission}" in
+              admin|write|maintain)
+                echo "allowed=true" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "allowed=false" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          else
+            err=$(cat "$perm_stderr")
+            echo "Permission lookup stderr: ${err}" >&2
+            # 404 (not a collaborator) is a genuine deny.
+            # Anything else is a transient API/network failure.
+            if grep -qE "HTTP 404|Not Found" "$perm_stderr"; then
               echo "allowed=false" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+            else
+              echo "::error::Permission lookup failed transiently — refusing to act."
+              echo "allowed=api-failed" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: React 😕 on transient permission-API failure
+        if: steps.body.outputs.match == 'true' && steps.perm.outputs.allowed == 'api-failed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          PR: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+            -f content="confused" >/dev/null
+          gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+            -f body="⚠️ Couldn't verify your repo permission (transient GitHub API failure). Please comment \`/autofix\` again. ([apply run](https://github.com/${GH_REPO}/actions/runs/${RUN_ID}))" \
+            >/dev/null
+          exit 1
 
       - name: React 👎 on permission denial
-        if: steps.body.outputs.match == 'true' && steps.perm.outputs.allowed != 'true'
+        if: steps.body.outputs.match == 'true' && steps.perm.outputs.allowed == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -274,12 +309,21 @@ jobs:
             exit 0
           fi
 
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config user.name  "github-actions[bot]"
-
-          git apply "$patch"
-          git add -A
-          git commit -m "chore(autofix): apply prettier + eslint fixes via /autofix command"
+          # Wrap the apply/commit phase so any non-zero exit sets a
+          # meaningful `result=` instead of leaving it unset (which would
+          # send the user to the `*` "unexpected state" arm with a
+          # non-actionable confused-emoji reply).
+          if ! {
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com" &&
+            git config user.name  "github-actions[bot]" &&
+            git apply "$patch" &&
+            git add -A &&
+            git commit -m "chore(autofix): apply prettier + eslint fixes via /autofix command"
+          }; then
+            echo "::error::git apply / config / commit failed after idempotency probe passed."
+            echo "result=apply-failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Push to the PR head branch with a lease against the resolved
           # SHA. The lease ensures the remote ref still points at HEAD_SHA
@@ -297,6 +341,10 @@ jobs:
           # GitHub's documented pattern for this scope.
           push_url="https://github.com/${HEAD_REPO}.git"
           auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          # GitHub's secret-masker only masks the raw token, not its
+          # base64-encoded form. Mask the encoded value so any subsequent
+          # log line (set -x, GIT_TRACE, error spew) gets ***-redacted.
+          echo "::add-mask::${auth_header}"
           push_stderr=$(mktemp)
           if git -c http.extraheader="${auth_header}" \
                 push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
@@ -305,9 +353,12 @@ jobs:
           else
             cat "$push_stderr" >&2
             # `--force-with-lease` reports "stale info" when the remote
-            # ref has moved past the expected SHA. Match that signal to
-            # distinguish from auth/network/maintainer-edit failures.
-            if grep -qE "stale info|force-with-lease|rejected.*non-fast-forward" "$push_stderr"; then
+            # ref has moved past the expected SHA. Other lease-failure
+            # phrases git emits include "remote rejected" (server-side
+            # reject), "non-fast-forward", and the literal flag name. Match
+            # any of those to distinguish from auth/network/maintainer-
+            # edit failures.
+            if grep -qE "stale info|force-with-lease|rejected.*non-fast-forward|remote rejected|! \[rejected\]" "$push_stderr"; then
               echo "::error::git push lease failed — branch moved during apply."
               echo "result=lease-failed" >> "$GITHUB_OUTPUT"
             else
@@ -358,6 +409,14 @@ jobs:
                 -f content="-1" >/dev/null
               gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
                 -f body="⚠️ The autofix patch is stale or conflicts with the current head — push a new commit to regenerate, then comment \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              exit 1
+              ;;
+            apply-failed)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="-1" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="⚠️ Autofix applied cleanly in the dry run, but \`git apply\` / \`git commit\` failed when actually landing the patch. This usually means a race with concurrent edits or a corrupt patch. See logs: ${run_url}" \
                 >/dev/null
               exit 1
               ;;

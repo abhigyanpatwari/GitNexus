@@ -215,8 +215,12 @@ jobs:
           # Machine-readable JSON block — agents parse this instead of
           # regexing English. Fenced code-block info string is
           # `gitnexus-autofix` so agents can locate it without ambiguity.
-          # Schema bumped from v1 -> v2: adds `apply_command`. All v1
-          # fields preserved exactly for backward compatibility.
+          # Schema bumped from v1 -> v2: adds `apply_command`. The v1
+          # field set is preserved as a superset, but the `state` enum
+          # is redefined (v1: suggestions-posted | skipped-too-large |
+          # diff-no-overlap; v2: fixes-available). v1 readers checking
+          # `schema == 'gitnexus.pr-autofix/v1'` see an unfamiliar version
+          # and fall back to prose, which is the intended migration path.
           json=$(jq -n -c \
             --arg state        "${ui_state}" \
             --argjson pr_number "${PR}" \

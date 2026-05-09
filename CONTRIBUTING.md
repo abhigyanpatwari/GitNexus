@@ -114,7 +114,7 @@ Two workflows produce machine-readable signals on every PR. Coding agents and hu
 | Surface           | Where                                                                                                                                                                                                                                                                                                   | Notes                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Sticky PR comment | Top-level comment with the HTML marker `<!-- gitnexus:pr-autofix-summary -->` and heading `## :sparkles: PR Autofix`. Only posted when there is something to fix; clean PRs stay silent.                                                                                                                | Edit-in-place via marker; one comment per PR.                          |
-| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v2` with fields `state` (`fixes-available` \| `applied`), `pr_number`, `head_sha`, `changed_lines`, `run_id`, `apply_command` (literal `/autofix`), and the optional `applied_run_id` (set after the apply workflow runs). | Parseable signal — preferred over regexing prose. v1 fields preserved. |
+| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v2` with fields `state` (`fixes-available`), `pr_number`, `head_sha`, `changed_lines`, `run_id`, and `apply_command` (literal `/autofix`). | Parseable signal — preferred over regexing prose. v1 fields preserved as a superset. |
 | Check Run         | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (`fixes-available`). The neutral title is `Autofix available — comment /autofix to apply`.                                                                                                                | Surfaced under PR Checks; readable via `gh pr checks <pr>`.            |
 
 To detect outcome from an agent: `gh pr checks <pr> --json name,conclusion,output | jq '.[] | select(.name == "gitnexus/autofix")'`.
@@ -197,8 +197,7 @@ Two publish workflows ship `gitnexus` to npm:
     the Docker build.
   - Manually run `docker build` + `docker push` locally and sign with Cosign
     against the same digest.
-  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force:
-true` to re-run the full RC pipeline (cuts a new RC number).
+  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force: true` to re-run the full RC pipeline (cuts a new RC number).
 
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 
