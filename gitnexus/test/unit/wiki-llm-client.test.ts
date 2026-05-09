@@ -379,7 +379,9 @@ describe('validateLLMBaseUrl', () => {
   it('rejects non-http schemes', () => {
     expect(() => validateLLMBaseUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
     expect(() => validateLLMBaseUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
-    expect(() => validateLLMBaseUrl('data:text/plain,evil')).toThrow('must use http:// or https://');
+    expect(() => validateLLMBaseUrl('data:text/plain,evil')).toThrow(
+      'must use http:// or https://',
+    );
     expect(() => validateLLMBaseUrl('ftp://example.com')).toThrow('must use http:// or https://');
   });
 

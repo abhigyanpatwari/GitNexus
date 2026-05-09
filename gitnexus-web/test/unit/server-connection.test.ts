@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchGraph, getBackendUrl, normalizeServerUrl, setBackendUrl, validateBackendUrl } from '../../src/services/backend-client';
+import {
+  fetchGraph,
+  getBackendUrl,
+  normalizeServerUrl,
+  setBackendUrl,
+  validateBackendUrl,
+} from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -180,7 +186,9 @@ describe('validateBackendUrl', () => {
   it('rejects non-http schemes', () => {
     expect(() => validateBackendUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
     expect(() => validateBackendUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
-    expect(() => validateBackendUrl('data:text/plain,evil')).toThrow('must use http:// or https://');
+    expect(() => validateBackendUrl('data:text/plain,evil')).toThrow(
+      'must use http:// or https://',
+    );
   });
 
   it('rejects malformed URLs', () => {

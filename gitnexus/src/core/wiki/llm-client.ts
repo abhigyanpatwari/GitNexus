@@ -103,9 +103,7 @@ export function validateLLMBaseUrl(baseUrl: string): void {
 
   if (!['https:', 'http:'].includes(parsed.protocol)) {
     // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
-    throw new Error(
-      `LLM base URL must use http:// or https:// (got ${parsed.protocol})`,
-    );
+    throw new Error(`LLM base URL must use http:// or https:// (got ${parsed.protocol})`);
   }
 
   if (parsed.protocol === 'http:') {

@@ -223,9 +223,7 @@ export function validateBackendUrl(url: string): void {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
-    throw new Error(
-      `Backend URL must use http:// or https:// (got ${parsed.protocol})`,
-    );
+    throw new Error(`Backend URL must use http:// or https:// (got ${parsed.protocol})`);
   }
 }
 

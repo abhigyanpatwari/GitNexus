@@ -746,7 +746,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           if (process.env.DEBUG) {
             // Sanitize user-controlled values to prevent log injection (CodeQL js/log-injection).
             logger.debug(
-              { jobId: String(job.id).replace(/[\r\n]/g, ' '), repoName: String(normalizedName).replace(/[\r\n]/g, ' ') },
+              {
+                jobId: String(job.id).replace(/[\r\n]/g, ' '),
+                repoName: String(normalizedName).replace(/[\r\n]/g, ' '),
+              },
               '[debug] resolveRepo waiting for active job',
             );
           }
