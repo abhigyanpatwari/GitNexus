@@ -3,6 +3,8 @@ name: E2E Tests
 on:
   workflow_call:
 
+permissions: read-all
+
 jobs:
   check-changes:
     name: Check web module changes

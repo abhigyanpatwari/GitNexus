@@ -4,7 +4,7 @@ ARG TARGETPLATFORM
 # ── Builder ────────────────────────────────────────────────────────────
 # Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
 # tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
-FROM node:22-trixie-slim AS builder
+FROM node:22-trixie-slim@sha256:55931e785da6feb47a9ed9ee54093b7710f3cbab9962708e5c4c9b5318c66451 AS builder # node:22-trixie-slim
 
 WORKDIR /app
 
@@ -29,7 +29,7 @@ RUN npm ci --prefix gitnexus
 RUN npm prune --omit=dev --prefix gitnexus
 
 # ── Runtime ────────────────────────────────────────────────────────────
-FROM node:22-trixie-slim AS runtime
+FROM node:22-trixie-slim@sha256:55931e785da6feb47a9ed9ee54093b7710f3cbab9962708e5c4c9b5318c66451 AS runtime # node:22-trixie-slim
 
 # curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*

@@ -17,6 +17,8 @@ on:
     # already-merged code without waiting for the next PR.
     - cron: '0 6 * * 1'
 
+permissions: read-all
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

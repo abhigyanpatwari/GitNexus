@@ -1,7 +1,7 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS builder # node:22-alpine
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-FROM node:22-alpine AS runtime
+FROM node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f AS runtime # node:22-alpine
 
 RUN apk add --no-cache curl
 

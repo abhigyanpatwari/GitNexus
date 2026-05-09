@@ -26,6 +26,8 @@ on:
         required: true
         type: string
 
+permissions: read-all
+
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel.
 # Re-pushes of the same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
