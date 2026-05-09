@@ -5,7 +5,8 @@ on:
     tags:
       - 'v*'
 
-permissions: read-all
+# No workflow-level permissions — scoped per job below.
+permissions: {}
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the

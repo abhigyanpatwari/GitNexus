@@ -35,7 +35,8 @@ on:
           - 'false'
           - 'true'
 
-permissions: read-all
+# No workflow-level permissions — scoped per job below.
+permissions: {}
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Serialize all runs on the same ref (push + workflow_dispatch) to prevent two publishes
