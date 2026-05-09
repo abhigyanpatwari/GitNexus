@@ -74,6 +74,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     clearCodeReferences,
     setSelectedNode,
     codeReferenceFocus,
+    loadFileContent,
   } = useAppState();
 
   const nodeById = useMemo(() => {
@@ -228,6 +229,13 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
   const showSelectedViewer = !!selectedNode && !!selectedFilePath;
   const showCitations = aiReferences.length > 0;
+
+  // Auto-load file content when file is selected but content not in memory
+  useEffect(() => {
+    if (selectedFilePath && selectedIsFile && !selectedFileContent) {
+      loadFileContent(selectedFilePath);
+    }
+  }, [selectedFilePath, selectedIsFile, selectedFileContent, loadFileContent]);
 
   if (isCollapsed) {
     return (

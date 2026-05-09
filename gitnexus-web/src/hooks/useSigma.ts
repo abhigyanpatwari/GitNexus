@@ -63,6 +63,7 @@ interface UseSigmaReturn {
   containerRef: React.RefObject<HTMLDivElement>;
   sigmaRef: React.RefObject<Sigma | null>;
   setGraph: (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => void;
+  addNodes: (nodes: Array<{ id: string; attributes: SigmaNodeAttributes }>, edges: Array<{ source: string; target: string; attributes: SigmaEdgeAttributes }>) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -555,6 +556,72 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     sigma.getCamera().animatedReset({ duration: 500 });
   }, [runLayout, setSelectedNode]);
 
+  // Add nodes incrementally without rebuilding entire graph
+  const addNodes = useCallback((
+    nodes: Array<{ id: string; attributes: SigmaNodeAttributes }>,
+    edges: Array<{ source: string; target: string; attributes: SigmaEdgeAttributes }>
+  ) => {
+    const sigma = sigmaRef.current;
+    const graph = graphRef.current;
+    if (!sigma || !graph) return;
+
+    // Track if any nodes were actually added
+    let addedCount = 0;
+    let edgeCount = 0;
+
+    // Add new nodes (skip existing)
+    nodes.forEach(({ id, attributes }) => {
+      if (!graph.hasNode(id)) {
+        // Position new nodes near existing ones or at random if no graph yet
+        const existingNodes = graph.nodes();
+        if (existingNodes.length > 0) {
+          // Position near a random existing node with some offset
+          const randomExisting = existingNodes[Math.floor(Math.random() * existingNodes.length)];
+          const existingAttrs = graph.getNodeAttributes(randomExisting);
+          graph.addNode(id, {
+            ...attributes,
+            x: existingAttrs.x + (Math.random() - 0.5) * 50,
+            y: existingAttrs.y + (Math.random() - 0.5) * 50,
+          });
+        } else {
+          // First nodes: random position
+          graph.addNode(id, {
+            ...attributes,
+            x: Math.random() * 100 - 50,
+            y: Math.random() * 100 - 50,
+          });
+        }
+        addedCount++;
+      }
+    });
+
+    // Add new edges (skip existing)
+    edges.forEach(({ source, target, attributes }) => {
+      if (!graph.hasDirectedEdge(source, target) && graph.hasNode(source) && graph.hasNode(target)) {
+        graph.addEdge(source, target, attributes);
+        edgeCount++;
+      }
+    });
+
+    if (addedCount > 0 || edgeCount > 0) {
+      console.log(`[useSigma] Incrementally added ${addedCount} nodes and ${edgeCount} edges`);
+
+      // Run a short layout iteration for new nodes only (faster than full layout)
+      if (addedCount > 0 && graph.order > 1) {
+        // Run a few iterations of ForceAtlas2 to settle new nodes
+        const iterations = Math.min(50, addedCount * 5);
+        const settings = getFA2Settings(graph.order);
+        forceAtlas2.assign(graph, { iterations, settings });
+
+        // Apply noverlap to prevent overlaps
+        noverlap.assign(graph, NOVERLAP_SETTINGS);
+      }
+
+      // Refresh sigma to show new nodes
+      sigma.refresh();
+    }
+  }, []);
+
   const focusNode = useCallback((nodeId: string) => {
     const sigma = sigmaRef.current;
     const graph = graphRef.current;
@@ -625,6 +692,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     containerRef,
     sigmaRef,
     setGraph,
+    addNodes,
     zoomIn,
     zoomOut,
     resetZoom,

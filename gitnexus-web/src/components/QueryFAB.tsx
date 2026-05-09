@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Terminal, Play, X, ChevronDown, ChevronUp, Loader2, Sparkles, Table } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { fetchNodesByIds } from '../services/server-connection';
 
 const EXAMPLE_QUERIES = [
   {
@@ -26,7 +27,18 @@ const EXAMPLE_QUERIES = [
 ];
 
 export const QueryFAB = () => {
-  const { setHighlightedNodeIds, setQueryResult, queryResult, clearQueryHighlights, graph, runQuery, isDatabaseReady } = useAppState();
+  const {
+    setHighlightedNodeIds,
+    setQueryResult,
+    queryResult,
+    clearQueryHighlights,
+    graph,
+    runQuery,
+    isDatabaseReady,
+    serverBaseUrl,
+    currentRepoName,
+    addNodesToGraph,
+  } = useAppState();
 
   const [isExpanded, setIsExpanded] = useState(false);
   const [query, setQuery] = useState('');
@@ -129,6 +141,26 @@ export const QueryFAB = () => {
 
       setQueryResult({ rows, nodeIds, executionTime });
       setHighlightedNodeIds(new Set(nodeIds));
+
+      // Visualize query results: load missing nodes from server
+      if (serverBaseUrl && nodeIds.length > 0) {
+        const existingNodeIds = new Set(graph.nodes.map(n => n.id));
+        const missingNodeIds = nodeIds.filter(id => !existingNodeIds.has(id));
+
+        if (missingNodeIds.length > 0) {
+          try {
+            console.log(`[QueryFAB] Loading ${missingNodeIds.length} missing nodes from server`);
+            const { nodes, relationships } = await fetchNodesByIds(serverBaseUrl, missingNodeIds, currentRepoName);
+            if (nodes.length > 0) {
+              addNodesToGraph(nodes, relationships);
+              console.log(`[QueryFAB] Added ${nodes.length} nodes and ${relationships.length} edges to graph`);
+            }
+          } catch (err) {
+            console.error('[QueryFAB] Failed to load missing nodes:', err);
+            // Don't fail the query, just log the error
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Query execution failed');
       setQueryResult(null);
@@ -136,7 +168,7 @@ export const QueryFAB = () => {
     } finally {
       setIsRunning(false);
     }
-  }, [query, isRunning, graph, isDatabaseReady, runQuery, setHighlightedNodeIds, setQueryResult]);
+  }, [query, isRunning, graph, isDatabaseReady, runQuery, setHighlightedNodeIds, setQueryResult, serverBaseUrl, currentRepoName, addNodesToGraph]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

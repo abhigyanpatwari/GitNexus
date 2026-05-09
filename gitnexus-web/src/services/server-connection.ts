@@ -140,18 +140,122 @@ export async function connectToServer(
   onProgress?.('validating', 0, null);
   const repoInfo = await fetchRepoInfo(baseUrl, repoName);
 
-  // Phase 2: Download graph
-  onProgress?.('downloading', 0, null);
-  const { nodes, relationships } = await fetchGraph(
-    baseUrl,
-    (downloaded, total) => onProgress?.('downloading', downloaded, total),
-    signal,
-    repoName
-  );
+  const NODE_THRESHOLD = 50000; // Small graphs use full loading, large graphs use summary
+
+  let nodes: GraphNode[];
+  let relationships: GraphRelationship[];
+
+  if (repoInfo.stats.nodes <= NODE_THRESHOLD) {
+    // Small graph: use original full loading
+    onProgress?.('downloading', 0, null);
+    const graph = await fetchGraph(
+      baseUrl,
+      (downloaded, total) => onProgress?.('downloading', downloaded, total),
+      signal,
+      repoName
+    );
+    nodes = graph.nodes;
+    relationships = graph.relationships;
+  } else {
+    // Large graph: use summary loading (Community + File + Folder + Process)
+    onProgress?.('downloading', 0, null);
+    const graph = await fetchGraphSummary(baseUrl, repoName, signal);
+    nodes = graph.nodes;
+    relationships = graph.relationships;
+  }
 
   // Phase 3: Extract file contents
   onProgress?.('extracting', 0, null);
   const fileContents = extractFileContents(nodes);
 
   return { nodes, relationships, fileContents, repoInfo };
+}
+
+export async function fetchGraphSummary(
+  baseUrl: string,
+  repoName?: string,
+  signal?: AbortSignal
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> {
+  const url = repoName
+    ? `${baseUrl}/graph-summary?repo=${encodeURIComponent(repoName)}`
+    : `${baseUrl}/graph-summary`;
+
+  const response = await fetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch graph summary: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchCommunityMembers(
+  baseUrl: string,
+  communityId: string,
+  repoName?: string,
+  signal?: AbortSignal
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> {
+  const url = repoName
+    ? `${baseUrl}/community-members/${communityId}?repo=${encodeURIComponent(repoName)}`
+    : `${baseUrl}/community-members/${communityId}`;
+
+  const response = await fetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch community members: ${response.status}`);
+  }
+  const data = await response.json();
+  return { nodes: data.nodes, relationships: data.relationships };
+}
+
+export async function fetchNodeNeighbors(
+  baseUrl: string,
+  nodeId: string,
+  repoName?: string
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> {
+  const url = repoName
+    ? `${baseUrl}/node-neighbors/${encodeURIComponent(nodeId)}?repo=${encodeURIComponent(repoName)}`
+    : `${baseUrl}/node-neighbors/${encodeURIComponent(nodeId)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch node neighbors: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchFileContent(
+  baseUrl: string,
+  filePath: string,
+  repoName?: string
+): Promise<string | null> {
+  const url = repoName
+    ? `${baseUrl}/file-content?path=${encodeURIComponent(filePath)}&repo=${encodeURIComponent(repoName)}`
+    : `${baseUrl}/file-content?path=${encodeURIComponent(filePath)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    if (response.status === 404) {
+      return null;
+    }
+    throw new Error(`Failed to fetch file content: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.content;
+}
+
+export async function fetchNodesByIds(
+  baseUrl: string,
+  nodeIds: string[],
+  repoName?: string
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> {
+  const url = `${baseUrl}/nodes-by-ids`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodeIds, repo: repoName })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch nodes: ${response.status}`);
+  }
+  return response.json();
 }

@@ -691,4 +691,56 @@ HTTP API   Local WASM
 
 ---
 
-**最后更新**: 2026-03-19 10:30
+---
+
+### 2026-04-03
+
+#### 阶段 8: 修复增量图谱更新中的边重复添加问题
+
+**时间**: 下午
+**操作**: 修复 `useSigma.addNodes()` 方法中的边去重逻辑错误
+
+**核心问题**:
+- 在增量添加节点和边到 Sigma.js 图谱时，出现 "Graph.addEdge: an edge linking X to Y already exists" 错误
+- 原因：使用 `graph.hasEdge(edgeId)` 检查边是否存在时，查询的是特定 ID 的边
+- 但 graphology 的 `addEdge(source, target, attributes)` 并不使用该 ID
+
+**修改文件**:
+
+1. **`gitnexus-web/src/hooks/useSigma.ts`** (~5 行修改，行 598-605)
+   - **修复前**:
+     ```typescript
+     const edgeId = `${source}->${target}`;
+     if (!graph.hasEdge(edgeId) && graph.hasNode(source) && graph.hasNode(target)) {
+       graph.addEdge(source, target, attributes);
+       edgeCount++;
+     }
+     ```
+   - **修复后**:
+     ```typescript
+     if (!graph.hasDirectedEdge(source, target) && graph.hasNode(source) && graph.hasNode(target)) {
+       graph.addEdge(source, target, attributes);
+       edgeCount++;
+     }
+     ```
+   - **改进点**:
+     - 使用 `graph.hasDirectedEdge(source, target)` 直接检查两个节点之间是否存在有向边
+     - 移除了不必要的 `edgeId` 变量
+     - 正确实现边去重，避免重复添加
+
+**技术说明**:
+- graphology 的 `hasEdge(edgeId)` 检查特定 ID 的边是否存在
+- graphology 的 `hasDirectedEdge(source, target)` 检查两个节点之间的有向连接
+- 增量更新场景下，应该检查连接关系而非边 ID
+
+**测试验证**:
+- ✅ TypeScript 编译成功
+- ✅ 边去重逻辑正确
+
+**性能影响**:
+- 无性能影响，只是修复逻辑错误
+- 避免了运行时的重复边添加异常
+
+---
+
+**最后更新**: 2026-04-03 下午

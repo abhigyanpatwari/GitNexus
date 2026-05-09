@@ -91,10 +91,12 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   return false;
 };
 
-const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
+const buildGraph = async (tablesToInclude?: string[], enableLogging = false): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
-  for (const table of NODE_TABLES) {
+  const tables = tablesToInclude || NODE_TABLES;
+  for (const table of tables) {
     try {
+      const tableStartTime = Date.now();
       let query = '';
       if (table === 'File') {
         query = `MATCH (n:File) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`;
@@ -109,6 +111,10 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
       }
 
       const rows = await executeQuery(query);
+      const tableEndTime = Date.now();
+      if (enableLogging) {
+        console.log(`[buildGraph] ${table}: queried ${rows.length} nodes in ${tableEndTime - tableStartTime}ms`);
+      }
       for (const row of rows) {
         nodes.push({
           id: row.id ?? row[0],
@@ -136,9 +142,23 @@ const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphR
   }
 
   const relationships: GraphRelationship[] = [];
-  const relRows = await executeQuery(
-    `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
-  );
+  const relStartTime = Date.now();
+
+  // For summary graph, only include structural relationships
+  // CONTAINS: Folder -> File
+  // MEMBER_OF: Symbol -> Community (needed for community expansion)
+  // STEP_IN_PROCESS: Step -> Process
+  const structuralTypes = tablesToInclude ? ['CONTAINS', 'MEMBER_OF', 'STEP_IN_PROCESS'] : null;
+  const relQuery = structuralTypes
+    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN ['${structuralTypes.join("','")}'] RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
+    : `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
+
+  const relRows = await executeQuery(relQuery);
+  const relEndTime = Date.now();
+  if (enableLogging) {
+    console.log(`[buildGraph] Relationships: queried ${relRows.length} edges in ${relEndTime - relStartTime}ms`);
+  }
+
   for (const row of relRows) {
     relationships.push({
       id: `${row.sourceId}_${row.type}_${row.targetId}`,
@@ -250,6 +270,171 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // Get graph summary (Community, File, Folder, Process, Section only)
+  app.get('/api/graph-summary', async (req, res) => {
+    const requestStartTime = Date.now();
+    console.log('[/api/graph-summary] Request started');
+    try {
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const SUMMARY_TABLES = ['Community', 'File', 'Folder', 'Process', 'Section'];
+      const graph = await withLbugDb(lbugPath, async () => {
+        // Step 1: Build graph (with logging enabled)
+        const buildStartTime = Date.now();
+        const { nodes, relationships } = await buildGraph(SUMMARY_TABLES, true);
+        const buildEndTime = Date.now();
+        console.log(`[/api/graph-summary] buildGraph completed: ${nodes.length} nodes, ${relationships.length} edges in ${buildEndTime - buildStartTime}ms`);
+
+        // Step 2: Remove file content from File nodes to reduce response size
+        const cleanupStartTime = Date.now();
+        let removedContentCount = 0;
+        nodes.forEach(node => {
+          if (node.label === 'File') {
+            const props = node.properties as any;
+            if (props.content) {
+              delete props.content;
+              removedContentCount++;
+            }
+          }
+        });
+        const cleanupEndTime = Date.now();
+        console.log(`[/api/graph-summary] Removed content from ${removedContentCount} File nodes in ${cleanupEndTime - cleanupStartTime}ms`);
+
+        // Step 3: Skip inter-community aggregation for now (too slow, not essential for initial view)
+        // Users can expand communities to see detailed connections
+        console.log(`[/api/graph-summary] Skipping cross-community aggregation (not needed for summary view)`);
+
+        console.log(`[/api/graph-summary] Final graph: ${nodes.length} nodes, ${relationships.length} edges`);
+        return { nodes, relationships };
+      });
+
+      // Step 4: JSON serialization (measured by response time)
+      const jsonStartTime = Date.now();
+      const jsonStr = JSON.stringify(graph);
+      const jsonEndTime = Date.now();
+      const jsonSizeMB = (jsonStr.length / 1024 / 1024).toFixed(2);
+      console.log(`[/api/graph-summary] JSON serialization: ${jsonSizeMB}MB in ${jsonEndTime - jsonStartTime}ms`);
+
+      const requestEndTime = Date.now();
+      console.log(`[/api/graph-summary] Total request time: ${requestEndTime - requestStartTime}ms`);
+
+      res.json(graph);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to build graph summary' });
+    }
+  });
+
+  // Get community members
+  app.get('/api/community-members/:id', async (req, res) => {
+    try {
+      const communityId = req.params.id;
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+
+      const result = await withLbugDb(lbugPath, async () => {
+        // Query member nodes
+        const memberQuery = `
+          MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community {id: '${communityId.replace(/'/g, "''")}'})
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content, labels(n)[0] AS label
+        `;
+
+        const memberRows = await executeQuery(memberQuery);
+        const nodes: GraphNode[] = memberRows.map(row => ({
+          id: row.id,
+          label: row.label as GraphNode['label'],
+          properties: {
+            name: row.name,
+            filePath: row.filePath,
+            startLine: row.startLine,
+            endLine: row.endLine,
+            content: row.content
+          } as GraphNode['properties']
+        }));
+
+        // Get member IDs
+        const memberIds = nodes.map(n => n.id);
+
+        if (memberIds.length === 0) {
+          return { communityId, nodes: [], relationships: [] };
+        }
+
+        // Query internal relationships
+        const relQuery = `
+          MATCH (a)-[r:CodeRelation]->(b)
+          WHERE a.id IN [${memberIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
+            AND b.id IN [${memberIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')}]
+            AND r.type <> 'MEMBER_OF'
+          RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason
+        `;
+
+        const relRows = await executeQuery(relQuery);
+        const relationships: GraphRelationship[] = relRows.map(row => ({
+          id: `${row.sourceId}_${row.type}_${row.targetId}`,
+          type: row.type,
+          sourceId: row.sourceId,
+          targetId: row.targetId,
+          confidence: row.confidence,
+          reason: row.reason,
+          step: null
+        }));
+
+        return { communityId, nodes, relationships };
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch community members' });
+    }
+  });
+
+  // Get file content by file path
+  app.get('/api/file-content', async (req, res) => {
+    try {
+      const filePath = req.query.path as string;
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing "path" query parameter' });
+        return;
+      }
+
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+
+      const result = await withLbugDb(lbugPath, async () => {
+        const query = `
+          MATCH (n:File {filePath: '${filePath.replace(/'/g, "''")}'})
+          RETURN n.content AS content
+        `;
+        const rows = await executeQuery(query);
+
+        if (rows.length === 0) {
+          return null;
+        }
+
+        return rows[0].content;
+      });
+
+      if (result === null) {
+        res.status(404).json({ error: 'File not found' });
+      } else {
+        res.json({ content: result });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch file content' });
+    }
+  });
+
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
     try {
@@ -269,6 +454,212 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.json({ result });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
+    }
+  });
+
+  // Get nodes by IDs (for visualizing query results)
+  app.post('/api/nodes-by-ids', async (req, res) => {
+    try {
+      const nodeIds = req.body.nodeIds as string[];
+      if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+        res.status(400).json({ error: 'Missing or invalid "nodeIds" array' });
+        return;
+      }
+
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+
+      const result = await withLbugDb(lbugPath, async () => {
+        // Escape single quotes in node IDs
+        const escapedIds = nodeIds.map(id => `'${id.replace(/'/g, "''")}'`);
+
+        // Query nodes by IDs
+        const nodeQuery = `
+          MATCH (n)
+          WHERE n.id IN [${escapedIds.join(',')}]
+          RETURN n.id AS id, labels(n)[0] AS label, n.name AS name, n.filePath AS filePath,
+                 n.startLine AS startLine, n.endLine AS endLine, n.content AS content,
+                 n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount
+        `;
+
+        const nodeRows = await executeQuery(nodeQuery);
+        const nodes: GraphNode[] = nodeRows.map(row => ({
+          id: row.id,
+          label: row.label as GraphNode['label'],
+          properties: {
+            name: row.name ?? row.heuristicLabel ?? row.id,
+            filePath: row.filePath ?? '',
+            startLine: row.startLine,
+            endLine: row.endLine,
+            heuristicLabel: row.heuristicLabel,
+            cohesion: row.cohesion,
+            symbolCount: row.symbolCount,
+          } as GraphNode['properties']
+        }));
+
+        // Query relationships between these nodes
+        const relQuery = `
+          MATCH (a)-[r:CodeRelation]->(b)
+          WHERE a.id IN [${escapedIds.join(',')}] AND b.id IN [${escapedIds.join(',')}]
+          RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step
+        `;
+
+        const relRows = await executeQuery(relQuery);
+        const relationships: GraphRelationship[] = relRows.map(row => ({
+          id: `${row.sourceId}_${row.type}_${row.targetId}`,
+          type: row.type,
+          sourceId: row.sourceId,
+          targetId: row.targetId,
+          confidence: row.confidence ?? 1.0,
+          reason: row.reason ?? '',
+          step: row.step,
+        }));
+
+        return { nodes, relationships };
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch nodes' });
+    }
+  });
+
+  // Get node neighbors (all connected nodes and relationships)
+  app.get('/api/node-neighbors/:id', async (req, res) => {
+    try {
+      const nodeId = req.params.id;
+      if (!nodeId) {
+        res.status(400).json({ error: 'Missing node ID' });
+        return;
+      }
+
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+
+      const result = await withLbugDb(lbugPath, async () => {
+        const escapedId = nodeId.replace(/'/g, "''");
+
+        // Query all neighbors (both incoming and outgoing)
+        const neighborQuery = `
+          MATCH (center {id: '${escapedId}'})
+          OPTIONAL MATCH (center)-[r1:CodeRelation]->(out)
+          OPTIONAL MATCH (in)-[r2:CodeRelation]->(center)
+          WITH center,
+               collect(DISTINCT out) as outgoing,
+               collect(DISTINCT in) as incoming,
+               collect(DISTINCT r1) as outRels,
+               collect(DISTINCT r2) as inRels
+          UNWIND (outgoing + incoming + [center]) as n
+          WITH DISTINCT n, outRels, inRels
+          RETURN n.id AS id, labels(n)[0] AS label, n.name AS name, n.filePath AS filePath,
+                 n.startLine AS startLine, n.endLine AS endLine,
+                 n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount,
+                 outRels, inRels
+        `;
+
+        const rows = await executeQuery(neighborQuery);
+
+        if (rows.length === 0) {
+          return { nodes: [], relationships: [] };
+        }
+
+        // Build nodes
+        const nodeMap = new Map<string, GraphNode>();
+        let allOutRels: any[] = [];
+        let allInRels: any[] = [];
+
+        for (const row of rows) {
+          if (row.id) {
+            nodeMap.set(row.id, {
+              id: row.id,
+              label: row.label as GraphNode['label'],
+              properties: {
+                name: row.name ?? row.heuristicLabel ?? row.id,
+                filePath: row.filePath ?? '',
+                startLine: row.startLine,
+                endLine: row.endLine,
+                heuristicLabel: row.heuristicLabel,
+                cohesion: row.cohesion,
+                symbolCount: row.symbolCount,
+              } as GraphNode['properties']
+            });
+          }
+          if (row.outRels) allOutRels = allOutRels.concat(row.outRels);
+          if (row.inRels) allInRels = allInRels.concat(row.inRels);
+        }
+
+        // Build relationships
+        const relationships: GraphRelationship[] = [];
+        const relSet = new Set<string>();
+
+        const processRel = (rel: any) => {
+          if (!rel || !rel.type) return;
+          const key = `${rel.sourceId ?? rel.start}_${rel.type}_${rel.targetId ?? rel.end}`;
+          if (relSet.has(key)) return;
+          relSet.add(key);
+
+          relationships.push({
+            id: key,
+            type: rel.type,
+            sourceId: rel.sourceId ?? rel.start,
+            targetId: rel.targetId ?? rel.end,
+            confidence: rel.confidence ?? 1.0,
+            reason: rel.reason ?? '',
+            step: rel.step,
+          });
+        };
+
+        allOutRels.filter(r => r).forEach(processRel);
+        allInRels.filter(r => r).forEach(processRel);
+
+        // Fallback: if Cypher didn't return relationships properly, query them directly
+        if (relationships.length === 0) {
+          const nodeIds = Array.from(nodeMap.keys());
+          const escapedIds = nodeIds.map(id => `'${id.replace(/'/g, "''")}'`);
+
+          const relQuery = `
+            MATCH (a)-[r:CodeRelation]->(b)
+            WHERE (a.id IN [${escapedIds.join(',')}] OR b.id IN [${escapedIds.join(',')}])
+              AND a.id IN [${escapedIds.join(',')}]
+              AND b.id IN [${escapedIds.join(',')}]
+            RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step
+          `;
+
+          const relRows = await executeQuery(relQuery);
+          relRows.forEach(row => {
+            const key = `${row.sourceId}_${row.type}_${row.targetId}`;
+            if (!relSet.has(key)) {
+              relSet.add(key);
+              relationships.push({
+                id: key,
+                type: row.type,
+                sourceId: row.sourceId,
+                targetId: row.targetId,
+                confidence: row.confidence ?? 1.0,
+                reason: row.reason ?? '',
+                step: row.step,
+              });
+            }
+          });
+        }
+
+        return {
+          nodes: Array.from(nodeMap.values()),
+          relationships
+        };
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch node neighbors' });
     }
   });
 

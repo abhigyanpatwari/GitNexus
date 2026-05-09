@@ -11,7 +11,7 @@ import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import type { RepoSummary, ConnectToServerResult } from '../services/server-connection';
-import { fetchRepos, connectToServer } from '../services/server-connection';
+import { fetchRepos, connectToServer, fetchFileContent } from '../services/server-connection';
 import { ERROR_RESET_DELAY_MS, getServerModeConfig } from '../config/ui-constants';
 import { normalizePath, resolveFilePath as resolvePathFromContents } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
@@ -127,6 +127,15 @@ interface AppState {
   currentRepoName: string;
   setCurrentRepoName: (name: string) => void;
   switchRepo: (repoName: string) => Promise<void>;
+
+  // Community expansion
+  expandedCommunities: Set<string>;
+  setExpandedCommunities: (communities: Set<string>) => void;
+  addNodesToGraph: (nodes: GraphNode[], relationships: GraphRelationship[]) => void;
+  collapseCommunity: (communityId: string) => void;
+  loadFileContent: (filePath: string) => Promise<string | null>;
+  incrementalUpdate: { nodes: GraphNode[]; relationships: GraphRelationship[] } | null;
+  clearIncrementalUpdate: () => void;
 
   // Worker API (shared across app)
   runPipeline: (file: File, onProgress: (p: PipelineProgress) => void, clusteringConfig?: ProviderConfig) => Promise<PipelineResult>;
@@ -308,6 +317,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
   const [availableRepos, setAvailableRepos] = useState<RepoSummary[]>([]);
   const [currentRepoName, setCurrentRepoName] = useState<string>('');
+
+  // Community expansion state
+  const [expandedCommunities, setExpandedCommunities] = useState<Set<string>>(new Set());
+  const [incrementalUpdate, setIncrementalUpdate] = useState<{ nodes: GraphNode[]; relationships: GraphRelationship[] } | null>(null);
 
   // Embedding state
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus>('idle');
@@ -1176,6 +1189,84 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     }
   }, [serverBaseUrl, setProgress, setViewMode, setProjectName, setCurrentRepoName, setGraph, setFileContents, loadServerGraph, initializeAgent, initializeBackendAgent, setServerConnection, startEmbeddingsWithFallback, setHighlightedNodeIds, clearAIToolHighlights, clearAICitationHighlights, clearBlastRadius, setSelectedNode, setQueryResult, setCodeReferences, setCodePanelOpen, setCodeReferenceFocus]);
 
+  // Community expansion: dynamically add nodes to graph (with deduplication)
+  const addNodesToGraph = useCallback((
+    newNodes: GraphNode[],
+    newRelationships: GraphRelationship[]
+  ) => {
+    if (!graph) return;
+    const existingIds = new Set(graph.nodes.map((n: GraphNode) => n.id));
+    const existingRelIds = new Set(graph.relationships.map((r: GraphRelationship) => r.id));
+    const deduped = newNodes.filter((n: GraphNode) => !existingIds.has(n.id));
+    const dedupedRels = newRelationships.filter((r: GraphRelationship) => !existingRelIds.has(r.id));
+
+    if (deduped.length === 0 && dedupedRels.length === 0) {
+      // No new data to add
+      return;
+    }
+
+    // Use createKnowledgeGraph to rebuild (avoid mutation)
+    const updated = createKnowledgeGraph();
+    [...graph.nodes, ...deduped].forEach((n: GraphNode) => updated.addNode(n));
+    [...graph.relationships, ...dedupedRels].forEach((r: GraphRelationship) => updated.addRelationship(r));
+    setGraph(updated);
+
+    // Notify GraphCanvas of incremental update
+    setIncrementalUpdate({ nodes: deduped, relationships: dedupedRels });
+  }, [graph, setGraph]);
+
+  // Community collapse: remove member nodes from graph
+  const collapseCommunity = useCallback((communityId: string) => {
+    if (!graph) return;
+
+    // Find community member node IDs
+    const memberIds = new Set<string>();
+    graph.relationships.forEach((rel: GraphRelationship) => {
+      if (rel.type === 'MEMBER_OF' && rel.targetId === communityId) {
+        memberIds.add(rel.sourceId);
+      }
+    });
+
+    // Remove member nodes and related edges
+    const updated = createKnowledgeGraph();
+    graph.nodes.filter((n: GraphNode) => !memberIds.has(n.id)).forEach((n: GraphNode) => updated.addNode(n));
+    graph.relationships.filter((r: GraphRelationship) =>
+      !memberIds.has(r.sourceId) && !memberIds.has(r.targetId)
+    ).forEach((r: GraphRelationship) => updated.addRelationship(r));
+
+    setGraph(updated);
+    const nextExpanded = new Set(expandedCommunities);
+    nextExpanded.delete(communityId);
+    setExpandedCommunities(nextExpanded);
+  }, [graph, setGraph, expandedCommunities]);
+
+  // Load file content on demand (for summary graph mode)
+  const loadFileContent = useCallback(async (filePath: string): Promise<string | null> => {
+    // Check if already loaded
+    if (fileContents.has(filePath)) {
+      return fileContents.get(filePath)!;
+    }
+
+    // Only works in server mode
+    if (!serverBaseUrl) {
+      return null;
+    }
+
+    try {
+      const content = await fetchFileContent(serverBaseUrl, filePath, currentRepoName);
+      if (content) {
+        // Add to fileContents map
+        const updated = new Map(fileContents);
+        updated.set(filePath, content);
+        setFileContents(updated);
+      }
+      return content;
+    } catch (err) {
+      console.error('Failed to load file content:', err);
+      return null;
+    }
+  }, [fileContents, serverBaseUrl, currentRepoName, setFileContents]);
+
   const removeCodeReference = useCallback((id: string) => {
     setCodeReferences(prev => {
       const ref = prev.find(r => r.id === id);
@@ -1260,6 +1351,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     currentRepoName,
     setCurrentRepoName,
     switchRepo,
+    // Community expansion
+    expandedCommunities,
+    setExpandedCommunities,
+    addNodesToGraph,
+    collapseCommunity,
+    loadFileContent,
+    incrementalUpdate,
+    clearIncrementalUpdate: useCallback(() => setIncrementalUpdate(null), []),
     runPipeline,
     runPipelineFromFiles,
     runQuery,

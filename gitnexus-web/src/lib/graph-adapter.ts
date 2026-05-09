@@ -163,8 +163,14 @@ export const knowledgeGraphToGraphology = (
     const y = radius * Math.sin(angle) + (Math.random() - 0.5) * jitter;
     
     nodePositions.set(node.id, { x, y });
-    
-    const baseSize = NODE_SIZES[node.label] || 8;
+
+    let baseSize = NODE_SIZES[node.label] || 8;
+    // Special handling for Community nodes: size based on symbolCount
+    if (node.label === 'Community' && node.properties.symbolCount) {
+      const symbolCount = node.properties.symbolCount as number;
+      // Logarithmic mapping: avoid large communities overwhelming small ones
+      baseSize = 8 + Math.log2(Math.max(1, symbolCount)) * 2; // Range ~8-30
+    }
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
     
     // Structural nodes keep their type-based color
@@ -218,8 +224,14 @@ export const knowledgeGraphToGraphology = (
     }
     
     nodePositions.set(nodeId, { x, y });
-    
-    const baseSize = NODE_SIZES[node.label] || 8;
+
+    let baseSize = NODE_SIZES[node.label] || 8;
+    // Special handling for Community nodes: size based on symbolCount
+    if (node.label === 'Community' && node.properties.symbolCount) {
+      const symbolCount = node.properties.symbolCount as number;
+      // Logarithmic mapping: avoid large communities overwhelming small ones
+      baseSize = 8 + Math.log2(Math.max(1, symbolCount)) * 2; // Range ~8-30
+    }
     const scaledSize = getScaledNodeSize(baseSize, nodeCount);
     
     // Check if this node has a community assignment (reuse communityIndex from above)

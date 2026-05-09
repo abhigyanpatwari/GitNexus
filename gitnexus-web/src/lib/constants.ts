@@ -56,7 +56,7 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Import: 1.5,     // Very small - usually hidden anyway
   Type: 3,         // Type alias - small
   CodeElement: 2,  // Generic small
-  Community: 0,    // Hidden by default - metadata node
+  Community: 12,   // Community aggregation node (visible in summary view)
   Process: 0,      // Hidden by default - metadata node
   Section: 8,      // Structural section - similar to Folder
   Struct: 8,       // Like Class
@@ -110,6 +110,7 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Interface',
   'Enum',
   'Type',
+  'Community', // Show community nodes in summary view
 ];
 
 // All filterable labels
@@ -122,6 +123,7 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Variable',
   'Interface',
   'Import',
+  'Community', // Allow manual toggle of community nodes
 ];
 
 // Edge/Relation types

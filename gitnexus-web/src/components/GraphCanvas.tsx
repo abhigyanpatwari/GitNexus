@@ -4,6 +4,7 @@ import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import { knowledgeGraphToGraphology, filterGraphByDepth, SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { GraphNode } from '../core/graph/types';
+import { fetchCommunityMembers, fetchNodeNeighbors } from '../services/server-connection';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
 
@@ -31,6 +32,15 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     clearAICitationHighlights,
     clearBlastRadius,
     animatedNodes,
+    expandedCommunities,
+    setExpandedCommunities,
+    addNodesToGraph,
+    collapseCommunity,
+    serverBaseUrl,
+    currentRepoName,
+    setProgress,
+    incrementalUpdate,
+    clearIncrementalUpdate,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -60,14 +70,57 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     return new Map(graph.nodes.map(n => [n.id, n]));
   }, [graph]);
 
-  const handleNodeClick = useCallback((nodeId: string) => {
+  const handleNodeClick = useCallback(async (nodeId: string) => {
     if (!graph) return;
     const node = nodeById.get(nodeId);
-    if (node) {
-      setSelectedNode(node);
-      openCodePanel();
+    if (!node) return;
+
+    // Handle Community node click: expand/collapse
+    if (node.label === 'Community') {
+      const isExpanded = expandedCommunities.has(nodeId);
+
+      if (!isExpanded) {
+        // Expand: fetch and add member nodes
+        if (!serverBaseUrl) return;
+        setProgress?.({ phase: 'extracting', percent: 50, message: 'Expanding community...',  detail: `Loading members of ${node.properties.name || nodeId}` });
+        try {
+          const members = await fetchCommunityMembers(serverBaseUrl, nodeId, currentRepoName);
+          addNodesToGraph(members.nodes, members.relationships);
+          const updated = new Set(expandedCommunities);
+          updated.add(nodeId);
+          setExpandedCommunities(updated);
+        } catch (err) {
+          console.error('Failed to expand community:', err);
+        } finally {
+          setProgress?.(null);
+        }
+      } else {
+        // Collapse: remove member nodes
+        collapseCommunity(nodeId);
+      }
+      return;
     }
-  }, [graph, nodeById, setSelectedNode, openCodePanel]);
+
+    // Non-community nodes: load neighbors if in server mode
+    if (serverBaseUrl) {
+      setProgress?.({ phase: 'extracting', percent: 50, message: 'Loading neighbors...', detail: `Loading connections for ${node.properties.name || nodeId}` });
+      try {
+        const neighbors = await fetchNodeNeighbors(serverBaseUrl, nodeId, currentRepoName);
+        if (neighbors.nodes.length > 0 || neighbors.relationships.length > 0) {
+          addNodesToGraph(neighbors.nodes, neighbors.relationships);
+          console.log(`[GraphCanvas] Loaded ${neighbors.nodes.length} neighbors and ${neighbors.relationships.length} edges for ${nodeId}`);
+        }
+      } catch (err) {
+        console.error('Failed to load node neighbors:', err);
+      } finally {
+        setProgress?.(null);
+      }
+    }
+
+    // Select node and open code panel
+    setSelectedNode(node);
+    openCodePanel();
+  }, [graph, nodeById, expandedCommunities, serverBaseUrl, currentRepoName, setProgress, addNodesToGraph, setExpandedCommunities, collapseCommunity, setSelectedNode, openCodePanel]);
 
   const handleNodeHover = useCallback((nodeId: string | null) => {
     if (!nodeId || !graph) {
@@ -97,6 +150,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     containerRef,
     sigmaRef,
     setGraph: setSigmaGraph,
+    addNodes: addNodesToSigma,
     zoomIn,
     zoomOut,
     resetZoom,
@@ -154,6 +208,70 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
     setSigmaGraph(sigmaGraph);
   }, [graph, nodeById, setSigmaGraph]);
+
+  // Handle incremental updates (add nodes without full rebuild)
+  useEffect(() => {
+    if (!incrementalUpdate || !graph) return;
+
+    const { nodes: newNodes, relationships: newRels } = incrementalUpdate;
+    if (newNodes.length === 0 && newRels.length === 0) {
+      clearIncrementalUpdate();
+      return;
+    }
+
+    // Build communityMemberships for new nodes
+    const communityMemberships = new Map<string, number>();
+    newRels.forEach(rel => {
+      if (rel.type === 'MEMBER_OF') {
+        const communityNode = nodeById.get(rel.targetId);
+        if (communityNode && communityNode.label === 'Community') {
+          const numericPart = rel.targetId.replace('comm_', '');
+          const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
+          communityMemberships.set(rel.sourceId, communityIdx);
+        }
+      }
+    });
+
+    // Convert new nodes and relationships to Sigma format
+    const sigmaNodes: Array<{ id: string; attributes: SigmaNodeAttributes }> = [];
+    const sigmaEdges: Array<{ source: string; target: string; attributes: SigmaEdgeAttributes }> = [];
+
+    // Import knowledgeGraphToGraphology logic inline for new nodes
+    newNodes.forEach(node => {
+      const communityIndex = communityMemberships.get(node.id);
+      sigmaNodes.push({
+        id: node.id,
+        attributes: {
+          label: node.properties.name,
+          size: 10, // Will be calculated properly by Sigma
+          color: '#888', // Will be calculated properly by Sigma
+          nodeType: node.label,
+          filePath: node.properties.filePath || '',
+          startLine: node.properties.startLine,
+          endLine: node.properties.endLine,
+          x: 0,
+          y: 0,
+          community: communityIndex,
+        }
+      });
+    });
+
+    newRels.forEach(rel => {
+      sigmaEdges.push({
+        source: rel.sourceId,
+        target: rel.targetId,
+        attributes: {
+          relationType: rel.type,
+          size: 1,
+          color: '#444',
+        }
+      });
+    });
+
+    // Use incremental add instead of full rebuild
+    addNodesToSigma(sigmaNodes, sigmaEdges);
+    clearIncrementalUpdate();
+  }, [incrementalUpdate, graph, nodeById, addNodesToSigma, clearIncrementalUpdate]);
 
   // Update node visibility when filters change
   useEffect(() => {
