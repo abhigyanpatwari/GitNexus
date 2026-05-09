@@ -48,6 +48,11 @@ jobs:
       # Required by actions/download-artifact to fetch artifacts produced
       # by a different workflow run.
       actions: read
+      # Required to create the `gitnexus/autofix` Check Run that reports
+      # the outcome (clean / suggestions-posted / skipped-too-large) to
+      # the PR's Checks tab. Branch protection or agents can grep the
+      # conclusion + output title without parsing the sticky comment.
+      checks: write
     steps:
       # Pinned to v8.0.1. Verify SHA via:
       #   gh api repos/actions/download-artifact/git/refs/tags/v8.0.1
@@ -259,3 +264,47 @@ jobs:
               -f body="${body}" >/dev/null
             echo "Created summary comment."
           fi
+
+      - name: Emit gitnexus/autofix Check Run
+        # Stable check name `gitnexus/autofix` so PR-watching agents can
+        # `gh pr checks <pr>` and read the conclusion + title without
+        # parsing the sticky comment. Three outcomes:
+        #   clean              → conclusion: success
+        #   suggestions-posted → conclusion: neutral (review suggestions)
+        #   skipped-too-large  → conclusion: neutral (diff > 3000 lines)
+        # `neutral` does not block branch-protection required-checks but
+        # is visually distinct from a green pass.
+        if: always() && steps.meta.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          CHANGED: ${{ steps.meta.outputs.changed_lines }}
+          POSTED: ${{ steps.suggest.outputs.posted }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${CHANGED}" = "0" ]; then
+            conclusion="success"
+            title="Formatting clean"
+            summary="Prettier and ESLint --fix produced no changes."
+          elif [ "${POSTED}" = "skipped-too-large" ]; then
+            conclusion="neutral"
+            title="Diff too large for inline suggestions (${CHANGED} lines)"
+            summary="GitHub caps the review-comment API at ~3000 lines. Run \`npm run lint:fix && npm run format\` locally."
+          else
+            conclusion="neutral"
+            title="Suggestions posted"
+            summary="Inline review-comment suggestions posted. Click **Apply suggestion** on each, or run \`npm run lint:fix && npm run format\` locally."
+          fi
+
+          gh api -X POST "repos/${GH_REPO}/check-runs" \
+            -f name="gitnexus/autofix" \
+            -f head_sha="${HEAD_SHA}" \
+            -f status="completed" \
+            -f conclusion="${conclusion}" \
+            -f "output[title]=${title}" \
+            -f "output[summary]=${summary}" \
+            >/dev/null
+          echo "Posted check-run gitnexus/autofix=${conclusion} (${title})"
