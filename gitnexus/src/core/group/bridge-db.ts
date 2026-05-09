@@ -726,8 +726,12 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
   // CodeQL js/log-injection. Pino's NDJSON serialization already
   // JSON-escapes all values, but we sanitize here as a defence-in-depth
   // measure so CodeQL can see the taint flow is broken.
+  const safeGroupDir = String(groupDir).replace(/[\r\n]/g, ' ');
+  const safeErrMsg = lastErr instanceof Error
+    ? String(lastErr.message).replace(/[\r\n]/g, ' ')
+    : undefined;
   bridgeLogger.debug(
-    { groupDir: String(groupDir).replace(/[\r\n]/g, ' '), err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    { groupDir: safeGroupDir, errMsg: safeErrMsg, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
     'openBridgeDbReadOnly gave up',
   );
   return null;
