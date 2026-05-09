@@ -1,12 +1,16 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
+# Pinned npm version — keep in sync with Dockerfile.cli and
+# gitnexus/Dockerfile.test.
+ARG NPM_VERSION=11.14.1
 
 # node:22-bookworm-slim
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS builder
+ARG NPM_VERSION
 
 WORKDIR /app
 
-RUN npx --yes npm@11.14.1 install -g npm@11.14.1
+RUN npx --yes npm@${NPM_VERSION} install -g npm@${NPM_VERSION}
 
 COPY gitnexus-shared/package.json gitnexus-shared/package-lock.json ./gitnexus-shared/
 RUN npm ci --prefix gitnexus-shared

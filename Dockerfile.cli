@@ -1,15 +1,20 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
+# Pinned npm version used to replace the bundled npm in the upstream Node
+# image. Bumping requires a coordinated update in Dockerfile.web and
+# gitnexus/Dockerfile.test so all images bootstrap the same npm.
+ARG NPM_VERSION=11.14.1
 
 # -- Builder -----------------------------------------------------------
 # Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
 # tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
 # node:22-bookworm-slim
 FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS builder
+ARG NPM_VERSION
 
 WORKDIR /app
 
-RUN npx --yes npm@11.14.1 install -g npm@11.14.1
+RUN npx --yes npm@${NPM_VERSION} install -g npm@${NPM_VERSION}
 
 # Toolchain for node-gyp / native builds.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ git && rm -rf /var/lib/apt/lists/*
