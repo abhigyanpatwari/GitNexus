@@ -499,6 +499,12 @@ const CSHARP_SCOPE_QUERY = `
   left: (member_access_expression
     expression: "base" @reference.receiver
     name: (identifier) @reference.name)) @reference.write.member
+
+;; References — field/property reads: \`obj.Name\`
+;; Emit-side filtering drops call targets and assignment left-hand sides.
+(member_access_expression
+  expression: (_) @reference.receiver
+  name: (identifier) @reference.name) @reference.read.member
 `;
 
 let _parser: Parser | null = null;
