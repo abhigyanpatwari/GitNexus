@@ -3,20 +3,19 @@ name: PR Autofix (publish)
 # TRUSTED HALF of the autofix pipeline.
 #
 # Triggered by `pr-autofix.yml` completing on a PR (including fork PRs).
-# Downloads the diff artifact produced by the untrusted job and posts
-# inline review-comment suggestions to the PR using `reviewdog`. This
-# job NEVER checks out fork code — it only consumes the diff (data) and
-# calls the GitHub API. That isolation is what makes it safe to run
-# under `pull-requests: write` on fork-triggered events.
+# Downloads the diff artifact produced by the untrusted job, verifies
+# its claimed PR identity against the workflow_run authority, then
+# posts (or edits) a single sticky summary comment plus a
+# `gitnexus/autofix` Check Run. This job NEVER checks out fork code —
+# it only consumes the diff (data) and calls the GitHub API. That
+# isolation is what makes it safe to run under `pull-requests: write`
+# on fork-triggered events.
 #
-# Also posts (or edits) a single sticky summary comment so contributors
-# and AI agents have one stable, machine-readable signal that says
-# whether autofix had anything to suggest. Look for the heading
-# "## :sparkles: PR Autofix" in the PR's top-level comments.
-#
-# Reviewdog reporter: `github-pr-review` reads $REVIEWDOG_GITHUB_API_TOKEN
-# and posts via the GraphQL/REST PR-review API. It does not need a
-# checkout because the diff itself encodes file paths + line numbers.
+# The sticky comment is the contributor signal: heading
+# "## :sparkles: PR Autofix" in the PR's top-level comments, with a
+# fenced `gitnexus-autofix` JSON block carrying machine-readable state
+# for AI agents. Contributors apply the patch by commenting `/autofix`
+# on the PR — handled by the separate `pr-autofix-apply.yml` workflow.
 
 on:
   workflow_run:
@@ -49,9 +48,9 @@ jobs:
       # by a different workflow run.
       actions: read
       # Required to create the `gitnexus/autofix` Check Run that reports
-      # the outcome (clean / suggestions-posted / skipped-too-large) to
-      # the PR's Checks tab. Branch protection or agents can grep the
-      # conclusion + output title without parsing the sticky comment.
+      # the outcome (clean / fixes-available) to the PR's Checks tab.
+      # Branch protection or agents can grep the conclusion + output
+      # title without parsing the sticky comment.
       checks: write
     steps:
       # Pinned to v8.0.1. Verify SHA via:
@@ -114,71 +113,78 @@ jobs:
             echo "changed_lines=${CHANGED}"
           } >> "$GITHUB_OUTPUT"
 
-      # Pinned to v1.5.0. Verify SHA via:
-      #   gh api repos/reviewdog/action-setup/git/refs/tags/v1.5.0
-      #   (annotated tag — resolve via .../git/tags/<sha> --jq .object)
-      - name: Install reviewdog
-        if: steps.meta.outputs.changed_lines != '0'
-        uses: reviewdog/action-setup@d8a7baabd7f3e8544ee4dbde3ee41d0011c3a93f # v1.5.0
-        with:
-          # Pin the binary, not just the action SHA — a bad reviewdog
-          # release otherwise breaks every PR with no rollback. Bump
-          # this knob deliberately when validating a new release.
-          reviewdog_version: v0.21.0
-
-      - name: Post inline suggestions
-        id: suggest
+      # Cross-verify the artifact's claimed identity against the
+      # GitHub-controlled workflow_run event. The previous step's
+      # allowlist only proves the fields are well-formed — not that
+      # they refer to the PR/SHA that actually triggered this run.
+      # A fork-controlled `npm run lint:fix` could plausibly mutate
+      # metadata.json to reference another PR or SHA, redirecting our
+      # write-scoped sticky/check-run onto an attacker-chosen target.
+      #
+      # Authority sources are all server-controlled GitHub event fields:
+      #   - workflow_run.head_sha
+      #   - workflow_run.head_repository.full_name
+      #   - workflow_run.pull_requests[].number  (within-repo PRs only;
+      #     empty array on fork PRs — fall back to commits/{sha}/pulls)
+      #
+      # Mismatch => fail loud BEFORE any sticky/check-run side effect.
+      - name: Verify metadata against workflow_run authority
+        id: verify
         if: steps.meta.outputs.changed_lines != '0'
         env:
-          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI_REPO_OWNER: ${{ github.repository_owner }}
-          CI_REPO_NAME: ${{ github.event.repository.name }}
-          CI_PULL_REQUEST: ${{ steps.meta.outputs.pr_number }}
-          CI_COMMIT: ${{ steps.meta.outputs.head_sha }}
-          # Pull `changed_lines` through env so bash gets a real
-          # variable (and shellcheck SC2170 doesn't fire on `-gt` against
-          # a `${{ }}`-interpolated literal).
-          CHANGED_LINES: ${{ steps.meta.outputs.changed_lines }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          META_PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          META_HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          META_HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WF_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WF_PR_NUMBERS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
         shell: bash
         run: |
           set -euo pipefail
-          patch=autofix-in/autofix.patch
-          if [ ! -s "$patch" ]; then
-            echo "Empty patch — nothing to suggest."
-            echo "posted=false" >> "$GITHUB_OUTPUT"
-            exit 0
+
+          # 1) head_sha must match exactly. workflow_run.head_sha is the
+          # commit GitHub actually ran the producer against — definitive.
+          if [ "${META_HEAD_SHA}" != "${WF_HEAD_SHA}" ]; then
+            echo "::error::Artifact head_sha (${META_HEAD_SHA}) does not match workflow_run.head_sha (${WF_HEAD_SHA}) — refusing to publish."
+            exit 1
           fi
 
-          # GitHub's review-comment API returns 406 on diffs above ~3k
-          # changed lines. Bail out gracefully and let the summary
-          # comment carry the signal instead.
-          if [ "$CHANGED_LINES" -gt 3000 ]; then
-            echo "Diff too large ($CHANGED_LINES lines) — skipping inline suggestions."
-            echo "posted=skipped-too-large" >> "$GITHUB_OUTPUT"
-            exit 0
+          # 2) head_repo must match exactly. Same authority anchor.
+          if [ "${META_HEAD_REPO}" != "${WF_HEAD_REPO}" ]; then
+            echo "::error::Artifact head_repo (${META_HEAD_REPO}) does not match workflow_run.head_repository (${WF_HEAD_REPO}) — refusing to publish."
+            exit 1
           fi
 
-          # `-f.diff.strip=1` matches `git diff` output (a/foo b/foo).
-          # `-filter-mode=added` only suggests on lines the PR added,
-          #   which avoids re-suggesting on already-resolved threads when
-          #   the contributor re-adds the autoformat label.
-          reviewdog \
-            -f=diff -f.diff.strip=1 \
-            -name="prettier+eslint" \
-            -reporter=github-pr-review \
-            -filter-mode=added \
-            -level=warning \
-            -fail-on-error=false < "$patch"
+          # 3) pr_number must reference an open PR with this head SHA.
+          # Within-repo PRs: workflow_run.pull_requests[] is populated.
+          # Fork PRs: that array is empty by GitHub design — fall back
+          # to the REST commit-to-PRs lookup. Fail closed if the lookup
+          # finds no matching open PR (avoids attacker-forged PR ids).
+          allowed_numbers=$(jq -c '.' <<< "${WF_PR_NUMBERS}")
+          if [ "${allowed_numbers}" = "[]" ]; then
+            echo "workflow_run.pull_requests is empty (fork PR) — falling back to commits/{sha}/pulls."
+            allowed_numbers=$(gh api "repos/${GH_REPO}/commits/${WF_HEAD_SHA}/pulls" \
+              --jq '[.[] | select(.state == "open") | .number]' 2>/dev/null || echo "[]")
+            if [ "${allowed_numbers}" = "[]" ]; then
+              echo "::error::No open PR found for head ${WF_HEAD_SHA} via commits/{sha}/pulls — refusing to publish."
+              exit 1
+            fi
+          fi
 
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+          if ! jq -e --argjson n "${META_PR_NUMBER}" 'index($n) != null' <<< "${allowed_numbers}" >/dev/null; then
+            echo "::error::Artifact pr_number (${META_PR_NUMBER}) is not in the authoritative PR list (${allowed_numbers}) — refusing to publish."
+            exit 1
+          fi
+
+          echo "Verified: metadata identity matches workflow_run authority (PR=${META_PR_NUMBER}, head_sha=${META_HEAD_SHA}, head_repo=${META_HEAD_REPO})."
 
       - name: Upsert sticky summary comment
         # Only post when ci-quality found something fixable (= the
         # autofix patch is non-empty). When prettier/eslint are clean
         # the patch is zero bytes and the sticky comment is pure noise,
-        # so we skip it. When the diff was too large for inline
-        # suggestions, the sticky is the only signal the contributor
-        # gets, so we still post in that case.
+        # so we skip it.
         if: >-
           always()
           && steps.meta.outputs.pr_number != ''
@@ -189,8 +195,6 @@ jobs:
           PR: ${{ steps.meta.outputs.pr_number }}
           CHANGED: ${{ steps.meta.outputs.changed_lines }}
           HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
-          SCHEMA: ${{ steps.meta.outputs.schema }}
-          POSTED: ${{ steps.suggest.outputs.posted }}
           RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
@@ -200,25 +204,29 @@ jobs:
           marker="<!-- gitnexus:pr-autofix-summary -->"
           heading="## :sparkles: PR Autofix"
 
-          if [ "${POSTED}" = "skipped-too-large" ]; then
-            ui_state="skipped-too-large"
-            prose="Diff is **${CHANGED}** lines — too large for inline suggestions (GitHub caps the review-comment API at ~3000). Run locally: \`npm run lint:fix && npm run format\`."
-          else
-            ui_state="suggestions-posted"
-            prose="Posted formatting / unused-import suggestions inline. Click **Apply suggestion** on each, or run locally: \`npm run lint:fix && npm run format\`."
-          fi
+          # Single state. The /autofix slash command works for any diff
+          # size — there's no 3K cap and no no-overlap dead-end because
+          # the apply workflow uses `git apply` + push, not the GitHub
+          # review-comment API.
+          ui_state="fixes-available"
+          prose="Found fixable formatting / unused-import issues across **${CHANGED}** changed lines. **Comment \`/autofix\` on this PR to apply them**, or run \`npm run lint:fix && npm run format\` locally."
 
           # Machine-readable JSON block — agents parse this instead of
           # regexing English. Fenced code-block info string is
           # `gitnexus-autofix` so agents can locate it without ambiguity.
+          # Schema bumped from v1 -> v2: adds `apply_command`. The v1
+          # field set is preserved as a superset, but the `state` enum
+          # is redefined (v1: suggestions-posted | skipped-too-large |
+          # diff-no-overlap; v2: fixes-available). v1 readers checking
+          # `schema == 'gitnexus.pr-autofix/v1'` see an unfamiliar version
+          # and fall back to prose, which is the intended migration path.
           json=$(jq -n -c \
-            --arg schema       "${SCHEMA}" \
             --arg state        "${ui_state}" \
             --argjson pr_number "${PR}" \
             --argjson changed_lines "${CHANGED}" \
             --arg head_sha     "${HEAD_SHA}" \
             --arg run_id       "${RUN_ID}" \
-            '{schema:$schema, state:$state, pr_number:$pr_number, changed_lines:$changed_lines, head_sha:$head_sha, run_id:$run_id}')
+            '{schema:"gitnexus.pr-autofix/v2", state:$state, pr_number:$pr_number, changed_lines:$changed_lines, head_sha:$head_sha, run_id:$run_id, apply_command:"/autofix"}')
 
           # Multi-line quoted string instead of a column-0 heredoc — YAML's
           # `run: |` block ends as soon as a content line dedents below the
@@ -272,10 +280,9 @@ jobs:
       - name: Emit gitnexus/autofix Check Run
         # Stable check name `gitnexus/autofix` so PR-watching agents can
         # `gh pr checks <pr>` and read the conclusion + title without
-        # parsing the sticky comment. Three outcomes:
-        #   clean              → conclusion: success
-        #   suggestions-posted → conclusion: neutral (review suggestions)
-        #   skipped-too-large  → conclusion: neutral (diff > 3000 lines)
+        # parsing the sticky comment. Two outcomes:
+        #   clean            → conclusion: success
+        #   fixes-available  → conclusion: neutral
         # `neutral` does not block branch-protection required-checks but
         # is visually distinct from a green pass.
         if: always() && steps.meta.outputs.head_sha != ''
@@ -284,7 +291,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
           CHANGED: ${{ steps.meta.outputs.changed_lines }}
-          POSTED: ${{ steps.suggest.outputs.posted }}
         shell: bash
         run: |
           set -euo pipefail
@@ -293,14 +299,10 @@ jobs:
             conclusion="success"
             title="Formatting clean"
             summary="Prettier and ESLint --fix produced no changes."
-          elif [ "${POSTED}" = "skipped-too-large" ]; then
-            conclusion="neutral"
-            title="Diff too large for inline suggestions (${CHANGED} lines)"
-            summary="GitHub caps the review-comment API at ~3000 lines. Run \`npm run lint:fix && npm run format\` locally."
           else
             conclusion="neutral"
-            title="Suggestions posted"
-            summary="Inline review-comment suggestions posted. Click **Apply suggestion** on each, or run \`npm run lint:fix && npm run format\` locally."
+            title="Autofix available — comment /autofix to apply"
+            summary="Comment \`/autofix\` on this PR to apply formatter + unused-import fixes (works at any diff size). Or run \`npm run lint:fix && npm run format\` locally."
           fi
 
           gh api -X POST "repos/${GH_REPO}/check-runs" \

@@ -1,4 +1,5 @@
 import { logger } from '../logger.js';
+import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 /**
  * LLM Client for Wiki Generation
  *
@@ -170,86 +171,85 @@ export async function callLLM(
     ? { 'api-key': config.apiKey }
     : { Authorization: `Bearer ${config.apiKey}` };
 
-  const MAX_RETRIES = 3;
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetch(url, {
+  // Network resilience (bounded retries with exponential-backoff jitter,
+  // 5xx + 429 + Retry-After handling, in-process circuit breaker on the
+  // LLM endpoint) is delegated to resilientFetch. Provider-specific
+  // error parsing (Azure content filter, empty-content checks) stays
+  // here since it requires response-body inspection.
+  let response: Response;
+  try {
+    response = await resilientFetch(
+      url,
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...authHeaders,
         },
         body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'unknown error');
-
-        // Azure content filter — surface a clear message instead of a generic API error
-        if (
-          azure &&
-          response.status === 400 &&
-          (errorText.includes('content_filter') ||
-            errorText.includes('ResponsibleAIPolicyViolation'))
-        ) {
-          throw new Error(
-            `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
-          );
-        }
-
-        // Rate limit — wait with exponential backoff and retry
-        if (response.status === 429 && attempt < MAX_RETRIES - 1) {
-          const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
-          const delay = retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 3000;
-          await sleep(delay);
-          continue;
-        }
-
-        // Server error — retry with backoff
-        if (response.status >= 500 && attempt < MAX_RETRIES - 1) {
-          await sleep((attempt + 1) * 2000);
-          continue;
-        }
-
-        throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
-      }
-
-      // Streaming path
-      if (useStream && response.body) {
-        return await readSSEStream(response.body, options!.onChunk!);
-      }
-
-      // Non-streaming path
-      const json = (await response.json()) as any;
-      const choice = json.choices?.[0];
-      if (!choice?.message?.content) {
-        throw new Error('LLM returned empty response');
-      }
-
-      return {
-        content: choice.message.content,
-        promptTokens: json.usage?.prompt_tokens,
-        completionTokens: json.usage?.completion_tokens,
-      };
-    } catch (err: any) {
-      lastError = err;
-
-      // Network error — retry with backoff
-      if (
-        attempt < MAX_RETRIES - 1 &&
-        (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))
-      ) {
-        await sleep((attempt + 1) * 3000);
-        continue;
-      }
-
-      throw err;
+        // Per-attempt timeout. Without this each retry can hang
+        // indefinitely on a frozen TCP connection — the per-call
+        // signal is the only timeout `resilientFetch` honors;
+        // `capDelayMs` only bounds the *backoff* between attempts.
+        // 60s matches typical LLM completion budgets.
+        signal: AbortSignal.timeout(60_000),
+      },
+      {
+        breakerKey: `wiki-llm-${new URL(url).host}`,
+        retry: { maxAttempts: 3, baseDelayMs: 2_000, capDelayMs: 30_000 },
+      },
+    );
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      throw new Error(
+        `LLM endpoint circuit open: retry in ${Math.ceil(err.retryAfterMs / 1000)}s. ${err.message}`,
+      );
     }
+    if (err instanceof ResilientFetchExhaustedError) {
+      const errorText = await err.response.text().catch(() => 'unknown error');
+      throw new Error(
+        `LLM API error (${err.response.status} after retries): ${errorText.slice(0, 500)}`,
+      );
+    }
+    throw err;
   }
 
-  throw lastError || new Error('LLM call failed after retries');
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'unknown error');
+
+    // Azure content filter — surface a clear message instead of a generic API error.
+    if (
+      azure &&
+      response.status === 400 &&
+      (errorText.includes('content_filter') || errorText.includes('ResponsibleAIPolicyViolation'))
+    ) {
+      throw new Error(
+        `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
+      );
+    }
+
+    // Any other non-OK response here is a terminal 4xx — resilientFetch
+    // already retried 5xx/429 to exhaustion and would have thrown above.
+    throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
+  }
+
+  // Streaming path
+  if (useStream && response.body) {
+    return await readSSEStream(response.body, options!.onChunk!);
+  }
+
+  // Non-streaming path
+  const json = (await response.json()) as any;
+  const choice = json.choices?.[0];
+  if (!choice?.message?.content) {
+    throw new Error('LLM returned empty response');
+  }
+
+  return {
+    content: choice.message.content,
+    promptTokens: json.usage?.prompt_tokens,
+    completionTokens: json.usage?.completion_tokens,
+  };
 }
 
 /**
@@ -311,8 +311,4 @@ async function readSSEStream(
   }
 
   return { content };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
