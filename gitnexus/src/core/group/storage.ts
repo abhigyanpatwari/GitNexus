@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import type { ContractRegistry } from './types.js';
+import { retryRename } from './bridge-db.js';
 
 /**
  * Build an unpredictable suffix for atomic-write tmp files. Replaces the
@@ -59,7 +60,13 @@ export async function writeContractRegistry(
   } finally {
     await handle.close();
   }
-  await fsp.rename(tmpPath, targetPath);
+  // retryRename absorbs the documented Windows EPERM/EBUSY/EACCES race that
+  // fires when AV scanners or another concurrent rename briefly hold the
+  // destination handle between rename calls. Same helper bridge-db.ts uses
+  // (lines 304, 583, 587, 595, 605, 677) for the bridge.lbug atomic swap —
+  // single source of truth for the Windows-rename pattern across the group
+  // package.
+  await retryRename(tmpPath, targetPath);
 }
 
 export async function readContractRegistry(groupDir: string): Promise<ContractRegistry | null> {
