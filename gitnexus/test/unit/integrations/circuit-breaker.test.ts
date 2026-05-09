@@ -122,6 +122,67 @@ describe('CircuitBreaker', () => {
     expect(b.getState()).toBe('closed');
   });
 
+  describe('recordNeutral (U1)', () => {
+    it('is a no-op from closed state with zero prior failures', () => {
+      const b = new CircuitBreaker({ failureThreshold: 3 });
+      b.recordNeutral();
+      expect(b.getState()).toBe('closed');
+      expect(b.getConsecutiveFailures()).toBe(0);
+    });
+
+    it('preserves partial-failure progress (does not reset counter)', () => {
+      const b = new CircuitBreaker({ failureThreshold: 3 });
+      b.recordFailure();
+      b.recordFailure();
+      b.recordNeutral();
+      expect(b.getConsecutiveFailures()).toBe(2);
+      expect(b.getState()).toBe('closed');
+      // Real third failure still trips the breaker — neutrals didn't
+      // erase the running count toward the threshold.
+      b.recordFailure();
+      expect(b.getState()).toBe('open');
+    });
+
+    it('does not reset openedAt or transition out of open state', () => {
+      const clock = makeClock();
+      const b = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 30_000, now: clock.now });
+      b.recordFailure();
+      expect(b.getState()).toBe('open');
+      b.recordNeutral();
+      // Still open; cooldown clock unchanged.
+      expect(() => b.check()).toThrow(CircuitOpenError);
+    });
+
+    it('leaves half-open state alone (next true outcome decides)', () => {
+      const clock = makeClock();
+      const b = new CircuitBreaker({ failureThreshold: 1, cooldownMs: 30_000, now: clock.now });
+      b.recordFailure();
+      clock.advance(31_000);
+      b.check(); // half-open
+      b.recordNeutral();
+      // Still half-open; a subsequent recordFailure flips to open.
+      b.recordFailure();
+      let caught: CircuitOpenError | null = null;
+      try {
+        b.check();
+      } catch (err) {
+        caught = err as CircuitOpenError;
+      }
+      expect(caught).toBeInstanceOf(CircuitOpenError);
+    });
+
+    it('integration: 2 failures + 5 neutrals + 1 failure → opens on third real failure', () => {
+      const b = new CircuitBreaker({ failureThreshold: 3 });
+      b.recordFailure();
+      b.recordFailure();
+      for (let i = 0; i < 5; i++) b.recordNeutral();
+      expect(b.getConsecutiveFailures()).toBe(2);
+      expect(b.getState()).toBe('closed');
+      b.recordFailure();
+      expect(b.getState()).toBe('open');
+    });
+  });
+
   describe('getBreaker registry', () => {
     it('returns the same instance for the same key', () => {
       const a = getBreaker('endpoint-a');

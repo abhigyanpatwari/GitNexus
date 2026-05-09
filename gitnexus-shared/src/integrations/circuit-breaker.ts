@@ -7,6 +7,18 @@
  * after the cooldown enters Half-Open: a recorded success returns to
  * Closed; a recorded failure flips back to Open with a fresh timestamp.
  *
+ * Outcome reporting is three-state:
+ *   - `recordSuccess` — closes the breaker and resets the failure
+ *     counter. Reserved for true 2xx/3xx outcomes only.
+ *   - `recordFailure` — increments the consecutive-failure counter and
+ *     may trip the breaker open.
+ *   - `recordNeutral` — explicit no-op: leaves state and counter
+ *     untouched. Used for outcomes that are neither evidence of
+ *     backend health nor evidence of backend failure (caller-driven
+ *     cancellation, local timeout, terminal client errors like 4xx).
+ *     Without this third path, callers conflate "request was cancelled"
+ *     with "backend is healthy" and erase legitimate outage signals.
+ *
  * Runtime-agnostic: depends only on a `now()` clock and standard JS —
  * no Node-only imports. Tests inject `now` to advance the clock
  * deterministically without `vi.useFakeTimers()`.
@@ -91,6 +103,18 @@ export class CircuitBreaker {
       this.state = 'open';
       this.openedAt = this.now();
     }
+  }
+
+  /**
+   * No-op outcome. Use when an attempt produced a response or error
+   * that should not influence breaker health in either direction —
+   * caller-driven aborts, local AbortSignal timeouts, terminal 4xx
+   * client errors. Calling `recordSuccess` for these would erase
+   * legitimate prior failure signal; calling `recordFailure` would
+   * trip the breaker for outcomes the backend isn't responsible for.
+   */
+  recordNeutral(): void {
+    // Intentional no-op. State and consecutiveFailures are preserved.
   }
 
   /** Inspection-only accessors for tests. */

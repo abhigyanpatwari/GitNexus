@@ -273,6 +273,20 @@ const fetchWithTimeout = async (
   const isIdempotent = IDEMPOTENT_METHODS.has(method);
   const maxAttempts = isIdempotent || forceRetry ? 2 : 1;
 
+  // Key the breaker by the current backend origin so switching backend
+  // URLs (e.g. recovering from a flapping local server by pointing at
+  // a different host) gives the new origin a fresh breaker state. A
+  // single shared `'web-backend'` key would otherwise leave a user
+  // locked out for the full cooldown after one bad host trips the
+  // circuit. The malformed-URL fallback is defensive — `setBackendUrl`
+  // normalizes input, so this branch shouldn't fire in practice.
+  let breakerKey: string;
+  try {
+    breakerKey = `web-backend:${new URL(_backendUrl).origin}`;
+  } catch {
+    breakerKey = 'web-backend:invalid';
+  }
+
   try {
     // Bounded retries + 5xx/429 handling are delegated to resilientFetch.
     // Method-aware budget: idempotent verbs retry once on transient
@@ -282,7 +296,7 @@ const fetchWithTimeout = async (
       url,
       { ...init, signal },
       {
-        breakerKey: 'web-backend',
+        breakerKey,
         retry: { maxAttempts, baseDelayMs: 250, capDelayMs: 1500 },
       },
     );

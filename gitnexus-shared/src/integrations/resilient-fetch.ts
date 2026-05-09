@@ -74,9 +74,9 @@ export function parseRetryAfter(value: string | null, now: () => number = Date.n
 /** Internal: outcome classification used by the resilientFetch loop. */
 type Outcome =
   | { kind: 'success'; resp: Response }
-  | { kind: 'terminal-client'; resp: Response } // 4xx other than 429: no retry, no breaker hit
+  | { kind: 'terminal-client'; resp: Response } // 4xx other than 429: no retry, breaker neutral
   | { kind: 'retryable-status'; resp: Response; afterMs: number | undefined } // 5xx, 429
-  | { kind: 'terminal-network'; err: unknown } // timeout: no retry, no breaker hit
+  | { kind: 'terminal-network'; err: unknown } // TimeoutError or AbortError: no retry, breaker neutral
   | { kind: 'retryable-network'; err: unknown }; // DNS, ECONNRESET, etc.
 
 /** Exported for unit tests. */
@@ -85,7 +85,15 @@ export function classifyOutcome(
   now: () => number,
 ): Outcome {
   if (result.kind === 'error') {
-    if (result.err instanceof DOMException && result.err.name === 'TimeoutError') {
+    // Both timer-fired aborts (`AbortSignal.timeout()` → `TimeoutError`)
+    // and caller-driven aborts (`AbortController.abort()` → `AbortError`)
+    // are terminal: retrying against an already-aborted signal would
+    // fail again immediately, and neither outcome reflects backend
+    // health. They route through the breaker's neutral path.
+    if (
+      result.err instanceof DOMException &&
+      (result.err.name === 'TimeoutError' || result.err.name === 'AbortError')
+    ) {
       return { kind: 'terminal-network', err: result.err };
     }
     return { kind: 'retryable-network', err: result.err };
@@ -191,18 +199,21 @@ export async function resilientFetch(
         return outcome.resp;
 
       case 'terminal-client':
-        // 4xx: do not count as breaker failure. The caller will see
-        // the Response and emit its own targeted error message
-        // (401: bad token, 403: missing scope, 404: wrong repo, ...).
-        breaker.recordSuccess();
+        // 4xx: do not count as breaker failure (the server is healthy
+        // and rejecting our request — auth, scope, or routing). But
+        // also do NOT call recordSuccess: a 401 sandwiched between
+        // 5xx responses would otherwise erase the running outage
+        // signal. The breaker's neutral path leaves state untouched.
+        breaker.recordNeutral();
         return outcome.resp;
 
       case 'terminal-network':
-        // Timeout: the local `AbortSignal.timeout()` fired. The server
-        // never had a chance to answer; this most likely reflects the
-        // user's network rather than registry health. Don't punish
-        // the breaker. Rethrow so the caller sees the timeout.
-        breaker.recordSuccess();
+        // Either `AbortSignal.timeout()` fired locally OR an external
+        // caller cancelled the request via AbortController. The server
+        // never had a chance to answer; this reflects the user's
+        // network or an explicit cancel, not registry health. Don't
+        // punish the breaker AND don't reset its outage signal.
+        breaker.recordNeutral();
         throw outcome.err;
 
       case 'retryable-status':

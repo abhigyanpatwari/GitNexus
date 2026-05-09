@@ -53,6 +53,41 @@ describe('backend-client retry budget (method-aware)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('switching backend URL after a circuit opens reaches a fresh breaker (U3)', async () => {
+    // Pre-open the breaker for host-A by directly recording 3 failures.
+    setBackendUrl('http://host-a.test:4747');
+    const aKey = 'web-backend:http://host-a.test:4747';
+    const breakerA = getBreaker(aKey);
+    breakerA.recordFailure();
+    breakerA.recordFailure();
+    breakerA.recordFailure();
+    expect(breakerA.getState()).toBe('open');
+
+    // Switch to host-B and make a request — must succeed against the
+    // new origin without tripping the host-A circuit. Under the old
+    // single-key behaviour the call would throw CircuitOpenError.
+    setBackendUrl('http://host-b.test:4747');
+    const fetchMock = vi.fn(
+      async () =>
+        new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const repos = await fetchRepos();
+    expect(repos).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Host-A's breaker is still open in cooldown.
+    expect(breakerA.getState()).toBe('open');
+    // Host-B has its own (fresh) breaker.
+    const bKey = 'web-backend:http://host-b.test:4747';
+    expect(getBreaker(bKey).getState()).toBe('closed');
+    expect(getBreaker(bKey).getConsecutiveFailures()).toBe(0);
+  });
+
   it('breaker not incremented when timeout fires (TimeoutError, not AbortError)', async () => {
     // Reject directly with a TimeoutError DOMException, mimicking what
     // `fetch` produces when its `AbortSignal.timeout()`-wired signal
@@ -67,7 +102,7 @@ describe('backend-client retry budget (method-aware)', () => {
     await expect(fetchRepos()).rejects.toMatchObject({ code: 'timeout' });
 
     // The breaker must not have been penalized for a local timeout.
-    expect(getBreaker('web-backend').getConsecutiveFailures()).toBe(0);
+    expect(getBreaker(`web-backend:${BASE}`).getConsecutiveFailures()).toBe(0);
     // Timeout is terminal — no retry attempted.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

@@ -274,4 +274,95 @@ describe('resilientFetch', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(breaker.getConsecutiveFailures()).toBe(1);
   });
+
+  describe('U2: terminal outcomes route through recordNeutral', () => {
+    it('401 does not erase prior partial-failure progress on the breaker', async () => {
+      const { breaker } = makeBreaker();
+      // Pre-seed the breaker with 2 failures (still closed; threshold 3).
+      breaker.recordFailure();
+      breaker.recordFailure();
+      expect(breaker.getConsecutiveFailures()).toBe(2);
+
+      const fetchImpl = vi.fn(async () => jsonResp(401));
+      await resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {} },
+      });
+
+      // Counter MUST stay at 2 — under the old behaviour recordSuccess
+      // would have reset to 0 and the next 5xx batch would have started
+      // from scratch instead of tipping over the threshold.
+      expect(breaker.getConsecutiveFailures()).toBe(2);
+      expect(breaker.getState()).toBe('closed');
+    });
+
+    it('TimeoutError does not erase prior partial-failure progress', async () => {
+      const { breaker } = makeBreaker();
+      breaker.recordFailure();
+      breaker.recordFailure();
+
+      const fetchImpl = vi.fn(async () => {
+        throw new DOMException('aborted by timeout', 'TimeoutError');
+      });
+      await expect(
+        resilientFetch(URL_STR, undefined, {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          breaker,
+          retry: { sleep: async () => {} },
+        }),
+      ).rejects.toBeInstanceOf(DOMException);
+
+      expect(breaker.getConsecutiveFailures()).toBe(2);
+    });
+
+    it('external AbortError is terminal: no retry, breaker untouched', async () => {
+      const { breaker } = makeBreaker();
+      breaker.recordFailure();
+
+      const fetchImpl = vi.fn(async () => {
+        throw new DOMException('aborted by caller', 'AbortError');
+      });
+      const sleep = vi.fn(async () => {});
+
+      await expect(
+        resilientFetch(URL_STR, undefined, {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          breaker,
+          retry: { sleep, maxAttempts: 3 },
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+      // Counter unchanged — neither incremented (no failure) nor reset
+      // (no synthetic success).
+      expect(breaker.getConsecutiveFailures()).toBe(1);
+    });
+
+    it('interleaved 5xx + 401 + 5xx + 401 + 5xx opens breaker on third real failure', async () => {
+      const { breaker } = makeBreaker({ failureThreshold: 3 });
+      const sequence = [503, 401, 503, 401, 503];
+      let i = 0;
+      const fetchImpl = vi.fn(async () => jsonResp(sequence[i++]));
+
+      // Each call uses maxAttempts:1 so each surfaces a single response
+      // (5xx → ResilientFetchExhaustedError; 4xx → returned Response).
+      const driveOne = () =>
+        resilientFetch(URL_STR, undefined, {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          breaker,
+          retry: { sleep: async () => {}, maxAttempts: 1 },
+        });
+
+      await expect(driveOne()).rejects.toBeInstanceOf(ResilientFetchExhaustedError); // 5xx fail #1
+      await driveOne(); // 401 neutral
+      await expect(driveOne()).rejects.toBeInstanceOf(ResilientFetchExhaustedError); // 5xx fail #2
+      await driveOne(); // 401 neutral
+      await expect(driveOne()).rejects.toBeInstanceOf(ResilientFetchExhaustedError); // 5xx fail #3 → opens
+
+      expect(breaker.getState()).toBe('open');
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+    });
+  });
 });
