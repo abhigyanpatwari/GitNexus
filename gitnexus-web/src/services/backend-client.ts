@@ -7,6 +7,7 @@
  */
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -237,28 +238,90 @@ export function normalizeServerUrl(input: string): string {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 2_000;
 
+/** Idempotent HTTP methods. Other verbs (POST, PATCH, PUT, DELETE) get
+ *  a single-attempt retry budget by default to avoid duplicate side
+ *  effects on retry — a POST that 5xx'd may have already executed
+ *  server-side. Callers that have idempotency keys or otherwise know
+ *  their mutation is safe to retry can opt in via `forceRetry`. */
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 const fetchWithTimeout = async (
   url: string,
   init: RequestInit = {},
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  /**
+   * Force a retry budget on non-idempotent methods. Default false.
+   * Pass true only when the endpoint is known-idempotent (e.g. DELETE
+   * of a known-deleted resource — second call is a 404 / no-op) AND
+   * the duplicate-side-effect window is acceptable.
+   */
+  forceRetry = false,
 ): Promise<Response> => {
-  const controller = new AbortController();
-  // Merge external signal if provided
+  // Merge the external caller signal (if any) with an
+  // `AbortSignal.timeout()` so a timer-fired abort produces a
+  // `DOMException` with `name === 'TimeoutError'` — which
+  // `resilientFetch` correctly classifies as terminal-network (no
+  // retry, no breaker hit). A manual `AbortController.abort()` would
+  // produce `name === 'AbortError'` and route through the
+  // retryable-network branch, which mis-penalizes the breaker for
+  // user-side network slowness.
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const externalSignal = init.signal;
-  if (externalSignal) {
-    externalSignal.addEventListener('abort', () => controller.abort());
+  const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
+
+  const method = (init.method ?? 'GET').toUpperCase();
+  const isIdempotent = IDEMPOTENT_METHODS.has(method);
+  const maxAttempts = isIdempotent || forceRetry ? 2 : 1;
+
+  // Key the breaker by the current backend origin so switching backend
+  // URLs (e.g. recovering from a flapping local server by pointing at
+  // a different host) gives the new origin a fresh breaker state. A
+  // single shared `'web-backend'` key would otherwise leave a user
+  // locked out for the full cooldown after one bad host trips the
+  // circuit. The malformed-URL fallback is defensive — `setBackendUrl`
+  // normalizes input, so this branch shouldn't fire in practice.
+  let breakerKey: string;
+  try {
+    breakerKey = `web-backend:${new URL(_backendUrl).origin}`;
+  } catch {
+    breakerKey = 'web-backend:invalid';
   }
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    // Bounded retries + 5xx/429 handling are delegated to resilientFetch.
+    // Method-aware budget: idempotent verbs retry once on transient
+    // backend failures; mutations (POST/PATCH/PUT/DELETE) default to
+    // single-attempt to avoid duplicate side effects.
+    const response = await resilientFetch(
+      url,
+      { ...init, signal },
+      {
+        breakerKey,
+        retry: { maxAttempts, baseDelayMs: 250, capDelayMs: 1500 },
+      },
+    );
     return response;
   } catch (error: unknown) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      if (externalSignal?.aborted) {
-        throw new BackendError('Request aborted', 0, 'network');
-      }
+    if (error instanceof CircuitOpenError) {
+      throw new BackendError(
+        `GitNexus backend at ${_backendUrl} is unhealthy; retry in ${Math.ceil(error.retryAfterMs / 1000)}s`,
+        0,
+        'network',
+      );
+    }
+    if (error instanceof ResilientFetchExhaustedError) {
+      // Fall through to caller — surface the raw response so assertOk
+      // can craft the BackendError with the right code.
+      return error.response;
+    }
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
       throw new BackendError(`Request to ${url} timed out after ${timeoutMs}ms`, 0, 'timeout');
+    }
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      // External caller-driven cancellation — `timeoutSignal` would
+      // have surfaced as TimeoutError above, so this branch covers
+      // only the externally-aborted case.
+      throw new BackendError('Request aborted', 0, 'network');
     }
     if (error instanceof TypeError) {
       throw new BackendError(
@@ -268,8 +331,6 @@ const fetchWithTimeout = async (
       );
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 };
 

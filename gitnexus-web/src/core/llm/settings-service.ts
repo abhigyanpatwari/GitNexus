@@ -20,6 +20,7 @@ import {
   ProviderConfig,
 } from './types';
 import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
+import { resilientFetch } from 'gitnexus-shared';
 
 const STORAGE_KEY = 'gitnexus-llm-settings';
 
@@ -407,7 +408,10 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
  */
 export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name: string }>> => {
   try {
-    const response = await fetch(`${DEFAULT_OPENROUTER_BASE_URL}/models`);
+    const response = await resilientFetch(`${DEFAULT_OPENROUTER_BASE_URL}/models`, undefined, {
+      breakerKey: 'openrouter-models',
+      retry: { maxAttempts: 2, baseDelayMs: 500, capDelayMs: 2_000 },
+    });
     if (!response.ok) throw new Error('Failed to fetch models');
     const data = await response.json();
     return data.data.map((model: any) => ({

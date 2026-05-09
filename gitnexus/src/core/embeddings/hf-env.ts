@@ -1,6 +1,8 @@
 import os from 'node:os';
 import { join } from 'node:path';
 
+import { CircuitBreaker, withRetry } from 'gitnexus-shared';
+
 // ---------------------------------------------------------------------------
 // Download resilience defaults
 // ---------------------------------------------------------------------------
@@ -108,70 +110,19 @@ export function isNetworkFetchError(message: string): boolean {
 /** @internal Used by `withHfDownloadRetry` to mark a circuit-open rejection. */
 export const CIRCUIT_OPEN_TAG = 'hf-circuit-open';
 
-/** Circuit-breaker states. */
-type CircuitState = 'closed' | 'open' | 'half-open';
-
 /**
- * Circuit breaker for HuggingFace model downloads.
- *
- * After `failureThreshold` consecutive network failures the circuit opens and
- * all subsequent calls to `withHfDownloadRetry` fail immediately without
- * issuing any network requests. After `resetTimeoutMs` the circuit enters the
- * half-open state and the next call is attempted — if it succeeds the circuit
- * closes again; if it fails the circuit re-opens.
- *
- * Exported for unit-testing; production code should use the module-level
- * `hfDownloadCircuit` singleton.
+ * Module-level singleton shared by both embedder entry points
+ * (`core/embeddings/embedder.ts` + `mcp/core/embedder.ts`). Per-process
+ * only — not persisted across restarts. Backed by the shared
+ * `CircuitBreaker` from `gitnexus-shared` (same state machine, same
+ * semantics, plus the single-permit half-open gate that prevents
+ * recovery-time stampedes).
  */
-export class HfDownloadCircuitBreaker {
-  private _state: CircuitState = 'closed';
-  private _failures = 0;
-  /** Timestamp of the last recorded failure (ms since epoch). */
-  lastFailureAt = 0;
-
-  constructor(
-    readonly failureThreshold: number = CB_FAILURE_THRESHOLD,
-    readonly resetTimeoutMs: number = CB_RESET_TIMEOUT_MS,
-  ) {}
-
-  /** Effective state, factoring in the reset-timeout transition. */
-  get state(): CircuitState {
-    if (this._state === 'open' && Date.now() - this.lastFailureAt > this.resetTimeoutMs) {
-      this._state = 'half-open';
-    }
-    return this._state;
-  }
-
-  /** Returns true when the circuit is open and calls should be rejected. */
-  isOpen(): boolean {
-    return this.state === 'open';
-  }
-
-  /** Record a successful call — resets the failure counter and closes the circuit. */
-  recordSuccess(): void {
-    this._failures = 0;
-    this._state = 'closed';
-  }
-
-  /** Record a failed call — increments the counter and opens the circuit when the threshold is reached. */
-  recordFailure(): void {
-    this._failures++;
-    this.lastFailureAt = Date.now();
-    if (this._failures >= this.failureThreshold) {
-      this._state = 'open';
-    }
-  }
-
-  /** @internal Reset to initial state (used in tests). */
-  reset(): void {
-    this._failures = 0;
-    this._state = 'closed';
-    this.lastFailureAt = 0;
-  }
-}
-
-/** Module-level singleton shared by both embedder entry points. */
-export const hfDownloadCircuit = new HfDownloadCircuitBreaker();
+export const hfDownloadCircuit = new CircuitBreaker({
+  failureThreshold: CB_FAILURE_THRESHOLD,
+  cooldownMs: CB_RESET_TIMEOUT_MS,
+  key: 'hf-download',
+});
 
 // ---------------------------------------------------------------------------
 // Retry + timeout wrapper
@@ -219,11 +170,6 @@ export function withDownloadTimeout<T>(fn: () => Promise<T>, timeoutMs: number):
   });
 }
 
-/** @internal Async sleep (exposed for testing). */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export interface HfRetryOptions {
   /** Maximum total attempts including the initial one (default: `HF_MAX_ATTEMPTS`). */
   maxAttempts?: number;
@@ -235,7 +181,7 @@ export interface HfRetryOptions {
    * Circuit-breaker instance to use. Defaults to the module-level
    * `hfDownloadCircuit` singleton. Pass a fresh instance in tests.
    */
-  circuit?: HfDownloadCircuitBreaker;
+  circuit?: CircuitBreaker;
   /**
    * Optional callback invoked before each retry (not the initial attempt).
    * @param attempt - 1-based retry number
@@ -295,49 +241,74 @@ export async function withHfDownloadRetry<T>(
     circuit = hfDownloadCircuit,
     onRetry,
   } = options;
-  if (circuit.isOpen()) {
-    const secsUntilReset = Math.ceil(
-      (circuit.resetTimeoutMs - (Date.now() - circuit.lastFailureAt)) / 1000,
-    );
+  if (circuit.getState() === 'open') {
+    // Compute remaining cooldown without consuming a probe permit.
+    const openedAt = circuit.getOpenedAt();
+    const secsUntilReset =
+      openedAt !== null ? Math.ceil((circuit.getCooldownMs() - (Date.now() - openedAt)) / 1000) : 0;
     throw new Error(
       `${CIRCUIT_OPEN_TAG}: HuggingFace download circuit is open after repeated network failures` +
         (secsUntilReset > 0 ? ` — will reset in ~${secsUntilReset}s` : ''),
     );
   }
 
-  let lastError: Error = new Error('unknown error');
+  // Retry budget delegated to `withRetry` from gitnexus-shared. The
+  // HF-specific bits — per-attempt timeout, network-vs-non-network
+  // classification, circuit-breaker recording, onRetry callback — wire
+  // through the `isRetryable` callback. `circuitTripped` is the
+  // sentinel that lets us replace the final thrown error with a
+  // CIRCUIT_OPEN_TAG message when the breaker tripped mid-loop.
+  let circuitTripped = false;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const result = await withDownloadTimeout(fn, timeoutMs);
-      circuit.recordSuccess();
-      return result;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-
-      if (!isNetworkFetchError(lastError.message)) {
-        // Non-network error (e.g. CUDA unavailable) — propagate without retry
-        throw lastError;
-      }
-
-      circuit.recordFailure();
-
-      if (circuit.isOpen()) {
-        // Circuit just tripped — fail fast, no more retries
-        throw new Error(
-          `${CIRCUIT_OPEN_TAG}: HuggingFace download circuit opened after ${circuit.failureThreshold} consecutive failures`,
-        );
-      }
-
-      if (attempt < maxAttempts - 1) {
-        const delay = baseDelayMs * Math.pow(2, attempt);
-        onRetry?.(attempt + 1, maxAttempts, lastError);
-        await sleep(delay);
-      }
+  try {
+    return await withRetry(
+      async () => {
+        const result = await withDownloadTimeout(fn, timeoutMs);
+        circuit.recordSuccess();
+        return result;
+      },
+      {
+        maxAttempts,
+        baseDelayMs,
+        // Disable the cap to match the bespoke pure-exponential
+        // progression. With the default `HF_MAX_ATTEMPTS_CAP = 10` and
+        // `baseDelayMs = 2000`, the largest possible delay is
+        // `2000 * 2^9 = ~17 minutes` — bounded enough not to need a cap.
+        capDelayMs: Number.MAX_SAFE_INTEGER,
+        isRetryable: (err, attempt) => {
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (!isNetworkFetchError(error.message)) {
+            // Non-network error (e.g. CUDA unavailable) — propagate
+            // without retry. Use recordNeutral so the breaker's existing
+            // failure-count progress isn't reset by a non-network failure
+            // that says nothing about the CDN's health.
+            circuit.recordNeutral();
+            return { retry: false };
+          }
+          circuit.recordFailure();
+          if (circuit.getState() === 'open') {
+            // Circuit just tripped — fail fast, no more retries.
+            circuitTripped = true;
+            return { retry: false };
+          }
+          // Mirror the bespoke onRetry contract: fire only when there's
+          // actually a next attempt.
+          if (attempt + 1 < maxAttempts) {
+            onRetry?.(attempt + 1, maxAttempts, error);
+          }
+          return { retry: true };
+        },
+      },
+    );
+  } catch (err) {
+    if (circuitTripped) {
+      throw new Error(
+        `${CIRCUIT_OPEN_TAG}: HuggingFace download circuit opened after ${CB_FAILURE_THRESHOLD} consecutive failures`,
+      );
     }
+    // All retries exhausted — rethrow the last network error so
+    // isNetworkFetchError patterns in the calling code still match and
+    // surface HF_ENDPOINT guidance.
+    throw err;
   }
-
-  // All retries exhausted — throw the last network error so isNetworkFetchError
-  // patterns in the calling code still match and surface HF_ENDPOINT guidance.
-  throw lastError;
 }
