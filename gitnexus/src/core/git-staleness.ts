@@ -3,10 +3,13 @@
  * Lives in core/ so application code does not depend on the MCP package layer.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'path';
 import { readRegistry, type RegistryEntry, type CwdMatch } from '../storage/repo-manager.js';
 import { findGitRootByDotGit, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface StalenessInfo {
   isStale: boolean;
@@ -26,6 +29,39 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
     }).trim();
 
     const commitsBehind = parseInt(result, 10) || 0;
+
+    if (commitsBehind > 0) {
+      return {
+        isStale: true,
+        commitsBehind,
+        hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`,
+      };
+    }
+
+    return { isStale: false, commitsBehind: 0 };
+  } catch {
+    return { isStale: false, commitsBehind: 0 };
+  }
+}
+
+/**
+ * Async variant of {@link checkStaleness} — spawns git as a child process
+ * instead of blocking the event loop.  Used by `listRepos()` to check many
+ * repos in parallel (issue #1363: 200 repos × sync spawn ≈ 50 s).
+ */
+export async function checkStalenessAsync(
+  repoPath: string,
+  lastCommit: string,
+): Promise<StalenessInfo> {
+  try {
+    // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
+    // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
+    const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+    });
+
+    const commitsBehind = parseInt(stdout.trim(), 10) || 0;
 
     if (commitsBehind > 0) {
       return {

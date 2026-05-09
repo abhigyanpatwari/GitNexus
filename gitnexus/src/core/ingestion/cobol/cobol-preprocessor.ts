@@ -369,9 +369,20 @@ const RE_USE_AFTER =
   /\bUSE\s+(?:AFTER\s+)?(?:STANDARD\s+)?(?:EXCEPTION|ERROR)\s+ON\s+([A-Z][A-Z0-9-]+|INPUT|OUTPUT|I-O|EXTEND)\b/i;
 
 // SET statement (condition, index)
-const RE_SET_TO_TRUE = /\bSET\s+((?:[A-Z][A-Z0-9-]+(?:\s+OF\s+[A-Z][A-Z0-9-]+)?\s+)+)TO\s+TRUE\b/i;
-const RE_SET_INDEX =
-  /\bSET\s+((?:[A-Z][A-Z0-9-]+\s+)+)(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
+//
+// Catastrophic-backtracking note (CodeQL js/redos): the previous shape
+// `((?:[A-Z][A-Z0-9-]+(?:\s+OF\s+[A-Z][A-Z0-9-]+)?\s+)+)TO\s+TRUE`
+// nested `\s+` quantifiers across alternations and was exponential on
+// inputs like "SET a OF a OF a ... TO TRUE". Replaced with a lazy
+// dot-match bounded by the explicit `\s+TO\s+TRUE` suffix — `.+?` is
+// O(n) with the trailing anchor, and the captured group is parsed
+// downstream the same way as before.
+// Exported so the U8 ReDoS regression test can pin the exact production
+// pattern. Direct import is the only way to ensure the test's
+// pathological-input timing assertion exercises the production regex
+// instead of an inline copy that drifts.
+export const RE_SET_TO_TRUE = /\bSET\s+(.+?)\s+TO\s+TRUE\b/i;
+export const RE_SET_INDEX = /\bSET\s+(.+?)\s+(TO|UP\s+BY|DOWN\s+BY)\s+(\d+|[A-Z][A-Z0-9-]+)/i;
 
 // INITIALIZE statement — data reset (captures targets before REPLACING/WITH clause)
 const RE_INITIALIZE = /\bINITIALIZE\s+([\s\S]*?)(?=\bREPLACING\b|\bWITH\b|\.\s*$|$)/i;

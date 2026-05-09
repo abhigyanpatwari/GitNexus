@@ -104,7 +104,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     }
 
     // Step 1: BM25 search (fast, no embeddings)
-    const bm25Results = await searchFTSFromLbug(pattern, 10, repoId);
+    const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
 
     if (bm25Results.length === 0) return '';
 
