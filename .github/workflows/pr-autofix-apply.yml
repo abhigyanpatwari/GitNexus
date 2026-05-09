@@ -84,6 +84,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Retry wrapper for transient 5xx / 429 / network blips.
+          # Mirrors the helper in pr-autofix-publish.yml. Used on
+          # idempotent GETs only; reactions/comment-POSTs are NOT
+          # wrapped (retrying a POST would dupe the resource).
+          gh_retry() {
+            local n=0 max=3
+            while true; do
+              if gh "$@"; then return 0; fi
+              n=$((n+1))
+              if [ "$n" -ge "$max" ]; then return 1; fi
+              sleep $((n * 2))
+            done
+          }
+
           # Allowlist the commenter login before it flows into a URL.
           # GitHub usernames: alphanumeric + dashes, max 39 chars.
           if ! [[ "${COMMENTER}" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
@@ -103,9 +117,10 @@ jobs:
           # Distinguish API failure (5xx, 429, network) from genuine
           # permission denial (404 = not a collaborator). Conflating them
           # would silently refuse a legitimate maintainer with a public
-          # 👎 every time GitHub blips.
+          # 👎 every time GitHub blips. gh_retry handles transient blips;
+          # the stderr-grep distinguishes 404 from persistent failure.
           perm_stderr=$(mktemp)
-          if permission=$(gh api "repos/${GH_REPO}/collaborators/${COMMENTER}/permission" \
+          if permission=$(gh_retry api "repos/${GH_REPO}/collaborators/${COMMENTER}/permission" \
                 --jq '.permission' 2>"$perm_stderr"); then
             echo "Commenter permission: ${permission}"
             case "${permission}" in
@@ -188,10 +203,28 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Same retry wrapper used in the permission step, repeated
+          # because each YAML `run:` block is a fresh bash session.
+          gh_retry() {
+            local n=0 max=3
+            while true; do
+              if gh "$@"; then return 0; fi
+              n=$((n+1))
+              if [ "$n" -ge "$max" ]; then return 1; fi
+              sleep $((n * 2))
+            done
+          }
+
           # Fetch PR metadata. All fields here are server-controlled API
           # output, but we still allowlist before exporting so anything
-          # weird short-circuits before $GITHUB_OUTPUT.
-          pr_json=$(gh api "repos/${GH_REPO}/pulls/${PR}")
+          # weird short-circuits before $GITHUB_OUTPUT. Wrapped in
+          # gh_retry so transient blips don't surface as "no autofix run
+          # found" with a wrong remediation.
+          if ! pr_json=$(gh_retry api "repos/${GH_REPO}/pulls/${PR}"); then
+            echo "::error::PR metadata fetch failed after retries."
+            echo "found_status=api-failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           head_sha=$(jq -r '.head.sha' <<< "${pr_json}")
           head_ref=$(jq -r '.head.ref' <<< "${pr_json}")
           head_repo=$(jq -r '.head.repo.full_name' <<< "${pr_json}")
@@ -201,43 +234,89 @@ jobs:
           [[ "${head_repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$      ]] || { echo "::error::Bad head_repo"; exit 1; }
 
           # Find the latest successful pr-autofix.yml run for this head SHA.
-          run_id=$(gh api "repos/${GH_REPO}/actions/workflows/pr-autofix.yml/runs?head_sha=${head_sha}&status=success&per_page=1" \
-            --jq '.workflow_runs[0].id // empty')
+          if ! runs_json=$(gh_retry api "repos/${GH_REPO}/actions/workflows/pr-autofix.yml/runs?head_sha=${head_sha}&per_page=10"); then
+            echo "::error::Workflow run lookup failed after retries."
+            echo "found_status=api-failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          if [ -z "${run_id}" ] || ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
-            echo "::warning::No successful pr-autofix run found for head ${head_sha}"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=true" >> "$GITHUB_OUTPUT"
+          run_id=$(jq -r '[.workflow_runs[] | select(.conclusion == "success")] | .[0].id // empty' <<< "${runs_json}")
+
+          if [ -n "${run_id}" ] && [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+            echo "found_status=success" >> "$GITHUB_OUTPUT"
             {
+              echo "found=true"
               echo "head_sha=${head_sha}"
               echo "head_ref=${head_ref}"
               echo "head_repo=${head_repo}"
               echo "run_id=${run_id}"
             } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-      - name: Reply when no autofix run found
+          # No successful run. Distinguish "still running" (producer in
+          # flight after a recent push) from "never ran / all failed".
+          # in_progress / queued / pending / waiting cover the GitHub
+          # workflow-run lifecycle states that precede success/failure.
+          in_progress=$(jq -r '[.workflow_runs[] | select(.status == "in_progress" or .status == "queued" or .status == "pending" or .status == "waiting")] | length' <<< "${runs_json}")
+          if [ "${in_progress:-0}" -gt 0 ]; then
+            echo "::warning::pr-autofix run is still in progress for head ${head_sha}."
+            echo "found_status=in-progress" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No successful pr-autofix run found for head ${head_sha}."
+            echo "found_status=not-found" >> "$GITHUB_OUTPUT"
+          fi
+          # Existing `found` boolean is preserved so downstream gates
+          # (`steps.locate.outputs.found == 'true'`) still work.
+          echo "found=false" >> "$GITHUB_OUTPUT"
+
+      - name: Reply when locate did not yield a usable run
         if: steps.perm.outputs.allowed == 'true' && steps.locate.outputs.found != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           COMMENT_ID: ${{ github.event.comment.id }}
           PR: ${{ github.event.issue.number }}
+          FOUND_STATUS: ${{ steps.locate.outputs.found_status }}
+          RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
-            -f content="-1" >/dev/null
-          gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
-            -f body="🤔 No successful autofix run found for this PR's current head SHA. Push a new commit (or wait for the in-progress autofix run to finish), then comment \`/autofix\` again." \
-            >/dev/null
+          run_url="https://github.com/${GH_REPO}/actions/runs/${RUN_ID}"
+          case "${FOUND_STATUS}" in
+            in-progress)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="confused" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="⏳ A pr-autofix run is still in progress for this PR's current head SHA. Wait for it to finish, then comment \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              ;;
+            api-failed)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="confused" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="⚠️ Couldn't reach the GitHub API to look up the autofix run (transient failure after retries). Please comment \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              ;;
+            *)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="-1" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="🤔 No successful autofix run found for this PR's current head SHA. Push a new commit to trigger one, then comment \`/autofix\` again." \
+                >/dev/null
+              ;;
+          esac
           exit 1
 
       # Pinned to v8.0.1. Same SHA as pr-autofix-publish.yml.
+      # `continue-on-error: true` lets the workflow proceed when the
+      # artifact is expired or pruned (1-day retention). The apply
+      # step distinguishes "patch file missing entirely" (artifact-
+      # expired) from "patch file zero bytes" (genuinely empty patch).
       - name: Download autofix artifact
         if: steps.locate.outputs.found == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
         with:
           name: autofix
           run-id: ${{ steps.locate.outputs.run_id }}
@@ -288,9 +367,35 @@ jobs:
           set -euo pipefail
           patch="../autofix-in/autofix.patch"
 
+          # Distinguish artifact-expired (file missing entirely, because
+          # actions/download-artifact ran with continue-on-error and the
+          # 1-day retention had elapsed) from genuinely empty patch
+          # (file present, zero bytes, formatter found nothing).
+          if [ ! -e "$patch" ]; then
+            echo "::warning::Patch file does not exist — autofix artifact likely expired."
+            echo "result=artifact-expired" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ ! -s "$patch" ]; then
             echo "::warning::Empty patch — nothing to apply."
             echo "result=empty-patch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Re-entrancy guard: if HEAD itself is an autofix bot commit,
+          # refuse to apply again. Without this, lint/formatter config
+          # drift between runs could pump arbitrary apply commits into
+          # the same PR if an automated agent watches the sticky and
+          # re-fires `/autofix` on each new "fixes-available" surface.
+          # The contributor can still get out by force-pushing a
+          # human-authored commit to revert the autofix and re-trigger.
+          head_author=$(git log -1 --format='%ae' HEAD)
+          head_subject=$(git log -1 --format='%s' HEAD)
+          if [ "${head_author}" = "41898282+github-actions[bot]@users.noreply.github.com" ] \
+             && [[ "${head_subject}" =~ ^chore\(autofix\) ]]; then
+            echo "::warning::HEAD is an autofix bot commit — refusing to re-apply (loop guard)."
+            echo "result=loop-prevented" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -403,6 +508,22 @@ jobs:
               gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
                 -f body="✅ No autofix to apply — formatter found nothing." \
                 >/dev/null
+              ;;
+            artifact-expired)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="confused" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="⏳ The autofix artifact for this PR's head SHA has expired (1-day retention). Push a new commit to regenerate it, then comment \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              exit 1
+              ;;
+            loop-prevented)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="confused" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="🔁 Refusing to re-apply autofix on top of an existing autofix commit. If formatter rules drifted and you genuinely need another pass, push a human-authored commit (or revert the existing autofix commit) before commenting \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              exit 1
               ;;
             stale)
               gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
