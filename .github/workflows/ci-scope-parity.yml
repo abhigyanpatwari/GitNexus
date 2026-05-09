@@ -28,6 +28,9 @@ name: Scope Resolution Parity
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   discover:
     name: Discover migrated languages
