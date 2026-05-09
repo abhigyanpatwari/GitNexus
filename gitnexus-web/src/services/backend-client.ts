@@ -218,11 +218,13 @@ export function validateBackendUrl(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`Invalid backend URL: ${url}`);
+    // Do not echo raw input — it may contain credentials.
+    throw new Error('Invalid backend URL: must be a well-formed http:// or https:// URL');
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
     throw new Error(
-      `Backend URL must use http:// or https:// (got ${parsed.protocol}): ${url}`,
+      `Backend URL must use http:// or https:// (got ${parsed.protocol})`,
     );
   }
 }

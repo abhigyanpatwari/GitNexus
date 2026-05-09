@@ -97,12 +97,14 @@ export function validateLLMBaseUrl(baseUrl: string): void {
   try {
     parsed = new URL(baseUrl);
   } catch {
-    throw new Error(`Invalid LLM base URL: ${baseUrl}`);
+    // Do not include the raw input in the message — it may contain credentials.
+    throw new Error('Invalid LLM base URL: must be a well-formed http:// or https:// URL');
   }
 
   if (!['https:', 'http:'].includes(parsed.protocol)) {
+    // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
     throw new Error(
-      `LLM base URL must use http:// or https:// (got ${parsed.protocol}): ${baseUrl}`,
+      `LLM base URL must use http:// or https:// (got ${parsed.protocol})`,
     );
   }
 
@@ -111,9 +113,10 @@ export function validateLLMBaseUrl(baseUrl: string): void {
     // so strip them before comparing to bare address literals.
     const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+      // Use parsed.origin (scheme+host+port, no credentials) instead of the full URL.
       throw new Error(
         `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +
-          `Use https:// for remote endpoints: ${baseUrl}`,
+          `Use https:// for remote endpoints (got ${parsed.origin})`,
       );
     }
   }

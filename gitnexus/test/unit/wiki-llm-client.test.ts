@@ -346,22 +346,59 @@ describe('validateLLMBaseUrl', () => {
     expect(() => validateLLMBaseUrl('http://[::1]:11434/v1')).not.toThrow();
   });
 
+  it('allows http:// for LOCALHOST (uppercase) — lowercased before comparison', () => {
+    expect(() => validateLLMBaseUrl('http://LOCALHOST:11434/v1')).not.toThrow();
+  });
+
   it('rejects http:// for non-loopback hosts', () => {
-    expect(() => validateLLMBaseUrl('http://evil.example.com/v1')).toThrow(
+    expect(() => validateLLMBaseUrl('http://evil.example.com/v1')).toThrow('Insecure http://');
+    expect(() => validateLLMBaseUrl('http://192.168.1.1/v1')).toThrow('Insecure http://');
+    // Private IP ranges
+    expect(() => validateLLMBaseUrl('http://10.0.0.1/v1')).toThrow('Insecure http://');
+    // AWS/GCP IMDS — should be blocked
+    expect(() => validateLLMBaseUrl('http://169.254.169.254/latest/meta-data')).toThrow(
       'Insecure http://',
     );
-    expect(() => validateLLMBaseUrl('http://192.168.1.1/v1')).toThrow('Insecure http://');
+  });
+
+  it('rejects http:// hostname-spoofing attempts', () => {
+    // Full-hostname comparison prevents prefix/suffix attacks
+    expect(() => validateLLMBaseUrl('http://localhost.evil.com/v1')).toThrow('Insecure http://');
+    expect(() => validateLLMBaseUrl('http://127.0.0.1.evil.com/v1')).toThrow('Insecure http://');
+    // Trailing dot — hostname 'localhost.' ≠ 'localhost'
+    expect(() => validateLLMBaseUrl('http://localhost./v1')).toThrow('Insecure http://');
+  });
+
+  it('rejects http:// non-loopback IPv6 addresses', () => {
+    // Link-local IPv6
+    expect(() => validateLLMBaseUrl('http://[fe80::1]/v1')).toThrow('Insecure http://');
+    // IPv4-mapped IPv6 loopback — bracket-stripped to '::ffff:127.0.0.1' ≠ '::1'
+    expect(() => validateLLMBaseUrl('http://[::ffff:127.0.0.1]/v1')).toThrow('Insecure http://');
   });
 
   it('rejects non-http schemes', () => {
     expect(() => validateLLMBaseUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
     expect(() => validateLLMBaseUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
     expect(() => validateLLMBaseUrl('data:text/plain,evil')).toThrow('must use http:// or https://');
+    expect(() => validateLLMBaseUrl('ftp://example.com')).toThrow('must use http:// or https://');
   });
 
   it('rejects malformed URLs', () => {
     expect(() => validateLLMBaseUrl('not-a-url')).toThrow('Invalid LLM base URL');
     expect(() => validateLLMBaseUrl('')).toThrow('Invalid LLM base URL');
+  });
+
+  it('does not include the raw URL in error messages (credential hygiene)', () => {
+    // Simulates a URL with an embedded API key
+    const urlWithCreds = 'http://192.168.1.1/v1?apikey=sk-secret';
+    let msg = '';
+    try {
+      validateLLMBaseUrl(urlWithCreds);
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).not.toContain('sk-secret');
+    expect(msg).not.toContain(urlWithCreds);
   });
 
   it('callLLM rejects an invalid base URL before fetching', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchGraph, normalizeServerUrl, setBackendUrl, validateBackendUrl } from '../../src/services/backend-client';
+import { fetchGraph, getBackendUrl, normalizeServerUrl, setBackendUrl, validateBackendUrl } from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -186,6 +186,18 @@ describe('validateBackendUrl', () => {
   it('rejects malformed URLs', () => {
     expect(() => validateBackendUrl('not-a-url')).toThrow('Invalid backend URL');
   });
+
+  it('does not include the raw URL in error messages (credential hygiene)', () => {
+    const urlWithCreds = 'javascript:alert("sk-secret")';
+    let msg = '';
+    try {
+      validateBackendUrl(urlWithCreds);
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).not.toContain('sk-secret');
+    expect(msg).not.toContain(urlWithCreds);
+  });
 });
 
 describe('setBackendUrl', () => {
@@ -200,5 +212,12 @@ describe('setBackendUrl', () => {
   it('rejects non-http/https schemes', () => {
     expect(() => setBackendUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
     expect(() => setBackendUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
+  });
+
+  it('does not mutate _backendUrl when validation fails', () => {
+    setBackendUrl('http://localhost:4747');
+    expect(() => setBackendUrl('javascript:alert(1)')).toThrow();
+    // State must be preserved — validation must happen before the assignment
+    expect(getBackendUrl()).toBe('http://localhost:4747');
   });
 });
