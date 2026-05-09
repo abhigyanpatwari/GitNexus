@@ -294,9 +294,11 @@ jobs:
             fi
           fi
 
-          echo "base=$BASE"             >> "$GITHUB_OUTPUT"
-          echo "rc_n=$NEXT_N"           >> "$GITHUB_OUTPUT"
-          echo "rc_version=$RC_VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "base=$BASE"
+            echo "rc_n=$NEXT_N"
+            echo "rc_version=$RC_VERSION"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Apply rc version in-CI
         shell: bash
@@ -354,9 +356,11 @@ jobs:
           # remote ref, the push fails and we stop before npm publish.
           git push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
 
-          echo "vtag=$VTAG"     >> "$GITHUB_OUTPUT"
-          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
-          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "vtag=$VTAG"
+            echo "marker=$MARKER"
+            echo "release_sha=$RELEASE_SHA"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish to npm (rc dist-tag)
         run: npm publish --provenance --access public --tag rc

@@ -1,10 +1,13 @@
-name: Workflow Lint (zizmor)
+name: Workflow Lint
 
-# Lints .github/workflows/** for known GitHub Actions security misconfigurations:
-# unpinned Actions, dangerous ${{ ... }} interpolation in run: blocks,
-# missing per-job permissions:, etc.
+# Lints .github/workflows/** for both:
+#   - actionlint: YAML syntax, expression typing, shellcheck inside `run:`
+#     blocks, unknown contexts, deprecated runner labels.
+#   - zizmor: security misconfigurations — unpinned actions, dangerous
+#     `${{ }}` interpolation, missing per-job permissions, etc.
 #
-# Scoped to PRs that touch .github/** only — keeps off the typical PR critical path.
+# Scoped to PRs that touch .github/** only — keeps off the typical PR
+# critical path.
 
 on:
   pull_request:
@@ -17,6 +20,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Pinned to v2.1.2. Verify SHA via:
+      #   gh api repos/raven-actions/actionlint/git/refs/tags/v2.1.2
+      # The action wraps the upstream `rhysd/actionlint` binary and emits
+      # GitHub-annotation-formatted findings on PRs.
+      - name: Run actionlint
+        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
+        with:
+          fail-on-error: true
+
   zizmor:
     runs-on: ubuntu-latest
     timeout-minutes: 10

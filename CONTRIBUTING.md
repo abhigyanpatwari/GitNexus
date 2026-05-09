@@ -103,6 +103,24 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
 
 - When adding a new workflow, copy the concurrency block from an existing workflow of the same event shape.
 
+## CI automation contracts
+
+Two workflows produce machine-readable signals on every PR. Coding agents and humans alike can rely on the names and shapes below — change them with intent.
+
+### `gitnexus/autofix`
+
+`pr-autofix.yml` (untrusted) + `pr-autofix-publish.yml` (trusted) run `prettier --write` and `eslint --fix` against the PR head and surface the diff as inline review-comment suggestions. Three signals are emitted:
+
+| Surface | Where | Notes |
+|---|---|---|
+| Sticky PR comment | Top-level comment with the HTML marker `<!-- gitnexus:pr-autofix-summary -->` and heading `## :sparkles: PR Autofix`. Only posted when there is something to fix; clean PRs stay silent. | Edit-in-place via marker; one comment per PR. |
+| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v1` with fields `state` (`suggestions-posted` \| `skipped-too-large`), `pr_number`, `head_sha`, `changed_lines`, `run_id`. | Parseable signal — preferred over regexing prose. |
+| Check Run | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (suggestions-posted / skipped-too-large). The output title disambiguates the two `neutral` cases. | Surfaced under PR Checks; readable via `gh pr checks <pr>`. |
+
+To detect outcome from an agent: `gh pr checks <pr> --json name,conclusion,output | jq '.[] | select(.name == "gitnexus/autofix")'`.
+
+Forks are supported. The untrusted half runs fork code with `permissions: {}` and ships the diff as an artifact; the trusted publish job consumes only the diff (data, not code) and posts the comment + check run.
+
 ## AI-assisted contributions
 
 If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUDE.md`) and avoid drive-by refactors unrelated to the issue. Prefer incremental, test-backed changes.
