@@ -3,6 +3,9 @@ name: Quality Checks
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   format:
     runs-on: ubuntu-latest
