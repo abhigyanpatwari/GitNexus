@@ -9,7 +9,7 @@ describe('--skip-git CLI flag', () => {
 
   it('Commander maps --skip-git to options.skipGit (not --no-git inversion)', () => {
     // Verify the CLI defines --skip-git and --skip-agents-md in analyze help.
-    const helpOutput = execSync('node dist/cli/index.js analyze --help', {
+    const helpOutput = execSync(`node "${cliPath}" analyze --help`, {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
       timeout: 10000,
