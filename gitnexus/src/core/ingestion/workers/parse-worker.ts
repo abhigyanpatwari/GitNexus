@@ -1407,6 +1407,11 @@ const processFileGroup = (
       isVueSetup = extracted.isSetup;
     }
 
+    // Per-language source-text transform (e.g., UE macro stripping for C++).
+    // Length-preserving — see LanguageProvider.preprocessSource contract.
+    parseContent =
+      getProvider(language).preprocessSource?.(parseContent, file.path) ?? parseContent;
+
     clearCaches(); // Reset memoization before each new file
 
     let tree;
