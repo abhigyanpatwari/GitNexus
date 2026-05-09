@@ -1,13 +1,19 @@
 name: Trivy Image Scan
 
 # Builds Dockerfile.cli and Dockerfile.web, then scans the resulting images
-# for OS-package and language-package CVEs at HIGH/CRITICAL severity.
+# for OS-package and language-package CVEs at MEDIUM+ severity.
 # Findings upload to the Security tab; record-only (does not block merges).
 #
-# NOT triggered on PRs — image builds are slow and base-image CVE churn
-# shouldn't gate feature delivery.
+# Trigger on Dockerfile changes in PRs so base-image/npm-layer remediation can
+# be verified before merge without running image scans on every PR.
 
 on:
+  pull_request:
+    paths:
+      - 'Dockerfile.cli'
+      - 'Dockerfile.web'
+      - 'gitnexus/Dockerfile.test'
+      - '.github/workflows/trivy.yml'
   push:
     branches: [main]
   schedule:
@@ -61,7 +67,7 @@ jobs:
           image-ref: scan-target:${{ matrix.image.name }}
           format: sarif
           output: trivy-${{ matrix.image.name }}.sarif
-          severity: HIGH,CRITICAL
+          severity: MEDIUM,HIGH,CRITICAL
           # Hides CVEs with no available fix in the base image.
           ignore-unfixed: true
           exit-code: '0'
