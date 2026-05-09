@@ -11,6 +11,9 @@ import type { GraphRelationship } from 'gitnexus-shared';
 const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, ReadonlySet<string>>> = {
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
+    // Generic type-argument USES edges are emitted by the registry-primary
+    // resolver only; the legacy DAG path does not synthesize these references.
+    'emits USES edges for generic type arguments',
   ]),
   go: new Set([
     // The legacy DAG path does not resolve method calls when the method is
