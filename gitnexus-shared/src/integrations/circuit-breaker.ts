@@ -235,6 +235,16 @@ export class CircuitBreaker {
   isProbeInFlight(): boolean {
     return this.probeInFlight;
   }
+  /** Timestamp (ms since epoch) when the breaker last transitioned to Open,
+   *  or `null` if it's currently Closed. Useful for computing remaining
+   *  cooldown without consuming a probe permit via `check()`. */
+  getOpenedAt(): number | null {
+    return this.openedAt;
+  }
+  /** Configured cooldown duration in milliseconds. */
+  getCooldownMs(): number {
+    return this.cooldownMs;
+  }
 }
 
 // ─── Per-process registry ────────────────────────────────────────────
