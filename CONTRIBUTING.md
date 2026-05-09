@@ -30,17 +30,17 @@ Format: `<type>[(scope)][!]: <subject>`
 
 Allowed types and the release-notes section each one lands in (defined in `.github/release.yml`):
 
-| Type | Label applied | Release-notes section |
-|------|---------------|-----------------------|
-| `feat` | `enhancement` | 🚀 Features |
-| `fix` | `bug` | 🐛 Bug Fixes |
-| `perf` | `performance` | 🏎️ Performance |
-| `refactor` | `refactor` | 🔄 Refactoring |
-| `test` | `test` | 🧪 Tests |
-| `ci` | `ci` | 👷 CI/CD |
-| `build` / `deps` | `dependencies` | 📦 Dependencies |
-| `docs` | `documentation` | (grouped under Other Changes unless a Docs section is added) |
-| `chore` / `revert` | `chore` | (excluded from release notes) |
+| Type               | Label applied   | Release-notes section                                        |
+| ------------------ | --------------- | ------------------------------------------------------------ |
+| `feat`             | `enhancement`   | 🚀 Features                                                  |
+| `fix`              | `bug`           | 🐛 Bug Fixes                                                 |
+| `perf`             | `performance`   | 🏎️ Performance                                               |
+| `refactor`         | `refactor`      | 🔄 Refactoring                                               |
+| `test`             | `test`          | 🧪 Tests                                                     |
+| `ci`               | `ci`            | 👷 CI/CD                                                     |
+| `build` / `deps`   | `dependencies`  | 📦 Dependencies                                              |
+| `docs`             | `documentation` | (grouped under Other Changes unless a Docs section is added) |
+| `chore` / `revert` | `chore`         | (excluded from release notes)                                |
 
 Append `!` to the type (e.g. `feat(api)!: drop /v1 endpoint`) or include `BREAKING CHANGE:` in the PR body to flag a breaking change — the labeler then adds the `breaking` label and the 💥 Breaking Changes section is rendered first.
 
@@ -81,17 +81,17 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   - **Merge queue (`merge_group`)**: when this event is added, use `${{ github.workflow }}-${{ github.event.merge_group.head_ref }}` with `cancel-in-progress: false` (every queue entry is a distinct ref; never cancel).
 - **`cancel-in-progress` policy:**
 
-  | Event | `cancel-in-progress` | Why |
-  |-------|----------------------|-----|
-  | `pull_request` CI run | `true` | New push supersedes old run |
-  | `push` to `main` | `false` | Every main commit gets validated |
-  | Tag push (`v*` publish) | `false` | Never cancel mid-publish |
-  | `push` to `main` for release-candidate | `false` | Never cancel mid-RC publish |
-  | `workflow_dispatch` (release/publish) | `false` | Manual runs are intentional |
-  | `workflow_run` (sticky-comment reports) | `false` | Serialize, don't race |
-  | Per-PR bot workflows (`@claude`, review) | `false` | Serialize comments per PR |
-  | PR-meta re-checks (pr-description-check) | `true` | Cheap, latest wins |
-  | Single-slot utilities (triage sweep) | `true` | Latest dispatch supersedes |
+  | Event                                    | `cancel-in-progress` | Why                              |
+  | ---------------------------------------- | -------------------- | -------------------------------- |
+  | `pull_request` CI run                    | `true`               | New push supersedes old run      |
+  | `push` to `main`                         | `false`              | Every main commit gets validated |
+  | Tag push (`v*` publish)                  | `false`              | Never cancel mid-publish         |
+  | `push` to `main` for release-candidate   | `false`              | Never cancel mid-RC publish      |
+  | `workflow_dispatch` (release/publish)    | `false`              | Manual runs are intentional      |
+  | `workflow_run` (sticky-comment reports)  | `false`              | Serialize, don't race            |
+  | Per-PR bot workflows (`@claude`, review) | `false`              | Serialize comments per PR        |
+  | PR-meta re-checks (pr-description-check) | `true`               | Cheap, latest wins               |
+  | Single-slot utilities (triage sweep)     | `true`               | Latest dispatch supersedes       |
 
 - For workflows that serve multiple events at once (e.g. `ci.yml` handles `pull_request`, `push`, and `workflow_call`), make `cancel-in-progress` event-aware:
 
@@ -109,17 +109,34 @@ Two workflows produce machine-readable signals on every PR. Coding agents and hu
 
 ### `gitnexus/autofix`
 
-`pr-autofix.yml` (untrusted) + `pr-autofix-publish.yml` (trusted) run `prettier --write` and `eslint --fix` against the PR head and surface the diff as inline review-comment suggestions. Three signals are emitted:
+`pr-autofix.yml` (untrusted) + `pr-autofix-publish.yml` (trusted) run `prettier --write` and `eslint --fix` against the PR head and surface a single ChatOps button on the PR. Three signals are emitted:
 
-| Surface | Where | Notes |
-|---|---|---|
-| Sticky PR comment | Top-level comment with the HTML marker `<!-- gitnexus:pr-autofix-summary -->` and heading `## :sparkles: PR Autofix`. Only posted when there is something to fix; clean PRs stay silent. | Edit-in-place via marker; one comment per PR. |
-| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v1` with fields `state` (`suggestions-posted` \| `skipped-too-large`), `pr_number`, `head_sha`, `changed_lines`, `run_id`. | Parseable signal — preferred over regexing prose. |
-| Check Run | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (suggestions-posted / skipped-too-large). The output title disambiguates the two `neutral` cases. | Surfaced under PR Checks; readable via `gh pr checks <pr>`. |
+| Surface           | Where                                                                                                                                                                                                                                                                                                   | Notes                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Sticky PR comment | Top-level comment with the HTML marker `<!-- gitnexus:pr-autofix-summary -->` and heading `## :sparkles: PR Autofix`. Only posted when there is something to fix; clean PRs stay silent.                                                                                                                | Edit-in-place via marker; one comment per PR.                          |
+| Fenced JSON block | Inside the sticky, fenced as `gitnexus-autofix`. Schema `gitnexus.pr-autofix/v2` with fields `state` (`fixes-available`), `pr_number`, `head_sha`, `changed_lines`, `run_id`, and `apply_command` (literal `/autofix`). | Parseable signal — preferred over regexing prose. v1 fields preserved as a superset. |
+| Check Run         | Stable name `gitnexus/autofix` on the PR head SHA. Conclusion: `success` (clean) or `neutral` (`fixes-available`). The neutral title is `Autofix available — comment /autofix to apply`.                                                                                                                | Surfaced under PR Checks; readable via `gh pr checks <pr>`.            |
 
 To detect outcome from an agent: `gh pr checks <pr> --json name,conclusion,output | jq '.[] | select(.name == "gitnexus/autofix")'`.
 
 Forks are supported. The untrusted half runs fork code with `permissions: {}` and ships the diff as an artifact; the trusted publish job consumes only the diff (data, not code) and posts the comment + check run.
+
+#### Applying autofix
+
+Comment `/autofix` on the PR (whole-line, no arguments). The `pr-autofix-apply.yml` workflow:
+
+1. Validates the comment body matches `^/autofix\s*$` exactly. Quoted or inline mentions are silently ignored.
+2. Validates the commenter has `admin`, `write`, or `maintain` permission on the repo, OR is the PR author. Other commenters get a 👎 reaction and a refusal reply.
+3. Locates the most recent successful `pr-autofix.yml` run for the PR's current head SHA, downloads its `autofix` artifact, applies the patch, and pushes a `chore(autofix): ...` commit back to the PR head branch.
+4. Reacts ✅ on success, 👎 on stale-patch / push-failure, and posts a short reply with the apply-run URL in either case.
+
+The apply workflow runs from the default branch's copy of the file regardless of where the comment originates — that's the trust anchor. There is no diff-size cap (the apply workflow uses `git apply` + push, not the GitHub review-comment API).
+
+For fork PRs, the push succeeds only when the contributor has **Allow edits by maintainers** enabled on the PR (the default). When they have disabled it, the workflow fails loud with a 👎 reaction and an explanation comment.
+
+Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow detects the already-applied state via `git apply --check --reverse` and reacts ✅ without pushing.
+
+**Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
 
 ## AI-assisted contributions
 
@@ -182,8 +199,7 @@ Two publish workflows ship `gitnexus` to npm:
     the Docker build.
   - Manually run `docker build` + `docker push` locally and sign with Cosign
     against the same digest.
-  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force:
-    true` to re-run the full RC pipeline (cuts a new RC number).
+  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force: true` to re-run the full RC pipeline (cuts a new RC number).
 
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 
