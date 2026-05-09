@@ -4,6 +4,7 @@ import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { shouldIgnorePath, loadIgnoreRules } from '../../../config/ignore-service.js';
 
+import { logger } from '../../logger.js';
 interface JavaProjectMeta {
   groupId: string;
   artifactId: string;
@@ -213,7 +214,7 @@ export async function extractJavaWorkspaceLinks(
     };
     const existing = projectsByKey.get(key);
     if (existing) {
-      console.warn(
+      logger.warn(
         `[java-workspace-extractor] duplicate artifact "${key}" in "${groupPath}" and "${existing.groupPath}" — skipping "${groupPath}"`,
       );
       continue;

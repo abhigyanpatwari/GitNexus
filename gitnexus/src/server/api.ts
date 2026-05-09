@@ -19,6 +19,7 @@ import {
   executePrepared,
   executeWithReusedStatement,
   streamQuery,
+  flushWAL,
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
@@ -26,8 +27,6 @@ import { isWriteQuery } from '../core/lbug/pool-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
-// Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
-// at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
@@ -35,6 +34,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { logger, flushLoggerSync } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -142,7 +142,7 @@ export const resolveWebDistDir = async (
       return dir;
     } catch (err: any) {
       if (err?.code !== 'ENOENT') {
-        console.warn(`[serve] could not access web UI dir ${dir}:`, err.message);
+        logger.warn({ err: err.message }, `[serve] could not access web UI dir ${dir}:`);
       }
     }
   }
@@ -1060,11 +1060,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       const results = await withLbugDb(lbugPath, async () => {
         let searchResults: any[];
+        let ftsAvailable: boolean | undefined;
 
         if (mode === 'semantic') {
           const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
           if (!isEmbedderReady()) {
-            return [] as any[];
+            return { searchResults: [] as any[], ftsAvailable: undefined };
           }
           const { semanticSearch: semSearch } =
             await import('../core/embeddings/embedding-pipeline.js');
@@ -1077,8 +1078,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             sources: ['semantic'],
           }));
         } else if (mode === 'bm25') {
-          searchResults = await searchFTSFromLbug(query, limit);
-          searchResults = searchResults.map((r: any, i: number) => ({
+          const ftsResponse = await searchFTSFromLbug(query, limit);
+          ftsAvailable = ftsResponse.ftsAvailable;
+          searchResults = ftsResponse.results.map((r: any, i: number) => ({
             ...r,
             rank: i + 1,
             sources: ['bm25'],
@@ -1091,11 +1093,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               await import('../core/embeddings/embedding-pipeline.js');
             searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
           } else {
-            searchResults = await searchFTSFromLbug(query, limit);
+            const ftsResponse = await searchFTSFromLbug(query, limit);
+            ftsAvailable = ftsResponse.ftsAvailable;
+            searchResults = ftsResponse.results;
           }
         }
 
-        if (!enrich) return searchResults;
+        if (!enrich) return { searchResults, ftsAvailable };
 
         // Server-side enrichment: add connections, cluster, processes per result
         // Uses parameterized queries to prevent Cypher injection via nodeId
@@ -1177,9 +1181,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }),
         );
 
-        return enriched;
+        return { searchResults: enriched, ftsAvailable };
       });
-      res.json({ results });
+      const response: any = { results: results.searchResults ?? results };
+      if (results.ftsAvailable === false) {
+        response.warning =
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.';
+      }
+      res.json(response);
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Search failed' });
     }
@@ -1489,7 +1498,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     });
                   })
                   .catch((err) => {
-                    console.error('backend.init() failed after analyze:', err);
+                    logger.error({ err }, 'backend.init() failed after analyze:');
                     jobManager.updateJob(job.id, {
                       status: 'failed',
                       error: 'Server failed to reload after analysis. Try again.',
@@ -1521,7 +1530,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 j.retryCount++;
                 const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
                 const lastErr = stderrChunks.trim().split('\n').pop() || '';
-                console.warn(
+                logger.warn(
                   `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
                     (lastErr ? `: ${lastErr}` : ''),
                 );
@@ -1706,12 +1715,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             // Flush WAL so subsequent /api/search requests see the new
             // embeddings immediately (#1149). In the CLI path closeLbug()
             // handles this during process exit, but the server keeps the
-            // connection open for other routes -- a CHECKPOINT is enough.
-            try {
-              await executeQuery('CHECKPOINT');
-            } catch {
-              /* best-effort -- older LadybugDB may not support it */
-            }
+            // connection open for other routes — a CHECKPOINT is enough.
+            await flushWAL();
           });
 
           clearTimeout(embedTimeout);
@@ -1793,7 +1798,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Global error handler — catch anything the route handlers miss
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('Unhandled error:', err);
+    logger.error({ err }, 'Unhandled error:');
     res.status(500).json({ error: 'Internal server error' });
   });
 
@@ -1807,7 +1812,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     });
     server.on('error', (err) => reject(err));
 
-    // Graceful shutdown — close Express + LadybugDB cleanly
+    // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default
+    // destination is `sync: false` (buffered); `flushLoggerSync()` before
+    // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
       console.log('\nShutting down...');
       server.close();
@@ -1816,22 +1823,33 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
+      const { flushLoggerSync } = await import('../core/logger.js');
+      flushLoggerSync();
       process.exit(0);
     };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
 
-    // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts)
+    // Catch-all crash guards (mirrors startMCPServer in mcp/server.ts).
+    // Pino v10's default destination is buffered (`sync: false`) — call
+    // `flushLoggerSync()` after logging and before triggering shutdown
+    // so the crash record reaches stderr regardless of how cleanup goes.
+    // Worker-thread transports (pino-pretty under TTY) handle their own
+    // flush on process exit in v10. `pino.final` was removed in v10
+    // because the new transport architecture made it unnecessary.
     let shuttingDown = false;
     process.on('uncaughtException', (err) => {
-      console.error('GitNexus uncaughtException:', err?.stack || err);
+      logger.error({ err }, 'GitNexus uncaughtException');
+      flushLoggerSync();
       if (!shuttingDown) {
         shuttingDown = true;
         shutdown().catch(() => {});
       }
     });
-    process.on('unhandledRejection', (reason: any) => {
-      console.error('GitNexus unhandledRejection:', reason?.stack || reason);
+    process.on('unhandledRejection', (reason: unknown) => {
+      // Availability-first: log the rejection without exiting.
+      const err = reason instanceof Error ? reason : new Error(String(reason));
+      logger.error({ err }, 'GitNexus unhandledRejection');
     });
   });
 };

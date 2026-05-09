@@ -113,12 +113,13 @@ export const mergeWithRRF = (
 };
 
 /**
- * Check if hybrid search is available
- * LadybugDB FTS is always available once the database is initialized.
- * Semantic search is optional - hybrid works with just FTS if embeddings aren't ready.
+ * Check if hybrid search is available.
+ * FTS indexes may be missing on read-only MCP connections (see #1403);
+ * callers should inspect `ftsAvailable` from searchFTSFromLbug for
+ * per-query availability. This helper is a coarse gate only.
  */
 export const isHybridSearchReady = (): boolean => {
-  return true; // FTS is always available via LadybugDB when DB is open
+  return true; // FTS is attempted on every query; ftsAvailable signals actual availability
 };
 
 /**
@@ -160,7 +161,7 @@ export const hybridSearch = async (
   ) => Promise<SemanticSearchResult[]>,
 ): Promise<HybridSearchResult[]> => {
   // Use LadybugDB FTS for always-fresh BM25 results
-  const bm25Results = await searchFTSFromLbug(query, limit);
+  const { results: bm25Results } = await searchFTSFromLbug(query, limit);
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

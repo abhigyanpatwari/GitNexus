@@ -23,7 +23,11 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
-  .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
+  .option(
+    '--embeddings [limit]',
+    'Enable embedding generation for semantic search (off by default). ' +
+      'Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
+  )
   .option(
     '--drop-embeddings',
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
@@ -155,6 +159,18 @@ program
   .command('augment <pattern>')
   .description('Augment a search pattern with knowledge graph context (used by hooks)')
   .action(createLazyAction(() => import('./augment.js'), 'augmentCommand'));
+
+program
+  .command('publish [path]')
+  .description(
+    'Notify the understand-quickly registry that this repo has a fresh GitNexus index. ' +
+      'Opt-in: requires UNDERSTAND_QUICKLY_TOKEN (fine-grained PAT with ' +
+      '`Repository dispatches: write` on looptech-ai/understand-quickly). ' +
+      'No-op without the token. See https://github.com/looptech-ai/understand-quickly.',
+  )
+  .option('--id <owner/repo>', 'Override the registry id (defaults to the origin remote)')
+  .option('--skip-git', 'Treat cwd as the repo root and skip parent git-root discovery')
+  .action(createLazyAction(() => import('./publish.js'), 'publishCommand'));
 
 // ─── Direct Tool Commands (no MCP overhead) ────────────────────────
 // These invoke LocalBackend directly for use in eval, scripts, and CI.

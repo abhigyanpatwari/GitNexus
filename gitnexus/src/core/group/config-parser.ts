@@ -4,9 +4,26 @@ import type { GroupConfig, GroupManifestLink, ContractType, ContractRole } from 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
 
-const VALID_CONTRACT_TYPES: ContractType[] = ['http', 'grpc', 'thrift', 'topic', 'lib', 'custom'];
+const VALID_CONTRACT_TYPES: ContractType[] = [
+  'http',
+  'grpc',
+  'thrift',
+  'topic',
+  'lib',
+  'custom',
+  'include',
+];
 const VALID_ROLES: ContractRole[] = ['provider', 'consumer'];
 
+// Defaults matter for backward compatibility: any group.yaml that omits a
+// `detect.<type>` key inherits its value from this constant. Adding a new
+// extractor that defaults to `true` silently changes the behavior of every
+// existing group on the next sync. New extractors must default to `false`
+// (opt-in) so operators consciously enable them via group.yaml.
+//
+// `includes`: opt-in. The C/C++ IncludeExtractor (PR #1156) ships disabled by
+// default; enable with `detect.includes: true` for groups containing C/C++
+// repos that need cross-repo header tracking.
 const DEFAULT_DETECT = {
   http: true,
   grpc: true,
@@ -14,6 +31,7 @@ const DEFAULT_DETECT = {
   topics: true,
   shared_libs: true,
   embedding_fallback: true,
+  includes: false,
   workspace_deps: false,
 };
 

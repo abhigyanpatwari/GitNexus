@@ -167,7 +167,18 @@ export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
 export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
 export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
-export const PROPERTY_SCHEMA = CODE_ELEMENT_BASE('Property');
+export const PROPERTY_SCHEMA = `
+CREATE NODE TABLE \`Property\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  declaredType STRING,
+  PRIMARY KEY (id)
+)`;
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
 export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
 export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');

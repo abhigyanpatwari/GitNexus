@@ -13,6 +13,7 @@ import {
   CLASS_SCHEMA,
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
+  PROPERTY_SCHEMA,
   CODE_ELEMENT_SCHEMA,
   COMMUNITY_SCHEMA,
   PROCESS_SCHEMA,
@@ -115,6 +116,11 @@ describe('LadybugDB Schema', () => {
 
     it('Function schema has isExported', () => {
       expect(FUNCTION_SCHEMA).toContain('isExported BOOLEAN');
+    });
+
+    it('Property schema preserves declaredType', () => {
+      expect(SCHEMA_QUERIES).toContain(PROPERTY_SCHEMA);
+      expect(PROPERTY_SCHEMA).toContain('declaredType STRING');
     });
 
     it('Community schema has heuristicLabel and cohesion', () => {

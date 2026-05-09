@@ -34,6 +34,7 @@ import type { ResolutionContext } from './model/resolution-context.js';
 import { TIER_CONFIDENCE } from './model/resolution-context.js';
 import type { HeritageInfo } from './heritage-types.js';
 
+import { logger } from '../logger.js';
 /**
  * Derive the heritage-resolution strategy for a language from its
  * `LanguageProvider`. This is the production wiring that `buildHeritageMap`
@@ -218,9 +219,13 @@ export const processHeritage = async (
     let tree = astCache.get(file.path);
     if (!tree) {
       // Use larger bufferSize for files > 32KB
+      // Per-language source preprocessor (length-preserving, e.g. UE macro
+      // stripping for C++). MUST mirror parsing-processor on cache miss so
+      // re-parses see the same input as the cached AST.
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parser.parse(parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
         // Skip files that can't be parsed
@@ -237,7 +242,7 @@ export const processHeritage = async (
       query = new Parser.Query(treeSitterLang, queryStr);
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
-      console.warn(`Heritage query error for ${file.path}:`, queryError);
+      logger.warn({ queryError }, `Heritage query error for ${file.path}:`);
       continue;
     }
 
@@ -267,7 +272,7 @@ export const processHeritage = async (
 
   if (skippedByLang && skippedByLang.size > 0) {
     for (const [lang, count] of skippedByLang.entries()) {
-      console.warn(
+      logger.warn(
         `[ingestion] Skipped ${count} ${lang} file(s) in heritage processing — ${lang} parser not available.`,
       );
     }
@@ -412,9 +417,10 @@ export async function extractExtractedHeritageFromFiles(
 
     let tree = astCache.get(file.path);
     if (!tree) {
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parser.parse(parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch {
         continue;

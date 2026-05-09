@@ -23,7 +23,24 @@ interface ScriptBlock {
   lang: string;
 }
 
-const SCRIPT_RE = /<script(\s[^>]*)?>([^]*?)<\/script>/g;
+// Closing-tag pattern accepts:
+//   - whitespace before `>`            — `</script >`, `</script\t\n>`
+//   - attribute-like junk after `script` — `</script foo="bar">`,
+//                                          `</script\t\n bar>`
+//   - any case                          — `</SCRIPT>`, `</Script>`
+//
+// HTML5 parses `</script foo>` as a valid close tag (attributes on
+// close tags are ignored by the parser but still terminate the script
+// block). A strict `<\/script\s*>` would miss those forms and let a
+// crafted Vue file hide content from this extractor — exactly the
+// CodeQL `js/bad-tag-filter` failure mode (the published test cases
+// it checks include `</script foo="bar">` and `</script\t\n bar>`).
+//
+// `[^>]*` after `</script` accepts everything up to the next `>`,
+// matching the HTML parser's actual close-tag behaviour. The `i` flag
+// covers the case axis. PR #1330 CI surfaced both the case and
+// attribute axes; this expression closes both at once.
+const SCRIPT_RE = /<script(\s[^>]*)?>([^]*?)<\/script[^>]*>/gi;
 const TEMPLATE_COMPONENT_RE = /<([A-Z][A-Za-z0-9]+)/g;
 // Greedy: matches from the first <template> to the *last* </template>.
 // This is intentional — nested <template v-slot:...> tags are valid Vue

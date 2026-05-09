@@ -16,6 +16,7 @@ import type { ExtractedORMQuery } from '../workers/parse-worker.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface ORMOutput {
   edgesCreated: number;
   modelCount: number;
@@ -91,7 +92,7 @@ function processORMQueries(
   }
 
   if (isDev) {
-    console.log(
+    logger.info(
       `ORM dataflow: ${edgesCreated} QUERIES edges, ${modelNodes.size} models (${queries.length} total calls)`,
     );
   }

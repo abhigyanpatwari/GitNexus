@@ -112,3 +112,55 @@ describe('Go type binding synthesis — 7 patterns', () => {
     expect(normalizeGoTypeName('List[User]')).toBe('List');
   });
 });
+
+describe('Go type binding — null guard (#1346, #1366)', () => {
+  it('does not crash on make(chan T) — channel_type has no matching child', () => {
+    const src = 'package main\nfunc main() {\n  ch := make(chan int)\n}';
+    const tree = getGoParser().parse(src);
+    // Before fix: .find() returned undefined, checked with !== null, crashed
+    // accessing .type on undefined.
+    const matches = synthesizeGoTypeBindings(tree.rootNode as any);
+    // make(chan T) is not handled (V1 limitation) — should produce no crash
+    // and no make-binding, not crash the pipeline.
+    const makeMatch = matches.find((m) => m['@type-binding.make']);
+    expect(makeMatch).toBeUndefined();
+  });
+
+  it('does not crash on new() with no type arguments', () => {
+    const src = 'package main\nfunc main() {\n  x := new(complex128)\n  _ = x\n}';
+    const tree = getGoParser().parse(src);
+    // complex128 is a builtin type_identifier — this should work normally,
+    // but tests the path where .find() must not return undefined unchecked.
+    const matches = synthesizeGoTypeBindings(tree.rootNode as any);
+    const newMatch = matches.find((m) => m['@type-binding.new']);
+    expect(newMatch).toBeDefined();
+    expect(newMatch?.['@type-binding.type']?.text).toBe('complex128');
+  });
+
+  it('does not crash on make with only generic type arguments', () => {
+    const src = 'package main\nfunc main() {\n  ch := make(chan *User)\n}';
+    const tree = getGoParser().parse(src);
+    // chan *User: sliceOrMap is undefined (channel_type not in ['slice_type','map_type'])
+    const matches = synthesizeGoTypeBindings(tree.rootNode as any);
+    expect(matches.find((m) => m['@type-binding.make'])).toBeUndefined();
+  });
+
+  it('does not crash on composite literal with embedded struct', () => {
+    const src = `package main
+type Base struct{ ID int }
+type User struct{ Base }
+func main() { u := User{Base: Base{ID: 1}} }`;
+    const matches = emitGoScopeCaptures(src, 'main.go');
+    // Should produce captures without crashing
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it('does not crash on short var decl with function call (no typeBinding)', () => {
+    const src = 'package main\nfunc main() {\n  result := DoSomething()\n}';
+    const tree = getGoParser().parse(src);
+    // RHS is a call_expression with no new/make — no typeBinding expected
+    const matches = synthesizeGoTypeBindings(tree.rootNode as any);
+    // Should not crash; may or may not produce bindings depending on the call
+    expect(Array.isArray(matches)).toBe(true);
+  });
+});

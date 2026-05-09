@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs/promises';
+import { logger } from '../core/logger.js';
 import {
   findRepo,
   unregisterRepo,
@@ -45,7 +46,7 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
         assertSafeStoragePath(entry);
       } catch (err) {
         if (err instanceof UnsafeStoragePathError) {
-          console.error(`Refusing to clean ${entry.name}: ${err.message}`);
+          logger.error(`Refusing to clean ${entry.name}: ${err.message}`);
           continue;
         }
         throw err;
@@ -56,7 +57,7 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
         await unregisterRepo(entry.path);
         console.log(`Deleted: ${entry.name} (${entry.storagePath})`);
       } catch (err) {
-        console.error(`Failed to delete ${entry.name}:`, err);
+        logger.error({ err }, `Failed to delete ${entry.name}:`);
       }
     }
     return;
@@ -85,6 +86,6 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
     await unregisterRepo(repo.repoPath);
     console.log(`Deleted: ${repo.storagePath}`);
   } catch (err) {
-    console.error('Failed to delete:', err);
+    logger.error({ err }, 'Failed to delete:');
   }
 };
