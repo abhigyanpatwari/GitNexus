@@ -18,7 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
-import { createLbugDatabase } from './lbug-config.js';
+import { createLbugDatabase, isWalCorruptionError } from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -97,7 +97,7 @@ let idleTimer: ReturnType<typeof setInterval> | null = null;
 // @ladybugdb/core), corrupting stdout in the pre-sentinel window. Routing
 // through the leaf breaks that chain.
 export { realStdoutWrite, realStderrWrite, setActiveStdoutWrite } from '../../mcp/stdio-capture.js';
-import { getActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+import { getActiveStdoutWrite, realStderrWrite } from '../../mcp/stdio-capture.js';
 
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
@@ -263,6 +263,46 @@ const WAITER_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 
+async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
+  let db: lbug.Database | undefined;
+  silenceStdout();
+  try {
+    db = createLbugDatabase(lbug, dbPath, {
+      readOnly: true,
+      throwOnWalReplayFailure: false,
+    });
+    await db.init();
+    return db;
+  } catch (err) {
+    if (db) await db.close().catch(() => {});
+    throw err;
+  } finally {
+    restoreStdout();
+  }
+}
+
+/**
+ * Quarantine the .wal file and retry opening the database.
+ * Used when the initial open fails with a WAL corruption error.
+ */
+async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<lbug.Database> {
+  const walPath = dbPath + '.wal';
+  const quarantineName = `${walPath}.corrupt.${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await fs.rename(walPath, quarantineName);
+  } catch {
+    throw new Error(
+      `LadybugDB WAL corruption detected for ${repoId}. ` +
+        `Run \`gitnexus analyze\` to rebuild the index. (quarantine failed)`,
+    );
+  }
+  realStderrWrite(
+    `GitNexus: LadybugDB WAL quarantined for ${repoId}; graph may be stale. ` +
+      `Run \`gitnexus analyze\` to rebuild the index.\n`,
+  );
+  return await openReadOnlyDatabase(dbPath);
+}
+
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
 
@@ -319,16 +359,29 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // avoids lock conflicts when `gitnexus analyze` is writing.
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      silenceStdout();
       try {
-        const db = createLbugDatabase(lbug, dbPath, { readOnly: true });
-        restoreStdout();
+        const db = await openReadOnlyDatabase(dbPath);
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
-        restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (isWalCorruptionError(lastError)) {
+          try {
+            const db = await tryQuarantineAndReopen(dbPath, repoId);
+            shared = { db, refCount: 0, ftsLoaded: false };
+            dbCache.set(dbPath, shared);
+            break;
+          } catch (retryErr) {
+            throw new Error(
+              `LadybugDB WAL corruption detected for ${repoId}. ` +
+                `Run \`gitnexus analyze\` to rebuild the index. ` +
+                `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
+            );
+          }
+        }
+
         const isLockError =
           lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;

@@ -95,31 +95,33 @@ jobs:
 
           # Validate PR number is a positive integer (artifact comes from
           # untrusted fork code, so treat contents defensively).
-          PR_NUM=$(cat "$DIR/pr_number" | tr -d '[:space:]')
+          PR_NUM=$(tr -d '[:space:]' < "$DIR/pr_number")
           if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::error::Invalid PR number in artifact: '$PR_NUM'"
             exit 0
           fi
 
-          echo "skip=false"              >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUM"       >> "$GITHUB_OUTPUT"
           # Validate job-result strings against known GitHub Actions values.
           # Artifact contents come from the PR workflow (potentially untrusted
           # fork code), so we whitelist to prevent newline injection into
           # GITHUB_OUTPUT.
           validate_result() {
             local val
-            val=$(cat "$1" | tr -d '[:space:]')
+            val=$(tr -d '[:space:]' < "$1")
             case "$val" in
               success|failure|cancelled|skipped) echo "$val" ;;
               *) echo "unknown" ;;
             esac
           }
 
-          echo "quality=$(validate_result "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
-          echo "tests=$(validate_result "$DIR/tests_result")"            >> "$GITHUB_OUTPUT"
-          echo "e2e=$(validate_result "$DIR/e2e_result")"                >> "$GITHUB_OUTPUT"
+          {
+            echo "skip=false"
+            echo "pr_number=$PR_NUM"
+            echo "quality=$(validate_result "$DIR/quality_result")"
+            echo "tests=$(validate_result "$DIR/tests_result")"
+            echo "e2e=$(validate_result "$DIR/e2e_result")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout (for vitest config)
         if: steps.meta.outputs.skip != 'true'
@@ -279,14 +281,17 @@ jobs:
             fi
           }
 
-          read CLI_T CLI_P CLI_F CLI_S CLI_SU CLI_D <<< "$(sum_results "$RESULTS_FILE")"
-          read WEB_T WEB_P WEB_F WEB_S WEB_SU WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
+          # `_` placeholder for the suite-count column — positional
+          # readability for sum_results' 6-field output, but the value
+          # isn't surfaced in the report (suites are tracked per-test
+          # framework, not as a top-line metric).
+          read -r CLI_T CLI_P CLI_F CLI_S _ CLI_D <<< "$(sum_results "$RESULTS_FILE")"
+          read -r WEB_T WEB_P WEB_F WEB_S _ WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
 
           TOTAL=$((CLI_T + WEB_T))
           PASSED=$((CLI_P + WEB_P))
           FAILED=$((CLI_F + WEB_F))
           SKIPPED=$((CLI_S + WEB_S))
-          SUITES=$((CLI_SU + WEB_SU))
           DURATION=$((CLI_D > WEB_D ? CLI_D : WEB_D))
 
           # ── Status helpers ──

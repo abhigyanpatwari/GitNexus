@@ -143,6 +143,18 @@ export type { ScopeTree } from './scope-resolution/scope-tree.js';
 export { buildPositionIndex } from './scope-resolution/position-index.js';
 export type { PositionIndex } from './scope-resolution/position-index.js';
 
+// Understand-Quickly registry integration (opt-in)
+export {
+  UNDERSTAND_QUICKLY_DISPATCH_URL,
+  UNDERSTAND_QUICKLY_EVENT_TYPE,
+  UNDERSTAND_QUICKLY_TOKEN_ENV,
+  buildUqDispatchPayload,
+  isValidOwnerRepo,
+  parseOwnerRepoFromRemote,
+  stripGitSuffix,
+} from './integrations/understand-quickly.js';
+export type { UqDispatchPayload } from './integrations/understand-quickly.js';
+
 // Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
 export { diffResolutions } from './scope-resolution/shadow/diff.js';
 export type {

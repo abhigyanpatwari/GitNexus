@@ -42,20 +42,24 @@ describe('BM25 search', () => {
   });
 
   describe('searchFTSFromLbug', () => {
-    it('returns empty array when LadybugDB is not initialized', async () => {
-      // Without LadybugDB init, search should return empty (not crash)
-      const results = await searchFTSFromLbug('test query');
+    it('returns empty results when LadybugDB is not initialized', async () => {
+      // Simulate an uninitialized DB: queryFTS throws instead of returning rows
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockRejectedValue(new Error('DB not initialized'));
+
+      const { results, ftsAvailable } = await searchFTSFromLbug('test query');
       expect(Array.isArray(results)).toBe(true);
       expect(results).toHaveLength(0);
+      expect(ftsAvailable).toBe(false);
     });
 
     it('handles empty query', async () => {
-      const results = await searchFTSFromLbug('');
+      const { results } = await searchFTSFromLbug('');
       expect(Array.isArray(results)).toBe(true);
     });
 
     it('accepts custom limit parameter', async () => {
-      const results = await searchFTSFromLbug('test', 5);
+      const { results } = await searchFTSFromLbug('test', 5);
       expect(Array.isArray(results)).toBe(true);
     });
   });
@@ -105,7 +109,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const results = await searchFTSFromLbug('queryset');
+      const { results } = await searchFTSFromLbug('queryset');
 
       expect(results).toHaveLength(1);
       expect(results[0].filePath).toBe('src/views.py');
@@ -127,7 +131,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const results = await searchFTSFromLbug('model');
+      const { results } = await searchFTSFromLbug('model');
 
       expect(results).toHaveLength(1);
       expect(results[0].score).toBe(8); // 5+3
@@ -147,7 +151,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const results = await searchFTSFromLbug('util');
+      const { results } = await searchFTSFromLbug('util');
 
       expect(results).toHaveLength(1);
       expect(results[0].nodeIds).toEqual([]);
@@ -171,7 +175,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const results = await searchFTSFromLbug('auth');
+      const { results } = await searchFTSFromLbug('auth');
 
       expect(results).toHaveLength(1);
       // All 3 hits (scores 9+7+4=20) — each from a different table, all top-3
@@ -192,7 +196,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const results = await searchFTSFromLbug('fn');
+      const { results } = await searchFTSFromLbug('fn');
 
       expect(results[0].filePath).toBe('src/high.py');
       expect(results[1].filePath).toBe('src/low.py');
@@ -220,7 +224,7 @@ describe('BM25 search', () => {
         return [];
       });
 
-      const results = await searchFTSFromLbug('login', 5, REPO);
+      const { results } = await searchFTSFromLbug('login', 5, REPO);
 
       expect(results).toEqual([
         { filePath: 'src/auth.ts', score: 8, rank: 1, nodeIds: ['func:login'] },
