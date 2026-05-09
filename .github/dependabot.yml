@@ -15,6 +15,32 @@ updates:
       - dependencies
       - ci
 
+  # Keep pinned Docker base-image digests current for the root Dockerfiles.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
+  # Keep the nested test-image Docker base digest current as well.
+  - package-ecosystem: docker
+    directory: /gitnexus
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
   # Gitnexus npm deps — tree-sitter grammars checked daily so we catch
   # new releases that unblock the tree-sitter 0.25 upgrade ASAP. Grammars
   # are grouped so lockstep bumps produce a single PR. The tree-sitter
