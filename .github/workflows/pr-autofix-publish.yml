@@ -114,100 +114,11 @@ jobs:
             echo "changed_lines=${CHANGED}"
           } >> "$GITHUB_OUTPUT"
 
-      # Pinned to v1.5.0. Verify SHA via:
-      #   gh api repos/reviewdog/action-setup/git/refs/tags/v1.5.0
-      #   (annotated tag — resolve via .../git/tags/<sha> --jq .object)
-      - name: Install reviewdog
-        if: steps.meta.outputs.changed_lines != '0'
-        uses: reviewdog/action-setup@d8a7baabd7f3e8544ee4dbde3ee41d0011c3a93f # v1.5.0
-        with:
-          # Pin the binary, not just the action SHA — a bad reviewdog
-          # release otherwise breaks every PR with no rollback. Bump
-          # this knob deliberately when validating a new release.
-          reviewdog_version: v0.21.0
-
-      - name: Post inline suggestions
-        id: suggest
-        if: steps.meta.outputs.changed_lines != '0'
-        env:
-          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          CI_REPO_OWNER: ${{ github.repository_owner }}
-          CI_REPO_NAME: ${{ github.event.repository.name }}
-          CI_PULL_REQUEST: ${{ steps.meta.outputs.pr_number }}
-          CI_COMMIT: ${{ steps.meta.outputs.head_sha }}
-          PR: ${{ steps.meta.outputs.pr_number }}
-          # Pull `changed_lines` through env so bash gets a real
-          # variable (and shellcheck SC2170 doesn't fire on `-gt` against
-          # a `${{ }}`-interpolated literal).
-          CHANGED_LINES: ${{ steps.meta.outputs.changed_lines }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          patch=autofix-in/autofix.patch
-          if [ ! -s "$patch" ]; then
-            echo "Empty patch — nothing to suggest."
-            echo "posted=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # GitHub's review-comment API returns 406 on diffs above ~3k
-          # changed lines. Bail out gracefully and let the summary
-          # comment carry the signal instead.
-          if [ "$CHANGED_LINES" -gt 3000 ]; then
-            echo "Diff too large ($CHANGED_LINES lines) — skipping inline suggestions."
-            echo "posted=skipped-too-large" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Snapshot the count of bot-authored review comments BEFORE
-          # reviewdog. Reviewdog with `-filter-mode=added` silently posts
-          # nothing when the patch's lines don't overlap the PR's added
-          # range (typical case: formatter touched code that wasn't part
-          # of this PR). It exits 0 either way, so the only reliable
-          # signal is "did new review comments actually show up?".
-          before=$(gh api "repos/${GH_REPO}/pulls/${PR}/comments" \
-            --paginate --jq '[.[] | select(.user.login == "github-actions[bot]")] | length')
-
-          # `-f.diff.strip=1` matches `git diff` output (a/foo b/foo).
-          # `-filter-mode=added` only suggests on lines the PR added,
-          #   which avoids re-suggesting on already-resolved threads on
-          #   subsequent pushes.
-          reviewdog \
-            -f=diff -f.diff.strip=1 \
-            -name="prettier+eslint" \
-            -reporter=github-pr-review \
-            -filter-mode=added \
-            -level=warning \
-            -fail-on-error=false < "$patch"
-
-          # Verify reviewdog actually posted suggestions. Without this
-          # check, a "0 review comments" run still emits a sticky claiming
-          # "Click Apply suggestion" — confusing because there's nothing
-          # to click.
-          after=$(gh api "repos/${GH_REPO}/pulls/${PR}/comments" \
-            --paginate --jq '[.[] | select(.user.login == "github-actions[bot]")] | length')
-          delta=$((after - before))
-          echo "Bot review comments: before=$before after=$after delta=$delta"
-
-          if [ "$delta" -gt 0 ]; then
-            echo "posted=true" >> "$GITHUB_OUTPUT"
-          else
-            # Patch had fixes but reviewdog couldn't surface them as
-            # suggestions — almost always because the formatter touched
-            # lines outside the PR's added range, which `-filter-mode=added`
-            # correctly filters out. Sticky tells the user to apply locally.
-            echo "posted=no-overlap" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Upsert sticky summary comment
         # Only post when ci-quality found something fixable (= the
         # autofix patch is non-empty). When prettier/eslint are clean
         # the patch is zero bytes and the sticky comment is pure noise,
-        # so we skip it. When the diff was too large for inline
-        # suggestions, the sticky is the only signal the contributor
-        # gets, so we still post in that case.
+        # so we skip it.
         if: >-
           always()
           && steps.meta.outputs.pr_number != ''
@@ -218,8 +129,6 @@ jobs:
           PR: ${{ steps.meta.outputs.pr_number }}
           CHANGED: ${{ steps.meta.outputs.changed_lines }}
           HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
-          SCHEMA: ${{ steps.meta.outputs.schema }}
-          POSTED: ${{ steps.suggest.outputs.posted }}
           RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
@@ -229,33 +138,25 @@ jobs:
           marker="<!-- gitnexus:pr-autofix-summary -->"
           heading="## :sparkles: PR Autofix"
 
-          if [ "${POSTED}" = "skipped-too-large" ]; then
-            ui_state="skipped-too-large"
-            prose="Diff is **${CHANGED}** lines — too large for inline suggestions (GitHub caps the review-comment API at ~3000). Run locally: \`npm run lint:fix && npm run format\`."
-          elif [ "${POSTED}" = "no-overlap" ]; then
-            # Reviewdog ran but couldn't post any inline suggestions —
-            # the formatter touched lines outside this PR's added range,
-            # which \`-filter-mode=added\` correctly filters out. There's
-            # nothing for **Apply suggestion** to click; the user has to
-            # apply locally.
-            ui_state="diff-no-overlap"
-            prose="Formatter found fixable issues, but they're on lines outside this PR's added range — there's nothing to click here. Run locally: \`npm run lint:fix && npm run format\`."
-          else
-            ui_state="suggestions-posted"
-            prose="Posted formatting / unused-import suggestions inline. Click **Apply suggestion** on each, or run locally: \`npm run lint:fix && npm run format\`."
-          fi
+          # Single state. The /autofix slash command works for any diff
+          # size — there's no 3K cap and no no-overlap dead-end because
+          # the apply workflow uses `git apply` + push, not the GitHub
+          # review-comment API.
+          ui_state="fixes-available"
+          prose="Found fixable formatting / unused-import issues across **${CHANGED}** changed lines. **Comment \`/autofix\` on this PR to apply them**, or run \`npm run lint:fix && npm run format\` locally."
 
           # Machine-readable JSON block — agents parse this instead of
           # regexing English. Fenced code-block info string is
           # `gitnexus-autofix` so agents can locate it without ambiguity.
+          # Schema bumped from v1 -> v2: adds `apply_command`. All v1
+          # fields preserved exactly for backward compatibility.
           json=$(jq -n -c \
-            --arg schema       "${SCHEMA}" \
             --arg state        "${ui_state}" \
             --argjson pr_number "${PR}" \
             --argjson changed_lines "${CHANGED}" \
             --arg head_sha     "${HEAD_SHA}" \
             --arg run_id       "${RUN_ID}" \
-            '{schema:$schema, state:$state, pr_number:$pr_number, changed_lines:$changed_lines, head_sha:$head_sha, run_id:$run_id}')
+            '{schema:"gitnexus.pr-autofix/v2", state:$state, pr_number:$pr_number, changed_lines:$changed_lines, head_sha:$head_sha, run_id:$run_id, apply_command:"/autofix"}')
 
           # Multi-line quoted string instead of a column-0 heredoc — YAML's
           # `run: |` block ends as soon as a content line dedents below the
@@ -309,10 +210,9 @@ jobs:
       - name: Emit gitnexus/autofix Check Run
         # Stable check name `gitnexus/autofix` so PR-watching agents can
         # `gh pr checks <pr>` and read the conclusion + title without
-        # parsing the sticky comment. Three outcomes:
-        #   clean              → conclusion: success
-        #   suggestions-posted → conclusion: neutral (review suggestions)
-        #   skipped-too-large  → conclusion: neutral (diff > 3000 lines)
+        # parsing the sticky comment. Two outcomes:
+        #   clean            → conclusion: success
+        #   fixes-available  → conclusion: neutral
         # `neutral` does not block branch-protection required-checks but
         # is visually distinct from a green pass.
         if: always() && steps.meta.outputs.head_sha != ''
@@ -321,7 +221,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
           CHANGED: ${{ steps.meta.outputs.changed_lines }}
-          POSTED: ${{ steps.suggest.outputs.posted }}
         shell: bash
         run: |
           set -euo pipefail
@@ -330,18 +229,10 @@ jobs:
             conclusion="success"
             title="Formatting clean"
             summary="Prettier and ESLint --fix produced no changes."
-          elif [ "${POSTED}" = "skipped-too-large" ]; then
-            conclusion="neutral"
-            title="Diff too large for inline suggestions (${CHANGED} lines)"
-            summary="GitHub caps the review-comment API at ~3000 lines. Run \`npm run lint:fix && npm run format\` locally."
-          elif [ "${POSTED}" = "no-overlap" ]; then
-            conclusion="neutral"
-            title="Formatter changes don't overlap PR's added range"
-            summary="Reviewdog couldn't post inline suggestions because the formatter touched lines outside this PR's added range. Run \`npm run lint:fix && npm run format\` locally."
           else
             conclusion="neutral"
-            title="Suggestions posted"
-            summary="Inline review-comment suggestions posted. Click **Apply suggestion** on each, or run \`npm run lint:fix && npm run format\` locally."
+            title="Autofix available — comment /autofix to apply"
+            summary="Comment \`/autofix\` on this PR to apply formatter + unused-import fixes (works at any diff size). Or run \`npm run lint:fix && npm run format\` locally."
           fi
 
           gh api -X POST "repos/${GH_REPO}/check-runs" \
