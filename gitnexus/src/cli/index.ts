@@ -160,6 +160,18 @@ program
   .description('Augment a search pattern with knowledge graph context (used by hooks)')
   .action(createLazyAction(() => import('./augment.js'), 'augmentCommand'));
 
+program
+  .command('publish [path]')
+  .description(
+    'Notify the understand-quickly registry that this repo has a fresh GitNexus index. ' +
+      'Opt-in: requires UNDERSTAND_QUICKLY_TOKEN (fine-grained PAT with ' +
+      '`Repository dispatches: write` on looptech-ai/understand-quickly). ' +
+      'No-op without the token. See https://github.com/looptech-ai/understand-quickly.',
+  )
+  .option('--id <owner/repo>', 'Override the registry id (defaults to the origin remote)')
+  .option('--skip-git', 'Treat cwd as the repo root and skip parent git-root discovery')
+  .action(createLazyAction(() => import('./publish.js'), 'publishCommand'));
+
 // ─── Direct Tool Commands (no MCP overhead) ────────────────────────
 // These invoke LocalBackend directly for use in eval, scripts, and CI.
 
