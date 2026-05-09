@@ -135,6 +135,10 @@ jobs:
           CI_REPO_NAME: ${{ github.event.repository.name }}
           CI_PULL_REQUEST: ${{ steps.meta.outputs.pr_number }}
           CI_COMMIT: ${{ steps.meta.outputs.head_sha }}
+          # Pull `changed_lines` through env so bash gets a real
+          # variable (and shellcheck SC2170 doesn't fire on `-gt` against
+          # a `${{ }}`-interpolated literal).
+          CHANGED_LINES: ${{ steps.meta.outputs.changed_lines }}
         shell: bash
         run: |
           set -euo pipefail
@@ -148,8 +152,8 @@ jobs:
           # GitHub's review-comment API returns 406 on diffs above ~3k
           # changed lines. Bail out gracefully and let the summary
           # comment carry the signal instead.
-          if [ "${{ steps.meta.outputs.changed_lines }}" -gt 3000 ]; then
-            echo "Diff too large (${{ steps.meta.outputs.changed_lines }} lines) — skipping inline suggestions."
+          if [ "$CHANGED_LINES" -gt 3000 ]; then
+            echo "Diff too large ($CHANGED_LINES lines) — skipping inline suggestions."
             echo "posted=skipped-too-large" >> "$GITHUB_OUTPUT"
             exit 0
           fi
