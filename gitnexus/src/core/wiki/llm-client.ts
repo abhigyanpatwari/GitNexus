@@ -78,6 +78,49 @@ export function estimateTokens(text: string): number {
 }
 
 /**
+ * Validate that a base URL supplied for LLM API calls is a safe HTTP/HTTPS
+ * endpoint (CWE-918 / CodeQL js/http-to-file-access).
+ *
+ * Allowed:
+ *  - https:// with any hostname (public LLM APIs, Azure, OpenRouter, …)
+ *  - http:// restricted to localhost / 127.0.0.1 (local servers: Ollama, LiteLLM, …)
+ *
+ * Rejected:
+ *  - file://, data:, javascript:, and any other non-HTTP scheme
+ *  - http:// aimed at non-loopback hosts (avoids SSRF against internal networks)
+ *
+ * Throws with a descriptive message on validation failure so callers surface a
+ * clear error rather than an opaque network error.
+ */
+export function validateLLMBaseUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    // Do not include the raw input in the message — it may contain credentials.
+    throw new Error('Invalid LLM base URL: must be a well-formed http:// or https:// URL');
+  }
+
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
+    throw new Error(`LLM base URL must use http:// or https:// (got ${parsed.protocol})`);
+  }
+
+  if (parsed.protocol === 'http:') {
+    // Node's URL parser preserves IPv6 brackets in hostname (e.g. "[::1]"),
+    // so strip them before comparing to bare address literals.
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+      // Use parsed.origin (scheme+host+port, no credentials) instead of the full URL.
+      throw new Error(
+        `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +
+          `Use https:// for remote endpoints (got ${parsed.origin})`,
+      );
+    }
+  }
+}
+
+/**
  * Returns true if the given base URL is an Azure OpenAI endpoint.
  * Uses proper hostname matching to avoid spoofed URLs like
  * "https://myresource.openai.azure.com.evil.com/v1".
@@ -128,6 +171,9 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
+  // Validate base URL before any fetch (CodeQL js/http-to-file-access)
+  validateLLMBaseUrl(config.baseUrl);
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
