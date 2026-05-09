@@ -116,6 +116,28 @@ interface LanguageProviderConfig {
    *  Required for tree-sitter languages; empty string for standalone processors. */
   readonly treeSitterQueries: string;
 
+  /**
+   * Optional source-text transform that runs **before** tree-sitter parses the file.
+   *
+   * Used to elide language constructs that confuse the grammar without affecting
+   * source-position fidelity — e.g., Unreal Engine reflection macros (`UCLASS`,
+   * `UFUNCTION`, `MODULENAME_API`) in C++ headers that prevent the parser from
+   * recognising class/function names correctly.
+   *
+   * **Length-preserving requirement:** the returned string MUST have the same
+   * byte length as the input. Implementations should replace removed text with
+   * spaces, preserving newlines, so tree-sitter's reported byte offsets and
+   * line/column positions still match the original file. Violating this will
+   * silently corrupt symbol locations in the graph.
+   *
+   * Must be a pure function — same input always yields the same output. Called
+   * once per file, on every code path that re-parses (parsing-processor, import
+   * processor, heritage processor, call processor, parse worker).
+   *
+   * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
+   */
+  readonly preprocessSource?: (sourceText: string, filePath: string) => string;
+
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */
   readonly typeConfig: LanguageTypeConfig;
