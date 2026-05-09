@@ -6,7 +6,9 @@ name: PR Autofix
 # (including fork heads) and uploads the resulting diff as an artifact.
 # This job has NO privileged token and CANNOT post to the PR. The trusted
 # `pr-autofix-publish.yml` workflow downloads the artifact via
-# `workflow_run` and posts the inline review-comment suggestions.
+# `workflow_run` and posts a sticky summary comment + Check Run.
+# Contributors apply the patch by commenting `/autofix` on the PR —
+# handled by the separate `pr-autofix-apply.yml` ChatOps workflow.
 #
 # Why the split:
 #   ESLint loads plugins from fork-controlled `node_modules`, so running
@@ -14,8 +16,8 @@ name: PR Autofix
 #   ship a poisoned eslint plugin and execute arbitrary code under that
 #   token. By keeping fork code execution in this job (token: read-only)
 #   and posting from a separate trusted job that never touches fork
-#   code, we get the inline-suggestion UX for fork PRs without the
-#   supply-chain hole. (See autofix.ci for the same pattern.)
+#   code, we get the autofix UX for fork PRs without the supply-chain
+#   hole. (See autofix.ci for the same pattern.)
 #
 # Removes unused imports via `eslint-plugin-unused-imports`, already in
 # devDependencies and wired into the `lint` config.
@@ -105,11 +107,9 @@ jobs:
           git diff --no-color > autofix-out/autofix.patch
 
           # NOTE: `changed_lines` is the line-count of the patch file,
-          # which includes hunk headers and context lines — NOT the
-          # added/removed source-line count. The 3000-line cap in
-          # pr-autofix-publish.yml is therefore conservative (fires
-          # before reviewdog hits GitHub's ~3k review-comment API
-          # ceiling). That bias is intentional.
+          # (hunk headers + context lines + added/removed). Surfaced in
+          # the sticky comment so contributors and AI agents have a
+          # quick size hint before invoking `/autofix`.
           changed_lines=$(wc -l < autofix-out/autofix.patch | tr -d ' ')
           echo "changed_lines=${changed_lines}" >> "$GITHUB_OUTPUT"
 

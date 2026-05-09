@@ -3,20 +3,19 @@ name: PR Autofix (publish)
 # TRUSTED HALF of the autofix pipeline.
 #
 # Triggered by `pr-autofix.yml` completing on a PR (including fork PRs).
-# Downloads the diff artifact produced by the untrusted job and posts
-# inline review-comment suggestions to the PR using `reviewdog`. This
-# job NEVER checks out fork code — it only consumes the diff (data) and
-# calls the GitHub API. That isolation is what makes it safe to run
-# under `pull-requests: write` on fork-triggered events.
+# Downloads the diff artifact produced by the untrusted job, verifies
+# its claimed PR identity against the workflow_run authority, then
+# posts (or edits) a single sticky summary comment plus a
+# `gitnexus/autofix` Check Run. This job NEVER checks out fork code —
+# it only consumes the diff (data) and calls the GitHub API. That
+# isolation is what makes it safe to run under `pull-requests: write`
+# on fork-triggered events.
 #
-# Also posts (or edits) a single sticky summary comment so contributors
-# and AI agents have one stable, machine-readable signal that says
-# whether autofix had anything to suggest. Look for the heading
-# "## :sparkles: PR Autofix" in the PR's top-level comments.
-#
-# Reviewdog reporter: `github-pr-review` reads $REVIEWDOG_GITHUB_API_TOKEN
-# and posts via the GraphQL/REST PR-review API. It does not need a
-# checkout because the diff itself encodes file paths + line numbers.
+# The sticky comment is the contributor signal: heading
+# "## :sparkles: PR Autofix" in the PR's top-level comments, with a
+# fenced `gitnexus-autofix` JSON block carrying machine-readable state
+# for AI agents. Contributors apply the patch by commenting `/autofix`
+# on the PR — handled by the separate `pr-autofix-apply.yml` workflow.
 
 on:
   workflow_run:
@@ -49,9 +48,9 @@ jobs:
       # by a different workflow run.
       actions: read
       # Required to create the `gitnexus/autofix` Check Run that reports
-      # the outcome (clean / suggestions-posted / skipped-too-large) to
-      # the PR's Checks tab. Branch protection or agents can grep the
-      # conclusion + output title without parsing the sticky comment.
+      # the outcome (clean / fixes-available) to the PR's Checks tab.
+      # Branch protection or agents can grep the conclusion + output
+      # title without parsing the sticky comment.
       checks: write
     steps:
       # Pinned to v8.0.1. Verify SHA via:

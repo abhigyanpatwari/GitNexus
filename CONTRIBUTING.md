@@ -136,6 +136,8 @@ For fork PRs, the push succeeds only when the contributor has **Allow edits by m
 
 Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow detects the already-applied state via `git apply --check --reverse` and reacts ✅ without pushing.
 
+**Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
+
 ## AI-assisted contributions
 
 If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUDE.md`) and avoid drive-by refactors unrelated to the issue. Prefer incremental, test-backed changes.

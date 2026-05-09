@@ -383,6 +383,25 @@ jobs:
             exit 0
           fi
 
+          # Sensitive-paths guard: refuse to apply patches that touch
+          # `.github/` — workflow files, action definitions, CODEOWNERS,
+          # dependabot config, etc. A malicious PR could ship a custom
+          # prettier/ESLint config that reformats workflow YAML; the
+          # producer would then capture those edits in autofix.patch,
+          # and a maintainer running `/autofix` would push them under
+          # `contents: write`. The default GITHUB_TOKEN lacks `workflows`
+          # scope so the platform would reject workflow-file pushes
+          # anyway, but that surfaces as a generic `push-failed` and
+          # misleads users into enabling maintainer-edit. Reject early
+          # with a specific reason. CODEOWNERS and dependabot.yml live
+          # under .github/ but outside .github/workflows/ — the broader
+          # match is intentional (they all govern trust boundaries).
+          if grep -qE '^(diff --git|---|\+\+\+) [ab]?/?\.github/' "$patch"; then
+            echo "::warning::Patch touches .github/ — refusing to apply (sensitive paths)."
+            echo "result=sensitive-paths" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Re-entrancy guard: if HEAD itself is an autofix bot commit,
           # refuse to apply again. Without this, lint/formatter config
           # drift between runs could pump arbitrary apply commits into
@@ -522,6 +541,14 @@ jobs:
                 -f content="confused" >/dev/null
               gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
                 -f body="🔁 Refusing to re-apply autofix on top of an existing autofix commit. If formatter rules drifted and you genuinely need another pass, push a human-authored commit (or revert the existing autofix commit) before commenting \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              exit 1
+              ;;
+            sensitive-paths)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="-1" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="🛑 Refusing to apply: the autofix patch touches files under \`.github/\` (workflow / CODEOWNERS / dependabot config). Apply formatter changes to those files manually in a regular commit so they get human review. ([apply run](${run_url}))" \
                 >/dev/null
               exit 1
               ;;
