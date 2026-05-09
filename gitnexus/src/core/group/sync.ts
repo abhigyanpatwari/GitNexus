@@ -8,12 +8,14 @@ import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
+import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
+import { writeBridge } from './bridge-db.js';
 import type { ContractRegistry } from './types.js';
 
 import { logger } from '../logger.js';
@@ -100,6 +102,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const grpcEx = new GrpcExtractor();
     const thriftEx = new ThriftExtractor();
     const topicEx = new TopicExtractor();
+    const includeEx = new IncludeExtractor();
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
 
@@ -159,6 +162,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.topics) {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              autoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.includes) {
+            const extracted = await includeEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               autoContracts.push({
                 ...c,
@@ -270,6 +284,28 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
   if (opts?.groupDir && !opts.skipWrite) {
     await writeContractRegistry(opts.groupDir, registry);
+    // writeBridge failure (disk full, schema error, permission denied) must
+    // not mask the registry — contracts.json was just written successfully
+    // and is the canonical source of truth. A stale or absent bridge
+    // degrades impact queries to empty results, which is recoverable on
+    // the next sync. Surface the failure as a warning so operators can
+    // act, but do not propagate it.
+    // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
+    // uncaught.)
+    try {
+      await writeBridge(opts.groupDir, {
+        contracts: allContracts,
+        crossLinks,
+        repoSnapshots,
+        missingRepos,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        { err: msg, groupDir: opts.groupDir },
+        '⚠️ writeBridge failed; contracts.json is intact but bridge.lbug is stale. Re-run `gitnexus group sync` to retry.',
+      );
+    }
   }
 
   return {
