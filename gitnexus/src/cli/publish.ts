@@ -134,7 +134,14 @@ export const publishCommand = async (
       signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
     });
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
+    // `AbortSignal.timeout()` throws a `DOMException` with `name ===
+    // 'TimeoutError'` on Node 18.14+ (and on browsers/Bun). It is NOT
+    // a plain `AbortError`. Match the pattern used in
+    // gitnexus/src/core/embeddings/http-client.ts so the user sees the
+    // targeted "timed out" message instead of a generic "operation
+    // was aborted".
+    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+    if (isTimeout) {
       cliError(
         `[understand-quickly] dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms. ` +
           `Check network access to api.github.com and retry.`,

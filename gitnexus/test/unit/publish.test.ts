@@ -26,7 +26,7 @@ describe('understand-quickly helpers (gitnexus-shared)', () => {
       // LOW 8 additions:
       ['some_org/repo', false], // underscore in owner — invalid
       ['-org/repo', false], // leading hyphen — invalid
-      ['org-/repo', true], // trailing hyphen — GitHub actually allows this
+      ['org-/repo', false], // trailing hyphen — GitHub rejects at account creation; we mirror that here
       ['org/repo_with_underscore', true],
       ['org/.dotfile', true], // repos may start with dot
     ])('returns %s for %j', (id, expected) => {
@@ -280,9 +280,13 @@ describe('publishCommand response branches (MEDIUM 5)', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('AbortError (HIGH 4 — fetch timeout) → exit 1 with timed-out message', async () => {
-    const abort = new Error('aborted');
-    abort.name = 'AbortError';
+  it('TimeoutError (HIGH 4 — fetch timeout) → exit 1 with timed-out message', async () => {
+    // `AbortSignal.timeout()` throws a real `DOMException` with
+    // `name === 'TimeoutError'`. Faking it as `Error{name:'AbortError'}`
+    // (the previous shape of this test) hid a mismatch in publish.ts —
+    // the catch branch only matched 'AbortError' and the user-facing
+    // "timed out" message never fired in production.
+    const abort = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
     fetchSpy.mockRejectedValueOnce(abort);
     const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const { publishCommand } = await import('../../src/cli/publish.js');

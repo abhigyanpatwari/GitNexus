@@ -65,13 +65,15 @@ export function buildUqDispatchPayload(id: string): UqDispatchPayload {
  * naming rules are looser, but we want to catch local paths
  * (`/Users/...`), bare slugs (`my-repo`), and accidental whitespace.
  *
- * Tightened (LOW 8) to match GitHub's published slug rules:
- *   owner: starts with alnum, then alnum/hyphen only — no underscore,
- *          no dot. Length cap 39.
+ * Matches GitHub's published slug rules:
+ *   owner: starts with alnum, then alnum/hyphen only, must end with
+ *          alnum (no trailing hyphen — GitHub rejects this at account
+ *          creation, so a `my-org-/repo` input would otherwise pass us
+ *          and 422 from GitHub). No underscore, no dot. Length cap 39.
  *   repo:  any of alnum/dot/hyphen/underscore. Length cap 100.
  */
 export function isValidOwnerRepo(id: string): boolean {
-  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/.test(id);
+  return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(id);
 }
 
 /**
