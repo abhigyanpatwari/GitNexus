@@ -42,6 +42,39 @@ const FUNCTION_NODE_TYPES = [
   'local_function_statement',
 ] as const;
 
+const BUILTIN_TYPE_NAMES = new Set([
+  'bool',
+  'byte',
+  'char',
+  'decimal',
+  'double',
+  'float',
+  'int',
+  'long',
+  'object',
+  'sbyte',
+  'short',
+  'string',
+  'uint',
+  'ulong',
+  'ushort',
+  'void',
+]);
+
+function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
+  const parent = memberNode.parent;
+  if (parent === null) return true;
+
+  switch (parent.type) {
+    case 'invocation_expression':
+      return parent.childForFieldName('function')?.id !== memberNode.id;
+    case 'assignment_expression':
+      return parent.childForFieldName('left')?.id !== memberNode.id;
+    default:
+      return true;
+  }
+}
+
 export function emitCsharpScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -92,6 +125,14 @@ export function emitCsharpScopeCaptures(
       // least sees an anchor, even without markers.
       out.push(grouped);
       continue;
+    }
+
+    if (grouped['@reference.read.member'] !== undefined) {
+      const anchor = grouped['@reference.read.member'];
+      const memberNode = findNodeAtRange(tree.rootNode, anchor.range, 'member_access_expression');
+      if (memberNode === null || !shouldEmitReadMember(memberNode)) {
+        continue;
+      }
     }
 
     // Synthesize `this` / `base` receiver type-bindings on every
@@ -209,7 +250,61 @@ export function emitCsharpScopeCaptures(
     }
   }
 
+  out.push(...synthesizeGenericTypeArgumentReferences(tree.rootNode));
+
   return out;
+}
+
+function synthesizeGenericTypeArgumentReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  // Treat all generic type arguments as static type references, including
+  // declaration signatures and call-site generic instantiations.
+  visit(root, (node) => {
+    if (node.type !== 'generic_name') return;
+    const args = findNamedChild(node, 'type_argument_list');
+    if (args === null) return;
+
+    for (const arg of args.namedChildren) {
+      if (arg === null) continue;
+      const nameNode = terminalTypeNameNode(arg);
+      if (nameNode === null) continue;
+      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      out.push({
+        '@reference.type': nodeToCapture('@reference.type', nameNode),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
+  return out;
+}
+
+function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'identifier':
+      return node;
+    case 'nullable_type':
+      return node.firstNamedChild === null ? null : terminalTypeNameNode(node.firstNamedChild);
+    case 'qualified_name':
+      return node.lastNamedChild;
+    case 'generic_name':
+      return node.childForFieldName('name') ?? node.firstNamedChild;
+    default:
+      return null;
+  }
+}
+
+function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (const child of node.namedChildren) {
+    if (child !== null && child.type === type) return child;
+  }
+  return null;
+}
+
+function visit(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  cb(node);
+  for (const child of node.namedChildren) {
+    if (child !== null) visit(child, cb);
+  }
 }
 
 /** C# 12 primary constructor: `class X(a, b) { }` / `record X(a, b)`.

@@ -32,7 +32,7 @@ vi.mock('../../../src/storage/repo-manager.js', () => ({
 }));
 
 vi.mock('../../../src/core/search/bm25-index.js', () => ({
-  searchFTSFromLbug: vi.fn().mockResolvedValue([]),
+  searchFTSFromLbug: vi.fn().mockResolvedValue({ results: [], ftsAvailable: true }),
 }));
 
 vi.mock('../../../src/mcp/core/embedder.js', () => ({

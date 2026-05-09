@@ -10,6 +10,9 @@ vi.mock('../../src/cli/mcp.js', () => ({
 vi.mock('../../src/cli/setup.js', () => ({
   setupCommand: vi.fn(),
 }));
+vi.mock('../../src/cli/publish.js', () => ({
+  publishCommand: vi.fn(),
+}));
 
 describe('CLI commands', () => {
   describe('version', () => {
@@ -82,6 +85,13 @@ describe('CLI commands', () => {
     it('is a function', async () => {
       const { setupCommand } = await import('../../src/cli/setup.js');
       expect(typeof setupCommand).toBe('function');
+    });
+  });
+
+  describe('publishCommand', () => {
+    it('is a function', async () => {
+      const { publishCommand } = await import('../../src/cli/publish.js');
+      expect(typeof publishCommand).toBe('function');
     });
   });
 });

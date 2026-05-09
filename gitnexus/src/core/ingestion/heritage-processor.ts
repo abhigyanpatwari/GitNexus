@@ -219,9 +219,13 @@ export const processHeritage = async (
     let tree = astCache.get(file.path);
     if (!tree) {
       // Use larger bufferSize for files > 32KB
+      // Per-language source preprocessor (length-preserving, e.g. UE macro
+      // stripping for C++). MUST mirror parsing-processor on cache miss so
+      // re-parses see the same input as the cached AST.
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parser.parse(parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
         // Skip files that can't be parsed
@@ -413,9 +417,10 @@ export async function extractExtractedHeritageFromFiles(
 
     let tree = astCache.get(file.path);
     if (!tree) {
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parser.parse(parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch {
         continue;

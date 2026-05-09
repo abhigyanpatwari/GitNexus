@@ -25,6 +25,8 @@ const DEFAULT_IGNORE_LIST = new Set([
   'bower_components',
   'jspm_packages',
   'vendor', // PHP/Go
+  'third_party', // C/C++ (Google-style vendored dependencies)
+  '3rdparty', // C/C++ (alternate spelling, also Qt convention)
   // 'packages' removed - commonly used for monorepo source code (lerna, pnpm, yarn workspaces)
   'venv',
   '.venv',

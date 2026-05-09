@@ -43,45 +43,65 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     expect(bridgeSource).toMatch(/import\s*\{[^}]*randomBytes[^}]*\}\s*from\s*'node:crypto'/);
   });
 
-  it('bridge-db.ts uses randomBytes for bridge.lbug temp path', () => {
-    expect(bridgeSource).toMatch(/bridge\.lbug\.tmp\.\$\{randomBytes/);
+  it('bridge-db.ts uses mkdtemp staging directory for bridge.lbug', () => {
+    // Follow-up to the original randomBytes pattern: stage inside a
+    // mkdtemp-created directory so the suffix is OS-supplied, the
+    // directory contents are empty by construction, and concurrent
+    // writers cannot collide. The bridge.lbug filename inside that
+    // directory is fixed; uniqueness comes from the directory name.
+    expect(bridgeSource).toMatch(/fsp\.mkdtemp\(path\.join\(groupDir,\s*['"]bridge-tmp-['"]\)\)/);
+    expect(bridgeSource).toMatch(/path\.join\(stagingDir,\s*['"]bridge\.lbug['"]\)/);
   });
 
   it('bridge-db.ts uses randomBytes for meta.json temp path', () => {
     expect(bridgeSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
   });
 
-  it('bridge-db.ts does not use Date.now() in any temp path', () => {
-    // Match Date.now() specifically in tmp-path contexts — not in unrelated code.
-    const tmpDateNow = bridgeSource.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
+  it('bridge-db.ts opens meta.json tmp file via fsp.open(..., "wx", 0o600)', () => {
+    // O_EXCL via `'wx'` flag closes the symlink-race; explicit `0o600`
+    // mode closes the permissions exposure CodeQL's
+    // `isSecureMode` predicate inspects (low 6 bits must be zero).
+    // Both arguments are required to fully clear the
+    // `js/insecure-temporary-file` alert — flags alone are ignored by
+    // the analyzer, mode alone leaves the symlink window open.
+    expect(bridgeSource).toMatch(/fsp\.open\(tmp,\s*['"]wx['"],\s*0o600\)/);
+  });
+
+  it('bridge-db.ts does not use Date.now() in any active temp path', () => {
+    // Strip block AND line comments first so the historical
+    // "prior `${target}.tmp.${Date.now()}` shape." explanation does not
+    // register as an active call site. Block strip runs first so a future
+    // multi-line `/* ...Date.now()... */` doc comment is also handled.
+    const codeOnly = bridgeSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });
 
-  it('bridge-db.ts uses readdir-based cleanup for stale bridge tmp files', () => {
-    expect(bridgeSource).toMatch(/cleanStaleBridgeTmpFiles/);
-    expect(bridgeSource).toMatch(/readdir\(groupDir\)/);
-    expect(bridgeSource).toMatch(/startsWith\('bridge\.lbug\.tmp\.'\)/);
-  });
-
-  it('bridge-db.ts calls cleanStaleBridgeTmpFiles before openBridgeDb in writeBridge', () => {
-    // Ensure cleanup happens before the DB is opened with the new random path.
-    const cleanIdx = bridgeSource.indexOf('cleanStaleBridgeTmpFiles(groupDir)');
-    const openIdx = bridgeSource.indexOf('openBridgeDb(tmpPath)');
-    expect(cleanIdx).toBeGreaterThan(-1);
-    expect(openIdx).toBeGreaterThan(-1);
-    expect(cleanIdx).toBeLessThan(openIdx);
+  it('bridge-db.ts removes the mkdtemp staging directory in finally', () => {
+    // Whether writeBridge succeeds or throws, the random staging dir
+    // must be cleaned up — otherwise the group dir accumulates
+    // bridge-tmp-* directories. The removal is idempotent (force: true).
+    expect(bridgeSource).toMatch(
+      /fsp\.rm\(stagingDir,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/,
+    );
   });
 
   it('storage.ts imports randomBytes from node:crypto', () => {
     expect(storageSource).toMatch(/import\s*\{[^}]*randomBytes[^}]*\}\s*from\s*'node:crypto'/);
   });
 
-  it('storage.ts uses randomBytes for contracts.json temp path', () => {
-    expect(storageSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
+  it('storage.ts uses tmpSuffix() helper backed by randomBytes', () => {
+    // The helper is a thin wrapper that DRYs the randomBytes call across
+    // multiple temp-path sites in this module. Its definition must use
+    // randomBytes, and the temp path must call it.
+    expect(storageSource).toMatch(/const\s+tmpSuffix\s*=.*randomBytes\(8\)\.toString\('hex'\)/);
+    expect(storageSource).toMatch(/\.tmp\.\$\{tmpSuffix\(\)\}/);
   });
 
-  it('storage.ts does not use Date.now() in any temp path', () => {
-    const tmpDateNow = storageSource.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
+  it('storage.ts does not use Date.now() in any active temp path', () => {
+    // Same comment-strip trick as bridge-db.ts above (block + line).
+    const codeOnly = storageSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
     expect(tmpDateNow.length).toBe(0);
   });
 });

@@ -19,7 +19,10 @@ import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
   closeLbugConnection,
+  isDbBusyError,
+  isOpenRetryExhausted,
   openLbugConnection,
+  waitForWindowsHandleRelease,
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
@@ -186,21 +189,6 @@ const DB_LOCK_RETRY_ATTEMPTS = 3;
 const DB_LOCK_RETRY_DELAY_MS = 500;
 
 /**
- * Return true when the error message indicates that another process holds
- * an exclusive lock on the LadybugDB file (e.g. `gitnexus analyze` or
- * `gitnexus serve` running at the same time).
- */
-export const isDbBusyError = (err: unknown): boolean => {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes('busy') ||
-    msg.includes('lock') ||
-    msg.includes('already in use') ||
-    msg.includes('could not set lock')
-  );
-};
-
-/**
  * Return true when the error message indicates a write was attempted against
  * a read-only LadybugDB connection. The MCP query pool opens DBs read-only,
  * so any path that calls a `CREATE_*` procedure there will surface this
@@ -252,7 +240,11 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
       });
     } catch (err) {
       lastError = err;
-      if (!isDbBusyError(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
+      // Skip outer retry when the inner open-retry already exhausted: the
+      // ~1.5s open-time budget was just spent, repeating the full reset+
+      // reopen cycle would only add 4-5s of tail latency without changing
+      // the outcome (both layers consult the same isDbBusyError matcher).
+      if (!isDbBusyError(err) || isOpenRetryExhausted(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
         throw err;
       }
       // Close stale connection inside the session lock to prevent race conditions
@@ -330,7 +322,16 @@ const doInitLbug = async (dbPath: string) => {
       await conn.query(schemaQuery);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('already exists')) {
+      // Suppression list:
+      //   - "already exists": expected idempotent re-create on existing DBs
+      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
+      //     Windows when CREATE NODE TABLE runs against a path that was
+      //     just opened (the WAL handle from a fresh Database briefly
+      //     contests the table's first-write lock). The table is created
+      //     anyway and any genuine cross-process lock contention surfaces
+      //     on the next operation via withLbugDb's retry. Logging it here
+      //     would just be noise in CI.
+      if (!msg.includes('already exists') && !isDbBusyError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
     }
@@ -607,6 +608,9 @@ const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Property') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -658,6 +662,11 @@ export const insertNodeToLbug = async (
         ? `, description: ${escapeValue(properties.description)}`
         : '';
       query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+    } else if (label === 'Property') {
+      const descPart = properties.description
+        ? `, description: ${escapeValue(properties.description)}`
+        : '';
+      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}, declaredType: ${escapeValue(properties.declaredType || '')}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
@@ -736,6 +745,11 @@ export const batchInsertNodesToLbug = async (
             ? `, n.description = ${escapeValue(properties.description)}`
             : '';
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+        } else if (label === 'Property') {
+          const descPart = properties.description
+            ? `, n.description = ${escapeValue(properties.description)}`
+            : '';
+          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.declaredType = ${escapeValue(properties.declaredType || '')}`;
         } else {
           const descPart = properties.description
             ? `, n.description = ${escapeValue(properties.description)}`
@@ -1064,6 +1078,9 @@ export const flushWAL = async (): Promise<void> => {
  */
 export const safeClose = async (): Promise<void> => {
   await flushWAL();
+  // Capture before close — currentDbPath stays set so the Windows post-close
+  // probe below knows which file to wait on.
+  const closingDbPath = currentDbPath;
   if (conn) {
     try {
       // eslint-disable-next-line no-restricted-syntax -- sole authorised close site
@@ -1081,6 +1098,24 @@ export const safeClose = async (): Promise<void> => {
       /* best-effort */
     }
     db = null;
+  }
+  // Windows: libuv reports `db.close()` resolved before the kernel has
+  // released the file handle. A subsequent `new Database(samePath)` in
+  // the same process can race the release. The probe (lbug-config.ts)
+  // forces any residual lock to surface as EBUSY/EPERM/EACCES so the
+  // open-time retry absorbs the lag.
+  if (process.platform === 'win32' && closingDbPath) {
+    const released = await waitForWindowsHandleRelease(closingDbPath);
+    if (!released) {
+      // Probe exhausted with a lock code still in flight. The next
+      // openLbugConnection will absorb whatever residual lag remains, but
+      // a chronic warning helps operators spot AV interference (Windows
+      // Defender holding the file far past the 250ms budget).
+      logger.warn(
+        { dbPath: closingDbPath },
+        '⚠️ LadybugDB file handle still locked after close (Windows). If this repeats, check antivirus/Defender exclusions for the GitNexus storage directory.',
+      );
+    }
   }
 };
 

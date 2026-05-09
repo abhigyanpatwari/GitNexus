@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./test-helpers": {
+      "types": "./dist/test-helpers.d.ts",
+      "default": "./dist/test-helpers.js"
     }
   },
   "scripts": {
