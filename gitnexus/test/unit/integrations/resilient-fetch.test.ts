@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
-  __resetBreakerRegistry__,
   CircuitBreaker,
   CircuitOpenError,
-  classifyOutcome,
   parseRetryAfter,
   resilientFetch,
   ResilientFetchExhaustedError,
   RETRY_AFTER_CAP_MS,
 } from 'gitnexus-shared';
+import { __resetBreakerRegistry__, classifyOutcome } from 'gitnexus-shared/test-helpers';
 
 describe('parseRetryAfter', () => {
   it('parses delta-seconds form', () => {

@@ -11,7 +11,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetBreakerRegistry__, getBreaker } from 'gitnexus-shared';
+import { getBreaker } from 'gitnexus-shared';
+import { __resetBreakerRegistry__ } from 'gitnexus-shared/test-helpers';
 import { fetchRepos, setBackendUrl, startAnalyze } from '../../src/services/backend-client';
 
 const BASE = 'http://localhost:4747';

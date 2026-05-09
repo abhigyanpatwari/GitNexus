@@ -154,6 +154,13 @@ export class ResilientFetchExhaustedError extends Error {
  *   without invoking `fetch`.
  * - When retries are exhausted on a 5xx / 429, throws
  *   `ResilientFetchExhaustedError` carrying the last response.
+ *
+ * Cumulative wall-clock budget:
+ *   maxAttempts × (per-attempt-timeout + capDelayMs)
+ *   With defaults (3, 500ms base, 5000ms cap) and a typical 15s per-attempt
+ *   timeout from the caller's signal, worst case is ~3 × (15s + 5s) = 60s.
+ *   Callers that want a tighter total bound should reduce `maxAttempts` or
+ *   wrap `resilientFetch` in their own outer `AbortSignal.timeout()`.
  */
 export async function resilientFetch(
   input: string | URL,
@@ -175,8 +182,6 @@ export async function resilientFetch(
 
   // Fail fast on an open breaker, before invoking fetch.
   breaker.check();
-
-  let lastRetryableResp: Response | null = null;
 
   for (let attempt = 0; attempt < retryConfig.maxAttempts; attempt++) {
     let result: { kind: 'error'; err: unknown } | { kind: 'response'; resp: Response };
@@ -223,7 +228,6 @@ export async function resilientFetch(
         throw outcome.err;
 
       case 'retryable-status':
-        lastRetryableResp = outcome.resp;
         if (attempt + 1 >= retryConfig.maxAttempts) {
           breaker.recordFailure();
           throw new ResilientFetchExhaustedError(outcome.resp);
@@ -254,15 +258,22 @@ export async function resilientFetch(
           ),
         );
         break;
+
+      default: {
+        // Exhaustiveness guard. If a sixth `Outcome` kind is added in
+        // future, TypeScript will refuse to assign it to `never` and
+        // this line forces the maintainer to add an explicit arm
+        // rather than silently fall through to retry/no-retry behaviour.
+        const _exhaustive: never = outcome;
+        throw new Error(`resilientFetch: unhandled outcome ${JSON.stringify(_exhaustive)}`);
+      }
     }
   }
 
-  // Loop terminated without returning — should be unreachable, but
-  // surface a defensive error so we fail loudly rather than hanging.
-  /* c8 ignore next 4 */
-  if (lastRetryableResp) {
-    breaker.recordFailure();
-    throw new ResilientFetchExhaustedError(lastRetryableResp);
-  }
+  // Unreachable: every iteration of the loop either returns (success
+  // / terminal-client) or throws (terminal-network / retry exhaustion).
+  // The throw is here purely so TypeScript's control-flow analysis sees
+  // the function never falls off the end without producing `Promise<Response>`.
+  /* c8 ignore next 2 */
   throw new Error('resilientFetch: retry loop terminated unexpectedly');
 }

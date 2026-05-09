@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  CircuitBreaker,
-  CircuitOpenError,
-  __resetBreakerRegistry__,
-  getBreaker,
-} from 'gitnexus-shared';
+import { CircuitBreaker, CircuitOpenError, getBreaker } from 'gitnexus-shared';
+import { __resetBreakerRegistry__ } from 'gitnexus-shared/test-helpers';
 
 describe('CircuitBreaker', () => {
   beforeEach(() => __resetBreakerRegistry__());

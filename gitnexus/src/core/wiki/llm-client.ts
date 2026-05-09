@@ -187,6 +187,12 @@ export async function callLLM(
           ...authHeaders,
         },
         body: JSON.stringify(body),
+        // Per-attempt timeout. Without this each retry can hang
+        // indefinitely on a frozen TCP connection — the per-call
+        // signal is the only timeout `resilientFetch` honors;
+        // `capDelayMs` only bounds the *backoff* between attempts.
+        // 60s matches typical LLM completion budgets.
+        signal: AbortSignal.timeout(60_000),
       },
       {
         breakerKey: `wiki-llm-${new URL(url).host}`,
