@@ -7,6 +7,7 @@
  */
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -251,9 +252,32 @@ const fetchWithTimeout = async (
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    // Bounded retries + 5xx/429 handling are delegated to resilientFetch.
+    // The local backend server is the typical target — a single 503 is
+    // worth one or two retries, but we keep the budget small so a dead
+    // server fails fast for the user.
+    const response = await resilientFetch(
+      url,
+      { ...init, signal: controller.signal },
+      {
+        breakerKey: 'web-backend',
+        retry: { maxAttempts: 2, baseDelayMs: 250, capDelayMs: 1500 },
+      },
+    );
     return response;
   } catch (error: unknown) {
+    if (error instanceof CircuitOpenError) {
+      throw new BackendError(
+        `GitNexus backend at ${_backendUrl} is unhealthy; retry in ${Math.ceil(error.retryAfterMs / 1000)}s`,
+        0,
+        'network',
+      );
+    }
+    if (error instanceof ResilientFetchExhaustedError) {
+      // Fall through to caller — surface the raw response so assertOk
+      // can craft the BackendError with the right code.
+      return error.response;
+    }
     if (error instanceof DOMException && error.name === 'AbortError') {
       if (externalSignal?.aborted) {
         throw new BackendError('Request aborted', 0, 'network');

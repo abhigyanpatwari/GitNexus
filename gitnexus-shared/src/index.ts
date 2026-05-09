@@ -143,6 +143,25 @@ export type { ScopeTree } from './scope-resolution/scope-tree.js';
 export { buildPositionIndex } from './scope-resolution/position-index.js';
 export type { PositionIndex } from './scope-resolution/position-index.js';
 
+// Resilient fetch primitives — bounded retries + per-process circuit breaker.
+export { withRetry, computeBackoffMs } from './integrations/retry.js';
+export type { RetryOptions, RetryDecision } from './integrations/retry.js';
+export {
+  CircuitBreaker,
+  CircuitOpenError,
+  getBreaker,
+  __resetBreakerRegistry__,
+} from './integrations/circuit-breaker.js';
+export type { CircuitBreakerOptions } from './integrations/circuit-breaker.js';
+export {
+  resilientFetch,
+  ResilientFetchExhaustedError,
+  RETRY_AFTER_CAP_MS,
+  parseRetryAfter,
+  classifyOutcome,
+} from './integrations/resilient-fetch.js';
+export type { ResilientFetchOptions } from './integrations/resilient-fetch.js';
+
 // Shadow-mode diff + aggregation (RFC §6.3; Ring 2 SHARED #918)
 export { diffResolutions } from './scope-resolution/shadow/diff.js';
 export type {
