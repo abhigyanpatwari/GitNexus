@@ -107,7 +107,9 @@ export function validateLLMBaseUrl(baseUrl: string): void {
   }
 
   if (parsed.protocol === 'http:') {
-    const host = parsed.hostname.toLowerCase();
+    // Node's URL parser preserves IPv6 brackets in hostname (e.g. "[::1]"),
+    // so strip them before comparing to bare address literals.
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
       throw new Error(
         `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +

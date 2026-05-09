@@ -342,6 +342,8 @@ describe('validateLLMBaseUrl', () => {
   it('allows http:// for localhost', () => {
     expect(() => validateLLMBaseUrl('http://localhost:11434/v1')).not.toThrow();
     expect(() => validateLLMBaseUrl('http://127.0.0.1:11434/v1')).not.toThrow();
+    // IPv6 loopback — Node's URL parser preserves brackets in hostname: "[::1]"
+    expect(() => validateLLMBaseUrl('http://[::1]:11434/v1')).not.toThrow();
   });
 
   it('rejects http:// for non-loopback hosts', () => {
