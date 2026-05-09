@@ -35,7 +35,8 @@ on:
   pull_request_target:
     types: [opened, edited, reopened]
 
-permissions: read-all
+permissions:
+  contents: read
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Include `github.event_name` so `pull_request` (validate-title) and

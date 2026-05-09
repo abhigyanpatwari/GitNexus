@@ -26,7 +26,8 @@ on:
         required: true
         type: string
 
-permissions: read-all
+permissions:
+  contents: read
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel.

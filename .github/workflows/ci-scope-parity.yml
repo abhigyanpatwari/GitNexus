@@ -28,7 +28,8 @@ name: Scope Resolution Parity
 on:
   workflow_call:
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   discover:

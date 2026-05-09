@@ -3,7 +3,8 @@ name: Quality Checks
 on:
   workflow_call:
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   format:

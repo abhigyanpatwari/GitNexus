@@ -3,7 +3,8 @@ name: E2E Tests
 on:
   workflow_call:
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   check-changes:

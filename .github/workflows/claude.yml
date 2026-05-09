@@ -19,7 +19,8 @@ on:
   pull_request_review:
     types: [submitted]
 
-permissions: read-all
+permissions:
+  contents: read
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Serialize per-PR/issue to avoid racing comments.

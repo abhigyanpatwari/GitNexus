@@ -20,7 +20,8 @@ on:
     - cron: '0 8 * * 1'
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
