@@ -375,4 +375,184 @@ describe('resilientFetch', () => {
       expect(fetchImpl).toHaveBeenCalledTimes(5);
     });
   });
+
+  describe('half-open single-probe gating (U2)', () => {
+    /** Test helper: a fetch mock whose Response is controlled by the test. */
+    function deferredFetch(): {
+      promise: Promise<Response>;
+      resolve: (resp: Response) => void;
+      reject: (err: unknown) => void;
+    } {
+      let resolve!: (resp: Response) => void;
+      let reject!: (err: unknown) => void;
+      const promise = new Promise<Response>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    /** Builds a clock-injected breaker pre-opened with cooldown elapsed. */
+    function preOpenedBreaker(opts: { cooldownMs: number; halfOpenRetryAfterMs?: number }): {
+      breaker: CircuitBreaker;
+      advance: (ms: number) => void;
+    } {
+      let t = 1_700_000_000_000;
+      const breaker = new CircuitBreaker({
+        failureThreshold: 1,
+        cooldownMs: opts.cooldownMs,
+        halfOpenRetryAfterMs: opts.halfOpenRetryAfterMs ?? 1_000,
+        key: 'test',
+        now: () => t,
+      });
+      breaker.recordFailure();
+      t += opts.cooldownMs + 1; // cooldown elapsed
+      return { breaker, advance: (ms) => (t += ms) };
+    }
+
+    it('happy: 3 concurrent calls — exactly 1 hits fetch, others throw CircuitOpenError', async () => {
+      const { breaker } = preOpenedBreaker({ cooldownMs: 10 });
+      const deferred = deferredFetch();
+      const fetchImpl = vi.fn(() => deferred.promise);
+
+      // Synchronous portion of each `resilientFetch` runs eagerly up to
+      // the first await, so by the time r2/r3 are constructed the probe
+      // permit is already consumed by r1 and they reject synchronously.
+      const r1 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      const r2 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      const r3 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+
+      // Resolve the probe with 200; r1 should now settle.
+      deferred.resolve(new Response(null, { status: 200 }));
+
+      const results = await Promise.allSettled([r1, r2, r3]);
+
+      expect(results[0].status).toBe('fulfilled');
+      if (results[0].status === 'fulfilled') {
+        expect(results[0].value.status).toBe(200);
+      }
+      expect(results[1].status).toBe('rejected');
+      if (results[1].status === 'rejected') {
+        expect(results[1].reason).toBeInstanceOf(CircuitOpenError);
+      }
+      expect(results[2].status).toBe('rejected');
+      if (results[2].status === 'rejected') {
+        expect(results[2].reason).toBeInstanceOf(CircuitOpenError);
+      }
+
+      // Only ONE underlying fetch was invoked.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      // Breaker closed after the probe's success.
+      expect(breaker.getState()).toBe('closed');
+    });
+
+    it('error: probe gets 503 — exhausted error; subsequent caller sees fresh full cooldown', async () => {
+      const { breaker } = preOpenedBreaker({ cooldownMs: 10_000, halfOpenRetryAfterMs: 1_000 });
+      const deferred = deferredFetch();
+      const fetchImpl = vi.fn(() => deferred.promise);
+
+      const r1 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      const r2 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      const r3 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+
+      // Probe fails with 503 → exhausted (maxAttempts: 1) → recordFailure → reopen.
+      deferred.resolve(new Response(null, { status: 503 }));
+
+      const results = await Promise.allSettled([r1, r2, r3]);
+
+      expect(results[0].status).toBe('rejected');
+      if (results[0].status === 'rejected') {
+        expect(results[0].reason).toBeInstanceOf(ResilientFetchExhaustedError);
+      }
+      expect(results[1].status).toBe('rejected');
+      if (results[1].status === 'rejected') {
+        expect(results[1].reason).toBeInstanceOf(CircuitOpenError);
+        // Blocked-while-half-open used the halfOpenRetryAfterMs default.
+        expect((results[1].reason as CircuitOpenError).retryAfterMs).toBe(1_000);
+      }
+
+      // Breaker has re-opened with a fresh openedAt.
+      expect(breaker.getState()).toBe('open');
+
+      // r4: should see the fresh full cooldown, NOT the probe-in-flight 1000ms.
+      let r4Caught: CircuitOpenError | null = null;
+      try {
+        await resilientFetch(URL_STR, undefined, {
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+          breaker,
+          retry: { sleep: async () => {}, maxAttempts: 1 },
+        });
+      } catch (err) {
+        r4Caught = err as CircuitOpenError;
+      }
+      expect(r4Caught).toBeInstanceOf(CircuitOpenError);
+      expect(r4Caught?.retryAfterMs).toBe(10_000);
+    });
+
+    it('cancellation: probe AbortError releases permit; next caller becomes new probe', async () => {
+      const { breaker } = preOpenedBreaker({ cooldownMs: 10_000 });
+      const deferred1 = deferredFetch();
+      const deferred2 = deferredFetch();
+      let callIdx = 0;
+      const fetchImpl = vi.fn(() => (callIdx++ === 0 ? deferred1.promise : deferred2.promise));
+
+      // r1 admitted as the probe; r2 blocked while r1 still in flight.
+      const r1 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      const r2 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      await expect(r2).rejects.toBeInstanceOf(CircuitOpenError);
+
+      // Cancel the probe — `AbortError` routes through terminal-network →
+      // `recordNeutral` → permit released, state stays half-open.
+      deferred1.reject(new DOMException('aborted by caller', 'AbortError'));
+      await expect(r1).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(breaker.isProbeInFlight()).toBe(false);
+      expect(breaker.getState()).toBe('half-open');
+
+      // r3: now succeeds and becomes the new probe.
+      const r3 = resilientFetch(URL_STR, undefined, {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        breaker,
+        retry: { sleep: async () => {}, maxAttempts: 1 },
+      });
+      deferred2.resolve(new Response(null, { status: 200 }));
+      const r3Resp = await r3;
+      expect(r3Resp.status).toBe(200);
+      expect(breaker.getState()).toBe('closed');
+      // Two fetches total: the cancelled probe + the recovery probe.
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+  });
 });
