@@ -75,6 +75,62 @@ repos:
     expect(config.detect.thrift).toBe(true);
   });
 
+  // PR #1156 Codex follow-up: include extraction is opt-in. Existing
+  // group.yaml files that do not declare `detect.includes` must not gain
+  // a wave of new include::* contracts on the next sync after upgrade.
+  describe('detect.includes opt-in default', () => {
+    it('defaults includes detection to false when detect block omits it', () => {
+      const minimal = `
+version: 1
+name: test
+repos:
+  app: my-app
+`;
+      const config = parseGroupConfig(minimal);
+      expect(config.detect.includes).toBe(false);
+    });
+
+    it('defaults includes detection to false when detect block is present but omits the key', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http: true
+  grpc: false
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(false);
+    });
+
+    it('honors explicit detect.includes: true (opt-in works)', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  includes: true
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(true);
+    });
+
+    it('honors explicit detect.includes: false', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  includes: false
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(false);
+    });
+  });
+
   it('parses thrift manifest links', () => {
     const yaml = `
 version: 1

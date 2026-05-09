@@ -217,6 +217,10 @@ export async function buildThriftContext(repoPath: string): Promise<ThriftContex
     cwd: repoPath,
     absolute: false,
     nodir: true,
+    // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
+    // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
+    // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
+    // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
     ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
   });
   const namespacesByThrift = new Map<string, string>();
@@ -290,6 +294,10 @@ export class ThriftExtractor implements ContractExtractor {
       cwd: repoPath,
       absolute: false,
       nodir: true,
+      // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
+      // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
+      // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
+      // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
       ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
     });
 
