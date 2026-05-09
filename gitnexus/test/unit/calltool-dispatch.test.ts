@@ -62,7 +62,7 @@ vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
 
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
-  searchFTSFromLbug: vi.fn().mockResolvedValue([]),
+  searchFTSFromLbug: vi.fn().mockResolvedValue({ results: [], ftsAvailable: true }),
 }));
 
 vi.mock('../../src/mcp/core/embedder.js', () => ({
@@ -193,6 +193,27 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('query', { query: 'auth' });
     expect(result).toHaveProperty('processes');
     expect(result).toHaveProperty('definitions');
+  });
+
+  it('includes FTS-unavailable warning when ftsAvailable is false (#1403)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { query: 'ProcessActivity' });
+
+    expect(result).toHaveProperty('warning');
+    expect((result as any).warning).toMatch(/gitnexus analyze --force/);
+  });
+
+  it('does not include warning when ftsAvailable is true with zero results', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: true });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { query: 'nonexistent' });
+
+    expect(result).not.toHaveProperty('warning');
   });
 
   it('skips vector index query when VECTOR is unsupported by the platform', async () => {
