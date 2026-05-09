@@ -1,0 +1,146 @@
+name: PR Autofix
+
+# UNTRUSTED HALF of the autofix pipeline.
+#
+# Runs `npm run lint:fix` + `npm run format` against the PR head
+# (including fork heads) and uploads the resulting diff as an artifact.
+# This job has NO privileged token and CANNOT post to the PR. The trusted
+# `pr-autofix-publish.yml` workflow downloads the artifact via
+# `workflow_run` and posts a sticky summary comment + Check Run.
+# Contributors apply the patch by commenting `/autofix` on the PR —
+# handled by the separate `pr-autofix-apply.yml` ChatOps workflow.
+#
+# Why the split:
+#   ESLint loads plugins from fork-controlled `node_modules`, so running
+#   it in a job with `pull-requests: write` would let a malicious fork PR
+#   ship a poisoned eslint plugin and execute arbitrary code under that
+#   token. By keeping fork code execution in this job (token: read-only)
+#   and posting from a separate trusted job that never touches fork
+#   code, we get the autofix UX for fork PRs without the supply-chain
+#   hole. (See autofix.ci for the same pattern.)
+#
+# Removes unused imports via `eslint-plugin-unused-imports`, already in
+# devDependencies and wired into the `lint` config.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Skip lockfile / generated-file PRs entirely — `action-suggester`
+    # cannot post on diffs > ~3k lines (GitHub returns 406) and these
+    # paths produce massive diffs no human wants suggested back inline.
+    paths-ignore:
+      - '**/package-lock.json'
+      - '**/*.snap'
+      - '**/dist/**'
+      - '**/node_modules/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # Don't cancel in-flight runs; the publish workflow may already be
+  # downloading the artifact and a cancelled untrusted run produces no
+  # signal at all (worse DX than waiting).
+  cancel-in-progress: false
+
+# This workflow runs untrusted fork code. Top-level deny-all and NO
+# job-level grants — the job can only read its own checkout.
+permissions: {}
+
+jobs:
+  autofix:
+    name: autofix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # PR head commit (not the synthetic merge ref) — we need the
+          # exact tree the contributor pushed so suggestions line up.
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # `--ignore-scripts` blocks pre/postinstall lifecycle hooks. ESLint
+      # plugins still load from node_modules (that is the actual escape
+      # hatch on a typical fork), but this job has no token to abuse —
+      # which is the whole point of the split.
+      - run: npm ci --ignore-scripts
+
+      - name: ESLint --fix (removes unused imports)
+        run: npm run lint:fix
+        # Lint errors that --fix can't auto-resolve must not block the
+        # diff artifact — partial fixes are still useful as suggestions.
+        continue-on-error: true
+
+      - name: Prettier --write
+        run: npm run format
+        continue-on-error: true
+
+      - name: Capture diff and metadata
+        id: capture
+        # Pass GitHub-context values via env: rather than `${{ }}`
+        # interpolated directly into the bash body. `head.ref` and
+        # `head.repo.full_name` are fork-controlled strings; expanding
+        # them into shell source is the canonical template-injection
+        # vector zizmor flags. Even though this job has `permissions: {}`,
+        # routing through env: makes it impossible for a future scope
+        # grant to turn into RCE. Inside bash, reference as `$HEAD_REF`
+        # etc. — the values are then plain strings, not code.
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p autofix-out
+
+          # Produce a unified diff of the working tree vs. the PR head.
+          # Empty diff => nothing to suggest; the publish job short-circuits.
+          git diff --no-color > autofix-out/autofix.patch
+
+          # NOTE: `changed_lines` is the line-count of the patch file,
+          # (hunk headers + context lines + added/removed). Surfaced in
+          # the sticky comment so contributors and AI agents have a
+          # quick size hint before invoking `/autofix`.
+          changed_lines=$(wc -l < autofix-out/autofix.patch | tr -d ' ')
+          echo "changed_lines=${changed_lines}" >> "$GITHUB_OUTPUT"
+
+          # Carry PR identity over to the trusted job. workflow_run
+          # context is base-repo-only, so the publish job needs these
+          # to call the GitHub PR API on the right resource.
+          # CONTRACT: keep this schema in sync with pr-autofix-publish.yml's
+          # `assert_field` validators and the agent-facing JSON block in
+          # the sticky comment. Bump `schema` when changing field names.
+          jq -n \
+            --arg     schema        'gitnexus.pr-autofix/v1' \
+            --argjson pr_number     "${PR_NUMBER}" \
+            --arg     head_sha      "${HEAD_SHA}" \
+            --arg     head_ref      "${HEAD_REF}" \
+            --arg     head_repo     "${HEAD_REPO}" \
+            --arg     base_repo     "${BASE_REPO}" \
+            --argjson changed_lines "${changed_lines}" \
+            '{schema:$schema, pr_number:$pr_number, head_sha:$head_sha, head_ref:$head_ref, head_repo:$head_repo, base_repo:$base_repo, changed_lines:$changed_lines}' \
+            > autofix-out/metadata.json
+
+          echo "--- metadata ---"
+          cat autofix-out/metadata.json
+          echo "--- diff (head) ---"
+          head -c 2000 autofix-out/autofix.patch || true
+
+      # Pinned to v7.0.1. Verify SHA via:
+      #   gh api repos/actions/upload-artifact/git/refs/tags/v7.0.1
+      - name: Upload autofix artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: autofix
+          path: autofix-out/
+          retention-days: 1
+          if-no-files-found: error

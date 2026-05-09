@@ -14,6 +14,15 @@ rules:
       # no checkout of fork code occurs. Header comment in the file documents.
       - ci-report.yml
 
+      # workflow_run is the trusted half of the autofix pipeline. The
+      # untrusted half (pr-autofix.yml) runs fork code with permissions:{}
+      # and produces only a diff artifact (data, not executable code). The
+      # publish job consumes the artifact, allowlist-validates every field
+      # of metadata.json before exporting to $GITHUB_OUTPUT, never checks
+      # out fork code, and never executes anything fork-controlled. Header
+      # comment in the file documents the split.
+      - pr-autofix-publish.yml
+
       # pull_request_target needed by claude-code-action to access secrets
       # and post review comments on fork PRs. Mitigated by: PR checkouts pin
       # the fork's HEAD SHA (not the branch ref) to prevent TOCTOU races,
