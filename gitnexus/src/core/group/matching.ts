@@ -107,6 +107,8 @@ export function normalizeContractId(id: string): string {
       return `topic::${rest.trim().toLowerCase()}`;
     case 'lib':
       return `lib::${rest.toLowerCase()}`;
+    case 'include':
+      return `include::${rest.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/').toLowerCase()}`;
     default:
       return id;
   }
