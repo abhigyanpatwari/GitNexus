@@ -9,9 +9,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
@@ -27,9 +24,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(deps)
@@ -45,9 +39,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(deps)
