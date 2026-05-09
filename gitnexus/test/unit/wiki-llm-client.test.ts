@@ -5,6 +5,7 @@ import {
   isAzureProvider,
   isReasoningModel,
   buildRequestUrl,
+  validateLLMBaseUrl,
 } from '../../src/core/wiki/llm-client.js';
 
 describe('isAzureProvider', () => {
@@ -328,5 +329,49 @@ describe('readSSEStream — content_filter handling', () => {
         { onChunk: () => {} },
       ),
     ).rejects.toThrow('content filter');
+  });
+});
+
+describe('validateLLMBaseUrl', () => {
+  it('allows https:// for any public host', () => {
+    expect(() => validateLLMBaseUrl('https://api.openai.com/v1')).not.toThrow();
+    expect(() => validateLLMBaseUrl('https://openrouter.ai/api/v1')).not.toThrow();
+    expect(() => validateLLMBaseUrl('https://myres.openai.azure.com/openai/v1')).not.toThrow();
+  });
+
+  it('allows http:// for localhost', () => {
+    expect(() => validateLLMBaseUrl('http://localhost:11434/v1')).not.toThrow();
+    expect(() => validateLLMBaseUrl('http://127.0.0.1:11434/v1')).not.toThrow();
+  });
+
+  it('rejects http:// for non-loopback hosts', () => {
+    expect(() => validateLLMBaseUrl('http://evil.example.com/v1')).toThrow(
+      'Insecure http://',
+    );
+    expect(() => validateLLMBaseUrl('http://192.168.1.1/v1')).toThrow('Insecure http://');
+  });
+
+  it('rejects non-http schemes', () => {
+    expect(() => validateLLMBaseUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
+    expect(() => validateLLMBaseUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
+    expect(() => validateLLMBaseUrl('data:text/plain,evil')).toThrow('must use http:// or https://');
+  });
+
+  it('rejects malformed URLs', () => {
+    expect(() => validateLLMBaseUrl('not-a-url')).toThrow('Invalid LLM base URL');
+    expect(() => validateLLMBaseUrl('')).toThrow('Invalid LLM base URL');
+  });
+
+  it('callLLM rejects an invalid base URL before fetching', async () => {
+    const { callLLM } = await import('../../src/core/wiki/llm-client.js');
+    await expect(
+      callLLM('prompt', {
+        apiKey: 'key',
+        baseUrl: 'file:///etc/passwd',
+        model: 'gpt-4o',
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    ).rejects.toThrow('must use http:// or https://');
   });
 });

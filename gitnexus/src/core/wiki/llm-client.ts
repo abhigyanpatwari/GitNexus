@@ -78,6 +78,46 @@ export function estimateTokens(text: string): number {
 }
 
 /**
+ * Validate that a base URL supplied for LLM API calls is a safe HTTP/HTTPS
+ * endpoint (CWE-918 / CodeQL js/http-to-file-access).
+ *
+ * Allowed:
+ *  - https:// with any hostname (public LLM APIs, Azure, OpenRouter, …)
+ *  - http:// restricted to localhost / 127.0.0.1 (local servers: Ollama, LiteLLM, …)
+ *
+ * Rejected:
+ *  - file://, data:, javascript:, and any other non-HTTP scheme
+ *  - http:// aimed at non-loopback hosts (avoids SSRF against internal networks)
+ *
+ * Throws with a descriptive message on validation failure so callers surface a
+ * clear error rather than an opaque network error.
+ */
+export function validateLLMBaseUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error(`Invalid LLM base URL: ${baseUrl}`);
+  }
+
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    throw new Error(
+      `LLM base URL must use http:// or https:// (got ${parsed.protocol}): ${baseUrl}`,
+    );
+  }
+
+  if (parsed.protocol === 'http:') {
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+      throw new Error(
+        `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +
+          `Use https:// for remote endpoints: ${baseUrl}`,
+      );
+    }
+  }
+}
+
+/**
  * Returns true if the given base URL is an Azure OpenAI endpoint.
  * Uses proper hostname matching to avoid spoofed URLs like
  * "https://myresource.openai.azure.com.evil.com/v1".
@@ -128,6 +168,9 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
+  // Validate base URL before any fetch (CodeQL js/http-to-file-access)
+  validateLLMBaseUrl(config.baseUrl);
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });

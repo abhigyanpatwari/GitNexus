@@ -722,13 +722,12 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  // Pino's NDJSON serialization is structurally injection-resistant
-  // (CodeQL js/log-injection): groupDir and err.message are JSON-escaped
-  // by the serializer, so no manual CRLF / U+2028 / ANSI sanitization is
-  // needed. Demoted to debug — only fires when the bridge truly gave up
-  // after retries, and operators only need it at debug verbosity.
+  // Strip CRLF from user-controlled strings before logging to close
+  // CodeQL js/log-injection. Pino's NDJSON serialization already
+  // JSON-escapes all values, but we sanitize here as a defence-in-depth
+  // measure so CodeQL can see the taint flow is broken.
   bridgeLogger.debug(
-    { groupDir, err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    { groupDir: String(groupDir).replace(/[\r\n]/g, ' '), err: lastErr, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
     'openBridgeDbReadOnly gave up',
   );
   return null;
