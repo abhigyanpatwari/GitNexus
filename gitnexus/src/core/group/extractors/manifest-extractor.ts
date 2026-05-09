@@ -274,6 +274,14 @@ export class ManifestExtractor {
            LIMIT 1`,
           { contract: link.contract },
         );
+      } else if (link.type === 'include') {
+        rows = await executor(
+          `MATCH (f:File) WHERE f.filePath = $contract
+           RETURN f.id AS uid, f.name AS name, f.filePath AS filePath
+           ORDER BY f.filePath ASC
+           LIMIT 1`,
+          { contract: link.contract },
+        );
       } else if (link.type === 'custom') {
         // Workspace extractors produce qualified contracts like "mathlex::Expression".
         // Graph nodes store the unqualified symbol name ("Expression"), so strip
@@ -358,6 +366,8 @@ export class ManifestExtractor {
         return `lib::${contract}`;
       case 'custom':
         return `custom::${contract}`;
+      case 'include':
+        return `include::${contract}`;
       default: {
         const _exhaustive: never = type;
         throw new Error(`Unhandled ContractType: ${String(_exhaustive)}`);

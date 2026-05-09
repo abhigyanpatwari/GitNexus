@@ -28,6 +28,8 @@ describe('shouldIgnorePath', () => {
     it.each([
       'node_modules',
       'vendor',
+      'third_party',
+      '3rdparty',
       'venv',
       '.venv',
       '__pycache__',
