@@ -101,7 +101,13 @@ export function classifyOutcome(
   const resp = result.resp;
   if (resp.status >= 200 && resp.status < 400) return { kind: 'success', resp };
   if (resp.status === 429) {
-    const parsed = parseRetryAfter(resp.headers.get('Retry-After'), now);
+    // `resp.headers` is always present on a real `Response`, but tests
+    // sometimes stub `fetch` with a plain `{ ok, status }` object. Be
+    // defensive — a missing `Retry-After` falls through to exponential
+    // backoff, which is the correct behaviour anyway.
+    const retryAfterHeader =
+      typeof resp.headers?.get === 'function' ? resp.headers.get('Retry-After') : null;
+    const parsed = parseRetryAfter(retryAfterHeader, now);
     return {
       kind: 'retryable-status',
       resp,

@@ -51,6 +51,17 @@ describe('classifyOutcome', () => {
     expect(out.kind).toBe('retryable-status');
     if (out.kind === 'retryable-status') expect(out.afterMs).toBe(RETRY_AFTER_CAP_MS);
   });
+  it('classifies 429 from a header-less fetch mock without throwing', () => {
+    // Tests sometimes stub `fetch` with a plain `{ ok, status }` object
+    // (e.g. http-embedder.test.ts). Real `Response` always carries
+    // `Headers`, but the helper must not crash when the stub does not.
+    // Falls through to exponential-backoff retry like a 429 with no
+    // Retry-After header.
+    const resp = { ok: false, status: 429 } as unknown as Response;
+    const out = classifyOutcome({ kind: 'response', resp }, now);
+    expect(out.kind).toBe('retryable-status');
+    if (out.kind === 'retryable-status') expect(out.afterMs).toBeUndefined();
+  });
   it('classifies 401/403/404/422 as terminal-client', () => {
     for (const status of [401, 403, 404, 422, 400]) {
       const resp = new Response(null, { status });
