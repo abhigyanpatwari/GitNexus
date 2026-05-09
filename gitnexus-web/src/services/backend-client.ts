@@ -205,8 +205,32 @@ export function streamSSE<T = unknown>(url: string, handlers: SSEHandlers<T>): A
 
 let _backendUrl = 'http://localhost:4747';
 
+/**
+ * Validate that a backend URL is a safe http:// or https:// origin before
+ * storing it as the fetch target base (CodeQL js/client-side-request-forgery).
+ *
+ * Throws if the URL uses a non-HTTP scheme (e.g. javascript:, data:, file://).
+ * All other well-formed http/https URLs are accepted — the client intentionally
+ * supports connecting to remote GitNexus servers, not just localhost.
+ */
+export function validateBackendUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Do not echo raw input — it may contain credentials.
+    throw new Error('Invalid backend URL: must be a well-formed http:// or https:// URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
+    throw new Error(`Backend URL must use http:// or https:// (got ${parsed.protocol})`);
+  }
+}
+
 export const setBackendUrl = (url: string): void => {
-  _backendUrl = url.replace(/\/$/, '');
+  const trimmed = url.replace(/\/$/, '');
+  validateBackendUrl(trimmed);
+  _backendUrl = trimmed;
 };
 
 export const getBackendUrl = (): string => _backendUrl;
