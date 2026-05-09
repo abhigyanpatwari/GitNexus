@@ -1,24 +1,32 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
+# Pinned npm version used to replace the bundled npm in the upstream Node
+# image. Bumping requires a coordinated update in Dockerfile.web and
+# gitnexus/Dockerfile.test so all images bootstrap the same npm.
+ARG NPM_VERSION=11.14.1
 
-# ── Builder ────────────────────────────────────────────────────────────
+# -- Builder -----------------------------------------------------------
 # Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
 # tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
-FROM node:22-trixie-slim AS builder
+# node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS builder
+ARG NPM_VERSION
 
 WORKDIR /app
+
+RUN npx --yes npm@${NPM_VERSION} install -g npm@${NPM_VERSION}
 
 # Toolchain for node-gyp / native builds.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ git && rm -rf /var/lib/apt/lists/*
 
-# Build gitnexus-shared first — gitnexus depends on it as a workspace.
+# Build gitnexus-shared first - gitnexus depends on it as a workspace.
 COPY gitnexus-shared/package.json gitnexus-shared/package-lock.json ./gitnexus-shared/
 RUN npm ci --prefix gitnexus-shared
 COPY gitnexus-shared ./gitnexus-shared
 RUN rm -f gitnexus-shared/tsconfig.tsbuildinfo
 RUN npm run build --prefix gitnexus-shared
 
-# Copy the full gitnexus package before installing — `npm ci` triggers
+# Copy the full gitnexus package before installing - `npm ci` triggers
 # `postinstall` (patches tree-sitter-swift, builds the vendored
 # tree-sitter-proto) and `prepare` (compiles TypeScript via scripts/build.js),
 # both of which need the source tree.
@@ -28,11 +36,15 @@ RUN npm ci --prefix gitnexus
 # Drop dev dependencies for a smaller runtime layer.
 RUN npm prune --omit=dev --prefix gitnexus
 
-# ── Runtime ────────────────────────────────────────────────────────────
-FROM node:22-trixie-slim AS runtime
+# -- Runtime -----------------------------------------------------------
+# node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS runtime
 
 # curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -rf /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 WORKDIR /app
 
@@ -47,7 +59,7 @@ COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 
 USER node
 
-# The web UI defaults to http://localhost:4747 — keep that contract.
+# The web UI defaults to http://localhost:4747 - keep that contract.
 ENV GITNEXUS_HOME=/data/gitnexus \
     NODE_ENV=production \
     PORT=4747
