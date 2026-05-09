@@ -211,6 +211,15 @@ jobs:
 
       # Pinned to v5.0.4. Verify SHA via:
       #   gh api repos/actions/checkout/git/refs/tags/v5.0.4
+      #
+      # `persist-credentials: false` disables the default behavior where
+      # actions/checkout writes the GITHUB_TOKEN into `.git/config` as an
+      # extraheader. That default is convenient (subsequent git commands
+      # auth automatically) but it means the token is sitting on disk in
+      # the checkout directory — an `actions/upload-artifact` step on
+      # this directory would leak the token. We don't upload, but
+      # zizmor's `credential-persistence` lint flags it defensively.
+      # Push auth is provided inline at push time via the URL.
       - name: Checkout PR head
         if: steps.locate.outputs.found == 'true'
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.4
@@ -218,6 +227,7 @@ jobs:
           repository: ${{ steps.locate.outputs.head_repo }}
           ref: ${{ steps.locate.outputs.head_sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
           # Fetch full history so the push doesn't hit shallow-clone errors.
           fetch-depth: 0
           path: pr-checkout
@@ -227,12 +237,16 @@ jobs:
         if: steps.locate.outputs.found == 'true'
         env:
           HEAD_REF: ${{ steps.locate.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.locate.outputs.head_repo }}
           # The SHA we resolved earlier in `locate` — this is what the
           # remote ref MUST still equal at push time. If the contributor
           # force-pushed between resolve and now, the lease fails and
           # we surface that distinctly from a fork-without-maintainer
           # -edit push failure.
           HEAD_SHA: ${{ steps.locate.outputs.head_sha }}
+          # Auth for the push only — never persisted to disk. Provided
+          # via env to avoid interpolating into the shell command line.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         working-directory: pr-checkout
         run: |
@@ -274,9 +288,19 @@ jobs:
           # `lease-failed` (NOT `push-failed`, which would mislead users
           # into enabling maintainer-edit). For fork PRs, the push still
           # requires "Allow edits by maintainers" to be enabled.
+          #
+          # Auth is supplied inline via `-c http.<base>.extraheader` (NOT
+          # via a `https://x-access-token:TOKEN@…` URL — those leak into
+          # process listings and `git remote -v` output). The header is
+          # set per-invocation; it never lands in `.git/config` on disk.
+          # The token is base64-encoded for the Basic auth header per
+          # GitHub's documented pattern for this scope.
+          push_url="https://github.com/${HEAD_REPO}.git"
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
           push_stderr=$(mktemp)
-          if git push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
-                origin "HEAD:${HEAD_REF}" 2>"$push_stderr"; then
+          if git -c http.extraheader="${auth_header}" \
+                push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
+                "${push_url}" "HEAD:${HEAD_REF}" 2>"$push_stderr"; then
             echo "result=applied" >> "$GITHUB_OUTPUT"
           else
             cat "$push_stderr" >&2
