@@ -114,6 +114,73 @@ jobs:
             echo "changed_lines=${CHANGED}"
           } >> "$GITHUB_OUTPUT"
 
+      # Cross-verify the artifact's claimed identity against the
+      # GitHub-controlled workflow_run event. The previous step's
+      # allowlist only proves the fields are well-formed — not that
+      # they refer to the PR/SHA that actually triggered this run.
+      # A fork-controlled `npm run lint:fix` could plausibly mutate
+      # metadata.json to reference another PR or SHA, redirecting our
+      # write-scoped sticky/check-run onto an attacker-chosen target.
+      #
+      # Authority sources are all server-controlled GitHub event fields:
+      #   - workflow_run.head_sha
+      #   - workflow_run.head_repository.full_name
+      #   - workflow_run.pull_requests[].number  (within-repo PRs only;
+      #     empty array on fork PRs — fall back to commits/{sha}/pulls)
+      #
+      # Mismatch => fail loud BEFORE any sticky/check-run side effect.
+      - name: Verify metadata against workflow_run authority
+        id: verify
+        if: steps.meta.outputs.changed_lines != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          META_PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          META_HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          META_HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WF_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WF_PR_NUMBERS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) head_sha must match exactly. workflow_run.head_sha is the
+          # commit GitHub actually ran the producer against — definitive.
+          if [ "${META_HEAD_SHA}" != "${WF_HEAD_SHA}" ]; then
+            echo "::error::Artifact head_sha (${META_HEAD_SHA}) does not match workflow_run.head_sha (${WF_HEAD_SHA}) — refusing to publish."
+            exit 1
+          fi
+
+          # 2) head_repo must match exactly. Same authority anchor.
+          if [ "${META_HEAD_REPO}" != "${WF_HEAD_REPO}" ]; then
+            echo "::error::Artifact head_repo (${META_HEAD_REPO}) does not match workflow_run.head_repository (${WF_HEAD_REPO}) — refusing to publish."
+            exit 1
+          fi
+
+          # 3) pr_number must reference an open PR with this head SHA.
+          # Within-repo PRs: workflow_run.pull_requests[] is populated.
+          # Fork PRs: that array is empty by GitHub design — fall back
+          # to the REST commit-to-PRs lookup. Fail closed if the lookup
+          # finds no matching open PR (avoids attacker-forged PR ids).
+          allowed_numbers=$(jq -c '.' <<< "${WF_PR_NUMBERS}")
+          if [ "${allowed_numbers}" = "[]" ]; then
+            echo "workflow_run.pull_requests is empty (fork PR) — falling back to commits/{sha}/pulls."
+            allowed_numbers=$(gh api "repos/${GH_REPO}/commits/${WF_HEAD_SHA}/pulls" \
+              --jq '[.[] | select(.state == "open") | .number]' 2>/dev/null || echo "[]")
+            if [ "${allowed_numbers}" = "[]" ]; then
+              echo "::error::No open PR found for head ${WF_HEAD_SHA} via commits/{sha}/pulls — refusing to publish."
+              exit 1
+            fi
+          fi
+
+          if ! jq -e --argjson n "${META_PR_NUMBER}" 'index($n) != null' <<< "${allowed_numbers}" >/dev/null; then
+            echo "::error::Artifact pr_number (${META_PR_NUMBER}) is not in the authoritative PR list (${allowed_numbers}) — refusing to publish."
+            exit 1
+          fi
+
+          echo "Verified: metadata identity matches workflow_run authority (PR=${META_PR_NUMBER}, head_sha=${META_HEAD_SHA}, head_repo=${META_HEAD_REPO})."
+
       - name: Upsert sticky summary comment
         # Only post when ci-quality found something fixable (= the
         # autofix patch is non-empty). When prettier/eslint are clean

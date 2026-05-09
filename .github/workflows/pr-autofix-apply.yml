@@ -227,6 +227,12 @@ jobs:
         if: steps.locate.outputs.found == 'true'
         env:
           HEAD_REF: ${{ steps.locate.outputs.head_ref }}
+          # The SHA we resolved earlier in `locate` — this is what the
+          # remote ref MUST still equal at push time. If the contributor
+          # force-pushed between resolve and now, the lease fails and
+          # we surface that distinctly from a fork-without-maintainer
+          # -edit push failure.
+          HEAD_SHA: ${{ steps.locate.outputs.head_sha }}
         shell: bash
         working-directory: pr-checkout
         run: |
@@ -261,13 +267,29 @@ jobs:
           git add -A
           git commit -m "chore(autofix): apply prettier + eslint fixes via /autofix command"
 
-          # Push to the PR head branch. For fork PRs this requires
-          # "Allow edits by maintainers" enabled by the PR author.
-          if git push origin "HEAD:${HEAD_REF}"; then
+          # Push to the PR head branch with a lease against the resolved
+          # SHA. The lease ensures the remote ref still points at HEAD_SHA
+          # when the push lands — if the contributor force-pushed in the
+          # window between resolve and now, the lease fails and we return
+          # `lease-failed` (NOT `push-failed`, which would mislead users
+          # into enabling maintainer-edit). For fork PRs, the push still
+          # requires "Allow edits by maintainers" to be enabled.
+          push_stderr=$(mktemp)
+          if git push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
+                origin "HEAD:${HEAD_REF}" 2>"$push_stderr"; then
             echo "result=applied" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::git push failed — likely fork without maintainer-edit enabled."
-            echo "result=push-failed" >> "$GITHUB_OUTPUT"
+            cat "$push_stderr" >&2
+            # `--force-with-lease` reports "stale info" when the remote
+            # ref has moved past the expected SHA. Match that signal to
+            # distinguish from auth/network/maintainer-edit failures.
+            if grep -qE "stale info|force-with-lease|rejected.*non-fast-forward" "$push_stderr"; then
+              echo "::error::git push lease failed — branch moved during apply."
+              echo "result=lease-failed" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::git push failed — likely fork without maintainer-edit enabled."
+              echo "result=push-failed" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
@@ -320,6 +342,14 @@ jobs:
                 -f content="-1" >/dev/null
               gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
                 -f body="⚠️ Couldn't push the autofix commit. If this is a fork PR, please tick **Allow edits by maintainers** in the PR sidebar, then comment \`/autofix\` again. ([apply run](${run_url}))" \
+                >/dev/null
+              exit 1
+              ;;
+            lease-failed)
+              gh api -X POST "repos/${GH_REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content="-1" >/dev/null
+              gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" \
+                -f body="⚠️ The PR head moved while autofix was applying — a new commit landed in the window between resolve and push. Comment \`/autofix\` again to retry against the latest head. ([apply run](${run_url}))" \
                 >/dev/null
               exit 1
               ;;
