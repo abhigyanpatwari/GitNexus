@@ -124,11 +124,22 @@ interface LanguageProviderConfig {
    * `UFUNCTION`, `MODULENAME_API`) in C++ headers that prevent the parser from
    * recognising class/function names correctly.
    *
-   * **Length-preserving requirement:** the returned string MUST have the same
-   * byte length as the input. Implementations should replace removed text with
-   * spaces, preserving newlines, so tree-sitter's reported byte offsets and
-   * line/column positions still match the original file. Violating this will
-   * silently corrupt symbol locations in the graph.
+   * **Length / position preservation:** the returned string MUST have the same
+   * JavaScript `.length` as the input AND preserve every newline (`\n`/`\r`)
+   * position byte-for-byte. Implementations replace elided characters with
+   * ASCII spaces while leaving newlines untouched. With this contract:
+   *
+   *   - tree-sitter's reported `startPosition.row`/`startPosition.column`
+   *     match the original file exactly (line/column come from newline counts)
+   *   - `startIndex`/`endIndex` byte offsets match the original file exactly
+   *     **when the elided range is pure ASCII** (UTF-16 `.length` equals UTF-8
+   *     byte length only for ASCII).
+   *
+   * Implementations targeting languages where elided ranges may contain
+   * non-ASCII content must therefore preserve byte length, not just `.length`,
+   * if downstream code uses `startIndex` to slice the original UTF-8 bytes.
+   * The current C++ UE-macro preprocessor relies on the practical fact that
+   * UE reflection macros and module-export tokens are ASCII-only.
    *
    * Must be a pure function — same input always yields the same output. Called
    * once per file, on every code path that re-parses (parsing-processor, import

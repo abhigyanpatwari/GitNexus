@@ -222,8 +222,7 @@ export const processHeritage = async (
       // Per-language source preprocessor (length-preserving, e.g. UE macro
       // stripping for C++). MUST mirror parsing-processor on cache miss so
       // re-parses see the same input as the cached AST.
-      const parseContent =
-        provider.preprocessSource?.(file.content, file.path) ?? file.content;
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
         tree = parser.parse(parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
@@ -418,8 +417,7 @@ export async function extractExtractedHeritageFromFiles(
 
     let tree = astCache.get(file.path);
     if (!tree) {
-      const parseContent =
-        provider.preprocessSource?.(file.content, file.path) ?? file.content;
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
         tree = parser.parse(parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),

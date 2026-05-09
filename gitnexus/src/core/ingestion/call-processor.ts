@@ -769,8 +769,7 @@ export const processCalls = async (
 
     let tree = astCache.get(file.path);
     if (!tree) {
-      const parseContent =
-        provider.preprocessSource?.(file.content, file.path) ?? file.content;
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
         tree = parser.parse(parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
@@ -3282,8 +3281,7 @@ export const extractFetchCallsFromFiles = async (
 
     let tree = astCache.get(file.path);
     if (!tree) {
-      const parseContent =
-        provider.preprocessSource?.(file.content, file.path) ?? file.content;
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
         tree = parser.parse(parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),

@@ -305,8 +305,7 @@ export const processImports = async (
     let wasReparsed = false;
 
     if (!tree) {
-      const parseContent =
-        provider.preprocessSource?.(file.content, file.path) ?? file.content;
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
         tree = parser.parse(parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),

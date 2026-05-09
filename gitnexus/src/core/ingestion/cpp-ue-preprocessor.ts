@@ -18,7 +18,18 @@
  *
  * Pure function — no tree-sitter dependency, safe for worker threads.
  */
-const HAS_UE_HINT = /\b(?:UCLASS|UFUNCTION|UPROPERTY|USTRUCT|UENUM|UINTERFACE|GENERATED_BODY|GENERATED_[A-Z_]+_BODY|UE_DEPRECATED|DECLARE_(?:DYNAMIC_)?(?:MULTICAST_)?DELEGATE|[A-Z][A-Z0-9_]*_API)/;
+/**
+ * Strong UE markers — reflection macros that only Unreal Engine projects use.
+ * Presence of one of these is sufficient evidence that the file is a UE source
+ * and that `MODULENAME_API` tokens in it are intended as export macros.
+ *
+ * Importantly, `_API` tokens are NOT in this guard — `REST_API`, `HTTP_API`,
+ * `MY_LIB_API` and similar identifiers appear in plenty of non-UE C++ codebases
+ * as constants/enums/parameter names. We must not erase them just because the
+ * file mentions an `_API` token.
+ */
+const HAS_UE_HINT =
+  /\b(?:UCLASS|UFUNCTION|UPROPERTY|USTRUCT|UENUM|UINTERFACE|GENERATED_BODY|GENERATED_[A-Z_]+_BODY|UE_DEPRECATED|DECLARE_(?:DYNAMIC_)?(?:MULTICAST_)?DELEGATE)/;
 
 const SIMPLE_MACROS_NO_ARGS: readonly string[] = [
   'GENERATED_BODY',
@@ -185,10 +196,15 @@ function skipWhitespace(source: string, idx: number): number {
 /**
  * Strip Unreal Engine reflection macros from C++ source, length-preserving.
  *
- * Returns the original string unchanged if no UE markers are detected, so
- * non-UE C++ files incur only a single regex test.
+ * Returns the original string unchanged if no strong UE marker is detected,
+ * so non-UE C++ files (including ones that contain `*_API`-suffixed
+ * identifiers like `REST_API` or `HTTP_API`) incur only a single regex test.
+ *
+ * The `_filePath` parameter is part of the `LanguageProvider.preprocessSource`
+ * contract but is unused — UE detection is purely content-based. Accepted and
+ * ignored here so the function matches the hook signature exactly.
  */
-export function stripUeMacros(source: string): string {
+export function stripUeMacros(source: string, _filePath?: string): string {
   if (!HAS_UE_HINT.test(source)) return source;
 
   const chars: string[] = source.split('');
