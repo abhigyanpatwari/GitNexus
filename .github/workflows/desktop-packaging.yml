@@ -5,6 +5,9 @@ on:
     paths:
       - .github/workflows/desktop-packaging.yml
       - gitnexus-desktop/**
+      - gitnexus/**
+      - gitnexus-web/**
+      - gitnexus-shared/**
   workflow_dispatch:
 
 permissions: {}
