@@ -102,15 +102,24 @@ jobs:
           # ── Skip when the merge commit corresponds to a release ─────────
           # Two complementary checks (belt-and-suspenders):
           #   1. The HEAD commit subject matches `chore: release vX.Y.Z`
-          #      (the canonical release-PR title in this repo).
+          #      (the canonical release-PR title in this repo). Anchored
+          #      at both ends to require the bare title or the squash-merge
+          #      `(#NNNN)` suffix exactly — rejects noisy variants like
+          #      `chore: release v1.0.0 (something unrelated)`.
           #   2. The squash-merged PR carries the `release` label.
           # Either match suppresses the rc build — stable releases publish
           # via publish.yml on the v-tag, so the rc cycle should pause for
           # them rather than racing the npm publish.
           HEAD_SUBJECT="$(git log -1 --pretty=%s HEAD)"
-          if [[ "$HEAD_SUBJECT" =~ ^chore:[[:space:]]*release[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          # Sanitise GitHub-Actions annotation prefixes before logging the
+          # raw subject — defence-in-depth so a hypothetical commit subject
+          # containing `::error::` or `::set-output::` cannot forge log
+          # annotations even though %s strips newlines.
+          HEAD_SUBJECT_SAFE="${HEAD_SUBJECT//::/__}"
+          RELEASE_SUBJECT_RE='^chore:[[:space:]]*release[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]+\(#[0-9]+\))?$'
+          if [[ "$HEAD_SUBJECT" =~ $RELEASE_SUBJECT_RE ]]; then
             echo "HEAD commit subject matches a release commit — skipping rc."
-            echo "  subject: $HEAD_SUBJECT"
+            echo "  subject (sanitised): $HEAD_SUBJECT_SAFE"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -129,7 +138,7 @@ jobs:
             else
               # Lookup failure is not fatal — fall through to the dedup check
               # so a transient GH API hiccup doesn't silently suppress rc builds.
-              echo "::warning::Could not read labels for PR #$PR_NUM — falling through."
+              echo "::warning::Could not read labels for PR #${PR_NUM} — falling through."
             fi
           fi
 
