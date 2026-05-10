@@ -11,7 +11,7 @@ export interface CArityInfo {
  */
 export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
   // Find the function_declarator child (may be wrapped in pointer_declarator)
-  let funcDecl = findFuncDeclarator(node);
+  const funcDecl = findFuncDeclarator(node);
   if (funcDecl === null) return {};
 
   const paramList = funcDecl.childForFieldName?.('parameters');
@@ -60,7 +60,7 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
  */
 export function computeCCallArity(node: SyntaxNode): number {
   const argList = node.childForFieldName?.('arguments');
-  if (argList === null || argList === undefined) return 0;
+  if (argList == null) return 0;
 
   let count = 0;
   for (let i = 0; i < argList.childCount; i++) {
@@ -77,7 +77,7 @@ export function computeCCallArity(node: SyntaxNode): number {
 function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
   // Direct child
   let decl = node.childForFieldName?.('declarator');
-  if (decl === null || decl === undefined) {
+  if (decl == null) {
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
       if (c?.type === 'function_declarator') return c;
@@ -85,9 +85,9 @@ function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
     return null;
   }
   // Unwrap pointer_declarator
-  while (decl !== null && decl.type === 'pointer_declarator') {
+  while (decl != null && decl.type === 'pointer_declarator') {
     const next = decl.childForFieldName?.('declarator');
-    if (next === null || next === undefined) break;
+    if (next == null) break;
     decl = next;
   }
   if (decl?.type === 'function_declarator') return decl;

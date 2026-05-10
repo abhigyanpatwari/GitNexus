@@ -95,8 +95,7 @@ export function emitCScopeCaptures(
     }
 
     // Enrich call references with arity
-    const callAnchor =
-      grouped['@reference.call.free'] ?? grouped['@reference.call.member'];
+    const callAnchor = grouped['@reference.call.free'] ?? grouped['@reference.call.member'];
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode = findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression');
       if (callNode !== null) {
