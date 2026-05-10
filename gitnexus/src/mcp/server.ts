@@ -27,6 +27,7 @@ import { GITNEXUS_TOOLS } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import { instrumented } from './request-log.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -162,35 +163,53 @@ export function createMCPServer(backend: LocalBackend): Server {
     })),
   }));
 
-  // Handle tool calls — append next-step hints to guide agent workflow
+  // Handle tool calls — append next-step hints to guide agent workflow.
+  // Wrapped in `instrumented(...)` so every call writes one JSONL line to
+  // the MCP request log (see ./request-log.ts) for utilization analysis.
+  // The wrap is no-op if GITNEXUS_MCP_REQUEST_LOG=off.
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    try {
-      const result = await backend.callTool(name, args);
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+    return instrumented(
+      name,
+      async () => {
+        try {
+          const result = await backend.callTool(name, args);
+          const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          const hint = getNextStepHint(name, args as Record<string, any> | undefined);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: resultText + hint,
-          },
-        ],
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
+          return {
+            content: [
+              {
+                type: 'text',
+                text: resultText + hint,
+              },
+            ],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Error: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+      (result) => {
+        // Size the text payload, not the whole envelope, so the log
+        // metric stays aligned with what the agent actually receives.
+        try {
+          const block = (result as { content?: Array<{ text?: string }> }).content?.[0];
+          return block?.text ? Buffer.byteLength(block.text, 'utf8') : 0;
+        } catch {
+          return 0;
+        }
+      },
+    );
   });
 
   // Handle list prompts request
