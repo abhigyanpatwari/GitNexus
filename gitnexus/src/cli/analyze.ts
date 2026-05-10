@@ -117,8 +117,18 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
-  noStats?: boolean;
+  /**
+   * Stats inclusion in AGENTS.md and CLAUDE.md.
+   *
+   * Commander.js represents `--no-stats` as `stats: boolean` (default
+   * `true`; `false` when the user passes `--no-stats`), NOT as
+   * `noStats: boolean`. Reading the negated form would always be
+   * `undefined` and the flag would silently no-op (#1477). Consumers
+   * that want "did the user request --no-stats?" should compare with
+   * `=== false` to distinguish the explicit-off case from the
+   * default-on case.
+   */
+  stats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
   /**
@@ -411,7 +421,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
+        // commander.js `.option('--no-stats', …)` registers the flag as
+        // `options.stats` (boolean, default true; `false` when the user
+        // passed --no-stats). Reading `options?.noStats` here returns
+        // undefined every time, so the flag was a no-op on the markdown
+        // rewrite path before this fix. See #1477.
+        noStats: options?.stats === false,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -497,7 +512,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+            // See note above (#1477): commander stores --no-stats as
+            // `options.stats === false`, not as `options.noStats`.
+            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.stats === false },
           );
         }
       } catch {
