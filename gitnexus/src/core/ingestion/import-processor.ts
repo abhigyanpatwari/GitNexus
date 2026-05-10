@@ -8,6 +8,7 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
@@ -307,7 +308,7 @@ export const processImports = async (
     if (!tree) {
       const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(parseContent, undefined, {
+        tree = parseSourceSafe(parser, parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
