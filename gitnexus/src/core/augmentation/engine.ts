@@ -144,7 +144,8 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     // When FTS indexes are unavailable (read-only DB, first run before indexes are built),
     // fall back to a direct name CONTAINS query so enrichment still works.
     if (symbolMatches.length === 0 && !ftsAvailable) {
-      const firstWord = pattern.replace(/'/g, "''").split(/\s+/)[0];
+      const firstWord = pattern.trim().replace(/'/g, "''").split(/\s+/)[0];
+      if (!firstWord || firstWord.length < 2) return '';
       const fallbackRows = await executeQuery(
         repoId,
         `
