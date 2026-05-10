@@ -15,15 +15,27 @@ const C_SCOPE_QUERY = `
 (switch_statement) @scope.block
 (case_statement) @scope.block
 
-;; Declarations — struct
+;; Declarations — struct (named)
 (struct_specifier
   name: (type_identifier) @declaration.name
   body: (field_declaration_list)) @declaration.struct
 
-;; Declarations — union
+;; Declarations — struct (typedef struct { ... } Name)
+(type_definition
+  type: (struct_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @declaration.name) @declaration.struct
+
+;; Declarations — union (named)
 (union_specifier
   name: (type_identifier) @declaration.name
   body: (field_declaration_list)) @declaration.union
+
+;; Declarations — union (typedef union { ... } Name)
+(type_definition
+  type: (union_specifier
+    body: (field_declaration_list))
+  declarator: (type_identifier) @declaration.name) @declaration.union
 
 ;; Declarations — enum
 (enum_specifier
@@ -64,15 +76,10 @@ const C_SCOPE_QUERY = `
   declarator: (pointer_declarator
     declarator: (field_identifier) @declaration.name)) @declaration.field
 
-;; Declarations — variables
+;; Declarations — variables (with initializer)
 (declaration
   declarator: (init_declarator
     declarator: (identifier) @declaration.name)) @declaration.variable
-
-;; Declarations — plain variable (no initializer)
-(declaration
-  declarator: (identifier) @declaration.name
-  !declarator) @declaration.variable
 
 ;; Declarations — macro definitions
 (preproc_def
@@ -89,13 +96,9 @@ const C_SCOPE_QUERY = `
 (preproc_include) @import.statement
 
 ;; Type bindings — parameter annotations
-(function_definition
-  declarator: (function_declarator
-    declarator: (identifier) @_fn_name
-    parameters: (parameter_list
-      (parameter_declaration
-        declarator: (identifier) @type-binding.name
-        type: (_) @type-binding.type)))) @type-binding.parameter
+(parameter_declaration
+  type: (_) @type-binding.type
+  declarator: (identifier) @type-binding.name) @type-binding.parameter
 
 ;; Type bindings — variable with type (init_declarator)
 (declaration

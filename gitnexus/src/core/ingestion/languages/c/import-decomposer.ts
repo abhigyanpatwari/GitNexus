@@ -8,27 +8,40 @@ import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/as
  */
 export function splitCInclude(node: SyntaxNode): CaptureMatch | null {
   // node.type === 'preproc_include'
-  // children: '#include' + (string_literal | system_lib_string)
-  let pathNode: SyntaxNode | null = null;
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child === null) continue;
-    if (child.type === 'string_literal' || child.type === 'system_lib_string') {
-      pathNode = child;
-      break;
+  // path field: (string_literal (string_content)) | (system_lib_string)
+  const pathNode = node.childForFieldName?.('path') ?? null;
+  if (pathNode === null) {
+    // Fallback: scan children
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child === null) continue;
+      if (child.type === 'string_literal' || child.type === 'system_lib_string') {
+        return buildIncludeCapture(node, child);
+      }
     }
+    return null;
   }
-  if (pathNode === null) return null;
+  return buildIncludeCapture(node, pathNode);
+}
 
-  // Strip quotes: "foo.h" → foo.h  or <stdio.h> → stdio.h
-  let raw = pathNode.text;
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith('<') && raw.endsWith('>'))) {
-    raw = raw.slice(1, -1);
+function buildIncludeCapture(node: SyntaxNode, pathNode: SyntaxNode): CaptureMatch {
+  let raw: string;
+  if (pathNode.type === 'string_literal') {
+    // string_literal has children: `"`, string_content, `"`
+    // Use namedChildren to find the string_content node
+    const content = pathNode.namedChildren.find((c) => c.type === 'string_content');
+    raw = content?.text ?? pathNode.text.replace(/^"|"$/g, '');
+  } else {
+    // system_lib_string: <stdio.h> → strip angle brackets
+    raw = pathNode.text;
+    if (raw.startsWith('<') && raw.endsWith('>')) {
+      raw = raw.slice(1, -1);
+    }
   }
 
   const isSystem = pathNode.type === 'system_lib_string';
 
-  const result: CaptureMatch = {
+  const result: Record<string, Capture> = {
     '@import.statement': nodeToCapture('@import.statement', node),
     '@import.kind': syntheticCapture('@import.kind', node, 'wildcard'),
     '@import.source': syntheticCapture('@import.source', node, raw),

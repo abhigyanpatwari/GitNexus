@@ -5,6 +5,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cProvider } from '../c-cpp.js';
 import { cArityCompatibility, cMergeBindings, resolveCImportTarget } from './index.js';
+import { scanHeaderFiles } from './header-scan.js';
 
 /**
  * C `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -22,8 +23,20 @@ export const cScopeResolver: ScopeResolver = {
   languageProvider: cProvider,
   importEdgeReason: 'c-scope: include',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) =>
-    resolveCImportTarget(targetRaw, fromFile, allFilePaths),
+  loadResolutionConfig: (repoPath: string) => scanHeaderFiles(repoPath),
+
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+    // Augment allFilePaths with .h files discovered via loadResolutionConfig
+    // since the phase only passes .c files to the C resolver but #include
+    // targets .h files classified as C++ in language detection.
+    const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
+    if (headerPaths !== undefined && headerPaths.size > 0) {
+      const augmented = new Set(allFilePaths);
+      for (const h of headerPaths) augmented.add(h);
+      return resolveCImportTarget(targetRaw, fromFile, augmented);
+    }
+    return resolveCImportTarget(targetRaw, fromFile, allFilePaths);
+  },
 
   mergeBindings: (existing, incoming, scopeId) => cMergeBindings(existing, incoming, scopeId),
 

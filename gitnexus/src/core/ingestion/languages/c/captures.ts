@@ -21,6 +21,10 @@ export function emitCScopeCaptures(
   const rawMatches = getCScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
+  // Track ranges where typedef-struct/union was captured as @declaration.struct/union
+  // so we can suppress the duplicate @declaration.typedef match at the same range.
+  const structTypedefRanges = new Set<string>();
+
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
     for (const c of m.captures) {
@@ -41,6 +45,21 @@ export function emitCScopeCaptures(
           continue;
         }
       }
+    }
+
+    // Track typedef-struct ranges to suppress duplicate typedef declarations
+    const structAnchor = grouped['@declaration.struct'] ?? grouped['@declaration.union'];
+    if (structAnchor !== undefined) {
+      const r = structAnchor.range;
+      structTypedefRanges.add(`${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`);
+    }
+
+    // Suppress @declaration.typedef if the same range was already captured as struct/union
+    const typedefAnchor = grouped['@declaration.typedef'];
+    if (typedefAnchor !== undefined) {
+      const r = typedefAnchor.range;
+      const key = `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
+      if (structTypedefRanges.has(key)) continue;
     }
 
     // Enrich function declarations with arity metadata
@@ -90,15 +109,6 @@ export function emitCScopeCaptures(
     }
 
     out.push(grouped);
-  }
-
-  // Synthesize typeBindings for struct fields (for compound receiver resolution)
-  for (const match of out) {
-    if (match['@declaration.field'] === undefined) continue;
-    const nameCap = match['@declaration.name'];
-    if (nameCap === undefined) continue;
-    // For C, we don't have rich type info on fields from the query
-    // but we keep the slot for future enhancement
   }
 
   return out;
