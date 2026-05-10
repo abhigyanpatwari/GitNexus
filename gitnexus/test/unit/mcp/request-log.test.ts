@@ -17,16 +17,25 @@ describe('resolveLogPath', () => {
     expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '/tmp/custom.log' })).toBe('/tmp/custom.log');
   });
 
-  it('returns null when env var is "off"', () => {
+  it('returns null when env var disables logging', () => {
     expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'off' })).toBeNull();
     expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'OFF' })).toBeNull();
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'false' })).toBeNull();
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '0' })).toBeNull();
   });
 
-  it('falls back to ~/.gitnexus/mcp-requests.log when env var is unset or empty', () => {
+  it('returns null (disabled) when env var is unset or empty (opt-in default)', () => {
+    expect(resolveLogPath({})).toBeNull();
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '' })).toBeNull();
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '   ' })).toBeNull();
+  });
+
+  it('returns the default log path for affirmative boolean values', () => {
     const expected = path.join(os.homedir(), '.gitnexus', 'mcp-requests.log');
-    expect(resolveLogPath({})).toBe(expected);
-    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '' })).toBe(expected);
-    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '   ' })).toBe(expected);
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'on' })).toBe(expected);
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'ON' })).toBe(expected);
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: 'true' })).toBe(expected);
+    expect(resolveLogPath({ GITNEXUS_MCP_REQUEST_LOG: '1' })).toBe(expected);
   });
 });
 

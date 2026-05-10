@@ -7,18 +7,19 @@
  * long do calls take." A simpler counterpart to the full OpenTelemetry
  * proposal in #1351 — see the issue for the design discussion.
  *
- * Configuration via env (defaults are safe-by-default — opt-out, not
- * opt-in, so the log is present without extra setup):
+ * Configuration via env (opt-in default — no log written unless the
+ * user asks for one, so this PoC is safe to merge without privacy
+ * concerns about incidental capture in shared environments):
  *
- *   GITNEXUS_MCP_REQUEST_LOG=off        — disable entirely
- *   GITNEXUS_MCP_REQUEST_LOG=/path/log  — write to this absolute path
- *   GITNEXUS_MCP_REQUEST_LOG=<empty>    — default: ~/.gitnexus/mcp-requests.log
+ *   unset / empty                       — disabled (default)
+ *   GITNEXUS_MCP_REQUEST_LOG=on         — enable; write to ~/.gitnexus/mcp-requests.log
+ *   GITNEXUS_MCP_REQUEST_LOG=/path/log  — enable; write to this absolute path
+ *   GITNEXUS_MCP_REQUEST_LOG=off        — explicitly disabled (same as unset)
  *
- * Privacy: tool inputs (e.g. raw `cypher` queries) may contain symbol
- * names from private code. The log lives next to `.gitnexus/` data
- * that already contains the indexed graph, so no new exposure surface
- * is created — but the log is kept off by default in CI to avoid
- * incidental capture in shared environments (see request-log.test.ts).
+ * Whether the default should flip to opt-out (so server-side ground
+ * truth exists without setup) is part of the design discussion on
+ * #1351 — the OpenTelemetry / Prometheus direction proposed there
+ * may make the JSONL path moot.
  *
  * Failures to write are swallowed — the MCP server's availability
  * matters more than logging fidelity.
@@ -47,12 +48,15 @@ export interface RequestLogEntry {
  */
 export function resolveLogPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = env['GITNEXUS_MCP_REQUEST_LOG'];
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (trimmed.toLowerCase() === 'off') return null;
-    if (trimmed.length > 0) return trimmed;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'off' || lower === 'false' || lower === '0') return null;
+  if (lower === 'on' || lower === 'true' || lower === '1') {
+    return join(homedir(), '.gitnexus', 'mcp-requests.log');
   }
-  return join(homedir(), '.gitnexus', 'mcp-requests.log');
+  return trimmed;
 }
 
 /**
