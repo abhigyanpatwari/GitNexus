@@ -15,6 +15,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // the .c file create a dedup ambiguity. The registry-primary path
     // resolves it via scope-based wildcard import binding.
     'emits CALLS edges for cross-file function calls',
+    // The legacy DAG path does not resolve cross-file calls through
+    // #include → prototype chains. The scope-based path resolves
+    // caller.c → b.h → public_b via wildcard import binding +
+    // isFileLocalDef filtering of static functions.
+    'caller.c calls b:helper via include, NOT a:static helper',
   ]),
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
