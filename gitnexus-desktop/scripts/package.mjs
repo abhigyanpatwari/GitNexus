@@ -28,19 +28,6 @@ const electronVersion =
   desktopPackageJson.devDependencies?.electron?.replace(/^[^\d]*/, '') ?? '41.2.1';
 const electronBuilderVersion =
   desktopPackageJson.devDependencies?.['electron-builder']?.replace(/^[^\d]*/, '') ?? '26.8.1';
-const [nodeMajorVersion = 0, nodeMinorVersion = 0] = process.versions.node
-  .split('.')
-  .map((segment) => Number.parseInt(segment, 10));
-const supportsElectronRebuildV4 =
-  nodeMajorVersion > 22 || (nodeMajorVersion === 22 && nodeMinorVersion >= 12);
-// electron-rebuild v4 requires Node >= 22.12. Keep a v3 fallback for local Node 20 usage.
-const electronRebuildVersion = supportsElectronRebuildV4 ? '4.0.3' : '3.7.2';
-
-if (!supportsElectronRebuildV4) {
-  console.warn(
-    `[build] Node ${process.versions.node} detected; using electron-rebuild@${electronRebuildVersion}. Node 22.12+ is recommended for Electron ${electronVersion}.`,
-  );
-}
 const electronBuilderCliPath = path.join(packageRoot, 'node_modules', 'electron-builder', 'cli.js');
 const builderUtilRequire = createRequire(
   path.join(packageRoot, 'node_modules', 'builder-util', 'out', 'util.js'),
@@ -81,7 +68,6 @@ const allowedBuilderArgs = new Set([
 const artifactFileExtensions = new Set(['.AppImage', '.dmg', '.exe', '.msi', '.zip']);
 const gitnexusRuntimeDependencyNames = Object.keys(gitnexusPackageJson.dependencies ?? {});
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const packagedResourceEntries = [
   {
     from: path.join(gitnexusWebRoot, 'dist'),
@@ -195,43 +181,6 @@ const runCommand = (command, args, cwd, extraEnv = {}) => {
   });
 };
 
-const patchBindingGypInPlace = (gypPath) => {
-  let descriptor;
-
-  try {
-    descriptor = fs.openSync(gypPath, 'r+');
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return false;
-    }
-
-    throw error;
-  }
-
-  try {
-    const original = fs.readFileSync(descriptor, 'utf8');
-
-    if (!original.includes('c++17')) {
-      return false;
-    }
-
-    const patched = original
-      .replaceAll('-std=c++17', '-std=c++20')
-      .replaceAll('/std:c++17', '/std:c++20')
-      .replaceAll('"c++17"', '"c++20"');
-
-    if (patched === original) {
-      return false;
-    }
-
-    fs.ftruncateSync(descriptor, 0);
-    fs.writeSync(descriptor, patched, 0, 'utf8');
-    return true;
-  } finally {
-    fs.closeSync(descriptor);
-  }
-};
-
 const mirrorDirectory = (sourceDirectory, destinationDirectory) => {
   if (process.platform === 'win32') {
     fs.mkdirSync(destinationDirectory, { recursive: true });
@@ -335,64 +284,6 @@ const syncPackagedRuntimeResources = () => {
       fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
       fs.cpSync(entry.from, destinationPath, { force: true });
     }
-  }
-};
-
-const rebuildPackagedNativeModules = () => {
-  const resourceRoots = resolvePackagedResourceRoots();
-
-  if (resourceRoots.length === 0) {
-    return;
-  }
-
-  for (const resourceRoot of resourceRoots) {
-    const packagedRuntimeRoot = path.join(resourceRoot, 'gitnexus');
-    const packagedNodeModulesRoot = path.join(packagedRuntimeRoot, 'node_modules');
-    const packagedRuntimePackageJson = path.join(packagedRuntimeRoot, 'package.json');
-
-    if (!fs.existsSync(packagedNodeModulesRoot)) {
-      continue;
-    }
-
-    if (!fs.existsSync(packagedRuntimePackageJson)) {
-      console.warn(
-        `[build] skipping native module rebuild because runtime package.json is missing at ${packagedRuntimePackageJson}`,
-      );
-      continue;
-    }
-
-    const rebuildCommandArgs = [
-      '--yes',
-      '-p',
-      `@electron/rebuild@${electronRebuildVersion}`,
-      'electron-rebuild',
-      '--force',
-      '--types',
-      'prod,optional',
-      '--version',
-      electronVersion,
-      '--module-dir',
-      packagedRuntimeRoot,
-      ...(process.platform === 'win32' ? ['--sequential'] : []),
-    ];
-
-    console.log(
-      `[build] rebuilding packaged native modules for Electron ${electronVersion} in ${packagedRuntimeRoot}`,
-    );
-
-    // node-tree-sitter's binding.gyp hardcodes -std=c++17 / /std:c++17 across
-    // all published versions. Electron 41's V8 headers require C++20. Env-var
-    // overrides (CXXFLAGS, CL) don't help because GYP places per-target
-    // cflags_cc AFTER environment flags, and the last -std= flag wins. Patch
-    // the binding.gyp files directly before rebuilding.
-    for (const entry of fs.readdirSync(packagedNodeModulesRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const gypPath = path.join(packagedNodeModulesRoot, entry.name, 'binding.gyp');
-      if (patchBindingGypInPlace(gypPath)) {
-        console.log(`[build] patched ${gypPath}: c++17 → c++20 for Electron ${electronVersion}`);
-      }
-    }
-    runCommand(npxCommand, rebuildCommandArgs, packagedRuntimeRoot);
   }
 };
 
@@ -543,7 +434,6 @@ runCommand(npmCommand, ['run', 'build'], gitnexusWebRoot);
 
 runCommand(process.execPath, builderCliArgs, packageRoot, builderEnvironment);
 syncPackagedRuntimeResources();
-rebuildPackagedNativeModules();
 
 const artifacts = listArtifacts(outputDir);
 
