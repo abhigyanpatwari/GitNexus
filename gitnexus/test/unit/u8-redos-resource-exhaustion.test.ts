@@ -21,85 +21,112 @@ import {
 } from '../../src/core/group/cross-impact.js';
 
 /**
- * Time a single regex.exec call. Used by the linearity tests below to
- * compute a 10k/5k ratio in addition to the absolute <500ms bound.
+ * Linearity-test methodology
+ * --------------------------
+ * Wall-clock perf assertions in CI are notoriously flaky. To make these
+ * robust without losing regression-detection power, we combine four
+ * techniques:
  *
- * Ratio assertions catch sub-exponential O(n²) regressions that fit
- * inside the absolute cap on warm CI; the absolute cap catches
- * catastrophic backtracking on cold CI. Two complementary signals.
- */
-function timeRegex(re: RegExp, input: string): number {
-  // Reset regex.lastIndex for global/sticky regexes — ours are not, but
-  // be defensive in case future shape changes add the `g` flag.
-  re.lastIndex = 0;
-  const start = performance.now();
-  re.exec(input);
-  return performance.now() - start;
-}
-
-function timeFn<T>(fn: () => T): number {
-  const start = performance.now();
-  fn();
-  return performance.now() - start;
-}
-
-// Linear scaling is ~2.0× when input doubles; 3.0× allows generous
-// slack for CI-runner GC and tier-up jitter. An O(n²) regression on a
-// 2× input takes ~4× as long, well outside this bound.
-const LINEAR_RATIO_BOUND = 3.0;
-
-/**
- * Minimum elapsed time (in ms) below which `performance.now()` ratios
- * are dominated by scheduler jitter and become meaningless. When both
- * timed runs come in below this floor, we skip the ratio assertion —
- * the absolute <500ms bound still catches catastrophic backtracking,
- * and the next CI run will measure higher absolute times that the
- * ratio assertion can evaluate reliably.
+ *   1. **Warmup** — run the function a few times before timing, so the
+ *      JIT has tiered up by the time we measure.
+ *   2. **Median of N trials** — single measurements are dominated by
+ *      GC pauses, scheduler jitter, and OS interrupts. Median of 5
+ *      eliminates almost all of that.
+ *   3. **4× input ratio** (not 2×) — linear → ~4×, O(n²) → ~16×,
+ *      catastrophic → ≫16×. A wider input ratio gives a much bigger
+ *      gap between "linear" and "regressed", so the bound can be loose
+ *      enough to absorb noise without losing signal.
+ *   4. **Generous bound (8×)** with a noise floor — only assert the
+ *      ratio when the *large* measurement is well above the noise
+ *      floor. The absolute <500ms cap still catches catastrophic
+ *      backtracking on cold CI even when the ratio is skipped.
  *
- * Calibrated empirically: a flake on macOS reported ratio 5.29×
- * between two sub-millisecond measurements (~0.5ms vs ~2.6ms), both
- * genuinely linear but indistinguishable from noise. 5ms is a
- * comfortable floor where individual measurements are well-separated
- * from the ~10-100µs `performance.now()` resolution band.
+ * Headroom: linear is expected at ~4×; the bound is 8× → 2× headroom.
+ * O(n²) on a 4× input would clock 16×, well outside the bound.
  */
+const PERF_WARMUP_RUNS = 3;
+const PERF_TRIAL_COUNT = 5;
+const SIZE_RATIO = 4;
+const LINEAR_RATIO_BOUND = SIZE_RATIO * 2; // 8× — 2× headroom over expected linear
+// Median-of-N tightens the noise floor we can rely on. A single-sample 5ms
+// measurement is ~50% jitter; median-of-5 brings the same 5ms into the
+// reliably-resolvable range above `performance.now()`'s ~10-100µs band.
 const RATIO_MEASUREMENT_FLOOR_MS = 5;
 
+function median(samples: number[]): number {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 /**
- * Assert linear scaling between two timed runs on inputs that differ
- * by 2×. When measurements are too small to be reliable, the ratio
- * assertion is skipped (the absolute bound still fires elsewhere).
+ * Median time of `PERF_TRIAL_COUNT` runs of `fn`, after `PERF_WARMUP_RUNS`
+ * warmup iterations. Trial cost: (warmup + trials) × fn cost.
  */
-function assertSubLinearRatio(elapsedSmall: number, elapsedLarge: number, label: string): void {
+function medianTimeFn<T>(fn: () => T): number {
+  for (let i = 0; i < PERF_WARMUP_RUNS; i++) fn();
+  const samples: number[] = [];
+  for (let i = 0; i < PERF_TRIAL_COUNT; i++) {
+    const start = performance.now();
+    fn();
+    samples.push(performance.now() - start);
+  }
+  return median(samples);
+}
+
+/** Median time of regex.exec — defensively resets lastIndex each call. */
+function medianTimeRegex(re: RegExp, input: string): number {
+  return medianTimeFn(() => {
+    re.lastIndex = 0;
+    re.exec(input);
+  });
+}
+
+/**
+ * Assert near-linear scaling between two median-timed runs on inputs
+ * that differ by `SIZE_RATIO`×. The bound is `LINEAR_RATIO_BOUND` =
+ * `SIZE_RATIO * 2`, i.e. 2× headroom over the linear expectation —
+ * comfortably under the ~`SIZE_RATIO²` ratio a quadratic regression
+ * would produce, so true regressions still fail loudly.
+ *
+ * Skip semantics: the ratio assertion is skipped only when *both*
+ * measurements are below the noise floor. If either run is reliably
+ * measurable, we still assert — otherwise an O(n²) regression that
+ * happens to stay under the absolute 500ms cap on a fast runner could
+ * slip through with no detector firing. Median-of-N + the 5ms floor
+ * keeps the assertion stable while preserving regression coverage.
+ */
+function assertNearLinearScaling(elapsedSmall: number, elapsedLarge: number, label: string): void {
   if (elapsedSmall < RATIO_MEASUREMENT_FLOOR_MS && elapsedLarge < RATIO_MEASUREMENT_FLOOR_MS) {
-    // Both runs completed faster than the noise floor — the ratio is
-    // not meaningful. The absolute <500ms bound elsewhere in this
-    // describe block still pins linearity; we skip rather than risk a
-    // flake on a genuinely-linear implementation.
+    // Both runs completed below the noise floor — even the median is
+    // dominated by `performance.now()` resolution. The absolute <500ms
+    // cap elsewhere still catches catastrophic backtracking.
     return;
   }
   const ratio = elapsedLarge / Math.max(elapsedSmall, 0.001);
   if (ratio >= LINEAR_RATIO_BOUND) {
     throw new Error(
       `${label}: ratio ${ratio.toFixed(2)}× exceeds bound ${LINEAR_RATIO_BOUND}× ` +
-        `(small=${elapsedSmall.toFixed(2)}ms, large=${elapsedLarge.toFixed(2)}ms)`,
+        `on ${SIZE_RATIO}× input (small=${elapsedSmall.toFixed(2)}ms, ` +
+        `large=${elapsedLarge.toFixed(2)}ms, median of ${PERF_TRIAL_COUNT} trials)`,
     );
   }
 }
 
 describe('cobol-preprocessor RE_SET_TO_TRUE — linear time on pathological input', () => {
-  it('matches in <500ms on 50k repetitions of "A OF A " AND 100k/50k ratio is sub-linear when measurable', () => {
-    // 50k/100k repetitions chosen so timings exceed the
-    // RATIO_MEASUREMENT_FLOOR_MS noise floor on typical CI hardware.
-    // Pre-fix nested-quantifier shape would be exponential here; the
-    // post-fix `.+?` shape is linear (~2× when input doubles).
+  it('matches in <500ms on 50k repetitions of "A OF A " AND scales sub-linearly on a 4× input', () => {
+    // 50k → 200k (4× input ratio). Pre-fix nested-quantifier shape would
+    // be exponential here; the post-fix `.+?` shape is linear (~4× when
+    // input quadruples). Median of 5 trials with warmup eliminates GC
+    // and tier-up jitter.
     const inputSmall = 'SET ' + 'A OF A '.repeat(50_000) + 'TO TRUE';
-    const inputLarge = 'SET ' + 'A OF A '.repeat(100_000) + 'TO TRUE';
-    const elapsedSmall = timeRegex(RE_SET_TO_TRUE, inputSmall);
-    const elapsedLarge = timeRegex(RE_SET_TO_TRUE, inputLarge);
+    const inputLarge = 'SET ' + 'A OF A '.repeat(50_000 * SIZE_RATIO) + 'TO TRUE';
+    const elapsedSmall = medianTimeRegex(RE_SET_TO_TRUE, inputSmall);
+    const elapsedLarge = medianTimeRegex(RE_SET_TO_TRUE, inputLarge);
     expect(RE_SET_TO_TRUE.exec(inputSmall)).not.toBeNull();
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_TO_TRUE');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'RE_SET_TO_TRUE');
   });
 
   it('still matches a normal SET ... TO TRUE statement', () => {
@@ -110,17 +137,17 @@ describe('cobol-preprocessor RE_SET_TO_TRUE — linear time on pathological inpu
 });
 
 describe('cobol-preprocessor RE_SET_INDEX — linear time on pathological input', () => {
-  it('rejects in <500ms on 50k tokens with no valid suffix AND 100k/50k ratio is sub-linear when measurable', () => {
+  it('rejects in <500ms on 50k tokens with no valid suffix AND scales sub-linearly on a 4× input', () => {
     // Forces backtracking against the (TO|UP\s+BY|DOWN\s+BY) alternation
     // — the richer pathological surface of the two regexes.
     const inputSmall = 'SET ' + 'A '.repeat(50_000) + 'X';
-    const inputLarge = 'SET ' + 'A '.repeat(100_000) + 'X';
-    const elapsedSmall = timeRegex(RE_SET_INDEX, inputSmall);
-    const elapsedLarge = timeRegex(RE_SET_INDEX, inputLarge);
+    const inputLarge = 'SET ' + 'A '.repeat(50_000 * SIZE_RATIO) + 'X';
+    const elapsedSmall = medianTimeRegex(RE_SET_INDEX, inputSmall);
+    const elapsedLarge = medianTimeRegex(RE_SET_INDEX, inputLarge);
     expect(RE_SET_INDEX.exec(inputSmall)).toBeNull();
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_INDEX');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'RE_SET_INDEX');
   });
 
   it('still matches a normal SET INDEX statement', () => {
@@ -133,22 +160,22 @@ describe('cobol-preprocessor RE_SET_INDEX — linear time on pathological input'
 });
 
 describe('rust-workspace parseCargoPackageName — linear-time line walk', () => {
-  it('extracts the package name in <500ms on 100k blank lines AND 200k/100k ratio is sub-linear when measurable', () => {
-    // 100k/200k blank lines chosen so timings exceed the
-    // RATIO_MEASUREMENT_FLOOR_MS noise floor. Earlier 10k/20k pairing
-    // produced sub-millisecond measurements where scheduler jitter
-    // dominated and the ratio became meaningless (a real macOS run
-    // saw 5.29× between two genuinely-linear sub-ms measurements).
+  it('extracts the package name in <500ms on 100k blank lines AND scales sub-linearly on a 4× input', () => {
+    // 100k → 400k blank lines (4× input ratio). Median of 5 trials with
+    // warmup keeps the ratio stable across CI runners. A previous 2×
+    // input + 3× bound + single-trial setup flaked at 3.01× on macOS
+    // (small=7.41ms, large=22.31ms) — both above the noise floor but
+    // close enough that single-shot jitter pushed the ratio over.
     const cargoTomlSmall =
       '[package]\n' + '\n'.repeat(100_000) + 'name = "myrepo"\nversion = "0.1.0"\n';
     const cargoTomlLarge =
-      '[package]\n' + '\n'.repeat(200_000) + 'name = "myrepo"\nversion = "0.1.0"\n';
-    const elapsedSmall = timeFn(() => parseCargoPackageName(cargoTomlSmall));
-    const elapsedLarge = timeFn(() => parseCargoPackageName(cargoTomlLarge));
+      '[package]\n' + '\n'.repeat(100_000 * SIZE_RATIO) + 'name = "myrepo"\nversion = "0.1.0"\n';
+    const elapsedSmall = medianTimeFn(() => parseCargoPackageName(cargoTomlSmall));
+    const elapsedLarge = medianTimeFn(() => parseCargoPackageName(cargoTomlLarge));
     expect(parseCargoPackageName(cargoTomlSmall)).toBe('myrepo');
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'parseCargoPackageName');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'parseCargoPackageName');
   });
 
   it('returns null when [package] section is absent', () => {
