@@ -1,11 +1,11 @@
 {
   "version": 1,
   "hooks": {
-    "beforeShellExecution": [
+    "postToolUse": [
       {
-        "command": "./hooks/augment-shell.sh",
-        "timeout": 5,
-        "matcher": "\\brg\\b|\\bgrep\\b"
+        "matcher": "Shell|Read|Grep",
+        "command": "node ./hooks/gitnexus-hook.cjs",
+        "timeout": 10
       }
     ]
   }

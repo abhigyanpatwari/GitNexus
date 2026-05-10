@@ -422,4 +422,47 @@ describe('emitCsharpScopeCaptures — references', () => {
     expect(m!['@reference.receiver'].text).toBe('obj');
     expect(m!['@reference.name'].text).toBe('Name');
   });
+
+  it('captures member reads `obj.Name`', () => {
+    const m = findMatch('class A { void M(User obj) { var name = obj.Name; } }', (t) =>
+      t.includes('@reference.read.member'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@reference.receiver'].text).toBe('obj');
+    expect(m!['@reference.name'].text).toBe('Name');
+  });
+
+  it('does not capture member calls as member reads', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class A { void M(User obj) { obj.Save(); } }',
+      'test.cs',
+    );
+    expect(matches.some((m) => '@reference.call.member' in m)).toBe(true);
+    expect(matches.some((m) => '@reference.read.member' in m)).toBe(false);
+  });
+
+  it('captures generic type arguments as type references', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class A : IEntityTypeConfiguration<USER_INFO> { public Task<List<USER_INFO>> Load(List<USER_INFO> users) => null!; }',
+      'test.cs',
+    );
+    const names = matches
+      .filter((m) => '@reference.type' in m)
+      .map((m) => m['@reference.name'].text);
+
+    expect(names).toContain('USER_INFO');
+    expect(names).not.toContain('string');
+  });
+
+  it('captures call-site generic type arguments as type references', () => {
+    const matches = emitCsharpScopeCaptures(
+      'class A { void M(IRepo repo) { repo.Get<USER_INFO>(); } }',
+      'test.cs',
+    );
+    const names = matches
+      .filter((m) => '@reference.type' in m)
+      .map((m) => m['@reference.name'].text);
+
+    expect(names).toContain('USER_INFO');
+  });
 });

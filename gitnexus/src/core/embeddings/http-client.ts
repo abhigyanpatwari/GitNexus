@@ -3,13 +3,22 @@
  *
  * Shared fetch+retry logic for OpenAI-compatible /v1/embeddings endpoints.
  * Imported by both the core embedder (batch) and MCP embedder (query).
+ *
+ * Network resilience is delegated to `resilientFetch` from
+ * `gitnexus-shared` — bounded retries with exponential-backoff jitter,
+ * `Retry-After` honored on 429, and an in-process circuit breaker that
+ * fails fast on a flapping endpoint. Per-attempt timeout is enforced
+ * via `AbortSignal.timeout` on the underlying fetch.
  */
+
+import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 
 const HTTP_TIMEOUT_MS = 30_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_BATCH_SIZE = 64;
 const DEFAULT_DIMS = 384;
+const HTTP_BREAKER_KEY = 'embeddings-http';
 
 interface HttpConfig {
   baseUrl: string;
@@ -90,46 +99,51 @@ const httpEmbedBatch = async (
   model: string,
   apiKey: string,
   batchIndex = 0,
-  attempt = 0,
 ): Promise<EmbeddingItem[]> => {
   let resp: Response;
   try {
-    resp = await fetch(url, {
-      method: 'POST',
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+    resp = await resilientFetch(
+      url,
+      {
+        method: 'POST',
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ input: batch, model }),
       },
-      body: JSON.stringify({ input: batch, model }),
-    });
+      {
+        breakerKey: HTTP_BREAKER_KEY,
+        retry: { maxAttempts: HTTP_MAX_RETRIES + 1, baseDelayMs: HTTP_RETRY_BACKOFF_MS },
+      },
+    );
   } catch (err) {
-    // Timeouts should not be retried — the server is unresponsive.
-    // AbortSignal.timeout() throws DOMException with name 'TimeoutError'.
-    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-    if (isTimeout) {
+    if (err instanceof CircuitOpenError) {
+      throw new Error(
+        `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
+      );
+    }
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new Error(
         `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
       );
     }
-    // DNS, connection errors — retry with backoff
-    if (attempt < HTTP_MAX_RETRIES) {
-      const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
-      await new Promise((r) => setTimeout(r, delay));
-      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
+    if (err instanceof ResilientFetchExhaustedError) {
+      throw new Error(
+        `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
+      );
     }
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
   }
 
   if (!resp.ok) {
-    const status = resp.status;
-    if ((status === 429 || status >= 500) && attempt < HTTP_MAX_RETRIES) {
-      const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
-      await new Promise((r) => setTimeout(r, delay));
-      return httpEmbedBatch(url, batch, model, apiKey, batchIndex, attempt + 1);
-    }
-    throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
+    // resilientFetch already retried 5xx/429; any non-OK response here is
+    // a terminal client error (4xx other than 429).
+    throw new Error(
+      `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
+    );
   }
 
   const data = (await resp.json()) as { data: EmbeddingItem[] };

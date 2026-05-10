@@ -45,6 +45,7 @@ import { cVariableConfig, cppVariableConfig } from '../variable-extractors/confi
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { stripUeMacros } from '../cpp-ue-preprocessor.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -410,6 +411,7 @@ export const cppProvider = defineLanguage({
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: CPP_QUERIES,
+  preprocessSource: stripUeMacros,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cppImportConfig),
