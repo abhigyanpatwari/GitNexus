@@ -30,7 +30,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — only changed files are re-parsed and their LadybugDB rows rewritten.
+- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB.
 - **Why:** Tools query LadybugDB from last analyze; git changes are invisible until re-indexed.
 
 ### Index seems corrupt or "incremental" is misbehaving

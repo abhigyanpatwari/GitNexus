@@ -437,33 +437,62 @@ export async function runFullAnalysis(
     let lbugMsgCount = 0;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
-      // 0. Expand the writable set with importers of changed/deleted
-      //    files. Reason (Bugbot/Claude review on PR #1479): when a
-      //    barrel/re-export file changes, cross-file resolution may
-      //    update CALLS edges between two unchanged files. Those edges
-      //    live in `ctx.graph` (the pipeline's authoritative output)
-      //    but would be excluded from the subgraph if neither endpoint
-      //    is in the changed set, leaving the DB stale. Pulling the
-      //    importers in (1-hop transitive) puts those edges' source
-      //    files into the writable set so deleteNodesForFile clears
-      //    their old rows and the subgraph re-emits the refined ones.
-      //    Reads `IMPORTS` from the pre-pipeline DB state; importers
-      //    that no longer import the changed file get rewritten too,
-      //    which is harmless (idempotent re-emission) and necessary
-      //    for the "incremental ≡ full-rebuild" invariant.
+      // 0. Expand the writable set with transitive importers of
+      //    changed/deleted files (bounded BFS).
+      //
+      //    Reason (Bugbot/Claude review on PR #1479): when a barrel /
+      //    re-export file C changes, cross-file resolution may update
+      //    CALLS edges between two unchanged files A and B (A imports
+      //    from C, C re-exports something from B). Those refined edges
+      //    live in `ctx.graph` but would be excluded from the subgraph
+      //    if neither endpoint is in the changed set. To catch this,
+      //    files that imported (directly OR transitively, through
+      //    other unchanged intermediaries) any changed file get pulled
+      //    into the writable set so their rows are deleted + rewritten
+      //    against the refined edges.
+      //
+      //    BFS bound: MAX_IMPORTER_BFS_DEPTH. Practically sized to
+      //    catch nested barrel chains (e.g. `index.ts → submodule/index.ts
+      //    → submodule/impl.ts`) without ballooning into a near-full-
+      //    rebuild on monorepos with deep re-export pyramids. Beyond
+      //    this depth, the "incremental ≡ full-rebuild" invariant is
+      //    self-acknowledged as best-effort; `--force` remains the
+      //    escape hatch documented in GUARDRAILS.md.
+      //
+      //    `queryImporters` reads `IMPORTS` from the pre-pipeline DB
+      //    state, so the result is "files that USED TO import the
+      //    target" — exactly the set whose previously-stored edges may
+      //    no longer match what cross-file resolution produces this run.
+      const MAX_IMPORTER_BFS_DEPTH = 4;
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
-      for (const f of [...hashDiff.toWrite, ...hashDiff.deleted]) {
-        try {
-          const importers = await queryImporters(f);
-          for (const i of importers) writableFiles.add(i);
-        } catch {
-          /* importer query failure → don't expand; correctness degrades but DB stays writable */
+      {
+        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted];
+        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const nextFrontier: string[] = [];
+          for (const f of frontier) {
+            try {
+              const importers = await queryImporters(f);
+              for (const i of importers) {
+                if (!writableFiles.has(i)) {
+                  writableFiles.add(i);
+                  nextFrontier.push(i);
+                }
+              }
+            } catch {
+              /* per-file importer query failure → skip; correctness degrades on
+                 that branch, but DB stays writable. */
+            }
+          }
+          frontier = nextFrontier;
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
       if (importerExpansion > 0) {
-        log(`Incremental: +${importerExpansion} importer(s) added to writable set`);
+        log(
+          `Incremental: +${importerExpansion} importer(s) added to writable set ` +
+            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH})`,
+        );
       }
 
       // 1. Delete rows for files we're about to rewrite + deleted files.
