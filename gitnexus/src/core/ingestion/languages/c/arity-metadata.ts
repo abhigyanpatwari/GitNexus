@@ -85,7 +85,7 @@ function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
     return null;
   }
   // Unwrap pointer_declarator
-  while (decl !== null && decl.type === 'pointer_declarator') {
+  while (decl.type === 'pointer_declarator') {
     const next = decl.childForFieldName('declarator');
     if (next === null) break;
     decl = next;
