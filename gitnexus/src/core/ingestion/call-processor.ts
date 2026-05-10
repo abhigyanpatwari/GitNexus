@@ -40,6 +40,7 @@ import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
   FUNCTION_NODE_TYPES,
   findEnclosingClassId,
@@ -771,7 +772,7 @@ export const processCalls = async (
     if (!tree) {
       const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(parseContent, undefined, {
+        tree = parseSourceSafe(parser, parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
@@ -3283,7 +3284,7 @@ export const extractFetchCallsFromFiles = async (
     if (!tree) {
       const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(parseContent, undefined, {
+        tree = parseSourceSafe(parser, parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch {
