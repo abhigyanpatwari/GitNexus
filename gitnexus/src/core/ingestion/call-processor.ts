@@ -40,7 +40,7 @@ import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
-import { parseSourceSafe } from './utils/safe-parse.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
   FUNCTION_NODE_TYPES,
   findEnclosingClassId,

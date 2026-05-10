@@ -24,7 +24,7 @@ import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../utils/safe-parse.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = [

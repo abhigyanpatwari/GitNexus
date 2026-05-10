@@ -12,7 +12,7 @@ import { splitGoImportStatement } from './import-decomposer.js';
 import { synthesizeGoReceiverBinding } from './receiver-binding.js';
 import { synthesizeGoTypeBindings } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../utils/safe-parse.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 export function emitGoScopeCaptures(
   sourceText: string,

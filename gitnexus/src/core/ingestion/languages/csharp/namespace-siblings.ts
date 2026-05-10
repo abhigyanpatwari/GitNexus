@@ -36,7 +36,7 @@ import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'g
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../utils/safe-parse.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means

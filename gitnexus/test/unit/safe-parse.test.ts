@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
-import { parseSourceSafe } from '../../src/core/ingestion/utils/safe-parse.js';
+import { parseSourceSafe } from '../../src/core/tree-sitter/safe-parse.js';
 
 const makeParser = (): Parser => {
   const p = new Parser();
