@@ -1,7 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+const { parseSourceSafeSpy } = vi.hoisted(() => ({ parseSourceSafeSpy: vi.fn() }));
+
+vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
+  const { buildSafeParseMock } = await import('../../helpers/parse-source-safe-mock.js');
+  return buildSafeParseMock(parseSourceSafeSpy);
+});
+
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
@@ -813,6 +821,36 @@ export default r;
       expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
       expect(providers.find((c) => c.contractId === 'http::GET::/api/leaked')).toBeUndefined();
       expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+    });
+  });
+
+  describe('Windows SIGSEGV regression — large input must route through parseSourceSafe', () => {
+    it('routes >32 767-char source file through parseSourceSafe (not direct parser.parse)', async () => {
+      parseSourceSafeSpy.mockClear();
+
+      // >40 000-char Java controller file. Direct parser.parse(content) on
+      // an input this size SIGSEGVs the process on Windows. The spy assertion
+      // is what catches the regression — a "no throw" assertion alone is
+      // satisfied by the bypass on Linux/macOS where parser.parse(40 000 chars)
+      // succeeds.
+      const padding = Array.from(
+        { length: 600 },
+        (_, i) => `    public String helper${i}() { return "padding-${i}-aaaaaaaaaaaaaaaaaaa"; }\n`,
+      ).join('');
+      const largeJava = `package com.example;\n\n@RestController\npublic class BigController {\n${padding}}\n`;
+      expect(largeJava.length).toBeGreaterThan(40_000);
+
+      // Use mkdtempSync rather than a fixed subdir name: satisfies CodeQL's
+      // js/insecure-temporary-file rule by generating a unique random suffix
+      // instead of relying on the parent tmpDir's predictable Date.now() name.
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'large-input-'));
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/controller/BigController.java'), largeJava);
+
+      const mockDbExecutor = async (_query: string) => [];
+      await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+
+      expect(parseSourceSafeSpy).toHaveBeenCalled();
     });
   });
 });

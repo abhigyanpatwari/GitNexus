@@ -36,6 +36,7 @@ import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'g
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
@@ -56,7 +57,7 @@ function extractFileStructure(content: string, cachedTree: unknown): CsharpFileS
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
   const tree =
     (cachedTree as CsharpTree | undefined) ??
-    getCsharpParser().parse(content, undefined, {
+    parseSourceSafe(getCsharpParser(), content, undefined, {
       bufferSize: getTreeSitterBufferSize(content),
     });
   const namespaces: string[] = [];
@@ -359,7 +360,7 @@ export function populateCsharpNamespaceSiblings(
       const q = def.qualifiedName ?? '';
       const key = q.includes('.') ? q.slice(q.lastIndexOf('.') + 1) : q;
       if (key === '') continue;
-      const arr = defsByName.get(key) ?? [];
+      const arr = [...(defsByName.get(key) ?? [])];
       arr.push(def);
       defsByName.set(key, arr);
     }
