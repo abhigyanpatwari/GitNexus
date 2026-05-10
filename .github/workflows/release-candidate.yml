@@ -58,6 +58,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read # read PR labels on the merge commit
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       head_sha: ${{ steps.decide.outputs.head_sha }}
@@ -74,6 +75,8 @@ jobs:
           FORCE: ${{ inputs.force }}
           BUMP_INPUT: ${{ inputs.bump }}
           EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           HEAD_SHA=$(git rev-parse HEAD)
@@ -94,6 +97,49 @@ jobs:
             echo "Explicit bump=$BUMP_INPUT — bypassing marker dedup."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          # ── Skip when the merge commit corresponds to a release ─────────
+          # Two complementary checks (belt-and-suspenders):
+          #   1. The HEAD commit subject matches `chore: release vX.Y.Z`
+          #      (the canonical release-PR title in this repo). Anchored
+          #      at both ends to require the bare title or the squash-merge
+          #      `(#NNNN)` suffix exactly — rejects noisy variants like
+          #      `chore: release v1.0.0 (something unrelated)`.
+          #   2. The squash-merged PR carries the `release` label.
+          # Either match suppresses the rc build — stable releases publish
+          # via publish.yml on the v-tag, so the rc cycle should pause for
+          # them rather than racing the npm publish.
+          HEAD_SUBJECT="$(git log -1 --pretty=%s HEAD)"
+          # Sanitise GitHub-Actions annotation prefixes before logging the
+          # raw subject — defence-in-depth so a hypothetical commit subject
+          # containing `::error::` or `::set-output::` cannot forge log
+          # annotations even though %s strips newlines.
+          HEAD_SUBJECT_SAFE="${HEAD_SUBJECT//::/__}"
+          RELEASE_SUBJECT_RE='^chore:[[:space:]]*release[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]+\(#[0-9]+\))?$'
+          if [[ "$HEAD_SUBJECT" =~ $RELEASE_SUBJECT_RE ]]; then
+            echo "HEAD commit subject matches a release commit — skipping rc."
+            echo "  subject (sanitised): $HEAD_SUBJECT_SAFE"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Squash-merge commits include `(#NNNN)` at the end of the subject.
+          if [[ "$HEAD_SUBJECT" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
+            PR_NUM="${BASH_REMATCH[1]}"
+            echo "Detected squash-merge of PR #$PR_NUM — checking labels."
+            if LABELS_JSON="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels 2>/dev/null)"; then
+              if printf '%s' "$LABELS_JSON" | jq -e '.labels[] | select(.name == "release")' >/dev/null; then
+                echo "PR #$PR_NUM has the 'release' label — skipping rc."
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "PR #$PR_NUM has no 'release' label — proceeding."
+            else
+              # Lookup failure is not fatal — fall through to the dedup check
+              # so a transient GH API hiccup doesn't silently suppress rc builds.
+              echo "::warning::Could not read labels for PR #${PR_NUM} — falling through."
+            fi
           fi
 
           # Dedup: is there already an rc/<HEAD_SHA> marker pointing at HEAD?
