@@ -8,7 +8,10 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { emitCScopeCaptures } from '../../../../src/core/ingestion/languages/c/captures.js';
-import { clearStaticNames, isStaticName } from '../../../../src/core/ingestion/languages/c/static-linkage.js';
+import {
+  clearStaticNames,
+  isStaticName,
+} from '../../../../src/core/ingestion/languages/c/static-linkage.js';
 
 function tagsFor(src: string, filePath = 'test.c'): string[][] {
   const matches = emitCScopeCaptures(src, filePath);
@@ -71,9 +74,8 @@ describe('emitCScopeCaptures — struct declarations', () => {
   });
 
   it('captures typedef struct with @declaration.struct (not typedef)', () => {
-    const m = findMatch(
-      'typedef struct { int age; } User;',
-      (t) => t.includes('@declaration.struct'),
+    const m = findMatch('typedef struct { int age; } User;', (t) =>
+      t.includes('@declaration.struct'),
     );
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('User');
@@ -88,18 +90,14 @@ describe('emitCScopeCaptures — struct declarations', () => {
 
 describe('emitCScopeCaptures — union declarations', () => {
   it('captures named union with @declaration.union', () => {
-    const m = findMatch(
-      'union Data { int i; float f; };',
-      (t) => t.includes('@declaration.union'),
-    );
+    const m = findMatch('union Data { int i; float f; };', (t) => t.includes('@declaration.union'));
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('Data');
   });
 
   it('captures typedef union with @declaration.union', () => {
-    const m = findMatch(
-      'typedef union { int i; float f; } Value;',
-      (t) => t.includes('@declaration.union'),
+    const m = findMatch('typedef union { int i; float f; } Value;', (t) =>
+      t.includes('@declaration.union'),
     );
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('Value');
@@ -108,18 +106,14 @@ describe('emitCScopeCaptures — union declarations', () => {
 
 describe('emitCScopeCaptures — enum declarations', () => {
   it('captures enum with @declaration.enum', () => {
-    const m = findMatch(
-      'enum Color { RED, GREEN, BLUE };',
-      (t) => t.includes('@declaration.enum'),
-    );
+    const m = findMatch('enum Color { RED, GREEN, BLUE };', (t) => t.includes('@declaration.enum'));
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('Color');
   });
 
   it('captures enum constants as @declaration.const', () => {
-    const matches = allMatches(
-      'enum Color { RED, GREEN, BLUE };',
-      (t) => t.includes('@declaration.const'),
+    const matches = allMatches('enum Color { RED, GREEN, BLUE };', (t) =>
+      t.includes('@declaration.const'),
     );
     const names = matches.map((m) => m['@declaration.name'].text);
     expect(names).toContain('RED');
@@ -301,16 +295,18 @@ describe('emitCScopeCaptures — arity metadata', () => {
   });
 
   it('synthesizes arity on call references', () => {
-    const m = findMatch('void f(void) { add(1, 2); }', (t) =>
-      t.includes('@reference.call.free') && t.includes('@reference.arity'),
+    const m = findMatch(
+      'void f(void) { add(1, 2); }',
+      (t) => t.includes('@reference.call.free') && t.includes('@reference.arity'),
     );
     expect(m).toBeDefined();
     expect(m!['@reference.arity'].text).toBe('2');
   });
 
   it('zero-argument call has arity 0', () => {
-    const m = findMatch('void f(void) { init(); }', (t) =>
-      t.includes('@reference.call.free') && t.includes('@reference.arity'),
+    const m = findMatch(
+      'void f(void) { init(); }',
+      (t) => t.includes('@reference.call.free') && t.includes('@reference.arity'),
     );
     expect(m).toBeDefined();
     expect(m!['@reference.arity'].text).toBe('0');

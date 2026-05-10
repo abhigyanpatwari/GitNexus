@@ -120,20 +120,12 @@ describe('C import target resolution (resolveCImportTarget)', () => {
   });
 
   it('prefers shallower path over lexicographic order', () => {
-    const result = resolveCImportTarget(
-      'foo.h',
-      'main.c',
-      new Set(['a/b/c/foo.h', 'z/foo.h']),
-    );
+    const result = resolveCImportTarget('foo.h', 'main.c', new Set(['a/b/c/foo.h', 'z/foo.h']));
     expect(result).toBe('z/foo.h');
   });
 
   it('handles backslash paths (Windows)', () => {
-    const result = resolveCImportTarget(
-      'foo.h',
-      'main.c',
-      new Set(['include\\foo.h']),
-    );
+    const result = resolveCImportTarget('foo.h', 'main.c', new Set(['include\\foo.h']));
     expect(result).toBe('include\\foo.h');
   });
 });

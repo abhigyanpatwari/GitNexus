@@ -1,5 +1,10 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  findNodeAtRange,
+  nodeToCapture,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import { getCParser, getCScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';

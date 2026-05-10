@@ -8,4 +8,9 @@ export { cArityCompatibility } from './arity.js';
 export { cMergeBindings } from './merge-bindings.js';
 export { cBindingScopeFor, cImportOwningScope, cReceiverBinding } from './simple-hooks.js';
 export { resolveCImportTarget } from './import-target.js';
-export { markStaticName, isStaticName, clearStaticNames, expandCWildcardNames } from './static-linkage.js';
+export {
+  markStaticName,
+  isStaticName,
+  clearStaticNames,
+  expandCWildcardNames,
+} from './static-linkage.js';
