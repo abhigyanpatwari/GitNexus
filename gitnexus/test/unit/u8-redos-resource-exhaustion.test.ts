@@ -48,7 +48,10 @@ const PERF_WARMUP_RUNS = 3;
 const PERF_TRIAL_COUNT = 5;
 const SIZE_RATIO = 4;
 const LINEAR_RATIO_BOUND = SIZE_RATIO * 2; // 8× — 2× headroom over expected linear
-const RATIO_MEASUREMENT_FLOOR_MS = 20; // skip ratio when large run is below this
+// Median-of-N tightens the noise floor we can rely on. A single-sample 5ms
+// measurement is ~50% jitter; median-of-5 brings the same 5ms into the
+// reliably-resolvable range above `performance.now()`'s ~10-100µs band.
+const RATIO_MEASUREMENT_FLOOR_MS = 5;
 
 function median(samples: number[]): number {
   const sorted = [...samples].sort((a, b) => a - b);
@@ -80,16 +83,24 @@ function medianTimeRegex(re: RegExp, input: string): number {
 }
 
 /**
- * Assert sub-linear-with-headroom scaling between two median-timed runs
- * on inputs that differ by `SIZE_RATIO`×. When the larger measurement
- * is below the noise floor, the ratio assertion is skipped (the
- * absolute <500ms cap still pins catastrophic regressions).
+ * Assert near-linear scaling between two median-timed runs on inputs
+ * that differ by `SIZE_RATIO`×. The bound is `LINEAR_RATIO_BOUND` =
+ * `SIZE_RATIO * 2`, i.e. 2× headroom over the linear expectation —
+ * comfortably under the ~`SIZE_RATIO²` ratio a quadratic regression
+ * would produce, so true regressions still fail loudly.
+ *
+ * Skip semantics: the ratio assertion is skipped only when *both*
+ * measurements are below the noise floor. If either run is reliably
+ * measurable, we still assert — otherwise an O(n²) regression that
+ * happens to stay under the absolute 500ms cap on a fast runner could
+ * slip through with no detector firing. Median-of-N + the 5ms floor
+ * keeps the assertion stable while preserving regression coverage.
  */
-function assertSubLinearRatio(elapsedSmall: number, elapsedLarge: number, label: string): void {
-  if (elapsedLarge < RATIO_MEASUREMENT_FLOOR_MS) {
-    // Even the larger run finished too fast for `performance.now()` to
-    // distinguish linear from noisy-linear. Skip the ratio assertion;
-    // the absolute bound still fires.
+function assertNearLinearScaling(elapsedSmall: number, elapsedLarge: number, label: string): void {
+  if (elapsedSmall < RATIO_MEASUREMENT_FLOOR_MS && elapsedLarge < RATIO_MEASUREMENT_FLOOR_MS) {
+    // Both runs completed below the noise floor — even the median is
+    // dominated by `performance.now()` resolution. The absolute <500ms
+    // cap elsewhere still catches catastrophic backtracking.
     return;
   }
   const ratio = elapsedLarge / Math.max(elapsedSmall, 0.001);
@@ -115,7 +126,7 @@ describe('cobol-preprocessor RE_SET_TO_TRUE — linear time on pathological inpu
     expect(RE_SET_TO_TRUE.exec(inputSmall)).not.toBeNull();
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_TO_TRUE');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'RE_SET_TO_TRUE');
   });
 
   it('still matches a normal SET ... TO TRUE statement', () => {
@@ -136,7 +147,7 @@ describe('cobol-preprocessor RE_SET_INDEX — linear time on pathological input'
     expect(RE_SET_INDEX.exec(inputSmall)).toBeNull();
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'RE_SET_INDEX');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'RE_SET_INDEX');
   });
 
   it('still matches a normal SET INDEX statement', () => {
@@ -164,7 +175,7 @@ describe('rust-workspace parseCargoPackageName — linear-time line walk', () =>
     expect(parseCargoPackageName(cargoTomlSmall)).toBe('myrepo');
     expect(elapsedSmall).toBeLessThan(500);
     expect(elapsedLarge).toBeLessThan(500);
-    assertSubLinearRatio(elapsedSmall, elapsedLarge, 'parseCargoPackageName');
+    assertNearLinearScaling(elapsedSmall, elapsedLarge, 'parseCargoPackageName');
   });
 
   it('returns null when [package] section is absent', () => {
