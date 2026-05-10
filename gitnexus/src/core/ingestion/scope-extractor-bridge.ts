@@ -48,10 +48,6 @@ export function extractParsedFile(
   if (sourceText.trim().length === 0) return undefined;
   try {
     const captures = provider.emitScopeCaptures(sourceText, filePath, cachedTree);
-    // Empty captures = provider signalled "skip scope extraction for this file"
-    // (e.g. large file where tree-sitter truncation produced an ERROR root).
-    // Return undefined silently so the legacy DAG handles it without noise.
-    if (!Array.isArray(captures) || captures.length === 0) return undefined;
     return extractScope(captures, filePath, provider);
   } catch (err) {
     const message = `scope extraction failed for ${filePath}: ${

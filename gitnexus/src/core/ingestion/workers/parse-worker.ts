@@ -20,6 +20,7 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import { parseSourceSafe } from '../utils/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 
@@ -1414,16 +1415,9 @@ const processFileGroup = (
 
     clearCaches(); // Reset memoization before each new file
 
-    // tree-sitter 0.21.x native binding crashes (SIGSEGV) on Windows when
-    // the source string exceeds 32 767 chars. Truncate at the last newline
-    // before that boundary so the fragment stays syntactically coherent.
-    const MAX_TS_CHARS = 32_767;
-    if (parseContent.length > MAX_TS_CHARS) {
-      parseContent = parseContent.slice(0, parseContent.lastIndexOf('\n', MAX_TS_CHARS - 1) + 1);
-    }
     let tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {

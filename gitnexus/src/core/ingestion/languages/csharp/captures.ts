@@ -24,6 +24,7 @@ import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../utils/safe-parse.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = [
@@ -86,20 +87,10 @@ export function emitCsharpScopeCaptures(
   // the LanguageProvider contract layer; cast here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getCsharpParser>['parse']> | undefined;
   if (tree === undefined) {
-    const MAX_TS_CHARS = 32_767;
-    const src =
-      sourceText.length > MAX_TS_CHARS
-        ? sourceText.slice(0, sourceText.lastIndexOf('\n', MAX_TS_CHARS - 1) + 1)
-        : sourceText;
-    tree = getCsharpParser().parse(src, undefined, {
-      bufferSize: getTreeSitterBufferSize(src),
+    tree = parseSourceSafe(getCsharpParser(), sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
-    // tree-sitter 0.21.x on Windows: truncation mid-class gives ERROR root → orphaned scopes.
-    // Return empty so the legacy DAG handles the file silently.
-    if (tree.rootNode.type !== 'compilation_unit') {
-      return [];
-    }
   } else {
     recordCacheHit();
   }

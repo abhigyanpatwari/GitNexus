@@ -36,6 +36,7 @@ import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'g
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getCsharpParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../utils/safe-parse.js';
 
 interface CsharpFileStructure {
   /** Declared namespace names in file source order. Empty array means
@@ -54,15 +55,10 @@ interface CsharpFileStructure {
  *  shared across calls. */
 function extractFileStructure(content: string, cachedTree: unknown): CsharpFileStructure {
   type CsharpTree = ReturnType<ReturnType<typeof getCsharpParser>['parse']>;
-  const MAX_TS_CHARS = 32_767;
-  const src =
-    content.length > MAX_TS_CHARS
-      ? content.slice(0, content.lastIndexOf('\n', MAX_TS_CHARS - 1) + 1)
-      : content;
   const tree =
     (cachedTree as CsharpTree | undefined) ??
-    getCsharpParser().parse(src, undefined, {
-      bufferSize: getTreeSitterBufferSize(src),
+    parseSourceSafe(getCsharpParser(), content, undefined, {
+      bufferSize: getTreeSitterBufferSize(content),
     });
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];

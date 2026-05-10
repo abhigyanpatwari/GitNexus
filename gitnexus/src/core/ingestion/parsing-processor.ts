@@ -5,12 +5,11 @@ import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/pa
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
-// SymbolTableReader is used for the FieldExtractorContext stub; the
-// parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from './utils/safe-parse.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -382,16 +381,9 @@ const processParsingSequential = async (
       continue; // parser unavailable — safety net
     }
 
-    // tree-sitter 0.21.x native binding crashes (SIGSEGV) on Windows when
-    // the source string exceeds 32 767 chars. Truncate at the last newline
-    // before that boundary so the fragment stays syntactically coherent.
-    const MAX_TS_CHARS = 32_767;
-    if (parseContent.length > MAX_TS_CHARS) {
-      parseContent = parseContent.slice(0, parseContent.lastIndexOf('\n', MAX_TS_CHARS - 1) + 1);
-    }
     let tree: Parser.Tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (parseError) {
