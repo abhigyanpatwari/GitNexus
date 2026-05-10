@@ -420,7 +420,17 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // install; analyze owns extension installation. If LOAD fails, search
   // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows when
+    // the FTS extension binary is not installed locally (@ladybugdb/core native
+    // bug — the extension loader hits an unhandled error path that signals SIGSEGV
+    // rather than throwing a JS exception, so try/catch cannot protect here).
+    // Skip the load on Windows; bm25-index.js catches the resulting Kuzu catalog
+    // errors and returns empty BM25 results gracefully. Graph queries are unaffected.
+    if (process.platform === 'win32') {
+      shared.ftsLoaded = true;
+    } else {
+      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    }
   }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
@@ -484,8 +494,13 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database.
   // policy: 'load-only' — same contract as initLbug above; the read pool
   // must not block on a network install during query execution.
+  // Windows guard: same SIGSEGV risk as doInitLbug above — skip on Windows.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    if (process.platform === 'win32') {
+      shared.ftsLoaded = true;
+    } else {
+      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    }
   }
 
   pool.set(repoId, {
