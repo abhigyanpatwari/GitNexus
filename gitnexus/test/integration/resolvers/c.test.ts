@@ -102,9 +102,7 @@ describe('C static function isolation', () => {
     // caller.c should NOT have a CALLS edge to a.c's static helper.
     // Filter edges to only those originating from main → helper to
     // verify the correct target file.
-    const mainToHelper = calls.filter(
-      (r) => r.source === 'main' && r.target === 'helper',
-    );
+    const mainToHelper = calls.filter((r) => r.source === 'main' && r.target === 'helper');
     // If a main→helper edge exists, it should point to b.c, not a.c
     for (const edge of mainToHelper) {
       expect(edge.targetFilePath).not.toContain('a.c');

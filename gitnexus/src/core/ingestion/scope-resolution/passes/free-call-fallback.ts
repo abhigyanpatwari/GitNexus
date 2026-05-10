@@ -127,11 +127,7 @@ function pickUniqueGlobalCallable(
     if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
     // Skip file-local defs (e.g. C `static` functions) that live in a
     // different file from the caller — they are logically invisible.
-    if (
-      isFileLocalDef !== undefined &&
-      def.filePath !== callerFilePath &&
-      isFileLocalDef(def)
-    ) {
+    if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
       continue;
     }
     const key = logicalCallableKey(def);
