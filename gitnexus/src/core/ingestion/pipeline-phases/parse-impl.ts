@@ -163,14 +163,20 @@ export async function runChunkedParseAndResolve(
     );
   }
 
-  // We previously sorted parseableScanned alphabetically here for stable
-  // chunk membership across runs (so the parse cache wouldn't miss when
-  // filesystem-scan order varied). Removed because it surfaced a
-  // pre-existing order-dependency in Ruby cross-file resolution
-  // (`user.address.save → Address#save` resolution depends on file
-  // processing order — a separate bug to fix). Filesystem order on most
-  // platforms is stable enough in practice that the cache still hits the
-  // common case; runs where it doesn't simply pay a cold-parse cost.
+  // Sort parseableScanned alphabetically for stable chunk membership
+  // across runs (Finding 4). Without this, filesystem-scan order can
+  // shift between runs (notably on macOS APFS where directory entry
+  // order can change after modifications) — different files in the
+  // same chunk → different chunk hash → cache miss even when no file
+  // content changed. The cache also becomes platform-specific: a
+  // Linux-built cache misses on macOS for the same repo.
+  //
+  // Note: this re-introduces a pre-existing order-dependency in Ruby
+  // cross-file resolution (`user.address.save → Address#save` resolves
+  // differently depending on file processing order). That bug is
+  // independent — the sort surfaces it but doesn't cause it. Tracking
+  // separately rather than letting the parse cache pay the cost.
+  parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const totalParseable = parseableScanned.length;
 

@@ -36,7 +36,7 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
-import { extractChangedSubgraph } from './incremental/subgraph-extract.js';
+import { extractChangedSubgraph, computeEffectiveWriteSet } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
@@ -523,12 +523,26 @@ export async function runFullAnalysis(
         );
       }
 
-      // 1. Delete rows for files we're about to rewrite + deleted files.
-      //    Deduped: deleted entries may already appear in writableFiles via
-      //    BFS expansion (queryImporters can return a now-deleted path),
-      //    which would otherwise call deleteNodesForFile twice for the
-      //    same file (Bugbot LOW finding on PR #1479).
-      const filesToDelete = [...new Set([...writableFiles, ...hashDiff.deleted])];
+      // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
+      //    composed:
+      //      (a) `writableFiles` — toWrite ∪ transitive importers of
+      //          changed/deleted files (the bounded BFS above, reading
+      //          IMPORTS from the pre-pipeline DB).
+      //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
+      //          edges and pulls in any unchanged-side file that sits
+      //          on a writable-boundary-crossing edge (catches refined
+      //          cross-file CALLS edges that the pre-run DB couldn't
+      //          predict, e.g. a barrel re-export shifting `foo` from
+      //          B to D).
+      //    The composed set is the input to BOTH deleteNodesForFile
+      //    and extractChangedSubgraph — asymmetry between the two would
+      //    leave stale rows or PK-conflict at COPY time.
+      const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+      // Deduped: deleted entries may already appear via importer-BFS
+      // expansion (queryImporters can return a now-deleted path), which
+      // would otherwise call deleteNodesForFile twice for the same file
+      // (Bugbot LOW finding on PR #1479).
+      const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
       for (let i = 0; i < filesToDelete.length; i++) {
         const f = filesToDelete[i];
         try {
@@ -546,8 +560,10 @@ export async function runFullAnalysis(
       await deleteAllCommunitiesAndProcesses();
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
-      //    only that. Unchanged-file rows in the DB stay untouched.
-      const subgraph = extractChangedSubgraph(pipelineResult.graph, writableFiles);
+      //    only that. Unchanged-file rows in the DB stay untouched. Pass
+      //    the SAME effectiveWriteSet so the subgraph and the deletes
+      //    cover identical files (asymmetry would silently corrupt).
+      const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
       await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
         lbugMsgCount++;
         const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
