@@ -5,6 +5,11 @@
  * the workspace. "foo.h" matches "src/foo.h", "include/foo.h", etc.
  * For paths with directory components ("dir/foo.h"), match the full
  * relative suffix.
+ *
+ * Tie-breaking: prefer the match with the fewest path components
+ * (closest to root). On equal depth, break ties lexicographically
+ * by normalized path to ensure deterministic resolution regardless
+ * of filesystem iteration order.
  */
 export function resolveCImportTarget(
   targetRaw: string,
@@ -22,15 +27,17 @@ export function resolveCImportTarget(
   const suffix = '/' + normalizedTarget;
   let bestMatch: string | null = null;
   let bestDepth = Infinity;
+  let bestNormalized = '';
 
   for (const filePath of allFilePaths) {
     const normalized = filePath.replace(/\\/g, '/');
     if (normalized === normalizedTarget || normalized.endsWith(suffix)) {
       // Prefer shortest path (closest match)
       const depth = normalized.split('/').length;
-      if (depth < bestDepth) {
+      if (depth < bestDepth || (depth === bestDepth && normalized < bestNormalized)) {
         bestDepth = depth;
         bestMatch = filePath;
+        bestNormalized = normalized;
       }
     }
   }

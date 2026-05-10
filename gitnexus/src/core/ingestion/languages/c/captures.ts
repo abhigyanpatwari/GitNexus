@@ -5,6 +5,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCInclude } from './import-decomposer.js';
 import { computeCDeclarationArity, computeCCallArity } from './arity-metadata.js';
+import { markStaticName } from './static-linkage.js';
 
 export function emitCScopeCaptures(
   sourceText: string,
@@ -62,7 +63,7 @@ export function emitCScopeCaptures(
       if (structTypedefRanges.has(key)) continue;
     }
 
-    // Enrich function declarations with arity metadata
+    // Enrich function declarations with arity metadata and detect static linkage
     const declAnchor = grouped['@declaration.function'];
     if (declAnchor !== undefined) {
       const fnNode =
@@ -91,6 +92,14 @@ export function emitCScopeCaptures(
             JSON.stringify(arity.parameterTypes),
           );
         }
+
+        // Detect static storage class (file-local linkage)
+        if (hasStaticStorageClass(fnNode)) {
+          const nameText = grouped['@declaration.name']?.text;
+          if (nameText !== undefined) {
+            markStaticName(_filePath, nameText);
+          }
+        }
       }
     }
 
@@ -111,4 +120,18 @@ export function emitCScopeCaptures(
   }
 
   return out;
+}
+
+/**
+ * Check if a C function_definition or declaration has `static` storage class.
+ * Walks direct children for a `storage_class_specifier` node with text `static`.
+ */
+function hasStaticStorageClass(node: ReturnType<ReturnType<typeof getCParser>['parse']>['rootNode']): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child !== null && child.type === 'storage_class_specifier' && child.text === 'static') {
+      return true;
+    }
+  }
+  return false;
 }

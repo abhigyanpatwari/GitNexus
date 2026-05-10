@@ -6,6 +6,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { cProvider } from '../c-cpp.js';
 import { cArityCompatibility, cMergeBindings, resolveCImportTarget } from './index.js';
 import { scanHeaderFiles } from './header-scan.js';
+import { expandCWildcardNames } from './static-linkage.js';
 
 /**
  * C `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -37,6 +38,9 @@ export const cScopeResolver: ScopeResolver = {
     }
     return resolveCImportTarget(targetRaw, fromFile, allFilePaths);
   },
+
+  expandsWildcardTo: (targetModuleScope, parsedFiles) =>
+    expandCWildcardNames(targetModuleScope, parsedFiles),
 
   mergeBindings: (existing, incoming, scopeId) => cMergeBindings(existing, incoming, scopeId),
 
