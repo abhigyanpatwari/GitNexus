@@ -455,6 +455,10 @@ async def check_duplicate():
         data.get("/nope")
         service.request("POST", "/nope")
         return await client.post("https://svc.local/questions/duplicate-check")
+
+def unrelated_scope_collision():
+    client = acquire_cache_client()
+    return client.get("/ignored-same-name")
 `,
       );
 
@@ -476,6 +480,9 @@ async def check_duplicate():
 
       expect(consumers.find((c) => c.contractId === 'http::GET::/nope')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::POST::/nope')).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/ignored-same-name'),
+      ).toBeUndefined();
     });
 
     it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {

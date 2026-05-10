@@ -120,6 +120,85 @@ const HTTPX_ASYNC_CLIENT_WITH_ALIAS_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+function getScopeKey(node: Parser.SyntaxNode | null, preferClass = false): string {
+  if (preferClass) {
+    let current: Parser.SyntaxNode | null = node;
+    while (current) {
+      if (current.type === 'class_definition') {
+        return `class:${current.startIndex}:${current.endIndex}`;
+      }
+      current = current.parent;
+    }
+  }
+
+  let current: Parser.SyntaxNode | null = node;
+  while (current) {
+    if (current.type === 'function_definition') {
+      return `function:${current.startIndex}:${current.endIndex}`;
+    }
+    current = current.parent;
+  }
+
+  return 'module';
+}
+
+function trackedClientScopeKey(clientNode: Parser.SyntaxNode): string {
+  return getScopeKey(clientNode.parent, clientNode.text.includes('.'));
+}
+
+function callScopeKeys(clientNode: Parser.SyntaxNode): string[] {
+  const keys = new Set<string>();
+  const preferClass = clientNode.text.includes('.');
+  const nearestScope = getScopeKey(clientNode.parent, preferClass);
+
+  if (nearestScope !== 'module') {
+    keys.add(nearestScope);
+  }
+
+  if (!preferClass) {
+    const functionScope = getScopeKey(clientNode.parent, false);
+    if (functionScope !== 'module') {
+      keys.add(functionScope);
+    }
+  }
+
+  keys.add('module');
+  return [...keys];
+}
+
+function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
+  const clients = new Map<string, Set<string>>();
+
+  const addClient = (clientNode: Parser.SyntaxNode | undefined) => {
+    if (!clientNode) return;
+    const scopeKey = trackedClientScopeKey(clientNode);
+    const clientText = clientNode.text;
+    const scopes = clients.get(clientText) ?? new Set<string>();
+    scopes.add(scopeKey);
+    clients.set(clientText, scopes);
+  };
+
+  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS, tree)) {
+    addClient(match.captures.client);
+  }
+
+  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_WITH_ALIAS_PATTERNS, tree)) {
+    addClient(match.captures.client);
+  }
+
+  return clients;
+}
+
+function hasTrackedHttpxAsyncClient(
+  clients: Map<string, Set<string>>,
+  clientNode: Parser.SyntaxNode,
+): boolean {
+  const scopes = clients.get(clientNode.text);
+  if (!scopes) return false;
+
+  return callScopeKeys(clientNode).some((scopeKey) => scopes.has(scopeKey));
+}
+
 // ─── Consumer: httpx AsyncClient .get/.post/...("url") ──────────────
 const HTTPX_ASYNC_CLIENT_VERB_PATTERNS = compilePatterns({
   name: 'python-httpx-async-client-verb',
@@ -155,22 +234,6 @@ const HTTPX_ASYNC_CLIENT_GENERIC_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
-
-function collectHttpxAsyncClients(tree: Parser.Tree): Set<string> {
-  const clients = new Set<string>();
-
-  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS, tree)) {
-    const clientNode = match.captures.client;
-    if (clientNode) clients.add(clientNode.text);
-  }
-
-  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_WITH_ALIAS_PATTERNS, tree)) {
-    const clientNode = match.captures.client;
-    if (clientNode) clients.add(clientNode.text);
-  }
-
-  return clients;
-}
 
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
@@ -239,7 +302,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!clientNode || !methodNode || !pathNode) continue;
-      if (!httpxAsyncClients.has(clientNode.text)) continue;
+      if (!hasTrackedHttpxAsyncClient(httpxAsyncClients, clientNode)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       out.push({
@@ -258,7 +321,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!clientNode || !methodNode || !pathNode) continue;
-      if (!httpxAsyncClients.has(clientNode.text)) continue;
+      if (!hasTrackedHttpxAsyncClient(httpxAsyncClients, clientNode)) continue;
       const methodRaw = unquoteLiteral(methodNode.text);
       const path = unquoteLiteral(pathNode.text);
       if (methodRaw === null || path === null) continue;
