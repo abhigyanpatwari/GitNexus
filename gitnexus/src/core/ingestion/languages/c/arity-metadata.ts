@@ -90,6 +90,6 @@ function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
     if (next === null) break;
     decl = next;
   }
-  if (decl?.type === 'function_declarator') return decl;
+  if (decl.type === 'function_declarator') return decl;
   return null;
 }
