@@ -23,6 +23,7 @@ import {
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
+  queryImporters,
 } from './lbug/lbug-adapter.js';
 import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
@@ -436,8 +437,37 @@ export async function runFullAnalysis(
     let lbugMsgCount = 0;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
+      // 0. Expand the writable set with importers of changed/deleted
+      //    files. Reason (Bugbot/Claude review on PR #1479): when a
+      //    barrel/re-export file changes, cross-file resolution may
+      //    update CALLS edges between two unchanged files. Those edges
+      //    live in `ctx.graph` (the pipeline's authoritative output)
+      //    but would be excluded from the subgraph if neither endpoint
+      //    is in the changed set, leaving the DB stale. Pulling the
+      //    importers in (1-hop transitive) puts those edges' source
+      //    files into the writable set so deleteNodesForFile clears
+      //    their old rows and the subgraph re-emits the refined ones.
+      //    Reads `IMPORTS` from the pre-pipeline DB state; importers
+      //    that no longer import the changed file get rewritten too,
+      //    which is harmless (idempotent re-emission) and necessary
+      //    for the "incremental ≡ full-rebuild" invariant.
+      const writableFiles = new Set<string>(hashDiff.toWrite);
+      const directlyChangedCount = writableFiles.size;
+      for (const f of [...hashDiff.toWrite, ...hashDiff.deleted]) {
+        try {
+          const importers = await queryImporters(f);
+          for (const i of importers) writableFiles.add(i);
+        } catch {
+          /* importer query failure → don't expand; correctness degrades but DB stays writable */
+        }
+      }
+      const importerExpansion = writableFiles.size - directlyChangedCount;
+      if (importerExpansion > 0) {
+        log(`Incremental: +${importerExpansion} importer(s) added to writable set`);
+      }
+
       // 1. Delete rows for files we're about to rewrite + deleted files.
-      const filesToDelete = [...hashDiff.toWrite, ...hashDiff.deleted];
+      const filesToDelete = [...writableFiles, ...hashDiff.deleted];
       for (let i = 0; i < filesToDelete.length; i++) {
         const f = filesToDelete[i];
         try {
@@ -456,7 +486,7 @@ export async function runFullAnalysis(
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
       //    only that. Unchanged-file rows in the DB stay untouched.
-      const subgraph = extractChangedSubgraph(pipelineResult.graph, new Set(hashDiff.toWrite));
+      const subgraph = extractChangedSubgraph(pipelineResult.graph, writableFiles);
       await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
         lbugMsgCount++;
         const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));

@@ -23,25 +23,65 @@
  */
 
 import { createHash } from 'crypto';
+import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 
-/** Bump on incompatible changes to ParseWorkerResult or upstream parse semantics. */
-export const PARSE_CACHE_VERSION = 1;
+/**
+ * Cache version composed of:
+ *   - A schema bump knob (`SCHEMA_BUMP`) for hand-controlled invalidation
+ *     when ParseWorkerResult shape or upstream parse semantics change.
+ *   - The current `gitnexus` npm package version, read at module load.
+ *     Any release that ships an updated tree-sitter grammar or revised
+ *     extractor logic implies a version bump in package.json, which
+ *     automatically invalidates the on-disk cache. Without this, a user
+ *     running `npm i -g gitnexus@latest` after a parser-affecting
+ *     release would silently replay pre-upgrade ParseWorkerResults
+ *     against the new graph schema (Bugbot/Claude review on #1479).
+ *
+ * On version mismatch, `loadParseCache` returns an empty cache and the
+ * next save overwrites the on-disk file with the new version baked in.
+ */
+const SCHEMA_BUMP = 1;
+const GITNEXUS_PKG_VERSION = (() => {
+  try {
+    // package.json sits at gitnexus/package.json — two levels up from
+    // gitnexus/src/storage/parse-cache.ts (or its dist/ equivalent).
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      path.join(here, '..', '..', 'package.json'), // src/storage → gitnexus/
+      path.join(here, '..', '..', '..', 'package.json'), // dist/storage → gitnexus/
+    ];
+    const requireCJS = createRequire(import.meta.url);
+    for (const c of candidates) {
+      try {
+        const pkg = requireCJS(c);
+        if (typeof pkg?.version === 'string') return pkg.version;
+      } catch {
+        /* try next candidate */
+      }
+    }
+  } catch {
+    /* fall through to fallback */
+  }
+  return '0.0.0-unknown';
+})();
+export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
 
 const CACHE_FILENAME = 'parse-cache.json';
 
 /** On-disk shape. */
 interface ParseCacheFile {
-  version: number;
+  version: string;
   /** key = chunk hash (hex) → cached chunk result list. */
   entries: Record<string, ParseWorkerResult[]>;
 }
 
 /** Runtime view: keyed Map for fast lookup; mutated in place during a run. */
 export interface ParseCache {
-  version: number;
+  version: string;
   entries: Map<string, ParseWorkerResult[]>;
   /**
    * Hashes referenced (hit OR miss-and-stored) by the current run.

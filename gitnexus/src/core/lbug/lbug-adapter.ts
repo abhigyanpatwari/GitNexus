@@ -1205,6 +1205,46 @@ export const deleteNodesForFile = async (
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
+ * Return the distinct repo-relative paths of files that import
+ * `targetFilePath` according to the IMPORTS edges currently in the
+ * DB. Used by the incremental writeback path to expand the
+ * "files-to-rewrite" set so that files importing a changed file get
+ * their edges (which may have been refined by cross-file resolution)
+ * re-emitted, rather than left stale in the DB.
+ *
+ * The DB query reads the *previous* run's state — pre-pipeline, before
+ * any nodes are deleted — so the returned importers are "files that
+ * USED TO import the target". That's the right set to invalidate:
+ * those are the files whose edges in the DB might no longer match
+ * what cross-file resolution produces given the changed file's new
+ * exports.
+ */
+export const queryImporters = async (targetFilePath: string): Promise<string[]> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const escaped = targetFilePath.replace(/'/g, "''");
+  const cypher = `
+    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+    WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
+    RETURN DISTINCT a.filePath AS importer
+  `;
+  try {
+    const queryResult = await conn.query(cypher);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const rows = await result.getAll();
+    const out: string[] = [];
+    for (const row of rows) {
+      const v = (row as { importer?: unknown }).importer;
+      if (typeof v === 'string' && v.length > 0) out.push(v);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
+/**
  * Drop every Community and Process node (and their MEMBER_OF /
  * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
  * incremental run so the communities and processes phases regenerate
