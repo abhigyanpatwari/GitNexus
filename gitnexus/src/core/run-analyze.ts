@@ -37,6 +37,7 @@ import {
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import { extractChangedSubgraph } from './incremental/subgraph-extract.js';
+import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
   getCurrentCommit,
@@ -466,8 +467,35 @@ export async function runFullAnalysis(
       const MAX_IMPORTER_BFS_DEPTH = 4;
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
+
+      // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
+      // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
+      // existing unchanged files may have IMPORTS edges whose module-
+      // resolution claim the newcomer can steal under standard JS/TS
+      // resolution (Bugbot review on PR #1479). For each added file we
+      // derive the shadow candidates and, if the candidate was a known
+      // file in the prior meta, seed it into the BFS frontier so its
+      // importers — surfaced via queryImporters — get their CALLS edges
+      // re-resolved against the new file. See shadow-candidates.ts for
+      // the full pattern catalogue.
+      const priorFileSet = new Set<string>(
+        existingMeta?.fileHashes ? Object.keys(existingMeta.fileHashes) : [],
+      );
+      const shadowSeed: string[] = [];
+      for (const added of hashDiff.added) {
+        for (const cand of shadowCandidatesFor(added)) {
+          if (priorFileSet.has(cand) && !writableFiles.has(cand)) {
+            shadowSeed.push(cand);
+          }
+        }
+      }
+
       {
-        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted];
+        let frontier: string[] = [
+          ...hashDiff.toWrite,
+          ...hashDiff.deleted,
+          ...shadowSeed,
+        ];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
           const nextFrontier: string[] = [];
           for (const f of frontier) {
@@ -491,12 +519,18 @@ export async function runFullAnalysis(
       if (importerExpansion > 0) {
         log(
           `Incremental: +${importerExpansion} importer(s) added to writable set ` +
-            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH})`,
+            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH}` +
+            (shadowSeed.length > 0 ? `, ${shadowSeed.length} shadow-seed(s)` : '') +
+            `)`,
         );
       }
 
       // 1. Delete rows for files we're about to rewrite + deleted files.
-      const filesToDelete = [...writableFiles, ...hashDiff.deleted];
+      //    Deduped: deleted entries may already appear in writableFiles via
+      //    BFS expansion (queryImporters can return a now-deleted path),
+      //    which would otherwise call deleteNodesForFile twice for the
+      //    same file (Bugbot LOW finding on PR #1479).
+      const filesToDelete = [...new Set([...writableFiles, ...hashDiff.deleted])];
       for (let i = 0; i < filesToDelete.length; i++) {
         const f = filesToDelete[i];
         try {
