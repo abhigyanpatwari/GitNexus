@@ -464,8 +464,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // a healthy index.
     await assertAnalysisFinalized(repoPath);
 
-    // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    // Skill generation (CLI-only, uses pipeline result from analysis).
+    // Gated by !skipAll so `--index-only --skills` truly skips ALL file
+    // injection — otherwise `generateSkillFiles()` would still write
+    // community-derived skill files to .claude/skills/generated/.
+    if (options?.skills && result.pipelineResult && !skipAll) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
