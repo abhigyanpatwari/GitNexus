@@ -86,6 +86,9 @@ async function findRepoForCwd(cwd: string): Promise<{
 export async function augment(pattern: string, cwd?: string): Promise<string> {
   if (!pattern || pattern.length < 3) return '';
 
+  const patternFirstWord = pattern.trim().replace(/'/g, "''").split(/\s+/)[0];
+  if (!patternFirstWord || patternFirstWord.length < 2) return '';
+
   const workDir = cwd || process.cwd();
 
   try {
@@ -122,7 +125,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           repoId,
           `
           MATCH (n) WHERE n.filePath = '${escaped}'
-          AND n.name CONTAINS '${pattern.replace(/'/g, "''").split(/\s+/)[0]}'
+          AND n.name CONTAINS '${patternFirstWord}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 3
         `,
@@ -144,13 +147,11 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     // When FTS indexes are unavailable (read-only DB, first run before indexes are built),
     // fall back to a direct name CONTAINS query so enrichment still works.
     if (symbolMatches.length === 0 && !ftsAvailable) {
-      const firstWord = pattern.trim().replace(/'/g, "''").split(/\s+/)[0];
-      if (!firstWord || firstWord.length < 2) return '';
       const fallbackRows = await executeQuery(
         repoId,
         `
         MATCH (n)
-        WHERE n.name CONTAINS '${firstWord}'
+        WHERE n.name CONTAINS '${patternFirstWord}'
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
         LIMIT 5
       `,

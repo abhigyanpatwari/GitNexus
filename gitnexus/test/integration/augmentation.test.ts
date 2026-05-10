@@ -150,7 +150,7 @@ withTestLbugDB(
       });
 
       it("returns empty string for whitespace-only pattern (CONTAINS '' guard)", async () => {
-        const result = await augmentNoFts('   ', handle.dbPath);
+        const result = await augmentNoFts('    ', handle.dbPath);
         expect(result).toBe('');
       });
 
