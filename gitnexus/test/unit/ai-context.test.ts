@@ -53,14 +53,9 @@ describe('generateAIContextFiles', () => {
     try {
       // Stats values picked to be unmistakable if they leak through.
       const stats = { nodes: 12345, edges: 67890, processes: 99 };
-      await generateAIContextFiles(
-        subDir,
-        subStorage,
-        'NoStatsProject',
-        stats,
-        undefined,
-        { noStats: true },
-      );
+      await generateAIContextFiles(subDir, subStorage, 'NoStatsProject', stats, undefined, {
+        noStats: true,
+      });
 
       for (const f of ['CLAUDE.md', 'AGENTS.md']) {
         const content = await fs.readFile(path.join(subDir, f), 'utf-8');
