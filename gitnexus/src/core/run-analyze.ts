@@ -491,11 +491,7 @@ export async function runFullAnalysis(
       }
 
       {
-        let frontier: string[] = [
-          ...hashDiff.toWrite,
-          ...hashDiff.deleted,
-          ...shadowSeed,
-        ];
+        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
           const nextFrontier: string[] = [];
           for (const f of frontier) {
