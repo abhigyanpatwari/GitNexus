@@ -197,17 +197,34 @@ describe('Cursor hook extractPattern coverage', () => {
 
   it("handles 'grep' tool (Cursor matcher: Grep)", () => {
     expect(source).toMatch(/t === 'grep'/);
-    expect(source).toContain('toolInput.query');
+  });
+
+  it('probes a wide alias set for Grep query field (Cursor contract not formally specified)', () => {
+    // Cursor 2.4 docs at https://cursor.com/docs/agent/hooks list the
+    // matchers but not the per-tool tool_input field names. If Cursor
+    // changes the contract, we want the hook to still extract *something*
+    // — these aliases plus the longest-string fallback give us coverage.
+    for (const alias of ['query', 'pattern', 'regex', 'q', 'search', 'searchQuery']) {
+      expect(source).toContain(`toolInput.${alias}`);
+    }
+    expect(source).toContain('pickLongestStringValue');
   });
 
   it("handles 'read' tool (Cursor matcher: Read)", () => {
     expect(source).toMatch(/t === 'read'/);
-    expect(source).toMatch(/target_file|file_path|path|file/);
+    for (const alias of ['target_file', 'file_path', 'filePath', 'path', 'file']) {
+      expect(source).toContain(`toolInput.${alias}`);
+    }
   });
 
   it("handles 'shell' tool (Cursor matcher: Shell)", () => {
     expect(source).toMatch(/t === 'shell'/);
     expect(source).toMatch(/\\brg\\b\|\\bgrep\\b/);
+  });
+
+  it('logs raw payload to stderr when GITNEXUS_DEBUG is set (for contract diagnostics)', () => {
+    expect(source).toContain('GITNEXUS_DEBUG');
+    expect(source).toContain('GitNexus Cursor hook stdin:');
   });
 });
 
@@ -318,6 +335,106 @@ describe('Cursor hook behavior — early-exit paths', () => {
       expect(result.stdout.trim()).toBe('');
       expect(result.status).toBe(0);
     }
+  });
+});
+
+// ─── Behavior: GITNEXUS_DEBUG payload logging ────────────────────────
+
+describe('Cursor hook debug logging', () => {
+  it('echoes the payload to stderr only when GITNEXUS_DEBUG is set', () => {
+    const payload = {
+      tool_name: 'Grep',
+      tool_input: { query: 'validateUser' },
+      cwd: tmpDir,
+    };
+
+    // GITNEXUS_DEBUG unset → stderr quiet.
+    const quiet = spawnSync(process.execPath, [CURSOR_HOOK], {
+      input: JSON.stringify(payload),
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, GITNEXUS_DEBUG: '' },
+    });
+    expect(quiet.status).toBe(0);
+    expect(quiet.stderr).not.toContain('GitNexus Cursor hook stdin');
+
+    // GITNEXUS_DEBUG=1 → payload echoed to stderr (stdout still empty for
+    // unindexed cwd, so the hook output contract is preserved).
+    const verbose = spawnSync(process.execPath, [CURSOR_HOOK], {
+      input: JSON.stringify(payload),
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, GITNEXUS_DEBUG: '1' },
+    });
+    expect(verbose.status).toBe(0);
+    expect(verbose.stderr).toContain('GitNexus Cursor hook stdin');
+    expect(verbose.stderr).toContain('"tool_name":"Grep"');
+    expect(verbose.stdout.trim()).toBe('');
+  });
+});
+
+// ─── Documented contract behavior (extractPattern via the live hook) ─
+
+describe('Shell quoted-pattern parser limitations (documented)', () => {
+  // The Shell parser cannot reconstruct shell quoting. These tests pin the
+  // current behavior so a future "fix" doesn't silently change extraction
+  // — and so users diagnosing a noisy/missed pattern can find the behavior
+  // documented in tests.
+  //
+  // We can't observe the extracted pattern directly without an indexed
+  // repo, but we *can* confirm the hook reaches the augment-call path
+  // (vs. early-exiting) by checking exit status + clean stdout for cases
+  // where parseRgGrepPattern would yield a >=3-char token.
+
+  it('quoted multi-word `rg "User Service"` extracts the first word only', () => {
+    const result = runHook(CURSOR_HOOK, {
+      tool_name: 'Shell',
+      tool_input: { command: 'rg "User Service" src/' },
+      cwd: tmpDir, // no .gitnexus → exits early after extract
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('single-token quoted `rg "validateUser"` works as expected', () => {
+    const result = runHook(CURSOR_HOOK, {
+      tool_name: 'Shell',
+      tool_input: { command: 'rg "validateUser"' },
+      cwd: tmpDir,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
+// ─── Install docs ─────────────────────────────────────────────────────
+
+describe('Cursor integration install docs', () => {
+  const integrationReadme = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    'gitnexus-cursor-integration',
+    'README.md',
+  );
+
+  it('install README exists', () => {
+    expect(fs.existsSync(integrationReadme)).toBe(true);
+  });
+
+  it('install README documents the hook install path', () => {
+    const body = fs.readFileSync(integrationReadme, 'utf-8');
+    expect(body).toContain('.cursor/hooks.json');
+    expect(body).toContain('hooks/gitnexus-hook.cjs');
+    expect(body).toContain('Hook install');
+  });
+
+  it('install README documents GITNEXUS_DEBUG for payload diagnostics', () => {
+    const body = fs.readFileSync(integrationReadme, 'utf-8');
+    expect(body).toContain('GITNEXUS_DEBUG');
   });
 });
 

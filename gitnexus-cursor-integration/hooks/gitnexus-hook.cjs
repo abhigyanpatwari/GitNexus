@@ -117,20 +117,52 @@ function parseRgGrepPattern(cmd) {
 }
 
 /**
- * Extract a search pattern from the tool input. Cursor's tool_input shape
- * varies per tool; field names are not strictly contracted, so we try a few
- * reasonable aliases.
+ * Extract a search pattern from the tool input. Cursor 2.4 docs at
+ * https://cursor.com/docs/agent/hooks list the tool *matchers* but do not
+ * formally specify the per-tool tool_input field names, so we probe a
+ * generous set of MCP-style aliases. As a last-resort fallback for Grep
+ * (the highest-frequency search path) we also accept the longest plausible
+ * string value in tool_input. Set GITNEXUS_DEBUG=1 to log the raw payload
+ * to stderr if Cursor changes the contract and aliases stop matching.
  */
+function pickLongestStringValue(obj) {
+  let best = null;
+  if (!obj || typeof obj !== 'object') return null;
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && v.length >= 3 && (!best || v.length > best.length)) {
+      best = v;
+    }
+  }
+  return best;
+}
+
 function extractPattern(toolName, toolInput) {
   const t = (toolName || '').toLowerCase();
 
   if (t === 'grep') {
-    return toolInput.query || toolInput.pattern || toolInput.regex || null;
+    const aliases = [
+      toolInput.query,
+      toolInput.pattern,
+      toolInput.regex,
+      toolInput.q,
+      toolInput.search,
+      toolInput.searchQuery,
+    ];
+    for (const a of aliases) {
+      if (typeof a === 'string' && a.length >= 3) return a;
+    }
+    // Last resort: scan tool_input for any reasonable-looking string value.
+    return pickLongestStringValue(toolInput);
   }
 
   if (t === 'read') {
     const filePath =
-      toolInput.target_file || toolInput.file_path || toolInput.path || toolInput.file || '';
+      toolInput.target_file ||
+      toolInput.file_path ||
+      toolInput.filePath ||
+      toolInput.path ||
+      toolInput.file ||
+      '';
     if (!filePath) return null;
     const base = path.basename(String(filePath), path.extname(String(filePath)));
     const cleaned = base.replace(/[^a-zA-Z0-9_]/g, '');
@@ -140,6 +172,12 @@ function extractPattern(toolName, toolInput) {
   if (t === 'shell') {
     const cmd = toolInput.command || '';
     if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
+    // NOTE: parseRgGrepPattern uses split(/\s+/) and cannot handle shell
+    // quoting. `rg "User Service" src/` returns "User" (the first token
+    // after the rg/grep arg, with surrounding quotes stripped) — the
+    // multi-word pattern is intentionally not reconstructed since BM25 is
+    // already token-tolerant. Quoted single tokens (`rg "validateUser"`)
+    // work fine.
     return parseRgGrepPattern(cmd);
   }
 
@@ -175,6 +213,18 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
 function main() {
   try {
     const input = readInput();
+    if (process.env.GITNEXUS_DEBUG) {
+      // Echo the payload so users can capture Cursor's actual contract when
+      // diagnosing why augmentation isn't firing. Stderr only — stdout is
+      // reserved for the JSON response Cursor consumes.
+      try {
+        process.stderr.write(
+          `GitNexus Cursor hook stdin: ${JSON.stringify(input).slice(0, 500)}\n`,
+        );
+      } catch {
+        /* never let debug logging break the hook */
+      }
+    }
     const cwd = input.cwd || process.cwd();
     if (!path.isAbsolute(cwd)) return;
     if (!findGitNexusDir(cwd)) return;
