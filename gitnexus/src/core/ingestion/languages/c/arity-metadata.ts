@@ -14,8 +14,8 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
   const funcDecl = findFuncDeclarator(node);
   if (funcDecl === null) return {};
 
-  const paramList = funcDecl.childForFieldName?.('parameters');
-  if (paramList === null || paramList === undefined) return {};
+  const paramList = funcDecl.childForFieldName('parameters');
+  if (paramList === null) return {};
 
   const params: SyntaxNode[] = [];
   for (let i = 0; i < paramList.childCount; i++) {
@@ -28,9 +28,9 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
 
   // (void) means zero parameters
   if (params.length === 1 && params[0].type === 'parameter_declaration') {
-    const typeNode = params[0].childForFieldName?.('type');
-    const hasDeclarator = params[0].childForFieldName?.('declarator') !== null;
-    if (typeNode != null && typeNode.text === 'void' && !hasDeclarator) {
+    const typeNode = params[0].childForFieldName('type');
+    const hasDeclarator = params[0].childForFieldName('declarator') !== null;
+    if (typeNode !== null && typeNode.text === 'void' && !hasDeclarator) {
       return { parameterCount: 0, requiredParameterCount: 0, parameterTypes: [] };
     }
   }
@@ -43,7 +43,7 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
     if (p.type === 'variadic_parameter') {
       types.push('...');
     } else {
-      const typeNode = p.childForFieldName?.('type');
+      const typeNode = p.childForFieldName('type');
       types.push(typeNode?.text ?? 'unknown');
     }
   }
@@ -59,8 +59,8 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
  * Compute call-site arity from a call_expression node.
  */
 export function computeCCallArity(node: SyntaxNode): number {
-  const argList = node.childForFieldName?.('arguments');
-  if (argList == null) return 0;
+  const argList = node.childForFieldName('arguments');
+  if (argList === null) return 0;
 
   let count = 0;
   for (let i = 0; i < argList.childCount; i++) {
@@ -76,8 +76,8 @@ export function computeCCallArity(node: SyntaxNode): number {
 
 function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
   // Direct child
-  let decl = node.childForFieldName?.('declarator');
-  if (decl == null) {
+  let decl = node.childForFieldName('declarator');
+  if (decl === null) {
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
       if (c?.type === 'function_declarator') return c;
@@ -85,9 +85,9 @@ function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {
     return null;
   }
   // Unwrap pointer_declarator
-  while (decl != null && decl.type === 'pointer_declarator') {
-    const next = decl.childForFieldName?.('declarator');
-    if (next == null) break;
+  while (decl !== null && decl.type === 'pointer_declarator') {
+    const next = decl.childForFieldName('declarator');
+    if (next === null) break;
     decl = next;
   }
   if (decl?.type === 'function_declarator') return decl;
