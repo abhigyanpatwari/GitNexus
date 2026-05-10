@@ -29,7 +29,8 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
   // (void) means zero parameters
   if (params.length === 1 && params[0].type === 'parameter_declaration') {
     const typeNode = params[0].childForFieldName?.('type');
-    if (typeNode !== null && typeNode !== undefined && typeNode.text === 'void' && params[0].childForFieldName?.('declarator') === null) {
+    const hasDeclarator = params[0].childForFieldName?.('declarator') !== null;
+    if (typeNode != null && typeNode.text === 'void' && !hasDeclarator) {
       return { parameterCount: 0, requiredParameterCount: 0, parameterTypes: [] };
     }
   }
