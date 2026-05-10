@@ -2,8 +2,8 @@
  * Augmentation Engine
  *
  * Lightweight, fast-path enrichment of search patterns with knowledge graph context.
- * Designed to be called from platform hooks (Claude Code PreToolUse, Cursor beforeShellExecution)
- * when an agent runs grep/glob/search.
+ * Designed to be called from platform hooks (Claude Code PreToolUse, Cursor postToolUse)
+ * when an agent runs grep/glob/read/search.
  *
  * Performance target: <500ms cold start, <200ms warm.
  *
