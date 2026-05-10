@@ -5,6 +5,11 @@ import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
  * Populated during `emitCScopeCaptures` and consumed by `expandCWildcardNames`
  * to exclude file-local symbols from cross-file wildcard import visibility.
  *
+ * NOTE: module-level state, single-process-single-repo use only.
+ * For server-mode or multi-repo-in-one-process use cases, call
+ * `clearStaticNames()` at the start of each resolution pass to avoid
+ * stale static-linkage data from a previous invocation.
+ *
  * Key: filePath, Value: Set of static function names.
  */
 const staticNames = new Map<string, Set<string>>();

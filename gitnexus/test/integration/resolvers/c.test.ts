@@ -69,3 +69,45 @@ describe('C struct & include resolution', () => {
     expect(edges).toContain('destroy_service → free_user');
   });
 });
+
+// ---------------------------------------------------------------------------
+// C static function isolation — static functions must NOT leak across files
+// ---------------------------------------------------------------------------
+
+describe('C static function isolation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'c-static-isolation'), () => {});
+  }, 60000);
+
+  it('detects both static and non-static helper functions', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('helper');
+    expect(fns).toContain('public_a');
+    expect(fns).toContain('public_b');
+    expect(fns).toContain('main');
+  });
+
+  it('caller.c calls b:helper via include, NOT a:static helper', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edges = edgeSet(calls);
+
+    // caller.c should call public_b (included via b.h)
+    expect(edges).toContain('main → public_b');
+
+    // a.c's static helper calls itself locally
+    expect(edges).toContain('public_a → helper');
+
+    // caller.c should NOT have a CALLS edge to a.c's static helper.
+    // Filter edges to only those originating from main → helper to
+    // verify the correct target file.
+    const mainToHelper = calls.filter(
+      (r) => r.source === 'main' && r.target === 'helper',
+    );
+    // If a main→helper edge exists, it should point to b.c, not a.c
+    for (const edge of mainToHelper) {
+      expect(edge.targetFilePath).not.toContain('a.c');
+    }
+  });
+});

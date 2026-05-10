@@ -1,4 +1,4 @@
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -6,7 +6,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { cProvider } from '../c-cpp.js';
 import { cArityCompatibility, cMergeBindings, resolveCImportTarget } from './index.js';
 import { scanHeaderFiles } from './header-scan.js';
-import { expandCWildcardNames } from './static-linkage.js';
+import { expandCWildcardNames, isStaticName, clearStaticNames } from './static-linkage.js';
 
 /**
  * C `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -24,7 +24,12 @@ export const cScopeResolver: ScopeResolver = {
   languageProvider: cProvider,
   importEdgeReason: 'c-scope: include',
 
-  loadResolutionConfig: (repoPath: string) => scanHeaderFiles(repoPath),
+  loadResolutionConfig: (repoPath: string) => {
+    // Clear stale static-linkage data from any previous invocation to
+    // prevent cross-repo contamination in server-mode scenarios.
+    clearStaticNames();
+    return scanHeaderFiles(repoPath);
+  },
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
     // Augment allFilePaths with .h files discovered via loadResolutionConfig
@@ -59,4 +64,10 @@ export const cScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: false,
   // C #include brings in all symbols — enable global free call fallback
   allowGlobalFreeCallFallback: true,
+  // C `static` functions have file-local (translation-unit) linkage —
+  // exclude them from global free-call fallback cross-file resolution.
+  isFileLocalDef: (def: SymbolDefinition) => {
+    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+    return isStaticName(def.filePath, simple);
+  },
 };

@@ -67,6 +67,13 @@ const C_SCOPE_QUERY = `
 (type_definition
   declarator: (type_identifier) @declaration.name) @declaration.typedef
 
+;; Declarations — typedef for function pointers: typedef void (*callback)(int, int)
+(type_definition
+  declarator: (function_declarator
+    declarator: (parenthesized_declarator
+      (pointer_declarator
+        declarator: (type_identifier) @declaration.name)))) @declaration.typedef
+
 ;; Declarations — struct fields
 (field_declaration
   declarator: (field_identifier) @declaration.name) @declaration.field

@@ -159,6 +159,14 @@ describe('emitCScopeCaptures — other declarations', () => {
     expect(m!['@declaration.name'].text).toBe('MyInt');
   });
 
+  it('captures function pointer typedef as @declaration.typedef', () => {
+    const m = findMatch('typedef void (*callback)(int, int);', (t) =>
+      t.includes('@declaration.typedef'),
+    );
+    expect(m).toBeDefined();
+    expect(m!['@declaration.name'].text).toBe('callback');
+  });
+
   it('captures struct field as @declaration.field', () => {
     const m = findMatch('struct P { int x; };', (t) => t.includes('@declaration.field'));
     expect(m).toBeDefined();
