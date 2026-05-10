@@ -191,6 +191,7 @@ const runCommand = (command, args, cwd, extraEnv = {}) => {
     },
     stdio: 'inherit',
     windowsHide: true,
+    shell: process.platform === 'win32',
   });
 };
 
