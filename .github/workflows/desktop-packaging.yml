@@ -52,6 +52,8 @@ jobs:
     needs: validate
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +62,7 @@ jobs:
             label: Windows NSIS
             command: npm run build:win
             artifact_name: gitnexus-desktop-windows
+            installer_glob: gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
             artifact_paths: |
               gitnexus-desktop/release/*/GitNexus Desktop Setup *.exe
               gitnexus-desktop/release/*/win-unpacked/**
@@ -67,6 +70,7 @@ jobs:
             label: macOS DMG
             command: npm run build:mac
             artifact_name: gitnexus-desktop-macos
+            installer_glob: gitnexus-desktop/release/*/*.dmg
             artifact_paths: |
               gitnexus-desktop/release/*/*.dmg
               gitnexus-desktop/release/*/mac*/**
@@ -74,6 +78,7 @@ jobs:
             label: Linux AppImage
             command: npm run build:linux
             artifact_name: gitnexus-desktop-linux
+            installer_glob: gitnexus-desktop/release/*/*.AppImage
             artifact_paths: |
               gitnexus-desktop/release/*/*.AppImage
               gitnexus-desktop/release/*/linux-unpacked/**
@@ -165,3 +170,9 @@ jobs:
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Attest desktop artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
+        with:
+          subject-path: ${{ matrix.installer_glob }}
