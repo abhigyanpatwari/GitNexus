@@ -209,6 +209,19 @@ export function createMCPServer(backend: LocalBackend): Server {
           return 0;
         }
       },
+      (result) => {
+        // The handler converts thrown tool errors into a returned
+        // envelope `{ isError: true, content: [{ type: 'text', text: 'Error: ...' }] }`,
+        // so `instrumented`'s catch branch never fires for tool errors.
+        // Inspect the envelope here so the log doesn't undercount failures.
+        try {
+          const envelope = result as { isError?: boolean; content?: Array<{ text?: string }> };
+          if (envelope?.isError !== true) return null;
+          return envelope.content?.[0]?.text ?? 'tool error';
+        } catch {
+          return null;
+        }
+      },
     );
   });
 

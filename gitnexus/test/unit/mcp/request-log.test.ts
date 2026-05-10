@@ -178,4 +178,38 @@ describe('instrumented', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(fs.existsSync(logPath)).toBe(false);
   });
+
+  it('logs tool errors returned as { isError: true } envelopes via errorOf', async () => {
+    type ErrEnvelope = { isError?: boolean; content: Array<{ type: string; text: string }> };
+    const envelope: ErrEnvelope = {
+      isError: true,
+      content: [{ type: 'text', text: 'Error: target not found' }],
+    };
+    await instrumented(
+      'impact',
+      async () => envelope,
+      (r) => Buffer.byteLength(r.content[0]!.text, 'utf8'),
+      (r) => (r.isError === true ? r.content[0]!.text : null),
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[0]!) as RequestLogEntry;
+    expect(entry.tool).toBe('impact');
+    expect(entry.error).toBe('Error: target not found');
+    expect(entry.resultBytes).toBe(Buffer.byteLength('Error: target not found', 'utf8'));
+  });
+
+  it('logs error: null when errorOf is not provided (back-compat default)', async () => {
+    type Envelope = { content: Array<{ text: string }> };
+    const envelope: Envelope = { content: [{ text: 'plain success' }] };
+    await instrumented('context', async () => envelope);
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
+    const entry = JSON.parse(lines[0]!) as RequestLogEntry;
+    expect(entry.error).toBeNull();
+  });
 });

@@ -21,6 +21,12 @@
  * #1351 — the OpenTelemetry / Prometheus direction proposed there
  * may make the JSONL path moot.
  *
+ * Privacy note: tool *inputs* (`params`/`rawArgs`) are never logged.
+ * The `error` field, however, captures error messages verbatim. Tool
+ * error messages can echo user input — e.g. cypher parse errors
+ * routinely include the offending clause. Treat the log as
+ * input-adjacent for retention and access purposes.
+ *
  * Failures to write are swallowed — the MCP server's availability
  * matters more than logging fidelity.
  */
@@ -79,6 +85,19 @@ export async function appendRequestLog(
 /**
  * Wrap an async tool-call handler so each invocation produces a log
  * entry. Returns the original result unchanged.
+ *
+ * MCP tool errors arrive two ways:
+ * 1. Thrown — caught here; `error` is the thrown message.
+ * 2. Returned as `{ isError: true, content: [...] }` envelopes — the
+ *    handler converts thrown errors into this shape before returning.
+ *    We inspect the envelope so the log doesn't undercount failures.
+ *    The `errorOf` hook lets the wrap site teach us how to read the
+ *    envelope (returns the error message string, or null on success).
+ *
+ * NOTE on error content: MCP tool error messages can echo user input
+ * (e.g. cypher parse errors include the offending clause verbatim). The
+ * log is therefore NOT free of input data; see request-log.ts module
+ * header.
  */
 export async function instrumented<T>(
   toolName: string,
@@ -88,17 +107,20 @@ export async function instrumented<T>(
     if (r === null || r === undefined) return 0;
     try { return Buffer.byteLength(JSON.stringify(r), 'utf8'); } catch { return 0; }
   },
+  errorOf: (result: T) => string | null = () => null,
 ): Promise<T> {
   const ts = new Date().toISOString();
   const startedAt = Date.now();
   try {
     const result = await fn();
+    let errorMsg: string | null = null;
+    try { errorMsg = errorOf(result); } catch { errorMsg = null; }
     void appendRequestLog({
       ts,
       tool: toolName,
       durationMs: Date.now() - startedAt,
       resultBytes: resultBytesOf(result),
-      error: null,
+      error: errorMsg,
     });
     return result;
   } catch (err) {
