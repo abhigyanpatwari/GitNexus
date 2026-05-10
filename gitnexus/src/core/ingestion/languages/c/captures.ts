@@ -1,5 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import { findNodeAtRange, nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getCParser, getCScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -126,7 +126,7 @@ export function emitCScopeCaptures(
  * Check if a C function_definition or declaration has `static` storage class.
  * Walks direct children for a `storage_class_specifier` node with text `static`.
  */
-function hasStaticStorageClass(node: ReturnType<ReturnType<typeof getCParser>['parse']>['rootNode']): boolean {
+function hasStaticStorageClass(node: SyntaxNode): boolean {
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (child !== null && child.type === 'storage_class_specifier' && child.text === 'static') {

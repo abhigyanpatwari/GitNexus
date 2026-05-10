@@ -41,12 +41,15 @@ export function expandCWildcardNames(
   const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
   if (target === undefined) return [];
 
+  const seen = new Set<string>();
   const names: string[] = [];
   for (const def of target.localDefs) {
     const name = simpleName(def);
     if (name === '') continue;
     if (isStaticName(target.filePath, name)) continue;
-    if (!names.includes(name)) names.push(name);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
   }
   return names;
 }
