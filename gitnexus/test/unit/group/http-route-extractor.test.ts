@@ -840,7 +840,10 @@ export default r;
       const largeJava = `package com.example;\n\n@RestController\npublic class BigController {\n${padding}}\n`;
       expect(largeJava.length).toBeGreaterThan(40_000);
 
-      const dir = path.join(tmpDir, 'large-input');
+      // Use mkdtempSync rather than a fixed subdir name: satisfies CodeQL's
+      // js/insecure-temporary-file rule by generating a unique random suffix
+      // instead of relying on the parent tmpDir's predictable Date.now() name.
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'large-input-'));
       fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
       fs.writeFileSync(path.join(dir, 'src/controller/BigController.java'), largeJava);
 
