@@ -51,7 +51,5 @@ export function javaImportOwningScope(
 /** Look up `this` or `super` in the function scope's type bindings. */
 export function javaReceiverBinding(functionScope: Scope): TypeRef | null {
   if (functionScope.kind !== 'Function') return null;
-  return (
-    functionScope.typeBindings.get('this') ?? functionScope.typeBindings.get('super') ?? null
-  );
+  return functionScope.typeBindings.get('this') ?? functionScope.typeBindings.get('super') ?? null;
 }
