@@ -256,4 +256,28 @@ describe('bucket boundary contract', () => {
   it('publishes the documented result-size buckets verbatim', () => {
     expect(RESULT_BYTES_BUCKETS).toEqual([512, 2048, 8192, 32768, 131072, 524288, 2097152]);
   });
+
+  it('exposes the documented bucket boundaries in the Prometheus scrape', async () => {
+    process.env['GITNEXUS_OTEL_METRICS'] = 'on';
+    await withRandomPort(async () => {
+      const init = await initMetrics();
+      await observe(
+        'context',
+        async () => ({ content: [{ type: 'text', text: 'x' }] }),
+        (r) => Buffer.byteLength(r.content[0]!.text, 'utf8'),
+        () => false,
+      );
+      const text = await fetch(`http://127.0.0.1:${init.port}/metrics`).then((r) => r.text());
+      for (const b of DURATION_BUCKETS_SECONDS) {
+        expect(text).toMatch(
+          new RegExp(`gitnexus_mcp_tool_request_duration_seconds_bucket\\{[^}]*le="${b}"\\}`),
+        );
+      }
+      for (const b of RESULT_BYTES_BUCKETS) {
+        expect(text).toMatch(
+          new RegExp(`gitnexus_mcp_tool_result_bytes_bucket\\{[^}]*le="${b}"\\}`),
+        );
+      }
+    });
+  });
 });
