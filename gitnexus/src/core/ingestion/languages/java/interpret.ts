@@ -122,7 +122,9 @@ function stripGeneric(text: string): string {
   // Fallback: strip generic parameters from any unrecognized generic type.
   // `BaseModel<T>` → `BaseModel`, `Builder<Self>` → `Builder`.
   // This mirrors JVM type erasure — the raw class name is the resolvable symbol.
-  const fallback = text.match(/^([A-Za-z_][A-Za-z0-9_.]*)<.+>$/);
+  // The pattern matches up to the first `<` to handle nested generics safely
+  // (e.g. `BaseModel<List<String>>` → `BaseModel`).
+  const fallback = text.match(/^([A-Za-z_$][A-Za-z0-9_$]*)<.+>$/s);
   if (fallback !== null) return fallback[1].trim();
 
   return text;
