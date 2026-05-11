@@ -48,7 +48,10 @@ function walk(dir: string, root: string, out: Set<string>): void {
     } else if (entry.isFile()) {
       const ext = name.slice(name.lastIndexOf('.'));
       if (HEADER_EXTENSIONS.has(ext)) {
-        out.add(relative(root, full));
+        // Normalize to forward slashes for cross-platform consistency.
+        // path.relative() returns backslash-separated paths on Windows,
+        // but the scope-resolution pipeline uses forward slashes uniformly.
+        out.add(relative(root, full).replace(/\\/g, '/'));
       }
     }
   }
