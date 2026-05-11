@@ -150,11 +150,7 @@ describe('C import target resolution (resolveCImportTarget)', () => {
   });
 
   it('falls back to suffix match when no same-directory sibling exists', () => {
-    const result = resolveCImportTarget(
-      'missing.h',
-      'src/foo.c',
-      new Set(['lib/missing.h']),
-    );
+    const result = resolveCImportTarget('missing.h', 'src/foo.c', new Set(['lib/missing.h']));
     expect(result).toBe('lib/missing.h');
   });
 
