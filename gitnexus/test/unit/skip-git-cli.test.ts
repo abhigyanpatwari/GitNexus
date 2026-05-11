@@ -17,7 +17,39 @@ describe('--skip-git CLI flag', () => {
 
     expect(helpOutput).toContain('--skip-git');
     expect(helpOutput).toContain('--skip-agents-md');
+    expect(helpOutput).toContain('--skip-skills');
+    expect(helpOutput).toContain('--index-only');
     expect(helpOutput).not.toContain('--no-git');
+  });
+
+  it('warns when --index-only overrides --skills (PR 1485)', () => {
+    // `--index-only` suppresses the post-index skill step that `--skills`
+    // would otherwise trigger. Without an explicit warning, the user sees a
+    // pipeline re-index complete and silently no skill files written — the
+    // silent-contradiction case flagged in PR 1485 review.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-index-only-skills-'));
+    const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-index-only-skills-home-'));
+    // Make tmpDir a git repo so analyze accepts it without --skip-git.
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'export const a = 1;\n');
+
+    const env = {
+      ...process.env,
+      HOME: gitnexusHome,
+      GITNEXUS_HOME: gitnexusHome,
+      GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
+    };
+
+    try {
+      const output = execSync(
+        `node "${cliPath}" analyze "${tmpDir}" --index-only --skills --skip-agents-md`,
+        { encoding: 'utf8', timeout: 60000, env },
+      );
+      expect(output).toContain('--index-only overrides --skills');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(gitnexusHome, { recursive: true, force: true });
+    }
   });
 
   it('rejects non-git folder without --skip-git', () => {

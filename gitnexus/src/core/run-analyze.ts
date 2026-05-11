@@ -81,6 +81,8 @@ export interface AnalyzeOptions {
   skipAgentsMd?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
+  /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
+  skipSkills?: boolean;
   /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
@@ -527,7 +529,11 @@ export async function runFullAnalysis(
           processes: pipelineResult.processResult?.stats.totalProcesses,
         },
         undefined,
-        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
+        {
+          skipAgentsMd: options.skipAgentsMd,
+          skipSkills: options.skipSkills,
+          noStats: options.noStats,
+        },
       );
     } catch {
       // Best-effort — don't fail the entire analysis for context file issues
