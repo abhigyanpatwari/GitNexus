@@ -444,6 +444,8 @@ def create_order():
         `
 import httpx
 
+module_client = httpx.AsyncClient(base_url="https://svc.local")
+
 class TopicClient:
     def __init__(self):
         self._client = httpx.AsyncClient(base_url="https://svc.local")
@@ -467,6 +469,12 @@ async def check_duplicate():
 def unrelated_scope_collision():
     client = acquire_cache_client()
     return client.get("/ignored-same-name")
+
+def module_scope_shadow_collision():
+    client = acquire_cache_client()
+    return client.get("/ignored-module-same-name")
+
+module_client.get("/module-topic")
 `,
       );
 
@@ -478,6 +486,7 @@ def unrelated_scope_collision():
         'http::POST::/questions/import',
         'http::DELETE::/topic',
         'http::POST::/questions/duplicate-check',
+        'http::GET::/module-topic',
       ];
 
       for (const contractId of expected) {
@@ -490,6 +499,9 @@ def unrelated_scope_collision():
       expect(consumers.find((c) => c.contractId === 'http::POST::/nope')).toBeUndefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/ignored-same-name'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/ignored-module-same-name'),
       ).toBeUndefined();
     });
 

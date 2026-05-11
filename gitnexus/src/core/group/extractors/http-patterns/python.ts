@@ -82,7 +82,10 @@ const REQUESTS_GENERIC_PATTERNS = compilePatterns({
 // ─── Consumer: httpx.AsyncClient assignments ────────────────────────
 // NOTE: This targeted detector only tracks explicit `httpx.AsyncClient(...)`
 // construction. Direct imports (`from httpx import AsyncClient`) and module
-// aliases (`import httpx as hx`) are intentionally left for a follow-up.
+// aliases (`import httpx as hx`) and annotated assignments (`client: httpx.AsyncClient = ...`)
+// are intentionally left for a follow-up. Module-scope clients are only matched
+// at module scope; calls inside functions require a function/class-local tracked
+// client to avoid false positives from same-name local variables.
 const HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS = compilePatterns({
   name: 'python-httpx-async-client-assign',
   language: Python,
@@ -151,18 +154,8 @@ function callScopeKeys(clientNode: Parser.SyntaxNode): string[] {
   const preferClass = clientNode.text.includes('.');
   const nearestScope = getScopeKey(clientNode.parent, preferClass);
 
-  if (nearestScope !== 'module') {
-    keys.add(nearestScope);
-  }
+  keys.add(nearestScope);
 
-  if (!preferClass) {
-    const functionScope = getScopeKey(clientNode.parent, false);
-    if (functionScope !== 'module') {
-      keys.add(functionScope);
-    }
-  }
-
-  keys.add('module');
   return [...keys];
 }
 
