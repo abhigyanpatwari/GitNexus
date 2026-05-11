@@ -158,13 +158,12 @@ export async function observe<T>(
     requestsCounter?.add(1, labels);
     durationHistogram?.record(durationSeconds, labels);
     if (!errored) {
-      let bytes = 0;
       try {
-        bytes = sizer(result);
+        const bytes = sizer(result);
+        resultBytesHistogram?.record(bytes, { tool });
       } catch {
-        bytes = 0;
+        // Skip the histogram rather than poison the 0-bucket on a shape change.
       }
-      resultBytesHistogram?.record(bytes, { tool });
     }
     return result;
   } catch (err) {

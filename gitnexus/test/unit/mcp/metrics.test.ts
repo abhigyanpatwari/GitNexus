@@ -226,6 +226,28 @@ describe('privacy: target_info / scope_info suppression', () => {
   });
 });
 
+describe('observe() — sizer fault tolerance', () => {
+  it('skips the bytes histogram when sizer throws (does not record bytes=0)', async () => {
+    process.env['GITNEXUS_OTEL_METRICS'] = 'on';
+    await withRandomPort(async () => {
+      const init = await initMetrics();
+      await observe(
+        'list_repos',
+        async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+        () => {
+          throw new Error('shape changed');
+        },
+        () => false,
+      );
+      const text = await fetch(`http://127.0.0.1:${init.port}/metrics`).then((r) => r.text());
+      expect(text).toContain(
+        'gitnexus_mcp_tool_requests_total{tool="list_repos",error="false"} 1',
+      );
+      expect(text).not.toMatch(/gitnexus_mcp_tool_result_bytes_count\{tool="list_repos"\}/);
+    });
+  });
+});
+
 describe('bucket boundary contract', () => {
   it('publishes the documented duration buckets verbatim', () => {
     expect(DURATION_BUCKETS_SECONDS).toEqual([0.001, 0.005, 0.025, 0.1, 0.5, 2.5, 10, 30]);
