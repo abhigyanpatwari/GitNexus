@@ -155,12 +155,6 @@ const builderEnvironment = {
   GITNEXUS_DESKTOP_GITNEXUS_SKILLS: toBuilderRelativePath(path.join(gitnexusRoot, 'skills')),
   GITNEXUS_DESKTOP_GITNEXUS_VENDOR: toBuilderRelativePath(path.join(gitnexusRoot, 'vendor')),
   GITNEXUS_DESKTOP_WEB_DIST: toBuilderRelativePath(path.join(gitnexusWebRoot, 'dist')),
-  // On Windows, lbugjs.node PE-imports node.exe by name, which fails under Electron's binary.
-  // electron-builder copies this into resources/runtime/node.exe so it lands in both
-  // win-unpacked (smoke test) and the NSIS installer (end-user install).
-  // The extraResources entry in electron-builder.yml is platform: [win] so this value is
-  // ignored on macOS/Linux (empty string prevents electron-builder from touching it there).
-  GITNEXUS_DESKTOP_NODE_BINARY: process.platform === 'win32' ? process.execPath : '',
 };
 
 const builderCliArgs = [
@@ -436,6 +430,16 @@ runCommand(process.execPath, ['scripts/ensure-gitnexus-runtime.mjs'], packageRoo
 
 runCommand(npmCommand, ['run', 'bundle'], packageRoot);
 
+const gitnexusSharedRoot = path.join(workspaceRoot, 'gitnexus-shared');
+if (!fs.existsSync(path.join(gitnexusSharedRoot, 'dist'))) {
+  if (!fs.existsSync(path.join(gitnexusSharedRoot, 'node_modules'))) {
+    runCommand(npmCommand, ['ci'], gitnexusSharedRoot);
+  }
+  runCommand(npmCommand, ['run', 'build'], gitnexusSharedRoot);
+}
+if (!fs.existsSync(path.join(gitnexusWebRoot, 'node_modules'))) {
+  runCommand(npmCommand, ['ci'], gitnexusWebRoot);
+}
 runCommand(npmCommand, ['run', 'build'], gitnexusWebRoot);
 
 runCommand(process.execPath, builderCliArgs, packageRoot, builderEnvironment);
