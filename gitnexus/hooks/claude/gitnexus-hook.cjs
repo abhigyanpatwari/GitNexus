@@ -104,7 +104,8 @@ function findGitNexusDir(startDir) {
 
 function isGitNexusServerCommand(command) {
   const hasServerMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(command);
-  const hasGitNexus = /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(command) ||
+  const hasGitNexus =
+    /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(command) ||
     /node_modules[/\\]gitnexus[/\\]/.test(command);
   return hasServerMode && hasGitNexus;
 }
