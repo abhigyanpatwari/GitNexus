@@ -513,15 +513,15 @@ describe('PHP transitive trait MRO (U2)', () => {
   });
 
   it('depth-1: $this->aMethod() resolves to TraitA::aMethod', () => {
-    expect(callsFrom('callDepthOne', 'aMethod').length).toBeGreaterThanOrEqual(1);
+    expect(callsFrom('callDepthOne', 'aMethod').length).toBe(1);
   });
 
   it('depth-2: $this->bMethod() resolves to TraitB::bMethod (TraitA uses TraitB)', () => {
-    expect(callsFrom('callDepthTwo', 'bMethod').length).toBeGreaterThanOrEqual(1);
+    expect(callsFrom('callDepthTwo', 'bMethod').length).toBe(1);
   });
 
   it('depth-3: $this->deepMethod() resolves to TraitC::deepMethod (TraitA → TraitB → TraitC)', () => {
-    expect(callsFrom('callDepthThree', 'deepMethod').length).toBeGreaterThanOrEqual(1);
+    expect(callsFrom('callDepthThree', 'deepMethod').length).toBe(1);
   });
 });
 
@@ -545,14 +545,12 @@ describe('PHP parent:: bypasses traits (U3)', () => {
     );
 
   it('parent::record() resolves to Base::record, NOT Auditable::record', () => {
-    expect(callsFromTo('callViaParent', 'record', 'app/Base.php').length).toBeGreaterThanOrEqual(1);
+    expect(callsFromTo('callViaParent', 'record', 'app/Base.php').length).toBe(1);
     expect(callsFromTo('callViaParent', 'record', 'app/Auditable.php').length).toBe(0);
   });
 
   it('$this->record() still resolves to Auditable::record (trait shadows parent)', () => {
-    expect(callsFromTo('callViaThis', 'record', 'app/Auditable.php').length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(callsFromTo('callViaThis', 'record', 'app/Auditable.php').length).toBe(1);
     expect(callsFromTo('callViaThis', 'record', 'app/Base.php').length).toBe(0);
   });
 });
@@ -591,18 +589,19 @@ describe('PHP namespace-aware free-call fallback (U4)', () => {
   });
 
   it('resolves same-namespace free call (caller in App\\Utils → App\\Utils\\format)', () => {
-    expect(
-      callsFromTo('callSameNamespace', 'format', 'src/App/Utils/Format.php').length,
-    ).toBeGreaterThanOrEqual(1);
+    expect(callsFromTo('callSameNamespace', 'format', 'src/App/Utils/Format.php').length).toBe(1);
   });
 
   it('resolves use-function-imported alias (vendorFormat → Vendor\\Utils\\format)', () => {
     // `use function Vendor\Utils\format as vendorFormat;`. Caller in \App calls
-    // vendorFormat('x', 80) — the import target is reachable.
+    // vendorFormat('x', 80) — the import target is reachable. The CALLS edge
+    // may surface against either the alias name (`vendorFormat`) or the
+    // canonical function name (`format` in the vendor file) depending on
+    // dedup ordering; either way, exactly one edge total.
     expect(
       callsFromTo('callImported', 'vendorFormat').length +
         callsFromTo('callImported', 'format', 'src/Vendor/Utils/Format.php').length,
-    ).toBeGreaterThanOrEqual(1);
+    ).toBe(1);
   });
 });
 
@@ -1972,5 +1971,67 @@ describe('PHP Child extends ParentClass — inherited method resolution (SM-9)',
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fully-qualified type-hint resolution (Codex PR #1497 review, finding 1).
+//
+// Two `User` classes coexist in the workspace: `App\Models\User` and
+// `App\Other\User`. A service file imports the simple-name `User` from
+// App\Models, but uses a fully-qualified `\App\Other\User` in a parameter
+// annotation. PHP runtime semantics: the leading `\` is an absolute namespace
+// path; the parameter is always `App\Other\User`, even when the simple
+// `User` is bound to a different class by `use`.
+//
+// Pre-fix: `normalizePhpType` strips the qualifier so the TypeRef carries
+// only `User`, then `findClassBindingInScope` walks the scope chain and
+// resolves to the imported `App\Models\User` — emitting a CALLS edge to the
+// wrong class. Post-fix: qualified form survives on `rawName`, the
+// QualifiedNameIndex fallback (or a PHP-specific qualified lookup) routes
+// the call to App\Other\User::record.
+// ---------------------------------------------------------------------------
+
+describe('PHP fully-qualified type-hint resolution (Codex #1497)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-fqn-cross-namespace'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === file,
+    );
+
+  it('detects both User classes in distinct namespaces', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    // Exactly two User entries — one per namespace.
+    const userClasses = getNodesByLabelFull(result, 'Class').filter((n) => n.name === 'User');
+    expect(userClasses.length).toBe(2);
+    const userFiles = userClasses.map((c) => c.properties.filePath as string).sort();
+    expect(
+      userFiles.some((f) => f.includes('Models/User.php') || f.includes('Models\\User.php')),
+    ).toBe(true);
+    expect(
+      userFiles.some((f) => f.includes('Other/User.php') || f.includes('Other\\User.php')),
+    ).toBe(true);
+  });
+
+  it('\\App\\Other\\User parameter resolves $u->record() to app/Other/User.php (NOT app/Models/User.php)', () => {
+    // The bug Codex flagged: FQN parameter collapses to simple `User`, then
+    // resolves to the imported `App\Models\User` instead of the explicit
+    // `\App\Other\User` named in the annotation. Post-fix: exactly one edge,
+    // pointing to the FQN target.
+    expect(callsFromTo('save', 'record', 'app/Other/User.php').length).toBe(1);
+    expect(callsFromTo('save', 'record', 'app/Models/User.php').length).toBe(0);
+  });
+
+  it('simple-name `User $u` parameter resolves to the imported App\\Models\\User (control case)', () => {
+    // Sanity check that unqualified type-hint resolution still works via the
+    // `use App\Models\User;` import. Without this control, U2's normalizer
+    // change could regress the simple-name path and we'd miss it.
+    expect(callsFromTo('saveLocal', 'record', 'app/Models/User.php').length).toBe(1);
+    expect(callsFromTo('saveLocal', 'record', 'app/Other/User.php').length).toBe(0);
   });
 });
