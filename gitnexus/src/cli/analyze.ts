@@ -117,7 +117,6 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
-<<<<<<< fix/no-stats-flag-effective
   /**
    * Stats inclusion in AGENTS.md and CLAUDE.md.
    *
@@ -130,14 +129,10 @@ export interface AnalyzeOptions {
    * default-on case.
    */
   stats?: boolean;
-=======
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
-  noStats?: boolean;
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
->>>>>>> main
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
   /**
@@ -462,19 +457,14 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
-<<<<<<< fix/no-stats-flag-effective
-        skipAgentsMd: options?.skipAgentsMd,
+        skipAgentsMd,
+        skipSkills,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options?.noStats` here returns
         // undefined every time, so the flag was a no-op on the markdown
         // rewrite path before this fix. See #1477.
         noStats: options?.stats === false,
-=======
-        skipAgentsMd,
-        skipSkills,
-        noStats: options?.noStats,
->>>>>>> main
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -562,13 +552,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-<<<<<<< fix/no-stats-flag-effective
-            // See note above (#1477): commander stores --no-stats as
-            // `options.stats === false`, not as `options.noStats`.
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.stats === false },
-=======
-            { skipAgentsMd, skipSkills, noStats: options?.noStats },
->>>>>>> main
+            {
+              skipAgentsMd,
+              skipSkills,
+              // See note above (#1477): commander stores --no-stats as
+              // `options.stats === false`, not as `options.noStats`.
+              noStats: options?.stats === false,
+            },
           );
         }
       } catch {
