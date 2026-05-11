@@ -155,8 +155,15 @@ export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBindi
  *   3. Take first part of `&` intersection
  *   4. Strip array suffix `[]`
  *   5. Strip generic wrapper `Collection<User>` → `User`
- *   6. Strip backslash namespace qualifier `\App\Models\User` → `User`
+ *   6. Canonicalize leading backslash off: `\App\Models\User` → `App\Models\User`
  *   7. Reject PHP primitive / pseudo types
+ *
+ * The qualified form is preserved on `TypeRef.rawName` so downstream PHP
+ * receiver resolution can distinguish `\App\Other\User` from a same-simple-name
+ * `User` reachable via `use`. Without this, fully-qualified type hints collapse
+ * to ambiguous simple names and resolve against the caller's scope chain
+ * instead of the explicit target the source named (Codex PR #1497 review,
+ * finding 1).
  */
 export function normalizePhpType(raw: string): string | null {
   // 1. Strip nullable prefix
@@ -183,22 +190,28 @@ export function normalizePhpType(raw: string): string | null {
   if (type.endsWith('[]')) type = type.slice(0, -2).trim();
 
   // 5. Strip single-arg generic wrapper: Collection<User> → User
+  //    Qualified inner types (Collection<\App\Models\User>) survive — the
+  //    capture group preserves whatever the writer named.
   const genericMatch = type.match(/^\w[\w\\]*\s*<([^,<>]+)>$/);
   if (genericMatch) {
     type = genericMatch[1].trim();
   }
 
-  // 6. Strip backslash namespace qualifier: \App\Models\User → User
-  if (type.includes('\\')) {
-    const segments = type.split('\\').filter(Boolean);
-    type = segments[segments.length - 1] ?? type;
-  }
+  // 6. Canonicalize leading backslash off — keep the qualified path intact.
+  //    `\App\Models\User` → `App\Models\User`. `App\Models\User` → unchanged.
+  //    Unqualified `User` stays as `User`. The qualified form is the lookup
+  //    key into the workspace QualifiedNameIndex (PHP defs are indexed by
+  //    namespace-joined qualifiedName); the leading-backslash distinction in
+  //    source is only an "absolute path" anchor, not part of the canonical key.
+  if (type.startsWith('\\')) type = type.replace(/^\\+/, '');
 
   // 7. Reject primitives / pseudo-types
   if (isPrimitiveOrPseudo(type)) return null;
 
-  // Must be a simple identifier
-  if (!/^\w+$/.test(type)) return null;
+  // Must be a (possibly qualified) PHP identifier — segments of word chars
+  // separated by single backslashes. Empty segments (consecutive backslashes,
+  // trailing backslash) are rejected.
+  if (!/^\w+(?:\\\w+)*$/.test(type)) return null;
 
   return type;
 }
