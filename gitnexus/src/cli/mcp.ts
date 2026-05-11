@@ -48,11 +48,34 @@ export const mcpCommand = async () => {
   // stdout at module init, but transitive deps (pino, pino-pretty, the
   // worker-thread transport) could in theory, and the import-closure
   // regression test enforces the leaf invariant.
-  const [{ startMCPServer }, { LocalBackend }, { logger }] = await Promise.all([
+  const [{ startMCPServer }, { LocalBackend }, { logger }, { initMetrics }] = await Promise.all([
     import('../mcp/server.js'),
     import('../mcp/local/local-backend.js'),
     import('../core/logger.js'),
+    import('../mcp/metrics.js'),
   ]);
+
+  // OpenTelemetry metrics + Prometheus exporter. Opt-in via GITNEXUS_OTEL_METRICS.
+  // In stdio mode (this entrypoint), each agent host spawns its own process, so
+  // metrics are off by default. Operators who want server-side observability
+  // should run `gitnexus serve` and scrape that instance instead. The opt-in
+  // path still works here for local development / single-process setups.
+  try {
+    const result = await initMetrics();
+    if (result.enabled) {
+      logger.info(
+        { port: result.port, host: result.host, endpoint: result.endpoint },
+        'GitNexus: Prometheus metrics endpoint listening',
+      );
+    }
+  } catch (err: any) {
+    // Metrics must never crash the server. EADDRINUSE here is the common case;
+    // log and continue without metrics.
+    logger.warn(
+      { err: err?.message ?? String(err) },
+      'GitNexus: failed to start metrics endpoint — continuing without metrics',
+    );
+  }
 
   // Missing-optional-grammar warnings are intentionally NOT emitted here.
   // `gitnexus analyze` already warns at index time, filtered by the repo's

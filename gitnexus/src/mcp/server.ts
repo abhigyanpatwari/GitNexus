@@ -27,6 +27,7 @@ import { GITNEXUS_TOOLS } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import { observe, shutdownMetrics } from './metrics.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -162,35 +163,56 @@ export function createMCPServer(backend: LocalBackend): Server {
     })),
   }));
 
-  // Handle tool calls — append next-step hints to guide agent workflow
+  // Handle tool calls — append next-step hints to guide agent workflow.
+  // The body is wrapped in `observe()` (see `./metrics.ts`) so each call is
+  // recorded against the OTel meter when metrics are enabled. The wrapper is
+  // a no-op when metrics are disabled.
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    try {
-      const result = await backend.callTool(name, args);
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+    return observe(
+      name,
+      async () => {
+        try {
+          const result = await backend.callTool(name, args);
+          const resultText =
+            typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          const hint = getNextStepHint(name, args as Record<string, any> | undefined);
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: resultText + hint,
-          },
-        ],
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: resultText + hint,
+              },
+            ],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+      (result) => {
+        // Size = bytes of the text payload only. The envelope structure
+        // itself is not user data.
+        const block = result.content?.[0];
+        if (block && 'text' in block && typeof block.text === 'string') {
+          return Buffer.byteLength(block.text, 'utf8');
+        }
+        return 0;
+      },
+      // hasError must return a boolean only. Never accept the error message
+      // string at this seam — messages echo user input.
+      (result) => result.isError === true,
+    );
   });
 
   // Handle list prompts request
@@ -326,6 +348,9 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
     } catch {}
     try {
       await server.close();
+    } catch {}
+    try {
+      await shutdownMetrics();
     } catch {}
     const { flushLoggerSync } = await import('../core/logger.js');
     flushLoggerSync();
