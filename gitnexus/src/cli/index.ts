@@ -33,7 +33,11 @@ program
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
       'preserves any embeddings already present in the index.',
   )
-  .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option(
+    '--skills',
+    'Generate repo-specific skill files from detected communities ' +
+      '(no-op when --index-only is also set).',
+  )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
