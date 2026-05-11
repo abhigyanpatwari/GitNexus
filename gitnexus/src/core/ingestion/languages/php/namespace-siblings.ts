@@ -117,8 +117,8 @@ const namespaceByFilePath = new Map<string, string>();
 /**
  * Read the cached PHP namespace for a given filePath. Returns `''` (global)
  * when the file has no namespace_definition or hasn't been processed yet.
- * Callers should only consult this AFTER `populatePhpNamespaceSiblings` has
- * run for the current resolution.
+ * Callers should only consult this AFTER either `populatePhpClassQualifiedNames`
+ * or `populatePhpNamespaceSiblings` has run for the current resolution.
  */
 export function getPhpNamespaceForFile(filePath: string): string {
   return namespaceByFilePath.get(filePath) ?? '';
@@ -236,6 +236,38 @@ export function populatePhpNamespaceSiblings(
           if (arr.some((b) => b.def.nodeId === def.nodeId)) continue;
           arr.push({ def, origin: 'namespace' });
         }
+      }
+    }
+  }
+
+  // Step 3b: Inject fully-qualified-name bindings into every PHP file's
+  // Module scope. PHP `\App\Models\User` (leading-backslash FQN) and
+  // `App\Models\User` (already-qualified relative) on a parameter or
+  // typed receiver must resolve to the exact namespace-qualified class
+  // regardless of which simple-name `User` the caller's `use` imports
+  // shadowed. The shared `findClassBindingInScope` scope-chain walk
+  // consumes these augmentations via `lookupBindingsAt`, so adding the
+  // qualified key on every file's module scope routes FQN-receivers to
+  // the right def. Codex PR #1497 review, finding 1.
+  //
+  // Cost: O(PHP files × class-like defs in the workspace) augmentation
+  // entries. Bounded and acceptable in practice — typical PHP projects
+  // have hundreds of files and classes, not tens of thousands.
+  for (const parsed of parsedFiles) {
+    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    if (moduleScope === undefined) continue;
+    const moduleScopeId = moduleScope.id;
+
+    for (const [ns, bucket] of buckets) {
+      if (ns === '') continue; // global-namespace classes have no qualified form to register
+      for (const def of bucket.classDefs) {
+        const q = def.qualifiedName ?? '';
+        const simpleName = q.includes('\\') ? q.slice(q.lastIndexOf('\\') + 1) : q;
+        if (simpleName === '') continue;
+        const fqn = `${ns}\\${simpleName}`;
+        const arr = getAugmentationBucket(augmentations, moduleScopeId, fqn);
+        if (arr.some((b) => b.def.nodeId === def.nodeId)) continue;
+        arr.push({ def, origin: 'namespace' });
       }
     }
   }
