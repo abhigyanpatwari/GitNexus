@@ -473,6 +473,18 @@ export interface ScopeResolver {
   readonly allowGlobalFreeCallFallback?: boolean;
 
   /**
+   * Optional predicate to identify definitions with file-local linkage
+   * (e.g. C `static` functions). When provided, `pickUniqueGlobalCallable`
+   * excludes defs where `isFileLocalDef(def) === true` and the def lives
+   * in a different file from the caller. This prevents the global free-call
+   * fallback from creating CALLS edges to file-local symbols that are
+   * logically invisible from the caller's translation unit.
+   *
+   * Languages without file-local linkage semantics leave this undefined.
+   */
+  readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+
+  /**
    * Optional post-finalize hook to inject cross-file bindings that
    * aren't modeled via explicit imports. Runs after
    * `buildWorkspaceResolutionIndex` and before

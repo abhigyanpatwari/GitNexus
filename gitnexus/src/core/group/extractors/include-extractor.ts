@@ -10,6 +10,7 @@ import { readSafe } from './fs-utils.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/import-resolvers/utils.js';
 import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { logger } from '../../logger.js';
 
 /**
@@ -505,7 +506,7 @@ export class IncludeExtractor implements ContractExtractor {
       let extractionSource: 'tree_sitter' | 'regex_fallback';
       try {
         parser.setLanguage(lang);
-        const tree = parser.parse(content);
+        const tree = parseSourceSafe(parser, content);
         let matches: Parser.QueryMatch[];
         try {
           matches = query.matches(tree.rootNode);
