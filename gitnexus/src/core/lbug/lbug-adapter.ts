@@ -218,6 +218,19 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+const drainQueryResult = async (
+  queryResult: lbug.QueryResult | lbug.QueryResult[],
+): Promise<void> => {
+  const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+  for (const result of results) {
+    try {
+      await result.getAll();
+    } finally {
+      await Promise.resolve(result.close()).catch(() => {});
+    }
+  }
+};
+
 export const initLbug = async (dbPath: string) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
@@ -1060,7 +1073,8 @@ export const fetchExistingEmbeddingHashes = async (
 export const flushWAL = async (): Promise<void> => {
   if (!conn) return;
   try {
-    await conn.query('CHECKPOINT');
+    const checkpointResult = await conn.query('CHECKPOINT');
+    await drainQueryResult(checkpointResult);
   } catch {
     /* ignore — older LadybugDB or schemaless DB may not accept it */
   }
