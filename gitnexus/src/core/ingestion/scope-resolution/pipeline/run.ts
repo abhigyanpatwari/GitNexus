@@ -261,7 +261,10 @@ export function runScopeResolution(
     handledSites,
     readonlyModel,
     workspaceIndex,
-    { allowGlobalFallback: provider.allowGlobalFreeCallFallback === true },
+    {
+      allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+      isFileLocalDef: provider.isFileLocalDef,
+    },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
