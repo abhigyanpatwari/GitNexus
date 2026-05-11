@@ -55,6 +55,7 @@ RUN mkdir -p /data/gitnexus && chown -R node:node /data
 COPY --from=builder --chown=node:node /app/gitnexus/dist ./gitnexus/dist
 COPY --from=builder --chown=node:node /app/gitnexus/node_modules ./gitnexus/node_modules
 COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/package.json
+COPY --from=builder --chown=node:node /app/gitnexus/scripts/install-duckdb-extension.mjs ./gitnexus/scripts/install-duckdb-extension.mjs
 COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 
 USER node
