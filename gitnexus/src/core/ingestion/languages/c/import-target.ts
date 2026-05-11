@@ -29,10 +29,13 @@ export function resolveCImportTarget(
     const siblingRaw = join(dirname(fromFile), targetRaw);
     const sibling = siblingRaw.replace(/\\/g, '/');
     if (allFilePaths.has(sibling)) return sibling;
-    // Also try normalized target in case targetRaw has slashes
-    const siblingAlt = join(dirname(fromFile), normalizedTarget);
-    const siblingAltNorm = siblingAlt.replace(/\\/g, '/');
-    if (siblingAltNorm !== sibling && allFilePaths.has(siblingAltNorm)) return siblingAltNorm;
+    // When targetRaw contains backslashes, the normalized form may
+    // resolve to a different sibling path — try it as well.
+    if (targetRaw !== normalizedTarget) {
+      const siblingAlt = join(dirname(fromFile), normalizedTarget);
+      const siblingAltNorm = siblingAlt.replace(/\\/g, '/');
+      if (allFilePaths.has(siblingAltNorm)) return siblingAltNorm;
+    }
   }
 
   // Exact match (path as-is in the workspace)
