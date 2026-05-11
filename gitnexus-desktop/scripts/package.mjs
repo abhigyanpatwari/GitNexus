@@ -155,6 +155,12 @@ const builderEnvironment = {
   GITNEXUS_DESKTOP_GITNEXUS_SKILLS: toBuilderRelativePath(path.join(gitnexusRoot, 'skills')),
   GITNEXUS_DESKTOP_GITNEXUS_VENDOR: toBuilderRelativePath(path.join(gitnexusRoot, 'vendor')),
   GITNEXUS_DESKTOP_WEB_DIST: toBuilderRelativePath(path.join(gitnexusWebRoot, 'dist')),
+  // On Windows, lbugjs.node PE-imports node.exe by name, which fails under Electron's binary.
+  // electron-builder copies this into resources/runtime/node.exe so it lands in both
+  // win-unpacked (smoke test) and the NSIS installer (end-user install).
+  // The extraResources entry in electron-builder.yml is platform: [win] so this value is
+  // ignored on macOS/Linux (empty string prevents electron-builder from touching it there).
+  GITNEXUS_DESKTOP_NODE_BINARY: process.platform === 'win32' ? process.execPath : '',
 };
 
 const builderCliArgs = [

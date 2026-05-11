@@ -38,6 +38,10 @@ const GITNEXUS_WEB_DEV_ROOT = path.resolve(__dirname, '../../gitnexus-web');
 const GITNEXUS_WEB_DEV_ROOT_FALLBACK = path.resolve(__dirname, '../../../gitnexus-web');
 const GITNEXUS_PACKAGED_RUNTIME_DIR = path.join(process.resourcesPath, 'gitnexus');
 const GITNEXUS_WEB_PACKAGED_DIR = path.join(process.resourcesPath, 'gitnexus-web');
+// On Windows, native modules (e.g. lbugjs.node) PE-import node.exe by name.
+// Electron's binary is not node.exe, so LoadLibrary fails with an access violation.
+// Bundling a real node.exe and using it as the subprocess host avoids the crash.
+const GITNEXUS_PACKAGED_NODE_BINARY = path.join(process.resourcesPath, 'runtime', 'node.exe');
 const GITNEXUS_WEB_EXPECTED_MARKERS = ['<title>GitNexus</title>', '<div id="root"></div>'];
 const GITNEXUS_SERVER_READY_TIMEOUT_MS = 30_000;
 const GITNEXUS_WEB_READY_TIMEOUT_MS = 60_000;
@@ -240,6 +244,10 @@ const getGitNexusWebViteCliEntry = (): string => {
 
 const getNodeCommand = (): string => {
   if (app.isPackaged) {
+    if (process.platform === 'win32' && existsSync(GITNEXUS_PACKAGED_NODE_BINARY)) {
+      return GITNEXUS_PACKAGED_NODE_BINARY;
+    }
+
     return process.execPath;
   }
 
@@ -257,8 +265,14 @@ const getNodeProcessEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.Pr
   };
 
   if (app.isPackaged) {
-    // Packaged mode reuses Electron's embedded Node runtime via process.execPath.
-    environment.ELECTRON_RUN_AS_NODE = '1';
+    // Only set ELECTRON_RUN_AS_NODE when falling back to the Electron binary as the node host.
+    // When using the bundled node.exe, the host is already a real node process — no flag needed.
+    const usingBundledNode =
+      process.platform === 'win32' && existsSync(GITNEXUS_PACKAGED_NODE_BINARY);
+
+    if (!usingBundledNode) {
+      environment.ELECTRON_RUN_AS_NODE = '1';
+    }
   }
 
   return environment;
@@ -656,6 +670,12 @@ const registerWindowIpcHandlers = (): void => {
 
 const showStartupError = (error: unknown): void => {
   console.error('[gitnexus-desktop] Startup failed.', error);
+
+  // In CI smoke tests, dialog.showErrorBox() blocks synchronously forever (no display).
+  // Log the error above and let process.exit() handle the failure signal instead.
+  if (IS_DESKTOP_SMOKE_TEST) {
+    return;
+  }
 
   if (isAddressInUseError(error)) {
     dialog.showErrorBox(
