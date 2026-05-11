@@ -5,14 +5,14 @@ description: "Use when the user needs to run GitNexus CLI commands like analyze/
 
 # GitNexus CLI Commands
 
-All commands work via `npx` — no global install required.
+Use the installed `gitnexus` CLI when available. Prefix commands with `npx gitnexus` if the CLI is not installed globally.
 
 ## Commands
 
 ### analyze — Build or refresh the index
 
 ```bash
-npx gitnexus analyze
+gitnexus analyze
 ```
 
 Run from the project root. This parses all source files, builds the knowledge graph, writes it to `.gitnexus/`, and generates CLAUDE.md / AGENTS.md context files.
