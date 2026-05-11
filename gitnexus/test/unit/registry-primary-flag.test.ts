@@ -153,6 +153,7 @@ describe('primaryLanguages', () => {
     process.env['REGISTRY_PRIMARY_CSHARP'] = 'false';
     process.env['REGISTRY_PRIMARY_TYPESCRIPT'] = 'false';
     process.env['REGISTRY_PRIMARY_GO'] = 'false';
+    process.env['REGISTRY_PRIMARY_C'] = 'false';
     process.env['REGISTRY_PRIMARY_JAVA'] = '1';
     const enabled = primaryLanguages();
     expect(enabled.has(SupportedLanguages.Python)).toBe(false);
