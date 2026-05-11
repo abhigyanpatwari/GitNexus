@@ -128,4 +128,43 @@ describe('C import target resolution (resolveCImportTarget)', () => {
     const result = resolveCImportTarget('foo.h', 'main.c', new Set(['include\\foo.h']));
     expect(result).toBe('include\\foo.h');
   });
+
+  it('prefers same-directory sibling over deeper suffix match', () => {
+    // src/foo.c includes "bar.h" — src/bar.h should win over include/bar.h
+    const result = resolveCImportTarget(
+      'bar.h',
+      'src/foo.c',
+      new Set(['include/bar.h', 'src/bar.h']),
+    );
+    expect(result).toBe('src/bar.h');
+  });
+
+  it('prefers same-directory sibling over shallower suffix match', () => {
+    // deep/nested/main.c includes "foo.h" — deep/nested/foo.h wins over foo.h
+    const result = resolveCImportTarget(
+      'foo.h',
+      'deep/nested/main.c',
+      new Set(['foo.h', 'deep/nested/foo.h']),
+    );
+    expect(result).toBe('deep/nested/foo.h');
+  });
+
+  it('falls back to suffix match when no same-directory sibling exists', () => {
+    const result = resolveCImportTarget(
+      'missing.h',
+      'src/foo.c',
+      new Set(['lib/missing.h']),
+    );
+    expect(result).toBe('lib/missing.h');
+  });
+
+  it('same-directory sibling with nested target path', () => {
+    // src/foo.c includes "sub/bar.h" — src/sub/bar.h should win
+    const result = resolveCImportTarget(
+      'sub/bar.h',
+      'src/foo.c',
+      new Set(['other/sub/bar.h', 'src/sub/bar.h']),
+    );
+    expect(result).toBe('src/sub/bar.h');
+  });
 });

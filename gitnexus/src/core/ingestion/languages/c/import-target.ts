@@ -1,26 +1,41 @@
+import { dirname, join } from 'path';
+
 /**
  * Resolve a C #include path to a file in the workspace.
  *
- * Strategy: match the include path suffix against all file paths in
- * the workspace. "foo.h" matches "src/foo.h", "include/foo.h", etc.
- * For paths with directory components ("dir/foo.h"), match the full
- * relative suffix.
- *
- * Tie-breaking: prefer the match with the fewest path components
- * (closest to root). On equal depth, break ties lexicographically
- * by normalized path to ensure deterministic resolution regardless
- * of filesystem iteration order.
+ * Strategy:
+ * 1. Check for a same-directory sibling relative to the including file
+ *    (matches C compiler `#include "…"` relative-lookup semantics).
+ * 2. Check for an exact match (path as-is in the workspace).
+ * 3. Fall back to suffix matching against all workspace file paths.
+ *    Tie-breaking: prefer the match with the fewest path components
+ *    (closest to root). On equal depth, break ties lexicographically
+ *    by normalized path to ensure deterministic resolution regardless
+ *    of filesystem iteration order.
  */
 export function resolveCImportTarget(
   targetRaw: string,
-  _fromFile: string,
+  fromFile: string,
   allFilePaths: ReadonlySet<string>,
 ): string | null {
   if (!targetRaw) return null;
 
   const normalizedTarget = targetRaw.replace(/\\/g, '/');
 
-  // Exact match first
+  // Same-directory sibling first: mirrors the C compiler's #include "…"
+  // relative-lookup semantics where the directory of the including
+  // file is searched before the include-path list.
+  if (fromFile) {
+    const siblingRaw = join(dirname(fromFile), targetRaw);
+    const sibling = siblingRaw.replace(/\\/g, '/');
+    if (allFilePaths.has(sibling)) return sibling;
+    // Also try normalized target in case targetRaw has slashes
+    const siblingAlt = join(dirname(fromFile), normalizedTarget);
+    const siblingAltNorm = siblingAlt.replace(/\\/g, '/');
+    if (siblingAltNorm !== sibling && allFilePaths.has(siblingAltNorm)) return siblingAltNorm;
+  }
+
+  // Exact match (path as-is in the workspace)
   if (allFilePaths.has(normalizedTarget)) return normalizedTarget;
 
   // Suffix match: find files ending with /targetRaw or equal to targetRaw

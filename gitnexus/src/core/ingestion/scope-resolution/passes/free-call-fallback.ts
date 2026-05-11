@@ -141,6 +141,12 @@ function pickUniqueGlobalCallable(
   const seen = new Set<string>();
   const push = (pool: readonly SymbolDefinition[]): void => {
     for (const def of pool) {
+      // Apply the same file-local linkage filter as Phase 1 —
+      // cross-file static defs must never leak through the
+      // SemanticModel fallback path.
+      if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+        continue;
+      }
       const key = logicalCallableKey(def);
       if (seen.has(key)) continue;
       seen.add(key);

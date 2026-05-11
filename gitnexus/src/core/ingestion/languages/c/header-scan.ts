@@ -27,8 +27,21 @@ function walk(dir: string, root: string, out: Set<string>): void {
     const name = entry.name;
     const full = join(dir, name);
     if (entry.isDirectory()) {
-      // Skip common non-source directories
-      if (name === 'node_modules' || name === '.git' || name === 'vendor') {
+      // Skip common non-source directories and build output dirs.
+      // Build dirs (dist, build, out, target, _build, .next, cmake-build-*)
+      // may contain generated headers that shadow source headers.
+      if (
+        name === 'node_modules' ||
+        name === '.git' ||
+        name === 'vendor' ||
+        name === 'dist' ||
+        name === 'build' ||
+        name === 'out' ||
+        name === 'target' ||
+        name === '_build' ||
+        name === '.next' ||
+        name.startsWith('cmake-build')
+      ) {
         continue;
       }
       walk(full, root, out);
