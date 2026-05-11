@@ -101,6 +101,40 @@ describe('computeCDeclarationArity', () => {
     expect(arity.parameterCount).toBe(1);
     expect(arity.requiredParameterCount).toBe(1);
   });
+
+  it('returns unknown arity for K&R empty parameter list int foo()', () => {
+    const node = parseFunctionNode('int foo() { return 0; }');
+    expect(node).not.toBeNull();
+    const arity = computeCDeclarationArity(node!);
+    // K&R old-style: unspecified parameters, NOT zero parameters
+    expect(arity.parameterCount).toBeUndefined();
+    expect(arity.requiredParameterCount).toBeUndefined();
+    expect(arity.parameterTypes).toBeUndefined();
+  });
+
+  it('distinguishes K&R int foo() from explicit int foo(void)', () => {
+    const knrNode = parseFunctionNode('int foo() { return 0; }');
+    const voidNode = parseFunctionNode('int foo(void) { return 0; }');
+    expect(knrNode).not.toBeNull();
+    expect(voidNode).not.toBeNull();
+
+    const knrArity = computeCDeclarationArity(knrNode!);
+    const voidArity = computeCDeclarationArity(voidNode!);
+
+    // K&R: unknown arity
+    expect(knrArity.parameterCount).toBeUndefined();
+    // Explicit void: zero params
+    expect(voidArity.parameterCount).toBe(0);
+    expect(voidArity.requiredParameterCount).toBe(0);
+  });
+
+  it('returns unknown arity for K&R prototype int foo();', () => {
+    const node = parseFunctionNode('int foo();');
+    expect(node).not.toBeNull();
+    const arity = computeCDeclarationArity(node!);
+    expect(arity.parameterCount).toBeUndefined();
+    expect(arity.requiredParameterCount).toBeUndefined();
+  });
 });
 
 describe('computeCCallArity', () => {

@@ -14,7 +14,7 @@ import { markStaticName } from './static-linkage.js';
 
 export function emitCScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getCParser>['parse']> | undefined;
@@ -102,7 +102,7 @@ export function emitCScopeCaptures(
         if (hasStaticStorageClass(fnNode)) {
           const nameText = grouped['@declaration.name']?.text;
           if (nameText !== undefined) {
-            markStaticName(_filePath, nameText);
+            markStaticName(filePath, nameText);
           }
         }
       }

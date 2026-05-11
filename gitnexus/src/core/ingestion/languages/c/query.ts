@@ -53,6 +53,11 @@ const C_SCOPE_QUERY = `
       declarator: (identifier) @declaration.name))) @declaration.function
 
 ;; Declarations — function declaration (prototype)
+;; Note: Both prototypes and definitions are captured as @declaration.function.
+;; This may produce duplicate Function nodes in the knowledge graph when a
+;; function is declared in a header and defined in a .c file. CALLS edges
+;; resolve correctly through scope-based wildcard import chains; the
+;; duplication is a graph-quality concern only (no false edges).
 (declaration
   declarator: (function_declarator
     declarator: (identifier) @declaration.name)) @declaration.function
@@ -114,6 +119,12 @@ const C_SCOPE_QUERY = `
     declarator: (identifier) @type-binding.name)) @type-binding.assignment
 
 ;; References — free calls
+;; Note: This also captures calls through function pointer variables (e.g. fp(x))
+;; since tree-sitter-c produces structurally identical AST nodes for both direct
+;; function calls and function-pointer-variable calls. A type-based guard to
+;; distinguish variable-calls from function-calls is not implemented — this is a
+;; known architectural trade-off shared with the Go resolver. The uniqueness
+;; constraint in pickUniqueGlobalCallable limits false edge exposure.
 (call_expression
   function: (identifier) @reference.name) @reference.call.free
 

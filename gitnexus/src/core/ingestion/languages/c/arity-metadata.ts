@@ -26,6 +26,13 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
     }
   }
 
+  // K&R old-style declaration: `int foo()` has an empty parameter_list with
+  // no parameter_declaration or variadic_parameter children. Per C89/C99,
+  // this means the function accepts an unspecified number/types of arguments —
+  // NOT zero arguments. Return unknown arity to avoid false 'incompatible'.
+  // `int foo(void)` is the explicit zero-parameter form and is handled below.
+  if (params.length === 0) return {};
+
   // (void) means zero parameters
   if (params.length === 1 && params[0].type === 'parameter_declaration') {
     const typeNode = params[0].childForFieldName('type');
