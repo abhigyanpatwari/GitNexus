@@ -11,6 +11,13 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
 
+/**
+ * LadybugDB's native Windows file lock can outlive Database.close() for
+ * same-process close/reopen cycles. Keep true reopen coverage on POSIX and
+ * cover ordering deterministically in lbug-checkpoint-lifecycle.test.ts.
+ */
+const itLbugReopen = process.platform === 'win32' ? it.skip : it;
+
 describe('safeClose — close + reopen does not surface lock errors', () => {
   it('survives 10 sequential open/close/reopen cycles on the same path', async () => {
     const tmp = await createTempDir('gitnexus-lbug-close-cycle-');
@@ -39,7 +46,7 @@ describe('safeClose — close + reopen does not surface lock errors', () => {
     }
   });
 
-  it('flushes WAL when switching between two database paths in one process', async () => {
+  itLbugReopen('flushes WAL when switching between two database paths in one process', async () => {
     const repoA = await createTempDir('gitnexus-lbug-switch-a-');
     const repoB = await createTempDir('gitnexus-lbug-switch-b-');
     const dbPathA = path.join(repoA.dbPath, 'lbug');
