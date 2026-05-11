@@ -42,8 +42,14 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
         );
       }
     } catch (metricsErr: any) {
-      logger.warn(
-        { err: metricsErr?.message ?? String(metricsErr) },
+      logger.error(
+        {
+          err: metricsErr?.message ?? String(metricsErr),
+          code: metricsErr?.code,
+          port: metricsErr?.port ?? process.env['GITNEXUS_OTEL_METRICS_PORT'],
+          host: metricsErr?.address ?? process.env['GITNEXUS_OTEL_METRICS_HOST'],
+          stack: metricsErr?.stack,
+        },
         '[gitnexus serve] failed to start metrics endpoint — continuing without metrics',
       );
     }

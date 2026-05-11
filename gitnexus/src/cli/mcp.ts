@@ -64,8 +64,14 @@ export const mcpCommand = async () => {
       );
     }
   } catch (err: any) {
-    logger.warn(
-      { err: err?.message ?? String(err) },
+    logger.error(
+      {
+        err: err?.message ?? String(err),
+        code: err?.code,
+        port: err?.port ?? process.env['GITNEXUS_OTEL_METRICS_PORT'],
+        host: err?.address ?? process.env['GITNEXUS_OTEL_METRICS_HOST'],
+        stack: err?.stack,
+      },
       'GitNexus: failed to start metrics endpoint — continuing without metrics',
     );
   }
