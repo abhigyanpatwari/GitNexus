@@ -154,6 +154,16 @@ export interface AnalyzeOptions {
   embeddingDevice?: string;
 }
 
+/**
+ * Whether community skill files (`--skills`) should run after indexing.
+ * Kept as a pure helper so the `--index-only --skills` contract is unit-tested
+ * without booting the full analyze pipeline (#742 review).
+ */
+export const shouldGenerateCommunitySkillFiles = (
+  options: Pick<AnalyzeOptions, 'skills' | 'indexOnly'> | undefined,
+  pipelineResult: unknown,
+): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
+
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
 
@@ -465,10 +475,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     await assertAnalysisFinalized(repoPath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
-    // Gated by !skipAll so `--index-only --skills` truly skips ALL file
-    // injection — otherwise `generateSkillFiles()` would still write
-    // community-derived skill files to .claude/skills/generated/.
-    if (options?.skills && result.pipelineResult && !skipAll) {
+    // Gated so `--index-only --skills` skips community skill writes too
+    // (`shouldGenerateCommunitySkillFiles` — see unit test).
+    if (shouldGenerateCommunitySkillFiles(options, result.pipelineResult)) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');

@@ -38,7 +38,9 @@ program
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',
-    'Skip installing standard GitNexus skill files to .claude/skills/gitnexus/',
+    'Skip installing standard GitNexus skill files under .claude/skills/gitnexus/. ' +
+      'Does not suppress community skills from --skills (those use .claude/skills/generated/). ' +
+      'Use --index-only to skip all AI-context file injection.',
   )
   .option('--index-only', 'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)')
   .option(
