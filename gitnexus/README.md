@@ -166,6 +166,12 @@ gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
+gitnexus export [path]           # Export index to .gitnexus/export/ as JSON (nodes, edges, meta.json)
+gitnexus export --format parquet # Export as Parquet files
+gitnexus export --format csv     # Export as CSV files
+gitnexus export --output <dir>   # Write to a custom directory instead of .gitnexus/export/
+gitnexus export --embeddings     # Also export embeddings (requires prior `analyze --embeddings`)
+gitnexus export --force          # Overwrite existing export directory without prompting
 
 # Repository groups (multi-repo / monorepo service tracking)
 gitnexus group create <name>                                   # Create a repository group

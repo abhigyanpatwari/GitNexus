@@ -141,6 +141,20 @@ program
   .action(createLazyAction(() => import('./remove.js'), 'removeCommand'));
 
 program
+  .command('export [path]')
+  .description(
+    'Export the knowledge graph to JSON, CSV, or Parquet (see --format; default: json, output: .gitnexus/export/)',
+  )
+  .option('-o, --output <dir>', 'Output directory (default: .gitnexus/export)')
+  .option('--format <fmt>', 'Output format: json (default), csv, or parquet')
+  .option('-f, --force', 'Overwrite existing export without prompting')
+  .option(
+    '--embeddings',
+    'Include the embeddings table in the export (omitted by default; can be large)',
+  )
+  .action(createLazyAction(() => import('./export.js'), 'exportCommand'));
+
+program
   .command('wiki [path]')
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')

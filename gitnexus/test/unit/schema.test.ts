@@ -20,6 +20,7 @@ import {
   RELATION_SCHEMA,
   EMBEDDING_SCHEMA,
   CREATE_VECTOR_INDEX_QUERY,
+  BACKTICK_NODE_TABLES,
 } from '../../src/core/lbug/schema.js';
 
 describe('LadybugDB Schema', () => {
@@ -190,6 +191,68 @@ describe('LadybugDB Schema', () => {
         for (const tgt of backtickTargets) {
           expect(RELATION_SCHEMA).toContain(`FROM \`${src}\` TO \`${tgt}\``);
         }
+      }
+    });
+  });
+
+  describe('BACKTICK_NODE_TABLES', () => {
+    it('contains all tables created via CODE_ELEMENT_BASE (backtick DDL)', () => {
+      const codeElementBaseTables = [
+        'Struct',
+        'Enum',
+        'Macro',
+        'Typedef',
+        'Union',
+        'Namespace',
+        'Trait',
+        'Impl',
+        'TypeAlias',
+        'Const',
+        'Static',
+        'Variable',
+        'Record',
+        'Delegate',
+        'Annotation',
+        'Constructor',
+        'Template',
+        'Module',
+      ];
+      for (const t of codeElementBaseTables) {
+        expect(BACKTICK_NODE_TABLES.has(t)).toBe(true);
+      }
+    });
+
+    it('contains Property (inline backtick DDL)', () => {
+      expect(BACKTICK_NODE_TABLES.has('Property')).toBe(true);
+    });
+
+    it('includes Variable (previously missing bug fix)', () => {
+      expect(BACKTICK_NODE_TABLES.has('Variable')).toBe(true);
+    });
+
+    it('does not include tables with unquoted DDL', () => {
+      const unquoted = [
+        'File',
+        'Folder',
+        'Function',
+        'Class',
+        'Interface',
+        'Method',
+        'CodeElement',
+        'Community',
+        'Process',
+        'Section',
+        'Route',
+        'Tool',
+      ];
+      for (const t of unquoted) {
+        expect(BACKTICK_NODE_TABLES.has(t)).toBe(false);
+      }
+    });
+
+    it('every member is present in NODE_TABLES', () => {
+      for (const t of BACKTICK_NODE_TABLES) {
+        expect(NODE_TABLES).toContain(t);
       }
     });
   });

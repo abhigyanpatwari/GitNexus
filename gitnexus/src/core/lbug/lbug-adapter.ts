@@ -154,6 +154,7 @@ let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
+let jsonExtensionLoaded = false;
 
 /**
  * In-process cache of FTS indexes observed against the current singleton
@@ -254,6 +255,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
+        jsonExtensionLoaded = false;
         ensuredFTSIndexes.clear();
       });
       // Sleep outside the lock — no need to block others while waiting
@@ -280,6 +282,7 @@ const doInitLbug = async (dbPath: string) => {
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
+    jsonExtensionLoaded = false;
     ensuredFTSIndexes.clear();
   }
 
@@ -1124,6 +1127,7 @@ export const closeLbug = async (): Promise<void> => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  jsonExtensionLoaded = false;
   ensuredFTSIndexes.clear();
 };
 
@@ -1266,6 +1270,33 @@ export const loadVectorExtension = async (
   if (loaded && useModuleState) vectorExtensionLoaded = true;
   return loaded;
 };
+
+/**
+ * Load the JSON extension on the supplied connection (or the singleton
+ * writable connection when none is given).
+ *
+ * Delegates to the shared `ExtensionManager` so install policy (auto /
+ * load-only / never), out-of-process bounded INSTALL, and capability
+ * caching are owned in one place. Required for COPY TO '*.json' in
+ * the export command; callers must treat a `false` return as a hard error.
+ */
+export const loadJsonExtension = async (
+  targetConn?: lbug.Connection,
+  opts: ExtensionEnsureOptions = {},
+): Promise<boolean> => {
+  const useModuleState = targetConn === undefined;
+  if (useModuleState && jsonExtensionLoaded) return true;
+
+  const c: lbug.Connection | null = targetConn ?? conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+
+  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'json', 'JSON', opts);
+  if (loaded && useModuleState) jsonExtensionLoaded = true;
+  return loaded;
+};
+
 /**
  * Create a full-text search index on a table
  * @param tableName - The node table name (e.g., 'File', 'CodeSymbol')

@@ -185,6 +185,31 @@ export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
 export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
 export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
 export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+
+// Node tables whose DDL was created with backtick-quoted names (CODE_ELEMENT_BASE or inline).
+// Any Cypher that references these labels by name must also use backticks.
+export const BACKTICK_NODE_TABLES = new Set([
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+]);
+
 // API route endpoints (Next.js, Express, etc.)
 export const ROUTE_SCHEMA = `
 CREATE NODE TABLE Route (
