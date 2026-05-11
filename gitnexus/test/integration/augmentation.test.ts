@@ -107,6 +107,28 @@ withTestLbugDB(
         const result = await augment('日本語テスト', handle.dbPath);
         expect(typeof result).toBe('string');
       });
+
+      // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
+      //
+      // When FTS is available but happens to return zero BM25 hits, the
+      // CONTAINS fallback must NOT fire — preserving the original early-return
+      // semantics. If anyone later loosens the gate to `symbolMatches.length
+      // === 0` alone, this test fails.
+
+      it('does NOT fire CONTAINS fallback when FTS is available but BM25 returns empty', async () => {
+        const bm25 = await import('../../src/core/search/bm25-index.js');
+        const spy = vi
+          .spyOn(bm25, 'searchFTSFromLbug')
+          .mockResolvedValue({ results: [], ftsAvailable: true });
+        try {
+          // 'login' WOULD match a graph node via CONTAINS, but FTS is available
+          // and empty → fallback gate must hold → result must be ''.
+          const result = await augment('login', handle.dbPath);
+          expect(result).toBe('');
+        } finally {
+          spy.mockRestore();
+        }
+      });
     });
   },
   {
