@@ -86,6 +86,9 @@ async function findRepoForCwd(cwd: string): Promise<{
 export async function augment(pattern: string, cwd?: string): Promise<string> {
   if (!pattern || pattern.length < 3) return '';
 
+  const patternFirstWord = pattern.trim().replace(/'/g, "''").split(/\s+/)[0];
+  if (!patternFirstWord || patternFirstWord.length < 2) return '';
+
   const workDir = cwd || process.cwd();
 
   try {
@@ -104,9 +107,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     }
 
     // Step 1: BM25 search (fast, no embeddings)
-    const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
-
-    if (bm25Results.length === 0) return '';
+    const { results: bm25Results, ftsAvailable } = await searchFTSFromLbug(pattern, 10, repoId);
 
     // Step 2: Map BM25 file results to symbols
     const symbolMatches: Array<{
@@ -124,7 +125,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           repoId,
           `
           MATCH (n) WHERE n.filePath = '${escaped}'
-          AND n.name CONTAINS '${pattern.replace(/'/g, "''").split(/\s+/)[0]}'
+          AND n.name CONTAINS '${patternFirstWord}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           LIMIT 3
         `,
@@ -140,6 +141,29 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         }
       } catch {
         /* skip */
+      }
+    }
+
+    // When FTS indexes are unavailable (read-only DB, first run before indexes are built),
+    // fall back to a direct name CONTAINS query so enrichment still works.
+    if (symbolMatches.length === 0 && !ftsAvailable) {
+      const fallbackRows = await executeQuery(
+        repoId,
+        `
+        MATCH (n)
+        WHERE n.name CONTAINS '${patternFirstWord}'
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        LIMIT 5
+      `,
+      ).catch(() => []);
+      for (const sym of fallbackRows) {
+        symbolMatches.push({
+          nodeId: sym.id || sym[0],
+          name: sym.name || sym[1],
+          type: sym.type || sym[2],
+          filePath: sym.filePath || sym[3],
+          score: 1.0,
+        });
       }
     }
 
