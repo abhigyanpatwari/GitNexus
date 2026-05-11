@@ -14,5 +14,12 @@ public class Main {
         // 3-arg call: satisfies fixed prefix (level) + 2 varargs
         fmt.format(2, "hello", "world");
     }
+
+    public void badCall() {
+        Formatter fmt = new Formatter();
+        // 0-arg call: does NOT satisfy the required fixed prefix (int level)
+        // This should be rejected by arity — no CALLS edge to format
+        fmt.format();
+    }
 }
 
