@@ -295,6 +295,10 @@ const phpScopeResolver: ScopeResolver = {
   // PHP hoists method return-type bindings to the Module scope so
   // `propagateImportedReturnTypes` can pick them up across files.
   hoistTypeBindingsToModule: true,
+
+  // PHP recovers member calls on `mixed`/untyped receivers via a
+  // workspace-wide unique-method-name lookup, mirroring the legacy DAG.
+  emitUnresolvedReceiverEdges: phpEmitUnresolvedReceiverEdges,
 };
 
 export { phpScopeResolver };

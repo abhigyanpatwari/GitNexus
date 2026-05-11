@@ -252,6 +252,17 @@ export function runScopeResolution(
     workspaceIndex,
     readonlyModel,
   );
+  const unresolvedReceiverExtras =
+    provider.emitUnresolvedReceiverEdges !== undefined
+      ? provider.emitUnresolvedReceiverEdges(
+          graph,
+          indexes,
+          parsedFiles,
+          nodeLookup,
+          handledSites,
+          readonlyModel,
+        )
+      : 0;
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
@@ -299,7 +310,7 @@ export function runScopeResolution(
     filesSkipped,
     importsEmitted,
     resolve: resolveStats,
-    referenceEdgesEmitted: emitted + receiverExtras + freeCallExtras,
+    referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
     referenceSkipped: skipped,
   };
 }

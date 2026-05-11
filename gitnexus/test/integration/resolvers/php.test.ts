@@ -11,17 +11,8 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
-  isLegacyResolverParityRun,
   type PipelineResult,
 } from './helpers.js';
-
-/**
- * Whether the current run uses the scope-based (registry-primary) PHP resolver.
- * When true, some tests that rely on unresolvable-receiver fallback (mixed-typed
- * parameters) are skipped — the contract needs a postResolutionFallback hook to
- * support this pattern (tracked as follow-up to RFC #909 Ring 3).
- */
-const isRegistryPrimaryRun = !isLegacyResolverParityRun('php');
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
@@ -101,12 +92,10 @@ describe('PHP heritage & import resolution', () => {
   });
 
   // save($entity: mixed) calls $entity->getId() — the receiver is typed `mixed`
-  // so there is no TypeRef in scope. The scope-resolver contract does not yet
-  // have a postResolutionFallback hook for unresolvable-receiver member calls
-  // (follow-up to RFC #909 Ring 3). The legacy DAG resolves this via its own
-  // workspace-wide method-name lookup. Skip in registry-primary mode until the
-  // contract grows the necessary hook.
-  it.skipIf(isRegistryPrimaryRun)('emits CALLS edge: save → getId', () => {
+  // so there is no TypeRef in scope. The scope-resolver `emitUnresolvedReceiverEdges`
+  // hook (PHP-wired) recovers this case via workspace-wide unique-name lookup,
+  // matching the legacy DAG behavior.
+  it('emits CALLS edge: save → getId', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'save' && e.target === 'getId',
     );

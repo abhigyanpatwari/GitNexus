@@ -576,4 +576,32 @@ export interface ScopeResolver {
       readonly treeCache?: { get(filePath: string): unknown };
     },
   ) => void;
+
+  /**
+   * Optional post-resolution pass: emit CALLS edges for member-call sites
+   * whose receiver cannot be typed by the scope chain (no `TypeRef`).
+   * Dynamically-typed languages with untyped/`mixed`/`Any` parameters use
+   * this hook to recover the call edge via workspace-wide method-name
+   * lookup, mirroring what their legacy resolvers did.
+   *
+   * Runs AFTER `emitReceiverBoundCalls` and BEFORE `emitFreeCallFallback`.
+   * Implementations MUST:
+   *   - Skip sites already in `handledSites` (Invariant I2).
+   *   - Add resolved site keys to `handledSites` before returning.
+   *   - Stay narrow: a unique workspace-wide match is the safe baseline.
+   *     Multi-candidate fallbacks should narrow by arity / argument types
+   *     before emitting to keep false-positive rate bounded.
+   *
+   * Returns the number of edges emitted (for telemetry).
+   *
+   * Default: undefined (no unresolved-receiver fallback).
+   */
+  readonly emitUnresolvedReceiverEdges?: (
+    graph: KnowledgeGraph,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    handledSites: Set<string>,
+    model: SemanticModel,
+  ) => number;
 }
