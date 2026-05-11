@@ -441,6 +441,43 @@ describe('Java variadic call resolution', () => {
     }
     expect(allDangling).toEqual([]);
   });
+
+  it('resolves 2-arg call to fixed-prefix varargs method format(int, String...) in Formatter.java', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtCall = calls.find((c) => c.target === 'format');
+    expect(fmtCall).toBeDefined();
+    expect(fmtCall!.source).toBe('run');
+    expect(fmtCall!.targetFilePath).toBe('com/example/util/Formatter.java');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wildcard import: `import com.example.models.*` resolves to a package file
+// ---------------------------------------------------------------------------
+
+describe('Java wildcard import resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-wildcard-import'), () => {});
+  }, 60000);
+
+  it('parses wildcard import without errors and creates graph nodes', () => {
+    // The wildcard import (`import com.example.models.*`) exercises the
+    // directoryChild branch in resolveJavaImportTarget.  Even if no IMPORTS
+    // edge is created (nondeterministic file selection — documented flip
+    // blocker), the graph must contain valid nodes for all classes.
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Main');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Order');
+  });
+
+  it('resolves user.save() call via wildcard-imported User', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

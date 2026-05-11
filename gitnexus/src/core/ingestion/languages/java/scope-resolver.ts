@@ -26,7 +26,7 @@
  * and report parity as a dashboard input.
  *
  * **Parity baseline (29 failures):** The 29 gaps in forced registry mode
- * are tracked in the PR description and this JSDoc.  If the gap count
+ * are tracked in this PR (#1482) and this JSDoc.  If the gap count
  * changes (up or down), update this baseline accordingly.
  *
  * ### Known flip-blockers (must fix before adding to MIGRATED_LANGUAGES)
@@ -38,6 +38,12 @@
  *     Edge cases with nested classes may remain.
  *   - Generic superclass receiver binding: `BaseModel<T>` now strips
  *     to `BaseModel` via JVM type-erasure fallback in `stripGeneric`.
+ *   - Wildcard import (`import com.example.*`) file selection is
+ *     nondeterministic when multiple classes share a package directory.
+ *     May produce wrong-file edges in forced mode.
+ *   - Qualified generic type parameters in field/parameter annotations
+ *     (`com.example.BaseModel<T>`) — rare in practice but may miss
+ *     resolution when the full qualifier is present with generics.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';

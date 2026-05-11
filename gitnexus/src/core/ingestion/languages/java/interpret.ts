@@ -76,7 +76,7 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  const rawType = stripQualifier(stripGeneric(typeCap.text.trim()));
+  const rawType = stripGeneric(stripQualifier(typeCap.text.trim()));
 
   // Skip `var` — tree-sitter-java parses `var` as type_identifier with
   // text "var". When used without a constructor initializer, there's no
