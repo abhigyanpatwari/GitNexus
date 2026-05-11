@@ -131,4 +131,95 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
 
     await adapter.closeLbug();
   });
+
+  it('closes non-first stream query results when LadybugDB returns an array', async () => {
+    vi.resetModules();
+
+    const events: string[] = [];
+    const firstResult = {
+      hasNext: vi
+        .fn()
+        .mockImplementationOnce(() => {
+          events.push('first:hasNext:true');
+          return true;
+        })
+        .mockImplementationOnce(() => {
+          events.push('first:hasNext:false');
+          return false;
+        }),
+      getNext: vi.fn(async () => {
+        events.push('first:getNext');
+        return { id: 'file:a' };
+      }),
+      getAll: vi.fn(async () => []),
+      close: vi.fn(() => {
+        events.push('first:close');
+      }),
+    };
+    const secondResult = {
+      getAll: vi.fn(async () => {
+        events.push('second:getAll');
+        return [];
+      }),
+      close: vi.fn(() => {
+        events.push('second:close');
+      }),
+    };
+    const genericResult = {
+      getAll: vi.fn(async () => []),
+      close: vi.fn(),
+    };
+    const conn = {
+      query: vi.fn(async (sql: string) => {
+        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+          events.push('stream:query');
+          return [firstResult, secondResult];
+        }
+        return genericResult;
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const db = {
+      close: vi.fn(async () => {}),
+    };
+
+    vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      openLbugConnection: vi.fn(async () => ({ db, conn })),
+      closeLbugConnection: vi.fn(async () => {}),
+      isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
+      isOpenRetryExhausted: vi.fn(() => false),
+      waitForWindowsHandleRelease: vi.fn(async () => true),
+    }));
+    vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
+      extensionManager: {
+        ensure: vi.fn(async () => true),
+        getCapabilities: vi.fn(() => []),
+        reset: vi.fn(),
+      },
+    }));
+
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug('/tmp/gitnexus-lbug-stream-lifecycle/lbug');
+
+    const rows: unknown[] = [];
+    events.length = 0;
+    await expect(
+      adapter.streamQuery('MATCH (n:File) RETURN n.id AS id', (row) => {
+        rows.push(row);
+      }),
+    ).resolves.toBe(1);
+
+    expect(rows).toEqual([{ id: 'file:a' }]);
+    expect(events).toEqual([
+      'stream:query',
+      'first:hasNext:true',
+      'first:getNext',
+      'first:hasNext:false',
+      'first:close',
+      'second:getAll',
+      'second:close',
+    ]);
+
+    await adapter.closeLbug();
+  });
 });

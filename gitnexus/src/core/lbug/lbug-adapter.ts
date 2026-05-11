@@ -827,7 +827,8 @@ export const streamQuery = async (
   }
 
   const queryResult = await conn.query(cypher);
-  const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+  const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+  const result = results[0];
   let rowCount = 0;
 
   try {
@@ -843,6 +844,7 @@ export const streamQuery = async (
     } catch {
       // Best-effort cleanup only.
     }
+    await drainQueryResult(results.slice(1));
   }
 };
 
