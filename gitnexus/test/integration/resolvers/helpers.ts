@@ -34,6 +34,23 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  php: new Set([
+    // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
+    // candidates that are definitively below required-parameter-count. The
+    // legacy DAG path does not narrow on arity, so it emits over-broad CALLS
+    // edges for variadic functions invoked with too few args even though
+    // the only candidate's required count is non-zero. Scope-resolver-only
+    // correctness win (commit af9af4a9 U1); backporting to legacy is out
+    // of scope.
+    'does NOT emit CALLS edge for record() with zero args (below required=1)',
+    'does NOT emit CALLS edge for pad() with zero args (below required=1)',
+    // `$this->method()` precedence inside a class that composes a trait AND
+    // extends a parent both defining the same method requires the augmented
+    // trait-aware MRO (trait shadows parent). The legacy DAG has no
+    // trait-aware MRO, so it fails to bind the call to the trait. Scope-
+    // resolver-only correctness win (commit af9af4a9 U3).
+    '$this->record() still resolves to Auditable::record (trait shadows parent)',
+  ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
     // resolver's deterministic sort. The legacy resolver returns the

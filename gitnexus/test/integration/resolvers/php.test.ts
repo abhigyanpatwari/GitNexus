@@ -1,11 +1,12 @@
 /**
  * PHP: PSR-4 imports, extends, implements, trait use, enums, calls + ambiguous disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,12 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Wrap vitest's `it` so legacy-DAG-only divergences (commit af9af4a9 U1/U3)
+// are skipped under REGISTRY_PRIMARY_PHP=0. The skip list lives in
+// helpers.ts:LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.php — sibling pattern
+// to csharp/typescript/python.
+const it = createResolverParityIt('php');
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
