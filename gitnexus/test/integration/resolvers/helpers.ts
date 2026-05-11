@@ -9,6 +9,18 @@ import type { PipelineResult } from '../../../src/types/pipeline.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 
 const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, ReadonlySet<string>>> = {
+  c: new Set([
+    // The legacy DAG path does not resolve the main → create_service call
+    // because the function prototype in the .h file and the definition in
+    // the .c file create a dedup ambiguity. The registry-primary path
+    // resolves it via scope-based wildcard import binding.
+    'emits CALLS edges for cross-file function calls',
+    // The legacy DAG path does not resolve cross-file calls through
+    // #include → prototype chains. The scope-based path resolves
+    // caller.c → b.h → public_b via wildcard import binding +
+    // isFileLocalDef filtering of static functions.
+    'caller.c calls b:helper via include, NOT a:static helper',
+  ]),
   csharp: new Set([
     'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
     // Generic type-argument USES edges are emitted by the registry-primary

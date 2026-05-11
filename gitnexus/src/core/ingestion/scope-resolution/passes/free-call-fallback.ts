@@ -36,7 +36,10 @@ export function emitFreeCallFallback(
   handledSites: Set<string>,
   model: SemanticModel,
   workspaceIndex: WorkspaceResolutionIndex,
-  options: { readonly allowGlobalFallback?: boolean } = {},
+  options: {
+    readonly allowGlobalFallback?: boolean;
+    readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+  } = {},
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
@@ -73,7 +76,13 @@ export function emitFreeCallFallback(
       // the caller does not import the target package. Same-package calls are
       // caught by findCallableBindingInScope above before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
-        fnDef = pickUniqueGlobalCallable(site.name, model, scopes);
+        fnDef = pickUniqueGlobalCallable(
+          site.name,
+          model,
+          scopes,
+          parsed.filePath,
+          options.isFileLocalDef,
+        );
       }
       if (fnDef === undefined) continue;
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
@@ -107,6 +116,8 @@ function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
   scopes: ScopeResolutionIndexes,
+  callerFilePath: string,
+  isFileLocalDef?: (def: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
@@ -114,6 +125,11 @@ function pickUniqueGlobalCallable(
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
     if (simple !== name) continue;
     if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    // Skip file-local defs (e.g. C `static` functions) that live in a
+    // different file from the caller — they are logically invisible.
+    if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+      continue;
+    }
     const key = logicalCallableKey(def);
     if (scopeSeen.has(key)) continue;
     scopeSeen.add(key);
@@ -125,6 +141,12 @@ function pickUniqueGlobalCallable(
   const seen = new Set<string>();
   const push = (pool: readonly SymbolDefinition[]): void => {
     for (const def of pool) {
+      // Apply the same file-local linkage filter as Phase 1 —
+      // cross-file static defs must never leak through the
+      // SemanticModel fallback path.
+      if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+        continue;
+      }
       const key = logicalCallableKey(def);
       if (seen.has(key)) continue;
       seen.add(key);
