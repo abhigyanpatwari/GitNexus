@@ -1832,6 +1832,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
+      try {
+        const { shutdownMetrics } = await import('../mcp/metrics.js');
+        await shutdownMetrics();
+      } catch {}
       const { flushLoggerSync } = await import('../core/logger.js');
       flushLoggerSync();
       process.exit(0);
