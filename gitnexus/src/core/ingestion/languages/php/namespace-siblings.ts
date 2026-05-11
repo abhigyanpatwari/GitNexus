@@ -107,6 +107,24 @@ export interface PhpSiblingInputs {
 }
 
 /**
+ * Side-channel cache populated by `populatePhpNamespaceSiblings` so that
+ * later visibility-check hooks (e.g., `isCallableVisibleFromCaller`) can
+ * look up a file's PHP namespace without re-parsing. Cleared at the start
+ * of every populate run so stale entries don't leak across resolutions.
+ */
+const namespaceByFilePath = new Map<string, string>();
+
+/**
+ * Read the cached PHP namespace for a given filePath. Returns `''` (global)
+ * when the file has no namespace_definition or hasn't been processed yet.
+ * Callers should only consult this AFTER `populatePhpNamespaceSiblings` has
+ * run for the current resolution.
+ */
+export function getPhpNamespaceForFile(filePath: string): string {
+  return namespaceByFilePath.get(filePath) ?? '';
+}
+
+/**
  * Inject same-namespace class defs and return-type bindings into each
  * PHP file's Module scope's `bindingAugmentations`. This makes classes
  * in the same PHP namespace visible to each other without explicit `use`
@@ -120,13 +138,17 @@ export function populatePhpNamespaceSiblings(
   indexes: ScopeResolutionIndexes,
   inputs: PhpSiblingInputs,
 ): void {
-  // Step 1: extract namespace structure for each file.
+  // Step 1: extract namespace structure for each file. Also seed the
+  // side-channel cache used by visibility-check hooks downstream.
+  namespaceByFilePath.clear();
   const structureByFile = new Map<string, PhpFileStructure>();
   for (const parsed of parsedFiles) {
     const content = inputs.fileContents.get(parsed.filePath);
     if (content === undefined) continue;
     const cachedTree = inputs.treeCache?.get(parsed.filePath);
-    structureByFile.set(parsed.filePath, extractPhpFileStructure(content, cachedTree));
+    const struct = extractPhpFileStructure(content, cachedTree);
+    structureByFile.set(parsed.filePath, struct);
+    namespaceByFilePath.set(parsed.filePath, struct.namespace);
   }
 
   // Step 2: group class-like defs and module scopes by namespace.

@@ -33,12 +33,14 @@ import {
   resolveCallerGraphId,
   resolveDefGraphId,
 } from '../../scope-resolution/graph-bridge/ids.js';
+import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import { phpProvider } from '../php.js';
 import { phpArityCompatibility, phpMergeBindings } from './index.js';
 import { resolvePhpImportTargetInternal, loadPhpComposerConfig } from './import-target.js';
-import { populatePhpNamespaceSiblings } from './namespace-siblings.js';
+import { populatePhpNamespaceSiblings, getPhpNamespaceForFile } from './namespace-siblings.js';
 
 /**
  * PHP MRO builder — extends the generic EXTENDS-only MRO with trait-use
@@ -58,6 +60,72 @@ import { populatePhpNamespaceSiblings } from './namespace-siblings.js';
  * a trait method shadows the parent-class method but is overridden by the
  * using class's own methods).
  */
+/**
+ * PHP free-call visibility check for `pickUniqueGlobalCallable`. Returns
+ * true when the candidate function is reachable from the caller's PHP
+ * namespace context, false when the cross-namespace bridge would be a
+ * false positive (e.g., `\App\Utils\format` is not visible from `\App`
+ * without an explicit `use function App\Utils\format;`).
+ *
+ * Rules (PHP semantics):
+ *   1. Same-namespace candidates are always visible.
+ *   2. Global-namespace candidates (no namespace prefix) are visible from
+ *      every caller — PHP's global fallback for functions/constants.
+ *   3. Candidates in a different namespace are visible only when the
+ *      caller has a `use function` import that matches the candidate's
+ *      fully-qualified name.
+ */
+function phpIsCallableVisibleFromCaller(ctx: {
+  callerParsed: ParsedFile;
+  candidate: SymbolDefinition;
+}): boolean {
+  const { callerParsed, candidate } = ctx;
+  const callerNs = getPhpNamespaceForFile(callerParsed.filePath);
+  const candNs = getPhpNamespaceForFile(candidate.filePath);
+
+  // Global-namespace candidate: PHP falls back to global for functions
+  // and constants when the local namespace doesn't define them.
+  if (candNs === '') return true;
+
+  // Same-namespace: caller can see the candidate without an explicit use.
+  if (candNs === callerNs) return true;
+
+  // Cross-namespace: require an explicit `use function` import in the
+  // caller's parsedImports that matches the candidate's fully-qualified
+  // name. interpret.ts maps `use function Foo\bar` to a named import with
+  // localName = 'bar' and targetRaw = 'Foo\\bar'.
+  const candQualified =
+    candidate.qualifiedName === undefined
+      ? ''
+      : candNs !== '' && !candidate.qualifiedName.includes('\\')
+        ? `${candNs}\\${candidate.qualifiedName}`
+        : candidate.qualifiedName;
+  if (candQualified === '') return false;
+  return callerParsed.parsedImports.some(
+    (imp) =>
+      imp.kind === 'named' &&
+      imp.targetRaw.replace(/^\\+/, '') === candQualified.replace(/^\\+/, ''),
+  );
+}
+
+/**
+ * Compute the EXTENDS-only ancestor chain for every class — no trait
+ * augmentation. PHP semantics: `parent::method()` walks this view so
+ * that `parent::` resolves to the parent class's method, even when a
+ * composed trait shadows the same name.
+ *
+ * Returns the same shape as `buildPhpMro` so callers can swap views
+ * without changing dispatch logic. Just `buildMro` + `defaultLinearize`
+ * — no trait IMPLEMENTS edge walk.
+ */
+function buildPhpExtendsOnlyMro(
+  graph: KnowledgeGraph,
+  parsedFiles: readonly ParsedFile[],
+  nodeLookup: GraphNodeLookup,
+): Map<string, string[]> {
+  return buildMro(graph, parsedFiles, nodeLookup, defaultLinearize);
+}
+
 function buildPhpMro(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
@@ -104,34 +172,25 @@ function buildPhpMro(
   }
 
   // Step 4: augment every class's MRO by prepending the traits used by
-  // any class in its ancestor chain (transitively). PHP semantics:
-  // a trait used by a parent class is also visible on the child.
+  // any class in its ancestor chain (transitively closed). PHP semantics:
+  // a trait used by a parent class is also visible on the child, and a
+  // trait-using-trait chain is flattened to a single ancestor set.
   //
   // For each class, walk its (already-computed) EXTENDS-based MRO and
-  // collect all transitively-used traits. Prepend them before the
-  // EXTENDS ancestors so the method dispatch index finds trait methods
-  // before checking the parent class hierarchy.
+  // collect all transitively-used traits via BFS — `trait A { use B; }
+  // trait B { use C; } class X { use A; }` must include C in X's MRO.
+  // Prepend them before the EXTENDS ancestors so the method dispatch
+  // index finds trait methods before falling back to the parent class
+  // hierarchy.
   for (const [classDefId, extendsMro] of mro) {
-    const allTraits: string[] = [];
-    const seen = new Set<string>();
-
-    // Collect traits from this class itself and from each ancestor.
     const ancestorChain = [classDefId, ...extendsMro];
+    const seeds: string[] = [];
     for (const ancestorId of ancestorChain) {
       for (const traitId of directTraitUse.get(ancestorId) ?? []) {
-        if (!seen.has(traitId)) {
-          seen.add(traitId);
-          allTraits.push(traitId);
-          // Traits can use other traits — include transitively.
-          for (const transitiveTrait of directTraitUse.get(traitId) ?? []) {
-            if (!seen.has(transitiveTrait)) {
-              seen.add(transitiveTrait);
-              allTraits.push(transitiveTrait);
-            }
-          }
-        }
+        seeds.push(traitId);
       }
     }
+    const allTraits = collectTransitiveTraits(seeds, directTraitUse);
 
     if (allTraits.length > 0) {
       // Prepend traits before EXTENDS ancestors: own class's traits first,
@@ -146,25 +205,38 @@ function buildPhpMro(
   for (const [classDefId, traits] of directTraitUse) {
     if (!mro.has(classDefId) && !traitDefIds.has(classDefId)) {
       // Class with no EXTENDS but with trait-use — add to MRO map.
-      const allTraits: string[] = [];
-      const seen = new Set<string>();
-      for (const traitId of traits) {
-        if (!seen.has(traitId)) {
-          seen.add(traitId);
-          allTraits.push(traitId);
-          for (const transitiveTrait of directTraitUse.get(traitId) ?? []) {
-            if (!seen.has(transitiveTrait)) {
-              seen.add(transitiveTrait);
-              allTraits.push(transitiveTrait);
-            }
-          }
-        }
-      }
+      const allTraits = collectTransitiveTraits([...traits], directTraitUse);
       mro.set(classDefId, allTraits);
     }
   }
 
   return mro;
+}
+
+/**
+ * Collect the transitive closure of traits reachable from the seed set.
+ * BFS over `directTraitUse` until fixpoint. The `seen` set guards against
+ * cycles (invalid PHP but defensively handled) and prevents duplicate
+ * entries when multiple seeds converge on the same trait. Insertion order
+ * is preserved — first-seen wins for MRO ordering.
+ */
+function collectTransitiveTraits(
+  seeds: readonly string[],
+  directTraitUse: ReadonlyMap<string, readonly string[]>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const queue: string[] = [...seeds];
+  while (queue.length > 0) {
+    const t = queue.shift()!;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    for (const next of directTraitUse.get(t) ?? []) {
+      if (!seen.has(next)) queue.push(next);
+    }
+  }
+  return out;
 }
 
 /**
@@ -222,6 +294,15 @@ function phpEmitUnresolvedReceiverEdges(
       const fnDef = candidates[0];
       if (fnDef === undefined) continue;
 
+      // Apply arity narrowing — a unique method name match is not enough
+      // when arity says the call is definitively incompatible (e.g., PHP
+      // f(int $req, ...$rest) called with zero args). This prevents the
+      // fallback from emitting edges that the receiver-bound pass already
+      // rejected for arity reasons.
+      if (narrowOverloadCandidates([fnDef], site.arity, site.argumentTypes).length === 0) {
+        continue;
+      }
+
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
       if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
@@ -264,6 +345,19 @@ const phpScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => phpArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildPhpMro(graph, parsedFiles, nodeLookup),
+
+  // PHP-specific: parent::method() must walk inheritance only, skipping
+  // composed traits. See buildPhpExtendsOnlyMro and the super-branch use
+  // in `passes/receiver-bound-calls.ts`.
+  buildExtendsOnlyMro: (graph, parsedFiles, nodeLookup) =>
+    buildPhpExtendsOnlyMro(graph, parsedFiles, nodeLookup),
+
+  // PHP free-call visibility: cross-namespace candidates are blocked
+  // unless explicitly `use function`-imported by the caller. Prevents
+  // false-positive CALLS edges between unrelated namespaces sharing a
+  // function name. Same-namespace and global-namespace candidates pass
+  // unchanged.
+  isCallableVisibleFromCaller: phpIsCallableVisibleFromCaller,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

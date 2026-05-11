@@ -444,6 +444,162 @@ describe('PHP variadic call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Variadic arity minimum: required-arg count must be enforced for variadic
+// functions. f(int $req, ...$rest) called as f() is an ArgumentCountError at
+// PHP runtime and must NOT emit a CALLS edge from the resolver.
+// ---------------------------------------------------------------------------
+
+describe('PHP variadic arity minimum (U1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-variadic-arity-minimum'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === target);
+
+  it('emits CALLS edge for record(level, ...msgs) with arity 4 (happy path)', () => {
+    expect(callsFrom('callValidRecord', 'record').length).toBe(1);
+  });
+
+  it('emits CALLS edge for record(level) with only the required arg (arity 1)', () => {
+    expect(callsFrom('callValidRecordMin', 'record').length).toBe(1);
+  });
+
+  it('does NOT emit CALLS edge for record() with zero args (below required=1)', () => {
+    expect(callsFrom('callTooFewRecord', 'record').length).toBe(0);
+  });
+
+  it('emits CALLS edge for format() — pure variadic, required=0', () => {
+    expect(callsFrom('callPureVariadic', 'format').length).toBe(1);
+  });
+
+  it('emits CALLS edge for pad("x") — required+optional+variadic, only required given', () => {
+    expect(callsFrom('callPadMin', 'pad').length).toBe(1);
+  });
+
+  it('does NOT emit CALLS edge for pad() with zero args (below required=1)', () => {
+    expect(callsFrom('callPadTooFew', 'pad').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transitive trait MRO: trait A uses B uses C — Consumer using A must see C's
+// methods. Current depth-2 expansion in buildPhpMro silently drops methods
+// from 3+ level chains.
+// ---------------------------------------------------------------------------
+
+describe('PHP transitive trait MRO (U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-transitive-traits'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === target);
+
+  it('detects 3 traits and 1 class', () => {
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['TraitA', 'TraitB', 'TraitC']);
+    expect(getNodesByLabel(result, 'Class')).toContain('Consumer');
+  });
+
+  it('depth-1: $this->aMethod() resolves to TraitA::aMethod', () => {
+    expect(callsFrom('callDepthOne', 'aMethod').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('depth-2: $this->bMethod() resolves to TraitB::bMethod (TraitA uses TraitB)', () => {
+    expect(callsFrom('callDepthTwo', 'bMethod').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('depth-3: $this->deepMethod() resolves to TraitC::deepMethod (TraitA → TraitB → TraitC)', () => {
+    expect(callsFrom('callDepthThree', 'deepMethod').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parent:: bypasses traits. When a class composes a trait AND extends a parent
+// that both define the same method name, parent::method() must resolve to the
+// parent class (PHP semantics), NOT the trait. $this->method() still goes to
+// the trait (PHP's own-class > trait > parent precedence).
+// ---------------------------------------------------------------------------
+
+describe('PHP parent:: bypasses traits (U3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-parent-vs-trait'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === file,
+    );
+
+  it('parent::record() resolves to Base::record, NOT Auditable::record', () => {
+    expect(callsFromTo('callViaParent', 'record', 'app/Base.php').length).toBeGreaterThanOrEqual(1);
+    expect(callsFromTo('callViaParent', 'record', 'app/Auditable.php').length).toBe(0);
+  });
+
+  it('$this->record() still resolves to Auditable::record (trait shadows parent)', () => {
+    expect(callsFromTo('callViaThis', 'record', 'app/Auditable.php').length).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(callsFromTo('callViaThis', 'record', 'app/Base.php').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespace-aware free-call fallback. PHP's `pickUniqueGlobalCallable` must
+// reject cross-namespace candidates that the caller can't reach without an
+// explicit `use function` import. Same-namespace and globally-imported calls
+// still emit edges.
+// ---------------------------------------------------------------------------
+
+describe('PHP namespace-aware free-call fallback (U4)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-namespace-fallback-isolation'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file?: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === source &&
+        c.target === target &&
+        (file === undefined || c.targetFilePath === file),
+    );
+
+  it('rejects cross-namespace candidate when caller has no use-function import', () => {
+    // callNoImport (in \App) calls format('x'). Workspace has \App\Utils\format/1
+    // and \Vendor\Utils\format/2. Caller is in \App — NOT same namespace as
+    // either candidate, and no `use function` for `format` is in scope.
+    // Expected: NO CALLS edge.
+    expect(callsFromTo('callNoImport', 'format').length).toBe(0);
+  });
+
+  it('resolves same-namespace free call (caller in App\\Utils → App\\Utils\\format)', () => {
+    expect(
+      callsFromTo('callSameNamespace', 'format', 'src/App/Utils/Format.php').length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('resolves use-function-imported alias (vendorFormat → Vendor\\Utils\\format)', () => {
+    // `use function Vendor\Utils\format as vendorFormat;`. Caller in \App calls
+    // vendorFormat('x', 80) — the import target is reachable.
+    expect(
+      callsFromTo('callImported', 'vendorFormat').length +
+        callsFromTo('callImported', 'format', 'src/Vendor/Utils/Format.php').length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------
 

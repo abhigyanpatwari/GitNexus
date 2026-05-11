@@ -8,7 +8,10 @@
  *     `undefined`, which `phpArityCompatibility` then treats as
  *     "max unknown" — the candidate stays eligible at `argCount >= required`.
  *   - Defaulted parameters (`= expr`) contribute to `optionalCount`;
- *     `requiredParameterCount = total − optionalCount`.
+ *     `requiredParameterCount = total − optionalCount − (variadic ? 1 : 0)`.
+ *     The variadic slot itself accepts zero args so it is subtracted from
+ *     the required count — `f(int $a, ...$rest)` requires exactly 1 arg,
+ *     not 2, and `f(...$rest)` requires 0.
  *   - `property_promotion_parameter` (constructor-promoted) is counted
  *     the same as `simple_parameter` since both consume an argument slot.
  *   - `parameterTypes` collects declared type names; a literal `'...'`
@@ -46,7 +49,10 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
   // Variadic methods accept any arg count ≥ required — leave `parameterCount`
   // undefined so the registry treats max as unknown.
   const parameterCount = hasVariadic ? undefined : total;
-  const requiredParameterCount = hasVariadic ? undefined : total - optionalCount;
+  // The variadic slot itself accepts zero args; subtract it from the required
+  // count so PHP's ArgumentCountError-equivalent calls (too few args before
+  // the variadic) are correctly rejected by arity compatibility.
+  const requiredParameterCount = total - optionalCount - (hasVariadic ? 1 : 0);
 
   return {
     parameterCount,

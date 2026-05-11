@@ -39,6 +39,10 @@ export function emitFreeCallFallback(
   options: {
     readonly allowGlobalFallback?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+    readonly isCallableVisibleFromCaller?: (ctx: {
+      readonly callerParsed: ParsedFile;
+      readonly candidate: SymbolDefinition;
+    }) => boolean;
   } = {},
 ): number {
   let emitted = 0;
@@ -83,6 +87,10 @@ export function emitFreeCallFallback(
           parsed.filePath,
           options.isFileLocalDef,
           site.arity,
+          options.isCallableVisibleFromCaller !== undefined
+            ? (candidate) =>
+                options.isCallableVisibleFromCaller!({ callerParsed: parsed, candidate })
+            : undefined,
         );
       }
       if (fnDef === undefined) continue;
@@ -120,6 +128,7 @@ function pickUniqueGlobalCallable(
   callerFilePath: string,
   isFileLocalDef?: (def: SymbolDefinition) => boolean,
   callArity?: number,
+  isCallerVisible?: (candidate: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
@@ -130,6 +139,13 @@ function pickUniqueGlobalCallable(
     // Skip file-local defs (e.g. C `static` functions) that live in a
     // different file from the caller — they are logically invisible.
     if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+      continue;
+    }
+    // Caller-side visibility filter (e.g., PHP namespace + use-function
+    // import gating). When defined, blocks candidates the caller cannot
+    // legally reach. Languages without namespace-scoped function resolution
+    // leave this undefined → no filtering.
+    if (isCallerVisible !== undefined && !isCallerVisible(def)) {
       continue;
     }
     const key = logicalCallableKey(def);
@@ -156,6 +172,10 @@ function pickUniqueGlobalCallable(
       // cross-file static defs must never leak through the
       // SemanticModel fallback path.
       if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+        continue;
+      }
+      // Same caller-visibility filter applied to the model-side pool.
+      if (isCallerVisible !== undefined && !isCallerVisible(def)) {
         continue;
       }
       const key = logicalCallableKey(def);
