@@ -7,12 +7,14 @@ export function runHook(
   hookPath: string,
   input: Record<string, any>,
   cwd?: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
 ): { stdout: string; stderr: string; status: number | null } {
   const result = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(input),
     encoding: 'utf-8',
     timeout: 10000,
     cwd,
+    env: options.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   return {

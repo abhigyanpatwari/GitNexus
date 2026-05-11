@@ -102,6 +102,43 @@ function findGitNexusDir(startDir) {
   return null;
 }
 
+function isGitNexusServerCommand(command) {
+  const hasServerMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(command);
+  const hasGitNexus = /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(command) ||
+    /node_modules[/\\]gitnexus[/\\]/.test(command);
+  return hasServerMode && hasGitNexus;
+}
+
+function hasGitNexusServerOwner(gitNexusDir) {
+  const dbPath = path.join(gitNexusDir, 'lbug');
+  if (process.platform === 'win32' || !fs.existsSync(dbPath)) return false;
+
+  const lsof = spawnSync('lsof', ['-nP', '-t', '--', dbPath], {
+    encoding: 'utf-8',
+    timeout: 1000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
+
+  const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
+  for (const pid of pids) {
+    if (Number(pid) === process.pid) continue;
+    const ps = spawnSync('ps', ['-p', pid, '-o', 'command='], {
+      encoding: 'utf-8',
+      timeout: 500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (!ps.error && isGitNexusServerCommand(ps.stdout || '')) return true;
+  }
+  return false;
+}
+
+function extractAugmentContext(stderr) {
+  const output = (stderr || '').trim();
+  const marker = output.indexOf('[GitNexus]');
+  return marker === -1 ? '' : output.slice(marker).trim();
+}
+
 /**
  * Extract search pattern from tool input.
  */
@@ -217,7 +254,8 @@ function sendHookResponse(hookEventName, message) {
 function handlePreToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
-  if (!findGitNexusDir(cwd)) return;
+  const gitNexusDir = findGitNexusDir(cwd);
+  if (!gitNexusDir) return;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
@@ -226,19 +264,20 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
+  if (hasGitNexusServerOwner(gitNexusDir)) return;
 
   let result = '';
   try {
     const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
-      result = child.stderr || '';
+      result = extractAugmentContext(child.stderr || '');
     }
   } catch {
     /* graceful failure */
   }
 
-  if (result && result.trim()) {
-    sendHookResponse('PreToolUse', result.trim());
+  if (result) {
+    sendHookResponse('PreToolUse', result);
   }
 }
 
