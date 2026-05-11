@@ -76,6 +76,9 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
+  // Strip qualifier first so that `com.example.BaseModel<T>` becomes
+  // `BaseModel<T>` before stripGeneric — the JVM-erasure fallback pattern
+  // requires an unqualified identifier at the start of the string.
   const rawType = stripGeneric(stripQualifier(typeCap.text.trim()));
 
   // Skip `var` — tree-sitter-java parses `var` as type_identifier with
