@@ -31,9 +31,15 @@ export function computeJavaArityMetadata(fnNode: SyntaxNode): JavaArityMetadata 
   if (hasVariadic) types.push('varargs');
 
   const total = params.length;
+  // For varargs methods, `parameterCount` (max) is unknown — any number of
+  // trailing arguments is valid.  But the fixed-prefix parameters (everything
+  // before the variadic `...` param) are still required, so we preserve that
+  // count in `requiredParameterCount` so `javaArityCompatibility` can reject
+  // calls that undersupply the fixed prefix (e.g. `f(int x, String... args)`
+  // called with 0 args).
+  const fixedCount = params.filter((p) => !p.isVariadic).length;
   const parameterCount = hasVariadic ? undefined : total;
-  // Java has no optional parameters (no default values), so required = total
-  const requiredParameterCount = hasVariadic ? undefined : total;
+  const requiredParameterCount = hasVariadic ? fixedCount : total;
 
   return {
     parameterCount,

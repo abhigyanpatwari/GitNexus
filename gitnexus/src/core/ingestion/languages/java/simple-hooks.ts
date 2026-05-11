@@ -35,14 +35,13 @@ export function javaBindingScopeFor(
 
 // ─── importOwningScope ────────────────────────────────────────────────────
 
-/** Java imports are always at file level. Defensively handle nested
- *  scopes by attaching to the innermost if it's Class or Function. */
+/** Java imports are always at compilation-unit (Module) level (JLS §7.5).
+ *  Return `null` unconditionally so the default Module scope is used. */
 export function javaImportOwningScope(
   _imp: ParsedImport,
-  innermost: Scope,
+  _innermost: Scope,
   _tree: ScopeTree,
 ): ScopeId | null {
-  if (innermost.kind === 'Class' || innermost.kind === 'Function') return innermost.id;
   return null;
 }
 
