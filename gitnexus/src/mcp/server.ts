@@ -163,10 +163,6 @@ export function createMCPServer(backend: LocalBackend): Server {
     })),
   }));
 
-  // Handle tool calls — append next-step hints to guide agent workflow.
-  // The body is wrapped in `observe()` (see `./metrics.ts`) so each call is
-  // recorded against the OTel meter when metrics are enabled. The wrapper is
-  // a no-op when metrics are disabled.
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
@@ -201,16 +197,12 @@ export function createMCPServer(backend: LocalBackend): Server {
         }
       },
       (result) => {
-        // Size = bytes of the text payload only. The envelope structure
-        // itself is not user data.
         const block = result.content?.[0];
         if (block && 'text' in block && typeof block.text === 'string') {
           return Buffer.byteLength(block.text, 'utf8');
         }
         return 0;
       },
-      // hasError must return a boolean only. Never accept the error message
-      // string at this seam — messages echo user input.
       (result) => result.isError === true,
     );
   });

@@ -55,11 +55,6 @@ export const mcpCommand = async () => {
     import('../mcp/metrics.js'),
   ]);
 
-  // OpenTelemetry metrics + Prometheus exporter. Opt-in via GITNEXUS_OTEL_METRICS.
-  // In stdio mode (this entrypoint), each agent host spawns its own process, so
-  // metrics are off by default. Operators who want server-side observability
-  // should run `gitnexus serve` and scrape that instance instead. The opt-in
-  // path still works here for local development / single-process setups.
   try {
     const result = await initMetrics();
     if (result.enabled) {
@@ -69,8 +64,6 @@ export const mcpCommand = async () => {
       );
     }
   } catch (err: any) {
-    // Metrics must never crash the server. EADDRINUSE here is the common case;
-    // log and continue without metrics.
     logger.warn(
       { err: err?.message ?? String(err) },
       'GitNexus: failed to start metrics endpoint — continuing without metrics',

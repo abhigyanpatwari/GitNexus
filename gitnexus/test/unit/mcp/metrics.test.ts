@@ -1,16 +1,3 @@
-/**
- * Tests for src/mcp/metrics.ts — the OTel + Prometheus seam for issue #1351.
- *
- * Two privacy-critical invariants land here:
- *   1. `observe()` accepts a boolean error detector only, never a message string.
- *      (Type-enforced; tested by passing a result with an explicit message and
- *      asserting the message does not appear in the exposed metrics text.)
- *   2. The Prometheus exporter is configured to suppress `target_info` and
- *      scope info — only `tool` and `error` labels should appear.
- *
- * Lifecycle: each test that turns metrics on must `shutdownMetrics()` in afterEach,
- * otherwise the exporter HTTP server leaks port + handles across tests.
- */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   initMetrics,
@@ -31,8 +18,7 @@ function clearMetricsEnv(): void {
 }
 
 async function withRandomPort<T>(fn: () => Promise<T>): Promise<T> {
-  // Use port 0 by hand-rolling a free port — Node http will pick one but the
-  // exporter wants a concrete number. Bind/listen/close pattern.
+  // Exporter needs a concrete port number, not 0 — pre-bind to discover one.
   const net = await import('node:net');
   const srv = net.createServer();
   const port = await new Promise<number>((resolve, reject) => {
@@ -113,7 +99,6 @@ describe('observe() — success path', () => {
       expect(text).toContain(
         'gitnexus_mcp_tool_requests_total{tool="list_repos",error="false"} 1',
       );
-      // Histogram is exported by the OTel Prom format with _bucket / _sum / _count.
       expect(text).toContain('gitnexus_mcp_tool_request_duration_seconds_count');
       expect(text).toContain('gitnexus_mcp_tool_result_bytes_count');
     });
@@ -138,7 +123,6 @@ describe('observe() — error path', () => {
 
       const text = await fetch(`http://127.0.0.1:${init.port}/metrics`).then((r) => r.text());
       expect(text).toContain('gitnexus_mcp_tool_requests_total{tool="cypher",error="true"} 1');
-      // PRIVACY INVARIANT: error messages echo user input. They MUST NOT leak.
       expect(text).not.toContain(SECRET_ECHO);
       expect(text).not.toContain('parse error');
     });
@@ -186,8 +170,6 @@ describe('observe() — in-flight balance', () => {
       }
 
       const text = await fetch(`http://127.0.0.1:${init.port}/metrics`).then((r) => r.text());
-      // After all calls complete (regardless of success/failure), inflight returns to 0.
-      // Prom emits the latest value; assert it's a "0" reading for impact.
       expect(text).toMatch(/gitnexus_mcp_tool_inflight\{tool="impact"\} 0\b/);
     });
   });
@@ -208,7 +190,6 @@ describe('privacy: target_info / scope_info suppression', () => {
       const text = await fetch(`http://127.0.0.1:${init.port}/metrics`).then((r) => r.text());
       expect(text).not.toMatch(/^target_info/m);
       expect(text).not.toMatch(/otel_scope_info/);
-      // The exposed label set is bounded: only `tool` and `error` ever appear.
       const labelLines = text.split('\n').filter((l) => l.includes('gitnexus_mcp_'));
       for (const line of labelLines) {
         const match = line.match(/\{([^}]*)\}/);

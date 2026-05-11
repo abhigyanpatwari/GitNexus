@@ -32,9 +32,6 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
   const host = options?.host ?? 'localhost';
 
   try {
-    // OpenTelemetry metrics + Prometheus exporter. Opt-in via
-    // GITNEXUS_OTEL_METRICS. `gitnexus serve` is the supported scrape target
-    // (see src/mcp/metrics.ts for the rationale).
     try {
       const { initMetrics } = await import('../mcp/metrics.js');
       const result = await initMetrics();
@@ -45,7 +42,6 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
         );
       }
     } catch (metricsErr: any) {
-      // Never crash the server because of metrics. Log and continue.
       logger.warn(
         { err: metricsErr?.message ?? String(metricsErr) },
         '[gitnexus serve] failed to start metrics endpoint — continuing without metrics',
