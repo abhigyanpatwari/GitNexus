@@ -93,8 +93,18 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
 }
 
 /**
- * Unwrap a single-arg generic collection wrapper — `List<User>`,
- * `ArrayList<User>`, `Optional<User>` — to its element type.
+ * Unwrap generic type parameters from Java types.
+ *
+ * Three tiers, checked in order:
+ *   1. Known single-arg collection wrappers → extract the element type
+ *      (`List<User>` → `User`, `Optional<User>` → `User`).
+ *   2. Known two-arg map/container types → extract the value type
+ *      (`Map<String, User>` → `User`).
+ *   3. **Fallback (JVM type erasure):** any other generic type →
+ *      strip the generic parameters and keep the raw class name
+ *      (`BaseModel<T>` → `BaseModel`, `CustomList<Foo>` → `CustomList`).
+ *      This ensures receiver bindings (`this`/`super`) on classes with
+ *      generic superclasses resolve to the correct class file.
  */
 function stripGeneric(text: string): string {
   // Single-type-argument containers — extract the element type.
@@ -108,6 +118,12 @@ function stripGeneric(text: string): string {
     /^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?(?:Map|HashMap|TreeMap|LinkedHashMap|ConcurrentHashMap|ConcurrentMap|SortedMap|NavigableMap|Hashtable|EnumMap|WeakHashMap|IdentityHashMap|BiFunction|BiConsumer|BiPredicate|Pair|Entry)<[^,<>]+,\s*([^,<>]+)>$/,
   );
   if (twoArg !== null) return twoArg[1].trim();
+
+  // Fallback: strip generic parameters from any unrecognized generic type.
+  // `BaseModel<T>` → `BaseModel`, `Builder<Self>` → `Builder`.
+  // This mirrors JVM type erasure — the raw class name is the resolvable symbol.
+  const fallback = text.match(/^([A-Za-z_][A-Za-z0-9_.]*)<.+>$/);
+  if (fallback !== null) return fallback[1].trim();
 
   return text;
 }
