@@ -119,7 +119,7 @@ function generateGitNexusContent(
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run \`npx gitnexus analyze\` in terminal first.
+> If any GitNexus tool warns the index is stale, run \`gitnexus analyze\` in terminal first (or \`npx gitnexus analyze\` if the CLI is not installed).
 
 ## Always Do
 

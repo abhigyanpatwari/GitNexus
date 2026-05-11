@@ -188,6 +188,7 @@ describe('readResource', () => {
     const backend = createMockBackend({ repos: [] });
     const result = await readResource('gitnexus://repos', backend);
     expect(result).toContain('No repositories indexed');
+    expect(result).toContain('Run: gitnexus analyze');
   });
 
   it('routes gitnexus://setup to setup resource', async () => {
@@ -211,6 +212,8 @@ describe('readResource', () => {
     const backend = createMockBackend({ repos: [] });
     const result = await readResource('gitnexus://setup', backend);
     expect(result).toContain('No repositories indexed');
+    expect(result).toContain('Run: `gitnexus analyze`');
+    expect(result).toContain('`npx gitnexus analyze` if the CLI is not installed');
   });
 
   it('routes group contracts resource through backend', async () => {

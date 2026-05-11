@@ -57,6 +57,8 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('run `gitnexus analyze`');
+    expect(content).toContain('`npx gitnexus analyze` if the CLI is not installed');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');

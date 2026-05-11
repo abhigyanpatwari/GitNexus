@@ -77,7 +77,10 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.additionalContext).toContain('stale');
-      expect(output!.additionalContext).toContain('npx gitnexus analyze');
+      expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+      expect(output!.additionalContext).toContain(
+        '`npx gitnexus analyze` if the CLI is not installed',
+      );
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {
