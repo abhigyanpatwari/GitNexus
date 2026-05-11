@@ -72,4 +72,63 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       'db:close',
     ]);
   });
+
+  it('closes normal query results after reading rows', async () => {
+    vi.resetModules();
+
+    const events: string[] = [];
+    const queryResult = {
+      getAll: vi.fn(async () => {
+        events.push('query:getAll');
+        return [{ id: 'file:a' }];
+      }),
+      close: vi.fn(() => {
+        events.push('query:close');
+      }),
+    };
+    const genericResult = {
+      getAll: vi.fn(async () => []),
+      close: vi.fn(),
+    };
+    const conn = {
+      query: vi.fn(async (sql: string) => {
+        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+          events.push('query:run');
+          return queryResult;
+        }
+        return genericResult;
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const db = {
+      close: vi.fn(async () => {}),
+    };
+
+    vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      openLbugConnection: vi.fn(async () => ({ db, conn })),
+      closeLbugConnection: vi.fn(async () => {}),
+      isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
+      isOpenRetryExhausted: vi.fn(() => false),
+      waitForWindowsHandleRelease: vi.fn(async () => true),
+    }));
+    vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
+      extensionManager: {
+        ensure: vi.fn(async () => true),
+        getCapabilities: vi.fn(() => []),
+        reset: vi.fn(),
+      },
+    }));
+
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug('/tmp/gitnexus-lbug-query-lifecycle/lbug');
+
+    events.length = 0;
+    await expect(adapter.executeQuery('MATCH (n:File) RETURN n.id AS id')).resolves.toEqual([
+      { id: 'file:a' },
+    ]);
+
+    expect(events).toEqual(['query:run', 'query:getAll', 'query:close']);
+
+    await adapter.closeLbug();
+  });
 });
