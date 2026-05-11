@@ -22,6 +22,7 @@ let requestsCounter: Counter | null = null;
 let durationHistogram: Histogram | null = null;
 let resultBytesHistogram: Histogram | null = null;
 let inflightGauge: UpDownCounter | null = null;
+let boundConfig: { port: number; host: string; endpoint: string } | null = null;
 
 function envFlag(value: string | undefined): boolean {
   if (typeof value !== 'string') return false;
@@ -48,13 +49,8 @@ export async function initMetrics(
   const enabled = opts.forceEnabled ?? envFlag(env['GITNEXUS_OTEL_METRICS']);
   if (!enabled) return { enabled: false };
 
-  if (provider !== null) {
-    return {
-      enabled: true,
-      port: Number(env['GITNEXUS_OTEL_METRICS_PORT'] ?? 9464),
-      host: env['GITNEXUS_OTEL_METRICS_HOST'] ?? '127.0.0.1',
-      endpoint: env['GITNEXUS_OTEL_METRICS_ENDPOINT'] ?? '/metrics',
-    };
+  if (provider !== null && boundConfig !== null) {
+    return { enabled: true, ...boundConfig };
   }
 
   const port = Number(env['GITNEXUS_OTEL_METRICS_PORT'] ?? 9464);
@@ -115,6 +111,7 @@ export async function initMetrics(
   });
 
   await exporter.startServer();
+  boundConfig = { port, host, endpoint };
 
   return { enabled: true, port, host, endpoint };
 }
@@ -128,8 +125,17 @@ export async function shutdownMetrics(): Promise<void> {
   durationHistogram = null;
   resultBytesHistogram = null;
   inflightGauge = null;
-  if (e) await e.shutdown().catch(() => {});
-  if (p) await p.shutdown().catch(() => {});
+  boundConfig = null;
+  if (e) {
+    await e.shutdown().catch((err) => {
+      process.stderr.write(`[gitnexus metrics] exporter shutdown error: ${err?.message ?? err}\n`);
+    });
+  }
+  if (p) {
+    await p.shutdown().catch((err) => {
+      process.stderr.write(`[gitnexus metrics] provider shutdown error: ${err?.message ?? err}\n`);
+    });
+  }
 }
 
 /** hasError must be a boolean; never accept the error string — cypher errors echo user input. */

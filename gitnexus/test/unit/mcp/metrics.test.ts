@@ -69,6 +69,29 @@ describe('initMetrics gating', () => {
       expect(isMetricsEnabled()).toBe(true);
     });
   });
+
+  it('idempotent re-init returns the originally bound values, not current env', async () => {
+    process.env['GITNEXUS_OTEL_METRICS'] = 'on';
+    await withRandomPort(async () => {
+      const first = await initMetrics();
+      process.env['GITNEXUS_OTEL_METRICS_PORT'] = '65535';
+      process.env['GITNEXUS_OTEL_METRICS_HOST'] = '0.0.0.0';
+      process.env['GITNEXUS_OTEL_METRICS_ENDPOINT'] = '/changed';
+      const second = await initMetrics();
+      expect(second.port).toBe(first.port);
+      expect(second.host).toBe(first.host);
+      expect(second.endpoint).toBe(first.endpoint);
+    });
+  });
+
+  it('honors forceEnabled regardless of env', async () => {
+    delete process.env['GITNEXUS_OTEL_METRICS'];
+    await withRandomPort(async () => {
+      const result = await initMetrics({ forceEnabled: true });
+      expect(result.enabled).toBe(true);
+      expect(isMetricsEnabled()).toBe(true);
+    });
+  });
 });
 
 describe('observe() — success path', () => {
