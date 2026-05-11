@@ -12,6 +12,7 @@ import { splitGoImportStatement } from './import-decomposer.js';
 import { synthesizeGoReceiverBinding } from './receiver-binding.js';
 import { synthesizeGoTypeBindings } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 export function emitGoScopeCaptures(
   sourceText: string,
@@ -20,7 +21,7 @@ export function emitGoScopeCaptures(
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getGoParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = getGoParser().parse(sourceText, undefined, {
+    tree = parseSourceSafe(getGoParser(), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordGoCacheMiss();
