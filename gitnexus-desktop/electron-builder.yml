@@ -32,12 +32,6 @@ extraResources:
       - '**/*'
   - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON}'
     to: gitnexus/package.json
-  - from: '${env.GITNEXUS_DESKTOP_NODE_BINARY}'
-    to: runtime/node.exe
-    filter:
-      - '**/*'
-    platform:
-      - win
 asar: false
 npmRebuild: false
 win:
@@ -45,6 +39,9 @@ win:
   icon: build/icon.png
   target:
     - nsis
+  extraResources:
+    - from: '${env.GITNEXUS_DESKTOP_NODE_BINARY}'
+      to: runtime/node.exe
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.png

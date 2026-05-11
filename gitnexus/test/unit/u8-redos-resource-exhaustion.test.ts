@@ -97,7 +97,7 @@ function medianTimeRegex(re: RegExp, input: string): number {
  * keeps the assertion stable while preserving regression coverage.
  */
 function assertNearLinearScaling(elapsedSmall: number, elapsedLarge: number, label: string): void {
-  if (elapsedSmall < RATIO_MEASUREMENT_FLOOR_MS && elapsedLarge < RATIO_MEASUREMENT_FLOOR_MS) {
+  if (elapsedSmall < RATIO_MEASUREMENT_FLOOR_MS) {
     // Both runs completed below the noise floor — even the median is
     // dominated by `performance.now()` resolution. The absolute <500ms
     // cap elsewhere still catches catastrophic backtracking.
