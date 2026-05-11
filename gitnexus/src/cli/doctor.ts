@@ -1,6 +1,6 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
-import { isHttpMode } from '../core/embeddings/http-client.js';
+import { getHttpBatchSize, isHttpMode } from '../core/embeddings/http-client.js';
 
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
@@ -29,4 +29,6 @@ export const doctorCommand = async () => {
   console.log(`  Threads:   ${embeddingConfig.threads}`);
   console.log(`  Batch:     ${embeddingConfig.batchSize} nodes`);
   console.log(`  Sub-batch: ${embeddingConfig.subBatchSize} chunks`);
+  if (isHttpMode())
+    console.log(`  HTTP batch:${String(getHttpBatchSize()).padStart(6)} chunks/request`);
 };

@@ -151,6 +151,7 @@ export interface AnalyzeOptions {
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
+  embeddingHttpBatchSize?: string;
   embeddingDevice?: string;
 }
 
@@ -250,6 +251,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       '--embedding-sub-batch-size',
       'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
       options?.embeddingSubBatchSize,
+    ) ||
+    !setPositiveEnv(
+      '--embedding-http-batch-size',
+      'GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE',
+      options?.embeddingHttpBatchSize,
     )
   ) {
     return;

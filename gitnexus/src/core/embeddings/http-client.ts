@@ -16,9 +16,21 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
 const HTTP_TIMEOUT_MS = 30_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
-const HTTP_BATCH_SIZE = 64;
+const DEFAULT_HTTP_BATCH_SIZE = 64;
 const DEFAULT_DIMS = 384;
 const HTTP_BREAKER_KEY = 'embeddings-http';
+
+const parsePositiveInt = (name: string, value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${name} must be a positive integer, got "${value}"`);
+  }
+  const parsed = parseInt(value, 10);
+  if (parsed <= 0) {
+    throw new Error(`${name} must be a positive integer, got "${value}"`);
+  }
+  return parsed;
+};
 
 interface HttpConfig {
   baseUrl: string;
@@ -68,6 +80,16 @@ export const isHttpMode = (): boolean => readConfig() !== null;
  * if HTTP mode is not active or no explicit dimensions are set.
  */
 export const getHttpDimensions = (): number | undefined => readConfig()?.dimensions;
+
+/**
+ * Return the max number of chunks sent in a single HTTP embedding request.
+ */
+export const getHttpBatchSize = (): number =>
+  parsePositiveInt(
+    'GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE',
+    process.env.GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE,
+    DEFAULT_HTTP_BATCH_SIZE,
+  );
 
 /**
  * Return a safe representation of a URL for error messages.
@@ -183,10 +205,11 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
 
   const url = `${config.baseUrl}/embeddings`;
   const allVectors: Float32Array[] = [];
+  const httpBatchSize = getHttpBatchSize();
 
-  for (let i = 0; i < texts.length; i += HTTP_BATCH_SIZE) {
-    const batch = texts.slice(i, i + HTTP_BATCH_SIZE);
-    const batchIndex = Math.floor(i / HTTP_BATCH_SIZE);
+  for (let i = 0; i < texts.length; i += httpBatchSize) {
+    const batch = texts.slice(i, i + httpBatchSize);
+    const batchIndex = Math.floor(i / httpBatchSize);
     const items = await httpEmbedBatch(
       url,
       batch,

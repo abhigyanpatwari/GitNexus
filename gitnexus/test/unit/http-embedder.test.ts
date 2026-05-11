@@ -6,6 +6,7 @@ const ENV_KEYS = [
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
   'GITNEXUS_EMBEDDING_DIMS',
+  'GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE',
 ] as const;
 
 /** 384d mock vector matching the default schema dimensions. */
@@ -256,6 +257,50 @@ describe('HTTP embedding backend', () => {
 
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(results).toHaveLength(70);
+    });
+
+    it('uses GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE for HTTP request splitting', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE = '100';
+
+      const makeResp = (n: number) => ({
+        ok: true,
+        json: async () => ({ data: Array.from({ length: n }, () => ({ embedding: mockVec })) }),
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce(makeResp(100)).mockResolvedValueOnce(makeResp(30)),
+      );
+
+      const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+      const results = await embedBatch(Array.from({ length: 130 }, (_, i) => `text ${i}`));
+
+      const requestSizes = (fetch as any).mock.calls.map(([, options]: any[]) => {
+        const body = JSON.parse(options.body);
+        return body.input.length;
+      });
+      expect(requestSizes).toEqual([100, 30]);
+      expect(results).toHaveLength(130);
+    });
+
+    it('rejects non-numeric GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE values', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE = '64abc';
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: mockVec }] }),
+        }),
+      );
+
+      const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+      await expect(embedBatch(['text'])).rejects.toThrow(
+        'GITNEXUS_EMBEDDING_HTTP_BATCH_SIZE must be a positive integer',
+      );
     });
 
     it('forwards dimensions in every batch when splitting large inputs', async () => {
