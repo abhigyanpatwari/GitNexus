@@ -138,7 +138,12 @@ export async function shutdownMetrics(): Promise<void> {
   }
 }
 
-/** hasError must be a boolean; never accept the error string — cypher errors echo user input. */
+/**
+ * hasError must be a boolean; never accept the error string — cypher errors echo user input.
+ * Contract: hasError returns true for any result the caller considers a failed outcome.
+ * If a future handler returns a structured error envelope without throwing, hasError must
+ * still classify it, otherwise the bytes histogram will sample it as success data.
+ */
 export async function observe<T>(
   tool: string,
   fn: () => Promise<T>,
