@@ -117,6 +117,7 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+<<<<<<< fix/no-stats-flag-effective
   /**
    * Stats inclusion in AGENTS.md and CLAUDE.md.
    *
@@ -129,6 +130,14 @@ export interface AnalyzeOptions {
    * default-on case.
    */
   stats?: boolean;
+=======
+  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  noStats?: boolean;
+  /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
+  skipSkills?: boolean;
+  /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
+  indexOnly?: boolean;
+>>>>>>> main
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
   /**
@@ -159,6 +168,24 @@ export interface AnalyzeOptions {
   embeddingSubBatchSize?: string;
   embeddingDevice?: string;
 }
+
+/**
+ * Whether the post-index skill step should run.
+ *
+ * The gated block does two things in sequence: (1) generates the community
+ * skill files from `--skills`, and (2) re-runs `generateAIContextFiles` so
+ * AGENTS.md/CLAUDE.md can reference the freshly written skills. Both are
+ * suppressed together — `--index-only` drops the entire step, not just the
+ * community-skill write. Name retained for the test contract; see call site
+ * in `analyzeCommand` for the AGENTS.md/CLAUDE.md re-generation it also gates.
+ *
+ * Kept as a pure helper so the `--index-only --skills` contract is unit-tested
+ * without booting the full analyze pipeline (#742 review).
+ */
+export const shouldGenerateCommunitySkillFiles = (
+  options: Pick<AnalyzeOptions, 'skills' | 'indexOnly'> | undefined,
+  pipelineResult: unknown,
+): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
@@ -254,6 +281,18 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 
   console.log('\n  GitNexus Analyzer\n');
+
+  // `--index-only` is the stronger contract — it suppresses every form of file
+  // injection, including community skill writes that `--skills` would normally
+  // produce. Surface the override explicitly so users don't wonder why a
+  // pipeline re-index ran but no skill files appeared. The pipeline still
+  // re-runs (see `force: options?.force || options?.skills` below); the warning
+  // is purely about the dropped post-index write step.
+  if (options?.indexOnly && options?.skills) {
+    console.log(
+      '  Note: --index-only overrides --skills; community skill files will not be written.\n',
+    );
+  }
 
   let repoPath: string;
   if (inputPath) {
@@ -409,6 +448,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
+    const skipAll = options?.indexOnly;
+    const skipAgentsMd = skipAll || options?.skipAgentsMd;
+    const skipSkills = skipAll || options?.skipSkills;
     const result = await runFullAnalysis(
       repoPath,
       {
@@ -420,6 +462,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
+<<<<<<< fix/no-stats-flag-effective
         skipAgentsMd: options?.skipAgentsMd,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
@@ -427,6 +470,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // undefined every time, so the flag was a no-op on the markdown
         // rewrite path before this fix. See #1477.
         noStats: options?.stats === false,
+=======
+        skipAgentsMd,
+        skipSkills,
+        noStats: options?.noStats,
+>>>>>>> main
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -471,8 +519,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // a healthy index.
     await assertAnalysisFinalized(repoPath);
 
-    // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    // Skill generation (CLI-only, uses pipeline result from analysis).
+    // Gated so `--index-only --skills` skips community skill writes too
+    // (`shouldGenerateCommunitySkillFiles` — see unit test).
+    if (shouldGenerateCommunitySkillFiles(options, result.pipelineResult)) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
@@ -512,9 +562,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
+<<<<<<< fix/no-stats-flag-effective
             // See note above (#1477): commander stores --no-stats as
             // `options.stats === false`, not as `options.noStats`.
             { skipAgentsMd: options?.skipAgentsMd, noStats: options?.stats === false },
+=======
+            { skipAgentsMd, skipSkills, noStats: options?.noStats },
+>>>>>>> main
           );
         }
       } catch {
