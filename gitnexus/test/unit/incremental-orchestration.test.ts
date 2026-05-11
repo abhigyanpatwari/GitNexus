@@ -114,7 +114,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  it('second run after a source edit takes the incremental path (not full rebuild) and clears the dirty flag', async () => {
+  it('second run after a comment-only edit takes the incremental path, clears the dirty flag, and preserves graph stats exactly', async () => {
     const repo = await setupMiniRepo();
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -122,8 +122,12 @@ describe('runFullAnalysis — incremental orchestration', () => {
       const { storagePath } = getStoragePaths(repo.dbPath);
       const firstMeta = await loadMeta(storagePath);
 
-      // Modify a source file — body-only edit is enough to register a
-      // content-hash change.
+      // Modify a source file with a COMMENT-ONLY edit — by construction
+      // this changes the content hash (driving the incremental code path)
+      // without changing any symbol, scope binding, call edge, import,
+      // or community membership. Therefore every graph-stat invariant
+      // (files / nodes / edges / communities / processes) MUST be
+      // bit-identical to the first run. Anything else is a regression.
       const target = path.join(repo.dbPath, 'src', 'logger.ts');
       const before = await readFile(target, 'utf-8');
       await writeFile(target, before + '\n// touched by test\n', 'utf-8');
@@ -146,13 +150,76 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(secondMeta!.fileHashes?.['src/logger.ts']).not.toBe(
         firstMeta!.fileHashes?.['src/logger.ts'],
       );
-      // Stats should still be populated.
-      expect(secondMeta!.stats?.files).toBeGreaterThan(0);
-      expect(secondMeta!.stats?.nodes).toBeGreaterThan(0);
+      // Exact-equality stats invariant. DoD §2.7: avoid bounds-only
+      // assertions that would mask a regression dropping half the graph.
+      expect(secondMeta!.stats?.files).toBe(firstMeta!.stats?.files);
+      expect(secondMeta!.stats?.nodes).toBe(firstMeta!.stats?.nodes);
+      expect(secondMeta!.stats?.edges).toBe(firstMeta!.stats?.edges);
+      expect(secondMeta!.stats?.communities).toBe(firstMeta!.stats?.communities);
+      expect(secondMeta!.stats?.processes).toBe(firstMeta!.stats?.processes);
     } finally {
       await repo.cleanup();
     }
   }, 300_000);
+
+  it('incremental output is byte-equivalent to a full rebuild (incremental ≡ --force on the same repo state)', async () => {
+    // The central correctness contract of this PR: an incremental run
+    // and a full rebuild from the same repo state must produce identical
+    // graph stats. We exercise it end-to-end:
+    //
+    //   1. setup mini-repo + run analyze (populates the index)
+    //   2. edit one source file (comment-only — same graph)
+    //   3. run incremental analyze → record secondMeta
+    //   4. run analyze --force from the same state → record forceMeta
+    //   5. assert every stats invariant is exactly equal.
+    //
+    // Steps 3 and 4 share the same on-disk file contents, so any
+    // divergence is purely an artifact of the writeback strategy. If
+    // any invariant differs, the PR's load-bearing claim is violated.
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      // Step 1: initial index.
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      // Step 2: comment-only edit, same as the test above.
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      const original = await readFile(target, 'utf-8');
+      await writeFile(target, original + '\n// equivalence test touch\n', 'utf-8');
+
+      // Step 3: incremental writeback for the edited file.
+      const incremental = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(incremental.alreadyUpToDate).toBeUndefined();
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const secondMeta = await loadMeta(storagePath);
+      expect(secondMeta).not.toBeNull();
+
+      // Step 4: force a full rebuild from the SAME on-disk file state.
+      const forced = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, force: true },
+        { onProgress: () => {} },
+      );
+      expect(forced.alreadyUpToDate).toBeUndefined();
+      const forceMeta = await loadMeta(storagePath);
+      expect(forceMeta).not.toBeNull();
+
+      // Step 5: exact-equality across every stat. `toEqual` would also
+      // work but `toBe` per-field makes a failure pinpoint the field.
+      expect(secondMeta!.stats?.files).toBe(forceMeta!.stats?.files);
+      expect(secondMeta!.stats?.nodes).toBe(forceMeta!.stats?.nodes);
+      expect(secondMeta!.stats?.edges).toBe(forceMeta!.stats?.edges);
+      expect(secondMeta!.stats?.communities).toBe(forceMeta!.stats?.communities);
+      expect(secondMeta!.stats?.processes).toBe(forceMeta!.stats?.processes);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
 
   it('a stale incrementalInProgress flag at startup forces a full rebuild that clears it', async () => {
     const repo = await setupMiniRepo();
