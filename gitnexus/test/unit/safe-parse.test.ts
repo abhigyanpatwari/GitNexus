@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
-import { parseSourceSafe } from '../../src/core/tree-sitter/safe-parse.js';
+import { parseSourceSafe, ParseTimeoutError } from '../../src/core/tree-sitter/safe-parse.js';
 
 const makeParser = (): Parser => {
   const p = new Parser();
@@ -70,5 +70,36 @@ describe('parseSourceSafe', () => {
     const tree = parseSourceSafe(makeParser(), large);
     expect(tree.rootNode.hasError).toBe(false);
     expect(tree.rootNode.endIndex).toBe(large.length);
+  });
+
+  describe('GITNEXUS_PARSE_TIMEOUT_MICROS opt-in', () => {
+    const ORIGINAL = process.env.GITNEXUS_PARSE_TIMEOUT_MICROS;
+    afterEach(() => {
+      if (ORIGINAL === undefined) delete process.env.GITNEXUS_PARSE_TIMEOUT_MICROS;
+      else process.env.GITNEXUS_PARSE_TIMEOUT_MICROS = ORIGINAL;
+    });
+
+    it('is a no-op when the env var is unset (backward compatible)', () => {
+      delete process.env.GITNEXUS_PARSE_TIMEOUT_MICROS;
+      const tree = parseSourceSafe(makeParser(), 'x = 1\n');
+      expect(tree.rootNode.hasError).toBe(false);
+    });
+
+    it('throws ParseTimeoutError when parsing exceeds the configured timeout', () => {
+      // 1 microsecond is below any real parse latency — tree-sitter aborts
+      // immediately and returns null, which the wrapper converts to a throw.
+      process.env.GITNEXUS_PARSE_TIMEOUT_MICROS = '1';
+      const src = buildSource(64 * 1024);
+      expect(() => parseSourceSafe(makeParser(), src)).toThrowError(ParseTimeoutError);
+    });
+
+    it('resets the parser timeout after each call so reuse is unaffected', () => {
+      const parser = makeParser();
+      process.env.GITNEXUS_PARSE_TIMEOUT_MICROS = '1';
+      expect(() => parseSourceSafe(parser, buildSource(64 * 1024))).toThrow();
+      delete process.env.GITNEXUS_PARSE_TIMEOUT_MICROS;
+      const tree = parseSourceSafe(parser, 'x = 1\n');
+      expect(tree.rootNode.hasError).toBe(false);
+    });
   });
 });
