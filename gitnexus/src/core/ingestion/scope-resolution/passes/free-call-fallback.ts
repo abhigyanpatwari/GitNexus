@@ -73,7 +73,7 @@ export function emitFreeCallFallback(
       // the caller does not import the target package. Same-package calls are
       // caught by findCallableBindingInScope above before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
-        fnDef = pickUniqueGlobalCallable(site.name, model, scopes);
+        fnDef = pickUniqueGlobalCallable(site.name, model, scopes, site.arity);
       }
       if (fnDef === undefined) continue;
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
@@ -107,6 +107,7 @@ function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
   scopes: ScopeResolutionIndexes,
+  callArity?: number,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
@@ -120,6 +121,15 @@ function pickUniqueGlobalCallable(
     scopeDefs.push(def);
   }
   if (scopeDefs.length === 1) return scopeDefs[0];
+
+  // When multiple scope-index candidates exist, attempt arity narrowing
+  // before falling back to the semantic-model lookup. This handles
+  // registry-primary languages where the model is not populated for the
+  // migrated language's files (call-processor skips them).
+  if (scopeDefs.length > 1 && callArity !== undefined) {
+    const arityMatch = narrowByArity(scopeDefs, callArity);
+    if (arityMatch !== undefined) return arityMatch;
+  }
 
   const defs: SymbolDefinition[] = [];
   const seen = new Set<string>();
@@ -135,7 +145,35 @@ function pickUniqueGlobalCallable(
   push(model.symbols.lookupCallableByName(name));
   push(model.methods.lookupMethodByName(name));
 
-  return defs.length === 1 ? defs[0] : undefined;
+  if (defs.length === 1) return defs[0];
+
+  // When multiple candidates exist and the call site has a known arity,
+  // narrow by parameter count.
+  if (defs.length > 1 && callArity !== undefined) {
+    const arityMatch = narrowByArity(defs, callArity);
+    if (arityMatch !== undefined) return arityMatch;
+  }
+
+  return undefined;
+}
+
+/**
+ * Narrow a list of callable candidates by call-site arity.
+ * A def is compatible when `requiredParameterCount <= arity <= parameterCount`.
+ * Defs with `parameterCount === undefined` (variadic/unknown) are always kept.
+ * Returns the single compatible def, or `undefined` when zero or multiple match.
+ */
+function narrowByArity(
+  defs: readonly SymbolDefinition[],
+  callArity: number,
+): SymbolDefinition | undefined {
+  const compatible = defs.filter((d) => {
+    const total = d.parameterCount;
+    if (total === undefined) return true; // unknown arity — keep
+    const required = d.requiredParameterCount ?? total;
+    return required <= callArity && callArity <= total;
+  });
+  return compatible.length === 1 ? compatible[0] : undefined;
 }
 
 function logicalCallableKey(def: SymbolDefinition): string {

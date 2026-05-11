@@ -5,12 +5,22 @@
  * and standard export/import resolution. PHP files can use a variety of
  * extensions from legacy versions through modern PHP 8.
  */
+import {
+  emitPhpScopeCaptures,
+  interpretPhpImport,
+  interpretPhpTypeBinding,
+  phpArityCompatibility,
+  phpMergeBindings,
+  resolvePhpImportTarget,
+  phpBindingScopeFor,
+  phpImportOwningScope,
+  phpReceiverBinding,
+} from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { defineLanguage } from '../language-provider.js';
-import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -240,41 +250,6 @@ function isPhpRouteFile(filePath: string): boolean {
 export const phpProvider = defineLanguage({
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
-  entryPointPatterns: [
-    /Controller$/,
-    /^handle$/,
-    /^execute$/,
-    /^boot$/,
-    /^register$/,
-    /^__invoke$/,
-    /^(index|show|store|update|destroy|create|edit)$/,
-    /^(get|post|put|delete|patch)[A-Z]/,
-    /^run$/,
-    /^fire$/,
-    /^dispatch$/,
-    /Service$/,
-    /Repository$/,
-    /^find$/,
-    /^findAll$/,
-    /^save$/,
-    /^delete$/,
-  ],
-  astFrameworkPatterns: [
-    {
-      framework: 'laravel',
-      entryPointMultiplier: 3.0,
-      reason: 'php-route-attribute',
-      patterns: [
-        'Route::get',
-        'Route::post',
-        'Route::put',
-        'Route::delete',
-        'Route::resource',
-        'Route::apiResource',
-        '#[Route(',
-      ],
-    },
-  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: PHP_QUERIES,
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
@@ -289,4 +264,18 @@ export const phpProvider = defineLanguage({
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
+  emitScopeCaptures: emitPhpScopeCaptures,
+  interpretImport: interpretPhpImport,
+  interpretTypeBinding: interpretPhpTypeBinding,
+  // LanguageProvider uses (def, callsite); phpArityCompatibility uses (def, callsite) — same.
+  arityCompatibility: phpArityCompatibility,
+  // LanguageProvider adapter: (parsedImport, workspaceIndex) → string | null
+  resolveImportTarget: resolvePhpImportTarget,
+  // mergeBindings on LanguageProvider: (scope, bindings) — ignore scope id,
+  // delegate to phpMergeBindings which uses binding origin tiers.
+  mergeBindings: (_scope, bindings) => [...phpMergeBindings(bindings)],
+  bindingScopeFor: phpBindingScopeFor,
+  importOwningScope: phpImportOwningScope,
+  receiverBinding: phpReceiverBinding,
 });
