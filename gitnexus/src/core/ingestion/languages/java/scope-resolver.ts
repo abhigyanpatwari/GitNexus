@@ -1,6 +1,36 @@
 /**
  * Java `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
  * the generic `runScopeResolution` orchestrator (RFC #909 Ring 3).
+ *
+ * ## Registry-primary parity status
+ *
+ * Java is **not** in `MIGRATED_LANGUAGES` — the scope-resolution
+ * registry runs in shadow mode only.  Parity in forced registry mode
+ * (`REGISTRY_PRIMARY_JAVA=1`) is 143/172 (83%).  The 29 gaps fall into:
+ *
+ *   - switch pattern binding / sealed-class exhaustiveness
+ *   - Map.values() / entrySet() iteration type propagation
+ *   - assignment / method chain return-type propagation across files
+ *   - virtual dispatch / interface default methods
+ *
+ * These are the same category of advanced-resolution gaps seen in prior
+ * migrations (Python, C#, Go).  Parity is below the ≥99% flip threshold
+ * per RFC §6.4.
+ *
+ * **CI visibility:** Because Java is absent from `MIGRATED_LANGUAGES`,
+ * the parity CI workflow (`ci-scope-parity.yml`) does not run Java in
+ * either `REGISTRY_PRIMARY_JAVA=0` or `=1` mode.  Regressions in forced
+ * mode are only visible via manual `REGISTRY_PRIMARY_JAVA=1 npx vitest
+ * run java.test.ts`.  A tracking issue should be opened to monitor the
+ * 29-failure baseline and add a non-required CI step before flip.
+ *
+ * ### Known flip-blockers (must fix before adding to MIGRATED_LANGUAGES)
+ *
+ *   - Varargs arity: fixed-prefix count is now preserved, but no
+ *     integration fixture exercises the 0-arg rejection path yet.
+ *   - Static import resolution: `import static X.Y.m` now correctly
+ *     resolves to `X/Y.java` (the class), not `X/Y/m.java` (the member).
+ *     Edge cases with nested classes may remain.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
