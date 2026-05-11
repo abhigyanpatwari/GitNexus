@@ -248,10 +248,18 @@ function pickConstructorOrClass(
 
 /** Walk up from the call-site scope to the enclosing class scope,
  *  pick a method member by name with overload narrowing on arity +
- *  argument types. Returns undefined if there's no enclosing class
- *  or no matching method. Used for implicit-this calls inside a
- *  class body where multiple overloads share the call name. */
-function pickImplicitThisOverload(
+ *  argument types. Returns undefined if there's no enclosing class,
+ *  no matching method, OR narrowing leaves multiple compatible
+ *  candidates — in the multi-candidate case, picking
+ *  `candidates[0]` would emit a high-confidence CALLS edge whose
+ *  target depends on registration order rather than a defensible
+ *  resolution. Mirrors `pickUniqueGlobalCallable`'s uniqueness check
+ *  in the same file (Codex PR #1497 review, finding 2).
+ *
+ *  Exported for unit testing — language-agnostic logic, exercised
+ *  via synthetic stubs in `pick-implicit-this-overload.test.ts`. The
+ *  production call site is `applyFreeCallFallback` immediately above. */
+export function pickImplicitThisOverload(
   site: {
     readonly inScope: ScopeId;
     readonly name: string;
@@ -284,6 +292,11 @@ function pickImplicitThisOverload(
   if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 
+  // Narrow on arity + argument types. Require a UNIQUE survivor —
+  // ambiguous narrowing (multiple compatible candidates with no
+  // disambiguating signal) leaves the call unresolved rather than
+  // routing to an arbitrary first overload by registration order.
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  if (candidates.length !== 1) return undefined;
   return candidates[0];
 }
