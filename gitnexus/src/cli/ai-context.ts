@@ -28,6 +28,7 @@ interface RepoStats {
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
   noStats?: boolean;
+  skipSkills?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -94,6 +95,7 @@ function generateGitNexusContent(
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
   noStats?: boolean,
+  skipSkills?: boolean,
 ): string {
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -105,14 +107,26 @@ function generateGitNexusContent(
           .join('\n')
       : '';
 
-  const skillsTable = `| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
+  // Standard skill rows reference files installed by installSkills(). When
+  // --skip-skills suppresses that install, these rows must be omitted — else
+  // AGENTS.md/CLAUDE.md would direct agents to read files that don't exist.
+  // Community skills (generatedRows) live in .claude/skills/generated/ and
+  // are independent of --skip-skills, so they remain when present.
+  const standardSkillsRows = skipSkills
+    ? ''
+    : `| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
 | Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
 | Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
 | Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
 | Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |`;
+
+  const tableBody = [standardSkillsRows, generatedRows].filter(Boolean).join('\n');
+  const skillsTable = tableBody
+    ? `| Task | Read this skill file |
+|------|---------------------|
+${tableBody}`
+    : '';
 
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
@@ -153,11 +167,15 @@ This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** 
 
 `
     : ''
-}## CLI
+}${
+    skillsTable
+      ? `## CLI
 
 ${skillsTable}
 
-${GITNEXUS_END_MARKER}`;
+`
+      : ''
+  }${GITNEXUS_END_MARKER}`;
 }
 
 /**
@@ -319,6 +337,7 @@ export async function generateAIContextFiles(
     generatedSkills,
     groupNames,
     options?.noStats,
+    options?.skipSkills,
   );
   const createdFiles: string[] = [];
 
@@ -337,10 +356,14 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
-  if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  // Install skills to .claude/skills/gitnexus/ (unless --skip-skills)
+  if (!options?.skipSkills) {
+    const installedSkills = await installSkills(repoPath);
+    if (installedSkills.length > 0) {
+      createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    }
+  } else {
+    createdFiles.push('.claude/skills/gitnexus/ (skipped via --skip-skills)');
   }
 
   return { files: createdFiles };

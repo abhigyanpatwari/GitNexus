@@ -301,11 +301,15 @@ export const streamAllCSVsToDisk = async (
     'Template',
     'Module',
   ] as const;
+  const propertyHeader = 'id,name,filePath,startLine,endLine,content,description,declaredType';
   const multiLangWriters = new Map<string, BufferedCSVWriter>();
   for (const t of MULTI_LANG_TYPES) {
     multiLangWriters.set(
       t,
-      new BufferedCSVWriter(path.join(csvDir, `${t.toLowerCase()}.csv`), multiLangHeader),
+      new BufferedCSVWriter(
+        path.join(csvDir, `${t.toLowerCase()}.csv`),
+        t === 'Property' ? propertyHeader : multiLangHeader,
+      ),
     );
   }
 
@@ -478,6 +482,9 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.endLine, -1),
                 escapeCSVField(content),
                 escapeCSVField(node.properties.description || ''),
+                ...(node.label === 'Property'
+                  ? [escapeCSVField(node.properties.declaredType || '')]
+                  : []),
               ].join(','),
             );
           }

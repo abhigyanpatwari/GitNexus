@@ -27,6 +27,7 @@ import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
 // init, progress bar, console redirection) can monkey-patch it. The
@@ -118,6 +119,10 @@ export interface AnalyzeOptions {
   skipAgentsMd?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
+  /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
+  skipSkills?: boolean;
+  /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
+  indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
   /**
@@ -148,6 +153,24 @@ export interface AnalyzeOptions {
   embeddingSubBatchSize?: string;
   embeddingDevice?: string;
 }
+
+/**
+ * Whether the post-index skill step should run.
+ *
+ * The gated block does two things in sequence: (1) generates the community
+ * skill files from `--skills`, and (2) re-runs `generateAIContextFiles` so
+ * AGENTS.md/CLAUDE.md can reference the freshly written skills. Both are
+ * suppressed together — `--index-only` drops the entire step, not just the
+ * community-skill write. Name retained for the test contract; see call site
+ * in `analyzeCommand` for the AGENTS.md/CLAUDE.md re-generation it also gates.
+ *
+ * Kept as a pure helper so the `--index-only --skills` contract is unit-tested
+ * without booting the full analyze pipeline (#742 review).
+ */
+export const shouldGenerateCommunitySkillFiles = (
+  options: Pick<AnalyzeOptions, 'skills' | 'indexOnly'> | undefined,
+  pipelineResult: unknown,
+): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
@@ -243,6 +266,18 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 
   console.log('\n  GitNexus Analyzer\n');
+
+  // `--index-only` is the stronger contract — it suppresses every form of file
+  // injection, including community skill writes that `--skills` would normally
+  // produce. Surface the override explicitly so users don't wonder why a
+  // pipeline re-index ran but no skill files appeared. The pipeline still
+  // re-runs (see `force: options?.force || options?.skills` below); the warning
+  // is purely about the dropped post-index write step.
+  if (options?.indexOnly && options?.skills) {
+    console.log(
+      '  Note: --index-only overrides --skills; community skill files will not be written.\n',
+    );
+  }
 
   let repoPath: string;
   if (inputPath) {
@@ -398,6 +433,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
+    const skipAll = options?.indexOnly;
+    const skipAgentsMd = skipAll || options?.skipAgentsMd;
+    const skipSkills = skipAll || options?.skipSkills;
     const result = await runFullAnalysis(
       repoPath,
       {
@@ -409,7 +447,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
+        skipAgentsMd,
+        skipSkills,
         noStats: options?.noStats,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
@@ -455,8 +494,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     // a healthy index.
     await assertAnalysisFinalized(repoPath);
 
-    // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    // Skill generation (CLI-only, uses pipeline result from analysis).
+    // Gated so `--index-only --skills` skips community skill writes too
+    // (`shouldGenerateCommunitySkillFiles` — see unit test).
+    if (shouldGenerateCommunitySkillFiles(options, result.pipelineResult)) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
@@ -496,7 +537,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
+            { skipAgentsMd, skipSkills, noStats: options?.noStats },
           );
         }
       } catch {
@@ -571,6 +612,26 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `    2. Inspect ${err.storagePath} - a leftover lbug.wal indicates an aborted write.\n` +
           `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
           `       and attach the trace to the GitNexus issue tracker.\n\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // HF download failure — show clean guidance without the raw stack trace.
+    // Checked before writeFatalToStderr so the user sees one focused message
+    // rather than a stack-trace dump followed by a second remediation block.
+    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+      cliError(
+        `  The embedding model could not be downloaded.\n` +
+          `  huggingface.co may be unreachable from your network\n` +
+          `  (e.g. behind a corporate proxy or a regional firewall).\n` +
+          `  Suggestions:\n` +
+          `    1. Set HF_ENDPOINT to a mirror and retry:\n` +
+          `         HF_ENDPOINT=https://hf-mirror.com npx gitnexus analyze --embeddings\n` +
+          `         (Windows: set HF_ENDPOINT=https://hf-mirror.com && npx gitnexus analyze --embeddings)\n` +
+          `    2. Check your proxy / VPN settings.\n` +
+          `    3. Once downloaded the model is cached — future runs work offline.\n`,
+        { recoveryHint: 'hf-endpoint-unreachable' },
       );
       process.exitCode = 1;
       return;
