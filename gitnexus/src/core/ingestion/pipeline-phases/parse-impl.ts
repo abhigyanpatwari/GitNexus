@@ -17,7 +17,10 @@ import {
   enrichExportedTypeMap,
   type BindingEntry,
 } from '../binding-accumulator.js';
-import { processParsing } from '../parsing-processor.js';
+import { processParsing, mergeChunkResults } from '../parsing-processor.js';
+import { fileContentHash, computeChunkHash } from '../../../storage/parse-cache.js';
+import type { ParseWorkerResult } from '../workers/parse-worker.js';
+import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
   processImports,
   processImportsFromExtracted,
@@ -72,8 +75,21 @@ import { extractORMQueriesInline } from './orm-extraction.js';
 import { logger } from '../../logger.js';
 // ── Constants ──────────────────────────────────────────────────────────────
 
-/** Max bytes of source content to load per parse chunk. */
-const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20MB
+/** Max bytes of source content to load per parse chunk.
+ *
+ * Memory bound for the worker pool dispatch + a granularity knob for
+ * the parse cache. A single file change invalidates only its enclosing
+ * chunk, so smaller budgets → finer-grained invalidation.
+ *
+ * Override via GITNEXUS_CHUNK_BYTE_BUDGET (bytes) — the default of 2MB
+ * gives a useful invalidation floor (~1/N chunks on a multi-MB repo)
+ * while keeping worker dispatch overhead under 5% on cold runs.
+ */
+const CHUNK_BYTE_BUDGET = (() => {
+  const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
+  if (Number.isFinite(env) && env > 0) return env;
+  return 2 * 1024 * 1024;
+})();
 
 // ── Main parse + resolve function ──────────────────────────────────────────
 
@@ -119,6 +135,11 @@ export async function runChunkedParseAndResolve(
    *  source. See plan
    *  docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 4). */
   scopeTreeCache: ASTCache;
+  /** Worker-produced ParsedFile artifacts aggregated across chunks.
+   *  Threaded into scope-resolution as a re-extract cache so the warm-
+   *  cache analyze run can skip the dominant `extractParsedFile` cost
+   *  (otherwise ~58s on a 1000-file repo). */
+  parsedFiles: import('gitnexus-shared').ParsedFile[];
 }> {
   const ctx = createResolutionContext();
   const symbolTable = ctx.model.symbols;
@@ -141,6 +162,15 @@ export async function runChunkedParseAndResolve(
       `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
     );
   }
+
+  // Sort parseableScanned alphabetically for stable chunk membership
+  // across runs (Finding 4). Without this, filesystem-scan order can
+  // shift between runs (notably on macOS APFS where directory entry
+  // order can change after modifications) — different files in the
+  // same chunk → different chunk hash → cache miss even when no file
+  // content changed. The cache also becomes platform-specific: a
+  // Linux-built cache misses on macOS for the same repo.
+  parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const totalParseable = parseableScanned.length;
 
@@ -271,6 +301,20 @@ export async function runChunkedParseAndResolve(
   const deferredWorkerHeritage: ExtractedHeritage[] = [];
   const deferredConstructorBindings: FileConstructorBindings[] = [];
   const deferredAssignments: ExtractedAssignment[] = [];
+  // Aggregated per-file ParsedFile artifacts produced by workers' calls
+  // to `extractParsedFile`. Threaded through to the scope-resolution
+  // phase so it can SKIP its own re-extraction on cache hits — this is
+  // the second-half of the parse-cache speedup since scope-resolution's
+  // re-parse otherwise dominates the warm-cache wall-clock time.
+  const allParsedFiles: import('gitnexus-shared').ParsedFile[] = [];
+
+  // Incremental parse cache (Option B): chunk-level content-addressed.
+  // When the chunk's (filePath, content-hash) signature matches a prior
+  // run's, replay the cached ParseWorkerResult[] instead of dispatching
+  // to workers. See gitnexus/src/storage/parse-cache.ts.
+  const parseCache = options?.parseCache;
+  let chunkCacheHits = 0;
+  let chunkCacheMisses = 0;
 
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -281,29 +325,89 @@ export async function runChunkedParseAndResolve(
         .filter((p) => chunkContents.has(p))
         .map((p) => ({ path: p, content: chunkContents.get(p)! }));
 
-      const chunkWorkerData = await processParsing(
-        graph,
-        chunkFiles,
-        symbolTable,
-        astCache,
-        scopeTreeCache,
-        (current, _total, filePath) => {
-          const globalCurrent = filesParsedSoFar + current;
-          const parsingProgress = 20 + (globalCurrent / totalParseable) * 62;
-          onProgress({
-            phase: 'parsing',
-            percent: Math.round(parsingProgress),
-            message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
-            detail: filePath,
-            stats: {
-              filesProcessed: globalCurrent,
-              totalFiles: totalParseable,
-              nodesCreated: graph.nodeCount,
-            },
-          });
-        },
-        workerPool,
-      );
+      // Compute the chunk's content-hash signature (if cache available).
+      let chunkHash: string | null = null;
+      if (parseCache) {
+        const entries = chunkFiles.map((f) => ({
+          filePath: f.path,
+          contentHash: fileContentHash(f.content),
+        }));
+        chunkHash = computeChunkHash(entries);
+      }
+
+      let chunkWorkerData: WorkerExtractedData | null;
+      const cachedRaw = chunkHash ? parseCache!.entries.get(chunkHash) : undefined;
+
+      // Track every chunk hash we touched so the orchestrator can
+      // prune stale entries (chunks whose composition no longer
+      // corresponds to a live chunk in the current scan) before saving.
+      if (parseCache && chunkHash) parseCache.usedKeys.add(chunkHash);
+
+      if (cachedRaw && cachedRaw.length > 0) {
+        // Cache hit: replay the cached worker output through the same
+        // merge logic the live worker path uses.
+        chunkCacheHits++;
+        chunkWorkerData = mergeChunkResults(graph, symbolTable, cachedRaw);
+        if (isDev) {
+          logger.info(
+            `📦 parse-cache HIT: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash!.slice(0, 8)})`,
+          );
+        }
+        // Progress update so UI advances even on a cache hit.
+        const cachedFiles = chunkFiles.length;
+        onProgress({
+          phase: 'parsing',
+          percent: Math.round(20 + ((filesParsedSoFar + cachedFiles) / totalParseable) * 62),
+          message: `Parsing chunk ${chunkIdx + 1}/${numChunks} (cache)...`,
+          stats: {
+            filesProcessed: filesParsedSoFar + cachedFiles,
+            totalFiles: totalParseable,
+            nodesCreated: graph.nodeCount,
+          },
+        });
+      } else {
+        // Cache miss: dispatch to workers, capture the raw results, store
+        // them under the chunk hash for the next run.
+        chunkCacheMisses++;
+        const rawResults: ParseWorkerResult[] = [];
+        chunkWorkerData = await processParsing(
+          graph,
+          chunkFiles,
+          symbolTable,
+          astCache,
+          scopeTreeCache,
+          (current, _total, filePath) => {
+            const globalCurrent = filesParsedSoFar + current;
+            const parsingProgress = 20 + (globalCurrent / totalParseable) * 62;
+            onProgress({
+              phase: 'parsing',
+              percent: Math.round(parsingProgress),
+              message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
+              detail: filePath,
+              stats: {
+                filesProcessed: globalCurrent,
+                totalFiles: totalParseable,
+                nodesCreated: graph.nodeCount,
+              },
+            });
+          },
+          workerPool,
+          // Capture raw results only when we have a cache to write to —
+          // otherwise we'd retain extra arrays for nothing.
+          parseCache && chunkHash ? rawResults : undefined,
+        );
+        // Persist the raw results for this chunk hash. Sequential path
+        // doesn't populate rawResults (it writes directly to graph), so
+        // small repos without worker pool simply don't cache. That's fine.
+        if (parseCache && chunkHash && rawResults.length > 0) {
+          parseCache.entries.set(chunkHash, rawResults);
+          if (isDev) {
+            logger.info(
+              `📦 parse-cache MISS+store: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash.slice(0, 8)})`,
+            );
+          }
+        }
+      }
 
       const chunkBasePercent = 20 + (filesParsedSoFar / totalParseable) * 62;
 
@@ -349,6 +453,12 @@ export async function runChunkedParseAndResolve(
         for (const item of chunkWorkerData.heritage) deferredWorkerHeritage.push(item);
         for (const item of chunkWorkerData.constructorBindings)
           deferredConstructorBindings.push(item);
+        // Aggregate worker-produced ParsedFile artifacts so scope-
+        // resolution can use them as a re-extraction cache (skips its
+        // own tree-sitter re-parse on warm runs).
+        if (chunkWorkerData.parsedFiles?.length) {
+          for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
+        }
         if (chunkWorkerData.assignments?.length) {
           for (const item of chunkWorkerData.assignments) deferredAssignments.push(item);
         }
@@ -420,6 +530,12 @@ export async function runChunkedParseAndResolve(
 
       filesParsedSoFar += chunkFiles.length;
       astCache.clear();
+    }
+
+    if (isDev && parseCache && (chunkCacheHits > 0 || chunkCacheMisses > 0)) {
+      logger.info(
+        `📦 parse-cache summary: ${chunkCacheHits} chunk hit(s), ${chunkCacheMisses} miss(es) across ${numChunks} chunk(s)`,
+      );
     }
 
     const fullWorkerHeritageMap =
@@ -621,5 +737,12 @@ export async function runChunkedParseAndResolve(
     // chunk-local `astCache` above is intentionally NOT exposed
     // because parse-impl clears it between chunks.
     scopeTreeCache,
+    // Per-file ParsedFile artifacts produced by workers' calls to
+    // `extractParsedFile`. Empty when only the sequential path ran
+    // (sequential doesn't go through the worker, and extracts ParsedFile
+    // inline rather than emitting it). Consumed by scope-resolution as
+    // a re-extraction cache: when the file's ParsedFile is here,
+    // scope-resolution skips its own `extractParsedFile` call.
+    parsedFiles: allParsedFiles,
   };
 }

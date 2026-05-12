@@ -165,7 +165,16 @@ export function emitReceiverBoundCalls(
       if (provider.isSuperReceiver(receiverName)) {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
-          const ancestors = scopes.methodDispatch.mroFor(enclosingClass.nodeId);
+          // For super-receiver dispatch (`parent::`, `base.`, `super()`),
+          // walk the inheritance-only ancestor chain when the language
+          // exposes it. PHP's `parent::` semantically bypasses composed
+          // traits; other languages without mixin augmentation have no
+          // `extendsOnlyMroFor` and fall back to `mroFor`.
+          const extendsOnly = scopes.methodDispatch.extendsOnlyMroFor;
+          const ancestors =
+            extendsOnly !== undefined
+              ? extendsOnly(enclosingClass.nodeId)
+              : scopes.methodDispatch.mroFor(enclosingClass.nodeId);
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of ancestors) {
             memberDef = findOwnedMember(ownerId, memberName, model);
@@ -283,7 +292,21 @@ export function emitReceiverBoundCalls(
         let memberDef: SymbolDefinition | undefined;
         for (const ownerId of chain) {
           memberDef = findOwnedMember(ownerId, memberName, model);
-          if (memberDef !== undefined) break;
+          if (memberDef !== undefined) {
+            // The MRO chain is most-derived-first ([classDef, ...ancestors]).
+            // If the most-derived definition is arity-incompatible with the
+            // call site, PHP throws ArgumentCountError at runtime — it does
+            // NOT silently dispatch to an ancestor. Terminate the chain walk
+            // so no edge is emitted, rather than falling through to an
+            // arity-compatible ancestor (which would be a false positive).
+            if (
+              narrowOverloadCandidates([memberDef], site.arity, site.argumentTypes).length === 0
+            ) {
+              memberDef = undefined;
+              break;
+            }
+            break;
+          }
         }
         if (memberDef !== undefined) {
           const reason =
