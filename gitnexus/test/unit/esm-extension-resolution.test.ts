@@ -181,13 +181,7 @@ describe('ESM extension resolution — path aliases with .js extensions', () => 
 
   it('resolves @/component.jsx to src/component.tsx via alias', () => {
     const ctx = makeCtx(['src/index.ts', 'src/component.tsx']);
-    const result = resolveWithAlias(
-      'src/index.ts',
-      '@/component.jsx',
-      ctx,
-      [['@/', 'src/']],
-      '.',
-    );
+    const result = resolveWithAlias('src/index.ts', '@/component.jsx', ctx, [['@/', 'src/']], '.');
     expect(result).toBe('src/component.tsx');
   });
 
