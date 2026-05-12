@@ -151,3 +151,67 @@ describe('stripJsExtension', () => {
   it('returns null for .ts', () => expect(stripJsExtension('foo/bar.ts')).toBeNull());
   it('returns null for no extension', () => expect(stripJsExtension('foo/bar')).toBeNull());
 });
+
+describe('ESM extension resolution — path aliases with .js extensions', () => {
+  function resolveWithAlias(
+    currentFile: string,
+    importPath: string,
+    ctx: ReturnType<typeof makeCtx>,
+    aliases: [string, string][],
+    baseUrl = '.',
+  ): string | null {
+    return resolveImportPath(
+      currentFile,
+      importPath,
+      ctx.allFilesSet,
+      ctx.files,
+      ctx.normalized,
+      ctx.cache,
+      SupportedLanguages.TypeScript,
+      { aliases, baseUrl },
+      ctx.index,
+    );
+  }
+
+  it('resolves @/utils.js to src/utils.ts via alias', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/utils.ts']);
+    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, [['@/', 'src/']], '.');
+    expect(result).toBe('src/utils.ts');
+  });
+
+  it('resolves @/component.jsx to src/component.tsx via alias', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/component.tsx']);
+    const result = resolveWithAlias(
+      'src/index.ts',
+      '@/component.jsx',
+      ctx,
+      [['@/', 'src/']],
+      '.',
+    );
+    expect(result).toBe('src/component.tsx');
+  });
+
+  it('prefers actual .js file over TS fallback in alias resolution', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/utils.js', 'src/utils.ts']);
+    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, [['@/', 'src/']], '.');
+    expect(result).toBe('src/utils.js');
+  });
+
+  it('resolves alias with baseUrl prefix', () => {
+    const ctx = makeCtx(['app/src/index.ts', 'app/src/helpers/token.ts']);
+    const result = resolveWithAlias(
+      'app/src/index.ts',
+      '~/helpers/token.js',
+      ctx,
+      [['~/', 'src/']],
+      'app',
+    );
+    expect(result).toBe('app/src/helpers/token.ts');
+  });
+
+  it('returns null when alias .js import has no matching source', () => {
+    const ctx = makeCtx(['src/index.ts']);
+    const result = resolveWithAlias('src/index.ts', '@/missing.js', ctx, [['@/', 'src/']], '.');
+    expect(result).toBeNull();
+  });
+});
