@@ -170,12 +170,6 @@ export async function runChunkedParseAndResolve(
   // same chunk → different chunk hash → cache miss even when no file
   // content changed. The cache also becomes platform-specific: a
   // Linux-built cache misses on macOS for the same repo.
-  //
-  // Note: this re-introduces a pre-existing order-dependency in Ruby
-  // cross-file resolution (`user.address.save → Address#save` resolves
-  // differently depending on file processing order). That bug is
-  // independent — the sort surfaces it but doesn't cause it. Tracking
-  // separately rather than letting the parse cache pay the cost.
   parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const totalParseable = parseableScanned.length;

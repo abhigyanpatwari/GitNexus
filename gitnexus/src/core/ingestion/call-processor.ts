@@ -860,6 +860,67 @@ export const processCalls = async (
     prepared.push({ file, language, provider, tree, matches, parentMap, typeEnv });
   }
 
+  // ── Property-registration pre-pass ──
+  // Register all properties (e.g. Ruby attr_accessor) in the FieldRegistry
+  // BEFORE the resolution loop. This ensures cross-file field-type lookups
+  // (e.g. `user.address.save → Address#save`) succeed regardless of file
+  // processing order. Without this pre-pass, field type disambiguation fails
+  // when the declaring file is processed AFTER the consuming file.
+  for (const { file, language, provider, matches } of prepared) {
+    const callRouter = provider.callRouter;
+    if (!callRouter) continue;
+    matches.forEach((match) => {
+      const captureMap: Record<string, any> = {};
+      match.captures.forEach((c) => (captureMap[c.name] = c.node));
+      if (!captureMap['call']) return;
+      const callNameNode = captureMap['call.name'];
+      if (!callNameNode) return;
+      const routed = callRouter(callNameNode.text, captureMap['call']);
+      if (!routed || routed.kind !== 'properties') return;
+      const fileId = generateId('File', file.path);
+      const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
+      for (const item of routed.items) {
+        const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+        graph.addNode({
+          id: nodeId,
+          label: 'Property',
+          properties: {
+            name: item.propName,
+            filePath: file.path,
+            startLine: item.startLine,
+            endLine: item.endLine,
+            language,
+            isExported: true,
+            description: item.accessorType,
+          },
+        });
+        ctx.model.symbols.add(file.path, item.propName, nodeId, 'Property', {
+          ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
+          ...(item.declaredType ? { declaredType: item.declaredType } : {}),
+        });
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+        graph.addRelationship({
+          id: relId,
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        });
+        if (propEnclosingClassId) {
+          graph.addRelationship({
+            id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
+            sourceId: propEnclosingClassId,
+            targetId: nodeId,
+            type: 'HAS_PROPERTY',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
+      }
+    });
+  }
+
   // ── Resolution loop: verify constructor bindings and resolve calls ──
   // The accumulator (if present) is now fully populated from the preparation
   // loop above, so verifyConstructorBindings sees all provider bindings
@@ -1053,47 +1114,8 @@ export const processCalls = async (
             return;
 
           case 'properties': {
-            const fileId = generateId('File', file.path);
-            const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
-            for (const item of routed.items) {
-              const nodeId = generateId('Property', `${file.path}:${item.propName}`);
-              graph.addNode({
-                id: nodeId,
-                label: 'Property',
-                properties: {
-                  name: item.propName,
-                  filePath: file.path,
-                  startLine: item.startLine,
-                  endLine: item.endLine,
-                  language,
-                  isExported: true,
-                  description: item.accessorType,
-                },
-              });
-              ctx.model.symbols.add(file.path, item.propName, nodeId, 'Property', {
-                ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
-                ...(item.declaredType ? { declaredType: item.declaredType } : {}),
-              });
-              const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-              graph.addRelationship({
-                id: relId,
-                sourceId: fileId,
-                targetId: nodeId,
-                type: 'DEFINES',
-                confidence: 1.0,
-                reason: '',
-              });
-              if (propEnclosingClassId) {
-                graph.addRelationship({
-                  id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
-                  sourceId: propEnclosingClassId,
-                  targetId: nodeId,
-                  type: 'HAS_PROPERTY',
-                  confidence: 1.0,
-                  reason: '',
-                });
-              }
-            }
+            // Properties already registered in the pre-pass above.
+            // Skip to avoid duplicate nodes/edges.
             return;
           }
 
