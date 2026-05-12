@@ -250,7 +250,13 @@ describe('Step 5: arity filter', () => {
     );
   });
 
-  it('keeps incompatible candidates when no compatible candidate exists (soft penalty)', () => {
+  it('drops every candidate when ALL are incompatible AND none unknown (hard rejection)', () => {
+    // Post-commit af9af4a9 (PR #1497 / U1): the old soft-penalty fallback
+    // that kept incompatible candidates with `arityMatchIncompatible`
+    // weight was deliberately removed at this layer too. When every
+    // candidate is definitively arity-incompatible, the registry returns
+    // no resolution — matching the PHP variadic case `f(int $req, ...$rest)`
+    // called with zero args.
     const save3 = mkDef({
       nodeId: 'def:save-three',
       type: 'Method',
@@ -268,8 +274,41 @@ describe('Step 5: arity filter', () => {
     const results = buildMethodRegistry(ctx).lookup('save', 'scope:m', {
       callsite: { arity: 1 },
     });
-    expect(results).toHaveLength(1);
-    expect(evidenceOfKind(results[0]!, 'arity-match')?.weight).toBe(
+    expect(results).toHaveLength(0);
+  });
+
+  it('keeps incompatible candidates when at least one verdict is unknown (soft penalty)', () => {
+    // The soft-rescue path is still active when at least one candidate's
+    // arity verdict is 'unknown' — that signals missing metadata rather
+    // than a definitive mismatch, so all candidates (including incompatible
+    // ones) are preserved with their evidence weights for downstream
+    // tie-breaking.
+    const save3 = mkDef({
+      nodeId: 'def:save-three',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      parameterCount: 3,
+    });
+    const saveUnknown = mkDef({
+      nodeId: 'def:save-unknown',
+      type: 'Method',
+      qualifiedName: 'User.save',
+    });
+    const mod = mkScope({
+      id: 'scope:m',
+      parent: null,
+      bindings: { save: [mkBinding(save3, 'local'), mkBinding(saveUnknown, 'local')] },
+    });
+    const ctx = makeCtx([mod], [save3, saveUnknown], {
+      arity: (_callsite, def) => (def.nodeId === 'def:save-unknown' ? 'unknown' : 'incompatible'),
+    });
+    const results = buildMethodRegistry(ctx).lookup('save', 'scope:m', {
+      callsite: { arity: 1 },
+    });
+    expect(results).toHaveLength(2);
+    const incompat = results.find((r) => r.def.nodeId === 'def:save-three');
+    expect(incompat).toBeDefined();
+    expect(evidenceOfKind(incompat!, 'arity-match')?.weight).toBe(
       EvidenceWeights.arityMatchIncompatible,
     );
   });

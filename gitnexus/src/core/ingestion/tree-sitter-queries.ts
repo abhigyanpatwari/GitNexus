@@ -1020,6 +1020,16 @@ export const PHP_QUERIES = `
     (use_declaration
       [(name) (qualified_name)] @heritage.trait))) @heritage
 
+; ── Heritage: trait uses another trait (transitive trait composition) ────────
+; PHP allows a trait body to contain "use OtherTrait;". The trait-uses-trait
+; IMPLEMENTS edge is required by buildPhpMro to compute the full transitive
+; trait closure (depth 3+ chains).
+(trait_declaration
+  name: (name) @heritage.class
+  body: (declaration_list
+    (use_declaration
+      [(name) (qualified_name)] @heritage.trait))) @heritage
+
 ; PHP HTTP consumers: file_get_contents('/path'), curl_init('/path')
 (function_call_expression
   function: (name) @_php_http (#match? @_php_http "^(file_get_contents|curl_init)$")
