@@ -132,6 +132,9 @@ export const resolveImportPath = (
 
     // TypeScript ESM: imports use .js/.jsx/.mjs/.cjs but source files are
     // .ts/.tsx/.mts/.cts. Strip the JS-family extension and re-resolve.
+    // NOTE: This fallback only applies to relative imports. Path alias imports
+    // (e.g. @/utils.js via tsconfig paths) do not yet strip .js extensions —
+    // that is a known limitation tracked for follow-up.
     if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
       const stripped = stripJsExtension(basePath);
       if (stripped !== null) {

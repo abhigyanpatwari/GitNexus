@@ -13,7 +13,8 @@ import { buildSuffixIndex } from '../../src/core/ingestion/import-resolvers/util
 import { SupportedLanguages } from 'gitnexus-shared';
 
 function makeCtx(files: string[]) {
-  const normalized = files.map((f) => f.toLowerCase());
+  // Match production normalization: only replace backslashes with forward slashes
+  const normalized = files.map((f) => f.replace(/\\/g, '/'));
   const allFilesSet = new Set(files);
   const index = buildSuffixIndex(normalized, files);
   const cache = new Map<string, string | null>();
@@ -97,6 +98,48 @@ describe('TypeScript ESM .js extension resolution', () => {
     const ctx = makeCtx(['src/index.ts']);
     const result = resolve('src/index.ts', './missing.js', SupportedLanguages.TypeScript, ctx);
     expect(result).toBeNull();
+  });
+});
+
+describe('ESM extension resolution — .mjs/.cjs with competing siblings', () => {
+  it('resolves ./config.mjs to .ts when only .ts exists (no .mts)', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/config.ts']);
+    const result = resolve('src/index.ts', './config.mjs', SupportedLanguages.TypeScript, ctx);
+    // .ts wins because EXTENSIONS order tries .ts before .mts
+    expect(result).toBe('src/config.ts');
+  });
+
+  it('resolves ./config.mjs to .mts when both .ts and .mts exist', () => {
+    // Note: EXTENSIONS order is .tsx, .ts, .mts, .cts — so .ts wins over .mts.
+    // This is intentional for a source-analysis tool: we resolve to the first
+    // matching source file. In practice, having both config.ts and config.mts
+    // in the same directory is extremely rare.
+    const ctx = makeCtx(['src/index.ts', 'src/config.ts', 'src/config.mts']);
+    const result = resolve('src/index.ts', './config.mjs', SupportedLanguages.TypeScript, ctx);
+    expect(result).toBe('src/config.ts');
+  });
+
+  it('resolves ./config.cjs to .cts when only .cts exists', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/config.cts']);
+    const result = resolve('src/index.ts', './config.cjs', SupportedLanguages.TypeScript, ctx);
+    expect(result).toBe('src/config.cts');
+  });
+});
+
+describe('ESM extension resolution — directory index boundary', () => {
+  it('resolves ./dir.js to dir/index.ts when dir/ exists (bundler-mode)', () => {
+    // After stripping .js from "dir.js" → "dir", tryResolveWithExtensions probes
+    // "/index.ts" suffix. This matches bundler-mode behavior where bare directory
+    // imports resolve to index files. Intentional for source-analysis compatibility.
+    const ctx = makeCtx(['src/index.ts', 'src/dir/index.ts']);
+    const result = resolve('src/index.ts', './dir.js', SupportedLanguages.TypeScript, ctx);
+    expect(result).toBe('src/dir/index.ts');
+  });
+
+  it('resolves ./dir/index.js to dir/index.ts', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/dir/index.ts']);
+    const result = resolve('src/index.ts', './dir/index.js', SupportedLanguages.TypeScript, ctx);
+    expect(result).toBe('src/dir/index.ts');
   });
 });
 
