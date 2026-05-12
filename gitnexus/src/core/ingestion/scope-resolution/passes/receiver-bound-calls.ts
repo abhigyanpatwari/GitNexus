@@ -293,15 +293,17 @@ export function emitReceiverBoundCalls(
         for (const ownerId of chain) {
           memberDef = findOwnedMember(ownerId, memberName, model);
           if (memberDef !== undefined) {
-            // Reject when arity is definitively incompatible (e.g., PHP
-            // f(int $req, ...$rest) called with zero args). Falls through
-            // to the next owner in the chain — a subclass may shadow with
-            // a different arity.
+            // The MRO chain is most-derived-first ([classDef, ...ancestors]).
+            // If the most-derived definition is arity-incompatible with the
+            // call site, PHP throws ArgumentCountError at runtime — it does
+            // NOT silently dispatch to an ancestor. Terminate the chain walk
+            // so no edge is emitted, rather than falling through to an
+            // arity-compatible ancestor (which would be a false positive).
             if (
               narrowOverloadCandidates([memberDef], site.arity, site.argumentTypes).length === 0
             ) {
               memberDef = undefined;
-              continue;
+              break;
             }
             break;
           }

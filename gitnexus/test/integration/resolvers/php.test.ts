@@ -2035,3 +2035,61 @@ describe('PHP fully-qualified type-hint resolution (Codex #1497)', () => {
     expect(callsFromTo('saveLocal', 'record', 'app/Other/User.php').length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// MRO arity-mismatch: most-derived override with incompatible arity must NOT
+// fall through to an arity-compatible ancestor (PHP throws ArgumentCountError
+// at runtime). See receiver-bound-calls.ts Case 2.
+// ---------------------------------------------------------------------------
+
+describe('PHP MRO arity-mismatch fallthrough', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-mro-arity-mismatch'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, targetFilePath: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === targetFilePath,
+    );
+
+  it('detects ParentModel, ChildModel, Orphan, and Caller classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'Caller',
+      'ChildModel',
+      'Orphan',
+      'ParentModel',
+    ]);
+  });
+
+  it('arity-incompatible most-derived override does NOT fall through to ParentModel::method', () => {
+    // Pre-fix bug: `$child->method(1)` with ChildModel::method(int,int) and
+    // ParentModel::method(int) would emit a false CALLS edge to ParentModel::method.
+    // Post-fix: zero CALLS edges from callIncompatible for this site.
+    expect(callsFromTo('callIncompatible', 'method', 'app/Models/ParentModel.php').length).toBe(0);
+    expect(callsFromTo('callIncompatible', 'method', 'app/Models/ChildModel.php').length).toBe(0);
+  });
+
+  it('arity-compatible most-derived override emits exactly one CALLS edge to ChildModel::compat', () => {
+    // Happy path: ChildModel::compat(int) matches the call site $child->compat(1).
+    expect(callsFromTo('callCompatible', 'compat', 'app/Models/ChildModel.php').length).toBe(1);
+    expect(callsFromTo('callCompatible', 'compat', 'app/Models/ParentModel.php').length).toBe(0);
+  });
+
+  it('arity-incompatible class with no parent emits zero CALLS edges (regression check)', () => {
+    // Orphan::method(int,int) called with one arg, no parent class — must remain
+    // unresolved both before and after the fix.
+    expect(callsFromTo('callNoParent', 'method', 'app/Models/Orphan.php').length).toBe(0);
+  });
+
+  it('arity-compatible most-derived call still resolves to ChildModel::method (happy path)', () => {
+    // Ensure the fix did not break compatible-arity resolution.
+    expect(callsFromTo('callMostDerivedHappy', 'method', 'app/Models/ChildModel.php').length).toBe(
+      1,
+    );
+    expect(callsFromTo('callMostDerivedHappy', 'method', 'app/Models/ParentModel.php').length).toBe(
+      0,
+    );
+  });
+});
