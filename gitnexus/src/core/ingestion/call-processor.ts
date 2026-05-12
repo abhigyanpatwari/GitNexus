@@ -112,15 +112,19 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
  * stays scoped to a single `processCalls` invocation rather than leaking
  * across analyze runs (worker uses module-level caching because each worker
  * process is short-lived; the main thread is not).
+ *
+ * Cache key is `${filePath}:${classNode.startIndex}` — startIndex alone is a
+ * per-file byte offset, so almost every Ruby/Python file's leading class lands
+ * at byte 0 and would collide across files in the shared map.
  */
 const getFieldInfo = (
   classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
-  cache: Map<number, Map<string, FieldInfo>>,
+  cache: Map<string, Map<string, FieldInfo>>,
 ): Map<string, FieldInfo> | undefined => {
   if (!provider.fieldExtractor) return undefined;
-  const cacheKey = classNode.startIndex;
+  const cacheKey = `${context.filePath}:${classNode.startIndex}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
   const result = provider.fieldExtractor.extract(classNode, context);
@@ -922,7 +926,7 @@ export const processCalls = async (
   // worker-path block in parse-worker.ts (kind === 'properties') — any
   // divergence between the two paths breaks the `incremental ≡ --force`
   // invariant once a repo crosses the worker threshold between runs.
-  const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+  const fieldInfoCache = new Map<string, Map<string, FieldInfo>>();
   for (const { file, language, provider, matches, typeEnv } of prepared) {
     const callRouter = provider.callRouter;
     if (!callRouter) continue;
