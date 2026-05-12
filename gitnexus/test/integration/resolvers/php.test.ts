@@ -2237,3 +2237,61 @@ describe('PHP dynamic dispatch — negative regression suite', () => {
     expect(reads.length).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// phpEmitUnresolvedReceiverEdges exact-required-arity gate (Finding 8 / U4).
+// The 0.6-confidence fallback for untyped receivers now requires argCount
+// to exactly match the candidate's required parameter count for fixed-
+// arity candidates. Variadic candidates keep the relaxed argCount >=
+// required semantics.
+// ---------------------------------------------------------------------------
+
+describe('PHP unresolved-receiver fallback exact-required-arity gate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-unresolved-receiver-arity'),
+      () => {},
+    );
+  }, 60000);
+
+  const fallbackEdgeFromTo = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === source && c.target === target && c.targetFilePath === 'app/Models/Handler.php',
+    );
+
+  it('detects Handler and Caller classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Handler');
+    expect(getNodesByLabel(result, 'Class')).toContain('Caller');
+  });
+
+  it('happy path: argCount === required (0===0) emits 0.6 fallback edge', () => {
+    expect(fallbackEdgeFromTo('callHappyPath', 'happyPath').length).toBe(1);
+  });
+
+  it('argCount === required (1===1) on candidate with default param still emits edge', () => {
+    expect(fallbackEdgeFromTo('callDefaultExactRequired', 'withDefault').length).toBe(1);
+  });
+
+  it('argCount > required (2>1) on candidate with default param emits NO edge post-fix', () => {
+    // Pre-fix: first-stage narrowOverloadCandidates accepted (1 <= 2 <= 2).
+    // Post-fix: exact-required gate rejects (2 !== 1).
+    expect(fallbackEdgeFromTo('callDefaultBeyondRequired', 'withDefault').length).toBe(0);
+  });
+
+  it('variadic candidate, argCount === required (1===1) emits edge', () => {
+    expect(fallbackEdgeFromTo('callVariadicAtRequired', 'variadicLog').length).toBe(1);
+  });
+
+  it('variadic candidate, argCount > required (2>1) emits edge (relaxed)', () => {
+    expect(fallbackEdgeFromTo('callVariadicBeyondRequired', 'variadicLog').length).toBe(1);
+  });
+
+  it('variadic candidate, argCount < required (1<2) emits NO edge', () => {
+    expect(fallbackEdgeFromTo('callVariadicBelowRequired', 'variadicLogTwoRequired').length).toBe(
+      0,
+    );
+  });
+});

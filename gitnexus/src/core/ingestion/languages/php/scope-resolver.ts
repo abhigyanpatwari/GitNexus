@@ -303,6 +303,29 @@ function phpEmitUnresolvedReceiverEdges(
         continue;
       }
 
+      // Tighten the fallback further with an EXACT-required-arity gate
+      // (Finding 8 / U4): the first-stage `narrowOverloadCandidates`
+      // accepts any argCount in `min..max` (or `>= min` when variadic),
+      // which over-emits 0.6-confidence edges for common method names
+      // whose only workspace candidate has optional / defaulted params.
+      // For the fallback path only, require argCount === required for
+      // fixed-arity candidates. Variadic candidates keep the relaxed
+      // `argCount >= required` semantics (already enforced by the first-
+      // stage check, so no extra work here).
+      const min = fnDef.requiredParameterCount;
+      const hasVarArgs =
+        fnDef.parameterTypes !== undefined &&
+        fnDef.parameterTypes.some((t) => t === '...' || t.startsWith('...'));
+      if (
+        min !== undefined &&
+        Number.isFinite(site.arity) &&
+        site.arity >= 0 &&
+        !hasVarArgs &&
+        site.arity !== min
+      ) {
+        continue;
+      }
+
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
       if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
