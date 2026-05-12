@@ -128,7 +128,21 @@ export const resolveImportPath = (
 
   if (importPath.startsWith('.')) {
     const resolved = tryResolveWithExtensions(basePath, allFiles);
-    return cache(resolved);
+    if (resolved) return cache(resolved);
+
+    // TypeScript ESM: imports use .js/.jsx/.mjs/.cjs but source files are
+    // .ts/.tsx/.mts/.cts. Strip the JS-family extension and re-resolve.
+    // NOTE: This fallback only applies to relative imports. Path alias imports
+    // (e.g. @/utils.js via tsconfig paths) do not yet strip .js extensions —
+    // that is a known limitation tracked for follow-up.
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const stripped = stripJsExtension(basePath);
+      if (stripped !== null) {
+        return cache(tryResolveWithExtensions(stripped, allFiles));
+      }
+    }
+
+    return cache(null);
   }
 
   // ---- Generic package/absolute import resolution (suffix matching) ----
@@ -181,4 +195,20 @@ export function resolveStandard(
 /** Create a reusable standard-resolution strategy for a given language. */
 export function createStandardStrategy(language: SupportedLanguages): ImportResolverStrategy {
   return (raw, fp, ctx) => resolveStandard(raw, fp, ctx, language);
+}
+
+// ============================================================================
+// ESM extension helpers
+// ============================================================================
+
+/** JS-family extensions that TypeScript ESM maps to TS equivalents. */
+const JS_EXTENSION_PATTERN = /\.(js|jsx|mjs|cjs)$/;
+
+/**
+ * Strip a JS-family extension from a path, returning the stem.
+ * Returns `null` if the path does not end with a JS-family extension.
+ */
+export function stripJsExtension(path: string): string | null {
+  const match = JS_EXTENSION_PATTERN.exec(path);
+  return match ? path.slice(0, -match[0].length) : null;
 }

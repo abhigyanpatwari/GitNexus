@@ -58,6 +58,14 @@ describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
     expect(matches.length).toBe(1);
   });
 
+  it('flushWAL drains and closes the CHECKPOINT result before returning', () => {
+    const flushBody = adapterSource.slice(
+      adapterSource.indexOf('export const flushWAL'),
+      adapterSource.indexOf('export const safeClose'),
+    );
+    expect(flushBody).toMatch(/await drainQueryResult\(checkpointResult\)/);
+  });
+
   it('conn.close() only appears inside safeClose (with eslint-disable)', () => {
     // Every conn.close() in the adapter must live inside safeClose, guarded
     // by the eslint-disable comment. Count occurrences to catch leaks.

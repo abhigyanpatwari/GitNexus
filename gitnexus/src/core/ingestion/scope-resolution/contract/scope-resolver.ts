@@ -387,6 +387,26 @@ export interface ScopeResolver {
   ): Map<string /* DefId */, string[] /* ancestor DefIds */>;
 
   /**
+   * Optional parallel MRO that EXCLUDES mixin-like augmentation (e.g., PHP
+   * traits). Returns the inheritance-only ancestor chain — the same kind
+   * of map as `buildMro` but built only from inheritance edges (EXTENDS).
+   *
+   * Used by the shared super-branch dispatch in `receiver-bound-calls`
+   * so that `parent::method()` walks the inheritance chain only, not the
+   * trait-augmented one. PHP semantics: `parent::` explicitly bypasses
+   * traits, even when a composed trait shadows a same-named parent method.
+   *
+   * Languages without mixin-like semantics leave this undefined — callers
+   * fall back to `buildMro`/`mroFor`, which for those languages is already
+   * the inheritance chain.
+   */
+  readonly buildExtendsOnlyMro?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+  ) => Map<string /* DefId */, string[] /* ancestor DefIds */>;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned
@@ -485,6 +505,26 @@ export interface ScopeResolver {
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional predicate to gate free-call fallback emission by caller-side
+   * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
+   * the caller cannot legally reach — e.g., a PHP function in a different
+   * namespace with no `use function` import, which PHP runtime would treat
+   * as `Call to undefined function`. Returning `false` blocks the candidate;
+   * returning `true` allows it; undefined-default keeps current behavior
+   * (no visibility filtering, equivalent to "all candidates visible").
+   *
+   * The hook receives the caller's `ParsedFile` (so it can consult
+   * `parsedImports`, `moduleScope`, etc.) and the candidate `SymbolDefinition`.
+   * The predicate must be pure: same inputs → same answer.
+   *
+   * Languages without namespace-scoped function resolution leave this undefined.
+   */
+  readonly isCallableVisibleFromCaller?: (ctx: {
+    readonly callerParsed: ParsedFile;
+    readonly candidate: SymbolDefinition;
+  }) => boolean;
+
+  /**
    * Optional post-finalize hook to inject cross-file bindings that
    * aren't modeled via explicit imports. Runs after
    * `buildWorkspaceResolutionIndex` and before
@@ -576,4 +616,32 @@ export interface ScopeResolver {
       readonly treeCache?: { get(filePath: string): unknown };
     },
   ) => void;
+
+  /**
+   * Optional post-resolution pass: emit CALLS edges for member-call sites
+   * whose receiver cannot be typed by the scope chain (no `TypeRef`).
+   * Dynamically-typed languages with untyped/`mixed`/`Any` parameters use
+   * this hook to recover the call edge via workspace-wide method-name
+   * lookup, mirroring what their legacy resolvers did.
+   *
+   * Runs AFTER `emitReceiverBoundCalls` and BEFORE `emitFreeCallFallback`.
+   * Implementations MUST:
+   *   - Skip sites already in `handledSites` (Invariant I2).
+   *   - Add resolved site keys to `handledSites` before returning.
+   *   - Stay narrow: a unique workspace-wide match is the safe baseline.
+   *     Multi-candidate fallbacks should narrow by arity / argument types
+   *     before emitting to keep false-positive rate bounded.
+   *
+   * Returns the number of edges emitted (for telemetry).
+   *
+   * Default: undefined (no unresolved-receiver fallback).
+   */
+  readonly emitUnresolvedReceiverEdges?: (
+    graph: KnowledgeGraph,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    handledSites: Set<string>,
+    model: SemanticModel,
+  ) => number;
 }
