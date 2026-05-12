@@ -218,17 +218,33 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
+  try {
+    await result.close();
+  } catch {
+    // Best-effort cleanup only.
+  }
+};
+
 const drainQueryResult = async (
   queryResult: lbug.QueryResult | lbug.QueryResult[],
 ): Promise<void> => {
   const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+  let firstError: unknown;
+  let hasError = false;
   for (const result of results) {
     try {
       await result.getAll();
+    } catch (err) {
+      if (!hasError) {
+        firstError = err;
+        hasError = true;
+      }
     } finally {
-      await Promise.resolve(result.close()).catch(() => {});
+      await closeQueryResult(result);
     }
   }
+  if (hasError) throw firstError;
 };
 
 const readQueryRows = async (
@@ -236,15 +252,23 @@ const readQueryRows = async (
 ): Promise<any[]> => {
   const results = Array.isArray(queryResult) ? queryResult : [queryResult];
   let rows: any[] = [];
+  let firstError: unknown;
+  let hasError = false;
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     try {
       const resultRows = await result.getAll();
       if (i === 0) rows = resultRows;
+    } catch (err) {
+      if (!hasError) {
+        firstError = err;
+        hasError = true;
+      }
     } finally {
-      await Promise.resolve(result.close()).catch(() => {});
+      await closeQueryResult(result);
     }
   }
+  if (hasError) throw firstError;
   return rows;
 };
 
@@ -830,6 +854,7 @@ export const streamQuery = async (
   const results = Array.isArray(queryResult) ? queryResult : [queryResult];
   const result = results[0];
   let rowCount = 0;
+  let streamError: unknown;
 
   try {
     while (await result.hasNext()) {
@@ -838,13 +863,15 @@ export const streamQuery = async (
       rowCount++;
     }
     return rowCount;
+  } catch (err) {
+    streamError = err;
+    throw err;
   } finally {
     try {
-      await result.close();
-    } catch {
-      // Best-effort cleanup only.
+      await drainQueryResult(results);
+    } catch (err) {
+      if (streamError === undefined) throw err;
     }
-    await drainQueryResult(results.slice(1));
   }
 };
 
