@@ -43,6 +43,16 @@ export function narrowOverloadCandidates(
           const max = d.parameterCount;
           const min = d.requiredParameterCount;
           if (max !== undefined && argCount > max) {
+            // Variadic marker check is C#-specific (the 'params' keyword).
+            // Other languages use their own marker — PHP uses '...' (see
+            // `languages/php/arity-metadata.ts:46`), Python uses '*args'-
+            // shaped metadata that lives outside `parameterTypes` entirely.
+            // This branch is dead code for those languages because they
+            // set `parameterCount = undefined` for variadic functions,
+            // which keeps `max` undefined and skips this check entirely.
+            // Adding new variadic markers here changes behavior for those
+            // other languages too — don't extend without auditing each
+            // adapter's `arity-metadata.ts`. Finding 9 of PR #1497.
             const variadic =
               d.parameterTypes !== undefined &&
               d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));

@@ -43,6 +43,17 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
     }
     if (p.type !== null) types.push(p.type);
   }
+  // PHP variadic marker convention: append the literal '...' string to
+  // `parameterTypes`. This is intentionally DIFFERENT from C#, which uses
+  // the literal 'params' (its source-language keyword). The shared
+  // `narrowOverloadCandidates` pass in `scope-resolution/passes/overload-
+  // narrowing.ts` checks for the C# 'params' marker — that branch is
+  // dead code for PHP because PHP variadic methods set `parameterCount
+  // = undefined` (see line below), which skips the `max !== undefined`
+  // gate that hosts the 'params' check. PHP's actual variadic-aware
+  // arity logic lives in `phpArityCompatibility` (arity.ts) and now
+  // also in `phpEmitUnresolvedReceiverEdges` (scope-resolver.ts), both
+  // of which check `'...'`. Finding 9 of PR #1497 adversarial review.
   if (hasVariadic) types.push('...');
 
   const total = params.length;
