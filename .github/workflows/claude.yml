@@ -158,6 +158,8 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: '*'
           show_full_output: true
+          # Review posts use Bash (`gh`, etc.); default mode asks for approval — impossible in CI.
+          claude_args: '--dangerously-skip-permissions'
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }} --comment'
