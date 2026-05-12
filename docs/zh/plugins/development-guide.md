@@ -1,12 +1,12 @@
-# GitNexus Plugin Development Guide
+# GitNexus 插件开发指南#
 
-## 1. Overview
+## 1. 概述#
 
-The GitNexus plugin system allows developers to extend parsing capabilities, supporting more file types and language features. This guide details how to develop GitNexus plugins.
+GitNexus 插件系统允许开发者扩展解析能力，支持更多文件类型和语言特性。本指南将详细介绍如何开发 GitNexus 插件。
 
-## 2. Plugin Architecture
+## 2. 插件架构#
 
-### 2.1 Core Components
+### 2.1 核心组件#
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -22,43 +22,43 @@ The GitNexus plugin system allows developers to extend parsing capabilities, sup
 └─────────────────────────────────────────────────┘
 ```
 
-### 2.2 Plugin Types
+### 2.2 插件类型#
 
-| Plugin Type | Purpose | Interface |
+| 插件类型 | 作用 | 接口 |
 |---------|------|------|
-| **Parser Plugin** | Parse specific file types | `ParserPlugin` |
-| **Analyzer Plugin** | Analyze code semantics | `AnalyzerPlugin` |
-| **Processor Plugin** | Process specific language features | `ProcessorPlugin` |
-| **Integration Plugin** | Integrate external tools | `IntegrationPlugin` |
+| **解析器插件** | 解析特定文件类型 | `ParserPlugin` |
+| **分析器插件** | 分析代码语义 | `AnalyzerPlugin` |
+| **处理器插件** | 处理特定语言特性 | `ProcessorPlugin` |
+| **集成插件** | 集成外部工具 | `IntegrationPlugin` |
 
-## 3. Environment Setup
+## 3. 环境设置#
 
-### 3.1 Creating a Plugin Project
+### 3.1 创建插件项目#
 
 ```bash
-# Enter the plugins directory
+# 进入插件目录
 cd gitnexus-plugins/
 
-# Create the plugin directory
+# 创建插件目录
 mkdir gitnexus-my-plugin
 cd gitnexus-my-plugin/
 
-# Initialize the project
+# 初始化项目
 npm init -y
 ```
 
-### 3.2 Project Structure
+### 3.2 项目结构#
 
 ```
 gitnexus-my-plugin/
 ├── src/
-│   └── index.ts          # Plugin main file
+│   └── index.ts          # 插件主文件
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
 
-### 3.3 package.json Configuration
+### 3.3 package.json 配置#
 
 ```json
 {
@@ -77,22 +77,22 @@ gitnexus-my-plugin/
 }
 ```
 
-**Note**: From the `gitnexus-plugins/` directory, use `"file:../gitnexus-shared"` to point to the sibling `gitnexus-shared` directory.
+**注意**：从 `gitnexus-plugins/` 目录，使用 `"file:../gitnexus-shared"` 指向同级目录的 `gitnexus-shared`。
 
-Or use `npm link`:
+或者使用 `npm link` 方式：
 
 ```bash
-# First in the gitnexus-shared directory
+# 先在 gitnexus-shared 目录
 cd gitnexus-shared
 npm run build
 npm link
 
-# Then in the plugins directory
+# 然后在插件目录
 cd ../gitnexus-plugins/your-plugin
 npm link gitnexus-shared
 ```
 
-### 3.4 tsconfig.json Configuration
+### 3.4 tsconfig.json 配置#
 
 ```json
 {
@@ -112,9 +112,9 @@ npm link gitnexus-shared
 }
 ```
 
-## 4. Developing a Parser Plugin
+## 4. 开发解析器插件#
 
-### 4.1 Parser Plugin Interface
+### 4.1 解析器插件接口#
 
 ```typescript
 import { ParserPlugin, ParseResult, ParserRegistry, GraphNode, GraphRelationship, createNode, createEdge } from 'gitnexus-shared';
@@ -140,10 +140,10 @@ export class MyParserPlugin implements ParserPlugin {
     const edges: GraphRelationship[] = [];
     
     try {
-      // Parse content
+      // 解析内容
       const parsed = this.parseContent(content, filePath);
       
-      // Generate nodes
+      // 生成节点
       for (const item of parsed.items) {
         const node = createNode('MyNode', {
           name: item.name,
@@ -152,7 +152,7 @@ export class MyParserPlugin implements ParserPlugin {
         });
         nodes.push(node);
         
-        // Generate edges (if there is a parent node)
+        // 生成边（如果有父节点）
         if (item.parent) {
           edges.push(createEdge('CONTAINS', item.parent, node.id, {
             confidence: 1.0,
@@ -180,7 +180,7 @@ export class MyParserPlugin implements ParserPlugin {
   }
   
   private parseContent(content: string, filePath: string): any {
-    // Implement parsing logic
+    // 实现解析逻辑
     return { items: [] };
   }
   
@@ -193,27 +193,27 @@ export class MyParserPlugin implements ParserPlugin {
   }
   
   async dispose(): Promise<void> {
-    // Clean up resources
+    // 清理资源
   }
 }
 
 export default new MyParserPlugin();
 ```
 
-### 4.2 Parse Result Format
+### 4.2 解析结果格式#
 
 ```typescript
 interface ParseResult {
-  /** Nodes generated from parsing */
+  /** 解析生成的节点 */
   nodes: GraphNode[];
   
-  /** Edges generated from parsing */
+  /** 解析生成的边 */
   edges: GraphRelationship[];
   
-  /** Metadata */
+  /** 元数据 */
   metadata: Record<string, any>;
   
-  /** Error message */
+  /** 错误信息 */
   error?: string;
 }
 
@@ -237,9 +237,9 @@ interface GraphRelationship {
 }
 ```
 
-## 5. Developing an Analyzer Plugin
+## 5. 开发分析器插件#
 
-### 5.1 Analyzer Plugin Interface
+### 5.1 分析器插件接口#
 
 ```typescript
 import { 
@@ -258,7 +258,7 @@ export class MyAnalyzerPlugin implements AnalyzerPlugin {
   async analyze(node: any, context: AnalysisContext): Promise<AnalysisResult> {
     const results = [];
     
-    // Analyze node
+    // 分析节点
     if (node.type === 'class_declaration') {
       results.push({
         type: 'my.analyzed_class',
@@ -295,7 +295,7 @@ export class MyAnalyzerPlugin implements AnalyzerPlugin {
 export default new MyAnalyzerPlugin();
 ```
 
-### 5.2 Analysis Context
+### 5.2 分析上下文#
 
 ```typescript
 interface AnalysisContext {
@@ -314,9 +314,9 @@ interface AnalysisConfig {
 }
 ```
 
-## 6. Developing a Processor Plugin
+## 6. 开发处理器插件#
 
-### 6.1 Processor Plugin Interface
+### 6.1 处理器插件接口#
 
 ```typescript
 import { 
@@ -333,14 +333,14 @@ export class MyProcessorPlugin implements ProcessorPlugin {
   priority = 100;
   
   async process(data: any, context: ProcessContext): Promise<any> {
-    // Process data
+    // 处理数据
     const { knowledgeGraph } = context;
     
-    // Add extra nodes and edges
+    // 添加额外的节点和边
     const extraNodes = this.generateExtraNodes(data);
     const extraEdges = this.generateExtraEdges(data);
     
-    // Add extra nodes and edges to the knowledge graph
+    // 将额外节点和边添加到知识图谱
     for (const node of extraNodes) {
       knowledgeGraph.addNode(node);
     }
@@ -371,7 +371,7 @@ export class MyProcessorPlugin implements ProcessorPlugin {
 export default new MyProcessorPlugin();
 ```
 
-### 6.2 Process Context
+### 6.2 处理上下文#
 
 ```typescript
 interface ProcessContext {
@@ -389,9 +389,9 @@ interface ProcessConfig {
 }
 ```
 
-## 7. Developing an Integration Plugin
+## 7. 开发集成插件#
 
-### 7.1 Integration Plugin Interface
+### 7.1 集成插件接口#
 
 ```typescript
 import { 
@@ -409,7 +409,7 @@ export class MyIntegrationPlugin implements IntegrationPlugin {
   
   async execute(data: any, context: IntegrationContext): Promise<IntegrationResult> {
     try {
-      // Execute integration operation
+      // 执行集成操作
       const result = await this.callExternalService(data, context);
       
       return {
@@ -429,7 +429,7 @@ export class MyIntegrationPlugin implements IntegrationPlugin {
   }
   
   private async callExternalService(data: any, context: IntegrationContext): Promise<any> {
-    // Call external service
+    // 调用外部服务
     return {};
   }
   
@@ -441,26 +441,26 @@ export class MyIntegrationPlugin implements IntegrationPlugin {
 export default new MyIntegrationPlugin();
 ```
 
-## 8. Markdown Plugin (Profile System)
+## 8. Markdown 插件（Profile 系统）#
 
-GitNexus provides a powerful Markdown plugin that supports customized parsing of different document types through **Profiles**.
+GitNexus 提供了一个强大的 Markdown 插件，支持通过 **Profile** 对不同类型文档进行定制化解析。
 
-### 8.1 Built-in Profiles
+### 8.1 内置 Profile#
 
-| Profile | Match Condition | Parsed Content |
+| Profile | 匹配条件 | 解析内容 |
 |---------|-----------|----------|
-| `generic` | Default match for all Markdown files | Headings, code blocks, links, images, TODOs, tables |
-| `api-docs` | Contains `@api`/`## API`/`swagger` | Same as above + API-specific parsing |
-| `adr` | Contains `## Status`/`Architecture Decision Record` | Same as above + ADR structure |
+| `generic` | 默认匹配所有 Markdown 文件 | 标题、代码块、链接、图片、TODO、表格 |
+| `api-docs` | 包含 `@api`/`## API`/`swagger` | 同上 + API 特定解析 |
+| `adr` | 包含 `## Status`/`Architecture Decision Record` | 同上 + ADR 结构 |
 
-### 8.2 Custom Profile
+### 8.2 自定义 Profile#
 
-Create `my-profile.ts`:
+创建 `my-profile.ts`：
 
 ```typescript
 import { MarkdownProfile, SectionParser, createNode, GraphNode } from 'gitnexus-shared';
 
-// Custom parser: extract specific sections
+// 自定义解析器：提取特定章节
 class MySectionParser implements SectionParser {
   name = 'my-section';
   
@@ -469,7 +469,7 @@ class MySectionParser implements SectionParser {
     const match = line.match(/^## My Special Section$/);
     if (!match) return null;
     
-    // Extract section content
+    // 提取章节内容
     const contentLines: string[] = [];
     let j = startIndex + 1;
     while (j < lines.length && !lines[j].startsWith('## ')) {
@@ -495,29 +495,29 @@ class MySectionParser implements SectionParser {
   }
 }
 
-// Custom Profile
+// 自定义 Profile
 export const myDocProfile: MarkdownProfile = {
   name: 'my-doc',
   detect: (content: string) => content.includes('## My Special Section'),
   parsers: [new MySectionParser()],
-  priority: 20 // High priority
+  priority: 20 // 高优先级
 };
 ```
 
-### 8.3 Loading a Custom Profile
+### 8.3 加载自定义 Profile#
 
 ```bash
-# Method 1: Load via plugin configuration
+# 方式 1：通过插件配置加载
 gitnexus plugin load ../gitnexus-plugins/markdown-plugin \
   --config '{"customProfiles":["./my-profile.js"]}'
 
-# Method 2: Use built-in profiles
-# (api-docs, adr, etc. are auto-detected)
+# 方式 2：使用已提供的 Profile
+# （api-docs、adr 等会自动检测）
 ```
 
-## 9. Testing Plugins
+## 9. 测试插件#
 
-### 9.1 Unit Testing
+### 9.1 单元测试#
 
 ```typescript
 import { describe, it, expect, beforeEach } from 'jest';
@@ -557,7 +557,7 @@ describe('MyParserPlugin', () => {
 });
 ```
 
-### 9.2 Integration Testing
+### 9.2 集成测试#
 
 ```typescript
 import { describe, it, expect } from 'jest';
@@ -566,12 +566,12 @@ import { loadPlugin, unloadPlugin } from 'gitnexus-core/plugins/plugin-loader';
 
 describe('Plugin Integration', () => {
   beforeEach(async () => {
-    // Load test plugin
+    // 加载测试插件
     await loadPlugin({ pluginPath: './test-plugin' });
   });
   
   afterEach(async () => {
-    // Cleanup
+    // 清理
     unloadPlugin('gitnexus-test-plugin');
   });
   
@@ -587,86 +587,86 @@ describe('Plugin Integration', () => {
 });
 ```
 
-## 10. Debugging Tips
+## 10. 调试技巧#
 
-### 10.1 Enable Debug Mode
+### 10.1 启用调试模式#
 
 ```bash
 GITNEXUS_DEBUG=1 gitnexus analyze
 ```
 
-### 10.2 View Logs
+### 10.2 查看日志#
 
 ```bash
-# View plugin logs
+# 查看插件日志
 cat ~/.gitnexus/logs/plugin.log
 
-# View logs in real time
+# 实时查看日志
 tail -f ~/.gitnexus/logs/plugin.log
 ```
 
-### 10.3 Test a Single Plugin
+### 10.3 测试单个插件#
 
 ```bash
-# Load the plugin
+# 加载插件
 gitnexus plugin load ../gitnexus-plugins/my-plugin/
 
-# Test the plugin
+# 测试插件
 gitnexus analyze --verbose
 
-# Check plugin status
+# 查看插件状态
 gitnexus plugin status
 ```
 
-## 11. Publishing Plugins
+## 11. 发布插件#
 
-### 11.1 Publish to npm
+### 11.1 发布到 npm#
 
 ```bash
-# Log in to npm
+# 登录 npm
 npm login
 
-# Publish
+# 发布
 cd gitnexus-plugins/my-plugin/
 npm publish
 
-# Publish with a specific tag
+# 发布到特定标签
 npm publish --tag beta
 ```
 
-### 11.2 Plugin Naming Conventions
+### 11.2 插件命名规范#
 
-- Parser plugin: `gitnexus-[format]-plugin`
-- Analyzer plugin: `gitnexus-[language]-plugin`
-- Processor plugin: `gitnexus-[feature]-plugin`
-- Integration plugin: `gitnexus-[service]-integration`
+- 解析器插件：`gitnexus-[format]-plugin`
+- 分析器插件：`gitnexus-[language]-plugin`
+- 处理器插件：`gitnexus-[feature]-plugin`
+- 集成插件：`gitnexus-[service]-integration`
 
-Examples:
+示例：
 - `gitnexus-xml-plugin`
 - `gitnexus-java-plugin`
 - `gitnexus-spring-plugin`
 - `gitnexus-github-integration`
 
-## 12. Best Practices
+## 12. 最佳实践#
 
-### 12.1 Performance Optimization
+### 12.1 性能优化#
 
-- **Cache parse results**: Avoid re-parsing the same content
-- **Streaming processing**: Use streaming parsing for large files
-- **Parallel processing**: Utilize Worker threads for parallel processing
-- **Lazy loading**: Load plugin features on demand
+- **缓存解析结果**：避免重复解析相同内容
+- **流式处理**：处理大文件时使用流式解析
+- **并行处理**：利用 Worker 线程并行处理
+- **懒加载**：按需加载插件功能
 
-### 12.2 Error Handling
+### 12.2 错误处理#
 
 ```typescript
 async parse(content: string, filePath: string): Promise<ParseResult> {
   try {
-    // Parse logic
+    // 解析逻辑
   } catch (error) {
-    // Log error
+    // 记录错误
     console.error(`Parse error in ${filePath}:`, error);
     
-    // Return error result
+    // 返回错误结果
     return {
       nodes: [],
       edges: [],
@@ -677,7 +677,7 @@ async parse(content: string, filePath: string): Promise<ParseResult> {
 }
 ```
 
-### 12.3 Configuration Management
+### 12.3 配置管理#
 
 ```typescript
 interface PluginConfig {
@@ -697,13 +697,13 @@ async init(config: PluginConfig = {}): Promise<void> {
 }
 ```
 
-### 12.4 Resource Cleanup
+### 12.4 资源清理#
 
 ```typescript
 private resources: any[] = [];
 
 async dispose(): Promise<void> {
-  // Clean up all resources
+  // 清理所有资源
   for (const resource of this.resources) {
     if (typeof resource.dispose === 'function') {
       resource.dispose();
@@ -711,60 +711,60 @@ async dispose(): Promise<void> {
   }
   this.resources = [];
   
-  // Clear cache
+  // 清理缓存
   this.cache?.clear();
   
-  // Close connections
+  // 关闭连接
   await this.connection?.close();
 }
 ```
 
-## 13. Frequently Asked Questions
+## 13. 常见问题#
 
-### 13.1 Plugin Loading Failure
+### 13.1 插件加载失败#
 
-**Problem**: `Module not found` error when loading a plugin
+**问题**：插件加载时出现 `Module not found` 错误
 
-**Solutions**:
-- Check if plugin dependencies are installed
-- Ensure the plugin path is correct
-- Verify Node.js version compatibility
-- Use `npm link` or `file:` protocol to correctly reference `gitnexus-shared`
+**解决方案**：
+- 检查插件依赖是否安装
+- 确保插件路径正确
+- 验证 Node.js 版本兼容性
+- 使用 `npm link` 或 `file:` 协议正确引用 `gitnexus-shared`
 
-### 13.2 Parsing Performance Issues
+### 13.2 解析性能问题#
 
-**Problem**: Poor performance when parsing large files
+**问题**：解析大文件时性能不佳
 
-**Solutions**:
-- Implement streaming parsing
-- Use Worker threads for parallel processing
-- Enable caching mechanism
+**解决方案**：
+- 实现流式解析
+- 使用 Worker 线程并行处理
+- 启用缓存机制
 
-### 13.3 Plugin Conflicts
+### 13.3 插件冲突#
 
-**Problem**: Multiple plugins handling the same file type
+**问题**：多个插件处理相同文件类型
 
-**Solutions**:
-- Adjust plugin priorities
-- Clarify plugin processing scope
-- Use the `supports` method for precise matching
+**解决方案**：
+- 调整插件优先级
+- 明确插件处理范围
+- 使用 `supports` 方法进行精确匹配
 
-## 14. Related Documentation
+## 14. 相关文档#
 
-- [Plugin System Overview](../gitnexus-plugins/README.md) - View all available plugins
-- [API Reference](api-reference.md) - Complete plugin API documentation
-- [LLM Development Guide](llm-guide.md) - How to use LLMs to assist plugin development
-- [Quick Start](quickstart.md) - Create your first plugin in 5 minutes
-- [Troubleshooting](troubleshooting.md) - Common problem resolution
+- [插件系统总览](../gitnexus-plugins/README.md) - 查看所有可用插件
+- [API 参考](api-reference.md) - 完整的插件 API 文档
+- [LLM 开发指南](llm-guide.md) - 如何使用 LLM 辅助开发插件
+- [快速开始](quickstart.md) - 5分钟创建第一个插件
+- [故障排除](troubleshooting.md) - 常见问题解决
 
-## 15. Contact
+## 15. 联系方式#
 
-- **GitHub Issues**: https://github.com/abhigyanpatwari/GitNexus/issues
-- **Discord**: https://discord.gg/gitnexus
-- **Email**: support@gitnexus.io
+- **GitHub Issues**：https://github.com/abhigyanpatwari/GitNexus/issues
+- **Discord**：https://discord.gg/gitnexus
+- **Email**：support@gitnexus.io
 
 ---
 
-**Version**: 1.1.0
-**Last Updated**: 2026-05-07
-**Maintainer**: GitNexus Team
+**版本**：1.1.0
+**最后更新**：2026-05-07
+**维护者**：GitNexus 团队

@@ -1,21 +1,21 @@
-# XML Parser Plugin Example
+# XML 解析插件示例
 
-## Description
+## 功能描述
 
-This plugin parses XML files, extracts XML elements and attributes, and generates corresponding nodes and edge relationships.
+这个插件用于解析 XML 文件，提取 XML 元素和属性，生成相应的节点和边关系。
 
-## Directory Structure
+## 目录结构
 
 ```
 xml-parser/
 ├── src/
-│   └── index.ts          # Plugin main file
-├── package.json          # Project configuration
-├── tsconfig.json         # TypeScript configuration
-└── README.md             # Plugin documentation
+│   └── index.ts          # 插件主文件
+├── package.json          # 项目配置
+├── tsconfig.json         # TypeScript 配置
+└── README.md             # 插件文档
 ```
 
-## Code Implementation
+## 代码实现
 
 ### src/index.ts
 
@@ -24,27 +24,27 @@ import { ParserPlugin, ParseResult, ParserRegistry, createNode, createEdge } fro
 import { parseString } from 'xml2js';
 
 /**
- * XML Parser Plugin
- * Parses XML files, extracting elements and attributes
+ * XML 解析插件
+ * 解析 XML 文件，提取元素和属性
  */
 export class XmlParserPlugin implements ParserPlugin {
-  /** Plugin name */
+  /** 插件名称 */
   name = 'gitnexus-xml-plugin';
   
-  /** Plugin version */
+  /** 插件版本 */
   version = '1.0.0';
   
-  /** Plugin description */
+  /** 插件描述 */
   description = 'XML file parser plugin for GitNexus';
   
-  /** Supported file extensions */
+  /** 支持的文件扩展名 */
   extensions = ['.xml'];
   
   /**
-   * Parse XML file content
-   * @param content XML file content
-   * @param filePath File path
-   * @returns Parse result
+   * 解析 XML 文件内容
+   * @param content XML 文件内容
+   * @param filePath 文件路径
+   * @returns 解析结果
    */
   async parse(content: string, filePath: string): Promise<ParseResult> {
     return new Promise((resolve) => {
@@ -61,7 +61,7 @@ export class XmlParserPlugin implements ParserPlugin {
         const nodes = [];
         const edges = [];
         
-        // Process XML root element
+        // 处理 XML 根元素
         if (result) {
           const rootKey = Object.keys(result)[0];
           if (rootKey) {
@@ -83,19 +83,19 @@ export class XmlParserPlugin implements ParserPlugin {
   }
   
   /**
-   * Process XML element
-   * @param name Element name
-   * @param value Element value
-   * @param filePath File path
-   * @param parentId Parent element ID
-   * @param nodes Node array
-   * @param edges Edge array
+   * 处理 XML 元素
+   * @param name 元素名称
+   * @param value 元素值
+   * @param filePath 文件路径
+   * @param parentId 父元素 ID
+   * @param nodes 节点数组
+   * @param edges 边数组
    */
   private processXmlElement(name: string, value: any, filePath: string, parentId: string | null, nodes: any[], edges: any[]): void {
-    // Generate element node ID
+    // 生成元素节点 ID
     const elementId = `xml:${filePath}:${name}:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`;
     
-    // Create element node
+    // 创建元素节点
     const elementNode = createNode('XmlElement', {
       name,
       filePath,
@@ -103,7 +103,7 @@ export class XmlParserPlugin implements ParserPlugin {
     });
     nodes.push(elementNode);
     
-    // Create edge from parent to current element
+    // 创建父元素到当前元素的边
     if (parentId) {
       const edge = createEdge('CONTAINS', parentId, elementId, {
         confidence: 1.0,
@@ -112,9 +112,9 @@ export class XmlParserPlugin implements ParserPlugin {
       edges.push(edge);
     }
     
-    // Process element attributes
+    // 处理元素属性
     if (typeof value === 'object' && value !== null) {
-      // Extract attributes
+      // 提取属性
       const attributes = value['$'] || {};
       for (const [attrName, attrValue] of Object.entries(attributes)) {
         const attrId = `xml:${filePath}:attr:${name}:${attrName}`;
@@ -126,7 +126,7 @@ export class XmlParserPlugin implements ParserPlugin {
         });
         nodes.push(attrNode);
         
-        // Create edge from element to attribute
+        // 创建元素到属性的边
         const attrEdge = createEdge('HAS_ATTRIBUTE', elementId, attrId, {
           confidence: 1.0,
           reason: 'XML attribute'
@@ -134,10 +134,10 @@ export class XmlParserPlugin implements ParserPlugin {
         edges.push(attrEdge);
       }
       
-      // Process child elements
+      // 处理子元素
       for (const [childName, childValue] of Object.entries(value)) {
         if (childName !== '$') {
-          // Handle array-form child elements
+          // 处理数组形式的子元素
           if (Array.isArray(childValue)) {
             for (const item of childValue) {
               this.processXmlElement(childName, item, filePath, elementId, nodes, edges);
@@ -148,7 +148,7 @@ export class XmlParserPlugin implements ParserPlugin {
         }
       }
     } else if (value !== undefined) {
-      // Process text content
+      // 处理文本内容
       const textId = `xml:${filePath}:text:${name}`;
       const textNode = createNode('XmlText', {
         value: String(value),
@@ -157,7 +157,7 @@ export class XmlParserPlugin implements ParserPlugin {
       });
       nodes.push(textNode);
       
-      // Create edge from element to text
+      // 创建元素到文本的边
       const textEdge = createEdge('HAS_TEXT', elementId, textId, {
         confidence: 1.0,
         reason: 'XML text content'
@@ -167,39 +167,39 @@ export class XmlParserPlugin implements ParserPlugin {
   }
   
   /**
-   * Register plugin to the parser registry
-   * @param registry Parser registry
+   * 注册插件到解析器注册表
+   * @param registry 解析器注册表
    */
   register(registry: ParserRegistry): void {
     registry.registerParser(this);
   }
   
   /**
-   * Check if file is supported
-   * @param filePath File path
-   * @returns Whether supported
+   * 检查文件是否支持
+   * @param filePath 文件路径
+   * @returns 是否支持
    */
   supports(filePath: string): boolean {
     return filePath.endsWith('.xml');
   }
   
   /**
-   * Initialize plugin
-   * @param config Plugin configuration
+   * 初始化插件
+   * @param config 插件配置
    */
   async init(config: any): Promise<void> {
     console.log(`Initialized ${this.name} with config:`, config);
   }
   
   /**
-   * Clean up resources
+   * 清理资源
    */
   async dispose(): Promise<void> {
     console.log(`Disposed ${this.name}`);
   }
 }
 
-// Export plugin instance
+// 导出插件实例
 export default new XmlParserPlugin();
 ```
 
@@ -481,77 +481,77 @@ MIT
 
 ## Contact
 
-- **GitHub**: https://github.com/gitnexus/gitnexus
-- **Discord**: https://discord.gg/gitnexus
-- **Email**: support@gitnexus.io
+- **GitHub**：https://github.com/gitnexus/gitnexus
+- **Discord**：https://discord.gg/gitnexus
+- **Email**：support@gitnexus.io
 ```
 
-## How to Use
+## 如何使用
 
-### 1. Install Dependencies
+### 1. 安装依赖
 
 ```bash
 cd xml-parser
 npm install
 ```
 
-### 2. Build the Plugin
+### 2. 构建插件
 
 ```bash
 npm run build
 ```
 
-### 3. Install the Plugin
+### 3. 安装插件
 
 ```bash
 npm install -g .
 ```
 
-### 4. Enable the Plugin
+### 4. 启用插件
 
 ```bash
 npx gitnexus plugin enable gitnexus-xml-plugin
 ```
 
-### 5. Analyze a Project
+### 5. 分析项目
 
 ```bash
 npx gitnexus analyze --plugins gitnexus-xml-plugin
 ```
 
-## How the Plugin Works
+## 插件工作原理
 
-1. **File Recognition**: Identifies `.xml` files through the `supports` method
-2. **XML Parsing**: Uses the `xml2js` library to parse XML content
-3. **Node Generation**: Creates nodes for XML elements, attributes, and text
-4. **Edge Generation**: Creates edges for element containment, attribute relationships, and text content
-5. **Result Return**: Returns parse results containing nodes and edges
+1. **文件识别**：通过 `supports` 方法识别 `.xml` 文件
+2. **XML 解析**：使用 `xml2js` 库解析 XML 内容
+3. **节点生成**：为 XML 元素、属性和文本创建节点
+4. **边生成**：创建元素包含、属性关系和文本内容的边
+5. **结果返回**：返回包含节点和边的解析结果
 
-## Extension Suggestions
+## 扩展建议
 
-1. **Support more XML features**: Such as CDATA sections, processing instructions, etc.
-2. **Add XML Schema support**: Validate XML structure against XSD
-3. **Implement caching**: Cache parse results for better performance
-4. **Add configuration options**: Such as whether to ignore whitespace, whether to preserve comments, etc.
-5. **Support XML namespaces**: Better handling of namespace prefixes
+1. **支持更多 XML 特性**：如 CDATA  sections、处理指令等
+2. **添加 XML Schema 支持**：根据 XSD 验证 XML 结构
+3. **实现缓存机制**：缓存解析结果提高性能
+4. **添加配置选项**：如是否忽略空白、是否保留注释等
+5. **支持 XML 命名空间**：更好地处理命名空间前缀
 
-## Troubleshooting
+## 故障排查
 
-### Common Issues
+### 常见问题
 
-1. **Plugin load failure**: Check if dependencies are properly installed
-2. **Parse errors**: Check if XML file format is correct
-3. **Performance issues**: For large XML files, consider implementing streaming parsing
-4. **Memory usage**: For large XML files, you may need to adjust memory limits
+1. **插件加载失败**：检查依赖是否正确安装
+2. **解析错误**：检查 XML 文件格式是否正确
+3. **性能问题**：对于大 XML 文件，考虑实现流式解析
+4. **内存使用**：对于大型 XML 文件，可能需要调整内存限制
 
-### Debugging Tips
+### 调试技巧
 
-1. **Enable debug mode**: `GITNEXUS_DEBUG=1 npx gitnexus analyze`
-2. **View logs**: `~/.gitnexus/logs/plugin.log`
-3. **Test plugin**: `npx gitnexus plugin test gitnexus-xml-plugin`
+1. **启用调试模式**：`GITNEXUS_DEBUG=1 npx gitnexus analyze`
+2. **查看日志**：`~/.gitnexus/logs/plugin.log`
+3. **测试插件**：`npx gitnexus plugin test gitnexus-xml-plugin`
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2026-04-26
-**Maintainer**: GitNexus Team
+**版本**：1.0.0
+**最后更新**：2026-04-26
+**维护者**：GitNexus 团队

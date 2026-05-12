@@ -1,72 +1,72 @@
-# GitNexus Plugin Troubleshooting Guide
+# GitNexus 插件故障排查指南
 
-This guide helps you solve common issues encountered during plugin development and usage.
+本指南帮助您解决插件开发和使用过程中遇到的常见问题。
 
-## Table of Contents
+## 目录
 
-- [Plugin Loading Issues](#plugin-loading-issues)
-- [Parsing Issues](#parsing-issues)
-- [Performance Issues](#performance-issues)
-- [Configuration Issues](#configuration-issues)
-- [Debugging Tips](#debugging-tips)
+- [插件加载问题](#插件加载问题)
+- [解析问题](#解析问题)
+- [性能问题](#性能问题)
+- [配置问题](#配置问题)
+- [调试技巧](#调试技巧)
 
 ---
 
-## Plugin Loading Issues
+## 插件加载问题
 
-### 1. Plugin Load Failure
+### 1. 插件加载失败
 
-**Symptoms**:
+**症状**：
 ```
 Error: Cannot find module 'gitnexus-my-plugin'
 ```
 
-**Possible Causes**:
-- Plugin not properly built
-- Incorrect path
-- Missing dependencies
+**可能原因**：
+- 插件未正确构建
+- 路径不正确
+- 依赖缺失
 
-**Solutions**:
+**解决方案**：
 
 ```bash
-# 1. Ensure the plugin is built
+# 1. 确保插件已构建
 cd /path/to/your/plugin
 npm run build
 
-# 2. Check the path is correct
-# Use absolute path
+# 2. 检查路径是否正确
+# 使用绝对路径
 gitnexus plugin load /absolute/path/to/plugin
 
-# 3. Install dependencies
+# 3. 安装依赖
 cd /path/to/your/plugin
 npm install
 ```
 
-### 2. Dependency Version Conflicts
+### 2. 依赖版本冲突
 
-**Symptoms**:
+**症状**：
 ```
 Error: Cannot find module 'gitnexus-shared'
 ```
 
-**Solutions**:
+**解决方案**：
 
 ```bash
-# Check gitnexus-shared version
+# 检查 gitnexus-shared 版本
 npm list gitnexus-shared
 
-# Install correct version
+# 安装正确版本
 npm install gitnexus-shared@^1.0.0
 ```
 
-### 3. TypeScript Compilation Errors
+### 3. TypeScript 编译错误
 
-**Symptoms**:
+**症状**：
 ```
 error TS2307: Cannot find module 'gitnexus-shared'
 ```
 
-**Solutions**:
+**解决方案**：
 
 ```json
 // tsconfig.json
@@ -80,25 +80,25 @@ error TS2307: Cannot find module 'gitnexus-shared'
 
 ---
 
-## Parsing Issues
+## 解析问题
 
-### 1. Plugin Does Not Recognize File
+### 1. 插件不识别文件
 
-**Symptoms**: Plugin is loaded but file is not being parsed
+**症状**：插件已加载但文件没有被解析
 
-**Diagnostic Steps**:
+**诊断步骤**：
 
 ```bash
-# 1. Confirm plugin supports the file type
+# 1. 确认插件支持该文件类型
 gitnexus plugin list
 
-# 2. Check plugin status
+# 2. 检查插件状态
 gitnexus plugin status
 ```
 
-**Solutions**:
+**解决方案**：
 
-Check the `supports` method:
+检查 `supports` 方法：
 
 ```typescript
 supports(filePath: string): boolean {
@@ -107,13 +107,13 @@ supports(filePath: string): boolean {
 }
 ```
 
-### 2. Parse Result Is Empty
+### 2. 解析结果为空
 
-**Symptoms**: `parse` method returns empty arrays
+**症状**：`parse` 方法返回空数组
 
-**Diagnostic Steps**:
+**诊断步骤**：
 
-Add debug logging:
+添加调试日志：
 
 ```typescript
 async parse(content: string, filePath: string): Promise<ParseResult> {
@@ -131,33 +131,33 @@ async parse(content: string, filePath: string): Promise<ParseResult> {
 }
 ```
 
-### 3. Node ID Conflicts
+### 3. 节点 ID 冲突
 
-**Symptoms**: Duplicate nodes appear in the graph
+**症状**：图中出现重复节点
 
-**Solutions**: Use unique node IDs
+**解决方案**：使用唯一的节点 ID
 
 ```typescript
-// Bad example
+// 错误示例
 const nodeId = `user:${name}`;
 
-// Good example
+// 正确示例
 const nodeId = `user:${filePath}:${name}:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`;
 ```
 
 ---
 
-## Performance Issues
+## 性能问题
 
-### 1. Large File Parsing Timeout
+### 1. 解析大文件超时
 
-**Symptoms**: Timeout when parsing large files
+**症状**：解析大文件时超时
 
-**Solutions**:
+**解决方案**：
 
 ```typescript
 async parse(content: string, filePath: string): Promise<ParseResult> {
-  // Stream-process large files
+  // 流式处理大文件
   if (content.length > 1024 * 1024) { // > 1MB
     return this.parseLargeFile(content, filePath);
   }
@@ -165,7 +165,7 @@ async parse(content: string, filePath: string): Promise<ParseResult> {
 }
 
 private async parseLargeFile(content: string, filePath: string): Promise<ParseResult> {
-  // Process in chunks
+  // 分块处理
   const chunkSize = 64 * 1024; // 64KB
   const chunks = [];
   
@@ -179,11 +179,11 @@ private async parseLargeFile(content: string, filePath: string): Promise<ParseRe
 }
 ```
 
-### 2. High Memory Usage
+### 2. 内存使用过高
 
-**Symptoms**: Memory keeps growing after parsing
+**症状**：解析后内存持续增长
 
-**Solutions**:
+**解决方案**：
 
 ```typescript
 class MyPlugin implements ParserPlugin {
@@ -199,7 +199,7 @@ class MyPlugin implements ParserPlugin {
     
     const result = await this.doParse(content, filePath);
     
-    // LRU Cache
+    // LRU 缓存
     if (this.cache.size >= this.maxCacheSize) {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
@@ -215,11 +215,11 @@ class MyPlugin implements ParserPlugin {
 }
 ```
 
-### 3. Repeated Parsing of Same File
+### 3. 重复解析相同文件
 
-**Symptoms**: Files are being parsed repeatedly
+**症状**：文件被重复解析
 
-**Solutions**: Use caching and incremental parsing
+**解决方案**：使用缓存和增量解析
 
 ```typescript
 class MyPlugin implements ParserPlugin {
@@ -242,16 +242,16 @@ class MyPlugin implements ParserPlugin {
 
 ---
 
-## Configuration Issues
+## 配置问题
 
-### 1. Configuration File Format Error
+### 1. 配置文件格式错误
 
-**Symptoms**:
+**症状**：
 ```
 SyntaxError: Unexpected token
 ```
 
-**Correct Format**:
+**正确格式**：
 
 ```json
 {
@@ -267,34 +267,34 @@ SyntaxError: Unexpected token
 }
 ```
 
-### 2. Plugin Configuration Not Taking Effect
+### 2. 插件配置不生效
 
-**Diagnostic Steps**:
+**诊断步骤**：
 
 ```bash
-# Check configuration file locations
-# Global: ~/.gitnexus/plugins.json
-# Project-level: .gitnexus/plugins.json
+# 检查配置文件位置
+# 全局: ~/.gitnexus/plugins.json
+# 项目级: .gitnexus/plugins.json
 ```
 
-**Solutions**:
+**解决方案**：
 
-Ensure the configuration plugin name matches the actual plugin name:
+确保配置中的插件名称与实际插件名称匹配：
 
 ```typescript
-// Plugin name
+// 插件中的名称
 name = 'gitnexus-my-plugin';
 
-// Configuration file must also use this name
+// 配置文件中也必须使用这个名称
 {
   "name": "gitnexus-my-plugin",
   "enabled": true
 }
 ```
 
-### 3. Environment Variable Configuration
+### 3. 环境变量配置
 
-**Solutions**:
+**解决方案**：
 
 ```typescript
 class MyPlugin implements ParserPlugin {
@@ -307,9 +307,9 @@ class MyPlugin implements ParserPlugin {
 
 ---
 
-## Debugging Tips
+## 调试技巧
 
-### 1. Enable Debug Mode
+### 1. 启用调试模式
 
 ```bash
 # Linux/macOS
@@ -319,19 +319,19 @@ GITNEXUS_DEBUG=1 gitnexus analyze
 $env:GITNEXUS_DEBUG=1; gitnexus analyze
 ```
 
-### 2. View Detailed Logs
+### 2. 查看详细日志
 
 ```bash
-# View logs in real-time
+# 实时查看日志
 tail -f ~/.gitnexus/logs/plugin.log
 
-# View last 100 lines
+# 查看最近 100 行
 tail -n 100 ~/.gitnexus/logs/plugin.log
 ```
 
-### 3. Using VSCode Debugger
+### 3. 使用 VSCode 调试
 
-Create `.vscode/launch.json`:
+创建 `.vscode/launch.json`：
 
 ```json
 {
@@ -351,20 +351,20 @@ Create `.vscode/launch.json`:
 }
 ```
 
-### 4. Test Single File
+### 4. 测试单个文件
 
-Create test script `test-plugin.ts`:
+创建测试脚本 `test-plugin.ts`：
 
 ```typescript
 import { pluginManager } from './src/core/plugins/index.js';
 
 async function test() {
-  // Load plugin
+  // 加载插件
   await pluginManager.loadPlugin({
     pluginPath: './src/plugins/my-plugin'
   });
   
-  // Get parser
+  // 获取解析器
   const parser = pluginManager.parserRegistry.getParser('/path/to/test.file');
   
   if (!parser) {
@@ -372,7 +372,7 @@ async function test() {
     return;
   }
   
-  // Parse file
+  // 解析文件
   const fs = await import('fs');
   const content = fs.readFileSync('/path/to/test.file', 'utf8');
   const result = await parser.parse(content, '/path/to/test.file');
@@ -383,45 +383,45 @@ async function test() {
 test().catch(console.error);
 ```
 
-Run:
+运行：
 
 ```bash
 npx ts-node test-plugin.ts
 ```
 
-### 5. Check Plugin Status
+### 5. 检查插件状态
 
 ```bash
-# List all plugins
+# 列出所有插件
 gitnexus plugin list
 
-# View detailed status
+# 查看详细状态
 gitnexus plugin status
 
-# Test specific file
+# 测试特定文件
 gitnexus analyze --verbose --path /path/to/project
 ```
 
-### 6. Common Error Codes
+### 6. 常见错误代码
 
-| Error Code | Description | Solution |
-|------------|-------------|----------|
-| 1001 | Plugin load failure | Check dependencies and path |
-| 2001 | Parse error | Check file format |
-| 2002 | Unsupported file type | Check supports method |
-| 3001 | Analysis error | Check AST structure |
-| 4001 | Processing error | Check processing logic |
-
----
-
-## Getting Help
-
-If the above methods cannot resolve your issue:
-
-1. Browse [GitHub Issues](https://github.com/gitnexus/gitnexus/issues)
-2. Join the [Discord Community](https://discord.gg/gitnexus)
-3. Send an email to support@gitnexus.io
+| 错误代码 | 描述 | 解决方案 |
+|---------|------|----------|
+| 1001 | 插件加载失败 | 检查依赖和路径 |
+| 2001 | 解析错误 | 检查文件格式 |
+| 2002 | 不支持的文件类型 | 检查 supports 方法 |
+| 3001 | 分析错误 | 检查 AST 结构 |
+| 4001 | 处理错误 | 检查处理逻辑 |
 
 ---
 
-**Last Updated**: 2026-04-26
+## 获取帮助
+
+如果以上方法都无法解决您的问题：
+
+1. 查看 [GitHub Issues](https://github.com/gitnexus/gitnexus/issues)
+2. 加入 [Discord 社区](https://discord.gg/gitnexus)
+3. 发送邮件至 support@gitnexus.io
+
+---
+
+**最后更新**：2026-04-26

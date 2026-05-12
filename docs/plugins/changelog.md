@@ -1,93 +1,93 @@
-# GitNexus 插件系统更新日志
+# GitNexus Plugin System Changelog
 
-## 版本历史
+## Version History
 
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| 1.0.0 | 2026-04-26 | 初始版本 |
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0.0 | 2026-04-26 | Initial release |
 
 ## v1.0.0 (2026-04-26)
 
-### 新增功能
+### New Features
 
-#### 核心功能
-- **插件系统架构**：完整的插件系统，支持解析器、分析器、处理器和集成插件
-- **插件管理器**：`PluginManager` 类，管理所有插件的加载、卸载和状态
-- **插件注册表**：提供四种注册表（解析器、分析器、处理器、集成）
-- **插件钩子系统**：集成到 GitNexus 管道，支持 before/after 钩子
+#### Core Features
+- **Plugin System Architecture**: Complete plugin system supporting parser, analyzer, processor, and integration plugins
+- **Plugin Manager**: `PluginManager` class managing all plugin loading, unloading, and state
+- **Plugin Registries**: Four registries provided (parser, analyzer, processor, integration)
+- **Plugin Hook System**: Integration with GitNexus pipeline, supporting before/after hooks
 
-#### 插件类型
-- **解析器插件接口** (`ParserPlugin`)
-- **分析器插件接口** (`AnalyzerPlugin`)
-- **处理器插件接口** (`ProcessorPlugin`)
-- **集成插件接口** (`IntegrationPlugin`)
+#### Plugin Types
+- **Parser Plugin Interface** (`ParserPlugin`)
+- **Analyzer Plugin Interface** (`AnalyzerPlugin`)
+- **Processor Plugin Interface** (`ProcessorPlugin`)
+- **Integration Plugin Interface** (`IntegrationPlugin`)
 
-#### CLI 命令
-- `gitnexus plugin list` - 列出所有已安装的插件
-- `gitnexus plugin load <path>` - 加载插件
-- `gitnexus plugin unload <name>` - 卸载插件
-- `gitnexus plugin enable <name>` - 启用插件
-- `gitnexus plugin disable <name>` - 禁用插件
-- `gitnexus plugin status` - 显示插件系统状态
-- `gitnexus plugin scan [dir]` - 扫描插件目录
+#### CLI Commands
+- `gitnexus plugin list` - List all installed plugins
+- `gitnexus plugin load <path>` - Load a plugin
+- `gitnexus plugin unload <name>` - Unload a plugin
+- `gitnexus plugin enable <name>` - Enable a plugin
+- `gitnexus plugin disable <name>` - Disable a plugin
+- `gitnexus plugin status` - Show plugin system status
+- `gitnexus plugin scan [dir]` - Scan plugin directory
 
-#### 配置文件
-- 全局配置：`~/.gitnexus/plugins.json`
-- 项目配置：`.gitnexus/plugins.json`
+#### Configuration Files
+- Global config: `~/.gitnexus/plugins.json`
+- Project config: `.gitnexus/plugins.json`
 
-### 文档
-- [开发指南](development-guide.md) - 完整的插件开发文档
-- [API 参考](api-reference.md) - 详细的 API 接口文档
-- [LLM 开发指南](llm-guide.md) - 使用 LLM 辅助开发插件
-- [快速开始](quickstart.md) - 5 分钟快速上手
-- [故障排查](troubleshooting.md) - 常见问题解答
-- [示例插件](examples/) - XML 解析插件和 Spring 分析器插件示例
+### Documentation
+- [Development Guide](development-guide.md) - Complete plugin development documentation
+- [API Reference](api-reference.md) - Detailed API interface documentation
+- [LLM Development Guide](llm-guide.md) - Using LLMs to assist plugin development
+- [Quick Start](quickstart.md) - Get started in 5 minutes
+- [Troubleshooting](troubleshooting.md) - Frequently asked questions
+- [Example Plugins](examples/) - XML parser plugin and Spring analyzer plugin examples
 
-### 技术实现
+### Technical Implementation
 
-#### 核心文件
-- `src/core/plugins/types.ts` - 插件类型定义
-- `src/core/plugins/plugin-manager.ts` - 插件管理器实现
-- `src/core/plugins/plugin-loader.ts` - 插件加载器
-- `src/core/plugins/plugin-hooks.ts` - 插件钩子系统
-- `src/core/plugins/index.ts` - 插件系统入口
-- `src/cli/plugin.ts` - CLI 命令实现
+#### Core Files
+- `src/core/plugins/types.ts` - Plugin type definitions
+- `src/core/plugins/plugin-manager.ts` - Plugin manager implementation
+- `src/core/plugins/plugin-loader.ts` - Plugin loader
+- `src/core/plugins/plugin-hooks.ts` - Plugin hook system
+- `src/core/plugins/index.ts` - Plugin system entry point
+- `src/cli/plugin.ts` - CLI command implementation
 
-#### 集成点
-- 修改 `src/core/ingestion/pipeline.ts`，集成插件钩子
+#### Integration Points
+- Modified `src/core/ingestion/pipeline.ts` to integrate plugin hooks
 
-### 示例插件
-- **XML 解析插件** (`gitnexus-xml-plugin`)
-  - 解析 `.xml` 文件
-  - 提取元素、属性和文本内容
-  - 生成 CONTAINS、HAS_ATTRIBUTE、HAS_TEXT 边
+### Example Plugins
+- **XML Parser Plugin** (`gitnexus-xml-plugin`)
+  - Parses `.xml` files
+  - Extracts elements, attributes, and text content
+  - Generates CONTAINS, HAS_ATTRIBUTE, HAS_TEXT edges
 
-- **Spring 分析器插件** (`gitnexus-spring-plugin`)
-  - 分析 Java 代码中的 Spring 组件
-  - 识别 @Controller、@Service、@Repository 等注解
-  - 提取组件依赖关系
+- **Spring Analyzer Plugin** (`gitnexus-spring-plugin`)
+  - Analyzes Spring components in Java code
+  - Identifies @Controller, @Service, @Repository and other annotations
+  - Extracts component dependency relationships
 
-### 已知限制
+### Known Limitations
 
-1. **性能**：大文件解析可能需要优化
-2. **缓存**：尚未实现智能缓存机制
-3. **测试**：需要更多集成测试
+1. **Performance**: Large file parsing may need optimization
+2. **Caching**: Smart caching mechanism not yet implemented
+3. **Testing**: More integration tests needed
 
-### 计划中的功能
+### Planned Features
 
-- [ ] 插件市场
-- [ ] 插件自动更新
-- [ ] 插件沙箱隔离
-- [ ] 可视化插件开发工具
-- [ ] 插件性能分析器
-- [ ] 更多内置插件
+- [ ] Plugin marketplace
+- [ ] Plugin auto-update
+- [ ] Plugin sandbox isolation
+- [ ] Visual plugin development tools
+- [ ] Plugin performance analyzer
+- [ ] More built-in plugins
 
 ---
 
-## 贡献者
+## Contributors
 
-- GitNexus 团队
+- GitNexus Team
 
-## 反馈
+## Feedback
 
-如果您发现 bug 或有功能建议，请提交到 [GitHub Issues](https://github.com/gitnexus/gitnexus/issues)。
+If you find bugs or have feature suggestions, please submit them to [GitHub Issues](https://github.com/gitnexus/gitnexus/issues).

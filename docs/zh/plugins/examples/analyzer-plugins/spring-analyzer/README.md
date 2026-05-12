@@ -1,21 +1,21 @@
-# Spring Analyzer Plugin Example
+# Spring 分析器插件示例
 
-## Description
+## 功能描述
 
-This plugin analyzes Spring framework code, identifies Spring components (such as Controller, Service, Repository, etc.) and annotations, generating corresponding nodes and edge relationships.
+这个插件用于分析 Spring 框架代码，识别 Spring 组件（如 Controller、Service、Repository 等）和注解，生成相应的节点和边关系。
 
-## Directory Structure
+## 目录结构
 
 ```
 spring-analyzer/
 ├── src/
-│   └── index.ts          # Plugin main file
-├── package.json          # Project configuration
-├── tsconfig.json         # TypeScript configuration
-└── README.md             # Plugin documentation
+│   └── index.ts          # 插件主文件
+├── package.json          # 项目配置
+├── tsconfig.json         # TypeScript 配置
+└── README.md             # 插件文档
 ```
 
-## Code Implementation
+## 代码实现
 
 ### src/index.ts
 
@@ -23,32 +23,32 @@ spring-analyzer/
 import { AnalyzerPlugin, AnalysisResult, AnalyzerRegistry, AnalysisContext } from 'gitnexus-shared';
 
 /**
- * Spring Analyzer Plugin
- * Analyzes Spring framework code, identifying components and annotations
+ * Spring 分析器插件
+ * 分析 Spring 框架代码，识别组件和注解
  */
 export class SpringAnalyzerPlugin implements AnalyzerPlugin {
-  /** Plugin name */
+  /** 插件名称 */
   name = 'gitnexus-spring-plugin';
   
-  /** Plugin version */
+  /** 插件版本 */
   version = '1.0.0';
   
-  /** Plugin description */
+  /** 插件描述 */
   description = 'Spring framework analyzer plugin for GitNexus';
   
-  /** Supported languages */
+  /** 支持的语言 */
   languages = ['java'];
   
   /**
-   * Analyze code semantics
-   * @param node AST node
-   * @param context Analysis context
-   * @returns Analysis result
+   * 分析代码语义
+   * @param node AST 节点
+   * @param context 分析上下文
+   * @returns 分析结果
    */
   async analyze(node: any, context: AnalysisContext): Promise<AnalysisResult> {
     const results = [];
     
-    // Analyze Spring annotations
+    // 分析 Spring 注解
     if (node.type === 'annotation') {
       const annotationName = node.name?.text;
       if (annotationName) {
@@ -65,7 +65,7 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
       }
     }
     
-    // Analyze Spring components
+    // 分析 Spring 组件
     if (node.type === 'class_declaration') {
       const classAnnotations = node.annotations || [];
       for (const annotation of classAnnotations) {
@@ -86,7 +86,7 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
       }
     }
     
-    // Analyze Spring methods
+    // 分析 Spring 方法
     if (node.type === 'method_declaration') {
       const methodAnnotations = node.annotations || [];
       for (const annotation of methodAnnotations) {
@@ -117,14 +117,14 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Extract annotation properties
-   * @param annotation Annotation node
-   * @returns Annotation properties
+   * 提取注解属性
+   * @param annotation 注解节点
+   * @returns 注解属性
    */
   private extractAnnotationProperties(annotation: any): Record<string, any> {
     const properties: Record<string, any> = {};
     
-    // Extract annotation arguments
+    // 提取注解参数
     if (annotation.arguments) {
       properties.arguments = this.extractArguments(annotation.arguments);
     }
@@ -133,30 +133,30 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Extract component properties
-   * @param node Class node
-   * @param annotation Annotation node
-   * @returns Component properties
+   * 提取组件属性
+   * @param node 类节点
+   * @param annotation 注解节点
+   * @returns 组件属性
    */
   private extractComponentProperties(node: any, annotation: any): Record<string, any> {
     const properties: Record<string, any> = {};
     
-    // Extract annotation arguments
+    // 提取注解参数
     if (annotation.arguments) {
       properties.annotationArguments = this.extractArguments(annotation.arguments);
     }
     
-    // Extract class modifiers
+    // 提取类修饰符
     if (node.modifiers) {
       properties.modifiers = node.modifiers.map((m: any) => m.text);
     }
     
-    // Extract implemented interfaces
+    // 提取类实现的接口
     if (node.implements) {
       properties.implements = node.implements.map((i: any) => i.text);
     }
     
-    // Extract super class
+    // 提取类继承的父类
     if (node.superClass) {
       properties.superClass = node.superClass.text;
     }
@@ -165,30 +165,30 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Extract method properties
-   * @param node Method node
-   * @param annotation Annotation node
-   * @returns Method properties
+   * 提取方法属性
+   * @param node 方法节点
+   * @param annotation 注解节点
+   * @returns 方法属性
    */
   private extractMethodProperties(node: any, annotation: any): Record<string, any> {
     const properties: Record<string, any> = {};
     
-    // Extract annotation arguments
+    // 提取注解参数
     if (annotation.arguments) {
       properties.annotationArguments = this.extractArguments(annotation.arguments);
     }
     
-    // Extract method modifiers
+    // 提取方法修饰符
     if (node.modifiers) {
       properties.modifiers = node.modifiers.map((m: any) => m.text);
     }
     
-    // Extract method return type
+    // 提取方法返回类型
     if (node.returnType) {
       properties.returnType = node.returnType.text;
     }
     
-    // Extract method parameters
+    // 提取方法参数
     if (node.parameters) {
       properties.parameters = node.parameters.map((p: any) => ({
         name: p.name?.text,
@@ -200,9 +200,9 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Extract annotation arguments
-   * @param argumentsNode Annotation arguments
-   * @returns Arguments object
+   * 提取注解参数
+   * @param arguments 注解参数
+   * @returns 参数对象
    */
   private extractArguments(argumentsNode: any): Record<string, any> {
     const args: Record<string, any> = {};
@@ -214,7 +214,7 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
           const value = this.extractArgumentValue(arg.right);
           args[name] = value;
         } else {
-          // Handle unnamed arguments
+          // 处理没有名称的参数
           args.value = this.extractArgumentValue(arg);
         }
       }
@@ -224,9 +224,9 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Extract argument value
-   * @param valueNode Value node
-   * @returns Argument value
+   * 提取参数值
+   * @param valueNode 值节点
+   * @returns 参数值
    */
   private extractArgumentValue(valueNode: any): any {
     if (valueNode.type === 'string_literal') {
@@ -251,9 +251,9 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Check if annotation is a Spring component annotation
-   * @param annotationName Annotation name
-   * @returns Whether it is a Spring component
+   * 检查是否为 Spring 组件注解
+   * @param annotationName 注解名称
+   * @returns 是否为 Spring 组件
    */
   private isSpringComponent(annotationName: string): boolean {
     const componentAnnotations = [
@@ -278,9 +278,9 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Check if annotation is a Spring method annotation
-   * @param annotationName Annotation name
-   * @returns Whether it is a Spring method annotation
+   * 检查是否为 Spring 方法注解
+   * @param annotationName 注解名称
+   * @returns 是否为 Spring 方法注解
    */
   private isSpringMethodAnnotation(annotationName: string): boolean {
     const methodAnnotations = [
@@ -303,39 +303,39 @@ export class SpringAnalyzerPlugin implements AnalyzerPlugin {
   }
   
   /**
-   * Register plugin to the analyzer registry
-   * @param registry Analyzer registry
+   * 注册插件到分析器注册表
+   * @param registry 分析器注册表
    */
   register(registry: AnalyzerRegistry): void {
     registry.registerAnalyzer(this);
   }
   
   /**
-   * Check if language is supported
-   * @param language Language name
-   * @returns Whether supported
+   * 检查语言是否支持
+   * @param language 语言名称
+   * @returns 是否支持
    */
   supports(language: string): boolean {
     return this.languages.includes(language);
   }
   
   /**
-   * Initialize plugin
-   * @param config Plugin configuration
+   * 初始化插件
+   * @param config 插件配置
    */
   async init(config: any): Promise<void> {
     console.log(`Initialized ${this.name} with config:`, config);
   }
   
   /**
-   * Clean up resources
+   * 清理资源
    */
   async dispose(): Promise<void> {
     console.log(`Disposed ${this.name}`);
   }
 }
 
-// Export plugin instance
+// 导出插件实例
 export default new SpringAnalyzerPlugin();
 ```
 
@@ -582,78 +582,78 @@ MIT
 
 ## Contact
 
-- **GitHub**: https://github.com/gitnexus/gitnexus
-- **Discord**: https://discord.gg/gitnexus
-- **Email**: support@gitnexus.io
+- **GitHub**：https://github.com/gitnexus/gitnexus
+- **Discord**：https://discord.gg/gitnexus
+- **Email**：support@gitnexus.io
 ```
 
-## How to Use
+## 如何使用
 
-### 1. Install Dependencies
+### 1. 安装依赖
 
 ```bash
 cd spring-analyzer
 npm install
 ```
 
-### 2. Build the Plugin
+### 2. 构建插件
 
 ```bash
 npm run build
 ```
 
-### 3. Install the Plugin
+### 3. 安装插件
 
 ```bash
 npm install -g .
 ```
 
-### 4. Enable the Plugin
+### 4. 启用插件
 
 ```bash
 npx gitnexus plugin enable gitnexus-spring-plugin
 ```
 
-### 5. Analyze a Project
+### 5. 分析项目
 
 ```bash
 npx gitnexus analyze --plugins gitnexus-spring-plugin
 ```
 
-## How the Plugin Works
+## 插件工作原理
 
-1. **Language Recognition**: Identifies Java files through the `supports` method
-2. **AST Analysis**: Analyzes the abstract syntax tree of Java code
-3. **Annotation Recognition**: Identifies Spring-related annotations
-4. **Component Extraction**: Extracts Spring component information
-5. **Relationship Analysis**: Analyzes dependency relationships between components
-6. **Result Generation**: Returns an object containing analysis results
+1. **语言识别**：通过 `supports` 方法识别 Java 文件
+2. **AST 分析**：分析 Java 代码的抽象语法树
+3. **注解识别**：识别 Spring 相关的注解
+4. **组件提取**：提取 Spring 组件信息
+5. **关系分析**：分析组件之间的依赖关系
+6. **结果生成**：返回包含分析结果的对象
 
-## Extension Suggestions
+## 扩展建议
 
-1. **Support more Spring annotations**: Such as Spring Security, Spring Data, etc.
-2. **Add component dependency analysis**: Analyze dependency relationships between components
-3. **Implement API documentation generation**: Generate API docs based on RequestMapping
-4. **Add configuration file analysis**: Analyze application.yml/application.properties
-5. **Support Spring Boot features**: Such as @SpringBootApplication, @EnableAutoConfiguration, etc.
+1. **支持更多 Spring 注解**：如 Spring Security、Spring Data 等
+2. **添加组件依赖分析**：分析组件之间的依赖关系
+3. **实现 API 文档生成**：基于 RequestMapping 生成 API 文档
+4. **添加配置文件分析**：分析 application.yml/application.properties
+5. **支持 Spring Boot 特性**：如 @SpringBootApplication、@EnableAutoConfiguration 等
 
-## Troubleshooting
+## 故障排查
 
-### Common Issues
+### 常见问题
 
-1. **Plugin load failure**: Check if dependencies are properly installed
-2. **Analysis errors**: Check if Java file format is correct
-3. **Performance issues**: For large projects, you may need to adjust analysis strategy
-4. **Recognition issues**: Ensure Spring annotations use correct package paths
+1. **插件加载失败**：检查依赖是否正确安装
+2. **分析错误**：检查 Java 文件格式是否正确
+3. **性能问题**：对于大型项目，可能需要调整分析策略
+4. **识别问题**：确保 Spring 注解使用正确的包路径
 
-### Debugging Tips
+### 调试技巧
 
-1. **Enable debug mode**: `GITNEXUS_DEBUG=1 npx gitnexus analyze`
-2. **View logs**: `~/.gitnexus/logs/plugin.log`
-3. **Test plugin**: `npx gitnexus plugin test gitnexus-spring-plugin`
+1. **启用调试模式**：`GITNEXUS_DEBUG=1 npx gitnexus analyze`
+2. **查看日志**：`~/.gitnexus/logs/plugin.log`
+3. **测试插件**：`npx gitnexus plugin test gitnexus-spring-plugin`
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2026-04-26
-**Maintainer**: GitNexus Team
+**版本**：1.0.0
+**最后更新**：2026-04-26
+**维护者**：GitNexus 团队

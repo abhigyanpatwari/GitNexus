@@ -1,30 +1,30 @@
-# GitNexus Plugin Quick Start
+# GitNexus 插件快速开始
 
-This guide will help you create and run your first GitNexus plugin in 5 minutes.
+本指南将帮助您在 5 分钟内创建并运行您的第一个 GitNexus 插件。
 
-## Prerequisites
+## 前置要求
 
 - Node.js 18+
 - npm 8+
-- GitNexus CLI installed
+- GitNexus CLI 已安装
 
-## Step 1: Create the Plugin Project
+## 第一步：创建插件项目
 
 ```bash
-# Navigate to the plugins directory
+# 进入插件目录
 cd gitnexus-plugins/
 
-# Create the plugin directory
+# 创建插件目录
 mkdir gitnexus-hello-plugin
 cd gitnexus-hello-plugin
 
-# Initialize npm project
+# 初始化 npm 项目
 npm init -y
 ```
 
-## Step 2: Create Project Configuration
+## 第二步：创建项目配置
 
-Create `package.json`:
+创建 `package.json`：
 
 ```json
 {
@@ -43,7 +43,7 @@ Create `package.json`:
 }
 ```
 
-Create `tsconfig.json`:
+创建 `tsconfig.json`：
 
 ```json
 {
@@ -63,9 +63,9 @@ Create `tsconfig.json`:
 }
 ```
 
-## Step 3: Write Plugin Code
+## 第三步：编写插件代码
 
-Create `src/index.ts`:
+创建 `src/index.ts`：
 
 ```typescript
 import { 
@@ -79,8 +79,8 @@ import {
 } from 'gitnexus-shared';
 
 /**
- * Hello World Parser Plugin
- * Parses .hello files, extracting simple key-value pairs
+ * Hello World 解析器插件
+ * 解析 .hello 文件，提取简单的键值对
  */
 export class HelloParserPlugin implements ParserPlugin {
   name = 'gitnexus-hello-plugin';
@@ -92,8 +92,8 @@ export class HelloParserPlugin implements ParserPlugin {
     const nodes: GraphNode[] = [];
     const edges: GraphRelationship[] = [];
     
-    // Parse simple key-value format
-    // Format: key=value
+    // 解析简单的键值对格式
+    // 格式：key=value
     const lines = content.split('\n');
     let lineNumber = 0;
     
@@ -101,16 +101,16 @@ export class HelloParserPlugin implements ParserPlugin {
       lineNumber++;
       const trimmed = line.trim();
       
-      // Skip empty lines and comments
+      // 跳过空行和注释
       if (!trimmed || trimmed.startsWith('#')) continue;
       
-      // Parse key=value format
+      // 解析 key=value 格式
       const equalIndex = trimmed.indexOf('=');
       if (equalIndex > 0) {
         const key = trimmed.substring(0, equalIndex).trim();
         const value = trimmed.substring(equalIndex + 1).trim();
         
-        // Create node
+        // 创建节点
         const node = createNode('HelloKey', {
           name: key,
           value,
@@ -119,7 +119,7 @@ export class HelloParserPlugin implements ParserPlugin {
         });
         nodes.push(node);
         
-        // Create a category node if it's a config type
+        // 如果是配置类型，创建一个分类节点
         if (key.startsWith('config.')) {
           nodes.push(createNode('HelloConfig', {
             name: key,
@@ -152,48 +152,48 @@ export class HelloParserPlugin implements ParserPlugin {
 export default new HelloParserPlugin();
 ```
 
-## Step 4: Build the Plugin
+## 第四步：构建插件
 
 ```bash
-# Install dependencies (using npm link or file: protocol)
+# 安装依赖（使用 npm link 或 file: 协议）
 cd ../gitnexus-shared && npm run build && npm link
 cd ../gitnexus-hello-plugin
 npm link gitnexus-shared
 
-# Build the plugin
+# 构建插件
 npm run build
 ```
 
-## Step 5: Test the Plugin
+## 第五步：测试插件
 
-### Create a Test File
+### 创建测试文件
 
-Create `test.hello`:
+创建 `test.hello`：
 
 ```
-# Hello World Configuration File
+# Hello World 配置文件
 config.app.name=MyApp
 config.app.version=1.0.0
 database.host=localhost
 database.port=5432
 ```
 
-### Load and Test the Plugin
+### 加载并测试插件
 
 ```bash
-# Navigate to the GitNexus CLI directory
+# 进入 GitNexus CLI 目录
 cd gitnexus/
 
-# Scan and load plugins
+# 扫描并加载插件
 gitnexus plugin scan ../gitnexus-plugins/
 
-# List plugins to confirm it's loaded
+# 列出插件，确认已加载
 gitnexus plugin list
 ```
 
-## Complete Example: JSON Parser Plugin
+## 完整示例：JSON 解析插件
 
-If you need to parse more complex formats (like JSON), here is a complete example:
+如果您需要解析更复杂的格式（如 JSON），这里有一个完整的示例：
 
 ```typescript
 import { 
@@ -280,23 +280,23 @@ export class JsonParserPlugin implements ParserPlugin {
 export default new JsonParserPlugin();
 ```
 
-## Next Steps
+## 下一步
 
-- Read the [full development guide](../gitnexus-plugins/README.md) for advanced features
-- Read the [API Reference](api-reference.md) for all available interfaces
-- Read the [LLM Development Guide](llm-guide.md) for AI-assisted plugin development
-- Browse the [plugins directory](../gitnexus-plugins/) for more reference
+- 阅读 [完整开发指南](../gitnexus-plugins/README.md) 了解更高级的特性
+- 阅读 [API 参考](api-reference.md) 查看所有可用的接口
+- 阅读 [LLM 开发指南](llm-guide.md) 了解如何使用 AI 辅助开发插件
+- 查看 [插件目录](../gitnexus-plugins/) 获取更多参考
 
-## FAQ
+## 常见问题
 
-**Q: Plugin is loaded but not working?**
-A: Make sure the plugin is enabled: `gitnexus plugin enable <plugin-name>`
+**Q: 插件加载成功但没有生效？**
+A: 确保插件已启用：`gitnexus plugin enable <plugin-name>`
 
-**Q: How to debug a plugin?**
-A: Set the environment variable `GITNEXUS_DEBUG=1` and check the logs.
+**Q: 如何调试插件？**
+A: 设置环境变量 `GITNEXUS_DEBUG=1` 并查看日志
 
-**Q: Can plugins depend on other npm packages?**
-A: Yes, just add them to the `dependencies` in your `package.json`.
+**Q: 插件可以依赖其他 npm 包吗？**
+A: 可以，只需在 package.json 的 dependencies 中添加即可。
 
-**Q: How to reference gitnexus-shared?**
-A: In the `gitnexus-plugins/` directory, use `"gitnexus-shared": "file:../gitnexus-shared"`, or first do `cd gitnexus-shared && npm link`, then in the plugin directory `npm link gitnexus-shared`.
+**Q: 如何引用 gitnexus-shared？**
+A: 在 `gitnexus-plugins/` 目录下，使用 `"gitnexus-shared": "file:../gitnexus-shared"`，或先 `cd gitnexus-shared && npm link`，然后在插件目录 `npm link gitnexus-shared`。
