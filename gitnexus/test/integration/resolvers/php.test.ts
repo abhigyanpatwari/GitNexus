@@ -2154,3 +2154,86 @@ describe('PHP typed-property double-match dedup', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dynamic PHP constructs MUST NOT capture as resolvable references.
+// Findings 1-7 of the PR #1497 adversarial review confirmed via grammar
+// inspection that $obj->$method(), call_user_func(...), array/string
+// callables, and dynamic property reads produce zero captures. This suite
+// locks that invariant in regression so a future query.ts edit cannot
+// silently relax `name: (name)` to `name: (_)` and reintroduce false-
+// positive edges.
+// ---------------------------------------------------------------------------
+
+describe('PHP dynamic dispatch — negative regression suite', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-dynamic-calls'), () => {});
+  }, 60000);
+
+  const callsFromDynamicTo = (target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.target === target &&
+        // Source is some method on `Dynamic` (the file under test).
+        c.sourceFilePath === 'app/Services/Dynamic.php',
+    );
+
+  it('detects the Dynamic and Targets classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Dynamic');
+    expect(getNodesByLabel(result, 'Class')).toContain('Targets');
+  });
+
+  it('sanity check: non-dynamic call DOES emit an edge', () => {
+    // Without this, every zero-edge assertion below would pass even if the
+    // pipeline emitted no CALLS edges at all.
+    expect(callsFromDynamicTo('sanityStaticallyNamedTarget').length).toBe(1);
+  });
+
+  it('$obj->$method() emits no CALLS edge to dynamicProcess', () => {
+    expect(callsFromDynamicTo('dynamicProcess').length).toBe(0);
+  });
+
+  it('$obj->{$method}() emits no CALLS edge to dynamicBrace', () => {
+    expect(callsFromDynamicTo('dynamicBrace').length).toBe(0);
+  });
+
+  it('Class::$method() emits no CALLS edge to dynamicHandle', () => {
+    expect(callsFromDynamicTo('dynamicHandle').length).toBe(0);
+  });
+
+  it('$className::method() with untyped variable receiver emits no CALLS edge', () => {
+    // Two attractor classes (Targets and OtherTargets) both expose
+    // dynamicStaticMethod so the unresolved-receiver fallback (Finding 8 /
+    // U4) cannot fire — that isolates this assertion to the dynamic-
+    // dispatch suppression at the query / receiver-bound-calls layer.
+    expect(callsFromDynamicTo('dynamicStaticMethod').length).toBe(0);
+  });
+
+  it('$className::$method() with dynamic class and method names emits no CALLS edge', () => {
+    expect(callsFromDynamicTo('dynamicScopedDynName').length).toBe(0);
+  });
+
+  it('call_user_func / call_user_func_array string and array callables emit no CALLS edges', () => {
+    // call_user_func itself is a built-in with no workspace def, so the
+    // free-call to it is unresolved — no edge to `call_user_func`.
+    expect(callsFromDynamicTo('call_user_func').length).toBe(0);
+    expect(callsFromDynamicTo('call_user_func_array').length).toBe(0);
+    // None of the named targets reachable only via the callable argument
+    // should pick up a false-positive edge.
+    expect(callsFromDynamicTo('dynamicCallableMethod').length).toBe(0);
+    expect(callsFromDynamicTo('dynamicArrayCallableMethod').length).toBe(0);
+    expect(callsFromDynamicTo('dynamicArrayClassCallableMethod').length).toBe(0);
+  });
+
+  it('dynamic property read ($obj->$prop) emits no read-edge to dynamicProp', () => {
+    // No read-access property capture pattern exists in query.ts at all
+    // (Finding 2). Verify no CALLS / READS / write edge targets `dynamicProp`.
+    expect(callsFromDynamicTo('dynamicProp').length).toBe(0);
+    const reads = getRelationships(result, 'READS').filter(
+      (r) => r.target === 'dynamicProp' && r.sourceFilePath === 'app/Services/Dynamic.php',
+    );
+    expect(reads.length).toBe(0);
+  });
+});

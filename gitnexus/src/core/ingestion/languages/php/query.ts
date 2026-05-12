@@ -211,6 +211,15 @@ const PHP_SCOPE_QUERY = `
   function: (name) @reference.name) @reference.call.free
 
 ;; ── References — member calls: $obj->method() ────────────────────────────
+;;
+;; SAFETY-INVARIANT (Finding 1 of PR #1497 adversarial review): the name:
+;; field is constrained to (name), NOT (_) — tree-sitter-php emits
+;; variable_name nodes for dynamic method names ($obj->$method(),
+;; $obj->{$method}()). Keeping the pattern at (name) is what suppresses
+;; capture of those dynamic shapes. The resolver is structural-only and
+;; cannot infer the bound method name from runtime values; relaxing this
+;; pattern to (_) would silently emit zero-confidence false-positive
+;; edges. Regression: test/fixtures/lang-resolution/php-dynamic-calls/.
 
 (member_call_expression
   object: (_) @reference.receiver
@@ -223,6 +232,14 @@ const PHP_SCOPE_QUERY = `
   name: (name) @reference.name) @reference.call.member
 
 ;; ── References — static calls: X::method() ───────────────────────────────
+;;
+;; Same SAFETY-INVARIANT as member_call_expression above: name: (name)
+;; deliberately excludes variable_name so Class::$method() and
+;; $className::$method() shapes do not capture. The receiver field uses
+;; (_) because static dispatch on a variable receiver
+;; ($className::method()) IS captured — but resolution falls through
+;; harmlessly when $className has no class type binding. See
+;; php-dynamic-calls/ regression suite.
 
 (scoped_call_expression
   scope: (_) @reference.receiver
@@ -282,6 +299,13 @@ const PHP_SCOPE_QUERY = `
 ;; ── References — static property writes: User::$count = $x ──────────────
 ;; Uses @reference.write.static anchor so captures.ts can strip the leading
 ;; $ from the variable_name capture (static props are stored without $ in graph).
+;;
+;; SAFETY-INVARIANT (Finding 2 of PR #1497 adversarial review): no
+;; read-access property capture exists in this query — dynamic property
+;; reads ($obj->$prop, $obj->{$prop}) produce no captures, which is the
+;; desired behavior for a structural-only resolver. Adding a read pattern
+;; in the future MUST keep name: (name) (not (_)) to preserve the
+;; suppression. Regression: php-dynamic-calls/ fixture dynamicPropertyRead.
 
 (assignment_expression
   left: (scoped_property_access_expression
