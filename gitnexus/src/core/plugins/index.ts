@@ -1,5 +1,9 @@
 // src/core/plugins/index.ts
+/* eslint-disable no-console */
 
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import { pluginManager as _pm } from './plugin-manager.js';
 import { loadPluginsFromConfig as _loadPlugins } from './plugin-loader.js';
 
@@ -81,8 +85,17 @@ export async function initializePluginSystem() {
  * 加载默认插件
  */
 async function loadDefaultPlugins() {
-  // 这里可以加载内置的默认插件
-  // 例如：await pluginManager.loadPlugin({ pluginPath: './default-plugins/xml-parser' });
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+
+  const yamlPluginPath = path.resolve(__dirname, '../../../gitnexus-plugins/yaml-parser');
+  if (fs.existsSync(yamlPluginPath)) {
+    try {
+      await _pm.loadPlugin({ pluginPath: yamlPluginPath, enabled: true });
+    } catch (error) {
+      console.warn('Failed to load yaml-parser plugin:', (error as Error).message);
+    }
+  }
 }
 
 /**

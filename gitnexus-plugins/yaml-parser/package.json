@@ -1,0 +1,21 @@
+{
+  "name": "gitnexus-yaml-parser-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "GitNexus plugin to parse YAML/YML configuration files and extract configuration keys and values",
+  "main": "dist/index.js",
+  "gitnexus": {
+    "plugin": true
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "gitnexus-shared": "file:../../gitnexus-shared",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -11,7 +11,8 @@ gitnexus-plugins/
 ├── kafka-plugin/      # Kafka plugin
 ├── mybatis-plugin/    # MyBatis plugin
 ├── spring-boot-plugin/ # Spring Boot plugin
-└── markdown-plugin/   # Markdown plugin (with Profile system)
+├── markdown-plugin/   # Markdown plugin (with Profile system)
+└── yaml-parser/       # YAML/YML configuration file parser plugin
 ```
 
 ## Available Plugins
@@ -23,6 +24,7 @@ gitnexus-plugins/
 | `mybatis-plugin` | Parses MyBatis mappers, XML mappings, and SQL statements | `MyBatisMapper`, `MyBatisXmlMapper`, `MyBatisSql`, `MyBatisMethod` |
 | `spring-boot-plugin` | Parses Spring Boot components, beans, DI, AOP, transactions, etc. | `Bean`, `ConfigProperty`, `KafkaTopic`, `KafkaConsumer`, `KafkaProducer` |
 | `markdown-plugin` | Parses Markdown documents with Profile-based customization | `MarkdownDoc`, `MarkdownHeading`, `CodeBlock`, `Link`, `Image`, `Todo`, `Table` |
+| `yaml-parser` | Parses YAML/YML configuration files, extracts keys, values, and hierarchy | `YamlConfig`, `YamlSection`, `YamlProperty`, `YamlArrayItem` |
 
 ## How to Use
 
