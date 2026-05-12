@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__gitnexus__query",
+      "mcp__gitnexus__context",
+      "mcp__gitnexus__impact",
+      "mcp__gitnexus__detect_changes",
+      "mcp__gitnexus__rename",
+      "mcp__gitnexus__cypher",
+      "mcp__gitnexus__list_repos",
+      "mcp__gitnexus__api_impact",
+      "mcp__gitnexus__route_map",
+      "mcp__gitnexus__tool_map",
+      "mcp__gitnexus__shape_check",
+      "mcp__gitnexus__group_list",
+      "mcp__gitnexus__group_sync"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gitnexus-hook.js",
+            "timeout": 10,
+            "statusMessage": "Enriching with GitNexus graph context..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gitnexus-hook.js",
+            "timeout": 10,
+            "statusMessage": "Checking GitNexus index freshness..."
+          }
+        ]
+      }
+    ]
+  }
+}
