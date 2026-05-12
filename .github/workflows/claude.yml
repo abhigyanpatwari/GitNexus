@@ -160,4 +160,4 @@ jobs:
           show_full_output: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}'
+          prompt: '/code-review:code-review https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }} --comment'
