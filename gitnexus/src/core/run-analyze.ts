@@ -36,7 +36,10 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
-import { extractChangedSubgraph, computeEffectiveWriteSet } from './incremental/subgraph-extract.js';
+import {
+  extractChangedSubgraph,
+  computeEffectiveWriteSet,
+} from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
