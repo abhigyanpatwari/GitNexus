@@ -45,6 +45,16 @@ import { cVariableConfig, cppVariableConfig } from '../variable-extractors/confi
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { stripUeMacros } from '../cpp-ue-preprocessor.js';
+import {
+  emitCScopeCaptures,
+  interpretCImport,
+  interpretCTypeBinding,
+  cArityCompatibility,
+  cBindingScopeFor,
+  cImportOwningScope,
+  cReceiverBinding,
+} from './c/index.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -366,6 +376,16 @@ export const cProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.C),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  emitScopeCaptures: emitCScopeCaptures,
+  interpretImport: interpretCImport,
+  interpretTypeBinding: interpretCTypeBinding,
+  bindingScopeFor: cBindingScopeFor,
+  importOwningScope: cImportOwningScope,
+  receiverBinding: cReceiverBinding,
+  arityCompatibility: cArityCompatibility,
+  // mergeBindings + resolveImportTarget live on ScopeResolver (see c/scope-resolver.ts).
 });
 
 export const cppProvider = defineLanguage({
@@ -410,6 +430,7 @@ export const cppProvider = defineLanguage({
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: CPP_QUERIES,
+  preprocessSource: stripUeMacros,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cppImportConfig),

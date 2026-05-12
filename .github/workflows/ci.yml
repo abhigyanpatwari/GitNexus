@@ -6,6 +6,9 @@ on:
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
 
+permissions:
+  contents: read
+
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Hardcoded `CI-` prefix (not `${{ github.workflow }}`) because this workflow is
 # invoked as a reusable workflow from publish.yml and release-candidate.yml. In

@@ -1441,6 +1441,24 @@ describe('Write access tracking (C#)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generic type references: IEntityTypeConfiguration<USER_INFO>, List<USER_INFO>
+// ---------------------------------------------------------------------------
+
+describe('C# generic type-reference tracking', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-generic-type-refs'), () => {});
+  }, 60000);
+
+  it('emits USES edges for generic type arguments', () => {
+    const uses = getRelationships(result, 'USES').filter((e) => e.target === 'USER_INFO');
+    expect(edgeSet(uses)).toContain('UserInfoConfiguration → USER_INFO');
+    expect(edgeSet(uses)).toContain('Load → USER_INFO');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Call-result variable binding (Phase 9): var user = GetUser(); user.Save()
 // ---------------------------------------------------------------------------
 

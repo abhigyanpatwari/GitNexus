@@ -18,7 +18,7 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
-import { createLbugDatabase } from './lbug-config.js';
+import { createLbugDatabase, isWalCorruptionError } from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -97,7 +97,7 @@ let idleTimer: ReturnType<typeof setInterval> | null = null;
 // @ladybugdb/core), corrupting stdout in the pre-sentinel window. Routing
 // through the leaf breaks that chain.
 export { realStdoutWrite, realStderrWrite, setActiveStdoutWrite } from '../../mcp/stdio-capture.js';
-import { getActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+import { getActiveStdoutWrite, realStderrWrite } from '../../mcp/stdio-capture.js';
 
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
@@ -263,6 +263,46 @@ const WAITER_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 
+async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
+  let db: lbug.Database | undefined;
+  silenceStdout();
+  try {
+    db = createLbugDatabase(lbug, dbPath, {
+      readOnly: true,
+      throwOnWalReplayFailure: false,
+    });
+    await db.init();
+    return db;
+  } catch (err) {
+    if (db) await db.close().catch(() => {});
+    throw err;
+  } finally {
+    restoreStdout();
+  }
+}
+
+/**
+ * Quarantine the .wal file and retry opening the database.
+ * Used when the initial open fails with a WAL corruption error.
+ */
+async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<lbug.Database> {
+  const walPath = dbPath + '.wal';
+  const quarantineName = `${walPath}.corrupt.${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await fs.rename(walPath, quarantineName);
+  } catch {
+    throw new Error(
+      `LadybugDB WAL corruption detected for ${repoId}. ` +
+        `Run \`gitnexus analyze\` to rebuild the index. (quarantine failed)`,
+    );
+  }
+  realStderrWrite(
+    `GitNexus: LadybugDB WAL quarantined for ${repoId}; graph may be stale. ` +
+      `Run \`gitnexus analyze\` to rebuild the index.\n`,
+  );
+  return await openReadOnlyDatabase(dbPath);
+}
+
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
 
@@ -319,16 +359,29 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // avoids lock conflicts when `gitnexus analyze` is writing.
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      silenceStdout();
       try {
-        const db = createLbugDatabase(lbug, dbPath, { readOnly: true });
-        restoreStdout();
+        const db = await openReadOnlyDatabase(dbPath);
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
-        restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (isWalCorruptionError(lastError)) {
+          try {
+            const db = await tryQuarantineAndReopen(dbPath, repoId);
+            shared = { db, refCount: 0, ftsLoaded: false };
+            dbCache.set(dbPath, shared);
+            break;
+          } catch (retryErr) {
+            throw new Error(
+              `LadybugDB WAL corruption detected for ${repoId}. ` +
+                `Run \`gitnexus analyze\` to rebuild the index. ` +
+                `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
+            );
+          }
+        }
+
         const isLockError =
           lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
@@ -367,7 +420,17 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // install; analyze owns extension installation. If LOAD fails, search
   // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows when
+    // the FTS extension binary is not installed locally (@ladybugdb/core native
+    // bug — the extension loader hits an unhandled error path that signals SIGSEGV
+    // rather than throwing a JS exception, so try/catch cannot protect here).
+    // Skip the load on Windows; bm25-index.js catches the resulting Kuzu catalog
+    // errors and returns empty BM25 results gracefully. Graph queries are unaffected.
+    if (process.platform === 'win32') {
+      shared.ftsLoaded = true;
+    } else {
+      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    }
   }
 
   // Register pool entry only after all connections are pre-warmed and FTS is
@@ -431,8 +494,13 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database.
   // policy: 'load-only' — same contract as initLbug above; the read pool
   // must not block on a network install during query execution.
+  // Windows guard: same SIGSEGV risk as doInitLbug above — skip on Windows.
   if (!shared.ftsLoaded) {
-    shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    if (process.platform === 'win32') {
+      shared.ftsLoaded = true;
+    } else {
+      shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
+    }
   }
 
   pool.set(repoId, {

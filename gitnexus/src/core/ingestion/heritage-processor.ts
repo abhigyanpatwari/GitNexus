@@ -22,6 +22,7 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, type NodeLabel, type SupportedLanguages } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
@@ -219,9 +220,13 @@ export const processHeritage = async (
     let tree = astCache.get(file.path);
     if (!tree) {
       // Use larger bufferSize for files > 32KB
+      // Per-language source preprocessor (length-preserving, e.g. UE macro
+      // stripping for C++). MUST mirror parsing-processor on cache miss so
+      // re-parses see the same input as the cached AST.
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parseSourceSafe(parser, parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
         // Skip files that can't be parsed
@@ -413,9 +418,10 @@ export async function extractExtractedHeritageFromFiles(
 
     let tree = astCache.get(file.path);
     if (!tree) {
+      const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(file.content, undefined, {
-          bufferSize: getTreeSitterBufferSize(file.content),
+        tree = parseSourceSafe(parser, parseContent, undefined, {
+          bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch {
         continue;

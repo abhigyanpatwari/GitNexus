@@ -20,6 +20,7 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 
@@ -1465,11 +1466,16 @@ const processFileGroup = (
       isVueSetup = extracted.isSetup;
     }
 
+    // Per-language source-text transform (e.g., UE macro stripping for C++).
+    // Length-preserving — see LanguageProvider.preprocessSource contract.
+    parseContent =
+      getProvider(language).preprocessSource?.(parseContent, file.path) ?? parseContent;
+
     clearCaches(); // Reset memoization before each new file
 
     let tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
@@ -1579,7 +1585,10 @@ const processFileGroup = (
     }
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
-    const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean; configPath?: string }>();
+    const fileDecorators = new Map<
+      number,
+      { name: string; arg?: string; isTool?: boolean; configPath?: string }
+    >();
 
     // Track start indices of definition nodes already processed by higher-priority captures
     // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
@@ -1672,8 +1681,7 @@ const processFileGroup = (
             parentNode?.type === 'class_declaration' ||
             (parentNode?.type === 'modifiers' &&
               parentNode?.parent?.type === 'class_declaration') ||
-            (parentNode?.type === 'class_body' &&
-              parentNode?.parent?.type === 'class_declaration');
+            (parentNode?.type === 'class_body' && parentNode?.parent?.type === 'class_declaration');
 
           if (isClassLevel && (decoratorName === 'RequestMapping' || decoratorName === 'Path')) {
             httpMethod = 'CLASS';

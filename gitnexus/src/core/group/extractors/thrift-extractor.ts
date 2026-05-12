@@ -3,6 +3,7 @@ import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import {
   getPluginForFile,
   THRIFT_SCAN_GLOB,
@@ -217,6 +218,10 @@ export async function buildThriftContext(repoPath: string): Promise<ThriftContex
     cwd: repoPath,
     absolute: false,
     nodir: true,
+    // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
+    // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
+    // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
+    // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
     ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
   });
   const namespacesByThrift = new Map<string, string>();
@@ -290,6 +295,10 @@ export class ThriftExtractor implements ContractExtractor {
       cwd: repoPath,
       absolute: false,
       nodir: true,
+      // TODO(#1156-followup): replace this hand-rolled list with createIgnoreFilter
+      // (the canonical ingestion ignore filter, like include-extractor.ts now uses).
+      // New entries to DEFAULT_IGNORE_LIST in src/config/ignore-service.ts (e.g.
+      // third_party, 3rdparty added in commit a9936a9b) silently do not apply here.
       ignore: ['**/node_modules/**', '**/.git/**', '**/vendor/**', '**/dist/**', '**/build/**'],
     });
 
@@ -303,7 +312,7 @@ export class ThriftExtractor implements ContractExtractor {
       let detections: ThriftDetection[] = [];
       try {
         parser.setLanguage(plugin.language);
-        const tree = parser.parse(content);
+        const tree = parseSourceSafe(parser, content);
         detections = plugin.scan(tree);
       } catch {
         continue;

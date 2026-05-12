@@ -5,12 +5,11 @@ import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/pa
 import { getProvider } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
-// SymbolTableReader is used for the FieldExtractorContext stub; the
-// parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
@@ -175,7 +174,8 @@ const processParsingWithWorkers = async (
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
-    if (result.configReferences) for (const item of result.configReferences) allConfigReferences.push(item);
+    if (result.configReferences)
+      for (const item of result.configReferences) allConfigReferences.push(item);
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
@@ -377,6 +377,11 @@ const processParsingSequential = async (
       isVueSetup = extracted.isSetup;
     }
 
+    // Per-language source-text transform (e.g., UE macro stripping for C++).
+    // Length-preserving — see LanguageProvider.preprocessSource contract.
+    parseContent =
+      getProvider(language).preprocessSource?.(parseContent, file.path) ?? parseContent;
+
     try {
       await loadLanguage(language, file.path);
     } catch {
@@ -385,7 +390,7 @@ const processParsingSequential = async (
 
     let tree: Parser.Tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (parseError) {

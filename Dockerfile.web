@@ -1,9 +1,16 @@
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
+# Pinned npm version — keep in sync with Dockerfile.cli and
+# gitnexus/Dockerfile.test.
+ARG NPM_VERSION=11.14.1
 
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+# node:22-bookworm-slim
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS builder
+ARG NPM_VERSION
 
 WORKDIR /app
+
+RUN npx --yes npm@${NPM_VERSION} install -g npm@${NPM_VERSION}
 
 COPY gitnexus-shared/package.json gitnexus-shared/package-lock.json ./gitnexus-shared/
 RUN npm ci --prefix gitnexus-shared
@@ -19,9 +26,13 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-FROM node:22-alpine AS runtime
+# node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS runtime
 
-RUN apk add --no-cache curl
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -rf /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 WORKDIR /app
 
