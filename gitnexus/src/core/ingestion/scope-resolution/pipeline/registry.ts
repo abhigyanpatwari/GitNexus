@@ -15,6 +15,7 @@ import { pythonScopeResolver } from '../../languages/python/scope-resolver.js';
 import { csharpScopeResolver } from '../../languages/csharp/scope-resolver.js';
 import { typescriptScopeResolver } from '../../languages/typescript/scope-resolver.js';
 import { goScopeResolver } from '../../languages/go/scope-resolver.js';
+import { javaScopeResolver } from '../../languages/java/scope-resolver.js';
 import { cScopeResolver } from '../../languages/c/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
@@ -29,5 +30,6 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.CSharp, csharpScopeResolver],
   [SupportedLanguages.TypeScript, typescriptScopeResolver],
   [SupportedLanguages.Go, goScopeResolver],
+  [SupportedLanguages.Java, javaScopeResolver],
   [SupportedLanguages.C, cScopeResolver],
 ]);
