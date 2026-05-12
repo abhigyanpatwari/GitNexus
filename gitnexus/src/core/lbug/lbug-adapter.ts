@@ -1204,6 +1204,77 @@ export const deleteNodesForFile = async (
 
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
+/**
+ * Return the distinct repo-relative paths of files that import
+ * `targetFilePath` according to the IMPORTS edges currently in the
+ * DB. Used by the incremental writeback path to expand the
+ * "files-to-rewrite" set so that files importing a changed file get
+ * their edges (which may have been refined by cross-file resolution)
+ * re-emitted, rather than left stale in the DB.
+ *
+ * The DB query reads the *previous* run's state — pre-pipeline, before
+ * any nodes are deleted — so the returned importers are "files that
+ * USED TO import the target". That's the right set to invalidate:
+ * those are the files whose edges in the DB might no longer match
+ * what cross-file resolution produces given the changed file's new
+ * exports.
+ */
+export const queryImporters = async (targetFilePath: string): Promise<string[]> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const escaped = targetFilePath.replace(/'/g, "''");
+  const cypher = `
+    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+    WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
+    RETURN DISTINCT a.filePath AS importer
+  `;
+  try {
+    const queryResult = await conn.query(cypher);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const rows = await result.getAll();
+    const out: string[] = [];
+    for (const row of rows) {
+      const v = (row as { importer?: unknown }).importer;
+      if (typeof v === 'string' && v.length > 0) out.push(v);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Drop every Community and Process node (and their MEMBER_OF /
+ * STEP_IN_PROCESS edges via DETACH DELETE). Used at the start of an
+ * incremental run so the communities and processes phases regenerate
+ * them from scratch on the merged graph — required for the
+ * "Leiden runs on the FULL graph" correctness invariant.
+ */
+export const deleteAllCommunitiesAndProcesses = async (): Promise<{
+  nodesDeleted: number;
+}> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  let nodesDeleted = 0;
+  for (const label of ['Community', 'Process']) {
+    try {
+      const countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await conn.query(`MATCH (n:${label}) DETACH DELETE n`);
+        nodesDeleted += count;
+      }
+    } catch {
+      // Table may not exist yet on a freshly-initialized DB — fine.
+    }
+  }
+  return { nodesDeleted };
+};
+
 // ============================================================================
 // Full-Text Search (FTS) Functions
 // ============================================================================

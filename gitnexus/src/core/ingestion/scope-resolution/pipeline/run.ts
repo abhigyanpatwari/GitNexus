@@ -72,6 +72,22 @@ interface RunScopeResolutionInput {
    * provider doesn't supply a config loader.
    */
   readonly resolutionConfig?: unknown;
+  /**
+   * Pre-extracted ParsedFile artifacts keyed by file path. When a
+   * file is present here, the extract loop reuses it directly and
+   * skips `extractParsedFile` (which would re-parse the file with
+   * tree-sitter on the main thread). Only files matching the
+   * provider's language are honored — the loop verifies this
+   * implicitly by language filter at the call-site (scopeResolution
+   * phase).
+   *
+   * Worker-mode parses produce these ParsedFile artifacts as a side
+   * effect of `extractParsedFile` running inside the worker; threading
+   * them here is what lets the warm-cache analyze run skip the ~58s
+   * scope-resolution re-parse loop on a multi-thousand-file repo.
+   * Cache miss is safe — falls back to fresh extract.
+   */
+  readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
 }
 
 interface RunScopeResolutionStats {
@@ -104,21 +120,36 @@ export function runScopeResolution(
   const parsedFiles: ParsedFile[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
+  const preExtracted = input.preExtractedParsedFiles;
+  let preExtractedHits = 0;
   for (const file of files) {
-    const cachedTree = treeCache?.get(file.path);
-    const parsed = extractParsedFile(
-      provider.languageProvider,
-      file.content,
-      file.path,
-      onWarn,
-      cachedTree,
-    );
+    let parsed: ParsedFile | undefined;
+    // Fast path: a worker (during the parse phase) already produced a
+    // ParsedFile for this file via `extractParsedFile`. Reuse it
+    // directly — skips a tree-sitter re-parse on the main thread.
+    if (preExtracted !== undefined) {
+      parsed = preExtracted.get(file.path);
+      if (parsed !== undefined) preExtractedHits++;
+    }
     if (parsed === undefined) {
-      filesSkipped++;
-      continue;
+      const cachedTree = treeCache?.get(file.path);
+      parsed = extractParsedFile(
+        provider.languageProvider,
+        file.content,
+        file.path,
+        onWarn,
+        cachedTree,
+      );
+      if (parsed === undefined) {
+        filesSkipped++;
+        continue;
+      }
     }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
+  }
+  if (PROF && preExtracted !== undefined) {
+    logger.warn(`[scope-resolution prof] pre-extracted hits: ${preExtractedHits}/${files.length}`);
   }
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
 
