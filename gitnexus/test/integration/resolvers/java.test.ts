@@ -456,9 +456,7 @@ describe('Java variadic call resolution', () => {
     // enforced so the edge is created. This test documents the legacy
     // behavior; the negative assertion is a flip-blocker for registry-primary.
     const calls = getRelationships(result, 'CALLS');
-    const zeroArgFmtCall = calls.find(
-      (c) => c.target === 'format' && c.source === 'badCall',
-    );
+    const zeroArgFmtCall = calls.find((c) => c.target === 'format' && c.source === 'badCall');
     expect(zeroArgFmtCall).toBeDefined();
   });
 });
