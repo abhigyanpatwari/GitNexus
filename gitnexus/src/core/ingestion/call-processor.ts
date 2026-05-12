@@ -42,12 +42,14 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
+  CLASS_CONTAINER_TYPES,
   FUNCTION_NODE_TYPES,
-  findEnclosingClassId,
   findEnclosingClassInfo,
   genericFuncName,
   inferFunctionLabel,
 } from './utils/ast-helpers.js';
+import type { FieldInfo, FieldExtractorContext } from './field-types.js';
+import type { LanguageProvider } from './language-provider.js';
 import { typeTagForId, constTagForId, buildCollisionGroups } from './utils/method-props.js';
 import type { MethodInfo } from './method-types.js';
 import {
@@ -77,6 +79,58 @@ import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
 import { logger } from '../logger.js';
+
+// ── Property-prepass helpers (parity with parse-worker.ts) ──
+// These mirror the sequential-path equivalents in parse-worker.ts so the main-
+// thread `processCalls` pre-pass produces byte-identical Property nodes/symbols
+// to the worker pool. Drift between the two paths breaks the
+// `incremental ≡ --force` invariant the moment a repo crosses the worker
+// threshold between runs.
+
+/** Walk up to the nearest enclosing class/struct/interface AST node. */
+const findEnclosingClassNode = (node: SyntaxNode): SyntaxNode | null => {
+  let current = node.parent;
+  while (current) {
+    if (CLASS_CONTAINER_TYPES.has(current.type)) return current;
+    current = current.parent;
+  }
+  return null;
+};
+
+/** No-op SymbolTable stub for FieldExtractorContext — matches parse-worker. */
+const NOOP_SYMBOL_TABLE: SymbolTableReader = {
+  lookupExact: () => undefined,
+  lookupExactFull: () => undefined,
+  lookupExactAll: () => [],
+  lookupCallableByName: () => [],
+  getFiles: () => [][Symbol.iterator](),
+  getStats: () => ({ fileCount: 0 }),
+};
+
+/**
+ * Extract (and cache) field info for a class node. Cache is passed in so it
+ * stays scoped to a single `processCalls` invocation rather than leaking
+ * across analyze runs (worker uses module-level caching because each worker
+ * process is short-lived; the main thread is not).
+ */
+const getFieldInfo = (
+  classNode: SyntaxNode,
+  provider: LanguageProvider,
+  context: FieldExtractorContext,
+  cache: Map<number, Map<string, FieldInfo>>,
+): Map<string, FieldInfo> | undefined => {
+  if (!provider.fieldExtractor) return undefined;
+  const cacheKey = classNode.startIndex;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  const result = provider.fieldExtractor.extract(classNode, context);
+  if (!result?.fields?.length) return undefined;
+  const map = new Map<string, FieldInfo>();
+  for (const field of result.fields) map.set(field.name, field);
+  cache.set(cacheKey, map);
+  return map;
+};
+
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
 export type ExportedTypeMap = Map<string, Map<string, string>>;
@@ -861,12 +915,15 @@ export const processCalls = async (
   }
 
   // ── Property-registration pre-pass ──
-  // Register all properties (e.g. Ruby attr_accessor) in the FieldRegistry
-  // BEFORE the resolution loop. This ensures cross-file field-type lookups
-  // (e.g. `user.address.save → Address#save`) succeed regardless of file
-  // processing order. Without this pre-pass, field type disambiguation fails
-  // when the declaring file is processed AFTER the consuming file.
-  for (const { file, language, provider, matches } of prepared) {
+  // Register all routed properties (e.g. Ruby attr_accessor) BEFORE the
+  // resolution loop so cross-file field-type lookups (e.g.
+  // `user.address.save → Address#save`) succeed regardless of file
+  // processing order. This MUST stay in lockstep with the equivalent
+  // worker-path block in parse-worker.ts (kind === 'properties') — any
+  // divergence between the two paths breaks the `incremental ≡ --force`
+  // invariant once a repo crosses the worker threshold between runs.
+  const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+  for (const { file, language, provider, matches, typeEnv } of prepared) {
     const callRouter = provider.callRouter;
     if (!callRouter) continue;
     matches.forEach((match) => {
@@ -877,10 +934,42 @@ export const processCalls = async (
       if (!callNameNode) return;
       const routed = callRouter(callNameNode.text, captureMap['call']);
       if (!routed || routed.kind !== 'properties') return;
+
+      const propEnclosingInfo = findEnclosingClassInfo(
+        captureMap['call'],
+        file.path,
+        provider.resolveEnclosingOwner,
+      );
+      const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
+
+      // Enrich routed properties with FieldExtractor metadata so types
+      // discovered from constructor assignments (e.g. `@address = Address.new`)
+      // are propagated even when the routing payload itself lacks declaredType.
+      let routedFieldMap: Map<string, FieldInfo> | undefined;
+      if (provider.fieldExtractor && typeEnv) {
+        const classNode = findEnclosingClassNode(captureMap['call']);
+        if (classNode) {
+          routedFieldMap = getFieldInfo(
+            classNode,
+            provider,
+            {
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE,
+              filePath: file.path,
+              language,
+            },
+            fieldInfoCache,
+          );
+        }
+      }
+
       const fileId = generateId('File', file.path);
-      const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
       for (const item of routed.items) {
-        const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+        const routedFieldInfo = routedFieldMap?.get(item.propName);
+        const propQualifiedName = propEnclosingInfo
+          ? `${propEnclosingInfo.className}.${item.propName}`
+          : item.propName;
+        const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
         graph.addNode({
           id: nodeId,
           label: 'Property',
@@ -892,11 +981,29 @@ export const processCalls = async (
             language,
             isExported: true,
             description: item.accessorType,
+            ...(item.declaredType
+              ? { declaredType: item.declaredType }
+              : routedFieldInfo?.type
+                ? { declaredType: routedFieldInfo.type }
+                : {}),
+            ...(routedFieldInfo?.visibility !== undefined
+              ? { visibility: routedFieldInfo.visibility }
+              : {}),
+            ...(routedFieldInfo?.isStatic !== undefined
+              ? { isStatic: routedFieldInfo.isStatic }
+              : {}),
+            ...(routedFieldInfo?.isReadonly !== undefined
+              ? { isReadonly: routedFieldInfo.isReadonly }
+              : {}),
           },
         });
         ctx.model.symbols.add(file.path, item.propName, nodeId, 'Property', {
           ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
-          ...(item.declaredType ? { declaredType: item.declaredType } : {}),
+          ...(item.declaredType
+            ? { declaredType: item.declaredType }
+            : routedFieldInfo?.type
+              ? { declaredType: routedFieldInfo.type }
+              : {}),
         });
         const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         graph.addRelationship({
@@ -991,9 +1098,10 @@ export const processCalls = async (
             provider,
           );
           const srcId = enclosing || generateId('File', file.path);
-          // Defer resolution: Ruby attr_accessor properties are registered during
-          // this same loop, so cross-file lookups fail if the declaring file hasn't
-          // been processed yet. Collect now, resolve after all files are done.
+          // Defer resolution so write-access tracking sees the FINAL graph
+          // state — properties from the pre-pass are present, but receiver-type
+          // resolution can still depend on inference that completes during the
+          // main loop. Resolve after all files have been processed.
           pendingWrites.push({ receiverTypeName, propertyName, filePath: file.path, srcId });
         }
         // Assignment-only capture (no @call sibling): skip the rest of this
