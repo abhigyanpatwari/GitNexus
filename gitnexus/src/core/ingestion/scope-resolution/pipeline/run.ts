@@ -184,6 +184,7 @@ export function runScopeResolution(
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
   const nodeLookup = buildGraphNodeLookup(graph);
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
+  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
 
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
@@ -205,7 +206,7 @@ export function runScopeResolution(
   // the type system.
   const indexes = {
     ...finalized,
-    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId),
+    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId),
   };
 
   // Build the workspace resolution index ONCE — scope-valued lookups
@@ -283,6 +284,17 @@ export function runScopeResolution(
     workspaceIndex,
     readonlyModel,
   );
+  const unresolvedReceiverExtras =
+    provider.emitUnresolvedReceiverEdges !== undefined
+      ? provider.emitUnresolvedReceiverEdges(
+          graph,
+          indexes,
+          parsedFiles,
+          nodeLookup,
+          handledSites,
+          readonlyModel,
+        )
+      : 0;
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
@@ -295,6 +307,7 @@ export function runScopeResolution(
     {
       allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
       isFileLocalDef: provider.isFileLocalDef,
+      isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
@@ -330,7 +343,7 @@ export function runScopeResolution(
     filesSkipped,
     importsEmitted,
     resolve: resolveStats,
-    referenceEdgesEmitted: emitted + receiverExtras + freeCallExtras,
+    referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
     referenceSkipped: skipped,
   };
 }
