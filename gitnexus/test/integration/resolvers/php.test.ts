@@ -2093,3 +2093,64 @@ describe('PHP MRO arity-mismatch fallthrough', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// @declaration.variable double-match dedup on typed properties.
+// Pre-fix, the catch-all property pattern in query.ts (no `type:` constraint)
+// also matched typed property declarations and emitted a stray Variable def
+// alongside the legitimate Property def. captures.ts now pre-scans rawMatches
+// for @declaration.property anchors and suppresses the duplicate.
+// ---------------------------------------------------------------------------
+
+describe('PHP typed-property double-match dedup', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-property-dedup'), () => {});
+  }, 60000);
+
+  it('detects the Mixed class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Mixed');
+  });
+
+  it('emits exactly one Property def for the typed property `$repo`', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'repo').length).toBe(1);
+  });
+
+  it('emits exactly one Property def for the constructor-promoted typed `$promotedRepo`', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'promotedRepo').length).toBe(1);
+  });
+
+  it('emits zero stray Variable defs for typed property and promoted typed parameter', () => {
+    // Pre-fix: a Variable def named `$repo` and `$promotedRepo` (no `$` strip)
+    // would slip through the catch-all pattern. Post-fix: zero.
+    const variables = getNodesByLabel(result, 'Variable');
+    expect(variables.filter((n) => n === '$repo' || n === 'repo').length).toBe(0);
+    expect(variables.filter((n) => n === '$promotedRepo' || n === 'promotedRepo').length).toBe(0);
+  });
+
+  it('untyped property `$id` still emits its catch-all Property def (regression check)', () => {
+    // The untyped catch-all @declaration.variable pattern is the legitimate
+    // path for `public $id;`. Make sure the cross-match dedup does not
+    // over-suppress untyped declarations — they have no @declaration.property
+    // sibling, so their anchor is not in the typedPropertyAnchorIds set.
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'id').length).toBe(1);
+  });
+
+  it('no `$`-prefixed Property or Variable defs leak from typed declarations', () => {
+    // The catch-all branch does NOT run the `$`-strip normalization, so any
+    // def it produces for a typed property carries a `$`-prefixed name —
+    // a known receiver-binding lookup pollution vector. Post-fix the
+    // catch-all is suppressed for typed property_declaration anchors, so
+    // no `$repo` / `$promotedRepo` def should appear at any label.
+    for (const n of result.graph.iterNodes()) {
+      const name = String(n.properties.name);
+      if (name === '$repo' || name === '$promotedRepo') {
+        throw new Error(`leaked $-prefixed def: ${n.label}|${name}|${n.id}`);
+      }
+    }
+  });
+});

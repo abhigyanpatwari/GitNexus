@@ -75,6 +75,29 @@ export function emitPhpScopeCaptures(
   const rawMatches = getPhpScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
+  // Pre-scan: collect anchor node IDs of property_declaration nodes already
+  // matched by the typed @declaration.property pattern (query.ts ~lines 95–98).
+  // The untyped @declaration.variable catch-all (query.ts ~lines 101–103) is
+  // intentionally loose — it has no `type:` constraint, so tree-sitter also
+  // matches it against typed property declarations and emits a second capture
+  // for the same property_declaration anchor. Graph-level def-id collision
+  // currently masks the duplicate at the node-emit layer, but the catch-all
+  // capture still flows through scope-binding / name-keyed registries with a
+  // `$`-prefixed name that the typed branch's `$`-strip never normalizes —
+  // a known vector for receiver-binding lookup pollution. The two patterns
+  // produce separate rawMatches entries with separate `grouped` maps, so the
+  // dedup has to be cross-match: build the set here, then skip
+  // @declaration.variable matches whose anchor is in it (loop below).
+  const typedPropertyAnchorIds = new Set<number>();
+  for (const m of rawMatches) {
+    for (const c of m.captures) {
+      if (c.name === 'declaration.property') {
+        typedPropertyAnchorIds.add(c.node.id);
+        break;
+      }
+    }
+  }
+
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
     // `@`; we put it back so the central extractor's prefix lookups work.
@@ -84,6 +107,14 @@ export function emitPhpScopeCaptures(
       grouped[tag] = nodeToCapture(tag, c.node);
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // Cross-match dedup for the typed-property double-match described above:
+    // skip @declaration.variable matches whose anchor was already captured as
+    // @declaration.property in an earlier match.
+    if (grouped['@declaration.variable'] !== undefined) {
+      const varCap = m.captures.find((c) => c.name === 'declaration.variable');
+      if (varCap !== undefined && typedPropertyAnchorIds.has(varCap.node.id)) continue;
+    }
 
     // Normalize PHP property declarations: strip leading `$` from
     // `@declaration.name` for @declaration.property matches. PHP stores
