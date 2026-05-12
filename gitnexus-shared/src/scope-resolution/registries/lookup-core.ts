@@ -423,13 +423,30 @@ function applyArityFilter(
   }
 
   let anyCompatible = false;
+  let anyUnknown = false;
   for (const state of perCandidate.values()) {
     const verdict = arityFn(callsite, state.def);
     state.signals.arityVerdict = verdict;
     if (verdict === 'compatible') anyCompatible = true;
+    else if (verdict === 'unknown') anyUnknown = true;
   }
 
-  if (!anyCompatible) return;
+  // When ALL candidates are 'incompatible' (none compatible, none unknown),
+  // the call is genuinely arity-broken — drop every candidate so the
+  // registry returns no resolution. This matches the PHP variadic case
+  // f(int $req, ...$rest) called with zero args: every candidate definitively
+  // rejects, and emitting an edge to a definitively-rejected callable is
+  // a false positive. When some candidates are 'unknown' (missing metadata),
+  // keep the set so downstream evidence can break the tie — that's the
+  // original safety-fallback behavior.
+  if (!anyCompatible) {
+    if (!anyUnknown) {
+      for (const defId of perCandidate.keys()) {
+        perCandidate.delete(defId);
+      }
+    }
+    return;
+  }
 
   // Filter: when at least one compatible candidate exists, drop incompatibles.
   for (const [defId, state] of perCandidate) {

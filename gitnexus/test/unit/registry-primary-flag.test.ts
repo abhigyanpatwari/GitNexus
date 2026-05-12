@@ -148,17 +148,20 @@ describe('primaryLanguages', () => {
 
   it('returns exactly the flipped languages (env opts in unmigrated, opts out migrated)', () => {
     // Migrated languages are default-on; each must be opted out here when
-    // testing explicit env overrides. Java (unmigrated) opts in; Go stays off.
-    process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
-    process.env['REGISTRY_PRIMARY_CSHARP'] = 'false';
-    process.env['REGISTRY_PRIMARY_TYPESCRIPT'] = 'false';
-    process.env['REGISTRY_PRIMARY_GO'] = 'false';
-    process.env['REGISTRY_PRIMARY_C'] = 'false';
+    // testing explicit env overrides. Java (unmigrated) opts in.
+    // Opt out every member of MIGRATED_LANGUAGES dynamically so this test
+    // does not have to be updated each time a new language ships its
+    // Ring 3 migration (PHP joined the set in commit 69786b16; future
+    // Ring 3 additions land here without test churn).
+    for (const lang of MIGRATED_LANGUAGES) {
+      process.env[envVarNameFor(lang)] = 'false';
+    }
     process.env['REGISTRY_PRIMARY_JAVA'] = '1';
     const enabled = primaryLanguages();
     expect(enabled.has(SupportedLanguages.Python)).toBe(false);
     expect(enabled.has(SupportedLanguages.CSharp)).toBe(false);
     expect(enabled.has(SupportedLanguages.Go)).toBe(false);
+    expect(enabled.has(SupportedLanguages.PHP)).toBe(false);
     expect(enabled.has(SupportedLanguages.Java)).toBe(true);
     // Only Java is on: migrated defaults overridden off, Java explicitly on.
     expect(enabled.size).toBe(1);

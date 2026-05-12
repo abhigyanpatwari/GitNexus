@@ -27,6 +27,17 @@ import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitJavaScopeCaptures,
+  interpretJavaImport,
+  interpretJavaTypeBinding,
+  javaBindingScopeFor,
+  javaImportOwningScope,
+  javaMergeBindings,
+  javaReceiverBinding,
+  javaArityCompatibility,
+  resolveJavaImportTarget,
+} from './java/index.js';
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
@@ -65,4 +76,15 @@ export const javaProvider = defineLanguage({
   variableExtractor: createVariableExtractor(javaVariableConfig),
   classExtractor: createClassExtractor(javaClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Java),
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──
+  emitScopeCaptures: emitJavaScopeCaptures,
+  interpretImport: interpretJavaImport,
+  interpretTypeBinding: interpretJavaTypeBinding,
+  bindingScopeFor: javaBindingScopeFor,
+  importOwningScope: javaImportOwningScope,
+  mergeBindings: (_scope, bindings) => javaMergeBindings(bindings),
+  receiverBinding: javaReceiverBinding,
+  arityCompatibility: javaArityCompatibility,
+  resolveImportTarget: resolveJavaImportTarget,
 });
