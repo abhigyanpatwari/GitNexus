@@ -47,9 +47,7 @@ export function processText(text: string): number {
 
   it('emits CALLS edge from processText → estimateTokens via .js import', () => {
     const calls = getRelationships(result, 'CALLS');
-    const edge = calls.find(
-      (c) => c.source === 'processText' && c.target === 'estimateTokens',
-    );
+    const edge = calls.find((c) => c.source === 'processText' && c.target === 'estimateTokens');
     expect(edge).toBeDefined();
     expect(edge!.targetFilePath).toBe('src/utils.ts');
   });
