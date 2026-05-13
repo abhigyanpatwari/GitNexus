@@ -40,8 +40,8 @@ RUN npm prune --omit=dev --prefix gitnexus
 # node:22-bookworm-slim
 FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS runtime
 
-# curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/* \
+# curl for the healthcheck; git for cloning; ca-certificates for TLS verification.
+RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/lib/node_modules/npm \
     && rm -rf /usr/local/lib/node_modules/corepack \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
