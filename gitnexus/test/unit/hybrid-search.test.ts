@@ -1,5 +1,5 @@
 /**
- * P1 Unit Tests: Hybrid Search (mergeWithRRF)
+ * P1 Unit Tests: Hybrid Search (mergeWithRRF + hybridSearch)
  *
  * Tests: mergeWithRRF from hybrid-search.ts
  * - BM25-only merge
@@ -7,11 +7,19 @@
  * - Combined ranking
  * - Limit parameter
  * - Empty inputs
+ * - Undefined/null inputs (#1489)
+ *
+ * Tests: hybridSearch fallback when FTS unavailable (#1489)
  */
-import { describe, it, expect } from 'vitest';
-import { mergeWithRRF } from '../../src/core/search/hybrid-search.js';
+import { describe, it, expect, vi } from 'vitest';
+import { mergeWithRRF, hybridSearch } from '../../src/core/search/hybrid-search.js';
 import type { BM25SearchResult } from '../../src/core/search/bm25-index.js';
 import type { SemanticSearchResult } from '../../src/core/embeddings/types.js';
+
+vi.mock('../../src/core/search/bm25-index.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return { ...actual, searchFTSFromLbug: vi.fn() };
+});
 
 let bm25Rank = 0;
 function makeBM25(filePath: string, score: number): BM25SearchResult {
@@ -122,5 +130,73 @@ describe('mergeWithRRF', () => {
     const result = mergeWithRRF(bm25, semantic);
     expect(result[0].bm25Score).toBe(15);
     expect(result[0].semanticScore).toBeCloseTo(0.7); // 1 - distance
+  });
+
+  // Regression: #1489 — bm25Results is not iterable when FTS unavailable
+  it('does not crash when bm25Results is undefined (#1489)', () => {
+    const semantic: SemanticSearchResult[] = [makeSemantic('src/a.ts', 0.1)];
+    // Force undefined to simulate the crash path where FTS returns unexpected shape
+    const result = mergeWithRRF(undefined as any, semantic);
+    expect(result).toHaveLength(1);
+    expect(result[0].filePath).toBe('src/a.ts');
+    expect(result[0].sources).toEqual(['semantic']);
+  });
+
+  it('does not crash when semanticResults is undefined (#1489)', () => {
+    const bm25: BM25SearchResult[] = [makeBM25('src/a.ts', 10)];
+    const result = mergeWithRRF(bm25, undefined as any);
+    expect(result).toHaveLength(1);
+    expect(result[0].filePath).toBe('src/a.ts');
+    expect(result[0].sources).toEqual(['bm25']);
+  });
+
+  it('does not crash when both inputs are undefined (#1489)', () => {
+    const result = mergeWithRRF(undefined as any, undefined as any);
+    expect(result).toHaveLength(0);
+  });
+});
+
+// Regression: #1489 — hybridSearch must not crash when FTS is unavailable
+describe('hybridSearch — FTS failure fallback (#1489)', () => {
+  it('falls back to semantic-only when searchFTSFromLbug throws', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('bm25Results is not iterable'));
+
+    const mockExecuteQuery = vi.fn().mockResolvedValue([]);
+    const mockSemanticSearch = vi
+      .fn()
+      .mockResolvedValue([makeSemantic('src/semantic-hit.ts', 0.15)]);
+
+    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    expect(results).toHaveLength(1);
+    expect(results[0].filePath).toBe('src/semantic-hit.ts');
+    expect(results[0].sources).toEqual(['semantic']);
+  });
+
+  it('returns empty when both FTS and semantic return nothing', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('FTS unavailable'));
+
+    const mockExecuteQuery = vi.fn().mockResolvedValue([]);
+    const mockSemanticSearch = vi.fn().mockResolvedValue([]);
+
+    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    expect(results).toHaveLength(0);
+  });
+
+  it('works normally when FTS succeeds', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({
+      results: [{ filePath: 'src/fts-hit.ts', score: 5, rank: 1 }],
+      ftsAvailable: true,
+    });
+
+    const mockExecuteQuery = vi.fn().mockResolvedValue([]);
+    const mockSemanticSearch = vi.fn().mockResolvedValue([]);
+
+    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    expect(results).toHaveLength(1);
+    expect(results[0].filePath).toBe('src/fts-hit.ts');
+    expect(results[0].sources).toEqual(['bm25']);
   });
 });
