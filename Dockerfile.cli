@@ -58,6 +58,15 @@ COPY --from=builder --chown=node:node /app/gitnexus/package.json ./gitnexus/pack
 COPY --from=builder --chown=node:node /app/gitnexus/scripts/install-duckdb-extension.mjs ./gitnexus/scripts/install-duckdb-extension.mjs
 COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 
+# Expose the `gitnexus` binary on PATH so the documented Docker workflow
+# (`docker compose exec gitnexus-server gitnexus index /workspace/<repo>`)
+# works without users having to invoke `node /app/gitnexus/dist/cli/index.js`.
+# `npm prune --omit=dev` in the builder stage strips `node_modules/.bin/`
+# entries, so the `gitnexus` bin declared in package.json (`dist/cli/index.js`,
+# which already carries `#!/usr/bin/env node` and 755 perms) is otherwise
+# unreachable from $PATH.
+RUN ln -s /app/gitnexus/dist/cli/index.js /usr/local/bin/gitnexus
+
 USER node
 
 # The web UI defaults to http://localhost:4747 - keep that contract.
