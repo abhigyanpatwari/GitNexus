@@ -34,6 +34,14 @@ describe('sanitizeMermaidMarkdown', () => {
     expect(sanitized).toContain('Client -->|HTTP params| Script');
   });
 
+  it('escapes backslashes and quotes in quoted edge labels', () => {
+    const diagram = ['graph LR', '    Script -->|doc("C:\\\\tmp")| Target'].join('\n');
+
+    const sanitized = sanitizeMermaidDiagram(diagram);
+
+    expect(sanitized).toContain('Script -->|"doc(\\"C:\\\\\\\\tmp\\")"| Target');
+  });
+
   it('aliases bare node IDs that contain dots and keeps display labels', () => {
     const diagram = [
       'graph LR',
@@ -53,6 +61,17 @@ describe('sanitizeMermaidMarkdown', () => {
     expect(sanitized).toContain(
       'lbpwebjs-main_xsl["lbpwebjs-main.xsl"] -->|fetches| TEI-XML[(TEI XML in eXist)]',
     );
+  });
+
+  it('aliases unsafe node IDs while preserving existing inline labels', () => {
+    const diagram = [
+      'graph LR',
+      '    file.name.ts[(eXist-db XML)] --> target.node["Target node"]',
+    ].join('\n');
+
+    const sanitized = sanitizeMermaidDiagram(diagram);
+
+    expect(sanitized).toContain('file_name_ts[(eXist-db XML)] --> target_node["Target node"]');
   });
 
   it('only rewrites fenced Mermaid blocks in markdown', () => {

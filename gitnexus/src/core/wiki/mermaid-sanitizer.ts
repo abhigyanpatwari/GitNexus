@@ -75,7 +75,7 @@ function quoteUnsafeEdgeLabels(line: string): string {
     ) {
       return match;
     }
-    return `|"${trimmed.replace(/"/g, '\\"')}"|`;
+    return `|"${escapeMermaidLabel(trimmed)}"|`;
   });
 }
 
@@ -85,13 +85,10 @@ function sanitizeNodeReference(segment: string, aliasFor: (id: string) => string
 
   const [, leading, id, suffix, trailing] = match;
   if (!NODE_ID_RE.test(id) || !UNSAFE_NODE_ID_RE.test(id)) return segment;
-  if (
-    suffix.trim().startsWith('[') ||
-    suffix.trim().startsWith('(') ||
-    suffix.trim().startsWith('{')
-  ) {
-    return segment;
-  }
+  const hasInlineLabel =
+    suffix.trim().startsWith('[') || suffix.trim().startsWith('(') || suffix.trim().startsWith('{');
+
+  if (hasInlineLabel) return `${leading}${aliasFor(id)}${suffix}${trailing}`;
 
   return `${leading}${aliasFor(id)}["${escapeMermaidLabel(id)}"]${suffix}${trailing}`;
 }
