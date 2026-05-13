@@ -1,11 +1,12 @@
 /**
  * PHP: PSR-4 imports, extends, implements, trait use, enums, calls + ambiguous disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,12 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Wrap vitest's `it` so legacy-DAG-only divergences (commit af9af4a9 U1/U3)
+// are skipped under REGISTRY_PRIMARY_PHP=0. The skip list lives in
+// helpers.ts:LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.php — sibling pattern
+// to csharp/typescript/python.
+const it = createResolverParityIt('php');
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
@@ -91,6 +98,10 @@ describe('PHP heritage & import resolution', () => {
     expect(targets).toContain('label');
   });
 
+  // save($entity: mixed) calls $entity->getId() — the receiver is typed `mixed`
+  // so there is no TypeRef in scope. The scope-resolver `emitUnresolvedReceiverEdges`
+  // hook (PHP-wired) recovers this case via workspace-wide unique-name lookup,
+  // matching the legacy DAG behavior.
   it('emits CALLS edge: save → getId', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'save' && e.target === 'getId',
@@ -436,6 +447,161 @@ describe('PHP variadic call resolution', () => {
   it('detects Logger class and record method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('Logger');
     expect(getNodesByLabel(result, 'Method')).toContain('record');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Variadic arity minimum: required-arg count must be enforced for variadic
+// functions. f(int $req, ...$rest) called as f() is an ArgumentCountError at
+// PHP runtime and must NOT emit a CALLS edge from the resolver.
+// ---------------------------------------------------------------------------
+
+describe('PHP variadic arity minimum (U1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-variadic-arity-minimum'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === target);
+
+  it('emits CALLS edge for record(level, ...msgs) with arity 4 (happy path)', () => {
+    expect(callsFrom('callValidRecord', 'record').length).toBe(1);
+  });
+
+  it('emits CALLS edge for record(level) with only the required arg (arity 1)', () => {
+    expect(callsFrom('callValidRecordMin', 'record').length).toBe(1);
+  });
+
+  it('does NOT emit CALLS edge for record() with zero args (below required=1)', () => {
+    expect(callsFrom('callTooFewRecord', 'record').length).toBe(0);
+  });
+
+  it('emits CALLS edge for format() — pure variadic, required=0', () => {
+    expect(callsFrom('callPureVariadic', 'format').length).toBe(1);
+  });
+
+  it('emits CALLS edge for pad("x") — required+optional+variadic, only required given', () => {
+    expect(callsFrom('callPadMin', 'pad').length).toBe(1);
+  });
+
+  it('does NOT emit CALLS edge for pad() with zero args (below required=1)', () => {
+    expect(callsFrom('callPadTooFew', 'pad').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transitive trait MRO: trait A uses B uses C — Consumer using A must see C's
+// methods. Current depth-2 expansion in buildPhpMro silently drops methods
+// from 3+ level chains.
+// ---------------------------------------------------------------------------
+
+describe('PHP transitive trait MRO (U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-transitive-traits'), () => {});
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === target);
+
+  it('detects 3 traits and 1 class', () => {
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['TraitA', 'TraitB', 'TraitC']);
+    expect(getNodesByLabel(result, 'Class')).toContain('Consumer');
+  });
+
+  it('depth-1: $this->aMethod() resolves to TraitA::aMethod', () => {
+    expect(callsFrom('callDepthOne', 'aMethod').length).toBe(1);
+  });
+
+  it('depth-2: $this->bMethod() resolves to TraitB::bMethod (TraitA uses TraitB)', () => {
+    expect(callsFrom('callDepthTwo', 'bMethod').length).toBe(1);
+  });
+
+  it('depth-3: $this->deepMethod() resolves to TraitC::deepMethod (TraitA → TraitB → TraitC)', () => {
+    expect(callsFrom('callDepthThree', 'deepMethod').length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parent:: bypasses traits. When a class composes a trait AND extends a parent
+// that both define the same method name, parent::method() must resolve to the
+// parent class (PHP semantics), NOT the trait. $this->method() still goes to
+// the trait (PHP's own-class > trait > parent precedence).
+// ---------------------------------------------------------------------------
+
+describe('PHP parent:: bypasses traits (U3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-parent-vs-trait'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === file,
+    );
+
+  it('parent::record() resolves to Base::record, NOT Auditable::record', () => {
+    expect(callsFromTo('callViaParent', 'record', 'app/Base.php').length).toBe(1);
+    expect(callsFromTo('callViaParent', 'record', 'app/Auditable.php').length).toBe(0);
+  });
+
+  it('$this->record() still resolves to Auditable::record (trait shadows parent)', () => {
+    expect(callsFromTo('callViaThis', 'record', 'app/Auditable.php').length).toBe(1);
+    expect(callsFromTo('callViaThis', 'record', 'app/Base.php').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespace-aware free-call fallback. PHP's `pickUniqueGlobalCallable` must
+// reject cross-namespace candidates that the caller can't reach without an
+// explicit `use function` import. Same-namespace and globally-imported calls
+// still emit edges.
+// ---------------------------------------------------------------------------
+
+describe('PHP namespace-aware free-call fallback (U4)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-namespace-fallback-isolation'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file?: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === source &&
+        c.target === target &&
+        (file === undefined || c.targetFilePath === file),
+    );
+
+  it('rejects cross-namespace candidate when caller has no use-function import', () => {
+    // callNoImport (in \App) calls format('x'). Workspace has \App\Utils\format/1
+    // and \Vendor\Utils\format/2. Caller is in \App — NOT same namespace as
+    // either candidate, and no `use function` for `format` is in scope.
+    // Expected: NO CALLS edge.
+    expect(callsFromTo('callNoImport', 'format').length).toBe(0);
+  });
+
+  it('resolves same-namespace free call (caller in App\\Utils → App\\Utils\\format)', () => {
+    expect(callsFromTo('callSameNamespace', 'format', 'src/App/Utils/Format.php').length).toBe(1);
+  });
+
+  it('resolves use-function-imported alias (vendorFormat → Vendor\\Utils\\format)', () => {
+    // `use function Vendor\Utils\format as vendorFormat;`. Caller in \App calls
+    // vendorFormat('x', 80) — the import target is reachable. The CALLS edge
+    // may surface against either the alias name (`vendorFormat`) or the
+    // canonical function name (`format` in the vendor file) depending on
+    // dedup ordering; either way, exactly one edge total.
+    expect(
+      callsFromTo('callImported', 'vendorFormat').length +
+        callsFromTo('callImported', 'format', 'src/Vendor/Utils/Format.php').length,
+    ).toBe(1);
   });
 });
 
@@ -1805,5 +1971,327 @@ describe('PHP Child extends ParentClass — inherited method resolution (SM-9)',
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fully-qualified type-hint resolution (Codex PR #1497 review, finding 1).
+//
+// Two `User` classes coexist in the workspace: `App\Models\User` and
+// `App\Other\User`. A service file imports the simple-name `User` from
+// App\Models, but uses a fully-qualified `\App\Other\User` in a parameter
+// annotation. PHP runtime semantics: the leading `\` is an absolute namespace
+// path; the parameter is always `App\Other\User`, even when the simple
+// `User` is bound to a different class by `use`.
+//
+// Pre-fix: `normalizePhpType` strips the qualifier so the TypeRef carries
+// only `User`, then `findClassBindingInScope` walks the scope chain and
+// resolves to the imported `App\Models\User` — emitting a CALLS edge to the
+// wrong class. Post-fix: qualified form survives on `rawName`, the
+// QualifiedNameIndex fallback (or a PHP-specific qualified lookup) routes
+// the call to App\Other\User::record.
+// ---------------------------------------------------------------------------
+
+describe('PHP fully-qualified type-hint resolution (Codex #1497)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-fqn-cross-namespace'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, file: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === file,
+    );
+
+  it('detects both User classes in distinct namespaces', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    // Exactly two User entries — one per namespace.
+    const userClasses = getNodesByLabelFull(result, 'Class').filter((n) => n.name === 'User');
+    expect(userClasses.length).toBe(2);
+    const userFiles = userClasses.map((c) => c.properties.filePath as string).sort();
+    expect(
+      userFiles.some((f) => f.includes('Models/User.php') || f.includes('Models\\User.php')),
+    ).toBe(true);
+    expect(
+      userFiles.some((f) => f.includes('Other/User.php') || f.includes('Other\\User.php')),
+    ).toBe(true);
+  });
+
+  it('\\App\\Other\\User parameter resolves $u->record() to app/Other/User.php (NOT app/Models/User.php)', () => {
+    // The bug Codex flagged: FQN parameter collapses to simple `User`, then
+    // resolves to the imported `App\Models\User` instead of the explicit
+    // `\App\Other\User` named in the annotation. Post-fix: exactly one edge,
+    // pointing to the FQN target.
+    expect(callsFromTo('save', 'record', 'app/Other/User.php').length).toBe(1);
+    expect(callsFromTo('save', 'record', 'app/Models/User.php').length).toBe(0);
+  });
+
+  it('simple-name `User $u` parameter resolves to the imported App\\Models\\User (control case)', () => {
+    // Sanity check that unqualified type-hint resolution still works via the
+    // `use App\Models\User;` import. Without this control, U2's normalizer
+    // change could regress the simple-name path and we'd miss it.
+    expect(callsFromTo('saveLocal', 'record', 'app/Models/User.php').length).toBe(1);
+    expect(callsFromTo('saveLocal', 'record', 'app/Other/User.php').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MRO arity-mismatch: most-derived override with incompatible arity must NOT
+// fall through to an arity-compatible ancestor (PHP throws ArgumentCountError
+// at runtime). See receiver-bound-calls.ts Case 2.
+// ---------------------------------------------------------------------------
+
+describe('PHP MRO arity-mismatch fallthrough', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-mro-arity-mismatch'), () => {});
+  }, 60000);
+
+  const callsFromTo = (source: string, target: string, targetFilePath: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) => c.source === source && c.target === target && c.targetFilePath === targetFilePath,
+    );
+
+  it('detects ParentModel, ChildModel, Orphan, and Caller classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'Caller',
+      'ChildModel',
+      'Orphan',
+      'ParentModel',
+    ]);
+  });
+
+  it('arity-incompatible most-derived override does NOT fall through to ParentModel::method', () => {
+    // Pre-fix bug: `$child->method(1)` with ChildModel::method(int,int) and
+    // ParentModel::method(int) would emit a false CALLS edge to ParentModel::method.
+    // Post-fix: zero CALLS edges from callIncompatible for this site.
+    expect(callsFromTo('callIncompatible', 'method', 'app/Models/ParentModel.php').length).toBe(0);
+    expect(callsFromTo('callIncompatible', 'method', 'app/Models/ChildModel.php').length).toBe(0);
+  });
+
+  it('arity-compatible most-derived override emits exactly one CALLS edge to ChildModel::compat', () => {
+    // Happy path: ChildModel::compat(int) matches the call site $child->compat(1).
+    expect(callsFromTo('callCompatible', 'compat', 'app/Models/ChildModel.php').length).toBe(1);
+    expect(callsFromTo('callCompatible', 'compat', 'app/Models/ParentModel.php').length).toBe(0);
+  });
+
+  it('arity-incompatible class with no parent emits zero CALLS edges (regression check)', () => {
+    // Orphan::method(int,int) called with one arg, no parent class — must remain
+    // unresolved both before and after the fix.
+    expect(callsFromTo('callNoParent', 'method', 'app/Models/Orphan.php').length).toBe(0);
+  });
+
+  it('arity-compatible most-derived call still resolves to ChildModel::method (happy path)', () => {
+    // Ensure the fix did not break compatible-arity resolution.
+    expect(callsFromTo('callMostDerivedHappy', 'method', 'app/Models/ChildModel.php').length).toBe(
+      1,
+    );
+    expect(callsFromTo('callMostDerivedHappy', 'method', 'app/Models/ParentModel.php').length).toBe(
+      0,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// @declaration.variable double-match dedup on typed properties.
+// Pre-fix, the catch-all property pattern in query.ts (no `type:` constraint)
+// also matched typed property declarations and emitted a stray Variable def
+// alongside the legitimate Property def. captures.ts now pre-scans rawMatches
+// for @declaration.property anchors and suppresses the duplicate.
+// ---------------------------------------------------------------------------
+
+describe('PHP typed-property double-match dedup', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-property-dedup'), () => {});
+  }, 60000);
+
+  it('detects the Mixed class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Mixed');
+  });
+
+  it('emits exactly one Property def for the typed property `$repo`', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'repo').length).toBe(1);
+  });
+
+  it('emits exactly one Property def for the constructor-promoted typed `$promotedRepo`', () => {
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'promotedRepo').length).toBe(1);
+  });
+
+  it('emits zero stray Variable defs for typed property and promoted typed parameter', () => {
+    // Pre-fix: a Variable def named `$repo` and `$promotedRepo` (no `$` strip)
+    // would slip through the catch-all pattern. Post-fix: zero.
+    const variables = getNodesByLabel(result, 'Variable');
+    expect(variables.filter((n) => n === '$repo' || n === 'repo').length).toBe(0);
+    expect(variables.filter((n) => n === '$promotedRepo' || n === 'promotedRepo').length).toBe(0);
+  });
+
+  it('untyped property `$id` still emits its catch-all Property def (regression check)', () => {
+    // The untyped catch-all @declaration.variable pattern is the legitimate
+    // path for `public $id;`. Make sure the cross-match dedup does not
+    // over-suppress untyped declarations — they have no @declaration.property
+    // sibling, so their anchor is not in the typedPropertyAnchorIds set.
+    const properties = getNodesByLabel(result, 'Property');
+    expect(properties.filter((n) => n === 'id').length).toBe(1);
+  });
+
+  it('no `$`-prefixed Property or Variable defs leak from typed declarations', () => {
+    // The catch-all branch does NOT run the `$`-strip normalization, so any
+    // def it produces for a typed property carries a `$`-prefixed name —
+    // a known receiver-binding lookup pollution vector. Post-fix the
+    // catch-all is suppressed for typed property_declaration anchors, so
+    // no `$repo` / `$promotedRepo` def should appear at any label.
+    for (const n of result.graph.iterNodes()) {
+      const name = String(n.properties.name);
+      if (name === '$repo' || name === '$promotedRepo') {
+        throw new Error(`leaked $-prefixed def: ${n.label}|${name}|${n.id}`);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic PHP constructs MUST NOT capture as resolvable references.
+// Findings 1-7 of the PR #1497 adversarial review confirmed via grammar
+// inspection that $obj->$method(), call_user_func(...), array/string
+// callables, and dynamic property reads produce zero captures. This suite
+// locks that invariant in regression so a future query.ts edit cannot
+// silently relax `name: (name)` to `name: (_)` and reintroduce false-
+// positive edges.
+// ---------------------------------------------------------------------------
+
+describe('PHP dynamic dispatch — negative regression suite', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-dynamic-calls'), () => {});
+  }, 60000);
+
+  const callsFromDynamicTo = (target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.target === target &&
+        // Source is some method on `Dynamic` (the file under test).
+        c.sourceFilePath === 'app/Services/Dynamic.php',
+    );
+
+  it('detects the Dynamic and Targets classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Dynamic');
+    expect(getNodesByLabel(result, 'Class')).toContain('Targets');
+  });
+
+  it('sanity check: non-dynamic call DOES emit an edge', () => {
+    // Without this, every zero-edge assertion below would pass even if the
+    // pipeline emitted no CALLS edges at all.
+    expect(callsFromDynamicTo('sanityStaticallyNamedTarget').length).toBe(1);
+  });
+
+  it('$obj->$method() emits no CALLS edge to dynamicProcess', () => {
+    expect(callsFromDynamicTo('dynamicProcess').length).toBe(0);
+  });
+
+  it('$obj->{$method}() emits no CALLS edge to dynamicBrace', () => {
+    expect(callsFromDynamicTo('dynamicBrace').length).toBe(0);
+  });
+
+  it('Class::$method() emits no CALLS edge to dynamicHandle', () => {
+    expect(callsFromDynamicTo('dynamicHandle').length).toBe(0);
+  });
+
+  it('$className::method() with untyped variable receiver emits no CALLS edge', () => {
+    // Two attractor classes (Targets and OtherTargets) both expose
+    // dynamicStaticMethod so the unresolved-receiver fallback (Finding 8 /
+    // U4) cannot fire — that isolates this assertion to the dynamic-
+    // dispatch suppression at the query / receiver-bound-calls layer.
+    expect(callsFromDynamicTo('dynamicStaticMethod').length).toBe(0);
+  });
+
+  it('$className::$method() with dynamic class and method names emits no CALLS edge', () => {
+    expect(callsFromDynamicTo('dynamicScopedDynName').length).toBe(0);
+  });
+
+  it('call_user_func / call_user_func_array string and array callables emit no CALLS edges', () => {
+    // call_user_func itself is a built-in with no workspace def, so the
+    // free-call to it is unresolved — no edge to `call_user_func`.
+    expect(callsFromDynamicTo('call_user_func').length).toBe(0);
+    expect(callsFromDynamicTo('call_user_func_array').length).toBe(0);
+    // None of the named targets reachable only via the callable argument
+    // should pick up a false-positive edge.
+    expect(callsFromDynamicTo('dynamicCallableMethod').length).toBe(0);
+    expect(callsFromDynamicTo('dynamicArrayCallableMethod').length).toBe(0);
+    expect(callsFromDynamicTo('dynamicArrayClassCallableMethod').length).toBe(0);
+  });
+
+  it('dynamic property read ($obj->$prop) emits no read-edge to dynamicProp', () => {
+    // No read-access property capture pattern exists in query.ts at all
+    // (Finding 2). Verify no CALLS / READS / write edge targets `dynamicProp`.
+    expect(callsFromDynamicTo('dynamicProp').length).toBe(0);
+    const reads = getRelationships(result, 'READS').filter(
+      (r) => r.target === 'dynamicProp' && r.sourceFilePath === 'app/Services/Dynamic.php',
+    );
+    expect(reads.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// phpEmitUnresolvedReceiverEdges exact-required-arity gate (Finding 8 / U4).
+// The 0.6-confidence fallback for untyped receivers now requires argCount
+// to exactly match the candidate's required parameter count for fixed-
+// arity candidates. Variadic candidates keep the relaxed argCount >=
+// required semantics.
+// ---------------------------------------------------------------------------
+
+describe('PHP unresolved-receiver fallback exact-required-arity gate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-unresolved-receiver-arity'),
+      () => {},
+    );
+  }, 60000);
+
+  const fallbackEdgeFromTo = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (c) =>
+        c.source === source && c.target === target && c.targetFilePath === 'app/Models/Handler.php',
+    );
+
+  it('detects Handler and Caller classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Handler');
+    expect(getNodesByLabel(result, 'Class')).toContain('Caller');
+  });
+
+  it('happy path: argCount === required (0===0) emits 0.6 fallback edge', () => {
+    expect(fallbackEdgeFromTo('callHappyPath', 'happyPath').length).toBe(1);
+  });
+
+  it('argCount === required (1===1) on candidate with default param still emits edge', () => {
+    expect(fallbackEdgeFromTo('callDefaultExactRequired', 'withDefault').length).toBe(1);
+  });
+
+  it('argCount > required (2>1) on candidate with default param emits NO edge post-fix', () => {
+    // Pre-fix: first-stage narrowOverloadCandidates accepted (1 <= 2 <= 2).
+    // Post-fix: exact-required gate rejects (2 !== 1).
+    expect(fallbackEdgeFromTo('callDefaultBeyondRequired', 'withDefault').length).toBe(0);
+  });
+
+  it('variadic candidate, argCount === required (1===1) emits edge', () => {
+    expect(fallbackEdgeFromTo('callVariadicAtRequired', 'variadicLog').length).toBe(1);
+  });
+
+  it('variadic candidate, argCount > required (2>1) emits edge (relaxed)', () => {
+    expect(fallbackEdgeFromTo('callVariadicBeyondRequired', 'variadicLog').length).toBe(1);
+  });
+
+  it('variadic candidate, argCount < required (1<2) emits NO edge', () => {
+    expect(fallbackEdgeFromTo('callVariadicBelowRequired', 'variadicLogTwoRequired').length).toBe(
+      0,
+    );
   });
 });

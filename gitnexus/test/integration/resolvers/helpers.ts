@@ -34,6 +34,52 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  php: new Set([
+    // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
+    // candidates that are definitively below required-parameter-count. The
+    // legacy DAG path does not narrow on arity, so it emits over-broad CALLS
+    // edges for variadic functions invoked with too few args even though
+    // the only candidate's required count is non-zero. Scope-resolver-only
+    // correctness win (commit af9af4a9 U1); backporting to legacy is out
+    // of scope.
+    'does NOT emit CALLS edge for record() with zero args (below required=1)',
+    'does NOT emit CALLS edge for pad() with zero args (below required=1)',
+    // `$this->method()` precedence inside a class that composes a trait AND
+    // extends a parent both defining the same method requires the augmented
+    // trait-aware MRO (trait shadows parent). The legacy DAG has no
+    // trait-aware MRO, so it fails to bind the call to the trait. Scope-
+    // resolver-only correctness win (commit af9af4a9 U3).
+    '$this->record() still resolves to Auditable::record (trait shadows parent)',
+    // Fully-qualified type-hint resolution (`\App\Other\User $u` parameter)
+    // routes through the scope-resolver's bindingAugmentations channel
+    // populated by `populatePhpNamespaceSiblings` Step 3b. The legacy DAG
+    // resolves receiver types via simple-name workspace lookup and has no
+    // namespace-prefixed binding channel, so it cannot distinguish the FQN
+    // target from a same-simple-name class reachable via `use`. Scope-
+    // resolver-only correctness win (Codex PR #1497 review, finding 1).
+    '\\App\\Other\\User parameter resolves $u->record() to app/Other/User.php (NOT app/Models/User.php)',
+    // MRO arity-mismatch on class-name receivers (`Child::method(1)` where
+    // Child::method takes 2 args and Parent::method takes 1): the legacy
+    // DAG has no arity narrowing on Case 2 (class-name) MRO walk, so it
+    // emits a false CALLS edge to Parent::method on fallthrough. Scope-
+    // resolver-only correctness win (PR #1497 review Image 1 / U1).
+    'arity-incompatible most-derived override does NOT fall through to ParentModel::method',
+    // Class-name receiver with single-class arity mismatch (no parent in
+    // the MRO chain): legacy resolves the method by name without arity
+    // gating, so it emits a CALLS edge even when arity is definitively
+    // incompatible. The scope-resolver's `narrowOverloadCandidates` check
+    // in `receiver-bound-calls.ts` Case 2 rejects this post-fix. Scope-
+    // resolver-only correctness win (PR #1497 / U1).
+    'arity-incompatible class with no parent emits zero CALLS edges (regression check)',
+    // `phpEmitUnresolvedReceiverEdges` exact-required-arity gate (PR
+    // #1497 / U4): the legacy DAG has no equivalent unresolved-receiver
+    // fallback hook, so it resolves these untyped-receiver sites via a
+    // different code path that over-emits for default-parameter and
+    // variadic-required-mismatch shapes. Scope-resolver-only correctness
+    // wins; backporting to legacy is out of scope.
+    'argCount > required (2>1) on candidate with default param emits NO edge post-fix',
+    'variadic candidate, argCount < required (1<2) emits NO edge',
+  ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
     // resolver's deterministic sort. The legacy resolver returns the

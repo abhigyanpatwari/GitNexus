@@ -11,6 +11,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
   initLbug,
@@ -20,6 +21,9 @@ import {
   executeWithReusedStatement,
   closeLbug,
   loadCachedEmbeddings,
+  deleteNodesForFile,
+  deleteAllCommunitiesAndProcesses,
+  queryImporters,
 } from './lbug/lbug-adapter.js';
 import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
@@ -29,7 +33,15 @@ import {
   ensureGitNexusIgnored,
   registerRepo,
   cleanupOldKuzuFiles,
+  INCREMENTAL_SCHEMA_VERSION,
 } from '../storage/repo-manager.js';
+import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
+import {
+  extractChangedSubgraph,
+  computeEffectiveWriteSet,
+} from './incremental/subgraph-extract.js';
+import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
 import {
   getCurrentCommit,
   getRemoteUrl,
@@ -178,23 +190,81 @@ export async function runFullAnalysis(
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
 
+  // ── Crash recovery: dirty flag forces full rebuild ────────────────
+  // If the previous incremental run set incrementalInProgress and didn't
+  // clear it, the on-disk index may be in a half-state. Cheapest path
+  // back to a known-good index is to wipe + rebuild from scratch.
+  if (existingMeta?.incrementalInProgress) {
+    log(
+      'Previous incremental run did not complete cleanly (incrementalInProgress flag set); ' +
+        'forcing full rebuild to restore a known-good index.',
+    );
+    options = { ...options, force: true };
+    // Reload meta after clearing the flag in-memory; we still want fileHashes
+    // for the post-rebuild meta carry-over, but force=true ensures the
+    // rebuild path executes.
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
-      await ensureGitNexusIgnored(repoPath);
-      return {
-        // `resolveRepoIdentityRoot` collapses worktree roots to the
-        // canonical repo basename (#1259) but leaves arbitrary subdirs
-        // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
-        repoName:
-          options.registryName ??
-          getInferredRepoName(repoPath) ??
-          path.basename(resolveRepoIdentityRoot(repoPath)),
-        repoPath,
-        stats: existingMeta.stats ?? {},
-        alreadyUpToDate: true,
-      };
+      // For git repos, even if HEAD matches lastCommit, the working tree
+      // may have uncommitted changes. Only short-circuit when the working
+      // tree is also clean — otherwise fall through to the incremental
+      // path which will hash-diff and update only changed files.
+      //
+      // We exclude paths that GitNexus itself writes during analyze:
+      //   .gitnexus/                  — db / parse cache / meta.json
+      //   .claude/, .cursor/          — auto-generated agent skill files
+      //   AGENTS.md, CLAUDE.md        — auto-updated stats blocks
+      // Counting them as dirty would perpetually defeat the up-to-date
+      // fast path because the previous analyze just wrote them
+      // (regression vs PR #1233 behavior).
+      const dirty = (() => {
+        try {
+          const out = execFileSync(
+            'git',
+            [
+              'status',
+              '--porcelain',
+              '--',
+              '.',
+              ':(exclude).gitnexus',
+              ':(exclude).gitnexus/**',
+              ':(exclude).claude',
+              ':(exclude).claude/**',
+              ':(exclude).cursor',
+              ':(exclude).cursor/**',
+              ':(exclude)AGENTS.md',
+              ':(exclude)CLAUDE.md',
+            ],
+            {
+              cwd: repoPath,
+              stdio: ['ignore', 'pipe', 'ignore'],
+              encoding: 'utf8',
+            },
+          );
+          return out.trim().length > 0;
+        } catch {
+          return true; // conservative on git failure
+        }
+      })();
+      if (!dirty) {
+        await ensureGitNexusIgnored(repoPath);
+        return {
+          // `resolveRepoIdentityRoot` collapses worktree roots to the
+          // canonical repo basename (#1259) but leaves arbitrary subdirs
+          // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
+          repoName:
+            options.registryName ??
+            getInferredRepoName(repoPath) ??
+            path.basename(resolveRepoIdentityRoot(repoPath)),
+          repoPath,
+          stats: existingMeta.stats ?? {},
+          alreadyUpToDate: true,
+        };
+      }
     }
   }
 
@@ -243,6 +313,14 @@ export async function runFullAnalysis(
     );
   }
 
+  // We *always* load the embedding cache when one is requested (regardless
+  // of the predicted `willTryIncremental`). The post-pipeline branch may
+  // disagree with the prediction (e.g. when the pipeline produces zero
+  // File nodes, `isIncremental` flips false and the full-rebuild path
+  // wipes the DB) — loading unconditionally is cheap insurance against
+  // silently dropping embeddings on a mispredicted run. The re-insert
+  // step gates itself on the actual `isIncremental` value to avoid
+  // PK-conflicts when the incremental writeback path keeps the rows.
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
@@ -270,24 +348,89 @@ export async function runFullAnalysis(
     }
   }
 
+  // ── Load incremental parse cache ──────────────────────────────────
+  // Content-addressed: safe to reuse across `--force` runs (chunks whose
+  // file contents haven't changed produce identical worker output).
+  // Loaded into a single ParseCache object that the pipeline mutates
+  // in-place (cache hits leave entries unchanged; misses add new ones).
+  const parseCache = await loadParseCache(storagePath);
+
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
-    const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-    const scaled = Math.round(p.percent * 0.6);
-    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
-    progress(p.phase, scaled, message);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      const message = p.detail
+        ? `${p.message || phaseLabel} (${p.detail})`
+        : p.message || phaseLabel;
+      progress(p.phase, scaled, message);
+    },
+    { parseCache },
+  );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
 
-  await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
-    try {
-      await fs.rm(f, { recursive: true, force: true });
-    } catch {
-      /* swallow */
+  // Compute current per-file content hashes from the pipeline's File nodes.
+  // Used both to drive the incremental DB writeback (when eligible) and to
+  // populate meta.json.fileHashes for the next run.
+  const allFilePaths: string[] = [];
+  pipelineResult.graph.forEachNode((n) => {
+    if (n.label === 'File') {
+      const fp = n.properties?.filePath as string | undefined;
+      if (fp) allFilePaths.push(fp);
+    }
+  });
+  const newFileHashes = await computeFileHashes(repoPath, allFilePaths);
+
+  // Decide incremental vs full at THIS point (post-pipeline, pre-DB).
+  // All eligibility conditions are checked here against the actual
+  // pipeline output — no separate pre-pipeline prediction to desync from
+  // (Bugbot review on PR #1479: a prediction that flipped post-pipeline
+  // could skip the embedding cache load and then take the full-rebuild
+  // path, silently losing embeddings).
+  const isIncremental =
+    !options.force &&
+    !!existingMeta &&
+    existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    !!existingMeta.fileHashes &&
+    Object.keys(existingMeta.fileHashes).length > 0 &&
+    repoHasGit &&
+    allFilePaths.length > 0;
+
+  const hashDiff = isIncremental
+    ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
+    : undefined;
+
+  if (isIncremental && hashDiff) {
+    log(
+      `Incremental: changed=${hashDiff.changed.length}, ` +
+        `added=${hashDiff.added.length}, ` +
+        `deleted=${hashDiff.deleted.length} ` +
+        `(skipping wipe + ${
+          allFilePaths.length - hashDiff.toWrite.length
+        } unchanged file rows preserved)`,
+    );
+    // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
+    // success at the meta-save step.
+    await saveMeta(storagePath, {
+      ...existingMeta!,
+      incrementalInProgress: {
+        startedAt: Date.now(),
+        toWriteCount: hashDiff.toWrite.length,
+      },
+    });
+  } else {
+    // Full rebuild path: wipe DB files first.
+    await closeLbug();
+    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+    for (const f of lbugFiles) {
+      try {
+        await fs.rm(f, { recursive: true, force: true });
+      } catch {
+        /* swallow */
+      }
     }
   }
 
@@ -298,11 +441,145 @@ export async function runFullAnalysis(
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
-    await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-      lbugMsgCount++;
-      const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-      progress('lbug', pct, msg);
-    });
+    if (isIncremental && hashDiff) {
+      // ── Incremental DB writeback ───────────────────────────────────
+      // 0. Expand the writable set with transitive importers of
+      //    changed/deleted files (bounded BFS).
+      //
+      //    Reason (Bugbot/Claude review on PR #1479): when a barrel /
+      //    re-export file C changes, cross-file resolution may update
+      //    CALLS edges between two unchanged files A and B (A imports
+      //    from C, C re-exports something from B). Those refined edges
+      //    live in `ctx.graph` but would be excluded from the subgraph
+      //    if neither endpoint is in the changed set. To catch this,
+      //    files that imported (directly OR transitively, through
+      //    other unchanged intermediaries) any changed file get pulled
+      //    into the writable set so their rows are deleted + rewritten
+      //    against the refined edges.
+      //
+      //    BFS bound: MAX_IMPORTER_BFS_DEPTH. Practically sized to
+      //    catch nested barrel chains (e.g. `index.ts → submodule/index.ts
+      //    → submodule/impl.ts`) without ballooning into a near-full-
+      //    rebuild on monorepos with deep re-export pyramids. Beyond
+      //    this depth, the "incremental ≡ full-rebuild" invariant is
+      //    self-acknowledged as best-effort; `--force` remains the
+      //    escape hatch documented in GUARDRAILS.md.
+      //
+      //    `queryImporters` reads `IMPORTS` from the pre-pipeline DB
+      //    state, so the result is "files that USED TO import the
+      //    target" — exactly the set whose previously-stored edges may
+      //    no longer match what cross-file resolution produces this run.
+      const MAX_IMPORTER_BFS_DEPTH = 4;
+      const writableFiles = new Set<string>(hashDiff.toWrite);
+      const directlyChangedCount = writableFiles.size;
+
+      // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
+      // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
+      // existing unchanged files may have IMPORTS edges whose module-
+      // resolution claim the newcomer can steal under standard JS/TS
+      // resolution (Bugbot review on PR #1479). For each added file we
+      // derive the shadow candidates and, if the candidate was a known
+      // file in the prior meta, seed it into the BFS frontier so its
+      // importers — surfaced via queryImporters — get their CALLS edges
+      // re-resolved against the new file. See shadow-candidates.ts for
+      // the full pattern catalogue.
+      const priorFileSet = new Set<string>(
+        existingMeta?.fileHashes ? Object.keys(existingMeta.fileHashes) : [],
+      );
+      const shadowSeed: string[] = [];
+      for (const added of hashDiff.added) {
+        for (const cand of shadowCandidatesFor(added)) {
+          if (priorFileSet.has(cand) && !writableFiles.has(cand)) {
+            shadowSeed.push(cand);
+          }
+        }
+      }
+
+      {
+        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
+        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const nextFrontier: string[] = [];
+          for (const f of frontier) {
+            try {
+              const importers = await queryImporters(f);
+              for (const i of importers) {
+                if (!writableFiles.has(i)) {
+                  writableFiles.add(i);
+                  nextFrontier.push(i);
+                }
+              }
+            } catch {
+              /* per-file importer query failure → skip; correctness degrades on
+                 that branch, but DB stays writable. */
+            }
+          }
+          frontier = nextFrontier;
+        }
+      }
+      const importerExpansion = writableFiles.size - directlyChangedCount;
+      if (importerExpansion > 0) {
+        log(
+          `Incremental: +${importerExpansion} importer(s) added to writable set ` +
+            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH}` +
+            (shadowSeed.length > 0 ? `, ${shadowSeed.length} shadow-seed(s)` : '') +
+            `)`,
+        );
+      }
+
+      // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
+      //    composed:
+      //      (a) `writableFiles` — toWrite ∪ transitive importers of
+      //          changed/deleted files (the bounded BFS above, reading
+      //          IMPORTS from the pre-pipeline DB).
+      //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
+      //          edges and pulls in any unchanged-side file that sits
+      //          on a writable-boundary-crossing edge (catches refined
+      //          cross-file CALLS edges that the pre-run DB couldn't
+      //          predict, e.g. a barrel re-export shifting `foo` from
+      //          B to D).
+      //    The composed set is the input to BOTH deleteNodesForFile
+      //    and extractChangedSubgraph — asymmetry between the two would
+      //    leave stale rows or PK-conflict at COPY time.
+      const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+      // Deduped: deleted entries may already appear via importer-BFS
+      // expansion (queryImporters can return a now-deleted path), which
+      // would otherwise call deleteNodesForFile twice for the same file
+      // (Bugbot LOW finding on PR #1479).
+      const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
+      for (let i = 0; i < filesToDelete.length; i++) {
+        const f = filesToDelete[i];
+        try {
+          await deleteNodesForFile(f);
+        } catch {
+          /* file may not have rows (e.g. an unparseable file) — fine */
+        }
+        if (i % 20 === 0) {
+          progress('lbug', 62, `Removing rows for changed files (${i}/${filesToDelete.length})...`);
+        }
+      }
+      // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
+      //    from the fresh pipeline output below. Required for the
+      //    "Leiden runs on the FULL graph" correctness invariant.
+      await deleteAllCommunitiesAndProcesses();
+
+      // 3. Extract the changed subgraph from the FULL ctx.graph and write
+      //    only that. Unchanged-file rows in the DB stay untouched. Pass
+      //    the SAME effectiveWriteSet so the subgraph and the deletes
+      //    cover identical files (asymmetry would silently corrupt).
+      const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+      await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
+        lbugMsgCount++;
+        const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+        progress('lbug', pct, msg);
+      });
+    } else {
+      // ── Full rebuild ───────────────────────────────────────────────
+      await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+        lbugMsgCount++;
+        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+        progress('lbug', pct, msg);
+      });
+    }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     progress('fts', 85, 'Creating search indexes...');
@@ -310,6 +587,19 @@ export async function runFullAnalysis(
     progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
+    // Runs on BOTH the full-rebuild path and the incremental path:
+    //   - Full rebuild: DB was wiped, every cached row needs to come back.
+    //   - Incremental:  changed-file rows were just deleted by
+    //                   deleteNodesForFile (which cascades to their
+    //                   embedding rows) — so their cached vectors need
+    //                   to come back too. Unchanged-file rows still
+    //                   exist; re-inserting their cached vectors would
+    //                   PK-conflict, but the per-batch try/catch below
+    //                   silently ignores those (matches the existing
+    //                   "some may fail if node was removed, that's
+    //                   fine" semantics). Bugbot review on PR #1479
+    //                   flagged that gating this on `!isIncremental`
+    //                   silently lost changed-file embeddings.
     if (cachedEmbeddings.length > 0) {
       const cachedDims = cachedEmbeddings[0].embedding.length;
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -456,6 +746,12 @@ export async function runFullAnalysis(
     const effectiveSemanticMode =
       semanticMode ??
       (runtimeCapabilities.semanticMode === 'vector-index' ? 'vector-index' : 'exact-scan');
+
+    // Convert the post-run file-hash map to the on-disk Record<string,string>
+    // shape consumed by RepoMeta.fileHashes.
+    const newFileHashesRecord: Record<string, string> = {};
+    for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
+
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -485,8 +781,33 @@ export async function runFullAnalysis(
           reason: runtimeCapabilities.reason,
         },
       },
+      // Incremental-indexing fields. Populated for git repos so the next
+      // analyze run can take the incremental DB-writeback path. Setting
+      // incrementalInProgress to undefined explicitly clears any prior
+      // dirty flag (full and incremental success paths converge here).
+      schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
     };
     await saveMeta(storagePath, meta);
+
+    // Persist the incremental parse cache for the next run. Wraps in
+    // try/catch so a cache-write failure never breaks an otherwise
+    // successful indexing run. Prune stale chunk-hash entries first so
+    // the cache file size stays bounded across runs (chunks whose
+    // composition no longer matches anything in the current scan are
+    // dead weight; the parse phase populates `usedKeys` as it processes
+    // chunks).
+    try {
+      const pruned = pruneCache(parseCache, parseCache.usedKeys);
+      if (pruned > 0) {
+        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+      }
+      await saveParseCache(storagePath, parseCache);
+    } catch (e) {
+      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
+    }
+
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
     // pipeline `force` above. The CLI maps it from
