@@ -998,8 +998,12 @@ export class LocalBackend {
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
-    } catch {
+    } catch (err: any) {
       // Module import can fail in sandboxed MCP contexts (#1489)
+      logger.warn(
+        { err: err?.message },
+        'GitNexus: bm25-index.js import failed — falling back to semantic-only',
+      );
       return { results: [], ftsUsed: false };
     }
     let ftsResponse;

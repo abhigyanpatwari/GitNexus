@@ -175,7 +175,7 @@ export const hybridSearch = async (
   let bm25Results: BM25SearchResult[] = [];
   try {
     const ftsResponse = await searchFTSFromLbug(query, limit);
-    bm25Results = ftsResponse.results;
+    bm25Results = ftsResponse?.results ?? [];
   } catch {
     // FTS unavailable — continue with semantic-only search
   }
