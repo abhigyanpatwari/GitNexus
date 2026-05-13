@@ -33,11 +33,15 @@ function compileTypeScriptProject(projectRoot) {
 
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
-compileTypeScriptProject(SHARED_ROOT);
+const tscCmd =
+  process.platform === 'win32'
+    ? path.join('node_modules', '.bin', 'tsc.cmd')
+    : path.join('node_modules', '.bin', 'tsc');
+execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: 120_000 });
 
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
-compileTypeScriptProject(ROOT);
+execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: 120_000 });
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');
