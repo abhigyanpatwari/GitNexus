@@ -50,9 +50,15 @@ export const mergeWithRRF = (
 ): HybridSearchResult[] => {
   const merged = new Map<string, HybridSearchResult>();
 
+  // Guard against undefined/null inputs (#1489) — when FTS is unavailable
+  // in the MCP process, bm25Results can arrive as undefined and the
+  // for-loop would throw "bm25Results is not iterable".
+  const safeBm25 = bm25Results ?? [];
+  const safeSemantic = semanticResults ?? [];
+
   // Process BM25 results
-  for (let i = 0; i < bm25Results.length; i++) {
-    const r = bm25Results[i];
+  for (let i = 0; i < safeBm25.length; i++) {
+    const r = safeBm25[i];
     const rrfScore = 1 / (RRF_K + i + 1); // i+1 because rank starts at 1
 
     merged.set(r.filePath, {
@@ -65,8 +71,8 @@ export const mergeWithRRF = (
   }
 
   // Process semantic results and merge
-  for (let i = 0; i < semanticResults.length; i++) {
-    const r = semanticResults[i];
+  for (let i = 0; i < safeSemantic.length; i++) {
+    const r = safeSemantic[i];
     const rrfScore = 1 / (RRF_K + i + 1);
 
     const existing = merged.get(r.filePath);
@@ -149,6 +155,9 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
  * Execute BM25 + semantic search and merge with RRF.
  * Uses LadybugDB FTS for always-fresh BM25 results (no cached data).
  * The semanticSearch function is injected to keep this module environment-agnostic.
+ *
+ * When FTS is unavailable (e.g. read-only MCP connection, missing indexes),
+ * falls back to semantic-only results instead of crashing (#1489).
  */
 export const hybridSearch = async (
   query: string,
@@ -160,8 +169,16 @@ export const hybridSearch = async (
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
 ): Promise<HybridSearchResult[]> => {
-  // Use LadybugDB FTS for always-fresh BM25 results
-  const { results: bm25Results } = await searchFTSFromLbug(query, limit);
+  // Use LadybugDB FTS for always-fresh BM25 results.
+  // If FTS fails (e.g. extension not loaded in MCP process), fall back to
+  // semantic-only search instead of crashing with "bm25Results is not iterable".
+  let bm25Results: BM25SearchResult[] = [];
+  try {
+    const ftsResponse = await searchFTSFromLbug(query, limit);
+    bm25Results = ftsResponse?.results ?? [];
+  } catch {
+    // FTS unavailable — continue with semantic-only search
+  }
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };
