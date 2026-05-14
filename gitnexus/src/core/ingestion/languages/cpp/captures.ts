@@ -301,6 +301,13 @@ export function emitCppScopeCaptures(
     out.push(grouped);
   }
 
+  // ── Emit inheritance references for scope-resolution MRO / EXTENDS ──
+  // Walk every class/struct base list and synthesize `@reference.inherits`
+  // captures consumed by the registry-primary graph bridge. The lookup name
+  // is normalized to the bare class name so `Base<T>` / `outer::v1::Base<T>`
+  // resolve through V1's simple-name `findClassBindingInScope('Base')`.
+  emitCppInheritanceCaptures(tree.rootNode, out);
+
   // ── Detect dependent-base relationships for two-phase template lookup ──
   // Walk the tree once, finding every `template_declaration` whose
   // child is a class/struct definition with a `base_class_clause` whose
@@ -312,6 +319,40 @@ export function emitCppScopeCaptures(
   detectCppDependentBases(tree.rootNode, filePath);
 
   return out;
+}
+
+/**
+ * Walk every C++ class/struct base clause and emit `@reference.inherits`
+ * captures for each base so scope resolution can resolve them into EXTENDS
+ * edges. Lookup names are normalized to bare class names (`Base<T>` → `Base`,
+ * `outer::v1::Base<T>` → `Base`) to match the V1 simple-name
+ * `findClassBindingInScope` contract. This intentionally preserves the
+ * existing scope-chain tradeoff: qualified namespace context is discarded
+ * here instead of introducing a C++-only name-resolution lane in shared
+ * ingestion infrastructure.
+ */
+function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[]): void {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'class_specifier' || node.type === 'struct_specifier') {
+      const baseClause = findChildOfType(node, ['base_class_clause']);
+      if (baseClause !== null) {
+        for (const base of iterBaseClasses(baseClause)) {
+          const baseName = extractBaseLookupName(base);
+          if (baseName.length === 0) continue;
+          out.push({
+            '@reference.inherits': nodeToCapture('@reference.inherits', base),
+            '@reference.name': syntheticCapture('@reference.name', base, baseName),
+          });
+        }
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (child !== null) stack.push(child);
+    }
+  }
 }
 
 /**
@@ -344,7 +385,7 @@ function detectCppDependentBases(root: SyntaxNode, filePath: string): void {
           if (baseClause !== null) {
             for (const base of iterBaseClasses(baseClause)) {
               if (isBaseDependent(base, params)) {
-                const baseName = extractBaseSimpleName(base);
+                const baseName = extractBaseLookupName(base);
                 if (baseName !== '') {
                   markCppDependentBase(filePath, className, baseName);
                 }
@@ -461,19 +502,35 @@ function isBaseDependent(baseNode: SyntaxNode, templateParams: Set<string>): boo
   return false;
 }
 
-/** Extract the simple name of a base class node. */
-function extractBaseSimpleName(baseNode: SyntaxNode): string {
-  if (baseNode.type === 'type_identifier') return baseNode.text;
+/**
+ * Recursively extract the bare lookup name of a base class node.
+ * Examples: `Base` → `Base`, `Base<T>` → `Base`,
+ * `outer::v1::Base<T>` → `Base`. Namespace qualifiers are intentionally
+ * dropped to align with V1 scope-chain lookup everywhere else in the
+ * registry-primary pipeline.
+ */
+function extractBaseLookupName(baseNode: SyntaxNode): string {
+  if (baseNode.type === 'type_identifier' || baseNode.type === 'identifier') return baseNode.text;
   if (baseNode.type === 'template_type') {
     const nameNode = baseNode.childForFieldName('name');
-    if (nameNode !== null) return nameNode.text;
-    // Fallback: first type_identifier descendant.
-    const id = findFirstDescendantOfType(baseNode, 'type_identifier');
+    if (nameNode !== null) return extractBaseLookupName(nameNode);
+    const id =
+      findFirstDescendantOfType(baseNode, 'type_identifier') ??
+      findFirstDescendantOfType(baseNode, 'identifier');
     if (id !== null) return id.text;
   }
   if (baseNode.type === 'qualified_identifier') {
     const nameNode = baseNode.childForFieldName('name');
-    if (nameNode !== null) return nameNode.text;
+    if (nameNode !== null) {
+      const nested = extractBaseLookupName(nameNode);
+      if (nested.length > 0) return nested;
+    }
+    for (let i = baseNode.childCount - 1; i >= 0; i--) {
+      const child = baseNode.child(i);
+      if (child === null) continue;
+      const nested = extractBaseLookupName(child);
+      if (nested.length > 0) return nested;
+    }
   }
   return '';
 }
