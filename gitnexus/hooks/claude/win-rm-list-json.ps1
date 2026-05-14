@@ -12,7 +12,10 @@ namespace GitNexusHookRm {
     public const int ErrorMoreData = 234;
     [StructLayout(LayoutKind.Sequential)]
     public struct RM_UNIQUE_PROCESS {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct RM_UNIQUE_PROCESS {
       public int dwProcessId;
+      public long ProcessStartTime;
       public long ProcessStartTime;
     }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
