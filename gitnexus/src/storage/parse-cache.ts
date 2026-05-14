@@ -77,8 +77,7 @@ const CACHE_INDEX_FILENAME = 'index.json';
 /** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
 const CHUNK_CACHE_KEY_HEX_RE = /^[a-f0-9]{64}$/;
 
-const isValidChunkCacheKey = (chunkHash: string): boolean =>
-  CHUNK_CACHE_KEY_HEX_RE.test(chunkHash);
+const isValidChunkCacheKey = (chunkHash: string): boolean => CHUNK_CACHE_KEY_HEX_RE.test(chunkHash);
 
 /** On-disk shape for the legacy single-file format. */
 interface ParseCacheFile {

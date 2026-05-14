@@ -314,12 +314,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         path.join(cacheDir, 'index.json'),
         JSON.stringify({
           version: PARSE_CACHE_VERSION,
-          keys: [
-            '../evil',
-            '/absolute',
-            'G'.repeat(64),
-            safeKey,
-          ],
+          keys: ['../evil', '/absolute', 'G'.repeat(64), safeKey],
         }),
         'utf-8',
       );
