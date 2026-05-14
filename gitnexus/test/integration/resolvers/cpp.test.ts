@@ -1972,14 +1972,100 @@ describe('C++ two-phase template lookup — dependent base suppression', () => {
   });
 });
 
-// NOTE: positive guards (this->f() resolves, non-dependent-base unqualified
-// f() resolves, namespace-qualified utils::ns_helper() resolves) inside
-// template bodies are documented gaps in C++ template-context resolution
-// independent of U3's dependent-base suppression. The U3 core asserts only
-// the negative behavior (dependent-base members are NOT bound by unqualified
-// calls); the positive cases would require additional `this` type-binding
-// and template-body member-lookup work tracked separately. See plan
-// 2026-05-13-001 follow-ups.
+describe('C++ two-phase template lookup — positive this-qualified calls', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-this-qualified'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to f (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const thisCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(thisCalls.length).toBe(1);
+    expect(thisCalls[0].targetFilePath).toContain('base.h');
+  });
+
+  it('Derived<T>::k() -> this->base_method() resolves via EXTENDS chain (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inheritedCalls = calls.filter((c) => c.source === 'k' && c.target === 'base_method');
+    expect(inheritedCalls.length).toBe(1);
+    expect(inheritedCalls[0].targetFilePath).toContain('base.h');
+  });
+});
+
+describe('C++ two-phase template lookup — paired unqualified + this-qualified in one fixture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-two-phase-paired'), () => {});
+  }, 60000);
+
+  it('Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g_unqualified' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+
+  it('Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g_this' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('base.h');
+  });
+});
+
+describe('C++ two-phase template lookup — namespace calls inside template body', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-namespace-free-call-inside-template'),
+      () => {},
+    );
+  }, 60000);
+
+  it('D<T>::g() -> utils::ns_helper() resolves (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const qualifiedCalls = calls.filter((c) => c.source === 'g' && c.target === 'ns_helper');
+    expect(qualifiedCalls.length).toBe(1);
+    expect(qualifiedCalls[0].targetFilePath).toContain('helpers.h');
+  });
+
+  it('D<T>::g() -> ns_helper_2() resolves after using-declaration (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const usingCalls = calls.filter((c) => c.source === 'g' && c.target === 'ns_helper_2');
+    expect(usingCalls.length).toBe(1);
+    expect(usingCalls[0].targetFilePath).toContain('helpers.h');
+  });
+});
+
+describe('C++ two-phase template lookup — this-> name-hiding arity mismatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-this-name-hiding-arity'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(fCalls.length).toBe(0);
+  });
+
+  it('Derived<T>::g_ok() -> this->f(42) resolves to derived overload (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g_ok' && c.target === 'f');
+    expect(fCalls.length).toBe(1);
+    expect(fCalls[0].targetFilePath).toContain('derived.h');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // U3 cross-file namespace variant: Base lives in a different file AND
@@ -2057,7 +2143,7 @@ describe('C++ ADL — parenthesized name suppresses ADL', () => {
   });
 });
 
-describe('C++ ADL — pointer-arg V1 boundary', () => {
+describe('C++ ADL — pointer arg unwrapping', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2067,16 +2153,78 @@ describe('C++ ADL — pointer-arg V1 boundary', () => {
     );
   }, 60000);
 
-  it('record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args', () => {
+  it('record(p) where p is audit::Event* resolves to audit::record via ADL', () => {
     const calls = getRelationships(result, 'CALLS');
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
-    // Exact .toBe(0): V1 ADL covers only directly-named class-type values
-    // (per plan 2026-05-13-001 R4). Pointer-typed args fall under
-    // associated-entity closure rules deferred to V2. This fixture locks
-    // the boundary in CI so the implementer cannot accidentally extend
-    // V1 to include pointer types. Real ISO C++ would resolve via V2
-    // closure; matching that requires the V2 follow-up plan.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) where g is void (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — preceding function-pointer declarations do not block class args', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-before-class-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) still resolves via ADL when an earlier declaration is void (*)()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — class-returning function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-class-return-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(factory) where factory is audit::Event (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — pointer-to-pointer args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-pointer-to-pointer'), () => {});
+  }, 60000);
+
+  it('record(pp) where pp is audit::Event** resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
   });
 });
 

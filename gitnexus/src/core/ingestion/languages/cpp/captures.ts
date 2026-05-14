@@ -720,14 +720,15 @@ function isParenthesizedFunctionCall(callNode: SyntaxNode): boolean {
 
 /**
  * Per-argument ADL classification: walk each argument of a free call and
- * decide whether it's a directly-named class type (V1 ADL fires) or
- * something V1 excludes (pointer, reference, primitive, literal, function
- * pointer, template specialization).
+ * decide whether it resolves to a directly-named class or class-pointer
+ * type (ADL fires) or to an excluded shape such as a reference, function
+ * pointer, primitive, literal, or template specialization.
  *
- * V1 only fires for value class-typed args: `void f(N::S); N::S s; f(s);`.
- * Pointer args (`N::S* p; f(p);`) intentionally return `simpleClassName=''`
- * to lock the V1 boundary — the `cpp-adl-pointer-arg-boundary` fixture
- * regression-tests this.
+ * Class-typed values and class pointers (`N::S`, `N::S*`, `N::S**`) all
+ * preserve the pointee class name for associated-namespace lookup.
+ * Function pointers remain excluded even when their return type names a
+ * class, because the associated entity is the pointed-to function type,
+ * not the return type.
  */
 function inferCppCallAdlArgs(callNode: SyntaxNode): CppAdlArgInfo[] {
   const argList = callNode.childForFieldName('arguments');
@@ -792,15 +793,23 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
 
     // Unwrap declarator chain to find pointer/reference markers and the
     // variable name. `init_declarator > pointer_declarator > identifier`
-    // means pointer-typed; `init_declarator > reference_declarator > ...`
-    // means reference-typed; bare `init_declarator > identifier` is value.
+    // means pointer-typed; repeated pointer wrappers still count as pointer
+    // typed; `init_declarator > reference_declarator > ...` means
+    // reference-typed; bare `init_declarator > identifier` is value.
+    // Function-pointer wrappers (`pointer_declarator > function_declarator`)
+    // must not contribute ADL associated namespaces.
     let isPointer = false;
     let isReference = false;
+    let isFunctionPointer = false;
     let inner: SyntaxNode = declarator;
     let nameText: string | null = null;
     let safety = 16; // bound walk depth defensively
     while (safety-- > 0) {
       if (inner.type === 'pointer_declarator') {
+        if (findFirstDescendantOfType(inner, 'function_declarator') !== null) {
+          isFunctionPointer = true;
+          break;
+        }
         isPointer = true;
         const next = inner.childForFieldName('declarator');
         if (next === null) break;
@@ -828,11 +837,15 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
         inner = next;
         continue;
       }
+      if (inner.type === 'function_declarator') {
+        isFunctionPointer = true;
+        break;
+      }
       // Reached the leaf — usually `identifier`. Take its text.
       nameText = inner.text;
       break;
     }
-    if (nameText !== varName) continue;
+    if (isFunctionPointer || nameText !== varName) continue;
 
     const simpleClassName = extractAdlSimpleTypeName(typeNode);
     return { simpleClassName, isPointer, isReference };
@@ -841,9 +854,9 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
 }
 
 /** Extract the simple class-like type name from a `type:` field node.
- *  Returns '' for primitives, template specializations, function pointers,
- *  and any other shape V1 ADL doesn't support — those args are excluded
- *  from associated-namespace closure. */
+ *  Returns '' for primitives, template specializations, and any other
+ *  unsupported type-only shape. Function pointers are filtered at the
+ *  declarator level in `lookupAdlIdentifierType`. */
 function extractAdlSimpleTypeName(typeNode: SyntaxNode): string {
   if (typeNode.type === 'primitive_type') return '';
   if (typeNode.type === 'sized_type_specifier') return '';

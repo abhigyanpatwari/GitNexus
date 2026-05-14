@@ -36,6 +36,10 @@ import {
   resolveCppQualifiedNamespaceMember,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
+import {
+  isOverloadAmbiguousAfterNormalization,
+  narrowOverloadCandidates,
+} from '../../scope-resolution/passes/overload-narrowing.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -178,6 +182,8 @@ export const cppScopeResolver: ScopeResolver = {
   // for cross-file propagation and compound-receiver chain resolution.
   // cppBindingScopeFor hoists @type-binding.return to Module scope.
   hoistTypeBindingsToModule: true,
+  // Enable receiver-bound explicit-`this` fallback only for C++.
+  resolveThisViaEnclosingClass: true,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically
   // invisible cross-file" defs. C++ extends this to also reject class-
@@ -219,6 +225,33 @@ export const cppScopeResolver: ScopeResolver = {
   // V1 limitation: only direct enclosing-namespace closure for value
   // class-typed args; pointer/reference/template-spec args excluded.
   resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
+    // `using ns::name;` introduces `name` into ordinary unqualified lookup.
+    // For template-class method bodies, lexical scope walks can miss this
+    // named-using visibility; recover by resolving the imported namespace
+    // member directly when the local call name matches a named using import.
+    const usingNamedHits: SymbolDefinition[] = [];
+    const seenUsing = new Set<string>();
+    for (const imp of callerParsed.parsedImports) {
+      if (imp.kind !== 'named') continue;
+      if (imp.localName !== site.name) continue;
+      const member = resolveCppQualifiedNamespaceMember(
+        imp.targetRaw,
+        imp.importedName,
+        parsedFiles,
+        scopes,
+      );
+      if (member === undefined) continue;
+      if (seenUsing.has(member.nodeId)) continue;
+      seenUsing.add(member.nodeId);
+      usingNamedHits.push(member);
+    }
+    if (usingNamedHits.length > 0) {
+      const narrowed = narrowOverloadCandidates(usingNamedHits, site.arity, site.argumentTypes);
+      if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return 'ambiguous';
+      if (narrowed.length === 1) return narrowed[0];
+      if (narrowed.length > 1) return 'ambiguous';
+    }
+
     const result = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
     if (result === ADL_AMBIGUOUS) return 'ambiguous';
     return result;
