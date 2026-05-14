@@ -2009,11 +2009,14 @@ const processFileGroup = (
         nodeLabel === 'Interface' ||
         nodeLabel === 'Enum' ||
         nodeLabel === 'Record';
-      const definitionNameNode = definitionNode?.childForFieldName?.('name');
       if (
         isClassLikeLabel &&
-        captureMap['template-arguments'] === undefined &&
-        (nameNode?.parent?.type === 'template_type' || definitionNameNode?.type === 'template_type')
+        provider.classExtractor?.shouldSkipClassCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+          nodeLabel,
+        }) === true
       ) {
         continue;
       }
@@ -2132,11 +2135,13 @@ const processFileGroup = (
       }
       const classTemplateArguments =
         extractedClassSymbol?.templateArguments ??
+        provider.classExtractor?.extractTemplateArgumentsFromCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+        }) ??
         (captureMap['template-arguments']
           ? extractTemplateArguments(captureMap['template-arguments'].text)
-          : undefined) ??
-        (nameNode?.parent?.type === 'template_type'
-          ? extractTemplateArguments(nameNode.parent.text)
           : undefined) ??
         (nameNode && nameNode.text ? extractTemplateArguments(nameNode.text) : undefined);
       const classTemplateTag =

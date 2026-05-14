@@ -13,6 +13,12 @@ export interface ExtractedClassSymbol {
   templateArguments?: string[];
 }
 
+export interface ClassCaptureContext {
+  captureMap: Record<string, SyntaxNode>;
+  definitionNode: SyntaxNode | null;
+  nameNode: SyntaxNode | undefined;
+}
+
 /**
  * Cross-language qualified type names are normalized to dot-separated scope
  * segments:
@@ -31,6 +37,10 @@ export interface ClassExtractor {
     },
   ): ExtractedClassSymbol | null;
   extractQualifiedName(node: SyntaxNode, simpleName: string): string | null;
+  shouldSkipClassCapture?(
+    context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
+  ): boolean;
+  extractTemplateArgumentsFromCapture?(context: ClassCaptureContext): string[] | undefined;
 }
 
 export interface ClassExtractionConfig {
@@ -43,4 +53,8 @@ export interface ClassExtractionConfig {
   extractType?: (node: SyntaxNode) => ClassLikeNodeLabel | undefined;
   extractScopeSegments?: (node: SyntaxNode) => string[] | null | undefined;
   extractTemplateArguments?: (node: SyntaxNode) => string[] | undefined;
+  shouldSkipClassCapture?(
+    context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
+  ): boolean;
+  extractTemplateArgumentsFromCapture?(context: ClassCaptureContext): string[] | undefined;
 }

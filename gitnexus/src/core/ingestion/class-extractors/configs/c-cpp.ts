@@ -7,6 +7,36 @@ import {
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
 
+function shouldSkipCppTemplateDuplicateCapture(
+  captureMap: Record<string, { text: string } | undefined>,
+  definitionName: string | undefined,
+  capturedName: string | undefined,
+): boolean {
+  if (captureMap['template-arguments'] !== undefined) return false;
+  if (!definitionName) return false;
+  const argsFromDefinitionName = extractTemplateArguments(definitionName);
+  if (argsFromDefinitionName === undefined) return false;
+  const argsFromCaptureName = capturedName ? extractTemplateArguments(capturedName) : undefined;
+  // Generic class capture emits only `List`, while the specialization-aware
+  // capture emits `List` + `@declaration.template-arguments`. Skip the former
+  // when the declaration name itself is templated to avoid duplicate class defs.
+  return argsFromCaptureName === undefined;
+}
+
+function extractCppTemplateArgumentsWithFallback(
+  captureMap: Record<string, { text: string } | undefined>,
+  definitionName: string | undefined,
+  capturedName: string | undefined,
+): string[] | undefined {
+  return (
+    (captureMap['template-arguments']
+      ? extractTemplateArguments(captureMap['template-arguments'].text)
+      : undefined) ??
+    (definitionName ? extractTemplateArguments(definitionName) : undefined) ??
+    (capturedName ? extractTemplateArguments(capturedName) : undefined)
+  );
+}
+
 export const cClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.C,
   typeDeclarationNodes: ['struct_specifier', 'enum_specifier'],
@@ -27,4 +57,16 @@ export const cppClassConfig: ClassExtractionConfig = {
     if (!nameNode || nameNode.type !== 'template_type') return undefined;
     return extractTemplateArguments(nameNode.text);
   },
+  shouldSkipClassCapture: ({ captureMap, definitionNode, nameNode }) =>
+    shouldSkipCppTemplateDuplicateCapture(
+      captureMap,
+      definitionNode?.childForFieldName?.('name')?.text,
+      nameNode?.text,
+    ),
+  extractTemplateArgumentsFromCapture: ({ captureMap, definitionNode, nameNode }) =>
+    extractCppTemplateArgumentsWithFallback(
+      captureMap,
+      definitionNode?.childForFieldName?.('name')?.text,
+      nameNode?.text,
+    ),
 };

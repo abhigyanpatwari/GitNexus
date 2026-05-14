@@ -111,7 +111,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
           node.label,
           `${qualified}~${props.templateArguments.join(',')}`,
         );
-        lookup.set(tKey, node.id);
+        if (!lookup.has(tKey)) lookup.set(tKey, node.id);
       }
     }
 

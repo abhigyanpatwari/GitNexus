@@ -175,5 +175,13 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
     extractQualifiedName(node: SyntaxNode, simpleName: string): string | null {
       return extract(node, { name: simpleName })?.qualifiedName ?? null;
     },
+
+    shouldSkipClassCapture(context): boolean {
+      return config.shouldSkipClassCapture?.(context) ?? false;
+    },
+
+    extractTemplateArgumentsFromCapture(context): string[] | undefined {
+      return config.extractTemplateArgumentsFromCapture?.(context);
+    },
   };
 }
