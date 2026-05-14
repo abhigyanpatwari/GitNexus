@@ -555,8 +555,8 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
             {
               skipAgentsMd,
               skipSkills,
-              // See note above (#1477): commander stores --no-stats as
-              // `options.stats === false`, not as `options.noStats`.
+              // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
+              // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options?.stats === false,
             },
           );

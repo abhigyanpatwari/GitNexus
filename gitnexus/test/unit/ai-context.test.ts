@@ -81,11 +81,13 @@ describe('generateAIContextFiles', () => {
     try {
       const stats = { nodes: 12345, edges: 67890, processes: 99 };
       await generateAIContextFiles(subDir, subStorage, 'WithStatsProject', stats);
-      const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
-      expect(content).toContain('WithStatsProject');
-      expect(content).toMatch(
-        /\(12345\s+symbols,\s+67890\s+relationships,\s+99\s+execution flows\)/,
-      );
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        expect(content).toContain('WithStatsProject');
+        expect(content).toMatch(
+          /\(12345\s+symbols,\s+67890\s+relationships,\s+99\s+execution flows\)/,
+        );
+      }
     } finally {
       await fs.rm(subDir, { recursive: true, force: true });
     }
