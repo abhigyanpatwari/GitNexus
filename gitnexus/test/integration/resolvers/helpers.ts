@@ -162,6 +162,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'emits EXTENDS edge: Derived → Base for qualified template base outer::v1::Base<T>',
     'outer::v1::Base<T>::f() resolves to Base::f inside template body',
     'outer::v1::free_fn() resolves as a namespace free function, not a super-receiver method',
+    // Template specialization owner identity currently relies on
+    // class-template fingerprints in the registry-primary graph bridge.
+    // Legacy DAG collapses specializations to the simple class name.
+    'emits distinct Class nodes for List<User> and List<Order>',
+    'callSave() in each specialization resolves to its own save()',
+    'save specialization bodies route to their own sibling method',
   ]),
 };
 

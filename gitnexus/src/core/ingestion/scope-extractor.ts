@@ -76,6 +76,7 @@ import type {
 } from 'gitnexus-shared';
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
+import { extractTemplateArguments } from './utils/template-arguments.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -533,6 +534,9 @@ function buildDefFromDeclarationMatch(
 
   const qualifiedCap = match['@declaration.qualified_name'];
   const qualifiedName = qualifiedCap?.text;
+  const templateArguments =
+    extractTemplateArguments(match['@declaration.template-arguments']?.text ?? '') ??
+    extractTemplateArguments(qualifiedName ?? nameCap.text);
 
   // Optional arity metadata — producers (e.g. Python emit-captures)
   // synthesize these on function/method declarations. Their absence is
@@ -554,6 +558,7 @@ function buildDefFromDeclarationMatch(
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
+    ...(templateArguments !== undefined ? { templateArguments } : {}),
   };
 }
 
