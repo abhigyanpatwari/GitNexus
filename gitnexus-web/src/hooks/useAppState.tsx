@@ -663,10 +663,20 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCurrentToolCalls([]);
 
       // Prepare message history for agent (convert our format to AgentMessage format)
-      const history: AgentMessage[] = [...chatMessages, userMessage].map((m) => ({
-        role: m.role === 'tool' ? 'assistant' : m.role,
-        content: m.content,
-      }));
+      const history: AgentMessage[] = [...chatMessages, userMessage].flatMap<AgentMessage>((m) => {
+        if (m.role === 'user') {
+          return [{ role: 'user', content: m.content }];
+        }
+        if (m.role === 'tool') {
+          return m.toolCallId
+            ? [{ role: 'tool', content: m.content, toolCallId: m.toolCallId }]
+            : [];
+        }
+        if (m.historyMessages?.length) {
+          return m.historyMessages;
+        }
+        return [{ role: 'assistant', content: m.content }];
+      });
 
       // Create placeholder for assistant response
       const assistantMessageId = `assistant-${Date.now()}`;
@@ -675,6 +685,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Keep toolCalls for backwards compat and currentToolCalls state
       const toolCallsForMessage: ToolCallInfo[] = [];
       let stepCounter = 0;
+      let assistantHistoryMessages: ChatMessage['historyMessages'];
 
       // Helper to update the message with current steps
       const updateMessage = () => {
@@ -691,6 +702,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             id: assistantMessageId,
             role: 'assistant' as const,
             content,
+            historyMessages: assistantHistoryMessages,
             steps: [...stepsForMessage],
             toolCalls: [...toolCallsForMessage],
             timestamp: existing?.timestamp ?? Date.now(),
@@ -973,6 +985,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               break;
 
             case 'done':
+              assistantHistoryMessages = chunk.historyMessages;
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;
@@ -987,7 +1000,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         for await (const chunk of streamAgentResponse(agent, history)) {
           onChunk(chunk);
         }
-        onChunk({ type: 'done' });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setAgentError(message);

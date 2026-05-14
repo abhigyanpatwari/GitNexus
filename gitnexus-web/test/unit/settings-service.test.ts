@@ -104,6 +104,17 @@ describe('getActiveProviderConfig', () => {
     expect(config!.provider).toBe('openai');
   });
 
+  it('returns config for deepseek when API key is set', () => {
+    const settings = loadSettings();
+    settings.activeProvider = 'deepseek';
+    settings.deepseek = { ...settings.deepseek, apiKey: 'sk-deepseek-123' };
+    saveSettings(settings);
+
+    const config = getActiveProviderConfig();
+    expect(config).not.toBeNull();
+    expect(config!.provider).toBe('deepseek');
+  });
+
   it('returns null for openrouter with empty API key', () => {
     const settings = loadSettings();
     settings.activeProvider = 'openrouter';
@@ -139,6 +150,7 @@ describe('getProviderDisplayName', () => {
     expect(getProviderDisplayName('anthropic')).toBe('Anthropic');
     expect(getProviderDisplayName('ollama')).toBe('Ollama (Local)');
     expect(getProviderDisplayName('openrouter')).toBe('OpenRouter');
+    expect(getProviderDisplayName('deepseek')).toBe('DeepSeek');
   });
 });
 
@@ -147,6 +159,7 @@ describe('getAvailableModels', () => {
     expect(getAvailableModels('openai').length).toBeGreaterThan(0);
     expect(getAvailableModels('ollama').length).toBeGreaterThan(0);
     expect(getAvailableModels('anthropic')).toContain('claude-sonnet-4-20250514');
+    expect(getAvailableModels('deepseek')).toContain('deepseek-v4-flash');
   });
 
   it('returns empty array for unknown provider', () => {
