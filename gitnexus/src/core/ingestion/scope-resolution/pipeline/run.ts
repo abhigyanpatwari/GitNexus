@@ -32,16 +32,67 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
+import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import { findClassBindingInScope } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 import { logger } from '../../../logger.js';
+
+function preEmitInheritanceEdges(
+  graph: KnowledgeGraph,
+  scopes: ReturnType<typeof finalizeScopeModel>,
+  nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+): Set<string> {
+  const handledSites = new Set<string>();
+  const seen = new Set<string>();
+  const existing = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
+    existing.add(`${rel.sourceId}->${rel.targetId}`);
+  }
+
+  for (const site of scopes.referenceSites) {
+    if (site.kind !== 'inherits') continue;
+    const scope = scopes.scopeTree.getScope(site.inScope);
+    if (scope?.filePath !== undefined) {
+      handledSites.add(`${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+    }
+
+    const targetDef = findClassBindingInScope(site.inScope, site.name, scopes);
+    if (targetDef === undefined) continue;
+
+    const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
+    const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
+    if (callerGraphId === undefined || targetGraphId === undefined) continue;
+    const edgeKey = `${callerGraphId}->${targetGraphId}`;
+    if (existing.has(edgeKey)) continue;
+
+    if (
+      tryEmitEdge(
+        graph,
+        scopes,
+        nodeLookup,
+        site,
+        targetDef,
+        'scope-resolution: inherits',
+        seen,
+        0.85,
+      )
+    ) {
+      existing.add(edgeKey);
+    }
+  }
+
+  return handledSites;
+}
+
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   /**
@@ -183,8 +234,6 @@ export function runScopeResolution(
   // ── Phase 2: finalize → ScopeResolutionIndexes ─────────────────────────
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
   const nodeLookup = buildGraphNodeLookup(graph);
-  const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
-  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
 
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
@@ -197,6 +246,9 @@ export function runScopeResolution(
         provider.mergeBindings(existing, incoming, scopeId),
     },
   });
+  const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
+  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
 
   // Replace the empty MethodDispatchIndex that finalizeScopeModel
   // builds by design with the populated one derived from the
@@ -273,7 +325,7 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
-  const handledSites = new Set<string>();
+  const handledSites = new Set<string>(preEmittedInheritanceSites);
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
