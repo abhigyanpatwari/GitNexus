@@ -38,9 +38,9 @@ export const processMarkdown = (
 
     // Normalize CRLF/CR to LF before splitting so that line-end agnostic
     // markdown files (Windows-authored, mixed) yield correct headings.
-    // Without this, `## Heading\r\n` produces `## Heading\r` after split,
-    // and the HEADING_RE regex (anchored with `$`) fails to match because
-    // `$` matches before end-of-string, not before `\r`.
+    // Without this, splitting on `\n` alone leaves `## Heading\r` on each line;
+    // `$` in HEADING_RE only matches at end-of-string, while `.+` stops before
+    // the trailing `\r`, so the line never matches as a heading.
     const lines = file.content.split(/\r\n|\r|\n/);
 
     // --- Extract headings and build hierarchy ---
