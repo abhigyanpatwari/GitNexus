@@ -168,6 +168,15 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'emits distinct Class nodes for List<User> and List<Order>',
     'callSave() in each specialization resolves to its own save()',
     'save specialization bodies route to their own sibling method',
+    // PR #1590 follow-up: explicit `this->` resolution in template class
+    // bodies and paired two-phase assertions are scope-resolver-only.
+    // Legacy DAG lacks this receiver-bound template semantics and
+    // dependent-base suppression parity for these shapes.
+    'Derived<T>::g() -> this->f() resolves to f (1 edge)',
+    'Derived<T>::k() -> this->base_method() resolves via EXTENDS chain (1 edge)',
+    'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
+    'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
+    'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
   ]),
 };
 
