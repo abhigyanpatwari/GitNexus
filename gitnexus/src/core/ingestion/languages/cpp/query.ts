@@ -417,6 +417,25 @@ const CPP_SCOPE_QUERY = `
     scope: (_) @reference.receiver
     name: (identifier) @reference.name)) @reference.call.qualified
 
+;; Nested qualified receiver: outer::v1::Base<T>::f()
+;; tree-sitter-cpp nests this as qualified_identifier(name:
+;; qualified_identifier(scope: qualified_identifier(...), name: identifier)).
+;; Capturing the innermost receiver still gives isSuperReceiverInContext
+;; enough text to strip qualifiers/template args down to Base.
+(call_expression
+  function: (qualified_identifier
+    name: (qualified_identifier
+      scope: (_) @reference.receiver
+      name: (identifier) @reference.name))) @reference.call.qualified
+
+;; Double-nested qualified receiver: outer::v1::Base<T>::f()
+(call_expression
+  function: (qualified_identifier
+    name: (qualified_identifier
+      name: (qualified_identifier
+        scope: (_) @reference.receiver
+        name: (identifier) @reference.name)))) @reference.call.qualified
+
 ;; ─── References — member calls (obj.method() / ptr->method()) ───────
 (call_expression
   function: (field_expression
