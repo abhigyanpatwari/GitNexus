@@ -8,7 +8,7 @@
  *  3. Copy gitnexus-shared/dist → dist/_shared
  *  4. Rewrite bare 'gitnexus-shared' specifiers → relative paths
  */
-import { execFileSync, execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,27 +19,8 @@ const SHARED_ROOT = path.resolve(ROOT, '..', 'gitnexus-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
 
-function compileTypeScriptProject(projectRoot) {
-  const tscCliPath = path.join(projectRoot, 'node_modules', 'typescript', 'bin', 'tsc');
-
-  if (!fs.existsSync(tscCliPath)) {
-    throw new Error(
-      `[build] Missing TypeScript CLI at ${tscCliPath}. Run npm install in ${projectRoot}.`,
-    );
-  }
-
-  execFileSync(process.execPath, [tscCliPath], { cwd: projectRoot, stdio: 'inherit' });
-}
-
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
-<<<<<<< HEAD
-compileTypeScriptProject(SHARED_ROOT);
-
-// ── 2. Build gitnexus ──────────────────────────────────────────────
-console.log('[build] compiling gitnexus…');
-compileTypeScriptProject(ROOT);
-=======
 const tscCmd =
   process.platform === 'win32'
     ? path.join('node_modules', '.bin', 'tsc.cmd')
@@ -49,7 +30,6 @@ execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: 120_000 });
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
 execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: 120_000 });
->>>>>>> 9e23c80cabe33571be0c3a9418dba269668e717a
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');
