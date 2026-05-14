@@ -240,7 +240,7 @@ export const cppScopeResolver: ScopeResolver = {
       usingNamedHits.push(member);
     }
     if (usingNamedHits.length === 1) return usingNamedHits[0];
-    if (usingNamedHits.length > 1) return undefined;
+    if (usingNamedHits.length > 1) return 'ambiguous';
 
     const result = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
     if (result === ADL_AMBIGUOUS) return 'ambiguous';
