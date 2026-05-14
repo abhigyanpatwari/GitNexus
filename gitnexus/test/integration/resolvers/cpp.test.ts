@@ -2135,14 +2135,14 @@ describe('C++ ADL — base-class associated namespaces', () => {
     );
   }, 60000);
 
-  it('log(d) where Derived : base_lib::Base resolves to base_lib::log via ADL', () => {
+  it('resolves log(d) to base_lib::log via ADL when Derived inherits from base_lib::Base', () => {
     const calls = getRelationships(result, 'CALLS');
     const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
     expect(logCalls.length).toBe(1);
     expect(logCalls[0].targetFilePath).toContain('base_lib.h');
   });
 
-  it('trace(m) where MultiLevel : middle_lib::Mid : base_lib::Root resolves via full MRO walk', () => {
+  it('resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root', () => {
     const calls = getRelationships(result, 'CALLS');
     const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
     expect(traceCalls.length).toBe(1);
