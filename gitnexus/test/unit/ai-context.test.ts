@@ -45,6 +45,54 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('omits volatile counts when noStats option is set (#1477)', async () => {
+    // Distinct subdir per case so we can assert on a clean slate.
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-no-stats-test-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    try {
+      // Stats values picked to be unmistakable if they leak through.
+      const stats = { nodes: 12345, edges: 67890, processes: 99 };
+      await generateAIContextFiles(subDir, subStorage, 'NoStatsProject', stats, undefined, {
+        noStats: true,
+      });
+
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        expect(content).toContain('NoStatsProject');
+        // The "(N symbols, N relationships, N execution flows)"
+        // phrase MUST NOT appear when noStats=true.
+        expect(content).not.toMatch(
+          /\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution flows\)/,
+        );
+        // And the distinctive numbers must not leak via any other path.
+        expect(content).not.toContain('12345');
+        expect(content).not.toContain('67890');
+      }
+    } finally {
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves volatile counts when noStats is not set (default)', async () => {
+    const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-with-stats-test-'));
+    const subStorage = path.join(subDir, '.gitnexus');
+    await fs.mkdir(subStorage, { recursive: true });
+    try {
+      const stats = { nodes: 12345, edges: 67890, processes: 99 };
+      await generateAIContextFiles(subDir, subStorage, 'WithStatsProject', stats);
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(subDir, f), 'utf-8');
+        expect(content).toContain('WithStatsProject');
+        expect(content).toMatch(
+          /\(12345\s+symbols,\s+67890\s+relationships,\s+99\s+execution flows\)/,
+        );
+      }
+    } finally {
+      await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the load-bearing repo-specific sections in the CLAUDE.md block (#856)', async () => {
     // The trimmed block must still contain everything that is genuinely
     // unique per repo or load-bearing for the agent: the freshness warning,
