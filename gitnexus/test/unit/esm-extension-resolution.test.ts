@@ -153,11 +153,14 @@ describe('stripJsExtension', () => {
 });
 
 describe('ESM extension resolution — path aliases with .js extensions', () => {
+  const aliasAtToSrc = new Map<string, string>([['@/', 'src/']]);
+  const aliasTildeToSrc = new Map<string, string>([['~/', 'src/']]);
+
   function resolveWithAlias(
     currentFile: string,
     importPath: string,
     ctx: ReturnType<typeof makeCtx>,
-    aliases: [string, string][],
+    aliases: Map<string, string>,
     baseUrl = '.',
   ): string | null {
     return resolveImportPath(
@@ -175,31 +178,31 @@ describe('ESM extension resolution — path aliases with .js extensions', () => 
 
   it('resolves @/utils.js to src/utils.ts via alias', () => {
     const ctx = makeCtx(['src/index.ts', 'src/utils.ts']);
-    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, aliasAtToSrc, '.');
     expect(result).toBe('src/utils.ts');
   });
 
   it('resolves @/component.jsx to src/component.tsx via alias', () => {
     const ctx = makeCtx(['src/index.ts', 'src/component.tsx']);
-    const result = resolveWithAlias('src/index.ts', '@/component.jsx', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/component.jsx', ctx, aliasAtToSrc, '.');
     expect(result).toBe('src/component.tsx');
   });
 
   it('resolves @/config.mjs to src/config.mts via alias', () => {
     const ctx = makeCtx(['src/index.ts', 'src/config.mts']);
-    const result = resolveWithAlias('src/index.ts', '@/config.mjs', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/config.mjs', ctx, aliasAtToSrc, '.');
     expect(result).toBe('src/config.mts');
   });
 
   it('resolves @/legacy.cjs to src/legacy.cts via alias', () => {
     const ctx = makeCtx(['src/index.ts', 'src/legacy.cts']);
-    const result = resolveWithAlias('src/index.ts', '@/legacy.cjs', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/legacy.cjs', ctx, aliasAtToSrc, '.');
     expect(result).toBe('src/legacy.cts');
   });
 
   it('prefers actual .js file over TS fallback in alias resolution', () => {
     const ctx = makeCtx(['src/index.ts', 'src/utils.js', 'src/utils.ts']);
-    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, aliasAtToSrc, '.');
     expect(result).toBe('src/utils.js');
   });
 
@@ -209,7 +212,7 @@ describe('ESM extension resolution — path aliases with .js extensions', () => 
       'app/src/index.ts',
       '~/helpers/token.js',
       ctx,
-      [['~/', 'src/']],
+      aliasTildeToSrc,
       'app',
     );
     expect(result).toBe('app/src/helpers/token.ts');
@@ -217,7 +220,7 @@ describe('ESM extension resolution — path aliases with .js extensions', () => 
 
   it('returns null when alias .js import has no matching source', () => {
     const ctx = makeCtx(['src/index.ts']);
-    const result = resolveWithAlias('src/index.ts', '@/missing.js', ctx, [['@/', 'src/']], '.');
+    const result = resolveWithAlias('src/index.ts', '@/missing.js', ctx, aliasAtToSrc, '.');
     expect(result).toBeNull();
   });
 });
