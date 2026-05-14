@@ -9,4 +9,8 @@ struct Derived : Base<T> {
   void g() {
     this->f();
   }
+
+  void g_ok() {
+    this->f(42);
+  }
 };

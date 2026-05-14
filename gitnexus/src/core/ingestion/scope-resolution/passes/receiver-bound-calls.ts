@@ -360,6 +360,11 @@ export function emitReceiverBoundCalls(
               break;
             }
 
+            // Field/property lookup intentionally runs only after the method
+            // lookup above: in C++ member-name lookup, functions with this
+            // name hide same-named base members; we therefore prefer method
+            // candidates first and only target a field when no methods with
+            // this name exist on the current owner.
             memberDef = model.fields.lookupFieldByOwner(ownerId, memberName);
             if (memberDef !== undefined) {
               break;

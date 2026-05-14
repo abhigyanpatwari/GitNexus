@@ -2058,6 +2058,13 @@ describe('C++ two-phase template lookup — this-> name-hiding arity mismatch', 
     const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
     expect(fCalls.length).toBe(0);
   });
+
+  it('Derived<T>::g_ok() -> this->f(42) resolves to derived overload (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g_ok' && c.target === 'f');
+    expect(fCalls.length).toBe(1);
+    expect(fCalls[0].targetFilePath).toContain('derived.h');
+  });
 });
 
 // ---------------------------------------------------------------------------
