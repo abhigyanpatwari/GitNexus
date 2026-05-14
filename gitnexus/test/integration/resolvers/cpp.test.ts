@@ -1904,6 +1904,37 @@ describe('C++ two-phase template lookup — dependent base suppression', () => {
 // 2026-05-13-001 follow-ups.
 
 // ---------------------------------------------------------------------------
+// U3 cross-file namespace variant: Base lives in a different file AND
+// inside a namespace. The fixture also contains a free function with the
+// same name inside the namespace — that candidate has no ownerId, so the
+// class-owned filter does NOT apply to it; it is instead suppressed by the
+// namespace-nesting filter. Both candidates must still yield zero edges.
+// ---------------------------------------------------------------------------
+
+describe('C++ two-phase template lookup — cross-file namespace variant', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-ns'),
+      () => {},
+    );
+  }, 60000);
+
+  it('geom::Derived<T>::g() -> compute() does NOT bind to geom::Base<T>::compute (cross-file dependent base, class-owned)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'compute');
+    expect(leaks.length).toBe(0);
+  });
+
+  it('geom::Derived<T>::h() -> area does NOT bind to geom::Base<T>::area (cross-file dependent base, class-owned)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const leaks = accesses.filter((c) => c.source === 'h' && c.target === 'area');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U2 (follow-up plan 2026-05-13-001): argument-dependent (Koenig) lookup.
 // Free-function calls with class-typed arguments must consider candidates
 // declared in the argument's enclosing namespace (associated namespace).
