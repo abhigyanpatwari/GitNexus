@@ -15,12 +15,23 @@
  *
  * ## Current boundary
  *
- * The current implementation covers ONE associated-entity rule: an argument that's a directly-named
- * class type (`audit::Event e`) contributes its **direct enclosing
- * namespace** to the candidate set. V2 extends that one step to
- * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
- * they contribute the pointee class's enclosing namespace too. Reference
- * arguments, function-pointer arguments, template specializations,
+ * The current implementation covers TWO associated-entity rules:
+ *   1. An argument that's a directly-named class type (`audit::Event e`)
+ *      contributes its **direct enclosing namespace** to the candidate set.
+ *      V2 extends that one step to pointer-typed class args
+ *      (`audit::Event* p`, `audit::Event** pp`): they contribute the
+ *      pointee class's enclosing namespace too.
+ *   2. A free-function reference argument (`utils::worker`, or an
+ *      unqualified identifier that resolves to a free function in the
+ *      workspace) contributes the function's **enclosing namespace**.
+ *      For qualified refs (e.g. `utils::worker`) the namespace is
+ *      extracted directly from the qualifier. For unqualified refs, the
+ *      workspace is searched for any Function def with that simple name.
+ *      Overloaded function references contribute the namespace if any
+ *      overload exists (V1 simplification; no overload-resolution ranking).
+ *
+ * Reference arguments, locally-declared function-pointer variables (e.g.
+ * `void (*g)()`), member-function-pointer args, template specializations,
  * base-class associated namespaces, and the rest of the full closure are
  * still deliberately excluded.
  *
@@ -64,6 +75,7 @@ import {
  * Per-argument shape information collected at capture time. ADL fires for
  * arguments where `simpleClassName !== ''` AND `!isReference`, including
  * class pointers whose declarator chain resolves to a named class type.
+ * Arguments that are free-function references use `functionRefText`.
  */
 export interface CppAdlArgInfo {
   /** Simple class-like type name (last segment of qualified name); empty
@@ -74,6 +86,14 @@ export interface CppAdlArgInfo {
   readonly isPointer: boolean;
   /** True when the variable's declarator was a `reference_declarator`. */
   readonly isReference: boolean;
+  /** When set, the arg is a reference to a free function (not a locally-
+   *  declared function-pointer variable). Contains the identifier text as
+   *  written in source (e.g. `"utils::worker"` or `"worker"`). ADL
+   *  contributes the function's enclosing namespace to the associated set.
+   *  For qualified refs the namespace is extracted from the qualifier
+   *  directly; for unqualified refs the workspace is searched for any
+   *  Function def with that simple name. */
+  readonly functionRefText?: string;
 }
 
 const argInfoBySite = new Map<string, readonly CppAdlArgInfo[]>();
@@ -171,15 +191,19 @@ export function pickCppAdlCandidates(
   const args = argInfoBySite.get(key);
   if (args === undefined || args.length === 0) return undefined;
 
-  // Collect associated namespace QNames from every participating class-typed arg.
+  // Collect associated namespace QNames from every participating class-typed arg
+  // and from function-reference args.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
-    if (arg.simpleClassName === '') continue;
-    if (arg.isReference) continue;
-    const classDef = findCppClassDefBySimpleName(arg.simpleClassName, scopes);
-    if (classDef === undefined) continue;
-    const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
-    if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+    if (arg.simpleClassName !== '' && !arg.isReference) {
+      const classDef = findCppClassDefBySimpleName(arg.simpleClassName, scopes);
+      if (classDef === undefined) continue;
+      const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
+      if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+    }
+    if (arg.functionRefText !== undefined) {
+      collectFunctionRefNamespaces(arg.functionRefText, parsedFiles, associatedNamespaces);
+    }
   }
   if (associatedNamespaces.size === 0) return undefined;
 
@@ -333,4 +357,46 @@ function findCppClassDefBySimpleName(
     if (simple === simpleName) return def;
   }
   return undefined;
+}
+
+/**
+ * Contribute associated namespaces for a function-reference argument.
+ *
+ * - **Qualified refs** (`utils::worker`, `outer::inner::fn`): the namespace
+ *   is extracted directly from the qualifier text (converting `::` to `.` for
+ *   dot-joined QName matching). No workspace search needed.
+ * - **Unqualified refs** (`worker`): the workspace is searched for any
+ *   Function/Method def whose simple name matches. Every distinct enclosing
+ *   namespace found is added — overloads across the same namespace produce
+ *   a single entry; V1 simplification does not select a specific overload.
+ */
+function collectFunctionRefNamespaces(
+  refText: string,
+  parsedFiles: readonly ParsedFile[],
+  out: Set<string>,
+): void {
+  const colonIdx = refText.lastIndexOf('::');
+  if (colonIdx !== -1) {
+    // Qualified: extract namespace prefix and normalise :: → dot notation.
+    const nsText = refText.slice(0, colonIdx).replace(/::/g, '.');
+    if (nsText !== '') out.add(nsText);
+    return;
+  }
+
+  // Unqualified: search all namespace scopes for a Function def with this
+  // simple name and contribute its enclosing namespace.
+  for (const parsed of parsedFiles) {
+    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Function' && def.type !== 'Method') continue;
+        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+        if (simple !== refText) continue;
+        const nsQName = computeNamespaceQName(scope, scopesById);
+        if (nsQName !== '') out.add(nsQName);
+      }
+    }
+  }
 }

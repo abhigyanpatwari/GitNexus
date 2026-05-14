@@ -2252,6 +2252,61 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
 });
 
 // ---------------------------------------------------------------------------
+// ADL V2 — free-function reference args contribute their namespace.
+//
+// ISO C++ [basic.lookup.argdep]: an overloaded-function set (or single
+// function) passed as an argument contributes the function's enclosing
+// namespace to the associated set. `captures.ts` records a `functionRefText`
+// on the CppAdlArgInfo when it detects a qualified_identifier arg or an
+// unqualified identifier that is not in local scope; `adl.ts` extracts the
+// namespace at resolution time.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref'),
+      () => {},
+    );
+  }, 60000);
+
+  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
+    // declaration). utils::worker is a qualified_identifier argument, so ADL
+    // contributes `utils` to the associated-namespace set. utils::with_callback
+    // is then discovered as the sole candidate.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — overloaded free-function reference does not crash', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-overloaded'),
+      () => {},
+    );
+  }, 60000);
+
+  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // utils::worker has two overloads (worker() and worker(int)). V1
+    // simplification: contribute the namespace if ANY overload exists in the
+    // workspace, regardless of which one would be selected. The namespace
+    // `utils` is still added, and utils::with_callback is discovered.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U5 (follow-up plan 2026-05-13-001): inline namespace transitive walking.
 // `inline namespace v1 { ... }` makes its members reachable through the
 // enclosing namespace's qualified lookup as if declared directly there
