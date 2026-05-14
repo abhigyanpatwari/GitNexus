@@ -3,6 +3,15 @@ import tsParser from '@typescript-eslint/parser';
 import unusedImports from 'eslint-plugin-unused-imports';
 import reactHooks from 'eslint-plugin-react-hooks';
 import prettierConfig from 'eslint-config-prettier';
+import requireSafeParse from './eslint-rules/require-safe-parse.mjs';
+
+// Local plugin hosting custom rules that enforce GitNexus-specific invariants
+// (currently: the Windows-SIGSEGV-safe parser entrypoint).
+const gitnexusLocalPlugin = {
+  rules: {
+    'require-safe-parse': requireSafeParse,
+  },
+};
 
 // Selectors that protect MCP-reachable code from corrupting the JSON-RPC
 // stdio frame stream. The MCP-reachable block below uses these directly;
@@ -132,6 +141,23 @@ export default [
     rules: {
       'no-console': ['error', { allow: ['error'] }],
       'no-restricted-syntax': ['error', ...mcpStdoutWriteSelectors],
+    },
+  },
+
+  // Windows SIGSEGV protection: every tree-sitter parse in `core/` must route
+  // through parseSourceSafe. Direct `<parser>.parse(content, ...)` crashes on
+  // Windows for inputs > 32 767 chars (V8 string-conversion bug, uncatchable
+  // from JS). The rule auto-fixes the call site; the developer adds the
+  // missing import after the fix runs. Out of scope: tests (skipped by the
+  // rule), the helper itself (`safe-parse.ts`), and the `grpc-patterns/proto.ts`
+  // grammar-load smoke test (filtered by string-literal-arg skip in the rule).
+  {
+    files: ['gitnexus/src/core/**/*.ts'],
+    plugins: {
+      gitnexus: gitnexusLocalPlugin,
+    },
+    rules: {
+      'gitnexus/require-safe-parse': 'error',
     },
   },
 

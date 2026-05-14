@@ -137,6 +137,101 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('does not create .claude/skills/gitnexus/ when skipSkills is true (#742)', async () => {
+    // Regression guard for #742. The --skip-skills flag must prevent
+    // installSkills() from writing the 6 standard skill dirs into the
+    // analyzed repo. Per-test tmpdir so we start from a known-clean
+    // slate — the shared tmpDir from beforeAll may already contain
+    // .claude/skills/gitnexus/ from an earlier test.
+    const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-skills-'));
+    const skipStorage = path.join(skipDir, '.gitnexus');
+    await fs.mkdir(skipStorage, { recursive: true });
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      const result = await generateAIContextFiles(
+        skipDir,
+        skipStorage,
+        'TestProject',
+        stats,
+        undefined,
+        { skipSkills: true },
+      );
+
+      expect(result.files).toContain('.claude/skills/gitnexus/ (skipped via --skip-skills)');
+      await expect(
+        fs.access(path.join(skipDir, '.claude', 'skills', 'gitnexus')),
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(skipDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes nothing when both skipAgentsMd and skipSkills are true (--index-only, #742)', async () => {
+    // Regression guard for #742. analyzeCommand() resolves --index-only
+    // into BOTH skipAgentsMd=true and skipSkills=true. This test pins
+    // the resolved-flag combination so a future regression that drops
+    // either guard fails here. Per-test tmpdir for the same reason as
+    // the skipSkills test above.
+    const idxDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-index-only-'));
+    const idxStorage = path.join(idxDir, '.gitnexus');
+    await fs.mkdir(idxStorage, { recursive: true });
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      const result = await generateAIContextFiles(
+        idxDir,
+        idxStorage,
+        'TestProject',
+        stats,
+        undefined,
+        { skipAgentsMd: true, skipSkills: true },
+      );
+
+      expect(result.files).toContain('AGENTS.md (skipped via --skip-agents-md)');
+      expect(result.files).toContain('CLAUDE.md (skipped via --skip-agents-md)');
+      expect(result.files).toContain('.claude/skills/gitnexus/ (skipped via --skip-skills)');
+
+      await expect(fs.access(path.join(idxDir, 'AGENTS.md'))).rejects.toThrow();
+      await expect(fs.access(path.join(idxDir, 'CLAUDE.md'))).rejects.toThrow();
+      await expect(fs.access(path.join(idxDir, '.claude', 'skills', 'gitnexus'))).rejects.toThrow();
+    } finally {
+      await fs.rm(idxDir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits standard skill references from AGENTS.md/CLAUDE.md when skipSkills is true (#742)', async () => {
+    // The skills routing table in AGENTS.md/CLAUDE.md points agents at
+    // .claude/skills/gitnexus/*/SKILL.md files installed by installSkills().
+    // When --skip-skills suppresses that install but AGENTS.md/CLAUDE.md
+    // are still written, the routing table must NOT name files that don't
+    // exist — otherwise every agent load incurs 6 failed reads and the
+    // routing instructions are worthless. Per-test tmpdir so the assertions
+    // are not contaminated by a CLAUDE.md from an earlier test.
+    const noStdDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-no-std-skills-'));
+    const noStdStorage = path.join(noStdDir, '.gitnexus');
+    await fs.mkdir(noStdStorage, { recursive: true });
+    try {
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(noStdDir, noStdStorage, 'TestProject', stats, undefined, {
+        skipSkills: true,
+      });
+
+      const content = await fs.readFile(path.join(noStdDir, 'CLAUDE.md'), 'utf-8');
+      expect(content).not.toContain('gitnexus-exploring/SKILL.md');
+      expect(content).not.toContain('gitnexus-impact-analysis/SKILL.md');
+      expect(content).not.toContain('gitnexus-debugging/SKILL.md');
+      expect(content).not.toContain('gitnexus-refactoring/SKILL.md');
+      expect(content).not.toContain('gitnexus-guide/SKILL.md');
+      expect(content).not.toContain('gitnexus-cli/SKILL.md');
+      // The load-bearing imperative sections must still ship — only the
+      // routing rows are conditional.
+      expect(content).toContain('## Always Do');
+      expect(content).toContain('## Never Do');
+      expect(content).toContain('gitnexus://repo/TestProject/context');
+    } finally {
+      await fs.rm(noStdDir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
     const stats = { nodes: 42, edges: 84, processes: 3 };
     const agentsPath = path.join(tmpDir, 'AGENTS.md');

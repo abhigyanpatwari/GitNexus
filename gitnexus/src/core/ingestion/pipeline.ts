@@ -55,6 +55,19 @@ export interface PipelineOptions {
     minFiles?: number;
     minBytes?: number;
   };
+  /**
+   * Incremental-indexing parse cache. When provided:
+   *   - The parse phase looks up each chunk's content hash in
+   *     `parseCache.entries`. On hit, it replays the cached
+   *     `ParseWorkerResult[]` instead of dispatching to workers.
+   *   - On miss, it runs the workers as today and stores the new
+   *     results in `parseCache.entries` keyed by chunk hash.
+   * The caller (`run-analyze.ts`) is responsible for loading the cache
+   * before the pipeline runs and persisting it after. Cache survives
+   * `--force` because keys are content-addressed.
+   * See `gitnexus/src/storage/parse-cache.ts`.
+   */
+  parseCache?: import('../../storage/parse-cache.js').ParseCache;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

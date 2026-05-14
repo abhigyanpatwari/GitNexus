@@ -117,6 +117,11 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     label === 'Interface' ||
     label === 'Struct' ||
     label === 'Enum' ||
+    // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
+    // defs between scope-resolution DefIds and the graph's node ids.
+    // IMPLEMENTS edges from classes to traits are otherwise invisible to
+    // the scope-resolution MRO pass.
+    label === 'Trait' ||
     // Variable / Property are linkable too — receiver-bound write/read
     // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
     // ACCESSES edge to User's `name` Variable/Property node).

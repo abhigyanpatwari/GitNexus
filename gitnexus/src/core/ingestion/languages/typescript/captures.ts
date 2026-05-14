@@ -38,6 +38,7 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 /** tree-sitter-typescript node types for function-like scopes that may
  *  carry a synthesized `this` binding. Kept in sync with the
@@ -134,7 +135,7 @@ export function emitTsScopeCaptures(
     tree = undefined;
   }
   if (tree === undefined) {
-    tree = getTsParser(filePath).parse(sourceText, undefined, {
+    tree = parseSourceSafe(getTsParser(filePath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
