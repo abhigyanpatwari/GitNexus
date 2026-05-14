@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
+const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -103,6 +104,28 @@ function findGitNexusDir(startDir) {
   return null;
 }
 
+function hasGitNexusServerOwner(gitNexusDir) {
+  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
+}
+
+function extractAugmentContext(stderr) {
+  const output = (stderr || '').trim();
+  const marker = output.indexOf('[GitNexus]');
+  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  if (debug && output.length > 0) {
+    // Emit the FULL discarded prefix (everything before the marker, or all of
+    // it when no marker is present) so suppressed diagnostics — LadybugDB lock
+    // warnings, parser errors, etc. — remain recoverable on the hook's own
+    // stderr. The untruncated payload lets operators see exactly what was
+    // filtered out instead of a 180-char JSON-quoted preview.
+    const discarded = marker === -1 ? output : output.slice(0, marker).trim();
+    if (discarded.length > 0) {
+      process.stderr.write(`[GitNexus hook] augment stderr discarded prefix:\n${discarded}\n`);
+    }
+  }
+  return marker === -1 ? '' : output.slice(marker).trim();
+}
+
 /**
  * Extract search pattern from tool input.
  */
@@ -170,6 +193,15 @@ function extractPattern(toolName, toolInput) {
  */
 function runGitNexusCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
+  if (hookCli !== undefined && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
+    return spawnSync(process.execPath, [String(hookCli), ...args], {
+      encoding: 'utf-8',
+      timeout,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
 
   // Detect whether 'gitnexus' is on PATH (cheap check, no execution)
   let useDirectBinary = false;
@@ -228,6 +260,10 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
+  if (hasGitNexusServerOwner(gitNexusDir)) {
+    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+    return;
+  }
 
   const release = acquireHookSlot(gitNexusDir);
   if (!release) return;
@@ -236,7 +272,7 @@ function handlePreToolUse(input) {
   try {
     const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
-      result = child.stderr || '';
+      result = extractAugmentContext(child.stderr || '');
     }
   } catch {
     /* graceful failure */
@@ -244,8 +280,8 @@ function handlePreToolUse(input) {
     release();
   }
 
-  if (result && result.trim()) {
-    sendHookResponse('PreToolUse', result.trim());
+  if (result) {
+    sendHookResponse('PreToolUse', result);
   }
 }
 
