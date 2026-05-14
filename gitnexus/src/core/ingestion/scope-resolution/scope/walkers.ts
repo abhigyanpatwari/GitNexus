@@ -226,6 +226,8 @@ export function findCallableBindingInScope(
   callableName: string,
   scopes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
+  const start = scopes.scopeTree.getScope(startScope);
+  const startFilePath = start?.filePath;
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
@@ -251,6 +253,31 @@ export function findCallableBindingInScope(
     }
 
     currentId = scope.parent;
+  }
+
+  // Defensive fallback: some capture shapes in template-heavy C++
+  // fixtures can leave the callable site's lexical chain ending at a
+  // Class scope instead of reaching Module. Ensure file-level callables
+  // (including names introduced by `using`) remain visible by checking
+  // this file's Module scope directly.
+  if (startFilePath !== undefined) {
+    for (const scope of scopes.scopeTree.byId.values()) {
+      if (scope.kind !== 'Module' || scope.filePath !== startFilePath) continue;
+      const localBindings = scope.bindings.get(callableName);
+      if (localBindings !== undefined) {
+        for (const b of localBindings) {
+          if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+            return b.def;
+          }
+        }
+      }
+      const importedBindings = lookupBindingsAt(scope.id, callableName, scopes);
+      for (const b of importedBindings) {
+        if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+          return b.def;
+        }
+      }
+    }
   }
   return undefined;
 }

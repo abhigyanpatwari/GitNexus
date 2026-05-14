@@ -270,6 +270,54 @@ export function emitReceiverBoundCalls(
         }
       }
 
+      // ── Case 0.5: implicit `this` receiver ───────────────────────
+      // C++ `this->member()` (and same-shape receivers in other OO
+      // languages) should resolve against the enclosing class + MRO
+      // even when there is no explicit `this` typeBinding in scope.
+      if (receiverName === 'this') {
+        const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
+        if (enclosingClass !== undefined) {
+          const chain = [enclosingClass.nodeId, ...scopes.methodDispatch.mroFor(enclosingClass.nodeId)];
+          let memberDef: SymbolDefinition | undefined;
+          for (const ownerId of chain) {
+            memberDef = findOwnedMember(ownerId, memberName, model);
+            if (memberDef !== undefined) {
+              if (
+                site.kind === 'call' &&
+                narrowOverloadCandidates([memberDef], site.arity, site.argumentTypes).length === 0
+              ) {
+                memberDef = undefined;
+                break;
+              }
+              break;
+            }
+          }
+          if (memberDef !== undefined) {
+            const reason =
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+              collapse,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            continue;
+          }
+        }
+      }
+
       // ── Case 1: namespace receiver ───────────────────────────────
       const targetFiles = namespaceTargets.get(receiverName);
       if (targetFiles !== undefined) {
