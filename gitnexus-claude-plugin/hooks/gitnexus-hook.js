@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { acquireHookSlot } = require('./hook-lock.js');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -102,6 +103,25 @@ function findGitNexusDir(startDir) {
   return null;
 }
 
+function resolveHookBinary(tool) {
+  const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
+  const fromEnv = process.env[envKey];
+  if (fromEnv && String(fromEnv).trim()) return String(fromEnv);
+  const candidates =
+    tool === 'lsof'
+      ? ['/usr/bin/lsof', '/usr/sbin/lsof', '/sbin/lsof', tool]
+      : ['/bin/ps', '/usr/bin/ps', tool];
+  for (const candidate of candidates) {
+    if (candidate === tool) return tool;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* ignore */
+    }
+  }
+  return tool;
+}
+
 function isGitNexusServerCommand(command) {
   const hasServerMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(command);
   const hasGitNexus =
@@ -112,19 +132,25 @@ function isGitNexusServerCommand(command) {
 
 function hasGitNexusServerOwner(gitNexusDir) {
   const dbPath = path.join(gitNexusDir, 'lbug');
+  // Windows: no lsof/ps path here; extractAugmentContext filters lock noise.
   if (process.platform === 'win32' || !fs.existsSync(dbPath)) return false;
 
-  const lsof = spawnSync('lsof', ['-nP', '-t', '--', dbPath], {
+  const lsofPath = resolveHookBinary('lsof');
+  const lsof = spawnSync(lsofPath, ['-nP', '-t', '--', dbPath], {
     encoding: 'utf-8',
     timeout: 1000,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
+  // Fail-open on missing lsof or permission errors so augment can still run
+  // (output filtering is the backstop). On ETIMEDOUT only, fail-closed so we
+  // never stack more load on a DB that already struggled to answer lsof.
   if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
 
   const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
+  const psPath = resolveHookBinary('ps');
   for (const pid of pids) {
     if (Number(pid) === process.pid) continue;
-    const ps = spawnSync('ps', ['-p', pid, '-o', 'command='], {
+    const ps = spawnSync(psPath, ['-p', pid, '-o', 'command='], {
       encoding: 'utf-8',
       timeout: 500,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -137,6 +163,17 @@ function hasGitNexusServerOwner(gitNexusDir) {
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
+  if (
+    marker === -1 &&
+    output.length > 0 &&
+    (process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true')
+  ) {
+    const first = output.split('\n')[0] || '';
+    const preview = first.length > 180 ? `${first.slice(0, 180)}…` : first;
+    process.stderr.write(
+      `[GitNexus hook] augment stderr had no [GitNexus] marker: ${JSON.stringify(preview)}\n`,
+    );
+  }
   return marker === -1 ? '' : output.slice(marker).trim();
 }
 
@@ -207,6 +244,15 @@ function extractPattern(toolName, toolInput) {
  */
 function runGitNexusCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
+  if (hookCli && String(hookCli).trim()) {
+    return spawnSync(process.execPath, [String(hookCli), ...args], {
+      encoding: 'utf-8',
+      timeout,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
 
   // Detect whether 'gitnexus' is on PATH (cheap check, no execution)
   let useDirectBinary = false;
@@ -267,6 +313,9 @@ function handlePreToolUse(input) {
   if (!pattern || pattern.length < 3) return;
   if (hasGitNexusServerOwner(gitNexusDir)) return;
 
+  const release = acquireHookSlot(gitNexusDir);
+  if (!release) return;
+
   let result = '';
   try {
     const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
@@ -275,6 +324,8 @@ function handlePreToolUse(input) {
     }
   } catch {
     /* graceful failure */
+  } finally {
+    release();
   }
 
   if (result) {
