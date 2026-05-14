@@ -792,8 +792,11 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
 
     // Unwrap declarator chain to find pointer/reference markers and the
     // variable name. `init_declarator > pointer_declarator > identifier`
-    // means pointer-typed; `init_declarator > reference_declarator > ...`
-    // means reference-typed; bare `init_declarator > identifier` is value.
+    // means pointer-typed; repeated pointer wrappers still count as pointer
+    // typed; `init_declarator > reference_declarator > ...` means
+    // reference-typed; bare `init_declarator > identifier` is value.
+    // Function-pointer wrappers (`pointer_declarator > function_declarator`)
+    // must not contribute ADL associated namespaces.
     let isPointer = false;
     let isReference = false;
     let inner: SyntaxNode = declarator;
@@ -801,6 +804,9 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     let safety = 16; // bound walk depth defensively
     while (safety-- > 0) {
       if (inner.type === 'pointer_declarator') {
+        if (findFirstDescendantOfType(inner, 'function_declarator') !== null) {
+          return EMPTY_ADL_ARG;
+        }
         isPointer = true;
         const next = inner.childForFieldName('declarator');
         if (next === null) break;
@@ -841,9 +847,9 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
 }
 
 /** Extract the simple class-like type name from a `type:` field node.
- *  Returns '' for primitives, template specializations, function pointers,
- *  and any other shape V1 ADL doesn't support — those args are excluded
- *  from associated-namespace closure. */
+ *  Returns '' for primitives, template specializations, and any other
+ *  unsupported type-only shape. Function pointers are filtered at the
+ *  declarator level in `lookupAdlIdentifierType`. */
 function extractAdlSimpleTypeName(typeNode: SyntaxNode): string {
   if (typeNode.type === 'primitive_type') return '';
   if (typeNode.type === 'sized_type_specifier') return '';
