@@ -65,14 +65,16 @@ describe('ensureGitNexusIgnored — mocked writeFile (EROFS / EACCES / EPERM)', 
         await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
         expect(fswCtx.writeFileMock).toHaveBeenCalled();
         expect(
-          cap.records().some(
-            (r) =>
-              r.level === 40 &&
-              r.code === code &&
-              typeof r.path === 'string' &&
-              samePath(String(r.path), excludePath) &&
-              String(r.msg ?? '').includes('.git/info/exclude'),
-          ),
+          cap
+            .records()
+            .some(
+              (r) =>
+                r.level === 40 &&
+                r.code === code &&
+                typeof r.path === 'string' &&
+                samePath(String(r.path), excludePath) &&
+                String(r.msg ?? '').includes('.git/info/exclude'),
+            ),
         ).toBe(true);
       } finally {
         cap.restore();
@@ -92,14 +94,16 @@ describe('ensureGitNexusIgnored — mocked writeFile (EROFS / EACCES / EPERM)', 
         await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
         expect(fswCtx.writeFileMock).toHaveBeenCalled();
         expect(
-          cap.records().some(
-            (r) =>
-              r.level === 40 &&
-              r.code === code &&
-              typeof r.path === 'string' &&
-              samePath(String(r.path), gitignorePath) &&
-              String(r.msg ?? '').includes('.gitnexus/.gitignore'),
-          ),
+          cap
+            .records()
+            .some(
+              (r) =>
+                r.level === 40 &&
+                r.code === code &&
+                typeof r.path === 'string' &&
+                samePath(String(r.path), gitignorePath) &&
+                String(r.msg ?? '').includes('.gitnexus/.gitignore'),
+            ),
         ).toBe(true);
       } finally {
         cap.restore();

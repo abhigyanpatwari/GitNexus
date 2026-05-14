@@ -193,13 +193,15 @@ describe('ensureGitNexusIgnored (#1233)', () => {
       try {
         await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
         expect(
-          cap.records().some(
-            (r) =>
-              r.level === 40 &&
-              (r.code === 'EACCES' || r.code === 'EPERM') &&
-              String(r.msg ?? '').includes('.gitnexus/.gitignore') &&
-              String(r.path ?? '').includes('.gitnexus'),
-          ),
+          cap
+            .records()
+            .some(
+              (r) =>
+                r.level === 40 &&
+                (r.code === 'EACCES' || r.code === 'EPERM') &&
+                String(r.msg ?? '').includes('.gitnexus/.gitignore') &&
+                String(r.path ?? '').includes('.gitnexus'),
+            ),
         ).toBe(true);
       } finally {
         cap.restore();
@@ -207,7 +209,6 @@ describe('ensureGitNexusIgnored (#1233)', () => {
       }
     },
   );
-
 });
 
 // ─── readRegistry ────────────────────────────────────────────────────
