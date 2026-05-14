@@ -266,7 +266,11 @@ export function findCallableBindingInScope(
       const localBindings = scope.bindings.get(callableName);
       if (localBindings !== undefined) {
         for (const b of localBindings) {
-          if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+          if (
+            b.def.type === 'Function' ||
+            b.def.type === 'Method' ||
+            b.def.type === 'Constructor'
+          ) {
             return b.def;
           }
         }

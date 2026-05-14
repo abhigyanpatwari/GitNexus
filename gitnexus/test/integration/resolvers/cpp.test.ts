@@ -1976,7 +1976,10 @@ describe('C++ two-phase template lookup — positive this-qualified calls', () =
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-two-phase-this-qualified'), () => {});
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-this-qualified'),
+      () => {},
+    );
   }, 60000);
 
   it('Derived<T>::g() -> this->f() resolves to f (1 edge)', () => {

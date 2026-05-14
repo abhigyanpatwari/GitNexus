@@ -328,7 +328,10 @@ export function emitReceiverBoundCalls(
       if (receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
-          const chain = [enclosingClass.nodeId, ...scopes.methodDispatch.mroFor(enclosingClass.nodeId)];
+          const chain = [
+            enclosingClass.nodeId,
+            ...scopes.methodDispatch.mroFor(enclosingClass.nodeId),
+          ];
           let memberDef: SymbolDefinition | undefined;
           for (const ownerId of chain) {
             memberDef = findOwnedMember(ownerId, memberName, model);
