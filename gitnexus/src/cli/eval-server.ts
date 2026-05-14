@@ -14,9 +14,10 @@
  *   Agent bash cmd → curl localhost:PORT/tool/query → eval-server → LocalBackend → format → text
  *
  * Usage:
- *   gitnexus eval-server                    # default port 4848
- *   gitnexus eval-server --port 4848        # explicit port
- *   gitnexus eval-server --idle-timeout 300 # auto-shutdown after 300s idle
+ *   gitnexus eval-server                          # default port 4848
+ *   gitnexus eval-server --port 4848              # explicit port
+ *   gitnexus eval-server --host 0.0.0.0           # bind to all interfaces
+ *   gitnexus eval-server --idle-timeout 300       # auto-shutdown after 300s idle
  *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
@@ -32,6 +33,7 @@ import { cliInfo, cliWarn } from './cli-message.js';
 
 export interface EvalServerOptions {
   port?: string;
+  host?: string;
   idleTimeout?: string;
 }
 
@@ -328,6 +330,7 @@ function getNextStepHint(toolName: string): string {
 
 export async function evalServerCommand(options?: EvalServerOptions): Promise<void> {
   const port = parseInt(options?.port || '4848');
+  const host = options?.host ?? '127.0.0.1';
   const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
 
   const backend = new LocalBackend();
@@ -426,12 +429,12 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, host, () => {
     // Plain-text banner for the human watching stderr; structured record
     // for log aggregation (split into two so the user sees a real banner
     // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
     const bannerLines = [
-      `GitNexus eval-server: listening on http://127.0.0.1:${port}`,
+      `GitNexus eval-server: listening on http://${host}:${port}`,
       `  POST /tool/query    — search execution flows`,
       `  POST /tool/context  — 360-degree symbol view`,
       `  POST /tool/impact   — blast radius analysis`,
@@ -444,7 +447,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
     cliInfo(bannerLines.join('\n'), {
       port,
-      host: '127.0.0.1',
+      host,
       idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
       endpoints: [
         'POST /tool/query',
