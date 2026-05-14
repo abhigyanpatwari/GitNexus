@@ -82,7 +82,12 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
 
 /**
  * Normalize a C++ type name: strip pointer/array/reference syntax,
- * qualifiers, and template parameters (V1: generic-ignored).
+ * qualifiers, while preserving template arguments for specialization-aware
+ * receiver binding (`List<User>` vs `List<Order>`).
+ *
+ * Keeping template arguments here allows receiver-bound fallback to match
+ * specialization-specific class defs first; non-template behavior is preserved
+ * by base-name fallback in resolveClassBindingForName.
  */
 export function normalizeCppTypeName(text: string): string {
   let t = text.trim();
@@ -90,13 +95,6 @@ export function normalizeCppTypeName(text: string): string {
   t = t
     .replace(/\b(const|volatile|restrict|static|extern|inline|mutable|constexpr|consteval)\b/g, '')
     .trim();
-  // Strip template parameters (loop handles nested: Map<List<int>> → Map)
-  while (t.includes('<')) {
-    const stripped = t.replace(/<[^<>]*>/g, '');
-    if (stripped === t) break; // avoid infinite loop on malformed input
-    t = stripped;
-  }
-  t = t.trim();
   // Strip pointer stars
   while (t.endsWith('*')) t = t.slice(0, -1).trim();
   while (t.startsWith('*')) t = t.slice(1).trim();

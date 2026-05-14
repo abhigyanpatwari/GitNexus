@@ -67,6 +67,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       filePath?: string;
       name?: string;
       qualifiedName?: string;
+      templateArguments?: readonly string[];
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -95,6 +96,22 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         const pKey = qualifiedKey(props.filePath, node.label, `${qualified}~${pTypes.join(',')}`);
         // Each overload is unique — set unconditionally.
         lookup.set(pKey, node.id);
+      }
+      if (
+        (node.label === 'Class' ||
+          node.label === 'Struct' ||
+          node.label === 'Interface' ||
+          node.label === 'Enum' ||
+          node.label === 'Record') &&
+        props.templateArguments !== undefined &&
+        props.templateArguments.length > 0
+      ) {
+        const tKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${qualified}~${props.templateArguments.join(',')}`,
+        );
+        if (!lookup.has(tKey)) lookup.set(tKey, node.id);
       }
     }
 
