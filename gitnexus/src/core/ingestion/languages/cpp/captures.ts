@@ -321,6 +321,12 @@ export function emitCppScopeCaptures(
   return out;
 }
 
+/**
+ * Walk every C++ class/struct base clause and emit `@reference.inherits`
+ * captures for each base so scope resolution can resolve them into EXTENDS
+ * edges. Lookup names are normalized to bare class names (`Base<T>` → `Base`,
+ * `outer::v1::Base<T>` → `Base`) to match `findClassBindingInScope`.
+ */
 function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[]): void {
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
@@ -373,12 +379,12 @@ function detectCppDependentBases(root: SyntaxNode, filePath: string): void {
         if (className !== '') {
           const baseClause = findChildOfType(classNode, ['base_class_clause']);
           if (baseClause !== null) {
-              for (const base of iterBaseClasses(baseClause)) {
-                if (isBaseDependent(base, params)) {
-                  const baseName = extractBaseLookupName(base);
-                  if (baseName !== '') {
-                    markCppDependentBase(filePath, className, baseName);
-                  }
+            for (const base of iterBaseClasses(baseClause)) {
+              if (isBaseDependent(base, params)) {
+                const baseName = extractBaseLookupName(base);
+                if (baseName !== '') {
+                  markCppDependentBase(filePath, className, baseName);
+                }
               }
             }
           }
@@ -492,7 +498,11 @@ function isBaseDependent(baseNode: SyntaxNode, templateParams: Set<string>): boo
   return false;
 }
 
-/** Extract the simple name of a base class node. */
+/**
+ * Recursively extract the bare lookup name of a base class node.
+ * Examples: `Base` → `Base`, `Base<T>` → `Base`,
+ * `outer::v1::Base<T>` → `Base`.
+ */
 function extractBaseLookupName(baseNode: SyntaxNode): string {
   if (baseNode.type === 'type_identifier' || baseNode.type === 'identifier') return baseNode.text;
   if (baseNode.type === 'template_type') {

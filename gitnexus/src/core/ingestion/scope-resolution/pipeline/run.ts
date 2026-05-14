@@ -46,6 +46,14 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 import { logger } from '../../../logger.js';
 
+/**
+ * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
+ * before MRO construction. This lets template-base captures contribute to the
+ * graph in time for `buildMro`, while `handledSites` prevents the generic
+ * reference-edge bridge from re-emitting the same sites later.
+ *
+ * @returns Site keys to seed the downstream handled-site skip set.
+ */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
