@@ -185,6 +185,18 @@ describe('ESM extension resolution — path aliases with .js extensions', () => 
     expect(result).toBe('src/component.tsx');
   });
 
+  it('resolves @/config.mjs to src/config.mts via alias', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/config.mts']);
+    const result = resolveWithAlias('src/index.ts', '@/config.mjs', ctx, [['@/', 'src/']], '.');
+    expect(result).toBe('src/config.mts');
+  });
+
+  it('resolves @/legacy.cjs to src/legacy.cts via alias', () => {
+    const ctx = makeCtx(['src/index.ts', 'src/legacy.cts']);
+    const result = resolveWithAlias('src/index.ts', '@/legacy.cjs', ctx, [['@/', 'src/']], '.');
+    expect(result).toBe('src/legacy.cts');
+  });
+
   it('prefers actual .js file over TS fallback in alias resolution', () => {
     const ctx = makeCtx(['src/index.ts', 'src/utils.js', 'src/utils.ts']);
     const result = resolveWithAlias('src/index.ts', '@/utils.js', ctx, [['@/', 'src/']], '.');
