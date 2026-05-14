@@ -32,7 +32,7 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
@@ -41,7 +41,7 @@ import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
-import { findClassBindingInScope } from '../scope/walkers.js';
+import { findClassBindingInScope, findEnclosingClassDef } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 import { logger } from '../../../logger.js';
@@ -76,7 +76,9 @@ function preEmitInheritanceEdges(
     const targetDef = findClassBindingInScope(site.inScope, site.name, scopes);
     if (targetDef === undefined) continue;
 
-    const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
+    const callerClass = findEnclosingClassDef(site.inScope, scopes);
+    if (callerClass === undefined) continue;
+    const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (callerGraphId === undefined || targetGraphId === undefined) continue;
     const edgeKey = `${callerGraphId}->${targetGraphId}`;
