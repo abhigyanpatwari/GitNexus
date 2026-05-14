@@ -127,8 +127,10 @@ describe('isRegistryPrimary', () => {
   it('handles the CPlusPlus → REGISTRY_PRIMARY_CPP mapping correctly', () => {
     process.env['REGISTRY_PRIMARY_CPP'] = 'true';
     expect(isRegistryPrimary(SupportedLanguages.CPlusPlus)).toBe(true);
-    // Negative: the TS-key-style name is NOT read.
-    delete process.env['REGISTRY_PRIMARY_CPP'];
+    // Negative: the TS-key-style name is NOT read. CPlusPlus is now in
+    // MIGRATED_LANGUAGES, so we must explicitly opt it out via the
+    // canonical env var to verify the wrong-name var has no effect.
+    process.env['REGISTRY_PRIMARY_CPP'] = 'false';
     process.env['REGISTRY_PRIMARY_CPLUSPLUS'] = 'true';
     expect(isRegistryPrimary(SupportedLanguages.CPlusPlus)).toBe(false);
   });
@@ -151,8 +153,8 @@ describe('primaryLanguages', () => {
     // testing explicit env overrides. Java (unmigrated) opts in.
     // Opt out every member of MIGRATED_LANGUAGES dynamically so this test
     // does not have to be updated each time a new language ships its
-    // Ring 3 migration (PHP joined the set in commit 69786b16; future
-    // Ring 3 additions land here without test churn).
+    // Ring 3 migration (C++ and PHP joined the set in their respective
+    // Ring 3 migrations; future Ring 3 additions land here without test churn).
     for (const lang of MIGRATED_LANGUAGES) {
       process.env[envVarNameFor(lang)] = 'false';
     }
@@ -161,6 +163,7 @@ describe('primaryLanguages', () => {
     expect(enabled.has(SupportedLanguages.Python)).toBe(false);
     expect(enabled.has(SupportedLanguages.CSharp)).toBe(false);
     expect(enabled.has(SupportedLanguages.Go)).toBe(false);
+    expect(enabled.has(SupportedLanguages.CPlusPlus)).toBe(false);
     expect(enabled.has(SupportedLanguages.PHP)).toBe(false);
     expect(enabled.has(SupportedLanguages.Java)).toBe(true);
     // Only Java is on: migrated defaults overridden off, Java explicitly on.

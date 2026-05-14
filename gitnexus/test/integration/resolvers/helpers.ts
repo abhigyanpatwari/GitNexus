@@ -90,6 +90,74 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'binds the call to alpha/services/sync.py, not omega',
     'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
   ]),
+  cpp: new Set<string>([
+    // The legacy DAG path has no scope-aware filtering on the global
+    // free-call fallback, so `#include`d headers still leak class
+    // methods (`User::save`) and namespace members (`ns::foo`) as
+    // resolution targets for unqualified calls. The scope-resolver
+    // path filters via `populateCppNonGloballyVisible` +
+    // `isFileLocalDef`. Scope-resolver-only correctness win
+    // (PR #1520 review follow-up plan U1); backporting to legacy is
+    // out of scope.
+    'does NOT resolve unqualified save() to User::save via #include',
+    'does NOT resolve unqualified foo() to ns::foo via #include',
+    // The legacy DAG path lacks the OVERLOAD_AMBIGUOUS suppression
+    // wired through `pickOverload` + `isOverloadAmbiguousAfterNormalization`,
+    // so it arbitrarily picks the first overload when `f(int)` and
+    // `f(long)` collide after C++ integer-width normalization. Scope-
+    // resolver-only correctness win (PR #1520 review follow-up plan U2 /
+    // Claude review Finding 5); backporting to legacy is out of scope.
+    'emits zero CALLS edges when process(int)/process(long) collide after normalization',
+    // The legacy DAG path resolves `using namespace a; using namespace b; foo()`
+    // by walking the workspace registry by simple name and binding to
+    // the first match — same shape as the integer-width collision, just
+    // with namespace-resolution as the ambiguity source. Scope-resolver-
+    // only correctness win (PR #1520 review follow-up plan U4 / Claude
+    // review Finding 7); backporting to legacy is out of scope.
+    'emits zero CALLS edges for ambiguous foo() bound via two using-namespace declarations',
+    // The legacy DAG path lacks two-phase template lookup. Unqualified
+    // calls inside a class template body bind to dependent-base members
+    // there, producing CALLS edges the compiler would reject (ISO C++
+    // two-phase name lookup). Scope-resolver-only correctness win
+    // (PR #1520 review follow-up plan 2026-05-13-001 U3); backporting
+    // is out of scope.
+    'Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)',
+    // The legacy DAG path has no V1/V2 ADL boundary — pointer-typed
+    // arguments resolve via the workspace-wide simple-name walk. The
+    // scope-resolver V1 ADL pass excludes pointer args (closure rules
+    // deferred to V2) per plan 2026-05-13-001 U2 / R4. Scope-resolver-
+    // only correctness win; backporting is out of scope.
+    'record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args',
+    // The legacy DAG path has no ADL_AMBIGUOUS suppression sentinel.
+    // When ADL surfaces multiple overloads that collide after C++
+    // int/long normalization, legacy picks the first match arbitrarily.
+    // The scope-resolver path suppresses via the ADL_AMBIGUOUS sentinel
+    // (mirroring OVERLOAD_AMBIGUOUS for receiver-bound paths). Scope-
+    // resolver-only correctness win (PR #1520 review follow-up plan
+    // 2026-05-13-001 U2); backporting is out of scope.
+    'process(t, 42) emits zero CALLS edges when ADL surfaces process(Token,int)/process(Token,long) (collide after C++ int normalization)',
+    // The legacy DAG path has no qualified namespace-member resolver
+    // and no inline-namespace awareness. For the versioned fixture
+    // (`outer::v1::foo` inline, `outer::v0::foo` not), the registry-
+    // primary path resolves `outer::foo()` to v1 via the inline
+    // exemption; legacy can't see EITHER and emits zero edges. The
+    // unqualified / nested fixtures coincidentally resolve in legacy
+    // because their global free-call fallback picks the unique simple-
+    // name match; the versioned fixture has two `foo`s and legacy can't
+    // disambiguate. Scope-resolver-only correctness win (PR #1520
+    // review follow-up plan 2026-05-13-001 U5); backporting is out of
+    // scope.
+    'outer::foo() resolves to outer::v1::foo (inline child), NOT outer::v0::foo',
+    // Phase 5 cross-unit composition tests assert no false positives
+    // for compositions where the legacy DAG over-resolves. The legacy
+    // path has no template-arg-stripping qualified-receiver logic and
+    // no two-phase dependent-base suppression, so it produces CALLS
+    // edges where the registry-primary path correctly suppresses.
+    // Scope-resolver-only correctness wins (PR #1520 review follow-up
+    // plan 2026-05-13-001 Phase 5); backporting is out of scope.
+    'Base<T>::method() does NOT mis-route to a class method outside the MRO',
+    'unqualified f() inside Derived<T>::g() does NOT bind to outer::v1::Base<T>::f (dependent base across inline namespace)',
+  ]),
 };
 
 type ResolverParityEnv = Readonly<Record<string, string | undefined>>;

@@ -432,8 +432,46 @@ export interface ScopeResolver {
    * `/^super\s*\(/.test(t)`. Java returns `t === 'super'`. C++ may
    * also need `this` capture. Languages without inheritance return
    * constant `false`.
+   *
+   * For languages where the answer depends on caller context (e.g.
+   * C++, where `Base::method()` is a super call ONLY when `Base` is
+   * actually a base of the caller's enclosing class, and namespace-
+   * qualified calls like `Singleton::getInstance()` must NOT be
+   * misclassified), implement the optional `isSuperReceiverInContext`
+   * variant below. The receiver-bound-calls pass prefers the context-
+   * aware variant when both are defined.
    */
   isSuperReceiver(receiverText: string): boolean;
+
+  /**
+   * Optional context-aware variant of `isSuperReceiver`. When defined,
+   * the receiver-bound-calls pass prefers this hook over the simple
+   * `isSuperReceiver(text)` form. Languages where super classification
+   * is purely text-driven (Python, Java, PHP) omit this hook and the
+   * simple form is used unchanged.
+   *
+   * C++ uses this to distinguish `Base::method()` (super call when
+   * `Base` is in the caller's MRO) from `Singleton::getInstance()`
+   * (ordinary namespace-qualified call). Without this, the regex
+   * heuristic `/^[A-Z]\w*::/` misclassifies any uppercase-qualified
+   * call as a super-receiver call and routes it through the wrong
+   * resolution branch.
+   *
+   * Returns `true` ONLY when:
+   *   - the receiver text parses as `<Name>::<...>` (or another super-
+   *     form the language recognizes), AND
+   *   - `<Name>` resolves (via scope chain) to a class-like def, AND
+   *   - that class is in the MRO of the caller's enclosing class.
+   *
+   * Returns `false` for namespace-qualified calls, unresolved names,
+   * class-qualified calls where the class is NOT in the caller's MRO,
+   * and any text the simple `isSuperReceiver` hook also rejects.
+   */
+  readonly isSuperReceiverInContext?: (
+    receiverText: string,
+    callerScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+  ) => boolean;
 
   // ─── Optional toggles ──────────────────────────────────────────────────────
 
@@ -522,7 +560,69 @@ export interface ScopeResolver {
   readonly isCallableVisibleFromCaller?: (ctx: {
     readonly callerParsed: ParsedFile;
     readonly candidate: SymbolDefinition;
+    /** Caller's enclosing scope id. Languages that gate visibility on
+     *  caller scope (e.g. C++ two-phase template lookup) consult it;
+     *  others ignore. Optional so existing implementations stay valid. */
+    readonly callerScope?: ScopeId;
+    /** ScopeResolutionIndexes for scope-tree walks. Optional for the
+     *  same reason as `callerScope`. */
+    readonly scopes?: ScopeResolutionIndexes;
   }) => boolean;
+
+  /**
+   * Optional argument-dependent-lookup (ADL / Koenig lookup) hook for
+   * languages with C++-style associated-namespace candidate addition.
+   *
+   * Runs in the free-call fallback AFTER `findCallableBindingInScope`
+   * returns `undefined` and BEFORE `pickUniqueGlobalCallable`. The hook
+   * inspects the call site's argument types, computes the associated
+   * namespace set, and returns either:
+   *   - a unique `SymbolDefinition` — emit the CALLS edge to it.
+   *   - `'ambiguous'` — multiple candidates share normalized parameter
+   *     types; the caller MUST suppress (zero edges). Mirrors the
+   *     OVERLOAD_AMBIGUOUS sentinel from `overload-narrowing.ts`.
+   *   - `undefined` — no ADL candidates; caller falls through to the
+   *     global free-call fallback (`pickUniqueGlobalCallable`).
+   *
+   * Languages without C++-style ADL leave this undefined. The
+   * cross-language contract is "additive tier" — defining the hook never
+   * removes candidates the prior tier would have produced.
+   */
+  readonly resolveAdlCandidates?: (
+    site: {
+      readonly name: string;
+      readonly arity?: number;
+      readonly argumentTypes?: readonly string[];
+      readonly atRange: { readonly startLine: number; readonly startCol: number };
+    },
+    callerParsed: ParsedFile,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+  ) => SymbolDefinition | 'ambiguous' | undefined;
+
+  /**
+   * Optional resolver for qualified-receiver member calls where the
+   * receiver is a namespace (not a class) and ordinary scope-chain /
+   * import resolution doesn't find the member. C++ uses this for
+   * `outer::foo()` style calls and to walk through inline-namespace
+   * children transitively (`outer::v1::foo` reachable as `outer::foo`).
+   *
+   * Languages whose qualified-name semantics are already covered by the
+   * receiver-bound-calls Case-1 namespace-targets path (e.g., Python's
+   * `import X; X.foo()`) leave this undefined.
+   *
+   * Receiver-bound-calls invokes this hook AFTER Case 1 (namespace
+   * imports) and AFTER Case 2 (class-name receiver) fail to resolve.
+   * Returns the target def, or `undefined` to fall through to the
+   * remaining cases.
+   */
+  readonly resolveQualifiedReceiverMember?: (
+    receiverName: string,
+    memberName: string,
+    callerScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+  ) => SymbolDefinition | undefined;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
