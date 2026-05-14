@@ -55,6 +55,15 @@ import {
   cImportOwningScope,
   cReceiverBinding,
 } from './c/index.js';
+import {
+  emitCppScopeCaptures,
+  interpretCppImport,
+  interpretCppTypeBinding,
+  cppArityCompatibility,
+  cppBindingScopeFor,
+  cppImportOwningScope,
+  cppReceiverBinding,
+} from './cpp/index.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -447,4 +456,14 @@ export const cppProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.CPlusPlus),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  emitScopeCaptures: emitCppScopeCaptures,
+  interpretImport: interpretCppImport,
+  interpretTypeBinding: interpretCppTypeBinding,
+  bindingScopeFor: cppBindingScopeFor,
+  importOwningScope: cppImportOwningScope,
+  receiverBinding: cppReceiverBinding,
+  arityCompatibility: cppArityCompatibility,
+  // mergeBindings + resolveImportTarget live on ScopeResolver (see cpp/scope-resolver.ts).
 });

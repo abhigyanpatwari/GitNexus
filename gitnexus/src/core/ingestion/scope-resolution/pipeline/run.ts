@@ -308,6 +308,7 @@ export function runScopeResolution(
       allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
       isFileLocalDef: provider.isFileLocalDef,
       isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
+      resolveAdlCandidates: provider.resolveAdlCandidates,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(

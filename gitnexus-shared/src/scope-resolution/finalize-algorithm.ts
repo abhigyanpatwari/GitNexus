@@ -833,7 +833,16 @@ function expandWildcard(
   if (target === undefined) return [edge];
 
   const names = hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
-  if (names.length === 0) return [];
+  if (names.length === 0) {
+    // Resolved wildcard with zero propagating names is still a real file-
+    // level dependency (e.g. a C++ header that only declares classes —
+    // `#include` is a valid IMPORTS edge, but unqualified-binding names
+    // are correctly empty since class methods require `Class::method`).
+    // Preserve the original wildcard edge so the file→file IMPORTS edge
+    // survives; downstream binding materialization sees no propagated
+    // names because the edge has no `targetExportedName`/`localName`.
+    return [edge];
+  }
 
   const expanded: ImportEdge[] = [];
   for (const name of names) {
