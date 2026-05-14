@@ -267,6 +267,21 @@ describe('setupClaudeCode', () => {
     });
   });
 
+  it('copies hook-db-lock-probe.cjs and win-rm-list-json.ps1 to ~/.claude/hooks/gitnexus/', async () => {
+    setPlatform('linux');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const destHooksDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
+    await expect(
+      fs.access(path.join(destHooksDir, 'hook-db-lock-probe.cjs')),
+    ).resolves.toBeUndefined();
+    await expect(
+      fs.access(path.join(destHooksDir, 'win-rm-list-json.ps1')),
+    ).resolves.toBeUndefined();
+  });
+
   it('falls back to first line on Windows when no .cmd/.bat wrapper found', async () => {
     setPlatform('win32');
     // Edge case: where returns only the POSIX script (no .cmd wrapper)

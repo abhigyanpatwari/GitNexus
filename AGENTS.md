@@ -174,6 +174,20 @@ Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no 
 | Tools/resources/schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | CLI commands (index, status, clean, wiki) | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
+## Hook env knobs
+
+The Claude Code hook (`gitnexus/hooks/claude/gitnexus-hook.cjs` and the mirrored plugin copy under `gitnexus-claude-plugin/hooks/`) honours these env vars. Defaults work for normal installations; set them only to override resolution. All path overrides ignore values that do not exist on disk and fall through to the standard resolution chain.
+
+| Env var | Type | Default | Purpose |
+|---------|------|---------|---------|
+| `GITNEXUS_HOOK_CLI_PATH` | path | resolved via package layout / `require.resolve` | Override path to the `gitnexus` CLI entry the hook spawns for `augment`. |
+| `GITNEXUS_HOOK_LSOF_PATH` | path | `lsof` on `PATH` (with `/usr/bin/lsof`, `/usr/sbin/lsof`, `/sbin/lsof` fallbacks) | Override POSIX `lsof` location for the DB-lock probe. |
+| `GITNEXUS_HOOK_PS_PATH` | path | `ps` on `PATH` (with `/bin/ps`, `/usr/bin/ps` fallbacks) | Override POSIX `ps` location. |
+| `GITNEXUS_HOOK_POWERSHELL_PATH` | path | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` (then `SysWOW64`, then `powershell.exe` on `PATH`) | Override Windows PowerShell location used by the Restart-Manager probe. |
+| `GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS` | integer ms | `1200` | Max wall-clock for the Linux `/proc` fd scan before bailing out to the `lsof` fallback. |
+| `GITNEXUS_HOOK_RM_TARGET` | path | derived | Restart-Manager target file (the LadybugDB path under `.gitnexus/`). Set internally by the hook; rarely overridden manually. |
+| `GITNEXUS_DEBUG` | boolean (`1`/`true`) | unset | Verbose stderr from the hook: prints discarded augment-stderr prefixes and one-shot `.ps1` load-failure warnings. |
+
 <!-- gitnexus:end -->
 
 ## Repo reference

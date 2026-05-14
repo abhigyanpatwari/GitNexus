@@ -72,6 +72,13 @@ export const resolveImportPath = (
         const resolved = tryResolveWithExtensions(rewritten, allFiles);
         if (resolved) return cache(resolved);
 
+        // ESM fallback: strip .js/.jsx/.mjs/.cjs and retry with TS equivalents
+        const strippedAlias = stripJsExtension(rewritten);
+        if (strippedAlias !== null) {
+          const esmResolved = tryResolveWithExtensions(strippedAlias, allFiles);
+          if (esmResolved) return cache(esmResolved);
+        }
+
         // Try suffix matching as fallback
         const parts = rewritten.split('/').filter(Boolean);
         const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
@@ -132,9 +139,6 @@ export const resolveImportPath = (
 
     // TypeScript ESM: imports use .js/.jsx/.mjs/.cjs but source files are
     // .ts/.tsx/.mts/.cts. Strip the JS-family extension and re-resolve.
-    // NOTE: This fallback only applies to relative imports. Path alias imports
-    // (e.g. @/utils.js via tsconfig paths) do not yet strip .js extensions —
-    // that is a known limitation tracked for follow-up.
     if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
       const stripped = stripJsExtension(basePath);
       if (stripped !== null) {
