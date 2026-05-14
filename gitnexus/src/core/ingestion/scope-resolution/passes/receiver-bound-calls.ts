@@ -93,6 +93,9 @@ function resolveClassBindingForName(
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
     const qnameIds = scopes.qualifiedNames.get(baseName);
+    if (qnameIds.length === 0) {
+      return findClassBindingInScope(scopeId, baseName, scopes);
+    }
     const matches: SymbolDefinition[] = [];
     for (const id of qnameIds) {
       const def = scopes.defs.get(id);
