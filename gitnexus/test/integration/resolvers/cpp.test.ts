@@ -2098,7 +2098,7 @@ describe('C++ inline namespace — ADL participation', () => {
 // U3 (two-phase lookup), and U5 (inline namespaces).
 // ---------------------------------------------------------------------------
 
-describe('C++ Phase 5 U1×U3 — qualified Base<T>::method() inside template body (no false positives)', () => {
+describe('C++ Phase 5 U1×U3 — qualified Base<T>::method() inside template body', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2108,22 +2108,33 @@ describe('C++ Phase 5 U1×U3 — qualified Base<T>::method() inside template bod
     );
   }, 60000);
 
-  it('Base<T>::method() does NOT mis-route to a class method outside the MRO', () => {
+  it('emits EXTENDS edge: Derived → Base for template base Base<T>', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → Base');
+  });
+
+  it('Base<T>::method() resolves to Base::method inside template body', () => {
     const calls = getRelationships(result, 'CALLS');
     const methodCalls = calls.filter((c) => c.source === 'g' && c.target === 'method');
-    // V1 documented gap: cross-file (and same-file) template-class
-    // inheritance is not captured as an EXTENDS edge by the legacy DAG
-    // (the cpp captures.ts has no `base_class_clause` heritage emitter
-    // for template_type bases). Without an EXTENDS edge, MRO is empty
-    // and the U1 super branch can't dispatch. Result: 0 CALLS edges.
-    //
-    // This Phase 5 cross-unit composition test locks in that the
-    // template-arg-stripping U1 logic produces NO false positives —
-    // `Base<T>` correctly classifies as a super-receiver candidate but
-    // (due to empty MRO) doesn't accidentally route to an unrelated
-    // method named `method` via any other case. count > 0 here would
-    // indicate the U1 stripped lookup mis-resolved across cases.
-    expect(methodCalls.length).toBe(0);
+    expect(methodCalls.length).toBe(1);
+    expect(methodCalls[0].targetFilePath).toContain('classes.h');
+  });
+});
+
+describe('C++ Phase 5 U1×U3 — template multi-base list', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-template-multi-base-list'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edges: Derived → A, Derived → B for template multi-base list', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(2);
+    expect(edgeSet(extends_)).toEqual(['Derived → A', 'Derived → B']);
   });
 });
 
@@ -2181,5 +2192,36 @@ describe('C++ Phase 5 U3×U5 — template Derived : outer::v1::Base<T> (inline)'
     // walks the heritage's simple name (`Base`) regardless of the
     // qualifying namespace path.
     expect(fLeaks.length).toBe(0);
+  });
+});
+
+describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside template body', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-u5-qualified-inline-base-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edge: Derived → Base for qualified template base outer::v1::Base<T>', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → Base');
+  });
+
+  it('outer::v1::Base<T>::f() resolves to Base::f inside template body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(fCalls.length).toBe(1);
+    expect(fCalls[0].targetFilePath).toContain('base.h');
+  });
+
+  it('outer::v1::free_fn() resolves as a namespace free function, not a super-receiver method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const freeCalls = calls.filter((c) => c.source === 'g' && c.target === 'free_fn');
+    expect(freeCalls.length).toBe(1);
+    expect(freeCalls[0].targetLabel).toBe('Function');
+    expect(freeCalls[0].rel.reason).toBe('import-resolved');
   });
 });
