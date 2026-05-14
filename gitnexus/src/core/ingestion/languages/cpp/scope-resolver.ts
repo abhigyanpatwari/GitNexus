@@ -101,14 +101,19 @@ export const cppScopeResolver: ScopeResolver = {
     // fallback and wildcard expansion can suppress them as unqualified
     // cross-file callables.
     populateCppNonGloballyVisible(parsed);
-    // Resolve recorded template-class → dependent-base simple names to
-    // class nodeIds for two-phase template lookup (U3 of plan
-    // 2026-05-13-001).
-    populateCppDependentBases(parsed);
     // Build the class-def → enclosing-namespace-qualified-name map used
     // by ADL (U2 of plan 2026-05-13-001) to identify each argument type's
     // associated namespace for Koenig lookup.
     populateCppAssociatedNamespaces(parsed);
+  },
+
+  // Resolve recorded template-class → dependent-base simple names to
+  // class nodeIds for two-phase template lookup (U3 of plan
+  // 2026-05-13-001). Runs AFTER all files have had `populateOwners`
+  // applied so that cross-file base classes (e.g. Base in base.h,
+  // Derived in derived.h) are reachable in the workspace index.
+  populateWorkspaceOwners: (parsedFiles: readonly ParsedFile[]) => {
+    populateCppDependentBases(parsedFiles);
   },
 
   // Simple `isSuperReceiver` returns false for C++. Real super
