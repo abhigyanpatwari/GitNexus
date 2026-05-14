@@ -74,6 +74,12 @@ const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
 const CACHE_INDEX_FILENAME = 'index.json';
 
+/** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
+const CHUNK_CACHE_KEY_HEX_RE = /^[a-f0-9]{64}$/;
+
+const isValidChunkCacheKey = (chunkHash: string): boolean =>
+  CHUNK_CACHE_KEY_HEX_RE.test(chunkHash);
+
 /** On-disk shape for the legacy single-file format. */
 interface ParseCacheFile {
   version: string;
@@ -203,7 +209,7 @@ const loadShardedParseCache = async (storagePath: string): Promise<ParseCache | 
 
     const entries = new Map<string, ParseWorkerResult[]>();
     for (const chunkHash of data.keys) {
-      if (typeof chunkHash !== 'string' || chunkHash.length === 0) continue;
+      if (typeof chunkHash !== 'string' || !isValidChunkCacheKey(chunkHash)) continue;
       try {
         const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
         const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
@@ -230,8 +236,14 @@ export const loadParseCache = async (storagePath: string): Promise<ParseCache> =
 };
 
 /**
- * Persist the cache to disk atomically (write-and-rename) so a crash
- * mid-write doesn't leave a corrupt file.
+ * Persist the cache to disk using a temp directory + rename.
+ *
+ * Writes shards under `${cacheDir}.tmp`, then removes the old `cacheDir` and
+ * renames the temp directory into place. There is a crash window after
+ * `rm(cacheDir)` and before `rename(tmpDir, cacheDir)` where no cache exists;
+ * that is acceptable — `loadParseCache` yields empty and the next run
+ * reparses. This is not a single atomic swap of the whole tree, but avoids
+ * leaving a half-written shard set visible to readers.
  */
 export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
@@ -242,9 +254,18 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
 
   const keys: string[] = [];
   for (const [chunkHash, chunkResults] of cache.entries) {
+    if (!isValidChunkCacheKey(chunkHash)) continue;
+    let payload: string;
+    try {
+      payload = JSON.stringify(chunkResults, mapReplacer);
+    } catch {
+      // Extremely dense chunks could theoretically exceed string limits; skip
+      // rather than failing the entire save (orchestrator catches save errors).
+      continue;
+    }
     keys.push(chunkHash);
     const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
-    await fs.writeFile(chunkPath, JSON.stringify(chunkResults, mapReplacer), 'utf-8');
+    await fs.writeFile(chunkPath, payload, 'utf-8');
   }
 
   const index: ShardedParseCacheIndex = {
