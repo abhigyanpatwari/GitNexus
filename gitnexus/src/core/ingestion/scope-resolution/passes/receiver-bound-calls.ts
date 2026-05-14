@@ -55,6 +55,10 @@ import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
 } from './overload-narrowing.js';
+import {
+  extractTemplateArguments,
+  stripTemplateArguments,
+} from '../../utils/template-arguments.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -69,6 +73,53 @@ type ReceiverBoundProviderSubset = Pick<
   | 'hoistTypeBindingsToModule'
   | 'resolveQualifiedReceiverMember'
 >;
+
+function normalizeTemplateArgToken(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+function resolveClassBindingForName(
+  scopeId: string,
+  rawClassName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const direct = findClassBindingInScope(scopeId, rawClassName, scopes);
+  if (direct !== undefined) return direct;
+
+  if (!rawClassName.includes('<')) return undefined;
+  const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
+  if (baseName.length === 0) return undefined;
+
+  const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
+  if (wantedArgs !== undefined && wantedArgs.length > 0) {
+    // qualifiedNames is a Map and may not contain the stripped base name at all
+    // (e.g., unresolved type binding or only template-qualified entries), so
+    // default to [] before checking `.length`.
+    const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
+    if (qnameIds.length === 0) {
+      return findClassBindingInScope(scopeId, baseName, scopes);
+    }
+    const matches: SymbolDefinition[] = [];
+    for (const id of qnameIds) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      const defArgs = def.templateArguments?.map(normalizeTemplateArgToken);
+      if (
+        defArgs !== undefined &&
+        defArgs.length === wantedArgs.length &&
+        defArgs.every((value, i) => value === wantedArgs[i])
+      ) {
+        matches.push(def);
+      }
+    }
+    if (matches.length === 1) return matches[0];
+    // Scope extractor only records class definitions with bodies in C++, so
+    // forward declarations are not expected here. Keep fallback behavior for
+    // safety in non-ODR or mixed-language edge cases.
+  }
+
+  return findClassBindingInScope(scopeId, baseName, scopes);
+}
 
 export function emitReceiverBoundCalls(
   graph: KnowledgeGraph,
@@ -470,7 +521,7 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
-        let ownerDef = findClassBindingInScope(site.inScope, typeRef.rawName, scopes);
+        let ownerDef = resolveClassBindingForName(site.inScope, typeRef.rawName, scopes);
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
         // For languages with namespace-style imports (Go), imported types

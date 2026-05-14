@@ -2,6 +2,11 @@ import type Parser from 'tree-sitter';
 import type { Capture, NodeLabel, Range } from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 import { generateId } from '../../../lib/utils.js';
+import {
+  extractTemplateArguments,
+  stripTemplateArguments,
+  templateArgumentsIdTag,
+} from './template-arguments.js';
 
 /** Tree-sitter AST node. Re-exported for use across ingestion modules. */
 export type SyntaxNode = Parser.SyntaxNode;
@@ -390,8 +395,13 @@ export const findEnclosingClassInfo = (
         ) {
           label = 'Interface';
         }
+        const templateArguments = extractTemplateArguments(nameNode.text);
+        const classIdName =
+          templateArguments !== undefined
+            ? `${stripTemplateArguments(nameNode.text)}${templateArgumentsIdTag(templateArguments)}`
+            : nameNode.text;
         return {
-          classId: generateId(label, `${filePath}:${nameNode.text}`),
+          classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
         };
       }
