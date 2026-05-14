@@ -282,6 +282,11 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
   return null;
 };
 
+function isReadOnlyFilesystemError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
+}
+
 /**
  * Keep generated index files ignored without modifying the user's root .gitignore.
  */
@@ -306,7 +311,7 @@ export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => 
     await fs.mkdir(path.dirname(gitignorePath), { recursive: true });
     await fs.writeFile(gitignorePath, desired, 'utf-8');
   } catch (err: any) {
-    if (err?.code === 'EROFS' || err?.code === 'EACCES') {
+    if (isReadOnlyFilesystemError(err)) {
       logger.warn(
         { path: gitignorePath, code: err.code },
         'GitNexus storage filesystem is not writable; skipping .gitnexus/.gitignore. Generated files may appear as untracked in this repo locally.',
@@ -348,7 +353,7 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
     await fs.mkdir(path.dirname(excludePath), { recursive: true });
     await fs.writeFile(excludePath, `${content}${separator}${GITNEXUS_EXCLUDE_ENTRY}\n`, 'utf-8');
   } catch (err: any) {
-    if (err?.code === 'EROFS' || err?.code === 'EACCES') {
+    if (isReadOnlyFilesystemError(err)) {
       logger.warn(
         { path: excludePath, code: err.code },
         'GitNexus storage filesystem is not writable; skipping .git/info/exclude update. .gitnexus/ may appear as untracked in `git status` locally.',
