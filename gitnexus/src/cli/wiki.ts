@@ -33,6 +33,8 @@ export interface WikiCommandOptions {
   provider?: LLMProvider;
   verbose?: boolean;
   review?: boolean;
+  timeout?: string;
+  retries?: string;
 }
 
 /**
@@ -345,6 +347,16 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
         llmConfig = { ...llmConfig, apiKey: key, baseUrl, model, provider };
       }
     }
+  }
+
+  // ── Apply per-run overrides not saved to config ────────────────────
+  if (options?.timeout) {
+    const secs = parseInt(options.timeout, 10);
+    if (!isNaN(secs) && secs > 0) llmConfig.requestTimeoutMs = secs * 1000;
+  }
+  if (options?.retries) {
+    const n = parseInt(options.retries, 10);
+    if (!isNaN(n) && n > 0) llmConfig.maxAttempts = n;
   }
 
   // ── Setup progress bar with elapsed timer ──────────────────────────
