@@ -305,7 +305,7 @@ export function emitCppScopeCaptures(
   // Walk every class/struct base list and synthesize `@reference.inherits`
   // captures consumed by the registry-primary graph bridge. The lookup name
   // is normalized to the bare class name so `Base<T>` / `outer::v1::Base<T>`
-  // resolve through `findClassBindingInScope('Base')`.
+  // resolve through V1's simple-name `findClassBindingInScope('Base')`.
   emitCppInheritanceCaptures(tree.rootNode, out);
 
   // ── Detect dependent-base relationships for two-phase template lookup ──
@@ -325,7 +325,11 @@ export function emitCppScopeCaptures(
  * Walk every C++ class/struct base clause and emit `@reference.inherits`
  * captures for each base so scope resolution can resolve them into EXTENDS
  * edges. Lookup names are normalized to bare class names (`Base<T>` → `Base`,
- * `outer::v1::Base<T>` → `Base`) to match `findClassBindingInScope`.
+ * `outer::v1::Base<T>` → `Base`) to match the V1 simple-name
+ * `findClassBindingInScope` contract. This intentionally preserves the
+ * existing scope-chain tradeoff: qualified namespace context is discarded
+ * here instead of introducing a C++-only name-resolution lane in shared
+ * ingestion infrastructure.
  */
 function emitCppInheritanceCaptures(root: SyntaxNode, out: CaptureMatch[]): void {
   const stack: SyntaxNode[] = [root];
@@ -501,7 +505,9 @@ function isBaseDependent(baseNode: SyntaxNode, templateParams: Set<string>): boo
 /**
  * Recursively extract the bare lookup name of a base class node.
  * Examples: `Base` → `Base`, `Base<T>` → `Base`,
- * `outer::v1::Base<T>` → `Base`.
+ * `outer::v1::Base<T>` → `Base`. Namespace qualifiers are intentionally
+ * dropped to align with V1 scope-chain lookup everywhere else in the
+ * registry-primary pipeline.
  */
 function extractBaseLookupName(baseNode: SyntaxNode): string {
   if (baseNode.type === 'type_identifier' || baseNode.type === 'identifier') return baseNode.text;

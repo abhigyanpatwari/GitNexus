@@ -6,5 +6,7 @@ namespace outer {
     struct Base {
       void f();
     };
+
+    void free_fn();
   }
 }

@@ -69,8 +69,19 @@ function preEmitInheritanceEdges(
   for (const site of scopes.referenceSites) {
     if (site.kind !== 'inherits') continue;
     const scope = scopes.scopeTree.getScope(site.inScope);
-    if (scope?.filePath !== undefined) {
-      handledSites.add(`${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+    const siteKey =
+      scope?.filePath !== undefined
+        ? `${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`
+        : undefined;
+    if (siteKey !== undefined) {
+      // Intentionally suppress every `inherits` site from the generic
+      // reference bridge, even when this pre-pass can't emit an EXTENDS
+      // edge. The shared bridge resolves the source via
+      // `resolveCallerGraphId`, which can degrade class-heritage sites into
+      // method-owned EXTENDS edges once methods exist on the class. This
+      // pre-pass is the authoritative inheritance emitter, so broad
+      // suppression keeps `buildMro` and the final graph class-owned.
+      handledSites.add(siteKey);
     }
 
     const targetDef = findClassBindingInScope(site.inScope, site.name, scopes);

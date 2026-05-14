@@ -2121,6 +2121,23 @@ describe('C++ Phase 5 U1×U3 — qualified Base<T>::method() inside template bod
   });
 });
 
+describe('C++ Phase 5 U1×U3 — template multi-base list', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-template-multi-base-list'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edges: Derived → A, Derived → B for template multi-base list', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(2);
+    expect(edgeSet(extends_)).toEqual(['Derived → A', 'Derived → B']);
+  });
+});
+
 describe('C++ Phase 5 U2×U3 — ADL routes around dependent-base shadow', () => {
   let result: PipelineResult;
 
@@ -2198,5 +2215,13 @@ describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside te
     const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
     expect(fCalls.length).toBe(1);
     expect(fCalls[0].targetFilePath).toContain('base.h');
+  });
+
+  it('outer::v1::free_fn() resolves as a namespace free function, not a super-receiver method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const freeCalls = calls.filter((c) => c.source === 'g' && c.target === 'free_fn');
+    expect(freeCalls.length).toBe(1);
+    expect(freeCalls[0].targetLabel).toBe('Function');
+    expect(freeCalls[0].rel.reason).toBe('import-resolved');
   });
 });
