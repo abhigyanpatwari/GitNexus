@@ -181,6 +181,8 @@ export interface ExtractedAssignment {
   propertyName: string;
   /** Resolved type name of the receiver if available from TypeEnv */
   receiverTypeName?: string;
+  /** 1-indexed line number of the assignment site (used for per-site dedup) */
+  line?: number;
 }
 
 // `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
@@ -1580,6 +1582,7 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
+            line: captureMap['assignment'].startPosition.row + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }
