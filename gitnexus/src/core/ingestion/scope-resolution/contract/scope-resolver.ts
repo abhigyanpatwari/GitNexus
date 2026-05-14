@@ -87,6 +87,9 @@
  *     attempting emission (even on dedup-collapse), because the
  *     per-(caller, target) collapse semantics require multiple call
  *     sites in the same caller body not produce multiple edges.
+ *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
+ *     the generic bridge cannot remap class heritage into method-owned
+ *     EXTENDS edges via `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
