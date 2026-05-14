@@ -169,6 +169,10 @@ const builderCliArgs = [
 ];
 
 const runCommand = (command, args, cwd, extraEnv = {}) => {
+  // On Windows, only .cmd files (e.g. npm.cmd) require shell:true to execute.
+  // Using shell:true for all commands causes spaces in paths to be misinterpreted
+  // by cmd.exe when it joins the args array into a raw command string.
+  const needsShell = process.platform === 'win32' && command.endsWith('.cmd');
   execFileSync(command, args, {
     cwd,
     env: {
@@ -177,7 +181,7 @@ const runCommand = (command, args, cwd, extraEnv = {}) => {
     },
     stdio: 'inherit',
     windowsHide: true,
-    shell: process.platform === 'win32',
+    shell: needsShell,
   });
 };
 

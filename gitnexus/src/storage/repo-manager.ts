@@ -11,6 +11,7 @@ import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { logger } from '../core/logger.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -71,7 +72,39 @@ export interface RepoMeta {
     processes?: number;
     embeddings?: number;
   };
+  /**
+   * Bumped whenever incremental-indexing invariants change in an
+   * incompatible way (delete-and-rewrite logic, subgraph extraction,
+   * graph-wide node handling). On mismatch, runFullAnalysis forces a
+   * full rebuild rather than risk an inconsistent incremental update.
+   */
+  schemaVersion?: number;
+  /**
+   * SHA-256 of every file's content at the time of the last successful
+   * indexing run. The next run computes current hashes and diffs against
+   * this map to determine which files' DB rows must be replaced.
+   * Map keys are repo-relative paths.
+   */
+  fileHashes?: Record<string, string>;
+  /**
+   * Crash-recovery dirty flag. Written to meta.json BEFORE any
+   * destructive DB mutation in an incremental run; cleared on success
+   * by overwriting meta.json. If a run crashes between, the next run
+   * sees the flag and forces a full rebuild — the cheapest path back
+   * to a known-good index.
+   */
+  incrementalInProgress?: {
+    /** When the incremental run started (epoch ms). */
+    startedAt: number;
+    /** Number of files in the writable set, for diagnostic logs. */
+    toWriteCount: number;
+  };
 }
+
+/**
+ * Bumped whenever incremental-indexing invariants change incompatibly.
+ */
+export const INCREMENTAL_SCHEMA_VERSION = 1;
 
 export interface IndexedRepo {
   repoPath: string;
@@ -186,12 +219,23 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 };
 
 /**
- * Save metadata to storage
+ * Save metadata to storage.
+ *
+ * Atomic via tmp-file + rename (matches `saveParseCache`'s pattern). The
+ * `incrementalInProgress` dirty flag travels through this file — a crash
+ * mid-write would leave a corrupt `meta.json` that the next run's
+ * `loadMeta` would silently treat as "no prior index", losing the dirty
+ * flag and skipping the recovery full-rebuild. Write-and-rename rules
+ * that out: the rename is atomic on POSIX and on Windows (`fs.rename`
+ * on `node:fs/promises` uses `MoveFileEx(REPLACE_EXISTING)`), so either
+ * the old or the new file is observed at every moment.
  */
 export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
-  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+  const tmpPath = `${metaPath}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf-8');
+  await fs.rename(tmpPath, metaPath);
 };
 
 /**
@@ -238,14 +282,44 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
   return null;
 };
 
+function isReadOnlyFilesystemError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
+}
+
 /**
  * Keep generated index files ignored without modifying the user's root .gitignore.
  */
 export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => {
   const gitignorePath = path.join(getStoragePath(repoPath), '.gitignore');
+  const desired = '*\n';
 
-  await fs.mkdir(path.dirname(gitignorePath), { recursive: true });
-  await fs.writeFile(gitignorePath, '*\n', 'utf-8');
+  // Idempotent fast path: skip the write entirely when the file already has
+  // the expected content. Lets this run cleanly on read-only mounts (e.g.
+  // the documented Docker workflow with WORKSPACE_DIR bound :ro) when an
+  // earlier `analyze` already created the file. See issue #1549.
+  try {
+    if ((await fs.readFile(gitignorePath, 'utf-8')) === desired) {
+      await ensureGitInfoExclude(repoPath);
+      return;
+    }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+
+  try {
+    await fs.mkdir(path.dirname(gitignorePath), { recursive: true });
+    await fs.writeFile(gitignorePath, desired, 'utf-8');
+  } catch (err: any) {
+    if (isReadOnlyFilesystemError(err)) {
+      logger.warn(
+        { path: gitignorePath, code: err.code },
+        'GitNexus storage filesystem is not writable; skipping .gitnexus/.gitignore. Generated files may appear as untracked in this repo locally.',
+      );
+    } else {
+      throw err;
+    }
+  }
 
   await ensureGitInfoExclude(repoPath);
 };
@@ -261,8 +335,6 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
     return;
   }
 
-  await fs.mkdir(path.dirname(excludePath), { recursive: true });
-
   let content = '';
   try {
     content = await fs.readFile(excludePath, 'utf-8');
@@ -277,7 +349,19 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
   if (excludes.includes(GITNEXUS_DIR) || excludes.includes(GITNEXUS_EXCLUDE_ENTRY)) return;
 
   const separator = content.length === 0 || content.endsWith('\n') ? '' : '\n';
-  await fs.writeFile(excludePath, `${content}${separator}${GITNEXUS_EXCLUDE_ENTRY}\n`, 'utf-8');
+  try {
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.writeFile(excludePath, `${content}${separator}${GITNEXUS_EXCLUDE_ENTRY}\n`, 'utf-8');
+  } catch (err: any) {
+    if (isReadOnlyFilesystemError(err)) {
+      logger.warn(
+        { path: excludePath, code: err.code },
+        'GitNexus storage filesystem is not writable; skipping .git/info/exclude update. .gitnexus/ may appear as untracked in `git status` locally.',
+      );
+    } else {
+      throw err;
+    }
+  }
 };
 
 // ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────

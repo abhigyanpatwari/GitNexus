@@ -32,6 +32,8 @@ extraResources:
       - '**/*'
   - from: '${env.GITNEXUS_DESKTOP_GITNEXUS_PACKAGE_JSON}'
     to: gitnexus/package.json
+  - from: 'build/icon.png'
+    to: icon.png
 asar: false
 npmRebuild: false
 afterPack: scripts/after-pack.mjs

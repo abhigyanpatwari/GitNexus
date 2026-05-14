@@ -680,7 +680,15 @@ export const GO_QUERIES = `
 export const CPP_QUERIES = `
 ; Classes, Structs, Namespaces
 (class_specifier name: (type_identifier) @name) @definition.class
+(class_specifier
+  name: (template_type
+    (type_identifier) @name
+    (template_argument_list) @template-arguments)) @definition.class
 (struct_specifier name: (type_identifier) @name) @definition.struct
+(struct_specifier
+  name: (template_type
+    (type_identifier) @name
+    (template_argument_list) @template-arguments)) @definition.struct
 (namespace_definition name: (namespace_identifier) @name) @definition.namespace
 (enum_specifier name: (type_identifier) @name) @definition.enum
 
@@ -762,6 +770,11 @@ export const CPP_QUERIES = `
 
 ; Templates
 (template_declaration (class_specifier name: (type_identifier) @name)) @definition.template
+(template_declaration
+  (class_specifier
+    name: (template_type
+      (type_identifier) @name
+      (template_argument_list) @template-arguments))) @definition.template
 (template_declaration (function_definition declarator: (function_declarator declarator: (identifier) @name))) @definition.template
 
 ; Includes
@@ -1015,6 +1028,16 @@ export const PHP_QUERIES = `
 
 ; ── Heritage: use trait (must capture enclosing class name) ──────────────────
 (class_declaration
+  name: (name) @heritage.class
+  body: (declaration_list
+    (use_declaration
+      [(name) (qualified_name)] @heritage.trait))) @heritage
+
+; ── Heritage: trait uses another trait (transitive trait composition) ────────
+; PHP allows a trait body to contain "use OtherTrait;". The trait-uses-trait
+; IMPLEMENTS edge is required by buildPhpMro to compute the full transitive
+; trait closure (depth 3+ chains).
+(trait_declaration
   name: (name) @heritage.class
   body: (declaration_list
     (use_declaration

@@ -93,12 +93,24 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // Worker-mode parses leave the cache empty for those files; they
     // also fall back to a fresh parse — no correctness impact.
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { scopeTreeCache, resolutionContext } = parseOutput;
+    const { scopeTreeCache, resolutionContext, parsedFiles: workerParsedFiles } = parseOutput;
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
     // source of truth".
     const model = resolutionContext.model;
+
+    // Build a per-file lookup of ParsedFile artifacts the workers (or
+    // sequential extracts) already produced. Threading this into
+    // `runScopeResolution` lets the per-language extract loop short-
+    // circuit `extractParsedFile` — the dominant cost on the warm-cache
+    // path, since workers can't return tree-sitter Trees across the
+    // MessageChannel and scope-resolution would otherwise re-parse
+    // every file from scratch on the main thread.
+    const preExtractedByPath = new Map<string, import('gitnexus-shared').ParsedFile>();
+    for (const pf of workerParsedFiles) {
+      preExtractedByPath.set(pf.filePath, pf);
+    }
 
     let totalFiles = 0;
     let totalImports = 0;
@@ -143,6 +155,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           files,
           treeCache: scopeTreeCache,
           resolutionConfig,
+          preExtractedParsedFiles: preExtractedByPath,
           onWarn: (msg) => {
             if (isSemanticModelValidatorEnabled()) {
               logger.warn(`[scope-resolution:${lang}] ${msg}`);

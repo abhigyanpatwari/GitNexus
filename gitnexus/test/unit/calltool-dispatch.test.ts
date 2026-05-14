@@ -216,6 +216,19 @@ describe('LocalBackend.callTool', () => {
     expect(result).not.toHaveProperty('warning');
   });
 
+  it('does not crash when searchFTSFromLbug throws (#1489)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('bm25Results is not iterable'));
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { query: 'auth' });
+
+    // Should still return a valid result shape (semantic-only fallback)
+    expect(result).toHaveProperty('processes');
+    expect(result).toHaveProperty('definitions');
+    expect(result).not.toHaveProperty('error');
+  });
+
   it('skips vector index query when VECTOR is unsupported by the platform', async () => {
     const cap = _captureLogger();
     platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);

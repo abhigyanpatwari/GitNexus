@@ -1,7 +1,7 @@
 /**
  * C++: diamond inheritance + include-based imports + ambiguous #include disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -11,8 +11,11 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  createResolverParityIt,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('cpp');
 
 // ---------------------------------------------------------------------------
 // Heritage: diamond inheritance + include-based imports
@@ -937,10 +940,13 @@ describe('Write access tracking (C++)', () => {
   it('emits ACCESSES write edges for field assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
-    expect(writes.length).toBe(2);
-    const fieldNames = writes.map((e) => e.target);
-    expect(fieldNames).toContain('name');
-    expect(fieldNames).toContain('address');
+    expect(writes.length).toBe(3);
+    // Per-field exact counts: both `user.name = ...` and `user.name += ...`
+    // must produce distinct edges (no dedup); single write to `address`.
+    const nameWrites = writes.filter((e) => e.target === 'name');
+    expect(nameWrites.length).toBe(2);
+    const addrWrites = writes.filter((e) => e.target === 'address');
+    expect(addrWrites.length).toBe(1);
     const sources = writes.map((e) => e.source);
     expect(sources).toContain('updateUser');
   });
@@ -1458,6 +1464,84 @@ describe('C++ template overload cross-file and chain resolution', () => {
   });
 });
 
+describe('C++ template specialization disambiguation across files', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-specialization-disambiguation'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits distinct Class nodes for List<User> and List<Order>', () => {
+    const classes = getNodesByLabelFull(result, 'Class').filter(
+      (c) => c.name === 'List' && Array.isArray(c.properties.templateArguments),
+    );
+    expect(classes.length).toBe(2);
+    const fingerprints = new Set(classes.map((c) => c.properties.templateArguments.join(',')));
+    expect(fingerprints).toEqual(new Set(['User', 'Order']));
+  });
+
+  it('callSave() in each specialization resolves to its own save()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveEdges = calls.filter((c) => c.source === 'callSave' && c.target === 'save');
+    expect(saveEdges.length).toBe(2);
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const ownerFingerprints = new Set<string>();
+    for (const edge of saveEdges) {
+      const sourceOwnerEdge = hasMethod.find((e) => e.rel.targetId === edge.rel.sourceId);
+      const targetOwnerEdge = hasMethod.find((e) => e.rel.targetId === edge.rel.targetId);
+      expect(sourceOwnerEdge).toBeDefined();
+      expect(targetOwnerEdge).toBeDefined();
+      expect(sourceOwnerEdge!.rel.sourceId).toBe(targetOwnerEdge!.rel.sourceId);
+      const ownerNode = result.graph.getNode(sourceOwnerEdge!.rel.sourceId);
+      const fp = ownerNode?.properties.templateArguments?.join(',');
+      if (fp) ownerFingerprints.add(fp);
+    }
+    expect(ownerFingerprints).toEqual(new Set(['User', 'Order']));
+  });
+
+  it('save specialization bodies route to their own sibling method', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    const persistUserCalls = calls.filter((c) => c.target === 'persistUser');
+    expect(persistUserCalls.length).toBe(1);
+    const userSaveOwner = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === persistUserCalls[0].rel.sourceId,
+    );
+    expect(userSaveOwner).toBeDefined();
+    const userOwnerNode = result.graph.getNode(userSaveOwner!.rel.sourceId);
+    expect(userOwnerNode?.properties.templateArguments).toEqual(['User']);
+
+    const persistOrderCalls = calls.filter((c) => c.target === 'persistOrder');
+    expect(persistOrderCalls.length).toBe(1);
+    const orderSaveOwner = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === persistOrderCalls[0].rel.sourceId,
+    );
+    expect(orderSaveOwner).toBeDefined();
+    const orderOwnerNode = result.graph.getNode(orderSaveOwner!.rel.sourceId);
+    expect(orderOwnerNode?.properties.templateArguments).toEqual(['Order']);
+  });
+
+  it('resolves external List<User> receiver call to List<User>::save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (c) =>
+        c.source === 'callUserSave' && c.target === 'save' && c.targetFilePath === 'list_user.h',
+    );
+    expect(edge).toBeDefined();
+
+    const ownerEdge = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === edge!.rel.targetId,
+    );
+    expect(ownerEdge).toBeDefined();
+    const ownerNode = result.graph.getNode(ownerEdge!.rel.sourceId);
+    expect(ownerNode?.properties.templateArguments).toEqual(['User']);
+  });
+});
+
 // ── Phase P: C++ out-of-class method definition + overload disambiguation ─
 
 describe('C++ out-of-class method definition with overloaded declarations', () => {
@@ -1580,5 +1664,869 @@ describe('C++ Derived : A, B — diamond inheritance via leftmost-base MRO (SM-1
     );
     expect(methodCall).toBeDefined();
     expect(methodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U1: `#include` must not leak class-owned methods as unqualified bindings
+// ---------------------------------------------------------------------------
+
+describe('C++ include does not leak class methods', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-include-no-class-leak'), () => {});
+  }, 60000);
+
+  it('does NOT resolve unqualified save() to User::save via #include', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leak = calls.filter((c) => c.source === 'run' && c.target === 'save');
+    expect(leak.length).toBe(0);
+  });
+
+  it('preserves the file-level #include IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBe(1);
+    expect(imports[0].targetFilePath).toBe('user.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U1: `#include` must not leak namespace-nested symbols as unqualified bindings
+// ---------------------------------------------------------------------------
+
+describe('C++ include does not leak namespace members', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-include-no-namespace-leak'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT resolve unqualified foo() to ns::foo via #include', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leak = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    expect(leak.length).toBe(0);
+  });
+
+  it('preserves the file-level #include IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBe(1);
+    expect(imports[0].targetFilePath).toBe('lib.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U1: anonymous-namespace symbols remain visible within their declaring TU
+// (positive companion to the cross-file exclusion test below)
+// ---------------------------------------------------------------------------
+
+describe('C++ anonymous namespace symbols visible in same TU', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-anon-ns-same-file-visible'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves run() -> w() within the same TU', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wCalls = calls.filter((c) => c.source === 'run' && c.target === 'w');
+    expect(wCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U2: integer-width overload ambiguity suppresses CALLS edge entirely
+// (PR #1520 review follow-up plan U2; Claude review Finding 5)
+// ---------------------------------------------------------------------------
+
+describe('C++ ambiguous integer-width overloads', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overload-int-long'), () => {});
+  }, 60000);
+
+  it('emits zero CALLS edges when process(int)/process(long) collide after normalization', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // Exact .toBe(0): any non-zero count is a regression. count=1 = arbitrary
+    // pick (the bug U2 fixes); count=2+ would require an ambiguous-edge model
+    // GitNexus does not have. The resolver must suppress entirely.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U3: anonymous-namespace symbols MUST NOT leak across translation units
+// (full-pipeline integration test; unit-level coverage exists separately)
+// PR #1520 review follow-up plan U3 / Claude review Finding 7
+// ---------------------------------------------------------------------------
+
+describe('C++ anonymous namespace cross-file exclusion (integration)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-anon-ns-cross-file'), () => {});
+  }, 60000);
+
+  it('caller.cpp::run -> worker does NOT target helper.cpp anonymous-namespace worker', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossFileLeak = calls.filter(
+      (c) =>
+        c.source === 'run' && c.target === 'worker' && c.targetFilePath?.includes('helper.cpp'),
+    );
+    expect(crossFileLeak.length).toBe(0);
+  });
+
+  it('helper.cpp::helper_entry still resolves its OWN anonymous-namespace worker (positive guard)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sameFileResolve = calls.filter(
+      (c) =>
+        c.source === 'helper_entry' &&
+        c.target === 'worker' &&
+        c.targetFilePath?.includes('helper.cpp'),
+    );
+    // Pairs with the negative test above so a "no edges at all" regression
+    // doesn't make the cross-file leak check pass vacuously.
+    expect(sameFileResolve.length).toBe(1);
+  });
+});
+
+// State-isolation guard: re-run the same fixture and assert identical
+// results. Proves `clearFileLocalNames()` (called from the cpp resolver's
+// `loadResolutionConfig`) is exercised by `runPipelineFromRepo` and
+// that module-level `fileLocalNames` state doesn't bleed across runs.
+describe('C++ anonymous namespace state-isolation guard', () => {
+  it('second run of the same fixture produces identical worker-cross-file edge count', async () => {
+    const fixture = path.join(FIXTURES, 'cpp-anon-ns-cross-file');
+    const r1 = await runPipelineFromRepo(fixture, () => {});
+    const r2 = await runPipelineFromRepo(fixture, () => {});
+    const countLeak = (r: PipelineResult): number =>
+      getRelationships(r, 'CALLS').filter(
+        (c) =>
+          c.source === 'run' && c.target === 'worker' && c.targetFilePath?.includes('helper.cpp'),
+      ).length;
+    expect(countLeak(r1)).toBe(0);
+    expect(countLeak(r2)).toBe(0);
+  }, 120000);
+});
+
+// ---------------------------------------------------------------------------
+// U4: `using namespace` with conflicting names from two namespaces
+// The resolver MUST emit zero CALLS edges — emitting one is arbitrary
+// pick; emitting two requires an ambiguous-target edge model GitNexus
+// does not have.
+// Depends on U1 (without scope-aware filtering, `a::foo` and `b::foo`
+// would already be in the importer's wildcard binding set as simple
+// `foo` and this test would pass for the wrong reason).
+// PR #1520 review follow-up plan U4 / Claude review Finding 7
+// ---------------------------------------------------------------------------
+
+describe('C++ using-namespace with conflicting names', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-using-namespace-conflict'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits zero CALLS edges for ambiguous foo() bound via two using-namespace declarations', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    expect(fooCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U5: `using namespace std` MUST NOT leak shim STL symbols into unqualified
+// bindings. Uses a fixture-local `namespace std { ... }` shim rather than
+// real <iostream> — captures the wildcard-leak shape deterministically
+// without depending on system-header modeling stability.
+// PR #1520 review follow-up plan U5 / Claude review Finding 7
+// ---------------------------------------------------------------------------
+
+describe('C++ using-namespace std smoke test', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-using-namespace-std-smoke'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves the project call (positive guard against vacuous pass)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projectCalls = calls.filter((c) => c.source === 'run' && c.target === 'project_helper');
+    expect(projectCalls.length).toBe(1);
+  });
+
+  it('does NOT leak unqualified bindings for shim STL symbols', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const stlLeaks = calls.filter(
+      (c) => c.source === 'run' && (c.target === 'cout_write' || c.target === 'println'),
+    );
+    expect(stlLeaks.length).toBe(0);
+  });
+
+  it('emits no CALLS or ACCESSES edges from run() into std-shim.h', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const accesses = getRelationships(result, 'ACCESSES');
+    const intoShim = [...calls, ...accesses].filter(
+      (e) => e.source === 'run' && e.targetFilePath?.includes('std-shim.h'),
+    );
+    expect(intoShim.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U1 (follow-up plan 2026-05-13-001): namespace-qualified or class-qualified
+// calls from outside that class MUST NOT be classified as super-receiver calls.
+// The `isSuperReceiverInContext` hook consults the caller's MRO.
+// ---------------------------------------------------------------------------
+
+describe('C++ namespace-qualified call is not a super receiver', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-namespace-qualified-not-super'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves Singleton::getInstance() from a free function (not as super call)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getInstanceCalls = calls.filter((c) => c.source === 'run' && c.target === 'getInstance');
+    // Exactly 1: routed through the normal qualified-call path, NOT the super
+    // branch. Before the U1 fix the regex `/^[A-Z]\w*::/` matched Singleton::,
+    // entered the super branch with no enclosing class, and dropped the edge.
+    expect(getInstanceCalls.length).toBe(1);
+    expect(getInstanceCalls[0].targetFilePath).toContain('singleton.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U4 (follow-up plan 2026-05-13-001): default-argument overload ambiguity.
+// `void f(int); void f(int, int = 0); f(1);` is ambiguous per ISO C++. The
+// OVERLOAD_AMBIGUOUS sentinel from plan 2026-05-12-002 U2 should detect
+// this case via isOverloadAmbiguousAfterNormalization.
+// ---------------------------------------------------------------------------
+
+describe('C++ default-argument overload ambiguity', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-default-arg-ambiguous'),
+      () => {},
+    );
+  }, 60000);
+
+  it('s.f(1) emits zero CALLS edges when f(int) and f(int, int=0) both match', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // Exact .toBe(0): count=1 means arbitrary pick (the bug); count=2+ would
+    // require an ambiguous-target edge model GitNexus does not have. The
+    // resolver must suppress entirely. Standard C++ rejects the call as
+    // ambiguous (GCC/Clang both diagnose).
+    expect(fCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U3 (follow-up plan 2026-05-13-001): two-phase template lookup.
+// Inside a class template body, unqualified calls MUST NOT bind to members
+// of a dependent base class. Only `this->name()` or `Base<T>::name()` forms
+// should resolve.
+// ---------------------------------------------------------------------------
+
+describe('C++ two-phase template lookup — dependent base suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+
+  it('Derived<T>::h() -> i does NOT bind to Base<T>::i (dependent base)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const leaks = accesses.filter((c) => c.source === 'h' && c.target === 'i');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+describe('C++ two-phase template lookup — positive this-qualified calls', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-this-qualified'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to f (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const thisCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(thisCalls.length).toBe(1);
+    expect(thisCalls[0].targetFilePath).toContain('base.h');
+  });
+
+  it('Derived<T>::k() -> this->base_method() resolves via EXTENDS chain (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inheritedCalls = calls.filter((c) => c.source === 'k' && c.target === 'base_method');
+    expect(inheritedCalls.length).toBe(1);
+    expect(inheritedCalls[0].targetFilePath).toContain('base.h');
+  });
+});
+
+describe('C++ two-phase template lookup — paired unqualified + this-qualified in one fixture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-two-phase-paired'), () => {});
+  }, 60000);
+
+  it('Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g_unqualified' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+
+  it('Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g_this' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('base.h');
+  });
+});
+
+describe('C++ two-phase template lookup — namespace calls inside template body', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-namespace-free-call-inside-template'),
+      () => {},
+    );
+  }, 60000);
+
+  it('D<T>::g() -> utils::ns_helper() resolves (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const qualifiedCalls = calls.filter((c) => c.source === 'g' && c.target === 'ns_helper');
+    expect(qualifiedCalls.length).toBe(1);
+    expect(qualifiedCalls[0].targetFilePath).toContain('helpers.h');
+  });
+
+  it('D<T>::g() -> ns_helper_2() resolves after using-declaration (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const usingCalls = calls.filter((c) => c.source === 'g' && c.target === 'ns_helper_2');
+    expect(usingCalls.length).toBe(1);
+    expect(usingCalls[0].targetFilePath).toContain('helpers.h');
+  });
+});
+
+describe('C++ two-phase template lookup — this-> name-hiding arity mismatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-this-name-hiding-arity'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(fCalls.length).toBe(0);
+  });
+
+  it('Derived<T>::g_ok() -> this->f(42) resolves to derived overload (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g_ok' && c.target === 'f');
+    expect(fCalls.length).toBe(1);
+    expect(fCalls[0].targetFilePath).toContain('derived.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U3 cross-file namespace variant: Base lives in a different file AND
+// inside a namespace. The fixture also contains a free function with the
+// same name inside the namespace — that candidate has no ownerId, so the
+// class-owned filter does NOT apply to it; it is instead suppressed by the
+// namespace-nesting filter. Both candidates must still yield zero edges.
+// ---------------------------------------------------------------------------
+
+describe('C++ two-phase template lookup — cross-file namespace variant', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-ns'),
+      () => {},
+    );
+  }, 60000);
+
+  it('geom::Derived<T>::g() -> compute() does NOT bind to geom::Base<T>::compute (cross-file dependent base, class-owned)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'compute');
+    expect(leaks.length).toBe(0);
+  });
+
+  it('geom::Derived<T>::h() -> area does NOT bind to geom::Base<T>::area (cross-file dependent base, class-owned)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const leaks = accesses.filter((c) => c.source === 'h' && c.target === 'area');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U2 (follow-up plan 2026-05-13-001): argument-dependent (Koenig) lookup.
+// Free-function calls with class-typed arguments must consider candidates
+// declared in the argument's enclosing namespace (associated namespace).
+// V1 boundary: only direct enclosing-namespace closure for value class-
+// typed args; pointer and reference args included, template-spec args excluded.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — basic associated-namespace closure', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-basic'), () => {});
+  }, 60000);
+
+  it('record(e) where e is audit::Event resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // Exactly 1: ordinary lookup is empty (no `using` statement, no local
+    // declaration), ADL surfaces audit::record because audit::Event's
+    // associated namespace is `audit`. The CALLS edge should target the
+    // declaration in audit.h.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — parenthesized name suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-suppressed-parens'), () => {});
+  }, 60000);
+
+  it('(record)(e) emits zero CALLS edges — ADL is suppressed by parentheses', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // Exact .toBe(0): ISO C++ [basic.lookup.argdep]/3.1 specifies that the
+    // parenthesized form `(f)(x)` forces ordinary lookup only — ADL must
+    // NOT fire. Without ordinary-lookup candidates (no `using`, no local
+    // declaration), the call goes unresolved.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — pointer arg unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-pointer-arg-boundary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(p) where p is audit::Event* resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — reference arg unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-reference-arg-boundary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(s) where s is audit::Event& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('recordConst(cs) where cs is const audit::Event& resolves via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter(
+      (c) => c.source === 'runConstRef' && c.target === 'recordConst',
+    );
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('note(r) where r is int& emits zero CALLS edges (primitive ref)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const noteCalls = calls.filter((c) => c.source === 'runPrimitiveRef' && c.target === 'note');
+    expect(noteCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — rvalue reference args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-rvalue-ref'), () => {});
+  }, 60000);
+
+  it('record(rr) where rr is audit::Event&& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRvalueRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record-rvalue.h');
+  });
+});
+
+describe('C++ ADL — function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) where g is void (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — preceding function-pointer declarations do not block class args', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-before-class-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) still resolves via ADL when an earlier declaration is void (*)()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — class-returning function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-class-return-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(factory) where factory is audit::Event (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — pointer-to-pointer args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-pointer-to-pointer'), () => {});
+  }, 60000);
+
+  it('record(pp) where pp is audit::Event** resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUOUS', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-ambiguous'), () => {});
+  }, 60000);
+
+  it('process(t, 42) emits zero CALLS edges when ADL surfaces process(Token,int)/process(Token,long) (collide after C++ int normalization)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // Exact .toBe(0): both alpha::process(Token, int) and
+    // alpha::process(Token, long) are surfaced via ADL (alpha::Token's
+    // associated namespace). C++ arity-metadata normalizes int/long to
+    // 'int', so both candidates have parameterTypes ['Token', 'int'].
+    // narrowOverloadCandidates can't disambiguate (arg-types are
+    // ['', 'int']), and isOverloadAmbiguousAfterNormalization detects
+    // the collision → ADL_AMBIGUOUS sentinel → caller suppresses.
+    // count=1 is the bug (arbitrary first-pick); count=2 would require
+    // an ambiguous-target edge model GitNexus does not have.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U5 (follow-up plan 2026-05-13-001): inline namespace transitive walking.
+// `inline namespace v1 { ... }` makes its members reachable through the
+// enclosing namespace's qualified lookup as if declared directly there
+// (ISO C++ `[namespace.def]/p4`). Adds a C++-specific
+// `resolveQualifiedReceiverMember` hook on the ScopeResolver contract.
+// ---------------------------------------------------------------------------
+
+describe('C++ inline namespace — outer::foo resolves to inline child', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-unqualified'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() resolves to outer::v1::foo via inline-namespace transitive walking', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Exactly 1: the inline-namespace exemption lets `outer::foo()` reach
+    // the declaration in `outer::v1::foo()`. Without U5 the call would be
+    // unresolved (count = 0).
+    expect(fooCalls.length).toBe(1);
+    expect(fooCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ inline namespace — versioned (v1 inline, v0 not)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-versioned'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() resolves to outer::v1::foo (inline child), NOT outer::v0::foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Exactly 1: only inline-namespace children are reachable through the
+    // enclosing namespace's qualified lookup. `v0` is NOT inline so its
+    // `foo` is NOT visible as `outer::foo`.
+    expect(fooCalls.length).toBe(1);
+    expect(fooCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ inline namespace — nested (STL __1-style)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-nested'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() resolves through two transitive inline namespaces (v1 then experimental)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Exactly 1: the resolver descends inline namespaces depth-first, so
+    // `outer::foo` reaches `outer::v1::experimental::foo` through two
+    // transitive inline-namespace hops. Mirrors libc++ `std::__1::vector`
+    // / libstdc++ `std::__cxx11` qualified-call shape.
+    expect(fooCalls.length).toBe(1);
+    expect(fooCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ inline namespace — ADL participation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-adl-participation'),
+      () => {},
+    );
+  }, 60000);
+
+  it('ADL surfaces audit::v1::record through inline-namespace transitive walking', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // Exactly 1: `audit::Event e;` resolves Event's enclosing namespace
+    // to `audit` (the inline child `v1` is transparent — see U2's
+    // computeNamespaceQName walking through the inline scope). ADL then
+    // surfaces every callable named `record` in any namespace scope
+    // matching qname 'audit' across files. Since inline namespaces are
+    // exempted from the non-globally-visible filter, the `record`
+    // declared inside `inline namespace v1` is reachable. count=0
+    // would be the bug — ADL failing to walk inline children.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 (follow-up plan 2026-05-13-001): cross-unit composition tests.
+// Lock in correct interaction between U1 (super-receiver context), U2 (ADL),
+// U3 (two-phase lookup), and U5 (inline namespaces).
+// ---------------------------------------------------------------------------
+
+describe('C++ Phase 5 U1×U3 — qualified Base<T>::method() inside template body', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-qualified-base-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edge: Derived → Base for template base Base<T>', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → Base');
+  });
+
+  it('Base<T>::method() resolves to Base::method inside template body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const methodCalls = calls.filter((c) => c.source === 'g' && c.target === 'method');
+    expect(methodCalls.length).toBe(1);
+    expect(methodCalls[0].targetFilePath).toContain('classes.h');
+  });
+});
+
+describe('C++ Phase 5 U1×U3 — template multi-base list', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-template-multi-base-list'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edges: Derived → A, Derived → B for template multi-base list', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(extends_.length).toBe(2);
+    expect(edgeSet(extends_)).toEqual(['Derived → A', 'Derived → B']);
+  });
+});
+
+describe('C++ Phase 5 U2×U3 — ADL routes around dependent-base shadow', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u2-u3-adl-from-derived'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) inside Derived<T>::g() resolves via ADL to audit::record (not Base::record)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'g' && c.target === 'record');
+    // Exactly 1: Base::record is class-owned so the global free-call
+    // fallback's `isFileLocalDef` blocks it (and U3's two-phase
+    // suppression also fires for unqualified calls inside template
+    // body when the candidate is a dependent-base member). ADL then
+    // surfaces audit::record via `audit::Event`'s associated namespace.
+    // The two-phase + ADL composition leaves exactly one CALLS edge —
+    // to audit::record in audit.h.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('record(e) does NOT bind to Base::record (class-owned dependent-base member)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const baseRecordLeaks = calls.filter(
+      (c) => c.source === 'g' && c.target === 'record' && c.targetFilePath?.includes('base.h'),
+    );
+    expect(baseRecordLeaks.length).toBe(0);
+  });
+});
+
+describe('C++ Phase 5 U3×U5 — template Derived : outer::v1::Base<T> (inline)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u3-u5-inline-base'),
+      () => {},
+    );
+  }, 60000);
+
+  it('unqualified f() inside Derived<T>::g() does NOT bind to outer::v1::Base<T>::f (dependent base across inline namespace)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fLeaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    // Exact .toBe(0): same suppression rationale as the plain U3 fixture
+    // (`cpp-two-phase-dependent-base`) — `f()` is unqualified, Base is a
+    // dependent base, and Base::f is class-owned so the global free-call
+    // fallback's `isFileLocalDef` blocks it. The inline-namespace wrapper
+    // doesn't change the suppression behavior: dependent-base detection
+    // walks the heritage's simple name (`Base`) regardless of the
+    // qualifying namespace path.
+    expect(fLeaks.length).toBe(0);
+  });
+});
+
+describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside template body', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-phase5-u1-u3-u5-qualified-inline-base-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits EXTENDS edge: Derived → Base for qualified template base outer::v1::Base<T>', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → Base');
+  });
+
+  it('outer::v1::Base<T>::f() resolves to Base::f inside template body', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(fCalls.length).toBe(1);
+    expect(fCalls[0].targetFilePath).toContain('base.h');
+  });
+
+  it('outer::v1::free_fn() resolves as a namespace free function, not a super-receiver method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const freeCalls = calls.filter((c) => c.source === 'g' && c.target === 'free_fn');
+    expect(freeCalls.length).toBe(1);
+    expect(freeCalls[0].targetLabel).toBe('Function');
+    expect(freeCalls[0].rel.reason).toBe('import-resolved');
   });
 });

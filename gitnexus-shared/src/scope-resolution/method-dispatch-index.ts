@@ -40,11 +40,27 @@ export interface MethodDispatchIndex {
   readonly mroByOwnerDefId: ReadonlyMap<DefId, readonly DefId[]>;
   /** Interfaces / traits → classes that implement them. */
   readonly implsByInterfaceDefId: ReadonlyMap<DefId, readonly DefId[]>;
+  /**
+   * Optional parallel MRO view that EXCLUDES mixin-like augmentation
+   * (e.g., PHP traits). Populated only when the input supplies
+   * `computeExtendsOnlyMro`. Used by the super-branch dispatch in
+   * `receiver-bound-calls` so that `parent::method()` walks the
+   * inheritance chain only, not the trait-augmented one. Undefined for
+   * languages without mixin-like semantics — callers should fall back
+   * to `mroFor` when this is missing.
+   */
+  readonly extendsOnlyMroByOwnerDefId?: ReadonlyMap<DefId, readonly DefId[]>;
 
   /** `mroByOwnerDefId.get`, with an empty frozen array on miss. */
   mroFor(ownerDefId: DefId): readonly DefId[];
   /** `implsByInterfaceDefId.get`, with an empty frozen array on miss. */
   implementorsOf(interfaceDefId: DefId): readonly DefId[];
+  /**
+   * `extendsOnlyMroByOwnerDefId.get`, with an empty frozen array on miss.
+   * Undefined when `extendsOnlyMroByOwnerDefId` was not populated; callers
+   * should treat this as equivalent to `mroFor` for non-mixin languages.
+   */
+  readonly extendsOnlyMroFor?: (ownerDefId: DefId) => readonly DefId[];
 }
 
 export interface MethodDispatchInput {
@@ -81,12 +97,25 @@ export interface MethodDispatchInput {
    * write-wins policy and fires at most once per unique owner.
    */
   readonly implementsOf: (ownerDefId: DefId) => readonly DefId[];
+  /**
+   * Optional: return the EXTENDS-only ancestor chain for `ownerDefId`,
+   * excluding the owner itself AND any mixin-like augmentation (e.g.,
+   * PHP traits). Languages without mixin semantics leave this undefined
+   * and the index's `extendsOnlyMroByOwnerDefId` stays unpopulated.
+   *
+   * Same contract as `computeMro`: pure, deterministic, `[]` on no parents.
+   * Called at most once per unique owner (first-write-wins).
+   */
+  readonly computeExtendsOnlyMro?: (ownerDefId: DefId) => readonly DefId[];
 }
 
 // ─── Builder ────────────────────────────────────────────────────────────────
 
 export function buildMethodDispatchIndex(input: MethodDispatchInput): MethodDispatchIndex {
   const mroByOwnerDefId = new Map<DefId, readonly DefId[]>();
+  const extendsOnlyByOwnerDefId = input.computeExtendsOnlyMro
+    ? new Map<DefId, readonly DefId[]>()
+    : undefined;
   const implsBuilding = new Map<DefId, DefId[]>();
   const implsSeen = new Map<DefId, Set<DefId>>();
 
@@ -96,6 +125,14 @@ export function buildMethodDispatchIndex(input: MethodDispatchInput): MethodDisp
     if (!mroByOwnerDefId.has(ownerId)) {
       const chain = input.computeMro(ownerId);
       mroByOwnerDefId.set(ownerId, Object.freeze(chain.slice()));
+    }
+    if (
+      input.computeExtendsOnlyMro !== undefined &&
+      extendsOnlyByOwnerDefId !== undefined &&
+      !extendsOnlyByOwnerDefId.has(ownerId)
+    ) {
+      const extOnly = input.computeExtendsOnlyMro(ownerId);
+      extendsOnlyByOwnerDefId.set(ownerId, Object.freeze(extOnly.slice()));
     }
 
     for (const ifaceId of input.implementsOf(ownerId)) {
@@ -121,7 +158,7 @@ export function buildMethodDispatchIndex(input: MethodDispatchInput): MethodDisp
     implsByInterfaceDefId.set(ifaceId, Object.freeze(owners.slice()));
   }
 
-  return wrapIndex(mroByOwnerDefId, implsByInterfaceDefId);
+  return wrapIndex(mroByOwnerDefId, implsByInterfaceDefId, extendsOnlyByOwnerDefId);
 }
 
 // ─── Internal ───────────────────────────────────────────────────────────────
@@ -131,8 +168,9 @@ const EMPTY: readonly DefId[] = Object.freeze([]);
 function wrapIndex(
   mroByOwnerDefId: Map<DefId, readonly DefId[]>,
   implsByInterfaceDefId: Map<DefId, readonly DefId[]>,
+  extendsOnlyMroByOwnerDefId: Map<DefId, readonly DefId[]> | undefined,
 ): MethodDispatchIndex {
-  return {
+  const base: MethodDispatchIndex = {
     mroByOwnerDefId,
     implsByInterfaceDefId,
     mroFor(ownerDefId: DefId): readonly DefId[] {
@@ -142,4 +180,14 @@ function wrapIndex(
       return implsByInterfaceDefId.get(interfaceDefId) ?? EMPTY;
     },
   };
+  if (extendsOnlyMroByOwnerDefId !== undefined) {
+    return {
+      ...base,
+      extendsOnlyMroByOwnerDefId,
+      extendsOnlyMroFor(ownerDefId: DefId): readonly DefId[] {
+        return extendsOnlyMroByOwnerDefId.get(ownerDefId) ?? EMPTY;
+      },
+    };
+  }
+  return base;
 }

@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { acquireHookSlot } = require('./hook-lock.cjs');
 
 function readInput() {
   try {
@@ -227,13 +228,17 @@ function main() {
     }
     const cwd = input.cwd || process.cwd();
     if (!path.isAbsolute(cwd)) return;
-    if (!findGitNexusDir(cwd)) return;
+    const gitNexusDir = findGitNexusDir(cwd);
+    if (!gitNexusDir) return;
 
     const toolName = input.tool_name || '';
     const toolInput = input.tool_input || {};
 
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
+
+    const release = acquireHookSlot(gitNexusDir);
+    if (!release) return;
 
     const cliPath = resolveCliPath();
     let result = '';
@@ -244,6 +249,8 @@ function main() {
       }
     } catch {
       /* graceful failure */
+    } finally {
+      release();
     }
 
     if (result && result.trim()) {
