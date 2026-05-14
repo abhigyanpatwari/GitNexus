@@ -24,8 +24,12 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
-import { findCallableBindingInScope, findClassBindingInScope } from '../scope/walkers.js';
-import { narrowOverloadCandidates } from './overload-narrowing.js';
+import {
+  findAllCallableBindingsInScope,
+  findCallableBindingInScope,
+  findClassBindingInScope,
+} from '../scope/walkers.js';
+import { isOverloadAmbiguousAfterNormalization, narrowOverloadCandidates } from './overload-narrowing.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -55,7 +59,7 @@ export function emitFreeCallFallback(
       callerParsed: ParsedFile,
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
-    ) => SymbolDefinition | 'ambiguous' | undefined;
+    ) => readonly SymbolDefinition[] | undefined;
   } = {},
 ): number {
   let emitted = 0;
@@ -86,35 +90,53 @@ export function emitFreeCallFallback(
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
       }
       if (fnDef === undefined) {
-        fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
-      }
-      // V1 ADL tier (C++ Koenig lookup, opt-in via provider.resolveAdlCandidates).
-      // Fires only when ordinary lookup is empty — V1 limitation per
-      // plan 2026-05-13-001 U2; ISO C++ would merge ADL with ordinary lookup
-      // and run overload resolution over the union.
-      //
-      // Sentinel 'ambiguous': ADL surfaced multiple candidates with
-      // identical normalized parameter types (mirrors OVERLOAD_AMBIGUOUS).
-      // We mark the site handled so `emit-references` does not retry, and
-      // continue to the next site without emitting an edge.
-      if (fnDef === undefined && options.resolveAdlCandidates !== undefined) {
-        const adlResult = options.resolveAdlCandidates(
-          {
-            name: site.name,
-            arity: site.arity,
-            argumentTypes: site.argumentTypes,
-            atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
-          },
-          parsed,
-          scopes,
-          parsedFiles,
-        );
-        if (adlResult === 'ambiguous') {
-          handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
-          continue;
-        }
-        if (adlResult !== undefined) {
-          fnDef = adlResult;
+        if (options.resolveAdlCandidates === undefined) {
+          fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+        } else {
+          const ordinary = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+          const adl = options.resolveAdlCandidates(
+            {
+              name: site.name,
+              arity: site.arity,
+              argumentTypes: site.argumentTypes,
+              atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+            },
+            parsed,
+            scopes,
+            parsedFiles,
+          );
+
+          // Preserve existing ordinary-lookup behavior when ADL contributed
+          // no candidates.
+          if (adl === undefined || adl.length === 0) {
+            fnDef = ordinary[0];
+          } else {
+            const merged: SymbolDefinition[] = [];
+            const seen = new Set<string>();
+            const push = (defs: readonly SymbolDefinition[]): void => {
+              for (const d of defs) {
+                if (seen.has(d.nodeId)) continue;
+                seen.add(d.nodeId);
+                merged.push(d);
+              }
+            };
+            push(ordinary);
+            push(adl);
+
+            const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes);
+            if (narrowed.length === 1) {
+              fnDef = narrowed[0];
+            } else if (narrowed.length > 1) {
+              // Preserve existing ambiguity suppression (zero edges) for
+              // merged ordinary+ADL candidate sets.
+              if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+                continue;
+              }
+              handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+              continue;
+            }
+          }
         }
       }
       // V1: pickUniqueGlobalCallable ignores import context — resolves to any

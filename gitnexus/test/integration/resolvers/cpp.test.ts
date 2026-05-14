@@ -2125,6 +2125,24 @@ describe('C++ ADL — basic associated-namespace closure', () => {
   });
 });
 
+describe('C++ ADL — merges with non-empty ordinary lookup', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-merge-nonempty-ordinary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a, b) prefers data::swap(Pair&, Pair&) over app::swap(int, int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
 describe('C++ ADL — parenthesized name suppresses ADL', () => {
   let result: PipelineResult;
 

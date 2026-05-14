@@ -226,33 +226,55 @@ export function findCallableBindingInScope(
   callableName: string,
   scopes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
+  return findAllCallableBindingsInScope(startScope, callableName, scopes)[0];
+}
+
+/**
+ * Look up all callable bindings (Function/Method/Constructor) by name
+ * from the nearest scope in the chain that binds `callableName`.
+ *
+ * Preserves the original scope-walk boundary used by
+ * `findCallableBindingInScope`: once any callable binding is found in a
+ * scope, outer scopes are not consulted.
+ */
+export function findAllCallableBindingsInScope(
+  startScope: ScopeId,
+  callableName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
+    if (visited.has(currentId)) return [];
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return undefined;
+    if (scope === undefined) return [];
+
+    const out: SymbolDefinition[] = [];
+    const seen = new Set<string>();
+    const pushCallable = (def: SymbolDefinition): void => {
+      if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') return;
+      if (seen.has(def.nodeId)) return;
+      seen.add(def.nodeId);
+      out.push(def);
+    };
 
     const localBindings = scope.bindings.get(callableName);
     if (localBindings !== undefined) {
       for (const b of localBindings) {
-        if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
-          return b.def;
-        }
+        pushCallable(b.def);
       }
     }
 
     const importedBindings = lookupBindingsAt(currentId, callableName, scopes);
     for (const b of importedBindings) {
-      if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
-        return b.def;
-      }
+      pushCallable(b.def);
     }
 
+    if (out.length > 0) return out;
     currentId = scope.parent;
   }
-  return undefined;
+  return [];
 }
 
 /**

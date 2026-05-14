@@ -136,6 +136,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // resolver-only correctness win (PR #1520 review follow-up plan
     // 2026-05-13-001 U2); backporting is out of scope.
     'process(t, 42) emits zero CALLS edges when ADL surfaces process(Token,int)/process(Token,long) (collide after C++ int normalization)',
+    // Legacy DAG path does not merge ordinary and ADL candidate sets for
+    // non-empty ordinary lookup, so it misses ADL's better-match overload.
+    'swap(a, b) prefers data::swap(Pair&, Pair&) over app::swap(int, int)',
     // The legacy DAG path has no qualified namespace-member resolver
     // and no inline-namespace awareness. For the versioned fixture
     // (`outer::v1::foo` inline, `outer::v0::foo` not), the registry-
