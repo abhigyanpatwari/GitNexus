@@ -127,12 +127,14 @@ export function emitFreeCallFallback(
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
             } else if (narrowed.length > 1) {
-              // Preserve existing ambiguity suppression (zero edges) for
-              // merged ordinary+ADL candidate sets.
+              // Suppress ambiguous overload calls (emit zero edges) when
+              // merged ordinary+ADL candidate sets cannot be disambiguated.
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
                 handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
                 continue;
               }
+              // Multiple survivors remain but no conversion-ranking step
+              // exists yet; suppress instead of picking arbitrarily.
               handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
               continue;
             }
