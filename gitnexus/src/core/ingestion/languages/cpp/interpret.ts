@@ -84,6 +84,10 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
  * Normalize a C++ type name: strip pointer/array/reference syntax,
  * qualifiers, while preserving template arguments for specialization-aware
  * receiver binding (`List<User>` vs `List<Order>`).
+ *
+ * Keeping template arguments here allows receiver-bound fallback to match
+ * specialization-specific class defs first; non-template behavior is preserved
+ * by base-name fallback in resolveClassBindingForName.
  */
 export function normalizeCppTypeName(text: string): string {
   let t = text.trim();

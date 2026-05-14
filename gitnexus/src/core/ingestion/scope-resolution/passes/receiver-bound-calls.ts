@@ -92,6 +92,9 @@ function resolveClassBindingForName(
 
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
+    // qualifiedNames is a Map and may not contain the stripped base name at all
+    // (e.g., unresolved type binding or only template-qualified entries), so
+    // default to [] before checking `.length`.
     const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
     if (qnameIds.length === 0) {
       return findClassBindingInScope(scopeId, baseName, scopes);
