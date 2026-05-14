@@ -240,7 +240,7 @@ export const cppScopeResolver: ScopeResolver = {
         parsedFiles,
         scopes,
       );
-      if (member === undefined) continue;
+      if (member === undefined || member === 'ambiguous') continue;
       if (seenUsing.has(member.nodeId)) continue;
       seenUsing.add(member.nodeId);
       usingNamedHits.push(member);

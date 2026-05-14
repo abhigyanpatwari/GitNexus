@@ -177,6 +177,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
+    // The legacy DAG path has no inline-namespace same-name ambiguity
+    // detection. When two inline children declare the same name, the
+    // legacy path picks an arbitrary match. The scope-resolver returns
+    // 'ambiguous' and suppresses edge emission. Scope-resolver-only
+    // correctness win (#1564); backporting to legacy is out of scope.
+    'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
   ]),
 };
 
