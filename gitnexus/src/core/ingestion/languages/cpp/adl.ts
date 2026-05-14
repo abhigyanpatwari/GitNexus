@@ -1,5 +1,5 @@
 /**
- * C++ argument-dependent lookup (ADL / Koenig lookup) — V1/V2.
+ * C++ argument-dependent lookup (ADL / Koenig lookup).
  *
  * When ordinary unqualified lookup fails for a free-call site, ADL also
  * considers candidates declared in the **associated namespaces** of the

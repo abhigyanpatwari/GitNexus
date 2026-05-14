@@ -834,6 +834,9 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
         inner = next;
         continue;
       }
+      if (inner.type === 'function_declarator') {
+        return EMPTY_ADL_ARG;
+      }
       // Reached the leaf — usually `identifier`. Take its text.
       nameText = inner.text;
       break;
