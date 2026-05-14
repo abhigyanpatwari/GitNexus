@@ -161,6 +161,11 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
 
         // Multiple classes share the same simple name — prefer the one
         // whose namespace matches the deriving class's namespace.
+        // V1: exact dot-prefix match only. Cross-namespace inheritance
+        // (e.g., `ns::outer::Derived` extending bare `Inner` defined in
+        // `ns::outer::inner`) and inline-namespace cases are deferred to
+        // V2; the conservative skip-on-ambiguity below avoids false
+        // associations in those edge cases.
         const nsMatch = candidates.find((c) => c.nsPrefix === classEntry.nsPrefix);
         if (nsMatch !== undefined) {
           bases.add(nsMatch.nodeId);
