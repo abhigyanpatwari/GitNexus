@@ -1524,6 +1524,22 @@ describe('C++ template specialization disambiguation across files', () => {
     const orderOwnerNode = result.graph.getNode(orderSaveOwner!.rel.sourceId);
     expect(orderOwnerNode?.properties.templateArguments).toEqual(['Order']);
   });
+
+  it('resolves external List<User> receiver call to List<User>::save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (c) =>
+        c.source === 'callUserSave' && c.target === 'save' && c.targetFilePath === 'list_user.h',
+    );
+    expect(edge).toBeDefined();
+
+    const ownerEdge = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === edge!.rel.targetId,
+    );
+    expect(ownerEdge).toBeDefined();
+    const ownerNode = result.graph.getNode(ownerEdge!.rel.sourceId);
+    expect(ownerNode?.properties.templateArguments).toEqual(['User']);
+  });
 });
 
 // ── Phase P: C++ out-of-class method definition + overload disambiguation ─

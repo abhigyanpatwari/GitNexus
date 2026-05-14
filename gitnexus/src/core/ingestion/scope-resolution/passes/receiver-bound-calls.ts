@@ -92,7 +92,7 @@ function resolveClassBindingForName(
 
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
-    const qnameIds = scopes.qualifiedNames.get(baseName);
+    const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
     if (qnameIds.length === 0) {
       return findClassBindingInScope(scopeId, baseName, scopes);
     }
@@ -110,6 +110,9 @@ function resolveClassBindingForName(
       }
     }
     if (matches.length === 1) return matches[0];
+    // Scope extractor only records class definitions with bodies in C++, so
+    // forward declarations are not expected here. Keep fallback behavior for
+    // safety in non-ODR or mixed-language edge cases.
   }
 
   return findClassBindingInScope(scopeId, baseName, scopes);

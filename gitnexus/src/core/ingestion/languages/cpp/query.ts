@@ -249,6 +249,11 @@ const CPP_SCOPE_QUERY = `
   type: (type_identifier) @type-binding.type
   declarator: (identifier) @type-binding.name) @type-binding.annotation
 
+;; Covers: List<User> users;
+(declaration
+  type: (template_type) @type-binding.type
+  declarator: (identifier) @type-binding.name) @type-binding.annotation
+
 ;; ─── Type bindings — pointer variable declaration ───────────────────
 ;; Covers: User* ptr = new User()
 (declaration
