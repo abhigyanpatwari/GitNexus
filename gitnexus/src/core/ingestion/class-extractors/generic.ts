@@ -154,10 +154,12 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
 
     if (!name || !type) return null;
 
+    const templateArguments = config.extractTemplateArguments?.(node);
     return {
       name,
       type,
       qualifiedName: buildQualifiedName(node, name) || name,
+      ...(templateArguments !== undefined ? { templateArguments } : {}),
     };
   };
 
@@ -172,6 +174,14 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
 
     extractQualifiedName(node: SyntaxNode, simpleName: string): string | null {
       return extract(node, { name: simpleName })?.qualifiedName ?? null;
+    },
+
+    shouldSkipClassCapture(context): boolean {
+      return config.shouldSkipClassCapture?.(context) ?? false;
+    },
+
+    extractTemplateArgumentsFromCapture(context): string[] | undefined {
+      return config.extractTemplateArgumentsFromCapture?.(context);
     },
   };
 }
