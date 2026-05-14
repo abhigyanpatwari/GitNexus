@@ -22,8 +22,9 @@ const EMPTY_DEFS: readonly string[] = Object.freeze([]);
 
 export function buildPopulatedMethodDispatch(
   mroByDefId: ReadonlyMap<string, readonly string[]>,
+  extendsOnlyMroByDefId?: ReadonlyMap<string, readonly string[]>,
 ): MethodDispatchIndex {
-  return {
+  const base: MethodDispatchIndex = {
     mroByOwnerDefId: mroByDefId,
     implsByInterfaceDefId: new Map(),
     mroFor(ownerDefId) {
@@ -33,4 +34,14 @@ export function buildPopulatedMethodDispatch(
       return EMPTY_DEFS;
     },
   };
+  if (extendsOnlyMroByDefId !== undefined) {
+    return {
+      ...base,
+      extendsOnlyMroByOwnerDefId: extendsOnlyMroByDefId,
+      extendsOnlyMroFor(ownerDefId) {
+        return extendsOnlyMroByDefId.get(ownerDefId) ?? EMPTY_DEFS;
+      },
+    };
+  }
+  return base;
 }

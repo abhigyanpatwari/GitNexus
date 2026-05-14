@@ -21,11 +21,15 @@ const SHARED_DEST = path.join(DIST, '_shared');
 
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
-execSync('npx tsc', { cwd: SHARED_ROOT, stdio: 'inherit', timeout: 120_000 });
+const tscCmd =
+  process.platform === 'win32'
+    ? path.join('node_modules', '.bin', 'tsc.cmd')
+    : path.join('node_modules', '.bin', 'tsc');
+execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: 120_000 });
 
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
-execSync('npx tsc', { cwd: ROOT, stdio: 'inherit', timeout: 120_000 });
+execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: 120_000 });
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');

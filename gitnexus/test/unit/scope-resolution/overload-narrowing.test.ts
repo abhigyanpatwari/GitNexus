@@ -69,11 +69,26 @@ describe('narrowOverloadCandidates — arity filtering', () => {
     expect(result.map((d) => d.nodeId)).toEqual(['v:1']);
   });
 
-  it('falls back to the full overload list when arity filter empties it', () => {
+  it('returns empty when arity filter empties the set AND every candidate had definite bounds', () => {
     // argCount=5 doesn't match any overload (none variadic, all have max < 5).
+    // Post-commit af9af4a9 (PR #1497 / U1): the empty result is now authoritative
+    // because every rejected candidate had defined `parameterCount` /
+    // `requiredParameterCount`. The old "always fall back to full list" rescue
+    // was deliberately removed so resolvers actually drop calls that are
+    // definitively arity-incompatible (e.g., PHP `f(int $req, ...$rest)`
+    // called with zero args).
     const result = narrowOverloadCandidates([add1, add2, add3], 5, undefined);
-    expect(result.map((d) => d.nodeId)).toEqual(['add:1', 'add:2', 'add:3']);
+    expect(result.map((d) => d.nodeId)).toEqual([]);
   });
+
+  // Note: the `anyUnknownBounds ? overloads : []` branch in
+  // narrowOverloadCandidates is structurally unreachable in this caller's
+  // shape — a candidate with both `parameterCount` and `requiredParameterCount`
+  // undefined always passes the arity filter (neither `argCount > max` nor
+  // `argCount < min` can fire), so `arityMatches.length` is always > 0
+  // whenever `anyUnknownBounds` is true. The branch is preserved in the
+  // source as a defensive guard for future refactors that might add
+  // additional rejection criteria in the filter.
 });
 
 describe('narrowOverloadCandidates — type narrowing', () => {

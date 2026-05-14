@@ -71,6 +71,8 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.CSharp,
   SupportedLanguages.TypeScript,
   SupportedLanguages.Go,
+  SupportedLanguages.C,
+  SupportedLanguages.PHP,
 ]);
 
 /**

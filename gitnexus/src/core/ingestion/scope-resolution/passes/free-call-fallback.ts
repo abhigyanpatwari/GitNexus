@@ -36,7 +36,14 @@ export function emitFreeCallFallback(
   handledSites: Set<string>,
   model: SemanticModel,
   workspaceIndex: WorkspaceResolutionIndex,
-  options: { readonly allowGlobalFallback?: boolean } = {},
+  options: {
+    readonly allowGlobalFallback?: boolean;
+    readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+    readonly isCallableVisibleFromCaller?: (ctx: {
+      readonly callerParsed: ParsedFile;
+      readonly candidate: SymbolDefinition;
+    }) => boolean;
+  } = {},
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
@@ -73,7 +80,18 @@ export function emitFreeCallFallback(
       // the caller does not import the target package. Same-package calls are
       // caught by findCallableBindingInScope above before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
-        fnDef = pickUniqueGlobalCallable(site.name, model, scopes);
+        fnDef = pickUniqueGlobalCallable(
+          site.name,
+          model,
+          scopes,
+          parsed.filePath,
+          options.isFileLocalDef,
+          site.arity,
+          options.isCallableVisibleFromCaller !== undefined
+            ? (candidate) =>
+                options.isCallableVisibleFromCaller!({ callerParsed: parsed, candidate })
+            : undefined,
+        );
       }
       if (fnDef === undefined) continue;
       const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
@@ -107,6 +125,10 @@ function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
   scopes: ScopeResolutionIndexes,
+  callerFilePath: string,
+  isFileLocalDef?: (def: SymbolDefinition) => boolean,
+  callArity?: number,
+  isCallerVisible?: (candidate: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
@@ -114,6 +136,18 @@ function pickUniqueGlobalCallable(
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
     if (simple !== name) continue;
     if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    // Skip file-local defs (e.g. C `static` functions) that live in a
+    // different file from the caller — they are logically invisible.
+    if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+      continue;
+    }
+    // Caller-side visibility filter (e.g., PHP namespace + use-function
+    // import gating). When defined, blocks candidates the caller cannot
+    // legally reach. Languages without namespace-scoped function resolution
+    // leave this undefined → no filtering.
+    if (isCallerVisible !== undefined && !isCallerVisible(def)) {
+      continue;
+    }
     const key = logicalCallableKey(def);
     if (scopeSeen.has(key)) continue;
     scopeSeen.add(key);
@@ -121,10 +155,29 @@ function pickUniqueGlobalCallable(
   }
   if (scopeDefs.length === 1) return scopeDefs[0];
 
+  // When multiple scope-index candidates exist, attempt arity narrowing
+  // before falling back to the semantic-model lookup. This handles
+  // registry-primary languages where the model is not populated for the
+  // migrated language's files (call-processor skips them).
+  if (scopeDefs.length > 1 && callArity !== undefined) {
+    const arityMatch = narrowByArity(scopeDefs, callArity);
+    if (arityMatch !== undefined) return arityMatch;
+  }
+
   const defs: SymbolDefinition[] = [];
   const seen = new Set<string>();
   const push = (pool: readonly SymbolDefinition[]): void => {
     for (const def of pool) {
+      // Apply the same file-local linkage filter as Phase 1 —
+      // cross-file static defs must never leak through the
+      // SemanticModel fallback path.
+      if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
+        continue;
+      }
+      // Same caller-visibility filter applied to the model-side pool.
+      if (isCallerVisible !== undefined && !isCallerVisible(def)) {
+        continue;
+      }
       const key = logicalCallableKey(def);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -135,7 +188,35 @@ function pickUniqueGlobalCallable(
   push(model.symbols.lookupCallableByName(name));
   push(model.methods.lookupMethodByName(name));
 
-  return defs.length === 1 ? defs[0] : undefined;
+  if (defs.length === 1) return defs[0];
+
+  // When multiple candidates exist and the call site has a known arity,
+  // narrow by parameter count.
+  if (defs.length > 1 && callArity !== undefined) {
+    const arityMatch = narrowByArity(defs, callArity);
+    if (arityMatch !== undefined) return arityMatch;
+  }
+
+  return undefined;
+}
+
+/**
+ * Narrow a list of callable candidates by call-site arity.
+ * A def is compatible when `requiredParameterCount <= arity <= parameterCount`.
+ * Defs with `parameterCount === undefined` (variadic/unknown) are always kept.
+ * Returns the single compatible def, or `undefined` when zero or multiple match.
+ */
+function narrowByArity(
+  defs: readonly SymbolDefinition[],
+  callArity: number,
+): SymbolDefinition | undefined {
+  const compatible = defs.filter((d) => {
+    const total = d.parameterCount;
+    if (total === undefined) return true; // unknown arity — keep
+    const required = d.requiredParameterCount ?? total;
+    return required <= callArity && callArity <= total;
+  });
+  return compatible.length === 1 ? compatible[0] : undefined;
 }
 
 function logicalCallableKey(def: SymbolDefinition): string {
@@ -167,10 +248,18 @@ function pickConstructorOrClass(
 
 /** Walk up from the call-site scope to the enclosing class scope,
  *  pick a method member by name with overload narrowing on arity +
- *  argument types. Returns undefined if there's no enclosing class
- *  or no matching method. Used for implicit-this calls inside a
- *  class body where multiple overloads share the call name. */
-function pickImplicitThisOverload(
+ *  argument types. Returns undefined if there's no enclosing class,
+ *  no matching method, OR narrowing leaves multiple compatible
+ *  candidates — in the multi-candidate case, picking
+ *  `candidates[0]` would emit a high-confidence CALLS edge whose
+ *  target depends on registration order rather than a defensible
+ *  resolution. Mirrors `pickUniqueGlobalCallable`'s uniqueness check
+ *  in the same file (Codex PR #1497 review, finding 2).
+ *
+ *  Exported for unit testing — language-agnostic logic, exercised
+ *  via synthetic stubs in `pick-implicit-this-overload.test.ts`. The
+ *  production call site is `applyFreeCallFallback` immediately above. */
+export function pickImplicitThisOverload(
   site: {
     readonly inScope: ScopeId;
     readonly name: string;
@@ -203,6 +292,11 @@ function pickImplicitThisOverload(
   if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 
+  // Narrow on arity + argument types. Require a UNIQUE survivor —
+  // ambiguous narrowing (multiple compatible candidates with no
+  // disambiguating signal) leaves the call unresolved rather than
+  // routing to an arbitrary first overload by registration order.
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  if (candidates.length !== 1) return undefined;
   return candidates[0];
 }

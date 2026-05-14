@@ -28,6 +28,7 @@ import {
   type FileWithExports,
 } from './graph-queries.js';
 import { generateHTMLViewer } from './html-viewer.js';
+import { sanitizeMermaidMarkdown } from './mermaid-sanitizer.js';
 
 import {
   callLLM,
@@ -612,7 +613,7 @@ export class WikiGenerator {
     const response = await this.invokeLLM(prompt, MODULE_SYSTEM_PROMPT, this.streamOpts(node.name));
 
     // Write page with front matter
-    const pageContent = `# ${node.name}\n\n${response.content}`;
+    const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
@@ -652,7 +653,7 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(prompt, PARENT_SYSTEM_PROMPT, this.streamOpts(node.name));
 
-    const pageContent = `# ${node.name}\n\n${response.content}`;
+    const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
@@ -702,7 +703,9 @@ export class WikiGenerator {
       this.streamOpts('Generating overview', 88),
     );
 
-    const pageContent = `# ${path.basename(this.repoPath)} — Wiki\n\n${response.content}`;
+    const pageContent = sanitizeMermaidMarkdown(
+      `# ${path.basename(this.repoPath)} — Wiki\n\n${response.content}`,
+    );
     await fs.writeFile(path.join(this.wikiDir, 'overview.md'), pageContent, 'utf-8');
   }
 
