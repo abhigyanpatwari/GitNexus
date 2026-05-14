@@ -662,6 +662,167 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   }
 }
 
+// ─── CodeBuddy ──────────────────────────────────────────────────────
+
+async function setupCodeBuddy(result: SetupResult): Promise<void> {
+  const codebuddyDir = path.join(os.homedir(), '.codebuddy');
+  if (!(await dirExists(codebuddyDir))) {
+    result.skipped.push('CodeBuddy (not installed)');
+    return;
+  }
+
+  // CodeBuddy uses ~/.codebuddy/.mcp.json (JSONC format, supports comments)
+  const mcpPath = path.join(codebuddyDir, '.mcp.json');
+  try {
+    const entry = getMcpEntry();
+    const ok = await mergeJsoncFile(mcpPath, ['mcpServers', 'gitnexus'], {
+      type: 'stdio',
+      ...entry,
+    });
+    if (ok) {
+      result.configured.push('CodeBuddy');
+    } else {
+      result.errors.push(
+        'CodeBuddy: .mcp.json is corrupt — skipping to preserve existing content',
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`CodeBuddy: ${err.message}`);
+  }
+}
+
+/**
+ * Install global CodeBuddy skills to ~/.codebuddy/skills/
+ */
+async function installCodeBuddySkills(result: SetupResult): Promise<void> {
+  const codebuddyDir = path.join(os.homedir(), '.codebuddy');
+  if (!(await dirExists(codebuddyDir))) return;
+
+  const skillsDir = path.join(codebuddyDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(
+        `CodeBuddy skills (${installed.length} skills → ~/.codebuddy/skills/)`,
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`CodeBuddy skills: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus hooks to ~/.codebuddy/settings.json for CodeBuddy.
+ * CodeBuddy hooks are fully compatible with the Claude Code hooks spec,
+ * so we reuse the same hook scripts and event structure.
+ */
+async function installCodeBuddyHooks(result: SetupResult): Promise<void> {
+  const codebuddyDir = path.join(os.homedir(), '.codebuddy');
+  if (!(await dirExists(codebuddyDir))) return;
+
+  const settingsPath = path.join(codebuddyDir, 'settings.json');
+
+  // Source hooks bundled within the gitnexus package (hooks/claude/)
+  const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
+
+  // Copy unified hook script to ~/.codebuddy/hooks/gitnexus/
+  const destHooksDir = path.join(codebuddyDir, 'hooks', 'gitnexus');
+
+  try {
+    await fs.mkdir(destHooksDir, { recursive: true });
+
+    const src = path.join(pluginHooksPath, 'gitnexus-hook.cjs');
+    const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
+    try {
+      let content = await fs.readFile(src, 'utf-8');
+      const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
+      const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
+      const jsonCli = JSON.stringify(normalizedCli);
+      content = content.replace(
+        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
+        `let cliPath = ${jsonCli};`,
+      );
+      await fs.writeFile(dest, content, 'utf-8');
+    } catch {
+      // Script not found in source — skip
+    }
+
+    try {
+      await fs.copyFile(
+        path.join(pluginHooksPath, 'hook-lock.cjs'),
+        path.join(destHooksDir, 'hook-lock.cjs'),
+      );
+    } catch {
+      // Helper not found in source — skip
+    }
+
+    const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
+    const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const hookCmd = `node "${escapedHookPath}"`;
+
+    // Check which hook events need entries (idempotent: skip if already registered)
+    const parsed = await (async () => {
+      try {
+        const r = await fs.readFile(settingsPath, 'utf-8');
+        return parseJsonc(r);
+      } catch {
+        return null;
+      }
+    })();
+
+    const hookEntries: Array<{ eventName: string; value: unknown }> = [];
+
+    if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse')) {
+      hookEntries.push({
+        eventName: 'PreToolUse',
+        value: {
+          matcher: 'Grep|Glob|Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: hookCmd,
+              timeout: 10,
+              statusMessage: 'Enriching with GitNexus graph context...',
+            },
+          ],
+        },
+      });
+    }
+    if (!hasGitnexusHook(parsed?.hooks, 'PostToolUse')) {
+      hookEntries.push({
+        eventName: 'PostToolUse',
+        value: {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: hookCmd,
+              timeout: 10,
+              statusMessage: 'Checking GitNexus index freshness...',
+            },
+          ],
+        },
+      });
+    }
+
+    if (hookEntries.length === 0) {
+      result.configured.push('CodeBuddy hooks (already configured)');
+      return;
+    }
+
+    const ok = await mergeHooksJsonc(settingsPath, hookEntries);
+    if (ok) {
+      result.configured.push('CodeBuddy hooks (PreToolUse, PostToolUse)');
+    } else {
+      result.errors.push(
+        'CodeBuddy hooks: settings.json is corrupt — skipping to preserve existing content',
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`CodeBuddy hooks: ${err.message}`);
+  }
+}
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -685,6 +846,7 @@ export const setupCommand = async () => {
   await setupClaudeCode(result);
   await setupOpenCode(result);
   await setupCodex(result);
+  await setupCodeBuddy(result);
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
@@ -692,6 +854,8 @@ export const setupCommand = async () => {
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
   await installCodexSkills(result);
+  await installCodeBuddySkills(result);
+  await installCodeBuddyHooks(result);
 
   // Print results
   if (result.configured.length > 0) {
