@@ -42,7 +42,20 @@ export function emitFreeCallFallback(
     readonly isCallableVisibleFromCaller?: (ctx: {
       readonly callerParsed: ParsedFile;
       readonly candidate: SymbolDefinition;
+      readonly callerScope?: ScopeId;
+      readonly scopes?: ScopeResolutionIndexes;
     }) => boolean;
+    readonly resolveAdlCandidates?: (
+      site: {
+        readonly name: string;
+        readonly arity?: number;
+        readonly argumentTypes?: readonly string[];
+        readonly atRange: { readonly startLine: number; readonly startCol: number };
+      },
+      callerParsed: ParsedFile,
+      scopes: ScopeResolutionIndexes,
+      parsedFiles: readonly ParsedFile[],
+    ) => SymbolDefinition | 'ambiguous' | undefined;
   } = {},
 ): number {
   let emitted = 0;
@@ -75,6 +88,35 @@ export function emitFreeCallFallback(
       if (fnDef === undefined) {
         fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
       }
+      // V1 ADL tier (C++ Koenig lookup, opt-in via provider.resolveAdlCandidates).
+      // Fires only when ordinary lookup is empty — V1 limitation per
+      // plan 2026-05-13-001 U2; ISO C++ would merge ADL with ordinary lookup
+      // and run overload resolution over the union.
+      //
+      // Sentinel 'ambiguous': ADL surfaced multiple candidates with
+      // identical normalized parameter types (mirrors OVERLOAD_AMBIGUOUS).
+      // We mark the site handled so `emit-references` does not retry, and
+      // continue to the next site without emitting an edge.
+      if (fnDef === undefined && options.resolveAdlCandidates !== undefined) {
+        const adlResult = options.resolveAdlCandidates(
+          {
+            name: site.name,
+            arity: site.arity,
+            argumentTypes: site.argumentTypes,
+            atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+          },
+          parsed,
+          scopes,
+          parsedFiles,
+        );
+        if (adlResult === 'ambiguous') {
+          handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+          continue;
+        }
+        if (adlResult !== undefined) {
+          fnDef = adlResult;
+        }
+      }
       // V1: pickUniqueGlobalCallable ignores import context — resolves to any
       // globally-unique callable. False cross-package edges are possible when
       // the caller does not import the target package. Same-package calls are
@@ -89,7 +131,12 @@ export function emitFreeCallFallback(
           site.arity,
           options.isCallableVisibleFromCaller !== undefined
             ? (candidate) =>
-                options.isCallableVisibleFromCaller!({ callerParsed: parsed, candidate })
+                options.isCallableVisibleFromCaller!({
+                  callerParsed: parsed,
+                  candidate,
+                  callerScope: site.inScope,
+                  scopes,
+                })
             : undefined,
         );
       }
