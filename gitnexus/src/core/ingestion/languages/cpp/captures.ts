@@ -720,14 +720,15 @@ function isParenthesizedFunctionCall(callNode: SyntaxNode): boolean {
 
 /**
  * Per-argument ADL classification: walk each argument of a free call and
- * decide whether it's a directly-named class type (V1 ADL fires) or
- * something V1 excludes (pointer, reference, primitive, literal, function
- * pointer, template specialization).
+ * decide whether it resolves to a directly-named class or class-pointer
+ * type (ADL fires) or to an excluded shape such as a reference, function
+ * pointer, primitive, literal, or template specialization.
  *
- * V1 only fires for value class-typed args: `void f(N::S); N::S s; f(s);`.
- * Pointer args (`N::S* p; f(p);`) intentionally return `simpleClassName=''`
- * to lock the V1 boundary — the `cpp-adl-pointer-arg-boundary` fixture
- * regression-tests this.
+ * Class-typed values and class pointers (`N::S`, `N::S*`, `N::S**`) all
+ * preserve the pointee class name for associated-namespace lookup.
+ * Function pointers remain excluded even when their return type names a
+ * class, because the associated entity is the pointed-to function type,
+ * not the return type.
  */
 function inferCppCallAdlArgs(callNode: SyntaxNode): CppAdlArgInfo[] {
   const argList = callNode.childForFieldName('arguments');
@@ -799,13 +800,15 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     // must not contribute ADL associated namespaces.
     let isPointer = false;
     let isReference = false;
+    let isFunctionPointer = false;
     let inner: SyntaxNode = declarator;
     let nameText: string | null = null;
     let safety = 16; // bound walk depth defensively
     while (safety-- > 0) {
       if (inner.type === 'pointer_declarator') {
         if (findFirstDescendantOfType(inner, 'function_declarator') !== null) {
-          return EMPTY_ADL_ARG;
+          isFunctionPointer = true;
+          break;
         }
         isPointer = true;
         const next = inner.childForFieldName('declarator');
@@ -835,13 +838,14 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
         continue;
       }
       if (inner.type === 'function_declarator') {
-        return EMPTY_ADL_ARG;
+        isFunctionPointer = true;
+        break;
       }
       // Reached the leaf — usually `identifier`. Take its text.
       nameText = inner.text;
       break;
     }
-    if (nameText !== varName) continue;
+    if (isFunctionPointer || nameText !== varName) continue;
 
     const simpleClassName = extractAdlSimpleTypeName(typeNode);
     return { simpleClassName, isPointer, isReference };

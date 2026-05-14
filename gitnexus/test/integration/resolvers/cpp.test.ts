@@ -2092,6 +2092,41 @@ describe('C++ ADL — function pointer args do not participate', () => {
   });
 });
 
+describe('C++ ADL — preceding function-pointer declarations do not block class args', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-before-class-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) still resolves via ADL when an earlier declaration is void (*)()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — class-returning function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-class-return-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(factory) where factory is audit::Event (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
 describe('C++ ADL — pointer-to-pointer args participate', () => {
   let result: PipelineResult;
 
