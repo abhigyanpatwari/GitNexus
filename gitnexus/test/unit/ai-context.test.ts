@@ -123,9 +123,81 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
+  it('preserves custom section when gitnexus:keep is present', async () => {
+    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
+
+    // Write a custom lean section with keep marker
+    const customContent = `# My Project
+
+Some project docs here.
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# GitNexus — Code Knowledge Graph
+
+Indexed as **TestProject** (50 symbols, 100 relationships, 5 execution flows). MCP tools.
+
+| Tool | Use for |
+|------|---------|
+| query | Find flows |
+
+Resources: gitnexus://repo/TestProject/context
+<!-- gitnexus:end -->
+`;
+    await fs.writeFile(claudeMdPath, customContent, 'utf-8');
+
+    // Run analyze with new stats — should only update the stats line
+    const stats = { nodes: 999, edges: 1234, processes: 42 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const result = await fs.readFile(claudeMdPath, 'utf-8');
+
+    // Stats should be updated
+    expect(result).toContain('999 symbols');
+    expect(result).toContain('1234 relationships');
+    expect(result).toContain('42 execution flows');
+    expect(result).toContain('. MCP tools.');
+
+    // Custom layout should be preserved (not replaced with verbose template)
+    expect(result).toContain('<!-- gitnexus:keep -->');
+    expect(result).toContain('Code Knowledge Graph');
+    expect(result).toContain('| query | Find flows |');
+
+    // Verbose template sections should NOT be present
+    expect(result).not.toContain('## Always Do');
+    expect(result).not.toContain('## Never Do');
+    expect(result).not.toContain('## When Debugging');
+
+    // Non-GitNexus content should be preserved
+    expect(result).toContain('# My Project');
+    expect(result).toContain('Some project docs here.');
+  });
+
+  it('replaces section when no keep marker is present', async () => {
+    const agentsPath = path.join(tmpDir, 'AGENTS.md');
+
+    // Write a section WITHOUT keep marker
+    const content = `<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+Old content here.
+<!-- gitnexus:end -->
+`;
+    await fs.writeFile(agentsPath, content, 'utf-8');
+
+    const stats = { nodes: 100, edges: 200, processes: 10 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const result = await fs.readFile(agentsPath, 'utf-8');
+
+    // Should have the full verbose template
+    expect(result).toContain('## Always Do');
+    expect(result).not.toContain('Old content here');
+  });
+
   it('installs skills files', async () => {
     const stats = { nodes: 10 };
-    const result = await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
     // Should have installed skill files
     const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
@@ -369,6 +441,242 @@ describe('generateAIContextFiles', () => {
       expect(content).not.toContain('# GitNexus — Code Intelligence (stale stub)');
     } finally {
       await fs.rm(crlfDir, { recursive: true, force: true });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Keep-marker edge cases (added to address PR #1508 review findings)
+  // ──────────────────────────────────────────────────────────────────
+
+  it('keep marker OUTSIDE the GitNexus section has no effect (#1508 review F5)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-scope-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Keep marker appears in user prose BEFORE the GitNexus section.
+      // The keep-path must NOT be triggered — full template replacement
+      // is the correct behavior here, because the marker is not inside
+      // the generated block.
+      const fileWithOutOfBandMarker = `# My Project
+
+A note about <!-- gitnexus:keep --> markers: they only apply inside the
+GitNexus block below, not in prose like this.
+
+<!-- gitnexus:start -->
+Old verbose stub here.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, fileWithOutOfBandMarker, 'utf-8');
+
+      const stats = { nodes: 50, edges: 100, processes: 5 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'TestProject', stats);
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      // Section MUST have been fully replaced — keep marker outside section ignored
+      expect(result).toContain('## Always Do');
+      expect(result).not.toContain('Old verbose stub here.');
+      // User's prose with the marker reference is preserved untouched
+      expect(result).toContain('A note about <!-- gitnexus:keep --> markers');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('AGENTS.md keep path preserves custom layout (#1508 review F5)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-agents-'));
+    try {
+      const agentsPath = path.join(dir, 'AGENTS.md');
+      const customAgents = `# AGENTS instructions
+
+Project-specific agent guidance.
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# GitNexus context for AGENTS
+
+Indexed as **AgentsTest** (10 symbols, 20 relationships, 1 execution flows).
+
+Use 'query' for finding flows, 'context' for symbol details.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(agentsPath, customAgents, 'utf-8');
+
+      const stats = { nodes: 777, edges: 888, processes: 9 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'AgentsTest', stats);
+
+      const result = await fs.readFile(agentsPath, 'utf-8');
+      // Stats updated
+      expect(result).toContain('777 symbols');
+      expect(result).toContain('888 relationships');
+      expect(result).toContain('9 execution flows');
+      // Custom layout preserved
+      expect(result).toContain('# GitNexus context for AGENTS');
+      expect(result).toContain("Use 'query' for finding flows");
+      // Verbose template NOT injected
+      expect(result).not.toContain('## Always Do');
+      // Non-GitNexus content preserved
+      expect(result).toContain('# AGENTS instructions');
+      expect(result).toContain('Project-specific agent guidance.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('idempotent: second run with keep marker produces byte-identical output (#1508 review F5)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-idem-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      const seed = `# Project
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 99, edges: 100, processes: 7 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'Idem', stats);
+      const afterFirst = await fs.readFile(claudePath, 'utf-8');
+
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'Idem', stats);
+      const afterSecond = await fs.readFile(claudePath, 'utf-8');
+
+      expect(afterSecond).toBe(afterFirst);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('CRLF file with keep marker: stats line updates without corrupting content (#1508 review F5)', async () => {
+    // upsertGitNexusSection writes with .trim() + '\n', so the saved file uses LF
+    // line endings throughout — CRLF in the seed input is not preserved.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-crlf-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      const crlfContent =
+        '# Project\r\n' +
+        '\r\n' +
+        '<!-- gitnexus:start -->\r\n' +
+        '<!-- gitnexus:keep -->\r\n' +
+        'Indexed as **CRLFTest** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
+        '<!-- gitnexus:end -->\r\n';
+      await fs.writeFile(claudePath, crlfContent, 'utf-8');
+
+      const stats = { nodes: 50, edges: 60, processes: 7 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'CRLFTest', stats);
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      // Stats updated correctly
+      expect(result).toContain('50 symbols');
+      expect(result).toContain('60 relationships');
+      // Custom prose preserved
+      expect(result).toContain('Custom CRLF');
+      // No verbose template injected
+      expect(result).not.toContain('## Always Do');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('noStats + keep marker: stats line update is NOT corrupted by Always-Do tuple text (#1508 review F3)', async () => {
+    // Regression guard: with the old fallback regex `\(([^)]+)\)`, when
+    // noStats=true suppressed the canonical stats line from generated
+    // content, the fallback matched the FIRST parenthesized text in the
+    // template, which was `({target: "symbolName", direction: "upstream"})`
+    // from the Always Do bullet — silently writing that as the stats line.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-nostats-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **NoStatsTest** (1 symbols, 1 relationships, 1 execution flows). Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 42, edges: 84, processes: 3 };
+      await generateAIContextFiles(
+        dir,
+        path.join(dir, '.gitnexus'),
+        'NoStatsTest',
+        stats,
+        undefined,
+        { noStats: true },
+      );
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      // Stats line MUST NOT have been corrupted with the Always-Do tuple text
+      expect(result).not.toMatch(/\(\{target:/);
+      expect(result).not.toMatch(/direction:\s*"upstream"/);
+      // Stats line should reflect a sensible numeric update (passed stats)
+      expect(result).toContain('42 symbols');
+      // Custom prose still preserved
+      expect(result).toContain('Custom.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 'preserved' (not 'updated') when keep marker is present but no stats line matches (#1508 review F1)", async () => {
+    // Regression guard for the misleading-return-value bug: previously the
+    // function returned 'updated' without writing when the keep-section had
+    // no recognizable stats line, causing CLI output to claim files were
+    // updated when they were not.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-noline-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Custom keep-section with NO "Indexed as ..." or "indexed by GitNexus as ..." line
+      const seed = `# Project
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# GitNexus block (custom, no stats line)
+
+This block intentionally omits the standard stats line.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 100, edges: 200, processes: 10 };
+      const result = await generateAIContextFiles(
+        dir,
+        path.join(dir, '.gitnexus'),
+        'NoLineTest',
+        stats,
+      );
+
+      // The result manifest should reflect 'preserved', not 'updated'
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      // File on disk is unchanged
+      const onDisk = await fs.readFile(claudePath, 'utf-8');
+      expect(onDisk).toBe(seed);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('project name with markdown-sensitive punctuation lands intact in stats line (#1508 review F5)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-punct-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      // Name with hyphens, dot, and slash — exactly what dp-web4/some-repo
+      // style names look like
+      const trickyName = 'dp-web4/some-repo.v2';
+      const stats = { nodes: 5, edges: 10, processes: 1 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), trickyName, stats);
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      // The full name appears in the bold of the stats line, intact
+      expect(result).toContain(`Indexed as **${trickyName}** (5 symbols`);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 });
