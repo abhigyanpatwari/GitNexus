@@ -18,11 +18,11 @@
  * The current implementation covers ONE associated-entity rule: an argument that's a directly-named
  * class type (`audit::Event e`) contributes its **direct enclosing
  * namespace** to the candidate set. V2 extends that one step to
- * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
- * they contribute the pointee class's enclosing namespace too. Reference
- * arguments, function-pointer arguments, template specializations,
- * base-class associated namespaces, and the rest of the full closure are
- * still deliberately excluded.
+ * pointer-typed and reference-typed class args (`audit::Event* p`,
+ * `audit::Event& r`, `audit::Event&& rr`): they contribute the pointee /
+ * referred class's enclosing namespace too. Function-pointer arguments,
+ * template specializations, base-class associated namespaces, and the
+ * rest of the full closure are still deliberately excluded.
  *
  * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
@@ -62,18 +62,13 @@ import {
 
 /**
  * Per-argument shape information collected at capture time. ADL fires for
- * arguments where `simpleClassName !== ''` AND `!isReference`, including
- * class pointers whose declarator chain resolves to a named class type.
+ * arguments where `simpleClassName !== ''`, including class pointers and
+ * references whose declarator chain resolves to a named class type.
  */
 export interface CppAdlArgInfo {
   /** Simple class-like type name (last segment of qualified name); empty
    *  for primitives, literals, function pointers, template specs, etc. */
   readonly simpleClassName: string;
-  /** True when the variable's declarator contained one or more
-   *  `pointer_declarator` wrappers. */
-  readonly isPointer: boolean;
-  /** True when the variable's declarator was a `reference_declarator`. */
-  readonly isReference: boolean;
 }
 
 const argInfoBySite = new Map<string, readonly CppAdlArgInfo[]>();
@@ -152,8 +147,8 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
  *
  * Fires only when:
  *   - the call site is not in `noAdlSites` (parenthesized form), AND
- *   - at least one argument resolves to a named class type (value or
- *     pointer, but not reference, function pointer, literal, or primitive).
+ *   - at least one argument resolves to a named class type (value,
+ *     pointer, or reference; but not function pointer, literal, or primitive).
  */
 export function pickCppAdlCandidates(
   site: {
@@ -175,7 +170,6 @@ export function pickCppAdlCandidates(
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
     if (arg.simpleClassName === '') continue;
-    if (arg.isReference) continue;
     const classDef = findCppClassDefBySimpleName(arg.simpleClassName, scopes);
     if (classDef === undefined) continue;
     const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);

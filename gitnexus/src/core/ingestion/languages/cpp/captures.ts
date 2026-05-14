@@ -743,7 +743,7 @@ function inferCppCallAdlArgs(callNode: SyntaxNode): CppAdlArgInfo[] {
   return out;
 }
 
-const EMPTY_ADL_ARG: CppAdlArgInfo = { simpleClassName: '', isPointer: false, isReference: false };
+const EMPTY_ADL_ARG: CppAdlArgInfo = { simpleClassName: '' };
 
 function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   // Literals and primitive-shaped expressions never have associated namespaces.
@@ -794,12 +794,11 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     // Unwrap declarator chain to find pointer/reference markers and the
     // variable name. `init_declarator > pointer_declarator > identifier`
     // means pointer-typed; repeated pointer wrappers still count as pointer
-    // typed; `init_declarator > reference_declarator > ...` means
-    // reference-typed; bare `init_declarator > identifier` is value.
+    // typed; `init_declarator > reference_declarator > ...` (or
+    // `rvalue_reference_declarator`) means reference-typed; bare
+    // `init_declarator > identifier` is value.
     // Function-pointer wrappers (`pointer_declarator > function_declarator`)
     // must not contribute ADL associated namespaces.
-    let isPointer = false;
-    let isReference = false;
     let isFunctionPointer = false;
     let inner: SyntaxNode = declarator;
     let nameText: string | null = null;
@@ -810,14 +809,12 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
           isFunctionPointer = true;
           break;
         }
-        isPointer = true;
         const next = inner.childForFieldName('declarator');
         if (next === null) break;
         inner = next;
         continue;
       }
-      if (inner.type === 'reference_declarator') {
-        isReference = true;
+      if (inner.type === 'reference_declarator' || inner.type === 'rvalue_reference_declarator') {
         // reference_declarator has a single child (the inner declarator).
         let next: SyntaxNode | null = null;
         for (let j = 0; j < inner.namedChildCount; j++) {
@@ -848,7 +845,7 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     if (isFunctionPointer || nameText !== varName) continue;
 
     const simpleClassName = extractAdlSimpleTypeName(typeNode);
-    return { simpleClassName, isPointer, isReference };
+    return { simpleClassName };
   }
   return EMPTY_ADL_ARG;
 }
