@@ -30,6 +30,8 @@ export interface SymbolDefinition {
   returnType?: string;
   /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
   declaredType?: string;
+  /** Generic/template specialization arguments for class-like symbols (e.g. ['User'], ['T*']). */
+  templateArguments?: string[];
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
 }

@@ -1464,6 +1464,84 @@ describe('C++ template overload cross-file and chain resolution', () => {
   });
 });
 
+describe('C++ template specialization disambiguation across files', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-template-specialization-disambiguation'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits distinct Class nodes for List<User> and List<Order>', () => {
+    const classes = getNodesByLabelFull(result, 'Class').filter(
+      (c) => c.name === 'List' && Array.isArray(c.properties.templateArguments),
+    );
+    expect(classes.length).toBe(2);
+    const fingerprints = new Set(classes.map((c) => c.properties.templateArguments.join(',')));
+    expect(fingerprints).toEqual(new Set(['User', 'Order']));
+  });
+
+  it('callSave() in each specialization resolves to its own save()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveEdges = calls.filter((c) => c.source === 'callSave' && c.target === 'save');
+    expect(saveEdges.length).toBe(2);
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const ownerFingerprints = new Set<string>();
+    for (const edge of saveEdges) {
+      const sourceOwnerEdge = hasMethod.find((e) => e.rel.targetId === edge.rel.sourceId);
+      const targetOwnerEdge = hasMethod.find((e) => e.rel.targetId === edge.rel.targetId);
+      expect(sourceOwnerEdge).toBeDefined();
+      expect(targetOwnerEdge).toBeDefined();
+      expect(sourceOwnerEdge!.rel.sourceId).toBe(targetOwnerEdge!.rel.sourceId);
+      const ownerNode = result.graph.getNode(sourceOwnerEdge!.rel.sourceId);
+      const fp = ownerNode?.properties.templateArguments?.join(',');
+      if (fp) ownerFingerprints.add(fp);
+    }
+    expect(ownerFingerprints).toEqual(new Set(['User', 'Order']));
+  });
+
+  it('save specialization bodies route to their own sibling method', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    const persistUserCalls = calls.filter((c) => c.target === 'persistUser');
+    expect(persistUserCalls.length).toBe(1);
+    const userSaveOwner = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === persistUserCalls[0].rel.sourceId,
+    );
+    expect(userSaveOwner).toBeDefined();
+    const userOwnerNode = result.graph.getNode(userSaveOwner!.rel.sourceId);
+    expect(userOwnerNode?.properties.templateArguments).toEqual(['User']);
+
+    const persistOrderCalls = calls.filter((c) => c.target === 'persistOrder');
+    expect(persistOrderCalls.length).toBe(1);
+    const orderSaveOwner = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === persistOrderCalls[0].rel.sourceId,
+    );
+    expect(orderSaveOwner).toBeDefined();
+    const orderOwnerNode = result.graph.getNode(orderSaveOwner!.rel.sourceId);
+    expect(orderOwnerNode?.properties.templateArguments).toEqual(['Order']);
+  });
+
+  it('resolves external List<User> receiver call to List<User>::save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (c) =>
+        c.source === 'callUserSave' && c.target === 'save' && c.targetFilePath === 'list_user.h',
+    );
+    expect(edge).toBeDefined();
+
+    const ownerEdge = getRelationships(result, 'HAS_METHOD').find(
+      (e) => e.rel.targetId === edge!.rel.targetId,
+    );
+    expect(ownerEdge).toBeDefined();
+    const ownerNode = result.graph.getNode(ownerEdge!.rel.sourceId);
+    expect(ownerNode?.properties.templateArguments).toEqual(['User']);
+  });
+});
+
 // ── Phase P: C++ out-of-class method definition + overload disambiguation ─
 
 describe('C++ out-of-class method definition with overloaded declarations', () => {
