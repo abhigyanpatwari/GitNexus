@@ -628,6 +628,18 @@ export interface ScopeResolver {
   ) => SymbolDefinition | undefined;
 
   /**
+   * Enable the receiver-bound Case 0.5 fallback for explicit `this`
+   * receivers (`this->m()` / `this.m()`) that resolves against the
+   * enclosing class + MRO even when no explicit `this` typeBinding is
+   * present in scope.
+   *
+   * Keep disabled for languages where the existing type-binding path
+   * (Case 4) already handles `this` correctly and overload ambiguity
+   * suppression must remain unchanged.
+   */
+  readonly resolveThisViaEnclosingClass?: boolean;
+
+  /**
    * Optional post-finalize hook to inject cross-file bindings that
    * aren't modeled via explicit imports. Runs after
    * `buildWorkspaceResolutionIndex` and before

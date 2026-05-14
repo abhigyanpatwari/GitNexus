@@ -72,6 +72,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'unwrapCollectionAccessor'
   | 'hoistTypeBindingsToModule'
   | 'resolveQualifiedReceiverMember'
+  | 'resolveThisViaEnclosingClass'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -325,7 +326,7 @@ export function emitReceiverBoundCalls(
       // C++ `this->member()` (and same-shape receivers in other OO
       // languages) should resolve against the enclosing class + MRO
       // even when there is no explicit `this` typeBinding in scope.
-      if (receiverName === 'this') {
+      if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
           const chain = [
@@ -333,18 +334,44 @@ export function emitReceiverBoundCalls(
             ...scopes.methodDispatch.mroFor(enclosingClass.nodeId),
           ];
           let memberDef: SymbolDefinition | undefined;
+          let ambiguous = false;
+          let hiddenByName = false;
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) {
-              if (
-                site.kind === 'call' &&
-                narrowOverloadCandidates([memberDef], site.arity, site.argumentTypes).length === 0
-              ) {
-                memberDef = undefined;
+            const methodOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
+            if (methodOverloads.length > 0) {
+              const narrowed = narrowOverloadCandidates(
+                methodOverloads,
+                site.arity,
+                site.argumentTypes,
+              );
+              if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                ambiguous = true;
                 break;
               }
+              if (narrowed.length === 0) {
+                // C++ name hiding: if the derived class declares `f`, base-class
+                // overloads named `f` are hidden for member lookup
+                // ([basic.lookup.classref]). A non-viable derived overload set
+                // therefore terminates lookup instead of falling through to base.
+                hiddenByName = true;
+                break;
+              }
+              memberDef = narrowed[0] ?? methodOverloads[0];
               break;
             }
+
+            memberDef = model.fields.lookupFieldByOwner(ownerId, memberName);
+            if (memberDef !== undefined) {
+              break;
+            }
+          }
+          if (ambiguous) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (hiddenByName) {
+            handledSites.add(siteKey);
+            continue;
           }
           if (memberDef !== undefined) {
             const reason =
