@@ -12,6 +12,7 @@
  * - shell injection: verifies no shell: true in spawnSync calls
  * - dispatch map: correct handler routing
  * - cross-platform: Windows .cmd extension handling
+ * - cross-platform: DB lock probe (Linux /proc, Unix lsof, Windows RM)
  *
  * Since the hooks are CJS scripts that call main() on load, we test them
  * by spawning them as child processes with controlled stdin JSON.
@@ -45,6 +46,23 @@ const PLUGIN_HOOK_LOCK = path.resolve(
   'gitnexus-claude-plugin',
   'hooks',
   'hook-lock.js',
+);
+const CJS_HOOK_DB_PROBE = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'claude',
+  'hook-db-lock-probe.cjs',
+);
+const PLUGIN_HOOK_DB_PROBE = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'gitnexus-claude-plugin',
+  'hooks',
+  'hook-db-lock-probe.cjs',
 );
 
 // ─── Test fixtures: temporary .gitnexus directory ───────────────────
@@ -638,18 +656,32 @@ describe('PreToolUse concurrency guard (integration)', () => {
   }
 });
 
-// ─── Source code regression: trusted lsof/ps resolution (#1493) ────
+// ─── Source: cross-platform DB lock probe module (#1493) ─────────────
 
-describe('lsof/ps resolution (source)', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
+describe('Cross-platform DB lock probe (source)', () => {
+  for (const [label, hookPath, probePath] of [
+    ['CJS', CJS_HOOK, CJS_HOOK_DB_PROBE],
+    ['Plugin', PLUGIN_HOOK, PLUGIN_HOOK_DB_PROBE],
   ] as const) {
-    it(`${label} hook resolves lsof/ps via resolveHookBinary`, () => {
+    it(`${label} probe file exists`, () => {
+      expect(fs.existsSync(probePath)).toBe(true);
+    });
+
+    it(`${label} hook requires hook-db-lock-probe.cjs`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('function resolveHookBinary');
-      expect(source).toContain('GITNEXUS_HOOK_LSOF_PATH');
-      expect(source).toContain('GITNEXUS_HOOK_PS_PATH');
+      expect(source).toContain("require('./hook-db-lock-probe.cjs')");
+    });
+
+    it(`${label} probe covers Linux /proc, Unix lsof, and Windows Restart Manager`, () => {
+      const p = fs.readFileSync(probePath, 'utf-8');
+      expect(p).toContain('win-rm-list-json.ps1');
+      expect(p).toContain('/proc/');
+      expect(p).toContain('linuxProcScanFindGitNexusServer');
+      expect(p).toContain('unixLsofPsFindGitNexusServer');
+      expect(p).toContain('hasGitNexusServerOwnerWindows');
+      expect(p).toContain('GITNEXUS_HOOK_LSOF_PATH');
+      expect(p).toContain('GITNEXUS_HOOK_POWERSHELL_PATH');
+      expect(p).toContain('GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS');
     });
   }
 });
@@ -744,18 +776,6 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         }
       },
     );
-  }
-});
-
-describe('Windows DB owner guard (source)', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
-    it(`${label} hook documents Windows hasGitNexusServerOwner no-op`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('Windows: no lsof');
-    });
   }
 });
 

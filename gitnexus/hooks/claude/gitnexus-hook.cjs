@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
+const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -103,61 +104,8 @@ function findGitNexusDir(startDir) {
   return null;
 }
 
-function resolveHookBinary(tool) {
-  const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
-  const fromEnv = process.env[envKey];
-  if (fromEnv && String(fromEnv).trim()) return String(fromEnv);
-  const candidates =
-    tool === 'lsof'
-      ? ['/usr/bin/lsof', '/usr/sbin/lsof', '/sbin/lsof', tool]
-      : ['/bin/ps', '/usr/bin/ps', tool];
-  for (const candidate of candidates) {
-    if (candidate === tool) return tool;
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      /* ignore */
-    }
-  }
-  return tool;
-}
-
-function isGitNexusServerCommand(command) {
-  const hasServerMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(command);
-  const hasGitNexus =
-    /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(command) ||
-    /node_modules[/\\]gitnexus[/\\]/.test(command);
-  return hasServerMode && hasGitNexus;
-}
-
 function hasGitNexusServerOwner(gitNexusDir) {
-  const dbPath = path.join(gitNexusDir, 'lbug');
-  // Windows: no lsof/ps path here; extractAugmentContext filters lock noise.
-  if (process.platform === 'win32' || !fs.existsSync(dbPath)) return false;
-
-  const lsofPath = resolveHookBinary('lsof');
-  const lsof = spawnSync(lsofPath, ['-nP', '-t', '--', dbPath], {
-    encoding: 'utf-8',
-    timeout: 1000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  // Fail-open on missing lsof or permission errors so augment can still run
-  // (output filtering is the backstop). On ETIMEDOUT only, fail-closed so we
-  // never stack more load on a DB that already struggled to answer lsof.
-  if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
-
-  const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
-  const psPath = resolveHookBinary('ps');
-  for (const pid of pids) {
-    if (Number(pid) === process.pid) continue;
-    const ps = spawnSync(psPath, ['-p', pid, '-o', 'command='], {
-      encoding: 'utf-8',
-      timeout: 500,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    if (!ps.error && isGitNexusServerCommand(ps.stdout || '')) return true;
-  }
-  return false;
+  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
 }
 
 function extractAugmentContext(stderr) {
