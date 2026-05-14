@@ -36,7 +36,12 @@ export const processMarkdown = (
     // Skip if file node doesn't exist (shouldn't happen, structure-processor creates it)
     if (!graph.getNode(fileNodeId)) continue;
 
-    const lines = file.content.split('\n');
+    // Normalize CRLF/CR to LF before splitting so that line-end agnostic
+    // markdown files (Windows-authored, mixed) yield correct headings.
+    // Without this, splitting on `\n` alone leaves `## Heading\r` on each line;
+    // `$` in HEADING_RE only matches at end-of-string, while `.+` stops before
+    // the trailing `\r`, so the line never matches as a heading.
+    const lines = file.content.split(/\r\n|\r|\n/);
 
     // --- Extract headings and build hierarchy ---
     // First pass: collect all heading positions so we can compute endLine spans
