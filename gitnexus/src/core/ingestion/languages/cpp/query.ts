@@ -32,8 +32,20 @@ const CPP_SCOPE_QUERY = `
   name: (type_identifier) @declaration.name
   body: (field_declaration_list)) @declaration.class
 
+(class_specifier
+  name: (template_type
+    (type_identifier) @declaration.name
+    (template_argument_list) @declaration.template-arguments)
+  body: (field_declaration_list)) @declaration.class
+
 (struct_specifier
   name: (type_identifier) @declaration.name
+  body: (field_declaration_list)) @declaration.struct
+
+(struct_specifier
+  name: (template_type
+    (type_identifier) @declaration.name
+    (template_argument_list) @declaration.template-arguments)
   body: (field_declaration_list)) @declaration.struct
 
 ;; ─── Declarations — class / struct inside template_declaration ───────
@@ -43,8 +55,22 @@ const CPP_SCOPE_QUERY = `
     body: (field_declaration_list)) @declaration.class)
 
 (template_declaration
+  (class_specifier
+    name: (template_type
+      (type_identifier) @declaration.name
+      (template_argument_list) @declaration.template-arguments)
+    body: (field_declaration_list)) @declaration.class)
+
+(template_declaration
   (struct_specifier
     name: (type_identifier) @declaration.name
+    body: (field_declaration_list)) @declaration.struct)
+
+(template_declaration
+  (struct_specifier
+    name: (template_type
+      (type_identifier) @declaration.name
+      (template_argument_list) @declaration.template-arguments)
     body: (field_declaration_list)) @declaration.struct)
 
 ;; ─── Declarations — enum ─────────────────────────────────────────────

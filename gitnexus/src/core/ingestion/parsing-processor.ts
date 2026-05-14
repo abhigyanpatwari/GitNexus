@@ -30,6 +30,7 @@ import {
   constTagForId,
   buildCollisionGroups,
 } from './utils/method-props.js';
+import { extractTemplateArguments, templateArgumentsIdTag } from './utils/template-arguments.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -129,6 +130,7 @@ export const mergeChunkResults = (
         parameterTypes: sym.parameterTypes,
         returnType: sym.returnType,
         declaredType: sym.declaredType,
+        templateArguments: sym.templateArguments,
         ownerId: sym.ownerId,
         qualifiedName: sym.qualifiedName,
       });
@@ -483,6 +485,20 @@ const processParsingSequential = async (
             })
           : null;
       const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
+      const isClassLikeLabel =
+        nodeLabel === 'Class' ||
+        nodeLabel === 'Struct' ||
+        nodeLabel === 'Interface' ||
+        nodeLabel === 'Enum' ||
+        nodeLabel === 'Record';
+      const definitionNameNode = definitionNode?.childForFieldName?.('name');
+      if (
+        isClassLikeLabel &&
+        captureMap['template-arguments'] === undefined &&
+        (nameNode?.parent?.type === 'template_type' || definitionNameNode?.type === 'template_type')
+      ) {
+        return;
+      }
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
       const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
@@ -610,7 +626,29 @@ const processParsingSequential = async (
           cached.groups,
         );
       }
-      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
+      const classTemplateArguments =
+        extractedClassSymbol?.templateArguments ??
+        (captureMap['template-arguments']
+          ? extractTemplateArguments(captureMap['template-arguments'].text)
+          : undefined) ??
+        (nameNode?.parent?.type === 'template_type'
+          ? extractTemplateArguments(nameNode.parent.text)
+          : undefined) ??
+        (nameNode && nameNode.text ? extractTemplateArguments(nameNode.text) : undefined);
+      const classTemplateTag =
+        (nodeLabel === 'Class' ||
+          nodeLabel === 'Struct' ||
+          nodeLabel === 'Interface' ||
+          nodeLabel === 'Enum' ||
+          nodeLabel === 'Record') &&
+        classTemplateArguments !== undefined &&
+        classTemplateArguments.length > 0
+          ? templateArgumentsIdTag(classTemplateArguments)
+          : '';
+      const nodeId = generateId(
+        nodeLabel,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}`,
+      );
       const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
       const qualifiedTypeName =
         extractedClassSymbol?.qualifiedName ??
@@ -643,6 +681,9 @@ const processParsingSequential = async (
                   nodeName,
                 ),
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
+          ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
+            ? { templateArguments: classTemplateArguments }
+            : {}),
           ...(frameworkHint
             ? {
                 astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
@@ -700,6 +741,7 @@ const processParsingSequential = async (
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         declaredType,
+        templateArguments: classTemplateArguments,
         ownerId: enclosingClassId ?? undefined,
         qualifiedName: qualifiedTypeName,
       });

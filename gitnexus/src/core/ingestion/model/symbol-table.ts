@@ -128,6 +128,7 @@ export interface AddMetadata {
   parameterTypes?: string[];
   returnType?: string;
   declaredType?: string;
+  templateArguments?: string[];
   ownerId?: string;
   qualifiedName?: string;
 }
@@ -277,6 +278,9 @@ export const createSymbolTable = (): InternalSymbolTable => {
         : {}),
       ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
       ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
+      ...(metadata?.templateArguments !== undefined
+        ? { templateArguments: metadata.templateArguments }
+        : {}),
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
     };
 

@@ -10,6 +10,7 @@ export interface ExtractedClassSymbol {
   name: string;
   type: ClassLikeNodeLabel;
   qualifiedName: string;
+  templateArguments?: string[];
 }
 
 /**
@@ -41,4 +42,5 @@ export interface ClassExtractionConfig {
   extractName?: (node: SyntaxNode) => string | undefined;
   extractType?: (node: SyntaxNode) => ClassLikeNodeLabel | undefined;
   extractScopeSegments?: (node: SyntaxNode) => string[] | null | undefined;
+  extractTemplateArguments?: (node: SyntaxNode) => string[] | undefined;
 }
