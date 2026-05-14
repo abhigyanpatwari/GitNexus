@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 namespace GitNexusHookRm {
   public static class Native {
     public const int ErrorMoreData = 234;
-    [StructLayout(LayoutKind.Sequential)]
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
     public struct RM_UNIQUE_PROCESS {
       public int dwProcessId;
       public long ProcessStartTime;
@@ -42,7 +42,8 @@ namespace GitNexusHookRm {
 
 $h = [uint32]0
 $key = [guid]::NewGuid().ToString('N')
-$null = [GitNexusHookRm.Native]::RmStartSession([ref]$h, 0, $key)
+$rmErr = [GitNexusHookRm.Native]::RmStartSession([ref]$h, 0, $key)
+if ($rmErr -ne 0) { Write-Output '[]'; exit 0 }
 $files = @($target)
 $err = [GitNexusHookRm.Native]::RmRegisterResources($h, 1, $files, 0, [IntPtr]::Zero, 0, $null)
 if ($err -ne 0) {

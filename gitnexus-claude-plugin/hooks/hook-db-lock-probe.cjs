@@ -28,7 +28,9 @@ function isGitNexusServerCommand(command) {
 function resolveHookBinary(tool) {
   const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
   const fromEnv = process.env[envKey];
-  if (fromEnv && String(fromEnv).trim()) return String(fromEnv);
+  if (fromEnv && String(fromEnv).trim() && fs.existsSync(String(fromEnv))) {
+    return String(fromEnv);
+  }
   const candidates =
     tool === 'lsof'
       ? ['/usr/bin/lsof', '/usr/sbin/lsof', '/sbin/lsof', tool]
@@ -46,7 +48,9 @@ function resolveHookBinary(tool) {
 
 function resolveWindowsPowerShellPath() {
   const fromEnv = process.env.GITNEXUS_HOOK_POWERSHELL_PATH;
-  if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
+  if (fromEnv && String(fromEnv).trim() && fs.existsSync(String(fromEnv).trim())) {
+    return String(fromEnv).trim();
+  }
   const root = process.env.SystemRoot || 'C:\\Windows';
   const ps = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   if (fs.existsSync(ps)) return ps;
@@ -55,9 +59,16 @@ function resolveWindowsPowerShellPath() {
   return 'powershell.exe';
 }
 
-let windowsRmListPsEncodedCommandCache = null;
+// Sentinel:
+//   undefined = not loaded yet (try the read)
+//   string    = encoded PowerShell command (successful load)
+//   null      = load attempted and failed (do not retry; warning already emitted)
+let windowsRmListPsEncodedCommandCache;
+let windowsRmListPsLoadFailureWarned = false;
 function getWindowsRmListEncodedCommand() {
-  if (windowsRmListPsEncodedCommandCache !== null) return windowsRmListPsEncodedCommandCache;
+  if (windowsRmListPsEncodedCommandCache !== undefined) {
+    return windowsRmListPsEncodedCommandCache;
+  }
   try {
     const ps1Path = path.join(__dirname, 'win-rm-list-json.ps1');
     const src = fs
@@ -65,8 +76,16 @@ function getWindowsRmListEncodedCommand() {
       .replace(/^\uFEFF/, '')
       .replace(/\r\n/g, '\n');
     windowsRmListPsEncodedCommandCache = Buffer.from(src, 'utf16le').toString('base64');
-  } catch {
-    windowsRmListPsEncodedCommandCache = '';
+  } catch (err) {
+    windowsRmListPsEncodedCommandCache = null;
+    if (
+      !windowsRmListPsLoadFailureWarned &&
+      (process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true')
+    ) {
+      windowsRmListPsLoadFailureWarned = true;
+      const msg = err && err.message ? String(err.message).slice(0, 200) : 'unknown';
+      process.stderr.write(`[GitNexus hook] win-rm-list-json.ps1 load failed: ${msg}\n`);
+    }
   }
   return windowsRmListPsEncodedCommandCache;
 }
@@ -93,6 +112,7 @@ function hasGitNexusServerOwnerWindows(dbPathAbs, myPid) {
       env: { ...process.env, GITNEXUS_HOOK_RM_TARGET: dbPathAbs },
     },
   );
+  // ETIMEDOUT means the PowerShell probe didn't return in time; treat as 'unresponsive process holds DB' → fail-closed (skip augment).
   if (r.error) return r.error.code === 'ETIMEDOUT';
   if (r.status !== 0) return false;
   let rows;
@@ -184,7 +204,11 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
       timeout: 500,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    if (!ps.error && isGitNexusServerCommand(ps.stdout || '')) return true;
+    if (ps.error) {
+      if (ps.error.code === 'ETIMEDOUT') return true;
+      continue;
+    }
+    if (isGitNexusServerCommand(ps.stdout || '')) return true;
   }
   return false;
 }
@@ -211,5 +235,4 @@ function hasGitNexusDbLockedByGitNexusServer(dbPath, myPid) {
 
 module.exports = {
   hasGitNexusDbLockedByGitNexusServer,
-  isGitNexusServerCommand,
 };

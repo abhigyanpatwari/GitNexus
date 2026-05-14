@@ -111,16 +111,17 @@ function hasGitNexusServerOwner(gitNexusDir) {
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
-  if (
-    marker === -1 &&
-    output.length > 0 &&
-    (process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true')
-  ) {
-    const first = output.split('\n')[0] || '';
-    const preview = first.length > 180 ? `${first.slice(0, 180)}…` : first;
-    process.stderr.write(
-      `[GitNexus hook] augment stderr had no [GitNexus] marker: ${JSON.stringify(preview)}\n`,
-    );
+  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  if (debug && output.length > 0) {
+    // Emit the FULL discarded prefix (everything before the marker, or all of
+    // it when no marker is present) so suppressed diagnostics — LadybugDB lock
+    // warnings, parser errors, etc. — remain recoverable on the hook's own
+    // stderr. The untruncated payload lets operators see exactly what was
+    // filtered out instead of a 180-char JSON-quoted preview.
+    const discarded = marker === -1 ? output : output.slice(0, marker).trim();
+    if (discarded.length > 0) {
+      process.stderr.write(`[GitNexus hook] augment stderr discarded prefix:\n${discarded}\n`);
+    }
   }
   return marker === -1 ? '' : output.slice(marker).trim();
 }
@@ -193,7 +194,7 @@ function extractPattern(toolName, toolInput) {
 function runGitNexusCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
   const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
-  if (hookCli !== undefined && String(hookCli).trim()) {
+  if (hookCli !== undefined && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
     return spawnSync(process.execPath, [String(hookCli), ...args], {
       encoding: 'utf-8',
       timeout,
@@ -259,7 +260,10 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
-  if (hasGitNexusServerOwner(gitNexusDir)) return;
+  if (hasGitNexusServerOwner(gitNexusDir)) {
+    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+    return;
+  }
 
   const release = acquireHookSlot(gitNexusDir);
   if (!release) return;

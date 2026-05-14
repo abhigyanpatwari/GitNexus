@@ -20,7 +20,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
-import type { WriteFileOptions } from 'fs';
 import path from 'path';
 import os from 'os';
 import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
@@ -129,14 +128,16 @@ function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 're
 }
 
 function writeExecutable(filePath: string, content: string) {
-  fs.writeFileSync(filePath, content, { mode: 0o755 } as WriteFileOptions);
+  fs.writeFileSync(filePath, content, { mode: 0o755 });
 }
 
 function createHookToolDir(options: {
   gitnexusStderr?: string;
   gitnexusMarkerPath?: string;
   lsofOutput?: string;
+  lsofOutputLines?: string[];
   psOutput?: string;
+  psOutputByPid?: Record<string, string>;
   lsofSleepMs?: number;
 }) {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-bin-'));
@@ -147,16 +148,27 @@ function createHookToolDir(options: {
   writeExecutable(path.join(binDir, 'gitnexus'), fakeGitNexus);
   writeExecutable(path.join(binDir, 'gitnexus-cli.js'), fakeGitNexus);
 
+  const lsofOutput =
+    options.lsofOutputLines != null
+      ? options.lsofOutputLines.join('\n') + (options.lsofOutputLines.length ? '\n' : '')
+      : (options.lsofOutput ?? '');
   const lsofBody =
     options.lsofSleepMs != null
       ? `#!/usr/bin/env node\nsetTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
-      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.lsofOutput ?? '')});\nprocess.exit(0);\n`;
+      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
   writeExecutable(path.join(binDir, 'lsof'), lsofBody);
 
-  writeExecutable(
-    path.join(binDir, 'ps'),
-    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.psOutput ?? '')});\nprocess.exit(0);\n`,
-  );
+  const psBody =
+    options.psOutputByPid != null
+      ? `#!/usr/bin/env node
+const byPid = ${JSON.stringify(options.psOutputByPid)};
+const args = process.argv;
+const p = args[args.indexOf('-p') + 1];
+process.stdout.write(byPid[p] ?? '');
+process.exit(0);
+`
+      : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.psOutput ?? '')});\nprocess.exit(0);\n`;
+  writeExecutable(path.join(binDir, 'ps'), psBody);
 
   return binDir;
 }
@@ -720,7 +732,10 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     });
 
     it(`${label}: suppresses LadybugDB lock warnings from augment stderr`, () => {
+      const markerPath = path.join(os.tmpdir(), 'gn-hook-lockwarn-' + process.pid + '-' + label);
+      fs.rmSync(markerPath, { force: true });
       const binDir = createHookToolDir({
+        gitnexusMarkerPath: markerPath,
         gitnexusStderr:
           'GitNexus: FTS extension load failed: IO exception: Could not set lock on file : /tmp/repo/.gitnexus/lbug\n',
       });
@@ -738,7 +753,25 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         );
 
         expect(result.stdout.trim()).toBe('');
+        expect(fs.existsSync(markerPath)).toBe(true);
+
+        // Finding #18: when GITNEXUS_DEBUG=1 is set, the discarded prefix is
+        // recoverable on the hook's stderr (not silently dropped).
+        const debugResult = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
+        );
+        expect(debugResult.stderr).toContain('augment stderr discarded prefix');
+        expect(debugResult.stderr).toContain('Could not set lock on file');
       } finally {
+        fs.rmSync(markerPath, { force: true });
         fs.rmSync(binDir, { recursive: true, force: true });
       }
     });
@@ -769,6 +802,8 @@ describe('PreToolUse augmentation filtering (integration)', () => {
           );
 
           expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
@@ -809,6 +844,8 @@ describe.skipIf(process.platform === 'win32')(
             { env: hookEnv(binDir) },
           );
           expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
@@ -823,6 +860,7 @@ describe.skipIf(process.platform === 'win32')(
         fs.rmSync(markerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '99902\n',
           psOutput: 'npx -y gitnexus@latest mcp\n',
         });
@@ -870,6 +908,8 @@ describe.skipIf(process.platform === 'win32')(
             { env: hookEnv(binDir) },
           );
           expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
@@ -884,6 +924,7 @@ describe.skipIf(process.platform === 'win32')(
         fs.rmSync(markerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '',
           psOutput: '',
         });
@@ -935,6 +976,8 @@ describe.skipIf(process.platform === 'win32')(
             { env: hookEnv(binDir) },
           );
           expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
@@ -949,6 +992,7 @@ describe.skipIf(process.platform === 'win32')(
         fs.rmSync(markerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '99904\n',
           psOutput: '/usr/bin/bash -l\n',
         });
@@ -978,28 +1022,15 @@ describe.skipIf(process.platform === 'win32')(
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
         fs.rmSync(markerPath, { force: true });
-        const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-bin-'));
-        const gitnexusStderr = JSON.stringify(
-          '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
-        );
-        const markerPathJson = JSON.stringify(markerPath);
-        const fakeGitNexus = `#!/usr/bin/env node\nconst fs = require('fs');\nconst marker = ${markerPathJson};\nif (marker) fs.writeFileSync(marker, 'called');\nprocess.stderr.write(${gitnexusStderr});\n`;
-        writeExecutable(path.join(binDir, 'gitnexus'), fakeGitNexus);
-        writeExecutable(path.join(binDir, 'gitnexus-cli.js'), fakeGitNexus);
-        writeExecutable(
-          path.join(binDir, 'lsof'),
-          `#!/usr/bin/env node\nprocess.stdout.write('111\\n222\\n');\nprocess.exit(0);\n`,
-        );
-        writeExecutable(
-          path.join(binDir, 'ps'),
-          `#!/usr/bin/env node
-const args = process.argv;
-const p = args[args.indexOf('-p') + 1];
-if (p === '111') process.stdout.write('vim /tmp/x\\n');
-else process.stdout.write('node /x/node_modules/gitnexus/dist/cli/index.js mcp\\n');
-process.exit(0);
-`,
-        );
+        const binDir = createHookToolDir({
+          gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+          lsofOutputLines: ['111', '222'],
+          psOutputByPid: {
+            '111': 'vim /tmp/x\n',
+            '222': 'node /x/node_modules/gitnexus/dist/cli/index.js mcp\n',
+          },
+        });
         try {
           const result = runHook(
             hookPath,
@@ -1013,6 +1044,8 @@ process.exit(0);
             { env: hookEnv(binDir) },
           );
           expect(result.stdout.trim()).toBe('');
+          expect(result.status).toBe(0);
+          expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
@@ -1027,6 +1060,7 @@ process.exit(0);
         fs.rmSync(markerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
+          gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '99905\n',
           psOutput: '',
         });
