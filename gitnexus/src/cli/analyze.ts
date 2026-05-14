@@ -117,8 +117,18 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
-  noStats?: boolean;
+  /**
+   * Stats inclusion in AGENTS.md and CLAUDE.md.
+   *
+   * Commander.js represents `--no-stats` as `stats: boolean` (default
+   * `true`; `false` when the user passes `--no-stats`), NOT as
+   * `noStats: boolean`. Reading the negated form would always be
+   * `undefined` and the flag would silently no-op (#1477). Consumers
+   * that want "did the user request --no-stats?" should compare with
+   * `=== false` to distinguish the explicit-off case from the
+   * default-on case.
+   */
+  stats?: boolean;
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
@@ -449,7 +459,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         skipGit: options?.skipGit,
         skipAgentsMd,
         skipSkills,
-        noStats: options?.noStats,
+        // commander.js `.option('--no-stats', …)` registers the flag as
+        // `options.stats` (boolean, default true; `false` when the user
+        // passed --no-stats). Reading `options?.noStats` here returns
+        // undefined every time, so the flag was a no-op on the markdown
+        // rewrite path before this fix. See #1477.
+        noStats: options?.stats === false,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -537,7 +552,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
               processes: s.processes,
             },
             skillResult.skills,
-            { skipAgentsMd, skipSkills, noStats: options?.noStats },
+            {
+              skipAgentsMd,
+              skipSkills,
+              // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
+              // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
+              noStats: options?.stats === false,
+            },
           );
         }
       } catch {
