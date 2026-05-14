@@ -15,7 +15,7 @@
  *
  * ## Current boundary
  *
- * V1 covers ONE associated-entity rule: an argument that's a directly-named
+ * The current implementation covers ONE associated-entity rule: an argument that's a directly-named
  * class type (`audit::Event e`) contributes its **direct enclosing
  * namespace** to the candidate set. V2 extends that one step to
  * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
@@ -24,7 +24,7 @@
  * base-class associated namespaces, and the rest of the full closure are
  * still deliberately excluded.
  *
- * V1 also short-circuits to ADL only when ordinary lookup is empty
+ * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
  * normally merge ADL candidates with ordinary-lookup candidates and
  * run overload resolution over the union; V1 defers that merge to V2.
