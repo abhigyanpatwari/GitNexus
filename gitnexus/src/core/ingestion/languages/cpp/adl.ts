@@ -1,5 +1,5 @@
 /**
- * C++ argument-dependent lookup (ADL / Koenig lookup) — V1.
+ * C++ argument-dependent lookup (ADL / Koenig lookup).
  *
  * When ordinary unqualified lookup fails for a free-call site, ADL also
  * considers candidates declared in the **associated namespaces** of the
@@ -13,17 +13,18 @@
  * `using` anything. With V1 ADL: `audit::record` is discovered via
  * `audit::Event`'s associated namespace.
  *
- * ## V1 boundary
+ * ## Current boundary
  *
- * V1 covers ONE associated-entity rule: an argument that's a directly-named
+ * The current implementation covers ONE associated-entity rule: an argument that's a directly-named
  * class type (`audit::Event e`) contributes its **direct enclosing
- * namespace** to the candidate set. Anything else — pointer/reference
+ * namespace** to the candidate set. V2 extends that one step to
+ * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
+ * they contribute the pointee class's enclosing namespace too. Reference
  * arguments, function-pointer arguments, template specializations,
- * base-class associated namespaces — is V2 closure work and is
- * deliberately excluded. The `cpp-adl-pointer-arg-boundary` fixture
- * locks the exclusion in CI.
+ * base-class associated namespaces, and the rest of the full closure are
+ * still deliberately excluded.
  *
- * V1 also short-circuits to ADL only when ordinary lookup is empty
+ * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
  * normally merge ADL candidates with ordinary-lookup candidates and
  * run overload resolution over the union; V1 defers that merge to V2.
@@ -60,16 +61,16 @@ import {
 } from '../../scope-resolution/passes/overload-narrowing.js';
 
 /**
- * Per-argument shape information collected at capture time. ADL only
- * fires for arguments where `simpleClassName !== ''` AND `!isPointer`
- * AND `!isReference` — i.e., directly-named class-type values.
+ * Per-argument shape information collected at capture time. ADL fires for
+ * arguments where `simpleClassName !== ''` AND `!isReference`, including
+ * class pointers whose declarator chain resolves to a named class type.
  */
 export interface CppAdlArgInfo {
   /** Simple class-like type name (last segment of qualified name); empty
    *  for primitives, literals, function pointers, template specs, etc. */
   readonly simpleClassName: string;
-  /** True when the variable's declarator was a `pointer_declarator`. V1
-   *  excludes pointer-typed args (closure rules deferred to V2). */
+  /** True when the variable's declarator contained one or more
+   *  `pointer_declarator` wrappers. */
   readonly isPointer: boolean;
   /** True when the variable's declarator was a `reference_declarator`. */
   readonly isReference: boolean;
@@ -151,8 +152,8 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
  *
  * Fires only when:
  *   - the call site is not in `noAdlSites` (parenthesized form), AND
- *   - at least one argument is a directly-named class type (not pointer,
- *     not reference, not literal/primitive).
+ *   - at least one argument resolves to a named class type (value or
+ *     pointer, but not reference, function pointer, literal, or primitive).
  */
 export function pickCppAdlCandidates(
   site: {
@@ -170,11 +171,11 @@ export function pickCppAdlCandidates(
   const args = argInfoBySite.get(key);
   if (args === undefined || args.length === 0) return undefined;
 
-  // Collect associated namespace QNames from every value-class-typed arg.
+  // Collect associated namespace QNames from every participating class-typed arg.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
     if (arg.simpleClassName === '') continue;
-    if (arg.isPointer || arg.isReference) continue;
+    if (arg.isReference) continue;
     const classDef = findCppClassDefBySimpleName(arg.simpleClassName, scopes);
     if (classDef === undefined) continue;
     const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);

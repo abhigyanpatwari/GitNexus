@@ -2057,7 +2057,7 @@ describe('C++ ADL — parenthesized name suppresses ADL', () => {
   });
 });
 
-describe('C++ ADL — pointer-arg V1 boundary', () => {
+describe('C++ ADL — pointer arg unwrapping', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2067,16 +2067,78 @@ describe('C++ ADL — pointer-arg V1 boundary', () => {
     );
   }, 60000);
 
-  it('record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args', () => {
+  it('record(p) where p is audit::Event* resolves to audit::record via ADL', () => {
     const calls = getRelationships(result, 'CALLS');
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
-    // Exact .toBe(0): V1 ADL covers only directly-named class-type values
-    // (per plan 2026-05-13-001 R4). Pointer-typed args fall under
-    // associated-entity closure rules deferred to V2. This fixture locks
-    // the boundary in CI so the implementer cannot accidentally extend
-    // V1 to include pointer types. Real ISO C++ would resolve via V2
-    // closure; matching that requires the V2 follow-up plan.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) where g is void (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — preceding function-pointer declarations do not block class args', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-before-class-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) still resolves via ADL when an earlier declaration is void (*)()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — class-returning function pointer args do not participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-function-pointer-class-return-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(factory) where factory is audit::Event (*)() emits zero CALLS edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — pointer-to-pointer args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-pointer-to-pointer'), () => {});
+  }, 60000);
+
+  it('record(pp) where pp is audit::Event** resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
   });
 });
 
