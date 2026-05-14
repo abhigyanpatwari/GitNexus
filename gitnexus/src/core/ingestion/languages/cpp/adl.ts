@@ -19,10 +19,11 @@
  * class type (`audit::Event e`) contributes its **direct enclosing
  * namespace** to the candidate set. V2 extends that one step to
  * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
- * they contribute the pointee class's enclosing namespace too. Reference
- * arguments, function-pointer arguments, template specializations,
- * base-class associated namespaces, and the rest of the full closure are
- * still deliberately excluded.
+ * they contribute the pointee class's enclosing namespace too. V2 also
+ * walks class ancestors (via MRO) so base-class enclosing namespaces
+ * contribute associated namespaces. Reference arguments, function-pointer
+ * arguments, template specializations, and the rest of the full closure
+ * are still deliberately excluded.
  *
  * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
@@ -180,6 +181,10 @@ export function pickCppAdlCandidates(
     if (classDef === undefined) continue;
     const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
     if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+    for (const ancestorDefId of scopes.methodDispatch.mroFor(classDef.nodeId)) {
+      const ancestorNsQName = classToNamespaceQualifiedName.get(ancestorDefId);
+      if (ancestorNsQName !== undefined) associatedNamespaces.add(ancestorNsQName);
+    }
   }
   if (associatedNamespaces.size === 0) return undefined;
 

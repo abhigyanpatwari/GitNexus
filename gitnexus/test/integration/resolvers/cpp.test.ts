@@ -2125,6 +2125,38 @@ describe('C++ ADL — basic associated-namespace closure', () => {
   });
 });
 
+describe('C++ ADL — base-class associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces'),
+      () => {},
+    );
+  }, 60000);
+
+  it('log(d) where Derived : base_lib::Base resolves to base_lib::log via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
+    expect(logCalls.length).toBe(1);
+    expect(logCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+
+  it('trace(m) where MultiLevel : middle_lib::Mid : base_lib::Root resolves via full MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
+    expect(traceCalls.length).toBe(1);
+    expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+
+  it('diamond inheritance contributes base namespace once (no duplicate/crash)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pingCalls = calls.filter((c) => c.source === 'run_diamond' && c.target === 'ping');
+    expect(pingCalls.length).toBe(1);
+    expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+});
+
 describe('C++ ADL — parenthesized name suppresses ADL', () => {
   let result: PipelineResult;
 
