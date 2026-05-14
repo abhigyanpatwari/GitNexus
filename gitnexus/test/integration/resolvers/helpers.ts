@@ -155,8 +155,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // edges where the registry-primary path correctly suppresses.
     // Scope-resolver-only correctness wins (PR #1520 review follow-up
     // plan 2026-05-13-001 Phase 5); backporting is out of scope.
-    'Base<T>::method() does NOT mis-route to a class method outside the MRO',
+    'emits EXTENDS edge: Derived → Base for template base Base<T>',
+    'emits EXTENDS edges: Derived → A, Derived → B for template multi-base list',
+    'Base<T>::method() resolves to Base::method inside template body',
     'unqualified f() inside Derived<T>::g() does NOT bind to outer::v1::Base<T>::f (dependent base across inline namespace)',
+    'emits EXTENDS edge: Derived → Base for qualified template base outer::v1::Base<T>',
+    'outer::v1::Base<T>::f() resolves to Base::f inside template body',
+    'outer::v1::free_fn() resolves as a namespace free function, not a super-receiver method',
   ]),
 };
 
