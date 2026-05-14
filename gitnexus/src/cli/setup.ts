@@ -373,6 +373,24 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       // Helper not found in source — skip
     }
 
+    try {
+      await fs.copyFile(
+        path.join(pluginHooksPath, 'hook-db-lock-probe.cjs'),
+        path.join(destHooksDir, 'hook-db-lock-probe.cjs'),
+      );
+    } catch {
+      // Helper not found in source — skip
+    }
+
+    try {
+      await fs.copyFile(
+        path.join(pluginHooksPath, 'win-rm-list-json.ps1'),
+        path.join(destHooksDir, 'win-rm-list-json.ps1'),
+      );
+    } catch {
+      // Helper not found in source — skip
+    }
+
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
     // Escape backslashes FIRST, then quotes (CodeQL js/incomplete-sanitization).
     // The previous shape `replace(/"/g, '\\"')` alone would let `path\with"quote`
