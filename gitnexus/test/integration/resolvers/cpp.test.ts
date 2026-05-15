@@ -2195,10 +2195,13 @@ describe('C++ ADL — base-class namespace mapping skips anonymous/unresolved ba
     );
   }, 60000);
 
-  it('hidden_probe(d) emits zero CALLS when base namespace is anonymous', () => {
+  it('hidden_probe(d) still resolves via ordinary lookup when declaration is visible', () => {
     const calls = getRelationships(result, 'CALLS');
-    const hiddenProbeCalls = calls.filter((c) => c.source === 'run_hidden' && c.target === 'hidden_probe');
-    expect(hiddenProbeCalls.length).toBe(0);
+    const hiddenProbeCalls = calls.filter(
+      (c) => c.source === 'run_hidden' && c.target === 'hidden_probe',
+    );
+    expect(hiddenProbeCalls.length).toBe(1);
+    expect(hiddenProbeCalls[0].targetFilePath).toContain('base_lib.h');
   });
 
   it('unresolved_probe(d) emits zero CALLS when base class cannot be resolved', () => {
