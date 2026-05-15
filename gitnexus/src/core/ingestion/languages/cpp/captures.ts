@@ -788,7 +788,7 @@ function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   // Qualified function reference — e.g. `utils::worker`. The namespace is
   // encoded in the qualifier and will be extracted at resolution time.
   if (argNode.type === 'qualified_identifier') {
-    return { simpleClassName: '', isPointer: false, isReference: false, functionRefText: argNode.text };
+    return { simpleClassName: '', templateSimpleClassName: '', templateNamespace: '', templateArgClassNames: [], templateArgNamespaces: [], functionRefText: argNode.text };
   }
   // Variable reference — look up its declared type (preserving pointer /
   // reference / qualified-name shape; the existing arity-narrowing helper
@@ -798,7 +798,7 @@ function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
     if (result === null) {
       // Not found in the local compound_statement scope — could be a
       // free-function reference (unqualified name, namespace scope).
-      return { simpleClassName: '', isPointer: false, isReference: false, functionRefText: argNode.text };
+      return { simpleClassName: '', templateSimpleClassName: '', templateNamespace: '', templateArgClassNames: [], templateArgNamespaces: [], functionRefText: argNode.text };
     }
     return result;
   }
