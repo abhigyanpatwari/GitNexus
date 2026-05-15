@@ -2103,7 +2103,7 @@ describe('C++ two-phase template lookup — cross-file namespace variant', () =>
 // Free-function calls with class-typed arguments must consider candidates
 // declared in the argument's enclosing namespace (associated namespace).
 // V1 boundary: only direct enclosing-namespace closure for value class-
-// typed args; pointer / reference / template-spec args excluded.
+// typed args; pointer and reference args included, template-spec args excluded.
 // ---------------------------------------------------------------------------
 
 describe('C++ ADL — basic associated-namespace closure', () => {
@@ -2158,6 +2158,54 @@ describe('C++ ADL — pointer arg unwrapping', () => {
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — reference arg unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-reference-arg-boundary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(s) where s is audit::Event& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('recordConst(cs) where cs is const audit::Event& resolves via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter(
+      (c) => c.source === 'runConstRef' && c.target === 'recordConst',
+    );
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('note(r) where r is int& emits zero CALLS edges (primitive ref)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const noteCalls = calls.filter((c) => c.source === 'runPrimitiveRef' && c.target === 'note');
+    expect(noteCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — rvalue reference args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-rvalue-ref'), () => {});
+  }, 60000);
+
+  it('record(rr) where rr is audit::Event&& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRvalueRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record-rvalue.h');
   });
 });
 
