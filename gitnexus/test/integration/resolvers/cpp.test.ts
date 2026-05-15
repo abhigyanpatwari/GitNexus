@@ -2159,6 +2159,23 @@ describe('C++ ADL — base-class associated namespaces', () => {
   });
 });
 
+describe('C++ ADL — base-class namespace MRO with simple-name class collisions', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT emit CALLS for collide(t) when class-name lookup is ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const collideCalls = calls.filter((c) => c.source === 'run' && c.target === 'collide');
+    expect(collideCalls.length).toBe(0);
+  });
+});
+
 describe('C++ ADL — parenthesized name suppresses ADL', () => {
   let result: PipelineResult;
 
