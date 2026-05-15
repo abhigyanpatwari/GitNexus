@@ -8,6 +8,7 @@ import {
   clearSettings,
   getProviderDisplayName,
   getAvailableModels,
+  getProviderCapabilities,
 } from '../../src/core/llm/settings-service';
 
 describe('loadSettings', () => {
@@ -164,5 +165,13 @@ describe('getAvailableModels', () => {
 
   it('returns empty array for unknown provider', () => {
     expect(getAvailableModels('unknown' as any)).toEqual([]);
+  });
+});
+
+describe('getProviderCapabilities', () => {
+  it('enables transcript replay only for providers that require it', () => {
+    expect(getProviderCapabilities('deepseek').preserveAssistantTranscript).toBe(true);
+    expect(getProviderCapabilities('openai').preserveAssistantTranscript).toBe(false);
+    expect(getProviderCapabilities('anthropic').preserveAssistantTranscript).toBe(false);
   });
 });

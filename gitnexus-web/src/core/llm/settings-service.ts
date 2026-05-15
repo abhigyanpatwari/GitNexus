@@ -369,6 +369,24 @@ export const clearSettings = (): void => {
   }
 };
 
+interface ProviderCapabilities {
+  /** Provider requires hidden assistant/tool transcript replay across turns. */
+  preserveAssistantTranscript: boolean;
+}
+
+const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapabilities = {
+  preserveAssistantTranscript: false,
+};
+
+const PROVIDER_CAPABILITIES: Partial<Record<LLMProvider, ProviderCapabilities>> = {
+  deepseek: { preserveAssistantTranscript: true },
+};
+
+export const getProviderCapabilities = (provider: LLMProvider): ProviderCapabilities => ({
+  ...DEFAULT_PROVIDER_CAPABILITIES,
+  ...PROVIDER_CAPABILITIES[provider],
+});
+
 /**
  * Get display name for a provider
  */

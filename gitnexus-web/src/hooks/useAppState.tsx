@@ -18,7 +18,12 @@ import type {
   ToolCallInfo,
   MessageStep,
 } from '../core/llm/types';
-import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
+import {
+  loadSettings,
+  getActiveProviderConfig,
+  getProviderCapabilities,
+  saveSettings,
+} from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import {
@@ -662,6 +667,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(true);
       setCurrentToolCalls([]);
 
+      const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
+
       // Prepare message history for agent (convert our format to AgentMessage format)
       const history: AgentMessage[] = [...chatMessages, userMessage].flatMap<AgentMessage>((m) => {
         if (m.role === 'user') {
@@ -672,7 +679,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             ? [{ role: 'tool', content: m.content, toolCallId: m.toolCallId }]
             : [];
         }
-        if (m.historyMessages?.length) {
+        if (providerCapabilities.preserveAssistantTranscript && m.historyMessages?.length) {
           return m.historyMessages;
         }
         return [{ role: 'assistant', content: m.content }];
@@ -985,7 +992,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               break;
 
             case 'done':
-              assistantHistoryMessages = chunk.historyMessages;
+              assistantHistoryMessages = providerCapabilities.preserveAssistantTranscript
+                ? chunk.historyMessages
+                : undefined;
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;
@@ -997,7 +1006,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const agent = agentRef.current;
         if (!agent) throw new Error('Agent not initialized');
         const { streamAgentResponse } = await import('../core/llm/agent');
-        for await (const chunk of streamAgentResponse(agent, history)) {
+        for await (const chunk of streamAgentResponse(agent, history, {
+          captureHistory: providerCapabilities.preserveAssistantTranscript,
+        })) {
           onChunk(chunk);
         }
       } catch (error) {

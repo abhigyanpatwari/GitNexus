@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildLangChainMessages,
-  buildDeepSeekRequestMessages,
   createChatModel,
   serializeAgentHistoryMessages,
   type AgentMessage,
 } from '../../src/core/llm/agent';
+import {
+  buildDeepSeekRequestMessages,
+  DeepSeekChatOpenAI,
+  DeepSeekChatOpenAICompletions,
+} from '../../src/core/llm/deepseek-chat-model';
 
 describe('buildLangChainMessages', () => {
   it('reconstructs assistant tool-call turns for replay', () => {
@@ -165,7 +169,7 @@ describe('buildDeepSeekRequestMessages', () => {
 });
 
 describe('createChatModel', () => {
-  it('keeps DeepSeek reasoning patch on withConfig clones used for tool binding', () => {
+  it('keeps DeepSeek model subclasses on withConfig clones used for tool binding', () => {
     const model = createChatModel({
       provider: 'deepseek',
       apiKey: 'test-key',
@@ -173,10 +177,74 @@ describe('createChatModel', () => {
       temperature: 0.1,
     } as any) as any;
 
-    expect(model.completions.__deepseekReasoningPatched).toBe(true);
+    expect(model).toBeInstanceOf(DeepSeekChatOpenAI);
+    expect(model.completions).toBeInstanceOf(DeepSeekChatOpenAICompletions);
 
-    const clonedModel = model.withConfig({ tools: [] });
+    const clonedModel = model.withConfig({ tools: [] }) as any;
 
-    expect(clonedModel.completions.__deepseekReasoningPatched).toBe(true);
+    expect(clonedModel).toBeInstanceOf(DeepSeekChatOpenAI);
+    expect(clonedModel.completions).toBeInstanceOf(DeepSeekChatOpenAICompletions);
+  });
+
+  it('uses DeepSeek serialization on withConfig clones', async () => {
+    const model = createChatModel({
+      provider: 'deepseek',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash',
+      temperature: 0.1,
+    } as any) as any;
+    const clonedModel = model.withConfig({ tools: [] }) as any;
+    clonedModel.completions.streaming = false;
+    let capturedRequest: any;
+
+    clonedModel.completions.client = {
+      chat: {
+        completions: {
+          create: async (request: any) => {
+            capturedRequest = request;
+            return {
+              choices: [
+                {
+                  message: { role: 'assistant', content: 'ok' },
+                  finish_reason: 'stop',
+                },
+              ],
+            };
+          },
+        },
+      },
+    };
+
+    await clonedModel.completions._generate(
+      buildLangChainMessages([
+        { role: 'user', content: 'Check the weather' },
+        {
+          role: 'assistant',
+          content: '',
+          reasoningContent: 'Need the weather tool.',
+          toolCalls: [
+            {
+              id: 'call_weather',
+              name: 'get_weather',
+              args: { location: 'Hangzhou' },
+              type: 'tool_call',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: 'Cloudy 7~13°C',
+          toolCallId: 'call_weather',
+          name: 'get_weather',
+        },
+      ]),
+      { stream: false },
+    );
+
+    expect(capturedRequest.messages[1].reasoning_content).toBe('Need the weather tool.');
+    expect(capturedRequest.messages[1].tool_calls[0].function.arguments).toBe(
+      '{"location":"Hangzhou"}',
+    );
+    expect(capturedRequest.messages[2].tool_call_id).toBe('call_weather');
   });
 });

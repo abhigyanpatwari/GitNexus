@@ -32,10 +32,14 @@ import type {
   DeepSeekConfig,
   AgentStreamChunk,
   AgentHistoryMessage,
-  AgentToolCall,
 } from './types';
 import { type CodebaseContext, buildDynamicSystemPrompt } from './context-builder';
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+import {
+  DeepSeekChatOpenAI,
+  normalizeMessageContent,
+  normalizeToolCalls,
+} from './deepseek-chat-model';
 
 /**
  * System prompt for the Graph RAG agent
@@ -133,237 +137,6 @@ When generating diagrams:
 BAD:  A[User's Data] --> B(Process & Save)
 GOOD: A["User Data"] --> B["Process and Save"]
 `;
-
-/**
- * DeepSeek reasoning_content passthrough.
- *
- * DeepSeek thinking-mode models return a `reasoning_content` field alongside
- * `content` in assistant messages. The API requires this field to be passed
- * back on subsequent requests (400 error otherwise).
- *
- * LangChain's completions converter preserves reasoning_content on inbound
- * AIMessages (`additional_kwargs.reasoning_content`) but does NOT reliably
- * pass it through on outbound conversion, especially around tool-calling
- * turns. We fix this by patching the ChatOpenAI completions instance to
- * rebuild the outbound `messages` array directly from the original
- * LangChain messages right before the API call.
- */
-const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
-  const modelWithInternals = chatModel as any;
-  if (!modelWithInternals.__deepseekWithConfigPatched) {
-    const originalWithConfig = chatModel.withConfig;
-    modelWithInternals.__deepseekWithConfigPatched = true;
-    modelWithInternals.withConfig = function (this: ChatOpenAI, config: any) {
-      const nextModel = originalWithConfig.call(this, config) as ChatOpenAI;
-      patchDeepSeekCompletions(nextModel);
-      return nextModel;
-    };
-  }
-
-  const completions = (chatModel as any).completions;
-  if (!completions || completions.__deepseekReasoningPatched) return;
-  completions.__deepseekReasoningPatched = true;
-
-  // Shared mutable slot: set by _streamResponseChunks / _generate before the
-  // converter runs, then read by completionWithRetry.
-  let currentOriginalMessages: BaseMessage[] | null = null;
-
-  // ----- _streamResponseChunks (streaming path) -----
-  const origStreamChunks = completions._streamResponseChunks.bind(completions);
-  completions._streamResponseChunks = async function* (
-    this: any,
-    messages: BaseMessage[],
-    options: any,
-    runManager: any,
-  ) {
-    currentOriginalMessages = messages;
-    try {
-      yield* origStreamChunks(messages, options, runManager);
-    } finally {
-      currentOriginalMessages = null;
-    }
-  };
-
-  // ----- _generate (non-streaming path, fallback) -----
-  const origGenerate = completions._generate.bind(completions);
-  completions._generate = async function (
-    this: any,
-    messages: BaseMessage[],
-    options: any,
-    runManager: any,
-  ) {
-    currentOriginalMessages = messages;
-    try {
-      return await origGenerate(messages, options, runManager);
-    } finally {
-      currentOriginalMessages = null;
-    }
-  };
-
-  // ----- completionWithRetry (the actual API call) -----
-  const origCompletionWithRetry = completions.completionWithRetry.bind(completions);
-  completions.completionWithRetry = async function (this: any, request: any, requestOptions: any) {
-    if (request.messages && currentOriginalMessages) {
-      request = {
-        ...request,
-        messages: buildDeepSeekRequestMessages(currentOriginalMessages),
-      };
-    }
-    return origCompletionWithRetry(request, requestOptions);
-  };
-};
-
-const normalizeMessageContent = (content: unknown): string => {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((block: any) => block?.type === 'text' || typeof block === 'string')
-      .map((block: any) => (typeof block === 'string' ? block : block.text || ''))
-      .join('');
-  }
-  if (content == null) return '';
-  return String(content);
-};
-
-const normalizeToolCallArgs = (toolCall: any): Record<string, unknown> => {
-  if (toolCall?.args && typeof toolCall.args === 'object') {
-    return toolCall.args as Record<string, unknown>;
-  }
-  try {
-    return toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
-  } catch {
-    return {};
-  }
-};
-
-const normalizeToolCalls = (toolCalls: unknown): AgentToolCall[] | undefined => {
-  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return undefined;
-  return toolCalls.map((toolCall: any) => ({
-    id: typeof toolCall?.id === 'string' ? toolCall.id : undefined,
-    name: toolCall?.name || toolCall?.function?.name || 'unknown',
-    args: normalizeToolCallArgs(toolCall),
-    type: typeof toolCall?.type === 'string' ? toolCall.type : 'tool_call',
-  }));
-};
-
-const stringifyToolArguments = (args: unknown): string => {
-  if (typeof args === 'string') return args;
-  try {
-    return JSON.stringify(args ?? {});
-  } catch {
-    return '{}';
-  }
-};
-
-const normalizeOpenAIContent = (content: unknown): string | Array<Record<string, unknown>> => {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return normalizeMessageContent(content);
-
-  const blocks = content.flatMap((block: any) => {
-    if (typeof block === 'string') {
-      return [{ type: 'text', text: block }];
-    }
-    if (block?.type === 'text' && typeof block.text === 'string') {
-      return [{ type: 'text', text: block.text }];
-    }
-    return [];
-  });
-
-  if (blocks.length === 0) return '';
-  if (blocks.length === 1) return blocks[0].text as string;
-  return blocks;
-};
-
-const getOpenAIRole = (message: any): string => {
-  const messageType = message?._getType?.() || message?.type || message?.constructor?.name || 'unknown';
-  if ((message.additional_kwargs || {}).__openai_role__ === 'developer') {
-    return 'developer';
-  }
-  switch (messageType) {
-    case 'human':
-    case 'HumanMessage':
-      return 'user';
-    case 'ai':
-    case 'AIMessage':
-      return 'assistant';
-    case 'system':
-    case 'SystemMessage':
-      return 'system';
-    case 'tool':
-    case 'ToolMessage':
-      return 'tool';
-    case 'function':
-    case 'FunctionMessage':
-      return 'function';
-    default:
-      return typeof message.role === 'string' ? message.role : 'user';
-  }
-};
-
-export const buildDeepSeekRequestMessages = (
-  messages: Array<BaseMessage | Record<string, unknown>>,
-): Array<Record<string, unknown>> =>
-  messages.map((message: any) => {
-    const role = getOpenAIRole(message);
-    const additionalKwargs =
-      message.additional_kwargs && typeof message.additional_kwargs === 'object'
-        ? message.additional_kwargs
-        : {};
-    const requestMessage: Record<string, unknown> = {
-      role,
-      content: normalizeOpenAIContent(message.content),
-    };
-
-    if (typeof message.name === 'string' && message.name.length > 0) {
-      requestMessage.name = message.name;
-    }
-    if (role === 'assistant') {
-      const toolCalls = Array.isArray(message.tool_calls)
-        ? message.tool_calls
-        : Array.isArray(additionalKwargs.tool_calls)
-          ? additionalKwargs.tool_calls
-          : undefined;
-      if (toolCalls?.length) {
-        requestMessage.tool_calls = toolCalls.map((toolCall: any) => {
-          if (toolCall?.function) {
-            return {
-              id: toolCall.id,
-              type: toolCall.type ?? 'function',
-              function: {
-                name: toolCall.function.name,
-                arguments: stringifyToolArguments(toolCall.function.arguments),
-              },
-            };
-          }
-          return {
-            id: toolCall?.id,
-            type: 'function',
-            function: {
-              name: toolCall?.name ?? 'unknown',
-              arguments: stringifyToolArguments(toolCall?.args),
-            },
-          };
-        });
-      }
-      if (additionalKwargs.function_call != null) {
-        requestMessage.function_call = additionalKwargs.function_call;
-      }
-      if (typeof additionalKwargs.reasoning_content === 'string') {
-        requestMessage.reasoning_content = additionalKwargs.reasoning_content;
-      }
-      return requestMessage;
-    }
-
-    if (role === 'tool' && typeof message.tool_call_id === 'string') {
-      requestMessage.tool_call_id = message.tool_call_id;
-    }
-
-    if (role === 'function' && typeof message.name === 'string') {
-      requestMessage.name = message.name;
-    }
-
-    return requestMessage;
-  });
 
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
@@ -512,7 +285,7 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         throw new Error('DeepSeek API key is required but was not provided');
       }
 
-      const model = new ChatOpenAI({
+      return new DeepSeekChatOpenAI({
         apiKey: deepseekConfig.apiKey,
         modelName: deepseekConfig.model,
         temperature: deepseekConfig.temperature ?? 0.1,
@@ -523,8 +296,6 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         },
         streaming: true,
       });
-      patchDeepSeekCompletions(model);
-      return model;
     }
 
     default:
@@ -589,6 +360,11 @@ export const createGraphRAGAgent = (
  */
 export type AgentMessage = { role: 'user'; content: string } | AgentHistoryMessage;
 
+export interface AgentRuntimeOptions {
+  /** Capture assistant/tool messages for providers that require exact transcript replay. */
+  captureHistory?: boolean;
+}
+
 export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
   messages.map((message) => {
     if (message.role === 'user') {
@@ -652,6 +428,7 @@ export const serializeAgentHistoryMessages = (
 export async function* streamAgentResponse(
   agent: ReturnType<typeof createReactAgent>,
   messages: AgentMessage[],
+  options: AgentRuntimeOptions = {},
 ): AsyncGenerator<AgentStreamChunk> {
   try {
     const formattedMessages = buildLangChainMessages(messages);
@@ -794,7 +571,9 @@ export async function* streamAgentResponse(
       // Handle 'values' mode - state snapshots for structure
       if (mode === 'values' && data?.messages) {
         const stepMessages = data.messages || [];
-        lastStepMessages = stepMessages;
+        if (options.captureHistory) {
+          lastStepMessages = stepMessages;
+        }
 
         // Process new messages for tool calls/results we might have missed
         for (let i = lastProcessedMsgCount; i < stepMessages.length; i++) {
@@ -855,9 +634,10 @@ export async function* streamAgentResponse(
 
     yield {
       type: 'done',
-      historyMessages: lastStepMessages
-        ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
-        : undefined,
+      historyMessages:
+        options.captureHistory && lastStepMessages
+          ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
+          : undefined,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
