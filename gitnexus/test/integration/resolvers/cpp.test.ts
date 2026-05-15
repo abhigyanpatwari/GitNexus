@@ -2142,6 +2142,9 @@ describe('C++ ADL — base-class associated namespaces', () => {
     const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
     expect(logCalls.length).toBe(1);
     expect(logCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Base']);
   });
 
   it('resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root', () => {
@@ -2149,6 +2152,9 @@ describe('C++ ADL — base-class associated namespaces', () => {
     const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
     expect(traceCalls.length).toBe(1);
     expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(traceCalls[0].rel.targetId);
+    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Root']);
   });
 
   it('diamond inheritance contributes base namespace once (no duplicate/crash)', () => {
@@ -2156,6 +2162,9 @@ describe('C++ ADL — base-class associated namespaces', () => {
     const pingCalls = calls.filter((c) => c.source === 'run_diamond' && c.target === 'ping');
     expect(pingCalls.length).toBe(1);
     expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(pingCalls[0].rel.targetId);
+    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping');
+    expect(targetNode?.properties.parameterTypes).toEqual(['DiamondBase']);
   });
 });
 
