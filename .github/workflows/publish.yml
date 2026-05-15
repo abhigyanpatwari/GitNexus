@@ -335,9 +335,12 @@ jobs:
       # ~1h expiry, not tied to a user seat, organizationally auditable.
       # Replaces a prior fine-grained PAT.
       #
-      # Required secrets/vars (set in repo Settings → Secrets and variables → Actions):
-      #   vars.RELEASE_APP_ID            — the App's numeric ID (not sensitive)
+      # Required secrets (set in repo Settings → Secrets and variables → Actions):
+      #   secrets.RELEASE_APP_ID         — the App's numeric ID
       #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
+      # (The App ID is technically not sensitive — it's visible on the App's
+      # settings page — but storing it as a secret is harmless and avoids
+      # mixing storage classes for the same App.)
       # The App must be installed on this repository with:
       #   - Contents: write         (push the v-tag and rc marker)
       #   - Workflows: write        (because the v-tag's tree may touch
@@ -350,7 +353,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       # ── Separate checkout steps per mode ─────────────────────────────────
