@@ -73,21 +73,3 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/check-workflow-concurrency.py .github/workflows
-
-      # Mechanically enforce the pre-merge cleanup contract for publish.yml's
-      # temporary `dry_run` rehearsal input. Search publish.yml for the token
-      # `DRY_RUN_REMOVE_BEFORE_MERGE` for the rationale.
-      #
-      # Skipped on `workflow_dispatch` and tag-push events: the rehearsal flow
-      # ITSELF invokes ci.yml via publish.yml's workflow_dispatch, so failing
-      # here would block the very rehearsal the input exists to enable.
-      # Stable tag pushes are skipped for the same reason — a release PR
-      # earlier removed `dry_run` already, so re-checking adds nothing. On
-      # `pull_request` and `push` to main the check fires as the
-      # required-status merge-blocker.
-      - name: Block dry_run from merging to main
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/check-no-dry-run-on-main.py

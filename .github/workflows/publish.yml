@@ -62,26 +62,6 @@ on:
         options:
           - 'false'
           - 'true'
-      # ⚠️ DRY_RUN_REMOVE_BEFORE_MERGE — pre-merge rehearsal affordance ⚠️
-      # This input and every `inputs.dry_run` reference in this file MUST
-      # be removed in a final cleanup commit BEFORE this PR merges. The
-      # `check-no-dry-run-on-main.sh` script in ci-quality.yml fails the
-      # build if any `inputs.dry_run` reference survives on main. Search
-      # for the token `DRY_RUN_REMOVE_BEFORE_MERGE` to find every cleanup
-      # site this comment governs.
-      dry_run:
-        description: >-
-          REHEARSAL ONLY. When 'true', side-effect steps (version apply,
-          tag push, npm publish, GitHub Release, Docker) are skipped.
-          Rejected on `refs/heads/main` to prevent accidental retention
-          after merge.
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
-
 # Workflow-level deny-all; each job declares the minimum it needs.
 permissions: {}
 
@@ -105,25 +85,7 @@ jobs:
       head_sha: ${{ steps.classify.outputs.head_sha }}
       bump_input: ${{ inputs.bump }}
       force_input: ${{ inputs.force }}
-      dry_run: ${{ inputs.dry_run }}
     steps:
-      - name: Reject dry_run against main
-        # Defense in depth: if the temporary `dry_run` input is ever left in
-        # this workflow after merge, an actor with write access could dispatch
-        # it on `main` and silently exercise routing/version logic. Refuse.
-        if: ${{ inputs.dry_run == 'true' && github.ref == 'refs/heads/main' }}
-        shell: bash
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          # Sanitize annotation-injection prefixes when logging the ref, even
-          # though git ref names are constrained — defense in depth against
-          # crafted refs containing `::error::`-style annotation prefixes.
-          REF_SAFE="${REF_NAME//::/__}"
-          echo "::error::dry_run=true is not permitted on main (got ref ${REF_SAFE})."
-          echo "::error::dry_run is a pre-merge rehearsal mechanism; running it on main is a configuration error."
-          exit 1
-
       - name: Classify
         id: classify
         shell: bash
@@ -131,7 +93,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           GH_REF: ${{ github.ref }}
           GH_REF_NAME: ${{ github.ref_name }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
 
@@ -141,36 +102,18 @@ jobs:
           # Sanitize before logging (annotation-injection defense in depth).
           REF_SAFE="${GH_REF//::/__}"
           REF_NAME_SAFE="${GH_REF_NAME//::/__}"
-          echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE} dry_run=${DRY_RUN:-false}"
+          echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE}"
 
           MODE=""
           case "${EVENT_NAME}" in
             workflow_dispatch)
-              # Real (non-dry-run) dispatches must be on main — that's the only
-              # ref where a real publish makes sense. Dry-run rehearsal is
-              # allowed on any branch ref because the rehearsal MUST run
-              # against the workflow file as-edited on the PR branch (the
-              # version on main doesn't have the new logic yet). The
-              # complementary `Reject dry_run against main` step (below)
-              # closes the other side: dry_run on main is refused so a
-              # forgotten `dry_run` input post-merge can't be abused.
-              if [ "${DRY_RUN:-false}" = "true" ]; then
-                case "${GH_REF}" in
-                  refs/heads/*)
-                    MODE="rc"
-                    ;;
-                  *)
-                    echo "::error::dry_run dispatch is only permitted on a branch ref (got ${REF_SAFE})."
-                    exit 1
-                    ;;
-                esac
+              # Manual dispatch is only valid on main — that's the only ref
+              # where a real publish makes sense.
+              if [ "${GH_REF}" = "refs/heads/main" ]; then
+                MODE="rc"
               else
-                if [ "${GH_REF}" = "refs/heads/main" ]; then
-                  MODE="rc"
-                else
-                  echo "::error::Real workflow_dispatch is only permitted on refs/heads/main (got ${REF_SAFE}). For pre-merge rehearsal, set dry_run=true."
-                  exit 1
-                fi
+                echo "::error::workflow_dispatch is only permitted on refs/heads/main (got ${REF_SAFE})."
+                exit 1
               fi
               ;;
             push)
@@ -616,10 +559,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Apply rc version in-CI
-        # Runs in dry-run too — only mutates the runner's working tree (no
-        # push, no commit). This way the subsequent `Dry-run publish` packs
-        # the tarball at the intended rc version, so the rehearsal log is
-        # faithful instead of showing the un-bumped version.
         if: needs.route.outputs.mode == 'rc'
         shell: bash
         working-directory: gitnexus
@@ -633,8 +572,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Dry-run publish
-        # Always runs — even in dry_run rehearsal, the pack/dry-run is cheap
-        # verification that the tarball assembles.
+        # Cheap verification that the tarball assembles before the real publish.
         shell: bash
         working-directory: gitnexus
         env:
@@ -651,7 +589,7 @@ jobs:
       # blocks retries until manual cleanup (see Rollback Runbook in plan).
       - name: Create and push rc tags
         id: rc-tags
-        if: ${{ needs.route.outputs.mode == 'rc' && inputs.dry_run != 'true' }}
+        if: needs.route.outputs.mode == 'rc'
         shell: bash
         working-directory: gitnexus
         env:
@@ -773,50 +711,8 @@ jobs:
         env:
           MODE: ${{ needs.route.outputs.mode }}
           VTAG: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          # Available even when the real tag-push step was skipped (rc-version
-          # ran in dry-run too). Lets us build a synthetic vtag to exercise
-          # the regex check without producing artifacts.
-          RC_VERSION_DRY: ${{ steps.rc-version.outputs.rc_version }}
         run: |
           set -euo pipefail
-
-          if [ "$DRY_RUN" = "true" ]; then
-            # Build a synthetic vtag so the regex actually runs in rehearsal
-            # — without this, dry-run never exercises the gate's core check
-            # and a regex regression slips through to the first real RC.
-            case "$MODE" in
-              rc)     SYNTH_VTAG="v${RC_VERSION_DRY}" ;;
-              stable) SYNTH_VTAG="v0.0.0" ;;  # Stable has no dry-run path today; placeholder.
-              *)      SYNTH_VTAG="" ;;
-            esac
-
-            echo "::notice::dry_run=true — vtag integrity gate in synthetic-rehearsal mode."
-            echo "synthetic vtag for ${MODE}: '${SYNTH_VTAG}'"
-
-            case "$MODE" in
-              rc)
-                if [[ "$SYNTH_VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
-                  echo "rehearsal: rc regex would accept synthetic vtag ✓"
-                else
-                  echo "::warning::rehearsal: rc regex would REJECT synthetic vtag '${SYNTH_VTAG}' — likely a regex regression. Investigate before merging."
-                fi
-                ;;
-              stable)
-                if [[ "$SYNTH_VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                  echo "rehearsal: stable regex would accept synthetic vtag ✓"
-                else
-                  echo "::warning::rehearsal: stable regex would REJECT synthetic vtag '${SYNTH_VTAG}'."
-                fi
-                ;;
-            esac
-
-            # Emit a sentinel rather than empty: prevents downstream future
-            # consumers gating on `vtag != ''` from silently succeeding
-            # against a dry-run state.
-            echo "vtag=DRY_RUN_NO_VTAG" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
           if [ -z "$VTAG" ]; then
             echo "::error::vtag is empty — refusing to create GitHub Release or trigger Docker."
@@ -862,7 +758,6 @@ jobs:
       #   Workflow:    publish.yml
       #   Environment: (none)
       - name: Publish to npm
-        if: inputs.dry_run != 'true'
         shell: bash
         working-directory: gitnexus
         env:
@@ -886,7 +781,6 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        if: inputs.dry_run != 'true'
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
           tag_name: ${{ steps.vtag-gate.outputs.vtag }}
@@ -928,7 +822,7 @@ jobs:
       # actually produced a vtag (otherwise nothing to clean up). The
       # App token is still valid (~1h TTL, job timeout 20min).
       - name: Cleanup pushed tags on partial failure
-        if: ${{ failure() && needs.route.outputs.mode == 'rc' && inputs.dry_run != 'true' && steps.rc-tags.outputs.vtag != '' }}
+        if: ${{ failure() && needs.route.outputs.mode == 'rc' && steps.rc-tags.outputs.vtag != '' }}
         shell: bash
         working-directory: gitnexus
         env:
@@ -964,7 +858,7 @@ jobs:
   docker:
     name: Build & Push RC Docker images
     needs: [route, publish]
-    if: ${{ needs.route.outputs.mode == 'rc' && needs.publish.outputs.vtag != '' && inputs.dry_run != 'true' }}
+    if: ${{ needs.route.outputs.mode == 'rc' && needs.publish.outputs.vtag != '' }}
     uses: ./.github/workflows/docker.yml
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
