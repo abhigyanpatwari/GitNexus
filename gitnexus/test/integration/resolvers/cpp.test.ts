@@ -2444,10 +2444,7 @@ describe('C++ ADL — qualified free-function reference contributes its namespac
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'cpp-adl-free-func-ref'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
   }, 60000);
 
   it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
@@ -2585,7 +2582,6 @@ describe('C++ ADL — unqualified free-function ref with namespace collision', (
     expect(runWithCalls.length).toBe(0);
   });
 });
-
 
 describe('C++ inline namespace — outer::foo resolves to inline child', () => {
   let result: PipelineResult;
