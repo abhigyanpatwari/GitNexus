@@ -72,6 +72,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'unwrapCollectionAccessor'
   | 'hoistTypeBindingsToModule'
   | 'resolveQualifiedReceiverMember'
+  | 'resolveThisViaEnclosingClass'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -315,6 +316,88 @@ export function emitReceiverBoundCalls(
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
             // reference index.
+            handledSites.add(siteKey);
+            continue;
+          }
+        }
+      }
+
+      // ── Case 0.5: implicit `this` receiver ───────────────────────
+      // C++ `this->member()` (and same-shape receivers in other OO
+      // languages) should resolve against the enclosing class + MRO
+      // even when there is no explicit `this` typeBinding in scope.
+      if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
+        const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
+        if (enclosingClass !== undefined) {
+          const chain = [
+            enclosingClass.nodeId,
+            ...scopes.methodDispatch.mroFor(enclosingClass.nodeId),
+          ];
+          let memberDef: SymbolDefinition | undefined;
+          let ambiguous = false;
+          let hiddenByName = false;
+          for (const ownerId of chain) {
+            const methodOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
+            if (methodOverloads.length > 0) {
+              const narrowed = narrowOverloadCandidates(
+                methodOverloads,
+                site.arity,
+                site.argumentTypes,
+              );
+              if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                ambiguous = true;
+                break;
+              }
+              if (narrowed.length === 0) {
+                // C++ name hiding: if the derived class declares `f`, base-class
+                // overloads named `f` are hidden for member lookup
+                // ([basic.lookup.classref]). A non-viable derived overload set
+                // therefore terminates lookup instead of falling through to base.
+                hiddenByName = true;
+                break;
+              }
+              memberDef = narrowed[0] ?? methodOverloads[0];
+              break;
+            }
+
+            // Field/property lookup intentionally runs only after the method
+            // lookup above: in C++ member-name lookup, functions with this
+            // name hide same-named base members; we therefore prefer method
+            // candidates first and only target a field when no methods with
+            // this name exist on the current owner.
+            memberDef = model.fields.lookupFieldByOwner(ownerId, memberName);
+            if (memberDef !== undefined) {
+              break;
+            }
+          }
+          if (ambiguous) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (hiddenByName) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (memberDef !== undefined) {
+            const reason =
+              site.kind === 'write' || site.kind === 'read'
+                ? site.kind
+                : memberDef.filePath !== parsed.filePath
+                  ? 'import-resolved'
+                  : 'global';
+            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              memberDef,
+              reason,
+              seen,
+              confidence,
+              collapse,
+            );
+            if (ok) emitted++;
             handledSites.add(siteKey);
             continue;
           }

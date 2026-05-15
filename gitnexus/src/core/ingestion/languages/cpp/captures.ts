@@ -10,7 +10,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
 import { computeCppDeclarationArity, computeCppCallArity } from './arity-metadata.js';
-import { markFileLocal } from './file-local-linkage.js';
+import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
@@ -200,20 +200,37 @@ export function emitCppScopeCaptures(
     // namespace's source range so `populateCppInlineNamespaceScopes`
     // (during populateOwners) can match it back to the corresponding
     // Namespace scope.
-    if (grouped['@declaration.namespace'] !== undefined) {
-      const anchor = grouped['@declaration.namespace']!;
-      const nsNode = findNodeAtRange(tree.rootNode, anchor.range, 'namespace_definition');
-      if (nsNode !== null && isInlineNamespace(nsNode)) {
+    // `@declaration.namespace` fires only for NAMED namespaces (the query
+    // requires a `name: (namespace_identifier)` child). Use the unconditional
+    // `@scope.namespace` capture so the anonymous-namespace branch also runs.
+    const namespaceScopeAnchor = grouped['@declaration.namespace'] ?? grouped['@scope.namespace'];
+    if (namespaceScopeAnchor !== undefined) {
+      const nsNode = findNodeAtRange(
+        tree.rootNode,
+        namespaceScopeAnchor.range,
+        'namespace_definition',
+      );
+      if (nsNode !== null) {
         // Range coords stored in the shared Range shape use 1-based
         // line numbers (see `ast-helpers.ts` rangeForNode where
         // `startPosition.row + 1` is applied). Match that convention so
-        // `populateCppInlineNamespaceScopes` can join against `Scope.range`.
-        markCppInlineNamespaceRange(filePath, {
+        // the populators can join against `Scope.range`.
+        const nsRange = {
           startLine: nsNode.startPosition.row + 1,
           startCol: nsNode.startPosition.column,
           endLine: nsNode.endPosition.row + 1,
           endCol: nsNode.endPosition.column,
-        });
+        };
+        if (isInlineNamespace(nsNode)) {
+          markCppInlineNamespaceRange(filePath, nsRange);
+        }
+        // Anonymous namespace: `namespace_definition` with no `name` field.
+        // Recorded so `expandCppWildcardNames` can propagate its members
+        // to including TUs even though their names are also `markFileLocal`'d
+        // (which blocks the global free-call fallback's cross-file path).
+        if ((nsNode.childForFieldName?.('name') ?? null) === null) {
+          markCppAnonymousNamespaceRange(filePath, nsRange);
+        }
       }
     }
 
@@ -720,12 +737,14 @@ function isParenthesizedFunctionCall(callNode: SyntaxNode): boolean {
 
 /**
  * Per-argument ADL classification: walk each argument of a free call and
- * decide whether it resolves to a directly-named class or class-pointer
- * type (ADL fires) or to an excluded shape such as a reference, function
- * pointer, primitive, literal, or template specialization.
+ * classify its declared type for associated-namespace lookup.
  *
- * Class-typed values and class pointers (`N::S`, `N::S*`, `N::S**`) all
- * preserve the pointee class name for associated-namespace lookup.
+ * Value/pointer/reference class-typed args and template specializations
+ * with explicit type arguments contribute; function pointers, primitives,
+ * literals, and other unsupported shapes produce an empty result.
+ *
+ * Class-typed values/pointers/references (`N::S`, `N::S*`, `N::S&`) all
+ * preserve the class name for associated-namespace lookup.
  * Function pointers remain excluded even when their return type names a
  * class, because the associated entity is the pointed-to function type,
  * not the return type.
@@ -743,7 +762,14 @@ function inferCppCallAdlArgs(callNode: SyntaxNode): CppAdlArgInfo[] {
   return out;
 }
 
-const EMPTY_ADL_ARG: CppAdlArgInfo = { simpleClassName: '', isPointer: false, isReference: false };
+const ADL_TEMPLATE_RECURSION_MAX_DEPTH = 8;
+const EMPTY_ADL_ARG: CppAdlArgInfo = {
+  simpleClassName: '',
+  templateSimpleClassName: '',
+  templateNamespace: '',
+  templateArgClassNames: [],
+  templateArgNamespaces: [],
+};
 
 function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   // Literals and primitive-shaped expressions never have associated namespaces.
@@ -794,12 +820,11 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     // Unwrap declarator chain to find pointer/reference markers and the
     // variable name. `init_declarator > pointer_declarator > identifier`
     // means pointer-typed; repeated pointer wrappers still count as pointer
-    // typed; `init_declarator > reference_declarator > ...` means
-    // reference-typed; bare `init_declarator > identifier` is value.
+    // typed; `init_declarator > reference_declarator > ...` (or
+    // `rvalue_reference_declarator`) means reference-typed; bare
+    // `init_declarator > identifier` is value.
     // Function-pointer wrappers (`pointer_declarator > function_declarator`)
     // must not contribute ADL associated namespaces.
-    let isPointer = false;
-    let isReference = false;
     let isFunctionPointer = false;
     let inner: SyntaxNode = declarator;
     let nameText: string | null = null;
@@ -810,14 +835,12 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
           isFunctionPointer = true;
           break;
         }
-        isPointer = true;
         const next = inner.childForFieldName('declarator');
         if (next === null) break;
         inner = next;
         continue;
       }
-      if (inner.type === 'reference_declarator') {
-        isReference = true;
+      if (inner.type === 'reference_declarator' || inner.type === 'rvalue_reference_declarator') {
         // reference_declarator has a single child (the inner declarator).
         let next: SyntaxNode | null = null;
         for (let j = 0; j < inner.namedChildCount; j++) {
@@ -848,27 +871,173 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     if (isFunctionPointer || nameText !== varName) continue;
 
     const simpleClassName = extractAdlSimpleTypeName(typeNode);
-    return { simpleClassName, isPointer, isReference };
+    const {
+      templateSimpleClassName,
+      templateNamespace,
+      templateArgClassNames,
+      templateArgNamespaces,
+    } = extractAdlTemplateInfo(typeNode);
+    return {
+      simpleClassName,
+      templateSimpleClassName,
+      templateNamespace,
+      templateArgClassNames,
+      templateArgNamespaces,
+    };
   }
   return EMPTY_ADL_ARG;
 }
 
 /** Extract the simple class-like type name from a `type:` field node.
- *  Returns '' for primitives, template specializations, and any other
+ *  Returns '' for primitives and any other
  *  unsupported type-only shape. Function pointers are filtered at the
  *  declarator level in `lookupAdlIdentifierType`. */
 function extractAdlSimpleTypeName(typeNode: SyntaxNode): string {
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return extractAdlSimpleTypeName(innerType);
+    for (let i = 0; i < typeNode.childCount; i++) {
+      const child = typeNode.child(i);
+      if (child === null) continue;
+      if (
+        child.type === 'type_identifier' ||
+        child.type === 'qualified_identifier' ||
+        child.type === 'template_type'
+      ) {
+        return extractAdlSimpleTypeName(child);
+      }
+    }
+    return '';
+  }
   if (typeNode.type === 'primitive_type') return '';
   if (typeNode.type === 'sized_type_specifier') return '';
   if (typeNode.type === 'type_identifier') return typeNode.text;
+  if (typeNode.type === 'template_type') {
+    const nameNode = typeNode.childForFieldName('name');
+    if (nameNode !== null) return extractAdlSimpleTypeName(nameNode);
+    const id = findFirstDescendantOfType(typeNode, 'type_identifier');
+    return id !== null ? id.text : '';
+  }
   if (typeNode.type === 'qualified_identifier') {
     const nameNode = typeNode.childForFieldName('name');
     if (nameNode !== null) return extractAdlSimpleTypeName(nameNode);
     const id = findFirstDescendantOfType(typeNode, 'type_identifier');
     return id !== null ? id.text : '';
   }
-  // template_type (e.g. `vector<int>`), function pointers, decltype — V1 excludes.
+  // Function pointers, decltype, etc — unsupported for ADL participation.
   return '';
+}
+
+function extractAdlTypeNamespace(typeNode: SyntaxNode): string {
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return extractAdlTypeNamespace(innerType);
+    for (let i = 0; i < typeNode.childCount; i++) {
+      const child = typeNode.child(i);
+      if (child === null) continue;
+      if (
+        child.type === 'qualified_identifier' ||
+        child.type === 'template_type' ||
+        child.type === 'type_identifier'
+      ) {
+        return extractAdlTypeNamespace(child);
+      }
+    }
+    return '';
+  }
+  if (typeNode.type === 'template_type') {
+    const nameNode = typeNode.childForFieldName('name');
+    return nameNode !== null ? extractAdlTypeNamespace(nameNode) : '';
+  }
+  if (typeNode.type === 'qualified_identifier') {
+    const scope = typeNode.childForFieldName('scope');
+    if (scope !== null) return normalizeCppNamespaceQName(scope.text);
+    return extractNamespaceFromQualifiedText(typeNode.text);
+  }
+  return '';
+}
+
+function extractAdlTemplateInfo(typeNode: SyntaxNode): {
+  templateSimpleClassName: string;
+  templateNamespace: string;
+  templateArgClassNames: string[];
+  templateArgNamespaces: string[];
+} {
+  const templateTypeNode = findTemplateTypeNode(typeNode);
+  if (templateTypeNode === null) {
+    return {
+      templateSimpleClassName: '',
+      templateNamespace: '',
+      templateArgClassNames: [],
+      templateArgNamespaces: [],
+    };
+  }
+  const templateArgClassNames: string[] = [];
+  const templateArgNamespaces: string[] = [];
+  collectAdlTemplateArgs(templateTypeNode, 0, templateArgClassNames, templateArgNamespaces);
+  return {
+    templateSimpleClassName: extractAdlSimpleTypeName(templateTypeNode),
+    templateNamespace: extractAdlTypeNamespace(typeNode),
+    templateArgClassNames,
+    templateArgNamespaces,
+  };
+}
+
+function collectAdlTemplateArgs(
+  templateTypeNode: SyntaxNode,
+  depth: number,
+  outClassNames: string[],
+  outNamespaces: string[],
+): void {
+  if (depth >= ADL_TEMPLATE_RECURSION_MAX_DEPTH) return;
+  if (templateTypeNode.type !== 'template_type') return;
+
+  const argList =
+    templateTypeNode.childForFieldName('arguments') ??
+    findChildOfType(templateTypeNode, ['template_argument_list']);
+  if (argList === null) return;
+
+  for (let i = 0; i < argList.namedChildCount; i++) {
+    const arg = argList.namedChild(i);
+    if (arg === null || arg.type !== 'type_descriptor') continue;
+    const simpleClassName = extractAdlSimpleTypeName(arg);
+    if (simpleClassName.length > 0) outClassNames.push(simpleClassName);
+    const ns = extractAdlTypeNamespace(arg);
+    if (ns.length > 0) outNamespaces.push(ns);
+
+    const nestedType = arg.childForFieldName('type');
+    const nestedTemplate = nestedType !== null ? findTemplateTypeNode(nestedType) : null;
+    if (nestedTemplate !== null) {
+      collectAdlTemplateArgs(nestedTemplate, depth + 1, outClassNames, outNamespaces);
+    }
+  }
+}
+
+function findTemplateTypeNode(typeNode: SyntaxNode): SyntaxNode | null {
+  if (typeNode.type === 'template_type') return typeNode;
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return findTemplateTypeNode(innerType);
+    return null;
+  }
+  if (typeNode.type === 'qualified_identifier') {
+    const nameNode = typeNode.childForFieldName('name');
+    if (nameNode !== null) return findTemplateTypeNode(nameNode);
+    return null;
+  }
+  return null;
+}
+
+function normalizeCppNamespaceQName(text: string): string {
+  const normalized = text.replace(/^::/, '').replace(/::$/, '').replace(/::/g, '.');
+  return normalized;
+}
+
+function extractNamespaceFromQualifiedText(text: string): string {
+  const cleaned = text.replace(/\s+/g, '');
+  const idx = cleaned.lastIndexOf('::');
+  if (idx <= 0) return '';
+  return normalizeCppNamespaceQName(cleaned.slice(0, idx));
 }
 
 /**

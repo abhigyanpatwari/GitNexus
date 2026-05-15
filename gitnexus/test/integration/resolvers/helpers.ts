@@ -122,12 +122,6 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (PR #1520 review follow-up plan 2026-05-13-001 U3); backporting
     // is out of scope.
     'Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)',
-    // The legacy DAG path has no V1/V2 ADL boundary — pointer-typed
-    // arguments resolve via the workspace-wide simple-name walk. The
-    // scope-resolver V1 ADL pass excludes pointer args (closure rules
-    // deferred to V2) per plan 2026-05-13-001 U2 / R4. Scope-resolver-
-    // only correctness win; backporting is out of scope.
-    'record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args',
     // The legacy DAG path has no ADL_AMBIGUOUS suppression sentinel.
     // When ADL surfaces multiple overloads that collide after C++
     // int/long normalization, legacy picks the first match arbitrarily.
@@ -168,6 +162,15 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'emits distinct Class nodes for List<User> and List<Order>',
     'callSave() in each specialization resolves to its own save()',
     'save specialization bodies route to their own sibling method',
+    // PR #1590 follow-up: explicit `this->` resolution in template class
+    // bodies and paired two-phase assertions are scope-resolver-only.
+    // Legacy DAG lacks this receiver-bound template semantics and
+    // dependent-base suppression parity for these shapes.
+    'Derived<T>::g() -> this->f() resolves to f (1 edge)',
+    'Derived<T>::k() -> this->base_method() resolves via EXTENDS chain (1 edge)',
+    'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
+    'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
+    'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
   ]),
 };
 

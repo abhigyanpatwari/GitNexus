@@ -4,13 +4,13 @@
 
 template<class T>
 struct Derived : Base<T> {
+  void f(int);
+
   void g() {
     this->f();
   }
-  void k() {
-    this->base_method();
-  }
-  int h() {
-    return this->i;
+
+  void g_ok() {
+    this->f(42);
   }
 };

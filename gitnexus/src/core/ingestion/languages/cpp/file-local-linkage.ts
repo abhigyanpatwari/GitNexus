@@ -35,6 +35,33 @@ const fileLocalNames = new Map<string, Set<string>>();
  */
 const nonGloballyVisibleNodeIds = new Map<string, Set<string>>();
 
+/**
+ * Per-file set of source-range keys identifying `namespace { ... }` blocks.
+ * Resolved to `ScopeId`s in `populateCppAnonymousNamespaceScopes` and
+ * consumed via `isCppAnonymousNamespaceScope`.
+ *
+ * Anonymous namespaces have file-local linkage but, unlike `static`, their
+ * members propagate to any TU that `#include`s the declaring file — each
+ * including TU gets its own internal-linkage copy. So for wildcard import
+ * expansion (`expandCppWildcardNames`) we treat anonymous-namespace owned
+ * defs as if declared at the enclosing scope. Cross-file unqualified
+ * lookup that does NOT go through `#include` is still blocked by the
+ * `isFileLocal` mark recorded on the def's name.
+ */
+const anonymousNamespaceRangesByFile = new Map<string, Set<string>>();
+const anonymousNamespaceScopeIds = new Set<ScopeId>();
+
+interface RangeKeyShape {
+  readonly startLine: number;
+  readonly startCol: number;
+  readonly endLine: number;
+  readonly endCol: number;
+}
+
+function rangeKey(r: RangeKeyShape): string {
+  return `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
+}
+
 /** Record a symbol name as file-local (static or anonymous namespace). */
 export function markFileLocal(filePath: string, name: string): void {
   let names = fileLocalNames.get(filePath);
@@ -50,10 +77,51 @@ export function isFileLocal(filePath: string, name: string): boolean {
   return fileLocalNames.get(filePath)?.has(name) ?? false;
 }
 
+/** Capture-time: record an anonymous `namespace_definition` source range. */
+export function markCppAnonymousNamespaceRange(filePath: string, range: RangeKeyShape): void {
+  let set = anonymousNamespaceRangesByFile.get(filePath);
+  if (set === undefined) {
+    set = new Set();
+    anonymousNamespaceRangesByFile.set(filePath, set);
+  }
+  set.add(rangeKey(range));
+}
+
+/** Predicate consumed by `populateCppNonGloballyVisible` and
+ *  `expandCppWildcardNames` to exempt anonymous-namespace scopes from
+ *  the cross-file unqualified-lookup exclusion that applies to ordinary
+ *  named namespaces. */
+export function isCppAnonymousNamespaceScope(scopeId: ScopeId): boolean {
+  return anonymousNamespaceScopeIds.has(scopeId);
+}
+
 /** Clear tracked file-local names (call at start of each resolution pass). */
 export function clearFileLocalNames(): void {
   fileLocalNames.clear();
   nonGloballyVisibleNodeIds.clear();
+  anonymousNamespaceRangesByFile.clear();
+  anonymousNamespaceScopeIds.clear();
+}
+
+/** Resolve recorded anonymous-namespace source ranges to `ScopeId`s.
+ *  Must run inside `populateOwners` BEFORE `populateCppNonGloballyVisible`
+ *  consults the resolved set. */
+export function populateCppAnonymousNamespaceScopes(parsed: {
+  readonly filePath: string;
+  readonly scopes: readonly {
+    readonly id: ScopeId;
+    readonly kind: string;
+    readonly range: RangeKeyShape;
+  }[];
+}): void {
+  const ranges = anonymousNamespaceRangesByFile.get(parsed.filePath);
+  if (ranges === undefined || ranges.size === 0) return;
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    if (ranges.has(rangeKey(scope.range))) {
+      anonymousNamespaceScopeIds.add(scope.id);
+    }
+  }
 }
 
 /**
@@ -87,6 +155,13 @@ export function populateCppNonGloballyVisible(parsed: {
     // ISO C++ `[namespace.def]/p4`. Skip them here so cross-file
     // unqualified lookup can still see their callable defs.
     if (scope.kind === 'Namespace' && isCppInlineNamespaceScope(scope.id)) continue;
+    // Anonymous namespaces give internal linkage but their contents are
+    // visible at the enclosing scope within the same TU and propagate to
+    // any TU that `#include`s the declaring file. The `isFileLocal` mark
+    // (recorded on the def's name in this file) still blocks cross-file
+    // unqualified lookup that does not go through #include, so dropping
+    // the structural visibility exclusion here is safe.
+    if (scope.kind === 'Namespace' && anonymousNamespaceScopeIds.has(scope.id)) continue;
     for (const def of scope.ownedDefs) {
       set.add(def.nodeId);
     }
@@ -191,9 +266,18 @@ export function expandCppWildcardNames(
     // including TU. When the owning scope is unknown we default to
     // include (preserves prior behavior for any def whose structural
     // ownership wasn't recorded in `Scope.ownedDefs`).
+    //
+    // Anonymous namespaces are exempt: their members propagate to the
+    // enclosing scope of any TU that #includes the declaring file (each
+    // including TU gets its own internal-linkage copy per ISO C++).
     const ownerScope = ownerScopeByNodeId.get(def.nodeId);
+    const ownerIsAnonymousNamespace =
+      ownerScope !== undefined &&
+      ownerScope.kind === 'Namespace' &&
+      anonymousNamespaceScopeIds.has(ownerScope.id);
     if (
       ownerScope !== undefined &&
+      !ownerIsAnonymousNamespace &&
       (ownerScope.kind === 'Namespace' || ownerScope.kind === 'Class')
     ) {
       continue;
@@ -201,7 +285,11 @@ export function expandCppWildcardNames(
 
     const name = simpleName(def);
     if (name === '') continue;
-    if (isFileLocal(target.filePath, name)) continue;
+    // Same exemption for the `isFileLocal` mark — anonymous-namespace
+    // names are recorded as file-local to suppress the global free-call
+    // fallback's cross-file leak, but they MUST still propagate through
+    // wildcard import expansion to including TUs.
+    if (!ownerIsAnonymousNamespace && isFileLocal(target.filePath, name)) continue;
     if (seen.has(name)) continue;
     seen.add(name);
     names.push(name);
