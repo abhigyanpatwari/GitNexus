@@ -589,12 +589,29 @@ jobs:
           # .git/config (artipacked audit) — checkout above ran with
           # `persist-credentials: false`.
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # App's slug from create-github-app-token (e.g. `gitnexus-release-bot`).
+          # Used to attribute the release commit to the App identity rather
+          # than the generic github-actions[bot]. The bot's numeric user-id
+          # is resolved at runtime via the GitHub API (the action does not
+          # expose it directly as of v3.2.0).
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           VTAG="v${RC_VERSION}"
           MARKER="rc/${HEAD_SHA}"
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Resolve the App's bot user-id and construct the noreply email
+          # in the GitHub-canonical `<id>+<slug>[bot]@users.noreply.github.com`
+          # shape. `[bot]` is part of the actual login on GitHub.
+          BOT_LOGIN="${APP_SLUG}[bot]"
+          BOT_USER_ID="$(gh api "/users/${BOT_LOGIN}" --jq .id)"
+          if ! [[ "${BOT_USER_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not resolve bot user-id for ${BOT_LOGIN} (got: ${BOT_USER_ID})"
+            exit 1
+          fi
+          git config user.name  "${BOT_LOGIN}"
+          git config user.email "${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
 
           # Detached release commit with the version bump — main stays
           # pristine, but the v-tag's tree matches the published package
