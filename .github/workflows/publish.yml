@@ -373,7 +373,11 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
+          # `client-id` is the renamed input that supersedes the deprecated
+          # `app-id` in v3.x. The action accepts the App's numeric ID or
+          # its Client ID under this name. We pass the numeric App ID,
+          # which the action resolves correctly.
+          client-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       # ── Separate checkout steps per mode ─────────────────────────────────
