@@ -808,6 +808,53 @@ function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   return EMPTY_ADL_ARG;
 }
 
+/**
+ * Returns `true` when `varName` appears as a parameter name in the nearest
+ * enclosing `function_definition` or `function_declarator` that contains
+ * `identNode`. Parameters live in `parameter_list` (a sibling of the
+ * `compound_statement`), so the `compound_statement`-local declaration scan
+ * in `lookupAdlIdentifierType` would not find them — causing them to be
+ * mistakenly classified as potential free-function references.
+ *
+ * In tree-sitter-cpp a `function_definition` does NOT expose `parameters`
+ * as a direct named field; parameters live inside the nested
+ * `function_declarator`. For `function_declarator` nodes the `parameters`
+ * field IS direct. Both cases are handled below.
+ */
+function isIdentifierAFunctionParameter(identNode: SyntaxNode, varName: string): boolean {
+  let node: SyntaxNode | null = identNode.parent;
+  let safety = 64;
+  while (node !== null && safety-- > 0) {
+    let params: SyntaxNode | null = null;
+    if (node.type === 'function_declarator') {
+      // parameters is a direct field on function_declarator.
+      params = node.childForFieldName('parameters');
+    } else if (node.type === 'function_definition') {
+      // function_definition carries parameters inside its `declarator` field
+      // (which is a function_declarator). Walk through it.
+      const decl = node.childForFieldName('declarator');
+      if (decl !== null && decl.type === 'function_declarator') {
+        params = decl.childForFieldName('parameters');
+      }
+    }
+    if (params !== null) {
+      for (let i = 0; i < params.namedChildCount; i++) {
+        const param = params.namedChild(i);
+        if (param === null) continue;
+        const declNode = param.childForFieldName('declarator');
+        if (declNode === null) continue;
+        const leafName = extractDeclaratorLeafName(declNode);
+        if (leafName === varName) return true;
+      }
+      // Only check the immediately enclosing function — do not climb further.
+      break;
+    }
+    if (node.type === 'translation_unit') break;
+    node = node.parent;
+  }
+  return false;
+}
+
 function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo | null {
   const varName = identNode.text;
   let scope: SyntaxNode | null = identNode.parent;
@@ -819,6 +866,14 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo | null {
     scope = scope.parent;
   }
   if (scope === null) return null;
+
+  // Function parameters live in the enclosing function's `parameter_list`,
+  // NOT inside the `compound_statement`, so the declaration scan below would
+  // never find them and would return `null` — incorrectly triggering the
+  // free-function-reference path. Check the parameter_list first.
+  if (isIdentifierAFunctionParameter(identNode, varName)) {
+    return EMPTY_ADL_ARG;
+  }
 
   let foundAsLocalFunctionPointer = false;
   for (let i = 0; i < scope.childCount; i++) {

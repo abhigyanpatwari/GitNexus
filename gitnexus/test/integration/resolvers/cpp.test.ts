@@ -2508,6 +2508,31 @@ describe('C++ ADL — namespace-qualified variable arg does NOT contribute names
   });
 });
 
+describe('C++ ADL — function parameter does NOT trigger free-function-ref ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-param-not-free-func-ref'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // `callback` is an int parameter of `caller::run`. Function parameters
+    // live in the parameter_list, not in the compound_statement, so the
+    // local-scope declaration scan would not find it and would return null —
+    // previously misclassifying it as an unqualified free-function reference.
+    // The workspace contains utils::callback(), so the scan would find it and
+    // contribute `utils` to the ADL set, emitting a false-positive CALLS edge
+    // to utils::run_with. isIdentifierAFunctionParameter now catches this and
+    // returns EMPTY_ADL_ARG, preventing the workspace scan entirely.
+    expect(runWithCalls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U5 (follow-up plan 2026-05-13-001): inline namespace transitive walking.
 // `inline namespace v1 { ... }` makes its members reachable through the
