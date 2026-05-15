@@ -424,12 +424,17 @@ function findCppClassDefBySimpleName(
  * Contribute associated namespaces for a function-reference argument.
  *
  * - **Qualified refs** (`utils::worker`, `outer::inner::fn`): the namespace
- *   is extracted directly from the qualifier text (converting `::` to `.` for
- *   dot-joined QName matching). No workspace search needed.
+ *   is extracted from the qualifier text (converting `::` to `.` for dot-joined
+ *   QName matching). A workspace lookup then **verifies** that a Function or
+ *   Method def named `worker` (the simple name after the last `::`) actually
+ *   exists in the extracted namespace. This prevents false positives from
+ *   namespace-qualified variables, enum values, and static data members, which
+ *   also produce `qualified_identifier` AST nodes in tree-sitter-cpp (the
+ *   AST node type alone does not distinguish functions from non-function names).
  * - **Unqualified refs** (`worker`): the workspace is searched for any
  *   Function/Method def whose simple name matches. Every distinct enclosing
  *   namespace found is added — overloads across the same namespace produce
- *   a single entry; V1 simplification does not select a specific overload.
+ *   a single entry; GitNexus does not select a specific overload at this stage.
  */
 function collectFunctionRefNamespaces(
   refText: string,
@@ -438,9 +443,30 @@ function collectFunctionRefNamespaces(
 ): void {
   const colonIdx = refText.lastIndexOf('::');
   if (colonIdx !== -1) {
-    // Qualified: extract namespace prefix and normalise :: → dot notation.
+    // Qualified ref: extract namespace prefix and normalise :: → dot notation.
     const nsText = refText.slice(0, colonIdx).replace(/::/g, '.');
-    if (nsText !== '') out.add(nsText);
+    if (nsText === '') return;
+    const simpleName = refText.slice(colonIdx + 2);
+    // Verify that a Function/Method named `simpleName` exists in `nsText`.
+    // Without this guard every `a::b` qualified_identifier arg (variable,
+    // enum value, static member, type alias) would blindly contribute `a`
+    // to the associated set and risk a false-positive CALLS edge.
+    for (const parsed of parsedFiles) {
+      const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+      for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Namespace') continue;
+        if (computeNamespaceQName(scope, scopesById) !== nsText) continue;
+        for (const def of scope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method') continue;
+          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          if (simple === simpleName) {
+            out.add(nsText);
+            return; // Namespace confirmed; no need to scan further files.
+          }
+        }
+      }
+    }
     return;
   }
 

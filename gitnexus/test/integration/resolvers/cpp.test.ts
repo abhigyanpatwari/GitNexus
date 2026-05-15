@@ -2484,6 +2484,30 @@ describe('C++ ADL — overloaded free-function reference does not crash', () => 
   });
 });
 
+describe('C++ ADL — namespace-qualified variable arg does NOT contribute namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-qualified-variable-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('process(data::value) emits zero CALLS edges — data::value is a variable, not a function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // data::value is a namespace-qualified integer variable. tree-sitter-cpp
+    // produces a qualified_identifier AST node regardless of whether `value`
+    // denotes a function, variable, enum, or static member. The GitNexus guard
+    // in collectFunctionRefNamespaces verifies that a Function/Method named
+    // `value` exists in the `data` namespace before contributing it. Since
+    // `data::value` is an int variable, `data` is never added to the associated
+    // set, so data::process is never found as an ADL candidate.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U5 (follow-up plan 2026-05-13-001): inline namespace transitive walking.
 // `inline namespace v1 { ... }` makes its members reachable through the

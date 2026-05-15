@@ -785,8 +785,10 @@ function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   ) {
     return EMPTY_ADL_ARG;
   }
-  // Qualified function reference — e.g. `utils::worker`. The namespace is
-  // encoded in the qualifier and will be extracted at resolution time.
+  // Qualified expression (a::b) — may be a function, variable, enum value,
+  // or static member. Record as a potential function reference; resolution
+  // time verifies via workspace lookup that a Function/Method with this simple
+  // name exists in the extracted namespace before contributing to the set.
   if (argNode.type === 'qualified_identifier') {
     return { simpleClassName: '', templateSimpleClassName: '', templateNamespace: '', templateArgClassNames: [], templateArgNamespaces: [], functionRefText: argNode.text };
   }
