@@ -2425,12 +2425,163 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
 });
 
 // ---------------------------------------------------------------------------
+// ADL V2 — free-function reference args contribute their namespace.
+//
+// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
+// like `utils::worker` is passed as an argument, GitNexus contributes the
+// enclosing namespace (`utils`) to the associated set, provided a Function or
+// Method named `worker` is found in the `utils` namespace at resolution time.
+// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
+// argument come from the parameter types and return type of the overload set —
+// NOT the function's enclosing namespace. For `void worker()`, the standard-
+// compliant associated set is empty. The approximation captures the dominant
+// real-world pattern (pass a utility function → find its sibling) at the cost
+// of potential false positives when an unrelated function with the same simple
+// name exists in the same namespace (bounded by the workspace-function lookup).
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
+  }, 60000);
+
+  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
+    // declaration). utils::worker is a qualified_identifier argument, so ADL
+    // contributes `utils` to the associated-namespace set. utils::with_callback
+    // is then discovered as the sole candidate.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — overloaded free-function reference does not crash', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-overloaded'),
+      () => {},
+    );
+  }, 60000);
+
+  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // utils::worker has two overloads (worker() and worker(int)). V1
+    // simplification: contribute the namespace if ANY overload exists in the
+    // workspace, regardless of which one would be selected. The namespace
+    // `utils` is still added, and utils::with_callback is discovered.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — namespace-qualified variable arg does NOT contribute namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-qualified-variable-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('process(data::value) emits zero CALLS edges — data::value is a variable, not a function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // data::value is a namespace-qualified integer variable. tree-sitter-cpp
+    // produces a qualified_identifier AST node regardless of whether `value`
+    // denotes a function, variable, enum, or static member. The GitNexus guard
+    // in collectFunctionRefNamespaces verifies that a Function/Method named
+    // `value` exists in the `data` namespace before contributing it. Since
+    // `data::value` is an int variable, `data` is never added to the associated
+    // set, so data::process is never found as an ADL candidate.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — function parameter does NOT trigger free-function-ref ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-param-not-free-func-ref'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // `callback` is an int parameter of `caller::run`. Function parameters
+    // live in the parameter_list, not in the compound_statement, so the
+    // local-scope declaration scan would not find it and would return null —
+    // previously misclassifying it as an unqualified free-function reference.
+    // The workspace contains utils::callback(), so the scan would find it and
+    // contribute `utils` to the ADL set, emitting a false-positive CALLS edge
+    // to utils::run_with. isIdentifierAFunctionParameter now catches this and
+    // returns EMPTY_ADL_ARG, preventing the workspace scan entirely.
+    expect(runWithCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U5 (follow-up plan 2026-05-13-001): inline namespace transitive walking.
 // `inline namespace v1 { ... }` makes its members reachable through the
 // enclosing namespace's qualified lookup as if declared directly there
 // (ISO C++ `[namespace.def]/p4`). Adds a C++-specific
 // `resolveQualifiedReceiverMember` hook on the ScopeResolver contract.
 // ---------------------------------------------------------------------------
+
+describe('C++ ADL — local function-pointer var shadows same-named free function', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-local-fp-shadows-free-func'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) emits zero CALLS edges even though audit::g() exists in the workspace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // `g` is a locally-declared `void (*g)()` variable. `audit::g()` also
+    // exists in the workspace. Without the foundAsLocalFunctionPointer guard,
+    // `g` would not be detected in the compound_statement (it IS there, but
+    // as a function-pointer declarator), and the workspace scan would find
+    // audit::g, contribute `audit` to the ADL set, and emit a false-positive
+    // CALLS edge to audit::record. The guard correctly returns EMPTY_ADL_ARG,
+    // so no namespace is contributed and no edge is emitted.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — unqualified free-function ref with namespace collision', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-unqualified-ref-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(worker) emits zero CALLS edges when worker exists in two namespaces', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // Unqualified `worker` → workspace scan finds alpha::worker and beta::worker.
+    // Both alpha and beta are added to the associated set. run_with() exists in
+    // both namespaces → two candidates → ADL_AMBIGUOUS sentinel → zero CALLS
+    // edges (suppressed rather than arbitrary pick).
+    expect(runWithCalls.length).toBe(0);
+  });
+});
 
 describe('C++ inline namespace — outer::foo resolves to inline child', () => {
   let result: PipelineResult;
