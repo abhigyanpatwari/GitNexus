@@ -455,7 +455,7 @@ export class WikiGenerator {
     // translating module-name keys, breaking slug stability and JSON parsing.
     const response = await this.invokeLLM(
       prompt,
-      GROUPING_SYSTEM_PROMPT,
+      this.buildSystemPrompt(GROUPING_SYSTEM_PROMPT),
       this.streamOpts('Grouping files', 15, 13),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
