@@ -66,6 +66,8 @@ export interface WikiOptions {
   concurrency?: number;
   /** If true, stop after building module tree for user review */
   reviewOnly?: boolean;
+  /** Output language for generated documentation (e.g. 'english', 'chinese', 'spanish') */
+  lang?: string;
 }
 
 export interface WikiMeta {
@@ -175,6 +177,15 @@ export class WikiGenerator {
         }
       },
     };
+  }
+
+  /**
+   * Append an output-language instruction to a system prompt when --lang is set.
+   */
+  private buildSystemPrompt(base: string): string {
+    if (!this.options.lang) return base;
+    const lang = this.options.lang.trim();
+    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes headings, prose, code comments in examples, and diagram labels.`;
   }
 
   /**
@@ -417,7 +428,7 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(
       prompt,
-      GROUPING_SYSTEM_PROMPT,
+      this.buildSystemPrompt(GROUPING_SYSTEM_PROMPT),
       this.streamOpts('Grouping files', 15, 13),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
@@ -589,7 +600,7 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, MODULE_SYSTEM_PROMPT, this.streamOpts(node.name));
+    const response = await this.invokeLLM(prompt, this.buildSystemPrompt(MODULE_SYSTEM_PROMPT), this.streamOpts(node.name));
 
     // Write page with front matter
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
@@ -630,7 +641,7 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, PARENT_SYSTEM_PROMPT, this.streamOpts(node.name));
+    const response = await this.invokeLLM(prompt, this.buildSystemPrompt(PARENT_SYSTEM_PROMPT), this.streamOpts(node.name));
 
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
@@ -678,7 +689,7 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(
       prompt,
-      OVERVIEW_SYSTEM_PROMPT,
+      this.buildSystemPrompt(OVERVIEW_SYSTEM_PROMPT),
       this.streamOpts('Generating overview', 88),
     );
 

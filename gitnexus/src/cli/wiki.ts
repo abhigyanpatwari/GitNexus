@@ -35,6 +35,7 @@ export interface WikiCommandOptions {
   review?: boolean;
   timeout?: string;
   retries?: string;
+  lang?: string;
 }
 
 /**
@@ -395,6 +396,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     force: options?.force,
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
+    lang: options?.lang,
   };
 
   const generator = new WikiGenerator(
