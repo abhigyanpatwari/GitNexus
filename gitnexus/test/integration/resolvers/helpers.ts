@@ -184,6 +184,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Scope-resolver-only correctness wins; backporting is out of scope.
     'process(data::value) emits zero CALLS edges \u2014 data::value is a variable, not a function',
     'run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference',
+    // PR #1599 adversarial review findings: nearest-scope ADL blocker
+    // semantics and block-scope function declaration ADL suppression are
+    // scope-resolver-only. The legacy DAG has no scope-aware ADL blocker
+    // detection; it falls back to `pickUniqueGlobalCallable`. Scope-
+    // resolver-only correctness wins; backporting is out of scope.
+    'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
+    'record(e) emits zero CALLS when a block-scope function declaration exists',
   ]),
 };
 
