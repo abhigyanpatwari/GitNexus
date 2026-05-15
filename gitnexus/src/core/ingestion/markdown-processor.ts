@@ -13,6 +13,22 @@ import { KnowledgeGraph } from '../graph/types.js';
 
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+// Obsidian / Basic Memory style wikilink:
+//   [[id]]              — bare target
+//   [[id.md]]           — explicit extension
+//   [[folder/id]]       — relative path
+//   [[id#heading]]      — heading anchor (stripped before path resolution)
+//   [[id|alias]]        — alias (alias text ignored for path resolution)
+//
+// The leading `(?<!!)` excludes image-style embeds `![[image.png]]`.
+// The target is captured up to the first `#`, `|`, or `]`, so trailing
+// fragments and aliases never bleed into the resolved path.
+const WIKILINK_RE = /(?<!!)\[\[([^\]|#\r\n]+)(?:#[^\]|\r\n]*)?(?:\|[^\]\r\n]*)?\]\]/g;
+// Strip fenced code blocks (``` ... ``` and ~~~ ... ~~~) and inline code spans
+// before scanning for wikilinks so that snippets like `[[fake]]` inside a
+// code block don't produce spurious IMPORTS edges.
+const FENCED_CODE_RE = /(^|\n)([ \t]*)(```|~~~)[\s\S]*?\n\2\3[ \t]*(?=\n|$)/g;
+const INLINE_CODE_RE = /`[^`\r\n]*`/g;
 const MD_EXTENSIONS = new Set(['.md', '.mdx']);
 
 interface MdFile {
@@ -159,6 +175,74 @@ export const processMarkdown = (
         });
         totalLinks++;
       }
+    }
+
+    // --- Extract Obsidian / Basic Memory wikilinks ---
+    // Strip code (fenced + inline) before scanning so `[[x]]` inside code
+    // doesn't produce edges. Replace with same-length whitespace-equivalent
+    // content (newlines preserved) is unnecessary because we no longer use
+    // offsets here; we just need a sanitized scan target.
+    const sanitized = file.content
+      .replace(FENCED_CODE_RE, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(INLINE_CODE_RE, (m) => ' '.repeat(m.length));
+
+    let wm: RegExpExecArray | null;
+    WIKILINK_RE.lastIndex = 0;
+    while ((wm = WIKILINK_RE.exec(sanitized)) !== null) {
+      const rawTarget = wm[1].trim();
+      if (!rawTarget) continue;
+
+      // Defense in depth: the regex already drops `#heading` and `|alias`,
+      // but normalize again in case the target itself contained one.
+      const cleanTarget = rawTarget.split('#')[0].split('|')[0].trim();
+      if (!cleanTarget) continue;
+
+      const hasMdExt = cleanTarget.endsWith('.md') || cleanTarget.endsWith('.mdx');
+
+      // Resolution order: original path, sibling .md/.mdx, then repo-root .md/.mdx.
+      // path.posix.normalize collapses any `..`/redundant separators.
+      const candidates: string[] = [];
+      const push = (p: string) => {
+        if (!p) return;
+        const norm = path.posix.normalize(p);
+        if (!candidates.includes(norm)) candidates.push(norm);
+      };
+
+      // Sibling-first (relative to current file's directory)
+      push(path.posix.join(fileDir, cleanTarget));
+      if (!hasMdExt) {
+        push(path.posix.join(fileDir, `${cleanTarget}.md`));
+        push(path.posix.join(fileDir, `${cleanTarget}.mdx`));
+      }
+      // Repo-root fallback (treats target as a path from repo root)
+      push(cleanTarget);
+      if (!hasMdExt) {
+        push(`${cleanTarget}.md`);
+        push(`${cleanTarget}.mdx`);
+      }
+
+      const resolvedWiki = candidates.find((c) => allPathSet.has(c));
+      if (!resolvedWiki) continue;
+
+      const targetFileId = generateId('File', resolvedWiki);
+      if (!graph.getNode(targetFileId)) continue;
+
+      // Don't create self-loops
+      if (targetFileId === fileNodeId) continue;
+
+      const linkKey = `${fileNodeId}->${targetFileId}`;
+      if (seenLinks.has(linkKey)) continue;
+      seenLinks.add(linkKey);
+
+      graph.addRelationship({
+        id: generateId('IMPORTS', linkKey),
+        type: 'IMPORTS',
+        sourceId: fileNodeId,
+        targetId: targetFileId,
+        confidence: 0.8,
+        reason: 'markdown-wikilink',
+      });
+      totalLinks++;
     }
   }
 
