@@ -27,6 +27,7 @@ import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js'
 import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
+  findCallableBindingsAndAdlBlocker,
   findClassBindingInScope,
 } from '../scope/walkers.js';
 import {
@@ -63,7 +64,7 @@ export function emitFreeCallFallback(
       callerParsed: ParsedFile,
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
-    ) => SymbolDefinition | 'ambiguous' | undefined;
+    ) => readonly SymbolDefinition[] | undefined;
     readonly conversionRankFn?: ConversionRankFn;
   } = {},
 ): number {
@@ -107,70 +108,134 @@ export function emitFreeCallFallback(
       // by argument types (#1578). The first-match result is kept as a
       // fallback when narrowing is indeterminate.
       if (fnDef === undefined) {
-        fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
-        if (fnDef !== undefined && options.conversionRankFn !== undefined) {
-          const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
-          if (allCallables.length > 1) {
+        if (options.resolveAdlCandidates === undefined) {
+          // Non-ADL path: first-match preserves scope-chain precedence
+          // (local shadows import). When a conversion-rank function is
+          // available AND the binding scope contains multiple overloads,
+          // refine with narrowOverloadCandidates (#1578).
+          fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          if (fnDef !== undefined && options.conversionRankFn !== undefined) {
+            const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+            if (allCallables.length > 1) {
+              const narrowed = narrowOverloadCandidates(
+                allCallables,
+                site.arity,
+                site.argumentTypes,
+                options.conversionRankFn,
+              );
+              if (narrowed.length === 1) {
+                fnDef = narrowed[0];
+              } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                // True overload ambiguity: suppress only when all candidates
+                // share the same file (real overloads). Cross-file candidates
+                // are shadowing; keep first-match fnDef for those.
+                const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
+                if (sameFile) {
+                  handledSites.add(
+                    `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
+                  );
+                  continue;
+                }
+              }
+              // narrowed.length === 0 or >1 non-ambiguous: keep the
+              // first-match fnDef — preserves local-shadows-import.
+            }
+          }
+        } else {
+          // ADL path: ISO C++ `[basic.lookup.unqual]` §7 — ADL is suppressed
+          // when ordinary lookup finds a non-function name or a block-scope
+          // function declaration.
+          const {
+            callables: ordinary,
+            nonCallableFound,
+            blockScopeDeclFound,
+          } = findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes);
+          const adlSuppressed = nonCallableFound || blockScopeDeclFound;
+          const adl = adlSuppressed
+            ? undefined
+            : options.resolveAdlCandidates(
+                {
+                  name: site.name,
+                  arity: site.arity,
+                  argumentTypes: site.argumentTypes,
+                  atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+                },
+                parsed,
+                scopes,
+                parsedFiles,
+              );
+
+          // When ADL contributed no candidates, narrow ordinary candidates
+          // with conversion-rank scoring when multiple overloads exist.
+          // Single candidate or empty falls through to first-match.
+          if (adl === undefined || adl.length === 0) {
+            if (ordinary.length <= 1 || options.conversionRankFn === undefined) {
+              fnDef = ordinary[0];
+            } else {
+              const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+              const narrowed = narrowOverloadCandidates(
+                ordinary,
+                site.arity,
+                site.argumentTypes,
+                options.conversionRankFn,
+              );
+              if (narrowed.length === 1) {
+                fnDef = narrowed[0];
+              } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                // True overload ambiguity: suppress only when all candidates
+                // share the same file. Cross-file = shadowing → first-match.
+                const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
+                if (sameFile) {
+                  handledSites.add(siteKey);
+                  continue;
+                }
+                fnDef = ordinary[0];
+              } else {
+                fnDef = ordinary[0]; // fallback to first-match
+              }
+            }
+          } else {
+            const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+            const merged: SymbolDefinition[] = [];
+            const seenMerge = new Set<string>();
+            const push = (defs: readonly SymbolDefinition[]): void => {
+              for (const d of defs) {
+                if (seenMerge.has(d.nodeId)) continue;
+                seenMerge.add(d.nodeId);
+                merged.push(d);
+              }
+            };
+            push(ordinary);
+            push(adl);
+
             const narrowed = narrowOverloadCandidates(
-              allCallables,
+              merged,
               site.arity,
               site.argumentTypes,
               options.conversionRankFn,
             );
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
-            } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-              // True overload ambiguity (e.g. int/long normalize to same
-              // type): suppress only when all candidates share the same
-              // file — i.e. they are real overloads, not a local def
-              // shadowing an import. Cross-file candidates are shadowing;
-              // keep the first-match fnDef for those.
-              const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
-              if (sameFile) {
-                handledSites.add(
-                  `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-                );
+            } else if (narrowed.length === 0) {
+              handledSites.add(siteKey);
+              continue;
+            } else if (narrowed.length > 1) {
+              if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                handledSites.add(siteKey);
                 continue;
               }
+              // Multiple survivors remain after conversion-rank scoring;
+              // suppress instead of picking arbitrarily.
+              handledSites.add(siteKey);
+              continue;
             }
-            // narrowed.length === 0 or >1 non-ambiguous: keep the
-            // first-match fnDef — preserves local-shadows-import.
           }
-        }
-      }
-      // V1 ADL tier (C++ Koenig lookup, opt-in via provider.resolveAdlCandidates).
-      // Fires only when ordinary lookup is empty — V1 limitation per
-      // plan 2026-05-13-001 U2; ISO C++ would merge ADL with ordinary lookup
-      // and run overload resolution over the union.
-      //
-      // Sentinel 'ambiguous': ADL surfaced multiple candidates with
-      // identical normalized parameter types (mirrors OVERLOAD_AMBIGUOUS).
-      // We mark the site handled so `emit-references` does not retry, and
-      // continue to the next site without emitting an edge.
-      if (fnDef === undefined && options.resolveAdlCandidates !== undefined) {
-        const adlResult = options.resolveAdlCandidates(
-          {
-            name: site.name,
-            arity: site.arity,
-            argumentTypes: site.argumentTypes,
-            atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
-          },
-          parsed,
-          scopes,
-          parsedFiles,
-        );
-        if (adlResult === 'ambiguous') {
-          handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
-          continue;
-        }
-        if (adlResult !== undefined) {
-          fnDef = adlResult;
         }
       }
       // V1: pickUniqueGlobalCallable ignores import context — resolves to any
       // globally-unique callable. False cross-package edges are possible when
       // the caller does not import the target package. Same-package calls are
-      // caught by findCallableBindingInScope above before reaching here.
+      // usually caught by nearest-scope lookup before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
         fnDef = pickUniqueGlobalCallable(
           site.name,
