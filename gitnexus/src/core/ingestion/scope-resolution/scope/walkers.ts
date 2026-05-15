@@ -278,26 +278,39 @@ export function findAllCallableBindingsInScope(
 }
 
 /**
- * ISO C++ `[basic.lookup.unqual]` §7: if ordinary unqualified lookup finds
- * a name that is NOT a function or function template, ADL is suppressed.
+ * ISO C++ `[basic.lookup.unqual]` §7: ADL is suppressed when ordinary
+ * unqualified lookup finds:
+ *   - a name that is NOT a function or function template, OR
+ *   - a block-scope function declaration that is NOT a using-declaration.
  *
  * Combined walker that stops at the **nearest scope** where `name` has any
- * binding (callable or non-callable) and returns both the callable defs
- * found there and whether a non-callable was present. One pass, one stop —
- * no divergence between callable collection and non-callable detection.
+ * binding (callable or non-callable) and returns:
+ *   - `callables`: Function/Method/Constructor defs found at that scope
+ *   - `nonCallableFound`: a non-function binding was present (variable, class, etc.)
+ *   - `blockScopeDeclFound`: a callable was found at a Function or Block scope
+ *     (block-scope function declaration that blocks ADL)
+ *
+ * One pass, one stop — no divergence between callable collection and blocker
+ * detection.
  */
 export function findCallableBindingsAndAdlBlocker(
   startScope: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
-): { callables: readonly SymbolDefinition[]; nonCallableFound: boolean } {
+): {
+  callables: readonly SymbolDefinition[];
+  nonCallableFound: boolean;
+  blockScopeDeclFound: boolean;
+} {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
-    if (visited.has(currentId)) return { callables: [], nonCallableFound: false };
+    if (visited.has(currentId))
+      return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return { callables: [], nonCallableFound: false };
+    if (scope === undefined)
+      return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
 
     const callables: SymbolDefinition[] = [];
     const seen = new Set<string>();
@@ -328,10 +341,17 @@ export function findCallableBindingsAndAdlBlocker(
       process(b.def);
     }
 
-    if (anyBinding) return { callables, nonCallableFound };
+    if (anyBinding) {
+      // ISO C++: a block-scope function declaration (Function or Block scope)
+      // that is NOT a using-declaration blocks ADL. If we found callables at
+      // a function/block scope, ADL must be suppressed.
+      const blockScopeDeclFound =
+        callables.length > 0 && (scope.kind === 'Function' || scope.kind === 'Block');
+      return { callables, nonCallableFound, blockScopeDeclFound };
+    }
     currentId = scope.parent;
   }
-  return { callables: [], nonCallableFound: false };
+  return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
 }
 
 /**

@@ -96,11 +96,16 @@ export function emitFreeCallFallback(
         if (options.resolveAdlCandidates === undefined) {
           fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
         } else {
-          // ISO C++ `[basic.lookup.unqual]` §7: if ordinary lookup finds a
-          // non-function name (variable, class, enum) at the nearest scope
-          // where the name exists, ADL is suppressed.
-          const { callables: ordinary, nonCallableFound: adlSuppressed } =
-            findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes);
+          // ISO C++ `[basic.lookup.unqual]` §7: ADL is suppressed when
+          // ordinary lookup finds a non-function name (variable, class, enum)
+          // or a block-scope function declaration (not via using-declaration)
+          // at the nearest scope where the name exists.
+          const {
+            callables: ordinary,
+            nonCallableFound,
+            blockScopeDeclFound,
+          } = findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes);
+          const adlSuppressed = nonCallableFound || blockScopeDeclFound;
           const adl = adlSuppressed
             ? undefined
             : options.resolveAdlCandidates(

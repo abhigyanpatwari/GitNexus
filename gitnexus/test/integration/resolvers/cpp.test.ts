@@ -2555,6 +2555,26 @@ describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', 
   });
 });
 
+describe('C++ ADL — block-scope function declaration suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-block-scope-decl-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a block-scope function declaration exists', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++ [basic.lookup.argdep]: a block-scope function declaration
+    // (not via using-declaration) suppresses ADL — even though `e` is
+    // audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //
