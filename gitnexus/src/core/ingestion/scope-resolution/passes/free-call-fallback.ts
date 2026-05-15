@@ -24,8 +24,15 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
-import { findCallableBindingInScope, findClassBindingInScope } from '../scope/walkers.js';
-import { narrowOverloadCandidates } from './overload-narrowing.js';
+import {
+  findCallableBindingInScope,
+  findCallableBindingsAndAdlBlocker,
+  findClassBindingInScope,
+} from '../scope/walkers.js';
+import {
+  isOverloadAmbiguousAfterNormalization,
+  narrowOverloadCandidates,
+} from './overload-narrowing.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -55,7 +62,7 @@ export function emitFreeCallFallback(
       callerParsed: ParsedFile,
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
-    ) => SymbolDefinition | 'ambiguous' | undefined;
+    ) => readonly SymbolDefinition[] | undefined;
   } = {},
 ): number {
   let emitted = 0;
@@ -86,41 +93,80 @@ export function emitFreeCallFallback(
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
       }
       if (fnDef === undefined) {
-        fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
-      }
-      // V1 ADL tier (C++ Koenig lookup, opt-in via provider.resolveAdlCandidates).
-      // Fires only when ordinary lookup is empty — V1 limitation per
-      // plan 2026-05-13-001 U2; ISO C++ would merge ADL with ordinary lookup
-      // and run overload resolution over the union.
-      //
-      // Sentinel 'ambiguous': ADL surfaced multiple candidates with
-      // identical normalized parameter types (mirrors OVERLOAD_AMBIGUOUS).
-      // We mark the site handled so `emit-references` does not retry, and
-      // continue to the next site without emitting an edge.
-      if (fnDef === undefined && options.resolveAdlCandidates !== undefined) {
-        const adlResult = options.resolveAdlCandidates(
-          {
-            name: site.name,
-            arity: site.arity,
-            argumentTypes: site.argumentTypes,
-            atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
-          },
-          parsed,
-          scopes,
-          parsedFiles,
-        );
-        if (adlResult === 'ambiguous') {
-          handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
-          continue;
-        }
-        if (adlResult !== undefined) {
-          fnDef = adlResult;
+        if (options.resolveAdlCandidates === undefined) {
+          fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+        } else {
+          // ISO C++ `[basic.lookup.unqual]` §7: ADL is suppressed when
+          // ordinary lookup finds a non-function name (variable, class, enum)
+          // or a block-scope function declaration (not via using-declaration)
+          // at the nearest scope where the name exists.
+          const {
+            callables: ordinary,
+            nonCallableFound,
+            blockScopeDeclFound,
+          } = findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes);
+          const adlSuppressed = nonCallableFound || blockScopeDeclFound;
+          const adl = adlSuppressed
+            ? undefined
+            : options.resolveAdlCandidates(
+                {
+                  name: site.name,
+                  arity: site.arity,
+                  argumentTypes: site.argumentTypes,
+                  atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+                },
+                parsed,
+                scopes,
+                parsedFiles,
+              );
+
+          // Preserve existing ordinary-lookup behavior when ADL contributed
+          // no candidates.
+          if (adl === undefined || adl.length === 0) {
+            fnDef = ordinary[0];
+          } else {
+            const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+            const merged: SymbolDefinition[] = [];
+            const seen = new Set<string>();
+            const push = (defs: readonly SymbolDefinition[]): void => {
+              for (const d of defs) {
+                if (seen.has(d.nodeId)) continue;
+                seen.add(d.nodeId);
+                merged.push(d);
+              }
+            };
+            push(ordinary);
+            push(adl);
+
+            const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes);
+            if (narrowed.length === 1) {
+              fnDef = narrowed[0];
+            } else if (narrowed.length === 0) {
+              // ADL contributed candidates, but none survived arity/type
+              // narrowing. Treat as handled to avoid global-name fallback
+              // binding to the same mismatched symbol by simple-name
+              // uniqueness.
+              handledSites.add(siteKey);
+              continue;
+            } else if (narrowed.length > 1) {
+              // Suppress ambiguous overload calls (emit zero edges) when
+              // merged ordinary+ADL candidate sets cannot be disambiguated.
+              if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+                handledSites.add(siteKey);
+                continue;
+              }
+              // Multiple survivors remain but no conversion-ranking step
+              // exists yet; suppress instead of picking arbitrarily.
+              handledSites.add(siteKey);
+              continue;
+            }
+          }
         }
       }
       // V1: pickUniqueGlobalCallable ignores import context — resolves to any
       // globally-unique callable. False cross-package edges are possible when
       // the caller does not import the target package. Same-package calls are
-      // caught by findCallableBindingInScope above before reaching here.
+      // usually caught by nearest-scope lookup before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
         fnDef = pickUniqueGlobalCallable(
           site.name,
