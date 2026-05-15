@@ -59,6 +59,7 @@ import {
   isOverloadAmbiguousAfterNormalization,
   narrowOverloadCandidates,
 } from '../../scope-resolution/passes/overload-narrowing.js';
+import { cppConversionRank } from './conversion-rank.js';
 
 /**
  * Per-argument shape information collected at capture time. ADL fires for
@@ -211,14 +212,19 @@ export function pickCppAdlCandidates(
   // Multi-candidate: narrow then check ambiguity. Reuses the OVERLOAD_AMBIGUOUS
   // sentinel contract from `overload-narrowing.ts` so int/long-collision-style
   // ambiguity also suppresses on the ADL path.
-  const narrowed = narrowOverloadCandidates(candidates, site.arity, site.argumentTypes);
+  const narrowed = narrowOverloadCandidates(
+    candidates,
+    site.arity,
+    site.argumentTypes,
+    cppConversionRank,
+  );
   if (narrowed.length === 1) return narrowed[0];
   if (narrowed.length === 0) return undefined;
   if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return ADL_AMBIGUOUS;
   // Multiple surviving candidates that aren't normalization-ambiguous —
-  // ISO C++ would run overload resolution; V1 lacks conversion ranking so
-  // suppress rather than pick arbitrarily. Mirrors `pickImplicitThisOverload`'s
-  // unique-survivor requirement (see `pick-implicit-this-overload.test.ts`).
+  // ISO C++ would run full overload resolution; V1 uses conversion-rank
+  // scoring (#1578) but if that still leaves >1 candidate, suppress
+  // rather than pick arbitrarily.
   return ADL_AMBIGUOUS;
 }
 

@@ -24,8 +24,16 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
-import { findCallableBindingInScope, findClassBindingInScope } from '../scope/walkers.js';
-import { narrowOverloadCandidates } from './overload-narrowing.js';
+import {
+  findAllCallableBindingsInScope,
+  findCallableBindingInScope,
+  findClassBindingInScope,
+} from '../scope/walkers.js';
+import {
+  isOverloadAmbiguousAfterNormalization,
+  narrowOverloadCandidates,
+  type ConversionRankFn,
+} from './overload-narrowing.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -56,6 +64,7 @@ export function emitFreeCallFallback(
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
     ) => SymbolDefinition | 'ambiguous' | undefined;
+    readonly conversionRankFn?: ConversionRankFn;
   } = {},
 ): number {
   let emitted = 0;
@@ -83,10 +92,51 @@ export function emitFreeCallFallback(
       // the same name in a single class, choose the best match by
       // arity + argument types.
       if (fnDef === undefined) {
-        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
+        fnDef = pickImplicitThisOverload(
+          site,
+          scopes,
+          workspaceIndex,
+          model,
+          options.conversionRankFn,
+        );
       }
+      // Scope-chain callable lookup. First-match preserves scope-chain
+      // precedence (local shadows import). When a conversion-rank function
+      // is available AND the binding scope contains multiple overloads,
+      // refine with `narrowOverloadCandidates` to pick the best overload
+      // by argument types (#1578). The first-match result is kept as a
+      // fallback when narrowing is indeterminate.
       if (fnDef === undefined) {
         fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+        if (fnDef !== undefined && options.conversionRankFn !== undefined) {
+          const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+          if (allCallables.length > 1) {
+            const narrowed = narrowOverloadCandidates(
+              allCallables,
+              site.arity,
+              site.argumentTypes,
+              options.conversionRankFn,
+            );
+            if (narrowed.length === 1) {
+              fnDef = narrowed[0];
+            } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
+              // True overload ambiguity (e.g. int/long normalize to same
+              // type): suppress only when all candidates share the same
+              // file — i.e. they are real overloads, not a local def
+              // shadowing an import. Cross-file candidates are shadowing;
+              // keep the first-match fnDef for those.
+              const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
+              if (sameFile) {
+                handledSites.add(
+                  `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
+                );
+                continue;
+              }
+            }
+            // narrowed.length === 0 or >1 non-ambiguous: keep the
+            // first-match fnDef — preserves local-shadows-import.
+          }
+        }
       }
       // V1 ADL tier (C++ Koenig lookup, opt-in via provider.resolveAdlCandidates).
       // Fires only when ordinary lookup is empty — V1 limitation per
@@ -138,6 +188,8 @@ export function emitFreeCallFallback(
                   scopes,
                 })
             : undefined,
+          site.argumentTypes,
+          options.conversionRankFn,
         );
       }
       if (fnDef === undefined) continue;
@@ -176,6 +228,8 @@ function pickUniqueGlobalCallable(
   isFileLocalDef?: (def: SymbolDefinition) => boolean,
   callArity?: number,
   isCallerVisible?: (candidate: SymbolDefinition) => boolean,
+  callArgTypes?: readonly string[],
+  conversionRankFn?: ConversionRankFn,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
@@ -210,6 +264,14 @@ function pickUniqueGlobalCallable(
     const arityMatch = narrowByArity(scopeDefs, callArity);
     if (arityMatch !== undefined) return arityMatch;
   }
+  // When arity narrowing left >1 candidate, try overload narrowing with
+  // argument types + conversion ranking (#1578). This picks the unique
+  // best-rank candidate when exact-type or conversion-rank scoring can
+  // disambiguate (e.g., `f(int)` vs `f(double)` called with `f(2.5)`).
+  if (scopeDefs.length > 1) {
+    const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, conversionRankFn);
+    if (narrowed.length === 1) return narrowed[0];
+  }
 
   const defs: SymbolDefinition[] = [];
   const seen = new Set<string>();
@@ -242,6 +304,11 @@ function pickUniqueGlobalCallable(
   if (defs.length > 1 && callArity !== undefined) {
     const arityMatch = narrowByArity(defs, callArity);
     if (arityMatch !== undefined) return arityMatch;
+  }
+  // Same argument-type + conversion-rank narrowing for the model pool.
+  if (defs.length > 1) {
+    const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, conversionRankFn);
+    if (narrowed.length === 1) return narrowed[0];
   }
 
   return undefined;
@@ -316,6 +383,7 @@ export function pickImplicitThisOverload(
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   model: SemanticModel,
+  conversionRankFn?: ConversionRankFn,
 ): SymbolDefinition | undefined {
   // Find the enclosing Class scope by walking parents.
   let curId: ScopeId | null = site.inScope;
@@ -343,7 +411,12 @@ export function pickImplicitThisOverload(
   // ambiguous narrowing (multiple compatible candidates with no
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
-  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  const candidates = narrowOverloadCandidates(
+    overloads,
+    site.arity,
+    site.argumentTypes,
+    conversionRankFn,
+  );
   if (candidates.length !== 1) return undefined;
   return candidates[0];
 }

@@ -9,6 +9,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cppProvider } from '../c-cpp.js';
 import { cppArityCompatibility } from './arity.js';
+import { cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
 import { scanCppHeaderFiles } from './header-scan.js';
@@ -176,6 +177,10 @@ export const cppScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   // C++ #include brings in all symbols — enable global free call fallback
   allowGlobalFreeCallFallback: true,
+  // C++ standard-conversion-sequence ranking for overload resolution (#1578).
+  // Disambiguates `f(int)` vs `f(double)` called with `f(2.5)` by scoring
+  // each candidate's conversion cost; exact match wins over standard conversion.
+  conversionRankFn: cppConversionRank,
   // Range-for element type inference: for (auto& user : users) → bind user to User
   populateRangeBindings: populateCppRangeBindings,
   // C++ method return-type bindings need to be visible from module scope
@@ -246,7 +251,12 @@ export const cppScopeResolver: ScopeResolver = {
       usingNamedHits.push(member);
     }
     if (usingNamedHits.length > 0) {
-      const narrowed = narrowOverloadCandidates(usingNamedHits, site.arity, site.argumentTypes);
+      const narrowed = narrowOverloadCandidates(
+        usingNamedHits,
+        site.arity,
+        site.argumentTypes,
+        cppConversionRank,
+      );
       if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return 'ambiguous';
       if (narrowed.length === 1) return narrowed[0];
       if (narrowed.length > 1) return 'ambiguous';

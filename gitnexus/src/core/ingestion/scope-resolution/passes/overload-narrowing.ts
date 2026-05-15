@@ -24,15 +24,35 @@
  *      equality. An empty string in `argTypes[i]` means "unknown" and
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
+ *   4b. When the exact-type filter from step 4 returns empty AND a
+ *       `conversionRankFn` is provided, score each candidate by the
+ *       sum of per-slot conversion ranks and return the unique best
+ *       (lowest total cost). Ties return all tied candidates so that
+ *       callers can run `isOverloadAmbiguousAfterNormalization` to
+ *       detect same-rank ambiguity.
  *   5. Empty input returns empty output.
  */
 
 import type { SymbolDefinition } from 'gitnexus-shared';
 
+/**
+ * Per-slot conversion-rank function. Returns a numeric cost for
+ * converting `argType` to `paramType`:
+ *   - 0 = exact match (no conversion)
+ *   - 1 = promotion (e.g. float→double in C++)
+ *   - 2 = standard conversion (e.g. int→double)
+ *   - Infinity = incompatible types
+ *
+ * Each language provides its own implementation. The function operates
+ * on normalized type strings (output of the language's type normalizer).
+ */
+export type ConversionRankFn = (argType: string, paramType: string) => number;
+
 export function narrowOverloadCandidates(
   overloads: readonly SymbolDefinition[],
   argCount: number | undefined,
   argTypes: readonly string[] | undefined,
+  conversionRankFn?: ConversionRankFn,
 ): readonly SymbolDefinition[] {
   if (overloads.length === 0) return [];
 
@@ -84,9 +104,58 @@ export function narrowOverloadCandidates(
       return true;
     });
     if (typed.length > 0) return typed;
+
+    // ── Conversion-rank scoring (step 4b) ──────────────────────────
+    // The exact-type filter above rejected every candidate. When a
+    // per-language conversion-rank function is available, score each
+    // candidate by the sum of per-slot conversion costs and select
+    // the unique best (lowest total). Ties return all tied candidates
+    // so `isOverloadAmbiguousAfterNormalization` can detect same-rank
+    // ambiguity at the call site.
+    if (conversionRankFn !== undefined) {
+      const ranked = rankByConversion(candidates, argTypes, conversionRankFn);
+      if (ranked.length > 0) return ranked;
+    }
   }
 
   return candidates;
+}
+
+/**
+ * Score each candidate by the sum of per-slot conversion ranks, then
+ * return the candidate(s) sharing the lowest total cost. Candidates
+ * whose total cost is `Infinity` (at least one incompatible slot) are
+ * excluded.
+ */
+function rankByConversion(
+  candidates: readonly SymbolDefinition[],
+  argTypes: readonly string[],
+  rankFn: ConversionRankFn,
+): readonly SymbolDefinition[] {
+  let bestCost = Infinity;
+  const scored: Array<{ def: SymbolDefinition; cost: number }> = [];
+
+  for (const d of candidates) {
+    const params = d.parameterTypes;
+    if (params === undefined) continue;
+    let total = 0;
+    let viable = true;
+    for (let i = 0; i < argTypes.length && i < params.length; i++) {
+      if (argTypes[i] === '') continue; // unknown arg → any-match
+      const r = rankFn(argTypes[i], params[i]);
+      if (!isFinite(r)) {
+        viable = false;
+        break;
+      }
+      total += r;
+    }
+    if (!viable) continue;
+    scored.push({ def: d, cost: total });
+    if (total < bestCost) bestCost = total;
+  }
+
+  if (!isFinite(bestCost)) return [];
+  return scored.filter((s) => s.cost === bestCost).map((s) => s.def);
 }
 
 /**

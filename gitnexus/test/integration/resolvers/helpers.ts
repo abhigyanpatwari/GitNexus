@@ -177,6 +177,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
+    // Conversion-rank scoring (#1578) disambiguates `f(int)` vs `f(double)`
+    // by ranking exact match over standard conversion. The legacy DAG has no
+    // conversion-rank scoring; it either picks arbitrarily or leaves the call
+    // unresolved. Scope-resolver-only correctness win.
+    'f(2.5) resolves to f(double) — exact match beats standard conversion',
+    'f(42) resolves to f(int) — exact match beats standard conversion',
+    'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
   ]),
 };
 

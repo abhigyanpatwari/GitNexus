@@ -1763,6 +1763,55 @@ describe('C++ ambiguous integer-width overloads', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C++ overload resolution: standard-conversion-sequence ranking (#1578)
+// Disambiguates overloads when exact normalized-type matching cannot,
+// by scoring each candidate's conversion cost. Exact match (rank 0) wins
+// over standard conversion (rank 2); same-rank ties still suppress.
+// ---------------------------------------------------------------------------
+
+describe('C++ overload resolution — conversion-rank disambiguation (#1578)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-conversion-rank'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(2.5) resolves to f(double) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // Conversion-rank scoring picks f(double) as the unique best:
+    // f(double) is exact match (rank 0), f(int) is standard conversion (rank 2).
+    const fDoubleEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'double';
+    });
+    expect(fDoubleEdges.length).toBe(1);
+  });
+
+  it('f(42) resolves to f(int) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // f(int) is exact match (rank 0), f(double) is standard conversion (rank 2).
+    const fIntEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'int';
+    });
+    expect(fIntEdges.length).toBe(1);
+  });
+
+  it('g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+    // g(int) and g(long) both normalize to parameterTypes=['int'],
+    // so isOverloadAmbiguousAfterNormalization triggers suppression.
+    expect(gCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
 // PR #1520 review follow-up plan U3 / Claude review Finding 7

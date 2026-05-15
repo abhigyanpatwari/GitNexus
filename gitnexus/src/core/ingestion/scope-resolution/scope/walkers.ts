@@ -256,6 +256,61 @@ export function findCallableBindingInScope(
 }
 
 /**
+ * Collect ALL callable bindings for `callableName` in the scope chain
+ * starting from `startScope`. Collects from the first scope level that
+ * has at least one callable binding (same lexical-shadow semantics as
+ * `findCallableBindingInScope`, but returns the full overload set
+ * instead of just the first match).
+ *
+ * Used by the free-call fallback when conversion-rank scoring is
+ * available (#1578) to enable overload disambiguation for free-function
+ * calls like `f(2.5)` where `f(int)` and `f(double)` are both in scope.
+ */
+export function findAllCallableBindingsInScope(
+  startScope: ScopeId,
+  callableName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return [];
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return [];
+
+    const hits: SymbolDefinition[] = [];
+    const seenIds = new Set<string>();
+
+    const localBindings = scope.bindings.get(callableName);
+    if (localBindings !== undefined) {
+      for (const b of localBindings) {
+        if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+          if (!seenIds.has(b.def.nodeId)) {
+            seenIds.add(b.def.nodeId);
+            hits.push(b.def);
+          }
+        }
+      }
+    }
+
+    const importedBindings = lookupBindingsAt(currentId, callableName, scopes);
+    for (const b of importedBindings) {
+      if (b.def.type === 'Function' || b.def.type === 'Method' || b.def.type === 'Constructor') {
+        if (!seenIds.has(b.def.nodeId)) {
+          seenIds.add(b.def.nodeId);
+          hits.push(b.def);
+        }
+      }
+    }
+
+    if (hits.length > 0) return hits;
+    currentId = scope.parent;
+  }
+  return [];
+}
+
+/**
  * Populate `ownerId` on every def structurally owned by a Class
  * scope — methods (defs in Function scopes whose parent is Class)
  * and class-body fields (defs directly in Class scopes).
