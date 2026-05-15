@@ -2103,7 +2103,9 @@ describe('C++ two-phase template lookup — cross-file namespace variant', () =>
 // Free-function calls with class-typed arguments must consider candidates
 // declared in the argument's enclosing namespace (associated namespace).
 // V1 boundary: only direct enclosing-namespace closure for value class-
-// typed args; pointer / reference / template-spec args excluded.
+// typed args; pointer/reference args and template specializations with
+// explicit type arguments included. Function pointers and base-class
+// associated namespaces remain excluded.
 // ---------------------------------------------------------------------------
 
 describe('C++ ADL — basic associated-namespace closure', () => {
@@ -2122,6 +2124,92 @@ describe('C++ ADL — basic associated-namespace closure', () => {
     // declaration in audit.h.
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — base-class associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves log(d) to base_lib::log via ADL when Derived inherits from base_lib::Base', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
+    expect(logCalls.length).toBe(1);
+    expect(logCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Base']);
+  });
+
+  it('resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
+    expect(traceCalls.length).toBe(1);
+    expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(traceCalls[0].rel.targetId);
+    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Root']);
+  });
+
+  it('diamond inheritance contributes base namespace once (no duplicate/crash)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pingCalls = calls.filter((c) => c.source === 'run_diamond' && c.target === 'ping');
+    expect(pingCalls.length).toBe(1);
+    expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(pingCalls[0].rel.targetId);
+    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping');
+    expect(targetNode?.properties.parameterTypes).toEqual(['DiamondBase']);
+  });
+});
+
+describe('C++ ADL — base-class namespace MRO with simple-name class collisions', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT emit CALLS for collide(t) when class-name lookup is ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const collideCalls = calls.filter((c) => c.source === 'run' && c.target === 'collide');
+    expect(collideCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — base-class namespace mapping skips anonymous/unresolved bases', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-negative'),
+      () => {},
+    );
+  }, 60000);
+
+  it('hidden_probe(d) still resolves via ordinary lookup when declaration is visible', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hiddenProbeCalls = calls.filter(
+      (c) => c.source === 'run_hidden' && c.target === 'hidden_probe',
+    );
+    expect(hiddenProbeCalls.length).toBe(1);
+    expect(hiddenProbeCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+
+  it('unresolved_probe(d) emits zero CALLS when base class cannot be resolved', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const unresolvedProbeCalls = calls.filter(
+      (c) => c.source === 'run_missing' && c.target === 'unresolved_probe',
+    );
+    expect(unresolvedProbeCalls.length).toBe(0);
   });
 });
 
@@ -2158,6 +2246,54 @@ describe('C++ ADL — pointer arg unwrapping', () => {
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — reference arg unwrapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-reference-arg-boundary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(s) where s is audit::Event& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('recordConst(cs) where cs is const audit::Event& resolves via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter(
+      (c) => c.source === 'runConstRef' && c.target === 'recordConst',
+    );
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record.h');
+  });
+
+  it('note(r) where r is int& emits zero CALLS edges (primitive ref)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const noteCalls = calls.filter((c) => c.source === 'runPrimitiveRef' && c.target === 'note');
+    expect(noteCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — rvalue reference args participate', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-rvalue-ref'), () => {});
+  }, 60000);
+
+  it('record(rr) where rr is audit::Event&& resolves to audit::record via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'runRvalueRef' && c.target === 'record');
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('record-rvalue.h');
   });
 });
 
@@ -2225,6 +2361,43 @@ describe('C++ ADL — pointer-to-pointer args participate', () => {
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — template specialization args contribute associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-template-args'), () => {});
+  }, 60000);
+
+  it('apply(v) where v is std::vector<N::T> resolves to N::apply via ADL template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'run' && c.target === 'apply');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyNested(m) where m is std::map<std::string, std::vector<N::T>> resolves via nested template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runNested' && c.target === 'applyNested');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyArray(a) where a is std::array<N::T, 4> resolves to N::applyArray (non-type arg ignored)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runArray' && c.target === 'applyArray');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyStdConflict(v) is suppressed when ADL surfaces both N and std candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter(
+      (c) => c.source === 'runStdConflict' && c.target === 'applyStdConflict',
+    );
+    expect(applyCalls.length).toBe(0);
   });
 });
 

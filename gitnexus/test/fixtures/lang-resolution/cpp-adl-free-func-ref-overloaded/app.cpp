@@ -2,6 +2,6 @@
 
 namespace caller {
   void run() {
-    accept(utils::worker);
+    with_callback(utils::worker);
   }
 }
