@@ -193,6 +193,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          # rc-guard reads only — no git pushes from this job. Skip the
+          # default extraheader credential persistence (artipacked audit).
+          persist-credentials: false
 
       - name: Decide
         id: decide
@@ -320,12 +323,21 @@ jobs:
           # `.github/workflows/**`, which the default GITHUB_TOKEN cannot
           # author. See S34132 for the migration history.
           token: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          # Do not persist the PAT in .git/config (artipacked audit). The
+          # RC tag push uses an inline `http.extraheader` at push time only;
+          # the credential never lands on disk. See the
+          # `Create and push rc tags` step below.
+          persist-credentials: false
 
       - name: Checkout (stable)
         if: needs.route.outputs.mode == 'stable'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
         # path performs no git pushes; the default scope is sufficient.
+        with:
+          # No git pushes from the stable path either. Skip credential
+          # persistence (artipacked audit).
+          persist-credentials: false
 
       - name: Working-tree sanity
         # Defense in depth (mirrors KTD-5 vtag gate, but on the input side):
@@ -550,6 +562,11 @@ jobs:
         env:
           RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
           HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          # Auth is supplied inline at push time via `http.extraheader` (per
+          # GitHub's documented x-access-token Basic pattern). It is NOT
+          # persisted in .git/config (artipacked audit) — checkout above
+          # ran with `persist-credentials: false`.
+          PUSH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
         run: |
           set -euo pipefail
           VTAG="v${RC_VERSION}"
@@ -568,9 +585,18 @@ jobs:
           git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
           git tag "$MARKER" "$HEAD_SHA"
 
+          # Inline auth header. The base64-encoded form is masked as well
+          # as the raw token, because GitHub's secret-masker only masks the
+          # raw value — any subsequent `set -x` / GIT_TRACE line would
+          # otherwise expose the encoded credential. Pattern mirrors
+          # pr-autofix-apply.yml.
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+
           # Atomic push of both refs. If either would clobber an existing
           # remote ref, the push fails and we stop before npm publish.
-          git push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
+          git -c http.extraheader="${auth_header}" \
+              push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
 
           {
             echo "vtag=$VTAG"
@@ -582,8 +608,14 @@ jobs:
         id: stable-vtag
         if: needs.route.outputs.mode == 'stable'
         shell: bash
+        # github.ref_name flows in via env to avoid templating into the
+        # shell source (template-injection audit). Even though refs are
+        # constrained by git naming rules, the env-passthrough pattern
+        # makes injection structurally impossible.
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          echo "vtag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          echo "vtag=${REF_NAME}" >> "$GITHUB_OUTPUT"
 
       # ── KTD-5: vtag integrity gate ───────────────────────────────────────
       # Fail closed before any artifact-producing step (npm publish, Release,
@@ -690,17 +722,17 @@ jobs:
             ) || '' }}
 
   # ── Phase 5 (RC only): Docker images ───────────────────────────────────────
-  # R6: Docker remains RC-only. Stable Docker builds are explicitly deferred
-  # (see plan Scope Boundaries → Deferred to Follow-Up Work). KTD-8: the
-  # `secrets: inherit` to docker.yml is retained with an explicit security
-  # note in the plan rather than enumerated, because docker.yml's secret
-  # surface is owned and reviewed alongside this caller.
+  # R6: Docker remains RC-only. Stable Docker builds are explicitly deferred.
+  # Secrets are passed explicitly (not via `secrets: inherit`) so the
+  # callee's secret surface is auditable from the caller's source.
   docker:
     name: Build & Push RC Docker images
     needs: [route, publish]
     if: ${{ needs.route.outputs.mode == 'rc' && needs.publish.outputs.vtag != '' && inputs.dry_run != 'true' }}
     uses: ./.github/workflows/docker.yml
-    secrets: inherit
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: read
       packages: write
