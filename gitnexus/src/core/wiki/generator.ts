@@ -600,7 +600,11 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, this.buildSystemPrompt(MODULE_SYSTEM_PROMPT), this.streamOpts(node.name));
+    const response = await this.invokeLLM(
+      prompt,
+      this.buildSystemPrompt(MODULE_SYSTEM_PROMPT),
+      this.streamOpts(node.name),
+    );
 
     // Write page with front matter
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
@@ -641,7 +645,11 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, this.buildSystemPrompt(PARENT_SYSTEM_PROMPT), this.streamOpts(node.name));
+    const response = await this.invokeLLM(
+      prompt,
+      this.buildSystemPrompt(PARENT_SYSTEM_PROMPT),
+      this.streamOpts(node.name),
+    );
 
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
