@@ -2103,7 +2103,9 @@ describe('C++ two-phase template lookup — cross-file namespace variant', () =>
 // Free-function calls with class-typed arguments must consider candidates
 // declared in the argument's enclosing namespace (associated namespace).
 // V1 boundary: only direct enclosing-namespace closure for value class-
-// typed args; pointer and reference args included, template-spec args excluded.
+// typed args; pointer/reference args and template specializations with
+// explicit type arguments included. Function pointers and base-class
+// associated namespaces remain excluded.
 // ---------------------------------------------------------------------------
 
 describe('C++ ADL — basic associated-namespace closure', () => {
@@ -2273,6 +2275,43 @@ describe('C++ ADL — pointer-to-pointer args participate', () => {
     const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — template specialization args contribute associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-template-args'), () => {});
+  }, 60000);
+
+  it('apply(v) where v is std::vector<N::T> resolves to N::apply via ADL template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'run' && c.target === 'apply');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyNested(m) where m is std::map<std::string, std::vector<N::T>> resolves via nested template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runNested' && c.target === 'applyNested');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyArray(a) where a is std::array<N::T, 4> resolves to N::applyArray (non-type arg ignored)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runArray' && c.target === 'applyArray');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyStdConflict(v) is suppressed when ADL surfaces both N and std candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter(
+      (c) => c.source === 'runStdConflict' && c.target === 'applyStdConflict',
+    );
+    expect(applyCalls.length).toBe(0);
   });
 });
 
