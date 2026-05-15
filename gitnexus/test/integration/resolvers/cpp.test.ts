@@ -2541,6 +2541,52 @@ describe('C++ ADL — function parameter does NOT trigger free-function-ref ADL'
 // `resolveQualifiedReceiverMember` hook on the ScopeResolver contract.
 // ---------------------------------------------------------------------------
 
+describe('C++ ADL — local function-pointer var shadows same-named free function', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-local-fp-shadows-free-func'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) emits zero CALLS edges even though audit::g() exists in the workspace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // `g` is a locally-declared `void (*g)()` variable. `audit::g()` also
+    // exists in the workspace. Without the foundAsLocalFunctionPointer guard,
+    // `g` would not be detected in the compound_statement (it IS there, but
+    // as a function-pointer declarator), and the workspace scan would find
+    // audit::g, contribute `audit` to the ADL set, and emit a false-positive
+    // CALLS edge to audit::record. The guard correctly returns EMPTY_ADL_ARG,
+    // so no namespace is contributed and no edge is emitted.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — unqualified free-function ref with namespace collision', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-unqualified-ref-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(worker) emits zero CALLS edges when worker exists in two namespaces', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // Unqualified `worker` → workspace scan finds alpha::worker and beta::worker.
+    // Both alpha and beta are added to the associated set. run_with() exists in
+    // both namespaces → two candidates → ADL_AMBIGUOUS sentinel → zero CALLS
+    // edges (suppressed rather than arbitrary pick).
+    expect(runWithCalls.length).toBe(0);
+  });
+});
+
+
 describe('C++ inline namespace — outer::foo resolves to inline child', () => {
   let result: PipelineResult;
 
