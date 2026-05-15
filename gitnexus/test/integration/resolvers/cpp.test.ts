@@ -2185,6 +2185,31 @@ describe('C++ ADL — base-class namespace MRO with simple-name class collisions
   });
 });
 
+describe('C++ ADL — base-class namespace mapping skips anonymous/unresolved bases', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-negative'),
+      () => {},
+    );
+  }, 60000);
+
+  it('hidden_probe(d) emits zero CALLS when base namespace is anonymous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hiddenProbeCalls = calls.filter((c) => c.source === 'run_hidden' && c.target === 'hidden_probe');
+    expect(hiddenProbeCalls.length).toBe(0);
+  });
+
+  it('unresolved_probe(d) emits zero CALLS when base class cannot be resolved', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const unresolvedProbeCalls = calls.filter(
+      (c) => c.source === 'run_missing' && c.target === 'unresolved_probe',
+    );
+    expect(unresolvedProbeCalls.length).toBe(0);
+  });
+});
+
 describe('C++ ADL — parenthesized name suppresses ADL', () => {
   let result: PipelineResult;
 
