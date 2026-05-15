@@ -2442,6 +2442,23 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
   });
 });
 
+describe('C++ ADL — merged narrowing to zero suppresses global fallback', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-merged-narrow-zero'), () => {});
+  }, 60000);
+
+  it('probe(t, 42) emits zero CALLS when ADL contributes only arity-mismatched candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const probeCalls = calls.filter((c) => c.source === 'run' && c.target === 'probe');
+    // ADL surfaces alpha::probe(Token), but call arity is 2 (`probe(t, 42)`),
+    // so merged overload narrowing yields zero survivors. The site is treated
+    // as handled and must NOT fall through to global simple-name fallback.
+    expect(probeCalls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //

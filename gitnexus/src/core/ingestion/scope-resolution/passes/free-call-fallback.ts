@@ -114,6 +114,7 @@ export function emitFreeCallFallback(
           if (adl === undefined || adl.length === 0) {
             fnDef = ordinary[0];
           } else {
+            const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
             const merged: SymbolDefinition[] = [];
             const seen = new Set<string>();
             const push = (defs: readonly SymbolDefinition[]): void => {
@@ -129,20 +130,23 @@ export function emitFreeCallFallback(
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes);
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
+            } else if (narrowed.length === 0) {
+              // ADL contributed candidates, but none survived arity/type
+              // narrowing. Treat as handled to avoid global-name fallback
+              // binding to the same mismatched symbol by simple-name
+              // uniqueness.
+              handledSites.add(siteKey);
+              continue;
             } else if (narrowed.length > 1) {
               // Suppress ambiguous overload calls (emit zero edges) when
               // merged ordinary+ADL candidate sets cannot be disambiguated.
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                handledSites.add(
-                  `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-                );
+                handledSites.add(siteKey);
                 continue;
               }
               // Multiple survivors remain but no conversion-ranking step
               // exists yet; suppress instead of picking arbitrarily.
-              handledSites.add(
-                `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-              );
+              handledSites.add(siteKey);
               continue;
             }
           }
