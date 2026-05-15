@@ -93,6 +93,11 @@ let ObjectiveC: TreeSitterLanguage | null = null;
 try {
   ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
 } catch {}
+
+let Elixir: TreeSitterLanguage | null = null;
+try {
+  Elixir = _require('tree-sitter-elixir');
+} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   buildDefinitionPreScan,
@@ -574,6 +579,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
   ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
+  ...(Elixir ? { [SupportedLanguages.Elixir]: Elixir } : {}),
 };
 
 /**
