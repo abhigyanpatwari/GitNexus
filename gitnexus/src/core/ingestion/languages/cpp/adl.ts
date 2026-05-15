@@ -70,6 +70,7 @@
 
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 
 /**
  * Per-argument shape information collected at capture time. ADL fires for
@@ -214,6 +215,8 @@ export function pickCppAdlCandidates(
   // Walk every namespace scope in every parsed file; collect callable
   // ownedDefs whose enclosing namespace matches one of the associated
   // QNames AND whose simple name matches the call's name.
+  // ISO C++: inline namespaces are transparent — candidates in inline
+  // children of an associated namespace are also ADL-reachable.
   const candidates: SymbolDefinition[] = [];
   const seenKey = new Set<string>();
   for (const parsed of parsedFiles) {
@@ -222,7 +225,17 @@ export function pickCppAdlCandidates(
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Namespace') continue;
       const qName = computeNamespaceQName(scope, scopesById);
-      if (!associatedNamespaces.has(qName)) continue;
+      if (!associatedNamespaces.has(qName)) {
+        // Check if this is an inline-namespace child of an associated NS.
+        // ISO C++ inline namespaces are transparent for ADL: if the outer
+        // namespace is in the associated set, candidates in the inline child
+        // are also reachable.
+        if (!isCppInlineNamespaceScope(scope.id)) continue;
+        const parentScope = scope.parent !== null ? scopesById.get(scope.parent) : undefined;
+        if (parentScope === undefined || parentScope.kind !== 'Namespace') continue;
+        const parentQName = computeNamespaceQName(parentScope, scopesById);
+        if (!associatedNamespaces.has(parentQName)) continue;
+      }
       for (const def of scope.ownedDefs) {
         if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
           continue;

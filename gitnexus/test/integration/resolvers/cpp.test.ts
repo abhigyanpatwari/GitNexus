@@ -2731,6 +2731,29 @@ describe('C++ inline namespace — ADL participation', () => {
   });
 });
 
+describe('C++ ADL — inline namespace expansion in associated set', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inline-ns-expansion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) resolves to audit::v1::record when Event is in outer audit and record is in inline v1 (arity-disambiguated from other::record(int))', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: inline namespaces are transparent — candidates in
+    // `audit::v1` are visible as if declared at `audit` level. With a
+    // competing `other::record(int)` (different arity), the merged
+    // ordinary+ADL overload narrowing must select `audit::v1::record(Event)`
+    // since it's the only arity-matching candidate for `record(e)`.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Phase 5 (follow-up plan 2026-05-13-001): cross-unit composition tests.
 // Lock in correct interaction between U1 (super-receiver context), U2 (ADL),
