@@ -312,12 +312,19 @@ const cCppExtractFunctionName = (
   return { funcName, label };
 };
 
-/** Check if a C/C++ function_definition is inside a class or struct body.
+/** Check if a C/C++ function_definition is inside a class or struct body
+ *  (and NOT a friend declaration).
  *  Used by cppLabelOverride to skip duplicate function captures
- *  that are already covered by definition.method queries. */
+ *  that are already covered by definition.method queries.
+ *  Friend functions are free functions defined inside class bodies —
+ *  they must NOT be skipped (ISO C++ hidden-friend idiom). */
 function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
   let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
   while (ancestor) {
+    // Friend declarations: the function_definition is wrapped in
+    // `friend_declaration` → `field_declaration_list` → class_specifier.
+    // These are free functions, not methods — don't skip them.
+    if (ancestor.type === 'friend_declaration') return false;
     if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
     ancestor = ancestor.parent;
   }
