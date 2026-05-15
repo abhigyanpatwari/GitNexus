@@ -10,7 +10,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
 import { computeCppDeclarationArity, computeCppCallArity } from './arity-metadata.js';
-import { markFileLocal } from './file-local-linkage.js';
+import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
@@ -200,20 +200,37 @@ export function emitCppScopeCaptures(
     // namespace's source range so `populateCppInlineNamespaceScopes`
     // (during populateOwners) can match it back to the corresponding
     // Namespace scope.
-    if (grouped['@declaration.namespace'] !== undefined) {
-      const anchor = grouped['@declaration.namespace']!;
-      const nsNode = findNodeAtRange(tree.rootNode, anchor.range, 'namespace_definition');
-      if (nsNode !== null && isInlineNamespace(nsNode)) {
+    // `@declaration.namespace` fires only for NAMED namespaces (the query
+    // requires a `name: (namespace_identifier)` child). Use the unconditional
+    // `@scope.namespace` capture so the anonymous-namespace branch also runs.
+    const namespaceScopeAnchor = grouped['@declaration.namespace'] ?? grouped['@scope.namespace'];
+    if (namespaceScopeAnchor !== undefined) {
+      const nsNode = findNodeAtRange(
+        tree.rootNode,
+        namespaceScopeAnchor.range,
+        'namespace_definition',
+      );
+      if (nsNode !== null) {
         // Range coords stored in the shared Range shape use 1-based
         // line numbers (see `ast-helpers.ts` rangeForNode where
         // `startPosition.row + 1` is applied). Match that convention so
-        // `populateCppInlineNamespaceScopes` can join against `Scope.range`.
-        markCppInlineNamespaceRange(filePath, {
+        // the populators can join against `Scope.range`.
+        const nsRange = {
           startLine: nsNode.startPosition.row + 1,
           startCol: nsNode.startPosition.column,
           endLine: nsNode.endPosition.row + 1,
           endCol: nsNode.endPosition.column,
-        });
+        };
+        if (isInlineNamespace(nsNode)) {
+          markCppInlineNamespaceRange(filePath, nsRange);
+        }
+        // Anonymous namespace: `namespace_definition` with no `name` field.
+        // Recorded so `expandCppWildcardNames` can propagate its members
+        // to including TUs even though their names are also `markFileLocal`'d
+        // (which blocks the global free-call fallback's cross-file path).
+        if ((nsNode.childForFieldName?.('name') ?? null) === null) {
+          markCppAnonymousNamespaceRange(filePath, nsRange);
+        }
       }
     }
 
