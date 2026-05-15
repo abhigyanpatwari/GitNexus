@@ -131,6 +131,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           GH_REF: ${{ github.ref }}
           GH_REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
 
@@ -140,17 +141,36 @@ jobs:
           # Sanitize before logging (annotation-injection defense in depth).
           REF_SAFE="${GH_REF//::/__}"
           REF_NAME_SAFE="${GH_REF_NAME//::/__}"
-          echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE}"
+          echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE} dry_run=${DRY_RUN:-false}"
 
           MODE=""
           case "${EVENT_NAME}" in
             workflow_dispatch)
-              # Only main is valid for manual dispatch.
-              if [ "${GH_REF}" = "refs/heads/main" ]; then
-                MODE="rc"
+              # Real (non-dry-run) dispatches must be on main — that's the only
+              # ref where a real publish makes sense. Dry-run rehearsal is
+              # allowed on any branch ref because the rehearsal MUST run
+              # against the workflow file as-edited on the PR branch (the
+              # version on main doesn't have the new logic yet). The
+              # complementary `Reject dry_run against main` step (below)
+              # closes the other side: dry_run on main is refused so a
+              # forgotten `dry_run` input post-merge can't be abused.
+              if [ "${DRY_RUN:-false}" = "true" ]; then
+                case "${GH_REF}" in
+                  refs/heads/*)
+                    MODE="rc"
+                    ;;
+                  *)
+                    echo "::error::dry_run dispatch is only permitted on a branch ref (got ${REF_SAFE})."
+                    exit 1
+                    ;;
+                esac
               else
-                echo "::error::workflow_dispatch is only permitted on refs/heads/main (got ${REF_SAFE})."
-                exit 1
+                if [ "${GH_REF}" = "refs/heads/main" ]; then
+                  MODE="rc"
+                else
+                  echo "::error::Real workflow_dispatch is only permitted on refs/heads/main (got ${REF_SAFE}). For pre-merge rehearsal, set dry_run=true."
+                  exit 1
+                fi
               fi
               ;;
             push)
