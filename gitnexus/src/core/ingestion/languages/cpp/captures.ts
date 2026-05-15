@@ -785,17 +785,91 @@ function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   ) {
     return EMPTY_ADL_ARG;
   }
+  // Qualified expression (a::b) — may be a function, variable, enum value,
+  // or static member. Record as a potential function reference; resolution
+  // time verifies via workspace lookup that a Function/Method with this simple
+  // name exists in the extracted namespace before contributing to the set.
+  if (argNode.type === 'qualified_identifier') {
+    return {
+      simpleClassName: '',
+      templateSimpleClassName: '',
+      templateNamespace: '',
+      templateArgClassNames: [],
+      templateArgNamespaces: [],
+      functionRefText: argNode.text,
+    };
+  }
   // Variable reference — look up its declared type (preserving pointer /
   // reference / qualified-name shape; the existing arity-narrowing helper
   // strips this info).
   if (argNode.type === 'identifier') {
-    return lookupAdlIdentifierType(argNode);
+    const result = lookupAdlIdentifierType(argNode);
+    if (result === null) {
+      // Not found in the local compound_statement scope — could be a
+      // free-function reference (unqualified name, namespace scope).
+      return {
+        simpleClassName: '',
+        templateSimpleClassName: '',
+        templateNamespace: '',
+        templateArgClassNames: [],
+        templateArgNamespaces: [],
+        functionRefText: argNode.text,
+      };
+    }
+    return result;
   }
   // Other shapes (calls, member access, operators) — V1 unsupported.
   return EMPTY_ADL_ARG;
 }
 
-function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
+/**
+ * Returns `true` when `varName` appears as a parameter name in the nearest
+ * enclosing `function_definition` or `function_declarator` that contains
+ * `identNode`. Parameters live in `parameter_list` (a sibling of the
+ * `compound_statement`), so the `compound_statement`-local declaration scan
+ * in `lookupAdlIdentifierType` would not find them — causing them to be
+ * mistakenly classified as potential free-function references.
+ *
+ * In tree-sitter-cpp a `function_definition` does NOT expose `parameters`
+ * as a direct named field; parameters live inside the nested
+ * `function_declarator`. For `function_declarator` nodes the `parameters`
+ * field IS direct. Both cases are handled below.
+ */
+function isIdentifierAFunctionParameter(identNode: SyntaxNode, varName: string): boolean {
+  let node: SyntaxNode | null = identNode.parent;
+  let safety = 64;
+  while (node !== null && safety-- > 0) {
+    let params: SyntaxNode | null = null;
+    if (node.type === 'function_declarator') {
+      // parameters is a direct field on function_declarator.
+      params = node.childForFieldName('parameters');
+    } else if (node.type === 'function_definition') {
+      // function_definition carries parameters inside its `declarator` field
+      // (which is a function_declarator). Walk through it.
+      const decl = node.childForFieldName('declarator');
+      if (decl !== null && decl.type === 'function_declarator') {
+        params = decl.childForFieldName('parameters');
+      }
+    }
+    if (params !== null) {
+      for (let i = 0; i < params.namedChildCount; i++) {
+        const param = params.namedChild(i);
+        if (param === null) continue;
+        const declNode = param.childForFieldName('declarator');
+        if (declNode === null) continue;
+        const leafName = extractDeclaratorLeafName(declNode);
+        if (leafName === varName) return true;
+      }
+      // Only check the immediately enclosing function — do not climb further.
+      break;
+    }
+    if (node.type === 'translation_unit') break;
+    node = node.parent;
+  }
+  return false;
+}
+
+function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo | null {
   const varName = identNode.text;
   let scope: SyntaxNode | null = identNode.parent;
   while (
@@ -805,8 +879,17 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
   ) {
     scope = scope.parent;
   }
-  if (scope === null) return EMPTY_ADL_ARG;
+  if (scope === null) return null;
 
+  // Function parameters live in the enclosing function's `parameter_list`,
+  // NOT inside the `compound_statement`, so the declaration scan below would
+  // never find them and would return `null` — incorrectly triggering the
+  // free-function-reference path. Check the parameter_list first.
+  if (isIdentifierAFunctionParameter(identNode, varName)) {
+    return EMPTY_ADL_ARG;
+  }
+
+  let foundAsLocalFunctionPointer = false;
   for (let i = 0; i < scope.childCount; i++) {
     const stmt = scope.child(i);
     if (stmt === null || stmt.type !== 'declaration') continue;
@@ -833,6 +916,9 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
       if (inner.type === 'pointer_declarator') {
         if (findFirstDescendantOfType(inner, 'function_declarator') !== null) {
           isFunctionPointer = true;
+          // Extract the name from within the function-pointer declarator chain
+          // so `foundAsLocalFunctionPointer` can detect a matching declaration.
+          nameText = extractDeclaratorLeafName(inner);
           break;
         }
         const next = inner.childForFieldName('declarator');
@@ -862,11 +948,20 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
       }
       if (inner.type === 'function_declarator') {
         isFunctionPointer = true;
+        // Extract the name from the inner declarator (e.g. `(*g)` in `void (*g)()`).
+        const innerDecl = inner.childForFieldName('declarator');
+        if (innerDecl !== null) nameText = extractDeclaratorLeafName(innerDecl);
         break;
       }
       // Reached the leaf — usually `identifier`. Take its text.
       nameText = inner.text;
       break;
+    }
+    if (nameText === varName && isFunctionPointer) {
+      // Explicitly declared as a function-pointer variable — must not be
+      // treated as a free-function reference by the caller.
+      foundAsLocalFunctionPointer = true;
+      continue;
     }
     if (isFunctionPointer || nameText !== varName) continue;
 
@@ -885,7 +980,22 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
       templateArgNamespaces,
     };
   }
-  return EMPTY_ADL_ARG;
+  // If the identifier was found in local scope as a function-pointer variable,
+  // return EMPTY_ADL_ARG so the caller does NOT treat it as a free-function
+  // reference. Otherwise return null to indicate "not in local scope".
+  //
+  // Known limitation (Finding 4): variables whose type is a typedef/using alias
+  // for a function-pointer type are NOT detected here. For example:
+  //   using Callback = void (*)();
+  //   Callback g;
+  //   foo(g);  // `g`'s declarator is `identifier` with type `Callback`
+  // The declarator has no `pointer_declarator` wrapper, so `isFunctionPointer`
+  // stays false and `extractAdlSimpleTypeName` returns `"Callback"`. ADL then
+  // looks for a class named `Callback`; if none exists, this degrades to
+  // EMPTY_ADL_ARG (class not found → no namespace contributed). If a class
+  // named `Callback` does exist, a spurious namespace contribution could occur.
+  // Risk is low in practice; a future fix should resolve the typedef/alias chain.
+  return foundAsLocalFunctionPointer ? EMPTY_ADL_ARG : null;
 }
 
 /** Extract the simple class-like type name from a `type:` field node.
@@ -1038,6 +1148,29 @@ function extractNamespaceFromQualifiedText(text: string): string {
   const idx = cleaned.lastIndexOf('::');
   if (idx <= 0) return '';
   return normalizeCppNamespaceQName(cleaned.slice(0, idx));
+}
+
+/**
+ * Walk a declarator node chain, unwrapping pointer/reference/function/
+ * parenthesized wrappers, and return the text of the innermost identifier.
+ * Returns `null` when no identifier is found within `safety` steps.
+ * Used by `lookupAdlIdentifierType` to extract the variable name from
+ * function-pointer declarator trees such as `(*g)()` in `void (*g)()`.
+ */
+function extractDeclaratorLeafName(node: SyntaxNode): string | null {
+  let cur: SyntaxNode = node;
+  let safety = 16;
+  while (safety-- > 0) {
+    if (cur.type === 'identifier' || cur.type === 'type_identifier') return cur.text;
+    // Common wrapper nodes — follow the 'declarator' field when present.
+    const next =
+      cur.childForFieldName('declarator') ??
+      // parenthesized_declarator: single named child
+      (cur.type === 'parenthesized_declarator' ? cur.namedChild(0) : null);
+    if (next === null) return null;
+    cur = next;
+  }
+  return null;
 }
 
 /**

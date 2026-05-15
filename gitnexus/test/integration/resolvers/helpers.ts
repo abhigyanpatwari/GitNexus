@@ -171,6 +171,15 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
+    // PR #1598: ADL free-function reference arg negative fixtures rely on
+    // scope-resolver-only correctness. The legacy DAG falls back to
+    // `pickUniqueGlobalCallable` which resolves the callee by simple-name
+    // workspace lookup, ignoring argument analysis. These fixtures expect
+    // zero CALLS edges (the registry-primary path correctly avoids a false-
+    // positive), but the legacy path emits one edge via the global fallback.
+    // Scope-resolver-only correctness wins; backporting is out of scope.
+    'process(data::value) emits zero CALLS edges \u2014 data::value is a variable, not a function',
+    'run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference',
   ]),
 };
 
