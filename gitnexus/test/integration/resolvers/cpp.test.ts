@@ -2127,6 +2127,92 @@ describe('C++ ADL — basic associated-namespace closure', () => {
   });
 });
 
+describe('C++ ADL — base-class associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves log(d) to base_lib::log via ADL when Derived inherits from base_lib::Base', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
+    expect(logCalls.length).toBe(1);
+    expect(logCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Base']);
+  });
+
+  it('resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
+    expect(traceCalls.length).toBe(1);
+    expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(traceCalls[0].rel.targetId);
+    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Root']);
+  });
+
+  it('diamond inheritance contributes base namespace once (no duplicate/crash)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pingCalls = calls.filter((c) => c.source === 'run_diamond' && c.target === 'ping');
+    expect(pingCalls.length).toBe(1);
+    expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(pingCalls[0].rel.targetId);
+    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping');
+    expect(targetNode?.properties.parameterTypes).toEqual(['DiamondBase']);
+  });
+});
+
+describe('C++ ADL — base-class namespace MRO with simple-name class collisions', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT emit CALLS for collide(t) when class-name lookup is ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const collideCalls = calls.filter((c) => c.source === 'run' && c.target === 'collide');
+    expect(collideCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — base-class namespace mapping skips anonymous/unresolved bases', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-negative'),
+      () => {},
+    );
+  }, 60000);
+
+  it('hidden_probe(d) still resolves via ordinary lookup when declaration is visible', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hiddenProbeCalls = calls.filter(
+      (c) => c.source === 'run_hidden' && c.target === 'hidden_probe',
+    );
+    expect(hiddenProbeCalls.length).toBe(1);
+    expect(hiddenProbeCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+
+  it('unresolved_probe(d) emits zero CALLS when base class cannot be resolved', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const unresolvedProbeCalls = calls.filter(
+      (c) => c.source === 'run_missing' && c.target === 'unresolved_probe',
+    );
+    expect(unresolvedProbeCalls.length).toBe(0);
+  });
+});
+
 describe('C++ ADL — parenthesized name suppresses ADL', () => {
   let result: PipelineResult;
 

@@ -21,8 +21,9 @@
  *   - `audit::Event& r`, `audit::Event&& rr`
  *   - `std::vector<audit::Event>` (template namespace + template-arg namespaces)
  *
- * Function-pointer arguments, base-class associated namespaces, and the rest
- * of the full closure are still deliberately excluded.
+ * Function-pointer arguments and the rest of the full closure are still
+ * deliberately excluded. V2 additionally walks class ancestors (via MRO),
+ * so base-class enclosing namespaces also contribute associated namespaces.
  *
  * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
@@ -259,10 +260,19 @@ function addAssociatedNamespaceForClassName(
   associatedNamespaces: Set<string>,
 ): void {
   if (simpleClassName.length === 0) return;
-  const classDef = findCppClassDefBySimpleName(simpleClassName, scopes);
-  if (classDef === undefined) return;
+  const classLookup = findCppClassDefBySimpleName(simpleClassName, scopes);
+  if (classLookup === undefined) return;
+  const { classDef, ambiguous } = classLookup;
   const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
   if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+  // Preserve V1 collision behavior for the direct class namespace, but avoid
+  // amplifying a same-simple-name collision by walking an arbitrary class's
+  // full MRO chain.
+  if (ambiguous) return;
+  for (const ancestorDefId of scopes.methodDispatch.mroFor(classDef.nodeId)) {
+    const ancestorNsQName = classToNamespaceQualifiedName.get(ancestorDefId);
+    if (ancestorNsQName !== undefined) associatedNamespaces.add(ancestorNsQName);
+  }
 }
 
 /** Walk upward from a Class scope, finding the innermost enclosing
@@ -357,17 +367,25 @@ function findNamespaceDefInScope(scope: {
 }
 
 /** Find a class-like def by simple name across the workspace. V1
- *  arbitrary-pick on collisions (multiple classes share the simple name);
- *  C++ ADL strictness would require full type-driven lookup, but V1
- *  trades that for simplicity. */
+ *  still arbitrary-picks the first class on collisions (multiple classes
+ *  share the simple name), but reports the collision so callers can avoid
+ *  amplifying that uncertainty (for example by skipping MRO expansion).
+ *  C++ ADL strictness would require full type-driven lookup. */
 function findCppClassDefBySimpleName(
   simpleName: string,
   scopes: ScopeResolutionIndexes,
-): SymbolDefinition | undefined {
+): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
+  let firstMatch: SymbolDefinition | undefined;
   for (const def of scopes.defs.byId.values()) {
     if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-    if (simple === simpleName) return def;
+    if (simple !== simpleName) continue;
+    if (firstMatch === undefined) {
+      firstMatch = def;
+      continue;
+    }
+    return { classDef: firstMatch, ambiguous: true };
   }
-  return undefined;
+  if (firstMatch === undefined) return undefined;
+  return { classDef: firstMatch, ambiguous: false };
 }

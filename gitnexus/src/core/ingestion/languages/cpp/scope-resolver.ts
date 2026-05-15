@@ -16,6 +16,7 @@ import {
   expandCppWildcardNames,
   isFileLocal,
   clearFileLocalNames,
+  populateCppAnonymousNamespaceScopes,
   populateCppNonGloballyVisible,
   isCppDefGloballyVisible,
 } from './file-local-linkage.js';
@@ -97,10 +98,11 @@ export const cppScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => {
     populateClassOwnedMembers(parsed);
-    // Resolve inline-namespace ranges (recorded at capture time) to
-    // ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so the
-    // inline-namespace exemption sees the populated Set.
+    // Resolve inline- and anonymous-namespace ranges (recorded at capture
+    // time) to ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so
+    // both exemptions see the populated Sets.
     populateCppInlineNamespaceScopes(parsed);
+    populateCppAnonymousNamespaceScopes(parsed);
     // Track namespace-nested and class-nested defs so the global free-call
     // fallback and wildcard expansion can suppress them as unqualified
     // cross-file callables.
