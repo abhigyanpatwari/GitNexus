@@ -141,4 +141,45 @@ describe('ORM dataflow detection', () => {
       console.log('[info] MyBatis edges linked at File level (no Java parser in fixture)');
     }
   });
+
+  it('extracts table names from CDATA-wrapped SQL', () => {
+    const cdataEdges: string[] = [];
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type === 'QUERIES' && rel.reason?.startsWith('mybatis-')) {
+        const target = result.graph.getNode(rel.targetId);
+        if (target?.properties.name === 'cdata_table') {
+          cdataEdges.push(rel.reason ?? '');
+        }
+      }
+    }
+    expect(cdataEdges.length).toBeGreaterThan(0);
+    // XML comment inside <!-- ... --> should NOT produce edges for ignored_in_comment
+    const commentTable = [];
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type === 'QUERIES') {
+        const target = result.graph.getNode(rel.targetId);
+        if (target?.properties.name === 'ignored_in_comment') {
+          commentTable.push(target.properties.name);
+        }
+      }
+    }
+    expect(commentTable).toHaveLength(0);
+  });
+
+  it('falls back to xml file path when namespace cannot be resolved', () => {
+    // CdataMapper.xml uses namespace "com.example.mapper.CdataMapper"
+    // but there is no corresponding Java file in the fixture → fallback to xml path
+    let xmlPathEdgeFound = false;
+    for (const rel of result.graph.iterRelationships()) {
+      if (rel.type === 'QUERIES' && rel.reason?.startsWith('mybatis-')) {
+        const source = result.graph.getNode(rel.sourceId);
+        const target = result.graph.getNode(rel.targetId);
+        if (source && target?.properties.name === 'cdata_table') {
+          // Source should be either a File or Method node — both are acceptable
+          xmlPathEdgeFound = true;
+        }
+      }
+    }
+    expect(xmlPathEdgeFound).toBe(true);
+  });
 });

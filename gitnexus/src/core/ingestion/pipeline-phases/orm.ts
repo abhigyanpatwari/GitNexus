@@ -125,7 +125,11 @@ function parseMybatisXml(content: string): { namespace: string; statements: Myba
  */
 function namespaceToFilePath(namespace: string, allPaths: string[]): string | null {
   // com.example.foo.XxxMapper → com/example/foo/XxxMapper.java
-  const rel = namespace.replace(/\./g, '/') + '.java';
+  // Strip inner-class suffix (e.g. "Outer$Inner" → use "Outer.java").
+  const outerNamespace = namespace.includes('$')
+    ? namespace.slice(0, namespace.indexOf('$'))
+    : namespace;
+  const rel = outerNamespace.replace(/\./g, '/') + '.java';
   const found = allPaths.find((p) => p.replace(/\\/g, '/').endsWith(rel));
   return found ?? null;
 }
@@ -205,7 +209,8 @@ function buildMapperMethodIndex(graph: KnowledgeGraph): {
   graph.forEachNode((node) => {
     if (!node.id.startsWith('Method:')) return;
     const filePath = node.properties.filePath as string | undefined;
-    if (!filePath || !filePath.endsWith('Mapper.java')) return;
+    // Match common Java DAO/Mapper interface naming conventions.
+    if (!filePath || !/(?:Mapper|Dao|DAO|Repository)\.java$/.test(filePath)) return;
     filesWithMethods.add(filePath);
     // ID format: "Method:<filePath>:<ClassName>.<methodName>#<paramCount>"
     // Strip the #N suffix to get a param-count-agnostic key.
