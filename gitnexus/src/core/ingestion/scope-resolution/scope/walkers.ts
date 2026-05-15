@@ -278,6 +278,48 @@ export function findAllCallableBindingsInScope(
 }
 
 /**
+ * ISO C++ `[basic.lookup.unqual]` §7: if ordinary unqualified lookup finds
+ * a name that is NOT a function or function template, ADL is suppressed.
+ *
+ * Returns `true` when a non-function binding (variable, class, enum, etc.)
+ * for `name` exists in any scope up the chain from `startScope`. Used by
+ * free-call-fallback to block ADL when a variable shadows a function name.
+ */
+export function hasNonCallableBindingInScope(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+
+    const localBindings = scope.bindings.get(name);
+    if (localBindings !== undefined) {
+      for (const b of localBindings) {
+        if (b.def.type !== 'Function' && b.def.type !== 'Method' && b.def.type !== 'Constructor') {
+          return true;
+        }
+      }
+    }
+
+    const importedBindings = lookupBindingsAt(currentId, name, scopes);
+    for (const b of importedBindings) {
+      if (b.def.type !== 'Function' && b.def.type !== 'Method' && b.def.type !== 'Constructor') {
+        return true;
+      }
+    }
+
+    currentId = scope.parent;
+  }
+  return false;
+}
+
+/**
  * Populate `ownerId` on every def structurally owned by a Class
  * scope — methods (defs in Function scopes whose parent is Class)
  * and class-body fields (defs directly in Class scopes).

@@ -2508,6 +2508,32 @@ describe('C++ ADL — hidden friend function visible via ADL', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.unqual]` §7: non-function ordinary lookup
+// result blocks ADL. If the name resolves to a variable/class/enum in scope,
+// ADL does not fire even if class-typed arguments are present.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-non-function-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a variable named record exists in scope', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: `int record = 0;` in namespace app means ordinary lookup
+    // finds a non-function entity. ADL should be suppressed — even though
+    // `e` is audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //
 // GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier

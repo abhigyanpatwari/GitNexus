@@ -28,6 +28,7 @@ import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findClassBindingInScope,
+  hasNonCallableBindingInScope,
 } from '../scope/walkers.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -96,18 +97,23 @@ export function emitFreeCallFallback(
         if (options.resolveAdlCandidates === undefined) {
           fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
         } else {
+          // ISO C++ `[basic.lookup.unqual]` §7: if ordinary lookup finds a
+          // non-function name (variable, class, enum), ADL is suppressed.
+          const adlSuppressed = hasNonCallableBindingInScope(site.inScope, site.name, scopes);
           const ordinary = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
-          const adl = options.resolveAdlCandidates(
-            {
-              name: site.name,
-              arity: site.arity,
-              argumentTypes: site.argumentTypes,
-              atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
-            },
-            parsed,
-            scopes,
-            parsedFiles,
-          );
+          const adl = adlSuppressed
+            ? undefined
+            : options.resolveAdlCandidates(
+                {
+                  name: site.name,
+                  arity: site.arity,
+                  argumentTypes: site.argumentTypes,
+                  atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+                },
+                parsed,
+                scopes,
+                parsedFiles,
+              );
 
           // Preserve existing ordinary-lookup behavior when ADL contributed
           // no candidates.
