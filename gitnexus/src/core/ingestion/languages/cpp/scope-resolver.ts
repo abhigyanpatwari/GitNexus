@@ -222,8 +222,10 @@ export const cppScopeResolver: ScopeResolver = {
   // C++ argument-dependent / Koenig lookup (U2 of plan 2026-05-13-001).
   // Fires after `findCallableBindingInScope` returns undefined; surfaces
   // candidates from the associated namespaces of class-typed arguments.
-  // V1 limitation: only direct enclosing-namespace closure for value
-  // class-typed args; pointer/reference/template-spec args excluded.
+  // Current boundary: class-typed value/pointer/reference args and template
+  // specializations with explicit type arguments contribute associated
+  // namespaces. Function-pointer args, base-class associated namespaces,
+  // and full ordinary+ADL merge remain excluded.
   resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
     // `using ns::name;` introduces `name` into ordinary unqualified lookup.
     // For template-class method bodies, lexical scope walks can miss this

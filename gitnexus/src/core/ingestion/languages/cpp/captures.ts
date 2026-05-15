@@ -720,12 +720,14 @@ function isParenthesizedFunctionCall(callNode: SyntaxNode): boolean {
 
 /**
  * Per-argument ADL classification: walk each argument of a free call and
- * decide whether it resolves to a directly-named class or class-pointer
- * type (ADL fires) or to an excluded shape such as a reference, function
- * pointer, primitive, literal, or template specialization.
+ * classify its declared type for associated-namespace lookup.
  *
- * Class-typed values and class pointers (`N::S`, `N::S*`, `N::S**`) all
- * preserve the pointee class name for associated-namespace lookup.
+ * Value/pointer/reference class-typed args and template specializations
+ * with explicit type arguments contribute; function pointers, primitives,
+ * literals, and other unsupported shapes produce an empty result.
+ *
+ * Class-typed values/pointers/references (`N::S`, `N::S*`, `N::S&`) all
+ * preserve the class name for associated-namespace lookup.
  * Function pointers remain excluded even when their return type names a
  * class, because the associated entity is the pointed-to function type,
  * not the return type.
@@ -743,7 +745,14 @@ function inferCppCallAdlArgs(callNode: SyntaxNode): CppAdlArgInfo[] {
   return out;
 }
 
-const EMPTY_ADL_ARG: CppAdlArgInfo = { simpleClassName: '' };
+const ADL_TEMPLATE_RECURSION_MAX_DEPTH = 8;
+const EMPTY_ADL_ARG: CppAdlArgInfo = {
+  simpleClassName: '',
+  templateSimpleClassName: '',
+  templateNamespace: '',
+  templateArgClassNames: [],
+  templateArgNamespaces: [],
+};
 
 function classifyAdlArg(argNode: SyntaxNode): CppAdlArgInfo {
   // Literals and primitive-shaped expressions never have associated namespaces.
@@ -845,27 +854,173 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo {
     if (isFunctionPointer || nameText !== varName) continue;
 
     const simpleClassName = extractAdlSimpleTypeName(typeNode);
-    return { simpleClassName };
+    const {
+      templateSimpleClassName,
+      templateNamespace,
+      templateArgClassNames,
+      templateArgNamespaces,
+    } = extractAdlTemplateInfo(typeNode);
+    return {
+      simpleClassName,
+      templateSimpleClassName,
+      templateNamespace,
+      templateArgClassNames,
+      templateArgNamespaces,
+    };
   }
   return EMPTY_ADL_ARG;
 }
 
 /** Extract the simple class-like type name from a `type:` field node.
- *  Returns '' for primitives, template specializations, and any other
+ *  Returns '' for primitives and any other
  *  unsupported type-only shape. Function pointers are filtered at the
  *  declarator level in `lookupAdlIdentifierType`. */
 function extractAdlSimpleTypeName(typeNode: SyntaxNode): string {
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return extractAdlSimpleTypeName(innerType);
+    for (let i = 0; i < typeNode.childCount; i++) {
+      const child = typeNode.child(i);
+      if (child === null) continue;
+      if (
+        child.type === 'type_identifier' ||
+        child.type === 'qualified_identifier' ||
+        child.type === 'template_type'
+      ) {
+        return extractAdlSimpleTypeName(child);
+      }
+    }
+    return '';
+  }
   if (typeNode.type === 'primitive_type') return '';
   if (typeNode.type === 'sized_type_specifier') return '';
   if (typeNode.type === 'type_identifier') return typeNode.text;
+  if (typeNode.type === 'template_type') {
+    const nameNode = typeNode.childForFieldName('name');
+    if (nameNode !== null) return extractAdlSimpleTypeName(nameNode);
+    const id = findFirstDescendantOfType(typeNode, 'type_identifier');
+    return id !== null ? id.text : '';
+  }
   if (typeNode.type === 'qualified_identifier') {
     const nameNode = typeNode.childForFieldName('name');
     if (nameNode !== null) return extractAdlSimpleTypeName(nameNode);
     const id = findFirstDescendantOfType(typeNode, 'type_identifier');
     return id !== null ? id.text : '';
   }
-  // template_type (e.g. `vector<int>`), function pointers, decltype — V1 excludes.
+  // Function pointers, decltype, etc — unsupported for ADL participation.
   return '';
+}
+
+function extractAdlTypeNamespace(typeNode: SyntaxNode): string {
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return extractAdlTypeNamespace(innerType);
+    for (let i = 0; i < typeNode.childCount; i++) {
+      const child = typeNode.child(i);
+      if (child === null) continue;
+      if (
+        child.type === 'qualified_identifier' ||
+        child.type === 'template_type' ||
+        child.type === 'type_identifier'
+      ) {
+        return extractAdlTypeNamespace(child);
+      }
+    }
+    return '';
+  }
+  if (typeNode.type === 'template_type') {
+    const nameNode = typeNode.childForFieldName('name');
+    return nameNode !== null ? extractAdlTypeNamespace(nameNode) : '';
+  }
+  if (typeNode.type === 'qualified_identifier') {
+    const scope = typeNode.childForFieldName('scope');
+    if (scope !== null) return normalizeCppNamespaceQName(scope.text);
+    return extractNamespaceFromQualifiedText(typeNode.text);
+  }
+  return '';
+}
+
+function extractAdlTemplateInfo(typeNode: SyntaxNode): {
+  templateSimpleClassName: string;
+  templateNamespace: string;
+  templateArgClassNames: string[];
+  templateArgNamespaces: string[];
+} {
+  const templateTypeNode = findTemplateTypeNode(typeNode);
+  if (templateTypeNode === null) {
+    return {
+      templateSimpleClassName: '',
+      templateNamespace: '',
+      templateArgClassNames: [],
+      templateArgNamespaces: [],
+    };
+  }
+  const templateArgClassNames: string[] = [];
+  const templateArgNamespaces: string[] = [];
+  collectAdlTemplateArgs(templateTypeNode, 0, templateArgClassNames, templateArgNamespaces);
+  return {
+    templateSimpleClassName: extractAdlSimpleTypeName(templateTypeNode),
+    templateNamespace: extractAdlTypeNamespace(typeNode),
+    templateArgClassNames,
+    templateArgNamespaces,
+  };
+}
+
+function collectAdlTemplateArgs(
+  templateTypeNode: SyntaxNode,
+  depth: number,
+  outClassNames: string[],
+  outNamespaces: string[],
+): void {
+  if (depth >= ADL_TEMPLATE_RECURSION_MAX_DEPTH) return;
+  if (templateTypeNode.type !== 'template_type') return;
+
+  const argList =
+    templateTypeNode.childForFieldName('arguments') ??
+    findChildOfType(templateTypeNode, ['template_argument_list']);
+  if (argList === null) return;
+
+  for (let i = 0; i < argList.namedChildCount; i++) {
+    const arg = argList.namedChild(i);
+    if (arg === null || arg.type !== 'type_descriptor') continue;
+    const simpleClassName = extractAdlSimpleTypeName(arg);
+    if (simpleClassName.length > 0) outClassNames.push(simpleClassName);
+    const ns = extractAdlTypeNamespace(arg);
+    if (ns.length > 0) outNamespaces.push(ns);
+
+    const nestedType = arg.childForFieldName('type');
+    const nestedTemplate = nestedType !== null ? findTemplateTypeNode(nestedType) : null;
+    if (nestedTemplate !== null) {
+      collectAdlTemplateArgs(nestedTemplate, depth + 1, outClassNames, outNamespaces);
+    }
+  }
+}
+
+function findTemplateTypeNode(typeNode: SyntaxNode): SyntaxNode | null {
+  if (typeNode.type === 'template_type') return typeNode;
+  if (typeNode.type === 'type_descriptor') {
+    const innerType = typeNode.childForFieldName('type');
+    if (innerType !== null) return findTemplateTypeNode(innerType);
+    return null;
+  }
+  if (typeNode.type === 'qualified_identifier') {
+    const nameNode = typeNode.childForFieldName('name');
+    if (nameNode !== null) return findTemplateTypeNode(nameNode);
+    return null;
+  }
+  return null;
+}
+
+function normalizeCppNamespaceQName(text: string): string {
+  const normalized = text.replace(/^::/, '').replace(/::$/, '').replace(/::/g, '.');
+  return normalized;
+}
+
+function extractNamespaceFromQualifiedText(text: string): string {
+  const cleaned = text.replace(/\s+/g, '');
+  const idx = cleaned.lastIndexOf('::');
+  if (idx <= 0) return '';
+  return normalizeCppNamespaceQName(cleaned.slice(0, idx));
 }
 
 /**
