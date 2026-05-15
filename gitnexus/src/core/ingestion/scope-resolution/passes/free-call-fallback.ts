@@ -155,7 +155,7 @@ export function emitFreeCallFallback(
       // V1: pickUniqueGlobalCallable ignores import context — resolves to any
       // globally-unique callable. False cross-package edges are possible when
       // the caller does not import the target package. Same-package calls are
-      // caught by findCallableBindingInScope above before reaching here.
+      // usually caught by nearest-scope lookup before reaching here.
       if (fnDef === undefined && options.allowGlobalFallback === true) {
         fnDef = pickUniqueGlobalCallable(
           site.name,
