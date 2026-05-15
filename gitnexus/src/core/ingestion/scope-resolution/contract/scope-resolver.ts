@@ -615,8 +615,9 @@ export interface ScopeResolver {
    *
    * Receiver-bound-calls invokes this hook AFTER Case 1 (namespace
    * imports) and AFTER Case 2 (class-name receiver) fail to resolve.
-   * Returns the target def, or `undefined` to fall through to the
-   * remaining cases.
+   * Returns the target def, `'ambiguous'` when multiple inline-namespace
+   * children declare the same name (suppresses edge emission), or
+   * `undefined` to fall through to the remaining cases.
    */
   readonly resolveQualifiedReceiverMember?: (
     receiverName: string,
@@ -624,7 +625,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
-  ) => SymbolDefinition | undefined;
+  ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`

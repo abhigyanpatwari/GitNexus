@@ -2776,6 +2776,47 @@ describe('C++ inline namespace — versioned (v1 inline, v0 not)', () => {
   });
 });
 
+describe('C++ inline namespace — ambiguous same-name across inline children (#1564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() emits zero CALLS edges when v1 and v2 both declare foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // ISO C++ leaves this ambiguous — both inline namespace children declare
+    // the same name. The resolver must suppress rather than pick arbitrarily.
+    expect(fooCalls.length).toBe(0);
+  });
+});
+
+describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-diff-sigs'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Even though the two overloads have distinct signatures and a compiler
+    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
+    // hook lacks call-site arity/argument-type information, so multi-hit cases
+    // are conservatively suppressed. Documents the limitation noted in
+    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    expect(fooCalls.length).toBe(0);
+  });
+});
+
 describe('C++ inline namespace — nested (STL __1-style)', () => {
   let result: PipelineResult;
 
