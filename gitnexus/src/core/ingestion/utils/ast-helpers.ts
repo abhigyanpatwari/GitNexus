@@ -269,6 +269,8 @@ export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  isClassContainerNode?: (node: SyntaxNode) => boolean,
+  extractEnclosingClassInfo?: (node: SyntaxNode, filePath: string) => EnclosingClassInfo | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -319,7 +321,9 @@ export const findEnclosingClassInfo = (
         }
       }
     }
-    if (CLASS_CONTAINER_TYPES.has(current.type)) {
+    const isStandardContainer = CLASS_CONTAINER_TYPES.has(current.type);
+    const isProviderContainer = isClassContainerNode?.(current) === true;
+    if (isStandardContainer || isProviderContainer) {
       // Delegate language-specific container remapping to the provider hook.
       if (resolveEnclosingOwner) {
         if (visitedContainers.has(current)) {
@@ -341,6 +345,13 @@ export const findEnclosingClassInfo = (
           current = resolved;
           continue;
         }
+      }
+
+      const providerInfo = extractEnclosingClassInfo?.(current, filePath);
+      if (providerInfo) return providerInfo;
+      if (isProviderContainer && !isStandardContainer) {
+        current = current.parent;
+        continue;
       }
 
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`

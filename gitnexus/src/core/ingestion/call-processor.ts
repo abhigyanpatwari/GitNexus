@@ -504,7 +504,14 @@ const findEnclosingFunction = (
           if (resolved.candidates.length === 1) {
             return resolved.candidates[0].nodeId;
           }
-          const classInfo = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
+          const sigNodeForClass = customResult.definitionNode ?? current.previousSibling ?? current;
+          const classInfo = findEnclosingClassInfo(
+            sigNodeForClass,
+            filePath,
+            provider.resolveEnclosingOwner,
+            provider.isClassContainerNode,
+            provider.extractEnclosingClassInfo,
+          );
           if (classInfo) {
             const classMatches = resolved.candidates.filter((c) => c.ownerId === classInfo.classId);
             if (classMatches.length === 1) return classMatches[0].nodeId;
@@ -518,16 +525,22 @@ const findEnclosingFunction = (
           }
         }
         let finalLabel = customResult.label;
+        const sigNode = customResult.definitionNode ?? current.previousSibling ?? current;
         if (provider.labelOverride) {
-          const override = provider.labelOverride(current.previousSibling!, finalLabel);
+          const override = provider.labelOverride(sigNode, finalLabel);
           if (override !== null) finalLabel = override;
         }
-        const classInfo2 = findEnclosingClassInfo(current.previousSibling ?? current, filePath);
+        const classInfo2 = findEnclosingClassInfo(
+          sigNode,
+          filePath,
+          provider.resolveEnclosingOwner,
+          provider.isClassContainerNode,
+          provider.extractEnclosingClassInfo,
+        );
         const qualifiedName = classInfo2
           ? `${classInfo2.className}.${customResult.funcName}`
           : customResult.funcName;
         // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
-        const sigNode = current.previousSibling ?? current;
         const language2 = getLanguageFromFilename(filePath);
         let arity2: number | undefined;
         let encTypeTag2 = '';

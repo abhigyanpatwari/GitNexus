@@ -151,7 +151,9 @@ const lookupInEnv = (
   varName: string,
   callNode: SyntaxNode,
   patternOverrides?: PatternOverrides,
-  enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
+  enclosingFunctionFinder?: (
+    n: SyntaxNode,
+  ) => { funcName: string; label: NodeLabel; definitionNode?: SyntaxNode } | null,
   extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
@@ -385,7 +387,9 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
  *  signature instead of a child. */
 const findEnclosingScopeKey = (
   node: SyntaxNode,
-  enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
+  enclosingFunctionFinder?: (
+    n: SyntaxNode,
+  ) => { funcName: string; label: NodeLabel; definitionNode?: SyntaxNode } | null,
   extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
 ): string | undefined => {
   let current = node.parent;
@@ -398,7 +402,7 @@ const findEnclosingScopeKey = (
     if (enclosingFunctionFinder) {
       const result = enclosingFunctionFinder(current);
       if (result) {
-        const sigNode = current.previousSibling;
+        const sigNode = result.definitionNode ?? current.previousSibling;
         const startIdx = sigNode?.startIndex ?? current.startIndex;
         return `${result.funcName}@${startIdx}`;
       }
@@ -802,7 +806,7 @@ export interface BuildTypeEnvOptions {
    *  where function_body is a sibling of the signature (e.g., Dart). */
   enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
-  ) => { funcName: string; label: NodeLabel } | null;
+  ) => { funcName: string; label: NodeLabel; definitionNode?: SyntaxNode } | null;
   /** Language-specific function name extraction from an AST node.
    *  Replaces the generic name-field lookup for languages with non-standard
    *  AST structures (C/C++ declarator unwrapping, Swift init/deinit, etc.).
