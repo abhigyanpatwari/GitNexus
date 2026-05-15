@@ -2435,7 +2435,7 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
     // 'int', so both candidates have parameterTypes ['Token', 'int'].
     // narrowOverloadCandidates can't disambiguate (arg-types are
     // ['', 'int']), and isOverloadAmbiguousAfterNormalization detects
-    // the collision → ADL_AMBIGUOUS sentinel → caller suppresses.
+    // the collision in merged ordinary+ADL narrowing, so fallback suppresses.
     // count=1 is the bug (arbitrary first-pick); count=2 would require
     // an ambiguous-target edge model GitNexus does not have.
     expect(processCalls.length).toBe(0);
@@ -2595,8 +2595,8 @@ describe('C++ ADL — unqualified free-function ref with namespace collision', (
     const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
     // Unqualified `worker` → workspace scan finds alpha::worker and beta::worker.
     // Both alpha and beta are added to the associated set. run_with() exists in
-    // both namespaces → two candidates → ADL_AMBIGUOUS sentinel → zero CALLS
-    // edges (suppressed rather than arbitrary pick).
+    // both namespaces → two candidates → merged narrowing suppression →
+    // zero CALLS edges (suppressed rather than arbitrary pick).
     expect(runWithCalls.length).toBe(0);
   });
 });

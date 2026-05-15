@@ -241,8 +241,8 @@ function collectAssociatedNamespacesForAdlArg(
   addAssociatedNamespaceForClassName(arg.simpleClassName, scopes, associatedNamespaces);
 
   // Includes template-owner namespaces (e.g. `std` in std::vector<T>). If
-  // that surfaces extra candidates, ADL_AMBIGUOUS suppression below prevents
-  // arbitrary edge emission.
+  // that surfaces extra candidates, merged-candidate overload narrowing in
+  // free-call-fallback suppresses arbitrary edge emission.
   if (arg.templateNamespace.length > 0) associatedNamespaces.add(arg.templateNamespace);
 
   for (const ns of arg.templateArgNamespaces) {

@@ -122,12 +122,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (PR #1520 review follow-up plan 2026-05-13-001 U3); backporting
     // is out of scope.
     'Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)',
-    // The legacy DAG path has no ADL_AMBIGUOUS suppression sentinel.
+    // The legacy DAG path does not apply merged ordinary+ADL narrowing
+    // with ambiguity suppression.
     // When ADL surfaces multiple overloads that collide after C++
     // int/long normalization, legacy picks the first match arbitrarily.
-    // The scope-resolver path suppresses via the ADL_AMBIGUOUS sentinel
-    // (mirroring OVERLOAD_AMBIGUOUS for receiver-bound paths). Scope-
-    // resolver-only correctness win (PR #1520 review follow-up plan
+    // The scope-resolver path suppresses in free-call-fallback after
+    // merged-candidate overload narrowing. Scope-resolver-only
+    // correctness win (PR #1520 review follow-up plan
     // 2026-05-13-001 U2); backporting is out of scope.
     'process(t, 42) emits zero CALLS edges when ADL surfaces process(Token,int)/process(Token,long) (collide after C++ int normalization)',
     // Legacy DAG path does not merge ordinary and ADL candidate sets for
