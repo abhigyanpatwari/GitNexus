@@ -251,6 +251,53 @@ export function pickCppAdlCandidates(
         candidates.push(def);
       }
     }
+    // ISO C++ `[basic.lookup.argdep]` §2: hidden friend functions declared
+    // inside a class body are visible via ADL when the class is an associated
+    // class. Scan Class scopes whose enclosing namespace is in the associated
+    // set for callable ownedDefs matching the call name. This enables the
+    // canonical "hidden friend" idiom:
+    //   struct Foo { friend void swap(Foo&, Foo&) {} };
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Class') continue;
+      // Check if ANY class def in this scope has an associated namespace.
+      let isAssociatedClass = false;
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+        const nsQName = classToNamespaceQualifiedName.get(def.nodeId);
+        if (nsQName !== undefined && associatedNamespaces.has(nsQName)) {
+          isAssociatedClass = true;
+          break;
+        }
+      }
+      if (!isAssociatedClass) continue;
+      // Also scan Function scopes that are direct children of this class
+      // scope — friend function definitions create their own Function scope
+      // underneath the Class scope.
+      for (const childScope of parsed.scopes) {
+        if (childScope.parent !== scope.id) continue;
+        if (childScope.kind !== 'Function') continue;
+        for (const def of childScope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+            continue;
+          }
+          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          if (simple !== site.name) continue;
+          if (seenKey.has(def.nodeId)) continue;
+          seenKey.add(def.nodeId);
+          candidates.push(def);
+        }
+      }
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+          continue;
+        }
+        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+        if (simple !== site.name) continue;
+        if (seenKey.has(def.nodeId)) continue;
+        seenKey.add(def.nodeId);
+        candidates.push(def);
+      }
+    }
   }
   if (candidates.length === 0) return undefined;
   return candidates;

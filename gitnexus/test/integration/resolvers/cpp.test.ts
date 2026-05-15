@@ -2483,6 +2483,31 @@ describe('C++ ADL — enum-typed argument contributes enclosing namespace', () =
 });
 
 // ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: "hidden friend" functions
+// declared inside a class body are visible via ADL. They are not namespace-
+// scope declarations (owned by the class scope in tree-sitter-cpp), so they
+// require scanning associated class scopes in addition to namespace scopes.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — hidden friend function visible via ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-hidden-friend'), () => {});
+  }, 60000);
+
+  it('process(f) where f is lib::Foo resolves to hidden friend process(Foo&) via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // Exactly 1: process(Foo&) is a hidden friend declared inside Foo's
+    // class body. Ordinary namespace-scope lookup won't find it — only ADL
+    // scanning the associated class's ownedDefs can surface it.
+    expect(processCalls.length).toBe(1);
+    expect(processCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //
 // GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
