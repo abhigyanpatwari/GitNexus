@@ -122,12 +122,6 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (PR #1520 review follow-up plan 2026-05-13-001 U3); backporting
     // is out of scope.
     'Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)',
-    // The legacy DAG path has no V1/V2 ADL boundary — pointer-typed
-    // arguments resolve via the workspace-wide simple-name walk. The
-    // scope-resolver V1 ADL pass excludes pointer args (closure rules
-    // deferred to V2) per plan 2026-05-13-001 U2 / R4. Scope-resolver-
-    // only correctness win; backporting is out of scope.
-    'record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args',
     // The legacy DAG path has no ADL_AMBIGUOUS suppression sentinel.
     // When ADL surfaces multiple overloads that collide after C++
     // int/long normalization, legacy picks the first match arbitrarily.
@@ -184,6 +178,15 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'f(2.5) resolves to f(double) — exact match beats standard conversion',
     'f(42) resolves to f(int) — exact match beats standard conversion',
     'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
+    // PR #1598: ADL free-function reference arg negative fixtures rely on
+    // scope-resolver-only correctness. The legacy DAG falls back to
+    // `pickUniqueGlobalCallable` which resolves the callee by simple-name
+    // workspace lookup, ignoring argument analysis. These fixtures expect
+    // zero CALLS edges (the registry-primary path correctly avoids a false-
+    // positive), but the legacy path emits one edge via the global fallback.
+    // Scope-resolver-only correctness wins; backporting is out of scope.
+    'process(data::value) emits zero CALLS edges \u2014 data::value is a variable, not a function',
+    'run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference',
   ]),
 };
 
