@@ -25,22 +25,13 @@ import {
   clearCppDependentBases,
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
-import {
-  populateCppAssociatedNamespaces,
-  clearCppAdlState,
-  pickCppAdlCandidates,
-  ADL_AMBIGUOUS,
-} from './adl.js';
+import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
 import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
-import {
-  isOverloadAmbiguousAfterNormalization,
-  narrowOverloadCandidates,
-} from '../../scope-resolution/passes/overload-narrowing.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -222,12 +213,12 @@ export const cppScopeResolver: ScopeResolver = {
   },
 
   // C++ argument-dependent / Koenig lookup (U2 of plan 2026-05-13-001).
-  // Fires after `findCallableBindingInScope` returns undefined; surfaces
-  // candidates from the associated namespaces of class-typed arguments.
+  // Contributes candidates from associated namespaces of class-typed
+  // arguments; caller merges with ordinary unqualified lookup candidates.
   // Current boundary: class-typed value/pointer/reference args and template
   // specializations with explicit type arguments contribute associated
-  // namespaces. Function-pointer args, base-class associated namespaces,
-  // and full ordinary+ADL merge remain excluded.
+  // namespaces. Function-pointer args and full conversion-ranking remain
+  // excluded.
   resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
     // `using ns::name;` introduces `name` into ordinary unqualified lookup.
     // For template-class method bodies, lexical scope walks can miss this
@@ -249,16 +240,21 @@ export const cppScopeResolver: ScopeResolver = {
       seenUsing.add(member.nodeId);
       usingNamedHits.push(member);
     }
-    if (usingNamedHits.length > 0) {
-      const narrowed = narrowOverloadCandidates(usingNamedHits, site.arity, site.argumentTypes);
-      if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return 'ambiguous';
-      if (narrowed.length === 1) return narrowed[0];
-      if (narrowed.length > 1) return 'ambiguous';
+    const adlHits = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
+    if (usingNamedHits.length === 0) return adlHits;
+    if (adlHits === undefined || adlHits.length === 0) return usingNamedHits;
+    const merged: SymbolDefinition[] = [];
+    const seen = new Set<string>();
+    for (const hit of usingNamedHits) {
+      seen.add(hit.nodeId);
+      merged.push(hit);
     }
-
-    const result = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
-    if (result === ADL_AMBIGUOUS) return 'ambiguous';
-    return result;
+    for (const hit of adlHits) {
+      if (seen.has(hit.nodeId)) continue;
+      seen.add(hit.nodeId);
+      merged.push(hit);
+    }
+    return merged;
   },
 
   // C++ qualified namespace-member resolution (U5 of plan 2026-05-13-001).
