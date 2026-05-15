@@ -1809,6 +1809,29 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
     // so isOverloadAmbiguousAfterNormalization triggers suppression.
     expect(gCalls.length).toBe(0);
   });
+
+  it("p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pCalls = calls.filter((c) => c.source === 'run' && c.target === 'p');
+    // p('a'): argType='char'. Exact-type filter misses both p(int) and
+    // p(double), forcing the conversion ranker (step 4b). char→int is an
+    // integral promotion (rank 1), char→double is a standard conversion
+    // (rank 2). p(int) wins with the lower total cost.
+    expect(pCalls.length).toBe(1);
+    const tgt = result.graph.getNode(pCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes?.[0]).toBe('int');
+  });
+
+  it('h(42, 2.5) emits zero CALLS edges — multi-arg tied total score, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+    // h(42, 2.5): argTypes=['int','double']. Exact-type filter misses
+    // both h(int,int) and h(double,double), forcing the conversion ranker.
+    // h(int,int): rank('int','int') + rank('double','int') = 0 + 2 = 2
+    // h(double,double): rank('int','double') + rank('double','double') = 2 + 0 = 2
+    // Tied at cost 2 — both returned — suppressed as ambiguous.
+    expect(hCalls.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

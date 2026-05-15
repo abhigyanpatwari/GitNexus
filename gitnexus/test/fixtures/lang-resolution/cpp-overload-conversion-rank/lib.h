@@ -10,13 +10,23 @@ public:
   void g(int x);
   void g(long x);
 
+  // Variant 4: multi-arg tied total score
+  void h(int a, int b);
+  void h(double a, double b);
+
+  // Variant 5: char-literal promotion (exercises conversion ranker)
+  void p(int x);
+  void p(double x);
+
   // Inline: call sites live inside the class scope so the scope-chain
   // walk finds the Class scope, enabling pickImplicitThisOverload to
   // resolve overloads against the declaration-side Method nodes (which
   // carry distinct parameterTypes and graph-node IDs).
   void run() {
-    f(2.5);   // Variant 1: double literal -> f(double) wins (exact > standard)
-    f(42);    // Variant 3: int literal -> f(int) wins (exact > standard)
-    g(42);    // Variant 2: int/long both normalize to 'int' -> ambiguous
+    f(2.5);     // Variant 1: double literal -> f(double) wins (exact > standard)
+    f(42);      // Variant 3: int literal -> f(int) wins (exact > standard)
+    g(42);      // Variant 2: int/long both normalize to 'int' -> ambiguous
+    h(42, 2.5); // Variant 4: h(int,int) scores 0+2=2, h(double,double) scores 2+0=2 -> tied -> ambiguous
+    p('a');     // Variant 5: char literal -> p(int) wins via promotion (rank 1 < rank 2)
   }
 };

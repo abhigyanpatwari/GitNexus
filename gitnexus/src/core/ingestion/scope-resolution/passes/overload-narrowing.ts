@@ -39,7 +39,7 @@ import type { SymbolDefinition } from 'gitnexus-shared';
  * Per-slot conversion-rank function. Returns a numeric cost for
  * converting `argType` to `paramType`:
  *   - 0 = exact match (no conversion)
- *   - 1 = promotion (e.g. float→double in C++)
+ *   - 1 = promotion (e.g. char→int, bool→int in C++)
  *   - 2 = standard conversion (e.g. int→double)
  *   - Infinity = incompatible types
  *

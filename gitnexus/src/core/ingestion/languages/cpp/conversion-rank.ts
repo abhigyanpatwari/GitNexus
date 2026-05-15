@@ -1,25 +1,22 @@
 /**
- * C++ standard-conversion-sequence ranking for overload resolution.
+ * C++ conversion-rank scoring for overload resolution (#1578).
  *
- * ISO C++ ranks implicit conversion sequences as:
- *   - Exact match (rank 0) — no conversion needed
- *   - Promotion (rank 1) — int→long, float→double, char→int, bool→int
- *   - Standard conversion (rank 2) — int→double, double→int, etc.
- *   - Mismatch (Infinity) — incompatible types, no implicit conversion
- *
- * V1 operates on **normalized** type strings (output of
+ * Operates on **normalized** type strings (output of
  * `normalizeCppParamType` in `arity-metadata.ts`). After normalization:
  *   - int/long/short/unsigned → 'int'
  *   - float/double → 'double'
  *   - char → 'char', bool → 'bool'
  *
  * Because the normalizer collapses promotion pairs (int↔long,
- * float↔double) to the same string, promotions are invisible at this
- * layer — they look like exact matches. The ranking that matters
- * post-normalization is therefore:
- *   - exact (same normalized type) → rank 0
- *   - arithmetic cross-type (int↔double, char→int, bool→int) → rank 2
- *   - mismatch (string↔int, user types, etc.) → Infinity
+ * float↔double) to the same string, those promotions are invisible at
+ * this layer — they appear as exact matches (rank 0).
+ *
+ * Post-normalization ranking:
+ *   - rank 0 — exact (same normalized type)
+ *   - rank 1 — integral promotion (char→int, bool→int)
+ *   - rank 2 — standard arithmetic conversion (int↔double, char→double,
+ *              bool→double)
+ *   - Infinity — mismatch (string↔int, user types, pointers, etc.)
  *
  * This function is intentionally C++-specific (issue #1578 pitfall:
  * keep conversion-rank tables out of shared overload-narrowing). Other
@@ -29,14 +26,22 @@
 /** Set of normalized arithmetic types that support implicit conversion. */
 const ARITHMETIC = new Set(['int', 'double', 'char', 'bool']);
 
+/** Integral promotion targets: char→int and bool→int are rank 1. */
+const INTEGRAL_PROMOTION = new Map([
+  ['char', 'int'],
+  ['bool', 'int'],
+]);
+
 /**
  * Return the conversion rank from `argType` to `paramType`.
  *
- * @returns 0 for exact match, 2 for standard conversion between
- *          arithmetic types, Infinity for incompatible types.
+ * @returns 0 for exact match, 1 for integral promotion (char/bool→int),
+ *          2 for standard arithmetic conversion, Infinity for mismatch.
  */
 export function cppConversionRank(argType: string, paramType: string): number {
   if (argType === paramType) return 0;
+  // Integral promotions: char→int, bool→int (ISO C++ [conv.prom])
+  if (INTEGRAL_PROMOTION.get(argType) === paramType) return 1;
   if (ARITHMETIC.has(argType) && ARITHMETIC.has(paramType)) return 2;
   return Infinity;
 }

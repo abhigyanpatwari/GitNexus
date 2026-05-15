@@ -358,6 +358,12 @@ export function emitReceiverBoundCalls(
                 hiddenByName = true;
                 break;
               }
+              // Multiple tied survivors with distinct param types (e.g.
+              // h(int,double) vs h(double,int) both scoring 2) → ambiguous.
+              if (narrowed.length > 1) {
+                ambiguous = true;
+                break;
+              }
               memberDef = narrowed[0] ?? methodOverloads[0];
               break;
             }
@@ -734,6 +740,11 @@ function pickOverload(
   // would arbitrarily pick a candidate and lie about the call's target.
   // PR #1520 review follow-up plan U2 / Claude review Finding 5.
   if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
+  // When conversion-rank scoring leaves >1 tied candidate with distinct
+  // parameter types (e.g. h(int,double) vs h(double,int) both scoring 2),
+  // suppress rather than picking arbitrarily — C++ would call this
+  // ambiguous. Mirrors ADL merged-candidate suppression behavior.
+  if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
   return candidates[0] ?? overloads[0];
 }
 

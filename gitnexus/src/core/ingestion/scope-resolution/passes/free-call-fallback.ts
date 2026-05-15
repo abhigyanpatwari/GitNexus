@@ -125,10 +125,11 @@ export function emitFreeCallFallback(
               );
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
-              } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                // True overload ambiguity: suppress only when all candidates
-                // share the same file (real overloads). Cross-file candidates
-                // are shadowing; keep first-match fnDef for those.
+              } else if (narrowed.length > 1) {
+                // Multiple survivors after conversion-rank scoring.
+                // Suppress when all candidates share the same file (true
+                // overloads) — mirrors ADL merged-candidate path behavior.
+                // Cross-file candidates are shadowing; keep first-match.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
                   handledSites.add(
@@ -137,8 +138,8 @@ export function emitFreeCallFallback(
                   continue;
                 }
               }
-              // narrowed.length === 0 or >1 non-ambiguous: keep the
-              // first-match fnDef — preserves local-shadows-import.
+              // narrowed.length === 0: keep the first-match fnDef —
+              // preserves local-shadows-import.
             }
           }
         } else {
@@ -181,17 +182,17 @@ export function emitFreeCallFallback(
               );
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
-              } else if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                // True overload ambiguity: suppress only when all candidates
-                // share the same file. Cross-file = shadowing → first-match.
+              } else if (narrowed.length > 1) {
+                // Multiple survivors — suppress when same-file (true
+                // overloads), mirrors ADL merged-candidate behavior.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
                   handledSites.add(siteKey);
                   continue;
                 }
-                fnDef = ordinary[0];
+                fnDef = ordinary[0]; // cross-file shadowing → first-match
               } else {
-                fnDef = ordinary[0]; // fallback to first-match
+                fnDef = ordinary[0]; // narrowed empty → first-match
               }
             }
           } else {
