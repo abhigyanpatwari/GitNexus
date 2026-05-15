@@ -181,6 +181,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // 'ambiguous' and suppresses edge emission. Scope-resolver-only
     // correctness win (#1564); backporting to legacy is out of scope.
     'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
+    // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
+    // `foo(double)` in v2. The scope-resolver conservatively suppresses
+    // because `resolveQualifiedReceiverMember` lacks call-site argument
+    // types. Legacy DAG has no inline-namespace resolver. Scope-resolver-
+    // only correctness win (#1600 / Claude review Finding 1).
+    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)',
     // PR #1598: ADL free-function reference arg negative fixtures rely on
     // scope-resolver-only correctness. The legacy DAG falls back to
     // `pickUniqueGlobalCallable` which resolves the callee by simple-name

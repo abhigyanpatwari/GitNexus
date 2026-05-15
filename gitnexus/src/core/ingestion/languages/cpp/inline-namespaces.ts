@@ -132,15 +132,24 @@ export function resolveCppQualifiedNamespaceMember(
   if (allHits.length === 0) return undefined;
   if (allHits.length === 1) return allHits[0];
 
-  // Multi-candidate: narrow then check ambiguity. Same pattern as ADL
-  // in `adl.ts` lines 220-228 — reuses the overload-narrowing pass so
-  // int/long-collision-style ambiguity is also caught on this path.
+  // Multi-candidate: the `resolveQualifiedReceiverMember` hook has no
+  // access to call-site arity or argument types, so
+  // `narrowOverloadCandidates` cannot actually narrow here — the call
+  // with `(allHits, undefined, undefined)` is effectively a pass-through.
+  // We retain it so that `isOverloadAmbiguousAfterNormalization` can
+  // still detect int/long-style normalization collisions on this path,
+  // but for any multi-hit case where candidates have genuinely distinct
+  // signatures (e.g. `foo(int)` vs `foo(double)` in different inline
+  // children), we conservatively suppress rather than pick arbitrarily.
+  // A future enhancement could thread call-site argument info through
+  // the `resolveQualifiedReceiverMember` contract to enable real
+  // narrowing here.
   const narrowed = narrowOverloadCandidates(allHits, undefined, undefined);
   if (narrowed.length === 1) return narrowed[0];
   if (narrowed.length === 0) return undefined;
   if (isOverloadAmbiguousAfterNormalization(narrowed, undefined)) return 'ambiguous';
-  // Multiple surviving candidates that aren't normalization-ambiguous —
-  // conservative fallback: suppress rather than pick arbitrarily.
+  // Multiple surviving candidates (distinct signatures) — conservative
+  // suppress because we lack call-site info to disambiguate.
   return 'ambiguous';
 }
 
