@@ -179,32 +179,57 @@ routes between two modes based on the triggering event:
   the npm tarball exactly (traceable releases). The RC tag is excluded
   from this workflow's `push: tags:` filter, so it does **not** re-trigger
   publishing — preventing the double-publish failure mode tracked in #1609.
-  Recovery after a partial failure:
+  Recovery after a partial failure: the workflow's `if: failure()` cleanup
+  step in the `publish` job auto-deletes the v-tag and marker on most
+  post-publish failures, so the typical retry is just:
+
+  ```bash
+  gh workflow run publish.yml --ref main -f force=true
+  # or push a new commit to main, which will cut a fresh RC
+  ```
+
+  If auto-cleanup didn't run (e.g. the cleanup step itself failed, or the
+  failure happened in the route/rc-guard phase before the marker was
+  pushed), manual cleanup is:
 
   ```bash
   git push --delete origin rc/<HEAD_SHA> v<RC>
-  # then redispatch the workflow with force: true
+  # then redispatch with force: true
   ```
+
+  **Release-PR-skip subject pattern.** The rc-guard job recognizes a
+  squash-merged release commit by matching the commit subject against
+  `^chore: release vX.Y.Z` (optionally followed by ` (#NNNN)` for the
+  squash-merge PR-number suffix). Match is case-insensitive — `Chore: Release v1.2.3`
+  works too. PRs that should suppress the RC build must either use this
+  subject shape, or carry the `release` label so the label-based fallback
+  fires. Other release-style subjects (`chore(release): v1.2.3`,
+  `release: v1.2.3`) will NOT trigger the skip — please name the release
+  PR exactly `chore: release vX.Y.Z` to keep the dedup deterministic.
 
   **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
   are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
   the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.
-  Re-running `publish.yml` with `force: true` will abort at the
-  "Version already exists on npm" guard. To recover without cutting a new RC:
+  Recovery without cutting a new RC:
 
   ```bash
-  # 1. Manually trigger only the docker workflow, passing the existing RC tag:
-  gh workflow run docker.yml --ref main -f tag=v<RC_VERSION>
-  # (requires a workflow_dispatch trigger on docker.yml — see note below)
+  # Re-run only the failed docker job from the original workflow run:
+  gh run rerun <run-id> --failed
   ```
 
-  Because `docker.yml` intentionally has no `workflow_dispatch` (images are
-  tag-driven by design), the practical recovery options are:
-  - Wait for the next commit on `main`, which will cut a new RC that includes
-    the Docker build.
-  - Manually run `docker build` + `docker push` locally and sign with Cosign
-    against the same digest.
-  - Delete `rc/<HEAD_SHA>` and `v<RC>` tags, then redispatch with `force: true` to re-run the full RC pipeline (cuts a new RC number).
+  Find the run ID via `gh run list --workflow=publish.yml --branch main`.
+  `docker.yml` intentionally has no `workflow_dispatch` trigger (images are
+  tag-driven by design), so the gh-run-rerun path is the supported recovery.
+
+  **GitHub Release transient failure** (npm publish succeeded, Release step
+  failed): the npm artifact is live but no GitHub Release page exists.
+  Recover by either re-running the failed job (`gh run rerun <run-id> --failed`),
+  or creating the Release manually:
+
+  ```bash
+  gh release create v<RC> --prerelease --generate-notes        # RC
+  gh release create v<X.Y.Z> --notes-file gitnexus/CHANGELOG.md # stable
+  ```
 
 The rc workflow never moves `latest`. To verify after a change, inspect dist-tags:
 

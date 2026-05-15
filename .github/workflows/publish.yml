@@ -2,9 +2,8 @@ name: Publish
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sole publisher for the `gitnexus` npm package, GitHub Releases, and Docker
-# images. Replaces the former two-workflow design (release-candidate.yml +
-# publish.yml) — see plan docs/plans/2026-05-15-001-refactor-unify-publish-
-# workflow-plan.md and issue #1609 for context.
+# images. Replaces the former two-workflow design — see issue #1609 for the
+# double-publish race this unification closes.
 #
 # Two release modes, both routed through this file:
 #   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
@@ -16,13 +15,15 @@ name: Publish
 #       suffix). Verifies package.json matches the tag, publishes to npm with
 #       --tag latest, creates a stable GitHub Release. No docker (RC-only).
 #
-# ⚠️  KTD-1 INVARIANT — DO NOT WEAKEN ⚠️
+# ⚠️  SELF-TRIGGER INVARIANT — DO NOT WEAKEN ⚠️
 # The `tags:` filter below uses a negative glob `'!v*-rc.*'` to prevent the
 # workflow from re-triggering itself when the RC path pushes its own v-tag.
 # Without this exclusion, every RC publish double-fires (the bug fixed by
 # #1609). If a NEW prerelease channel is introduced (e.g. `-beta.N`,
 # `-alpha.N`, `-next.N`), the negative-glob list MUST be extended in
-# lock-step or self-trigger returns.
+# lock-step or self-trigger returns. The same invariant applies to the
+# `Classify` step further below — its accepted-tag regex must align with
+# the trigger filter's exclusion list.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -33,7 +34,8 @@ on:
       - 'docs/**'
       - 'LICENSE'
     tags:
-      # KTD-1: negative-globbed exclusion of RC tags this workflow itself produces.
+      # Negative-globbed exclusion of RC tags this workflow itself produces
+      # (see the SELF-TRIGGER INVARIANT in the header comment).
       - 'v*'
       - '!v*-rc.*'
   workflow_dispatch:
@@ -60,12 +62,19 @@ on:
         options:
           - 'false'
           - 'true'
+      # ⚠️ DRY_RUN_REMOVE_BEFORE_MERGE — pre-merge rehearsal affordance ⚠️
+      # This input and every `inputs.dry_run` reference in this file MUST
+      # be removed in a final cleanup commit BEFORE this PR merges. The
+      # `check-no-dry-run-on-main.sh` script in ci-quality.yml fails the
+      # build if any `inputs.dry_run` reference survives on main. Search
+      # for the token `DRY_RUN_REMOVE_BEFORE_MERGE` to find every cleanup
+      # site this comment governs.
       dry_run:
         description: >-
           REHEARSAL ONLY. When 'true', side-effect steps (version apply,
           tag push, npm publish, GitHub Release, Docker) are skipped.
           Rejected on `refs/heads/main` to prevent accidental retention
-          after merge — see plan Phase 6 cleanup gate.
+          after merge.
         required: false
         default: 'false'
         type: choice
@@ -76,8 +85,8 @@ on:
 # Workflow-level deny-all; each job declares the minimum it needs.
 permissions: {}
 
-# Distinct refs (refs/heads/main, refs/tags/v*) run in parallel. KTD-3
-# (release-PR-skip in rc-guard) is the load-bearing invariant that prevents
+# Distinct refs (refs/heads/main, refs/tags/v*) run in parallel. The
+# release-PR-skip in rc-guard is the load-bearing invariant that prevents
 # an RC main-push and a stable tag-push colliding on the same release commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -108,7 +117,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           # Sanitize annotation-injection prefixes when logging the ref, even
-          # though git ref names are constrained — defense in depth per S35017.
+          # though git ref names are constrained — defense in depth against
+          # crafted refs containing `::error::`-style annotation prefixes.
           REF_SAFE="${REF_NAME//::/__}"
           echo "::error::dry_run=true is not permitted on main (got ref ${REF_SAFE})."
           echo "::error::dry_run is a pre-merge rehearsal mechanism; running it on main is a configuration error."
@@ -127,7 +137,7 @@ jobs:
           HEAD_SHA="${GITHUB_SHA}"
           echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-          # Sanitize before logging (S35017).
+          # Sanitize before logging (annotation-injection defense in depth).
           REF_SAFE="${GH_REF//::/__}"
           REF_NAME_SAFE="${GH_REF_NAME//::/__}"
           echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE}"
@@ -149,7 +159,7 @@ jobs:
                   MODE="rc"
                   ;;
                 refs/tags/v*)
-                  # KTD-1 already filtered v*-rc.* at trigger level. Anything
+                  # The trigger filter already excluded v*-rc.* tags. Anything
                   # reaching here is either a stable semver or a malformed v*.
                   TAG="${GH_REF#refs/tags/}"
                   if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -226,26 +236,33 @@ jobs:
             exit 0
           fi
 
-          # ── Skip when the merge commit corresponds to a release (KTD-3) ──
-          # Two complementary checks:
+          # ── Skip when the merge commit corresponds to a release ───────────
+          # This skip is load-bearing: it prevents an RC build firing on the
+          # release-PR commit from racing the imminent stable-tag push on the
+          # same SHA. Two complementary checks:
           #   1. HEAD subject matches `chore: release vX.Y.Z` (the canonical
           #      release-PR title). Anchored to require the bare title or the
-          #      squash-merge `(#NNNN)` suffix exactly.
+          #      squash-merge `(#NNNN)` suffix exactly. Case-insensitive so
+          #      `Chore: Release v1.2.3` (IDE auto-capitalization) still
+          #      matches — prior commit-author conventions left the door open.
           #   2. Squash-merged PR carries the `release` label.
           # Either match suppresses the rc build — stable releases publish on
           # the v-tag instead.
           HEAD_SUBJECT="$(git log -1 --pretty=%s HEAD)"
           # Sanitize GitHub-Actions annotation prefixes before logging — even
           # though %s strips newlines, a crafted subject containing `::error::`
-          # could forge log annotations (S35017).
+          # could forge log annotations.
           HEAD_SUBJECT_SAFE="${HEAD_SUBJECT//::/__}"
           RELEASE_SUBJECT_RE='^chore:[[:space:]]*release[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]+\(#[0-9]+\))?$'
+          shopt -s nocasematch
           if [[ "$HEAD_SUBJECT" =~ $RELEASE_SUBJECT_RE ]]; then
+            shopt -u nocasematch
             echo "HEAD commit subject matches a release commit — skipping rc."
             echo "  subject (sanitised): $HEAD_SUBJECT_SAFE"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          shopt -u nocasematch
 
           # Squash-merge commits include `(#NNNN)` at the end of the subject.
           if [[ "$HEAD_SUBJECT" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
@@ -288,6 +305,12 @@ jobs:
       actions: read
 
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
+  # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
+  # for actions/create-github-app-token installation tokens). The atomic
+  # tag-push step relies on the token minted at job start; if the job ever
+  # runs longer than the TTL, the push fails with an opaque 401. If you
+  # need to raise the timeout, re-mint the token immediately before the
+  # `Create and push rc tags` step instead.
   publish:
     name: Publish to npm
     needs: [route, rc-guard, ci]
@@ -308,16 +331,20 @@ jobs:
       # ── Mint short-lived GitHub App token (RC only) ──────────────────────
       # Industry direction (2025-2026): GitHub Apps with
       # `actions/create-github-app-token` over long-lived PATs for
-      # workflow-touching tag pushes. Same fine-grained permission surface
-      # (Contents: write + Workflows: write), ~1h expiry, not tied to a
-      # user seat, organizationally auditable. Replaces the prior
-      # RELEASE_PUSH_TOKEN PAT (S34132).
+      # workflow-touching tag pushes. Same fine-grained permission surface,
+      # ~1h expiry, not tied to a user seat, organizationally auditable.
+      # Replaces a prior fine-grained PAT.
       #
       # Required secrets/vars (set in repo Settings → Secrets and variables → Actions):
       #   vars.RELEASE_APP_ID            — the App's numeric ID (not sensitive)
       #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
-      # The App must be installed on this repository with Contents: write
-      # and Workflows: write permissions.
+      # The App must be installed on this repository with:
+      #   - Contents: write         (push the v-tag and rc marker)
+      #   - Workflows: write        (because the v-tag's tree may touch
+      #                              .github/workflows/**, which the default
+      #                              GITHUB_TOKEN cannot author)
+      #   - Metadata: read          (required for the `gh api /users/<slug>[bot]`
+      #                              bot-identity lookup in the tag-push step)
       - name: Mint GitHub App token (RC)
         if: needs.route.outputs.mode == 'rc'
         id: app-token
@@ -326,7 +353,7 @@ jobs:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      # ── Separate checkout steps per mode (KTD-4) ─────────────────────────
+      # ── Separate checkout steps per mode ─────────────────────────────────
       # Conditional `token:` expressions are footguns: empty string passed to
       # actions/checkout fails opaquely, and `|| github.token` silently
       # degrades a missing token to GITHUB_TOKEN, masking auth failures until
@@ -361,7 +388,7 @@ jobs:
           persist-credentials: false
 
       - name: Working-tree sanity
-        # Defense in depth (mirrors KTD-5 vtag gate, but on the input side):
+        # Defense in depth (mirrors the vtag integrity gate, but on the input side):
         # if a route-mode regression skipped both checkout `if:` gates, all
         # downstream steps would run on a bare runner and produce confusing
         # ENOENT errors. Fail loudly and early here instead.
@@ -378,7 +405,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           # Hermetic install for published artifacts — opt out of the v5+
           # default packageManager-based caching (clears the zizmor
-          # cache-poisoning audit per S33365 / S35017). ~30s slower per
+          # zizmor cache-poisoning audit). ~30s slower per
           # release; runs rarely.
           package-manager-cache: false
 
@@ -399,7 +426,7 @@ jobs:
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           # Stable mode REJECTS prerelease suffixes — those are filtered at
-          # trigger by KTD-1, but defend at the bash layer too.
+          # trigger by the negative-glob filter, but defend at the bash layer too.
           if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
             exit 1
@@ -427,12 +454,12 @@ jobs:
           # 1. Current published `latest` — the floor for any new rc base.
           #    Only E404 ("never published") falls back to package.json; any
           #    other error (network, auth, malformed response) fails fast
-          #    (S35017: retry-loud, never silently substitute).
+          #    (retry-loud policy: never silently substitute on transient errors).
           NPM_STDERR_LATEST="$(mktemp)"
           if CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>"$NPM_STDERR_LATEST")"; then
             :
           else
-            if grep -q 'E404' "$NPM_STDERR_LATEST"; then
+            if grep -qiE 'E404|not found' "$NPM_STDERR_LATEST"; then
               CURRENT_LATEST="$(node -p "require('./package.json').version")"
               echo "Package not on registry (E404) — seeding from package.json: $CURRENT_LATEST"
             else
@@ -451,7 +478,7 @@ jobs:
           if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
             :
           else
-            if grep -q 'E404' "$NPM_STDERR_VERSIONS"; then
+            if grep -qiE 'E404|not found' "$NPM_STDERR_VERSIONS"; then
               VERSIONS_JSON='[]'
               echo "No published versions for $PKG_NAME yet (E404)."
             else
@@ -467,10 +494,26 @@ jobs:
           #    - workflow_dispatch + bump != auto → explicit cycle reset.
           #    - Otherwise (push, or dispatch with bump=auto) → continue the
           #      highest active rc base > latest if any; else patch from latest.
+          # Curated wrapper around `npx semver` — bare npx errors are noisy
+          # and don't distinguish registry-unreachable from invalid-bump-spec.
+          semver_bump() {
+            local kind="$1" current="$2" stderr_file out
+            stderr_file="$(mktemp)"
+            if out="$(npx --yes -p semver@7 semver -i "$kind" "$current" 2>"$stderr_file")"; then
+              rm -f "$stderr_file"
+              printf '%s' "$out"
+              return 0
+            fi
+            echo "::error::semver bump failed (kind=${kind}, current=${current}):" >&2
+            cat "$stderr_file" >&2
+            rm -f "$stderr_file"
+            return 1
+          }
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ] \
              && [ -n "${BUMP_INPUT:-}" ] \
              && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
-            BASE="$(npx --yes -p semver@7 semver -i "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
+            BASE="$(semver_bump "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
             echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
           else
             cat > /tmp/active_base.mjs <<'NODESCRIPT'
@@ -498,7 +541,7 @@ jobs:
               BASE="$ACTIVE_BASE"
               echo "Continuing active rc cycle → BASE=$BASE"
             else
-              BASE="$(npx --yes -p semver@7 semver -i patch "$CURRENT_LATEST_CLEAN")"
+              BASE="$(semver_bump patch "$CURRENT_LATEST_CLEAN")"
               echo "No active rc cycle → patch bump from latest → BASE=$BASE"
             fi
           fi
@@ -546,7 +589,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Apply rc version in-CI
-        if: ${{ needs.route.outputs.mode == 'rc' && inputs.dry_run != 'true' }}
+        # Runs in dry-run too — only mutates the runner's working tree (no
+        # push, no commit). This way the subsequent `Dry-run publish` packs
+        # the tarball at the intended rc version, so the rehearsal log is
+        # faithful instead of showing the un-bumped version.
+        if: needs.route.outputs.mode == 'rc'
         shell: bash
         working-directory: gitnexus
         run: |
@@ -604,12 +651,35 @@ jobs:
           # Resolve the App's bot user-id and construct the noreply email
           # in the GitHub-canonical `<id>+<slug>[bot]@users.noreply.github.com`
           # shape. `[bot]` is part of the actual login on GitHub.
+          #
+          # The lookup is wrapped in a bounded retry because the first RC
+          # after App installation may hit propagation delay (404), and
+          # transient api.github.com 5xx during heavy org activity is a real
+          # failure class. Without retry, every transient blip aborts the
+          # entire release after CI has already succeeded.
           BOT_LOGIN="${APP_SLUG}[bot]"
-          BOT_USER_ID="$(gh api "/users/${BOT_LOGIN}" --jq .id)"
+          BOT_USER_ID=""
+          api_stderr="$(mktemp)"
+          for attempt in 1 2 3; do
+            if BOT_USER_ID="$(gh api "/users/${BOT_LOGIN}" --jq .id 2>"$api_stderr")" \
+               && [[ "${BOT_USER_ID}" =~ ^[0-9]+$ ]]; then
+              break
+            fi
+            BOT_USER_ID=""
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::bot user-id lookup attempt ${attempt} failed; retrying in $((attempt * 5))s"
+              sleep $((attempt * 5))
+            fi
+          done
           if ! [[ "${BOT_USER_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::error::Could not resolve bot user-id for ${BOT_LOGIN} (got: ${BOT_USER_ID})"
+            echo "::error::Could not resolve bot user-id for ${BOT_LOGIN} after 3 attempts."
+            echo "::error::gh api stderr:"
+            cat "$api_stderr" >&2 || true
+            echo "::error::Common causes: (a) newly-installed App — user record still propagating to /users/ (wait ~5min, redispatch with force=true); (b) App lacks Metadata: read permission; (c) transient api.github.com 5xx (redispatch)."
+            rm -f "$api_stderr"
             exit 1
           fi
+          rm -f "$api_stderr"
           git config user.name  "${BOT_LOGIN}"
           git config user.email "${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
 
@@ -627,10 +697,19 @@ jobs:
           # Inline auth header. The base64-encoded form is masked as well
           # as the raw token, because GitHub's secret-masker only masks the
           # raw value — any subsequent `set -x` / GIT_TRACE line would
-          # otherwise expose the encoded credential. Pattern mirrors
-          # pr-autofix-apply.yml.
+          # otherwise expose the encoded credential.
+          #
+          # `set +x` wraps the compute+mask pair so that if an operator
+          # enables ACTIONS_STEP_DEBUG=true for triage (which turns on
+          # `set -x` globally), the assignment is NOT traced for the one
+          # line between compute and mask-registration. Without this wrap,
+          # debug mode would log `+ auth_header='Authorization: Basic <encoded>'`
+          # exposing a still-valid (~1h) App token.
+          { set +x; } 2>/dev/null
           auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
           echo "::add-mask::${auth_header}"
+          # Re-enable tracing only when explicitly requested via step-debug.
+          if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then set -x; fi
 
           # Atomic push of both refs. If either would clobber an existing
           # remote ref, the push fails and we stop before npm publish.
@@ -656,7 +735,7 @@ jobs:
         run: |
           echo "vtag=${REF_NAME}" >> "$GITHUB_OUTPUT"
 
-      # ── KTD-5: vtag integrity gate ───────────────────────────────────────
+      # ── vtag integrity gate ──────────────────────────────────────────────
       # Fail closed before any artifact-producing step (npm publish, Release,
       # Docker) runs against an empty or mode-mismatched vtag. Prevents the
       # silent "Release named main" / "Docker tagged from ref fallback"
@@ -668,13 +747,47 @@ jobs:
           MODE: ${{ needs.route.outputs.mode }}
           VTAG: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
           DRY_RUN: ${{ inputs.dry_run }}
+          # Available even when the real tag-push step was skipped (rc-version
+          # ran in dry-run too). Lets us build a synthetic vtag to exercise
+          # the regex check without producing artifacts.
+          RC_VERSION_DRY: ${{ steps.rc-version.outputs.rc_version }}
         run: |
           set -euo pipefail
 
           if [ "$DRY_RUN" = "true" ]; then
-            echo "::notice::dry_run=true — vtag integrity gate is REPORT-ONLY."
-            echo "report-only: would have validated VTAG='${VTAG}' for MODE='${MODE}'"
-            echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
+            # Build a synthetic vtag so the regex actually runs in rehearsal
+            # — without this, dry-run never exercises the gate's core check
+            # and a regex regression slips through to the first real RC.
+            case "$MODE" in
+              rc)     SYNTH_VTAG="v${RC_VERSION_DRY}" ;;
+              stable) SYNTH_VTAG="v0.0.0" ;;  # Stable has no dry-run path today; placeholder.
+              *)      SYNTH_VTAG="" ;;
+            esac
+
+            echo "::notice::dry_run=true — vtag integrity gate in synthetic-rehearsal mode."
+            echo "synthetic vtag for ${MODE}: '${SYNTH_VTAG}'"
+
+            case "$MODE" in
+              rc)
+                if [[ "$SYNTH_VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+                  echo "rehearsal: rc regex would accept synthetic vtag ✓"
+                else
+                  echo "::warning::rehearsal: rc regex would REJECT synthetic vtag '${SYNTH_VTAG}' — likely a regex regression. Investigate before merging."
+                fi
+                ;;
+              stable)
+                if [[ "$SYNTH_VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  echo "rehearsal: stable regex would accept synthetic vtag ✓"
+                else
+                  echo "::warning::rehearsal: stable regex would REJECT synthetic vtag '${SYNTH_VTAG}'."
+                fi
+                ;;
+            esac
+
+            # Emit a sentinel rather than empty: prevents downstream future
+            # consumers gating on `vtag != ''` from silently succeeding
+            # against a dry-run state.
+            echo "vtag=DRY_RUN_NO_VTAG" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -774,6 +887,48 @@ jobs:
               needs.rc-guard.outputs.head_sha,
               steps.rc-tags.outputs.release_sha
             ) || '' }}
+
+      # ── RC partial-failure cleanup ───────────────────────────────────────
+      # If anything after the atomic tag-push step failed (npm publish
+      # blew up, GitHub Release call timed out, etc.), the v-tag and
+      # rc/<SHA> marker are already on origin. External consumers
+      # (Renovate, Dependabot, Releases RSS) can ingest a phantom tag for
+      # a version that was never published to npm. This step deletes them
+      # automatically so the operator's recovery is just "redispatch with
+      # force=true on the next commit", not a manual ref cleanup.
+      #
+      # Scoped strictly to RC + real (non-dry-run) + the rc-tags step
+      # actually produced a vtag (otherwise nothing to clean up). The
+      # App token is still valid (~1h TTL, job timeout 20min).
+      - name: Cleanup pushed tags on partial failure
+        if: ${{ failure() && needs.route.outputs.mode == 'rc' && inputs.dry_run != 'true' && steps.rc-tags.outputs.vtag != '' }}
+        shell: bash
+        working-directory: gitnexus
+        env:
+          VTAG: ${{ steps.rc-tags.outputs.vtag }}
+          MARKER: ${{ steps.rc-tags.outputs.marker }}
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          echo "::warning::Publish step failed after tag push. Cleaning up remote refs to prevent phantom-version ingestion by downstream consumers."
+
+          { set +x; } 2>/dev/null
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then set -x; fi
+
+          # Delete v-tag and marker. Each delete is best-effort — if one
+          # is already absent (atomic push partially rejected, or earlier
+          # cleanup ran), the other still gets attempted.
+          for ref in "refs/tags/${VTAG}" "refs/tags/${MARKER}"; do
+            if git -c http.extraheader="${auth_header}" push origin --delete "${ref}" 2>&1; then
+              echo "deleted origin ${ref}"
+            else
+              echo "::warning::could not delete origin ${ref} — may already be absent or protected. Manual cleanup may be required."
+            fi
+          done
+
+          echo "::notice::Cleanup complete. To retry the release, redispatch the workflow with force=true on the same SHA, or push a new commit to main."
 
   # ── Phase 5 (RC only): Docker images ───────────────────────────────────────
   # R6: Docker remains RC-only. Stable Docker builds are explicitly deferred.

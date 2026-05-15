@@ -73,3 +73,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/check-workflow-concurrency.py .github/workflows
+
+      # Mechanically enforce the pre-merge cleanup contract for publish.yml's
+      # temporary `dry_run` rehearsal input. Search publish.yml for the token
+      # `DRY_RUN_REMOVE_BEFORE_MERGE` for the rationale.
+      - name: Block dry_run from merging to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check-no-dry-run-on-main.py
