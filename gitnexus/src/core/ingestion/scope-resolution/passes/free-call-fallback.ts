@@ -29,7 +29,10 @@ import {
   findCallableBindingInScope,
   findClassBindingInScope,
 } from '../scope/walkers.js';
-import { isOverloadAmbiguousAfterNormalization, narrowOverloadCandidates } from './overload-narrowing.js';
+import {
+  isOverloadAmbiguousAfterNormalization,
+  narrowOverloadCandidates,
+} from './overload-narrowing.js';
 
 export function emitFreeCallFallback(
   graph: KnowledgeGraph,
@@ -130,12 +133,16 @@ export function emitFreeCallFallback(
               // Suppress ambiguous overload calls (emit zero edges) when
               // merged ordinary+ADL candidate sets cannot be disambiguated.
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+                handledSites.add(
+                  `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
+                );
                 continue;
               }
               // Multiple survivors remain but no conversion-ranking step
               // exists yet; suppress instead of picking arbitrarily.
-              handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+              handledSites.add(
+                `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
+              );
               continue;
             }
           }

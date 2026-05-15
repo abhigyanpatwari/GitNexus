@@ -25,11 +25,7 @@ import {
   clearCppDependentBases,
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
-import {
-  populateCppAssociatedNamespaces,
-  clearCppAdlState,
-  pickCppAdlCandidates,
-} from './adl.js';
+import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
 import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
