@@ -275,9 +275,10 @@ jobs:
           fi
 
   # ── Phase 3: reusable CI gate ──────────────────────────────────────────────
-  # Runs for both rc (when guard says go) and stable. KTD-9: secrets: inherit
-  # matches release-candidate.yml's prior contract; ci.yml consumes secrets
-  # the current stable publish path was accidentally hiding.
+  # Runs for both rc (when guard says go) and stable. No `secrets:` passed —
+  # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
+  # ci-e2e, ci-scope-parity, ci-report) reference zero `secrets.*` values;
+  # passing any would be unused surface. GITHUB_TOKEN is implicit.
   ci:
     needs: [route, rc-guard]
     if: ${{ always() && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
@@ -285,7 +286,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-    secrets: inherit
 
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
   publish:
@@ -305,25 +305,46 @@ jobs:
       # Two distinct step IDs feed this output; exactly one fires per run.
       vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
     steps:
+      # ── Mint short-lived GitHub App token (RC only) ──────────────────────
+      # Industry direction (2025-2026): GitHub Apps with
+      # `actions/create-github-app-token` over long-lived PATs for
+      # workflow-touching tag pushes. Same fine-grained permission surface
+      # (Contents: write + Workflows: write), ~1h expiry, not tied to a
+      # user seat, organizationally auditable. Replaces the prior
+      # RELEASE_PUSH_TOKEN PAT (S34132).
+      #
+      # Required secrets/vars (set in repo Settings → Secrets and variables → Actions):
+      #   vars.RELEASE_APP_ID            — the App's numeric ID (not sensitive)
+      #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
+      # The App must be installed on this repository with Contents: write
+      # and Workflows: write permissions.
+      - name: Mint GitHub App token (RC)
+        if: needs.route.outputs.mode == 'rc'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       # ── Separate checkout steps per mode (KTD-4) ─────────────────────────
       # Conditional `token:` expressions are footguns: empty string passed to
       # actions/checkout fails opaquely, and `|| github.token` silently
-      # degrades a missing PAT to GITHUB_TOKEN, masking auth failures until
+      # degrades a missing token to GITHUB_TOKEN, masking auth failures until
       # the eventual `git push`. Two distinct steps make the auth contract
-      # explicit and fail loudly at checkout when RELEASE_PUSH_TOKEN is
-      # missing on the RC path.
+      # explicit and fail loudly at checkout when the App token mint failed
+      # on the RC path.
       - name: Checkout (RC)
         if: needs.route.outputs.mode == 'rc'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          # Fine-grained PAT (Contents: write + Workflows: write) — required
-          # because the v-tag push lands at a SHA whose tree may touch
+          # Short-lived GitHub App installation token. Required because the
+          # v-tag push lands at a SHA whose tree may touch
           # `.github/workflows/**`, which the default GITHUB_TOKEN cannot
-          # author. See S34132 for the migration history.
-          token: ${{ secrets.RELEASE_PUSH_TOKEN }}
-          # Do not persist the PAT in .git/config (artipacked audit). The
+          # author.
+          token: ${{ steps.app-token.outputs.token }}
+          # Do not persist the token in .git/config (artipacked audit). The
           # RC tag push uses an inline `http.extraheader` at push time only;
           # the credential never lands on disk. See the
           # `Create and push rc tags` step below.
@@ -562,11 +583,12 @@ jobs:
         env:
           RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
           HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
-          # Auth is supplied inline at push time via `http.extraheader` (per
-          # GitHub's documented x-access-token Basic pattern). It is NOT
-          # persisted in .git/config (artipacked audit) — checkout above
-          # ran with `persist-credentials: false`.
-          PUSH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
+          # Short-lived GitHub App token. Auth is supplied inline at push
+          # time via `http.extraheader` (per GitHub's documented
+          # x-access-token Basic pattern). It is NOT persisted in
+          # .git/config (artipacked audit) — checkout above ran with
+          # `persist-credentials: false`.
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           VTAG="v${RC_VERSION}"
@@ -666,14 +688,29 @@ jobs:
           echo "vtag verified: ${VTAG} (mode=${MODE})"
           echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
 
+      # npm Trusted Publishing (GA'd 2025-07-31). With the package registered
+      # as a trusted publisher on npmjs.com bound to this repo + this
+      # workflow file, npm authenticates via OIDC at publish time —
+      # NODE_AUTH_TOKEN is intentionally NOT set (an empty string would
+      # short-circuit the OIDC fallback; the env var must be unset, not
+      # blanked). Provenance is auto-attached by the registry on
+      # trusted-publisher publishes, so the explicit --provenance flag is
+      # dropped.
+      #
+      # Prerequisite: configure the package as a trusted publisher at
+      # https://www.npmjs.com/package/gitnexus/access (Publishing access →
+      # Trusted Publishers → GitHub Actions) bound to:
+      #   Owner:       <repo owner>
+      #   Repository:  GitNexus
+      #   Workflow:    publish.yml
+      #   Environment: (none)
       - name: Publish to npm
         if: inputs.dry_run != 'true'
         shell: bash
         working-directory: gitnexus
         env:
           NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public --tag "$NPM_TAG"
+        run: npm publish --access public --tag "$NPM_TAG"
 
       # ── Stable-only: pull CHANGELOG body if present ──────────────────────
       - name: Extract release notes from CHANGELOG (stable)
