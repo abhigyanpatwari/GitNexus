@@ -969,6 +969,18 @@ function lookupAdlIdentifierType(identNode: SyntaxNode): CppAdlArgInfo | null {
   // If the identifier was found in local scope as a function-pointer variable,
   // return EMPTY_ADL_ARG so the caller does NOT treat it as a free-function
   // reference. Otherwise return null to indicate "not in local scope".
+  //
+  // Known limitation (Finding 4): variables whose type is a typedef/using alias
+  // for a function-pointer type are NOT detected here. For example:
+  //   using Callback = void (*)();
+  //   Callback g;
+  //   foo(g);  // `g`'s declarator is `identifier` with type `Callback`
+  // The declarator has no `pointer_declarator` wrapper, so `isFunctionPointer`
+  // stays false and `extractAdlSimpleTypeName` returns `"Callback"`. ADL then
+  // looks for a class named `Callback`; if none exists, this degrades to
+  // EMPTY_ADL_ARG (class not found → no namespace contributed). If a class
+  // named `Callback` does exist, a spurious namespace contribution could occur.
+  // Risk is low in practice; a future fix should resolve the typedef/alias chain.
   return foundAsLocalFunctionPointer ? EMPTY_ADL_ARG : null;
 }
 
