@@ -2533,6 +2533,28 @@ describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
   });
 });
 
+describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inner-callable-outer-noncallable'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    // Ordinary lookup finds `inner::swap(int,int)` at the nearest scope.
+    // The outer `app::swap` (variable) does NOT suppress ADL because
+    // ordinary lookup stopped at the inner scope. ADL contributes
+    // data::swap(Pair&,Pair&) which wins via argTypes narrowing.
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //

@@ -281,42 +281,57 @@ export function findAllCallableBindingsInScope(
  * ISO C++ `[basic.lookup.unqual]` §7: if ordinary unqualified lookup finds
  * a name that is NOT a function or function template, ADL is suppressed.
  *
- * Returns `true` when a non-function binding (variable, class, enum, etc.)
- * for `name` exists in any scope up the chain from `startScope`. Used by
- * free-call-fallback to block ADL when a variable shadows a function name.
+ * Combined walker that stops at the **nearest scope** where `name` has any
+ * binding (callable or non-callable) and returns both the callable defs
+ * found there and whether a non-callable was present. One pass, one stop —
+ * no divergence between callable collection and non-callable detection.
  */
-export function hasNonCallableBindingInScope(
+export function findCallableBindingsAndAdlBlocker(
   startScope: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
-): boolean {
+): { callables: readonly SymbolDefinition[]; nonCallableFound: boolean } {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
-    if (visited.has(currentId)) return false;
+    if (visited.has(currentId)) return { callables: [], nonCallableFound: false };
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return false;
+    if (scope === undefined) return { callables: [], nonCallableFound: false };
+
+    const callables: SymbolDefinition[] = [];
+    const seen = new Set<string>();
+    let nonCallableFound = false;
+    let anyBinding = false;
+
+    const process = (def: SymbolDefinition): void => {
+      anyBinding = true;
+      if (def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor') {
+        if (!seen.has(def.nodeId)) {
+          seen.add(def.nodeId);
+          callables.push(def);
+        }
+      } else {
+        nonCallableFound = true;
+      }
+    };
 
     const localBindings = scope.bindings.get(name);
     if (localBindings !== undefined) {
       for (const b of localBindings) {
-        if (b.def.type !== 'Function' && b.def.type !== 'Method' && b.def.type !== 'Constructor') {
-          return true;
-        }
+        process(b.def);
       }
     }
 
     const importedBindings = lookupBindingsAt(currentId, name, scopes);
     for (const b of importedBindings) {
-      if (b.def.type !== 'Function' && b.def.type !== 'Method' && b.def.type !== 'Constructor') {
-        return true;
-      }
+      process(b.def);
     }
 
+    if (anyBinding) return { callables, nonCallableFound };
     currentId = scope.parent;
   }
-  return false;
+  return { callables: [], nonCallableFound: false };
 }
 
 /**

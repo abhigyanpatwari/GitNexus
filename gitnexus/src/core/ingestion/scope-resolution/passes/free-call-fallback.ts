@@ -25,10 +25,9 @@ import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
-  findAllCallableBindingsInScope,
   findCallableBindingInScope,
+  findCallableBindingsAndAdlBlocker,
   findClassBindingInScope,
-  hasNonCallableBindingInScope,
 } from '../scope/walkers.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -98,9 +97,10 @@ export function emitFreeCallFallback(
           fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
         } else {
           // ISO C++ `[basic.lookup.unqual]` §7: if ordinary lookup finds a
-          // non-function name (variable, class, enum), ADL is suppressed.
-          const adlSuppressed = hasNonCallableBindingInScope(site.inScope, site.name, scopes);
-          const ordinary = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
+          // non-function name (variable, class, enum) at the nearest scope
+          // where the name exists, ADL is suppressed.
+          const { callables: ordinary, nonCallableFound: adlSuppressed } =
+            findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes);
           const adl = adlSuppressed
             ? undefined
             : options.resolveAdlCandidates(
