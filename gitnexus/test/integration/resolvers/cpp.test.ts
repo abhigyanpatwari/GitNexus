@@ -2427,12 +2427,17 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
 // ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //
-// ISO C++ [basic.lookup.argdep]: an overloaded-function set (or single
-// function) passed as an argument contributes the function's enclosing
-// namespace to the associated set. `captures.ts` records a `functionRefText`
-// on the CppAdlArgInfo when it detects a qualified_identifier arg or an
-// unqualified identifier that is not in local scope; `adl.ts` extracts the
-// namespace at resolution time.
+// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
+// like `utils::worker` is passed as an argument, GitNexus contributes the
+// enclosing namespace (`utils`) to the associated set, provided a Function or
+// Method named `worker` is found in the `utils` namespace at resolution time.
+// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
+// argument come from the parameter types and return type of the overload set —
+// NOT the function's enclosing namespace. For `void worker()`, the standard-
+// compliant associated set is empty. The approximation captures the dominant
+// real-world pattern (pass a utility function → find its sibling) at the cost
+// of potential false positives when an unrelated function with the same simple
+// name exists in the same namespace (bounded by the workspace-function lookup).
 // ---------------------------------------------------------------------------
 
 describe('C++ ADL — qualified free-function reference contributes its namespace', () => {

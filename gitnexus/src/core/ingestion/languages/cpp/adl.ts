@@ -24,17 +24,22 @@
  * V2 additionally walks class ancestors (via MRO), so base-class enclosing
  * namespaces also contribute associated namespaces.
  *
- * V2 also handles **free-function reference arguments**: passing a function
- * reference like `utils::worker` contributes `utils` to the associated set,
- * enabling resolution of unqualified calls like `with_callback(utils::worker)`
- * to `utils::with_callback`. For qualified refs the namespace is extracted
- * directly from the qualifier; for unqualified refs the workspace is searched
- * for any Function def with that simple name. Overloaded function references
- * contribute the namespace if any overload exists (V1 simplification; no
- * overload-resolution ranking).
+ * **GitNexus approximation (not strict ISO C++ ADL):** passing a qualified
+ * function reference like `utils::worker` contributes `utils` to the associated
+ * set, enabling resolution of unqualified calls like `with_callback(utils::worker)`
+ * to `utils::with_callback`. Under ISO C++ `[basic.lookup.argdep]`, associated
+ * entities for function-type arguments come from the **parameter types and return
+ * type** of each function in the overload set — NOT the function's enclosing
+ * namespace. For `void worker()`, the standard-compliant associated set is empty.
+ * GitNexus instead contributes the enclosing namespace of any Function/Method
+ * def whose simple name matches, because it enables the dominant real-world ADL
+ * pattern at reasonable precision cost.
  *
- * Locally-declared function-pointer variables (e.g. `void (*g)()`) and
- * member-function-pointer args are explicitly excluded.
+ * For qualified refs (e.g. `utils::worker`) the namespace is confirmed via a
+ * workspace lookup (only contributed when a Function/Method named `worker` exists
+ * in `utils`). For unqualified refs the workspace is searched for any Function
+ * def with that simple name. Locally-declared function-pointer variables
+ * (e.g. `void (*g)()`) and function parameters are excluded from this path.
  *
  * The current implementation also short-circuits to ADL only when ordinary lookup is empty
  * (`findCallableBindingInScope` returned undefined). ISO C++ would
@@ -94,13 +99,14 @@ export interface CppAdlArgInfo {
   /** Enclosing namespaces extracted from explicit type template arguments,
    *  recursively bounded. */
   readonly templateArgNamespaces: readonly string[];
-  /** When set, the arg is a reference to a free function (not a locally-
-   *  declared function-pointer variable). Contains the identifier text as
-   *  written in source (e.g. `"utils::worker"` or `"worker"`). ADL
-   *  contributes the function's enclosing namespace to the associated set.
-   *  For qualified refs the namespace is extracted from the qualifier
-   *  directly; for unqualified refs the workspace is searched for any
-   *  Function def with that simple name. */
+  /** When set, the arg is a potential free-function reference (not a locally-
+   *  declared function-pointer variable or function parameter). Contains the
+   *  identifier text as written in source (e.g. `"utils::worker"` or
+   *  `"worker"`). GitNexus approximation: the function's enclosing namespace
+   *  is contributed to the ADL associated set. For qualified refs a workspace
+   *  lookup confirms a Function/Method with that simple name exists in the
+   *  namespace before contributing; for unqualified refs every namespace
+   *  containing a matching Function/Method def is contributed. */
   readonly functionRefText?: string;
 }
 
