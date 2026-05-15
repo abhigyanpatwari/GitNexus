@@ -15,14 +15,31 @@
  *
  * ## Current boundary
  *
- * The current implementation covers ONE associated-entity rule: an argument that's a directly-named
- * class type (`audit::Event e`) contributes its **direct enclosing
- * namespace** to the candidate set. V2 extends that one step to
- * pointer-typed class args (`audit::Event* p`, `audit::Event** pp`):
- * they contribute the pointee class's enclosing namespace too. Reference
- * arguments, function-pointer arguments, template specializations,
- * base-class associated namespaces, and the rest of the full closure are
- * still deliberately excluded.
+ * The current implementation covers class-typed arguments (value, pointer,
+ * and reference) and template specializations with explicit type arguments:
+ *   - `audit::Event e`, `audit::Event* p`, `audit::Event** pp`
+ *   - `audit::Event& r`, `audit::Event&& rr`
+ *   - `std::vector<audit::Event>` (template namespace + template-arg namespaces)
+ *
+ * V2 additionally walks class ancestors (via MRO), so base-class enclosing
+ * namespaces also contribute associated namespaces.
+ *
+ * **GitNexus approximation (not strict ISO C++ ADL):** passing a qualified
+ * function reference like `utils::worker` contributes `utils` to the associated
+ * set, enabling resolution of unqualified calls like `with_callback(utils::worker)`
+ * to `utils::with_callback`. Under ISO C++ `[basic.lookup.argdep]`, associated
+ * entities for function-type arguments come from the **parameter types and return
+ * type** of each function in the overload set — NOT the function's enclosing
+ * namespace. For `void worker()`, the standard-compliant associated set is empty.
+ * GitNexus instead contributes the enclosing namespace of any Function/Method
+ * def whose simple name matches, because it enables the dominant real-world ADL
+ * pattern at reasonable precision cost.
+ *
+ * For qualified refs (e.g. `utils::worker`) the namespace is confirmed via a
+ * workspace lookup (only contributed when a Function/Method named `worker` exists
+ * in `utils`). For unqualified refs the workspace is searched for any Function
+ * def with that simple name. Locally-declared function-pointer variables
+ * (e.g. `void (*g)()`) and function parameters are excluded from this path.
  *
  * ADL candidates are merged with ordinary unqualified-lookup candidates
  * in the free-call fallback before overload narrowing.
@@ -56,18 +73,35 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 
 /**
  * Per-argument shape information collected at capture time. ADL fires for
- * arguments where `simpleClassName !== ''` AND `!isReference`, including
- * class pointers whose declarator chain resolves to a named class type.
+ * arguments where `simpleClassName !== ''`, including class pointers and
+ * references whose declarator chain resolves to a named class type.
+ * Free-function reference arguments use `functionRefText`.
  */
 export interface CppAdlArgInfo {
   /** Simple class-like type name (last segment of qualified name); empty
-   *  for primitives, literals, function pointers, template specs, etc. */
+   *  for primitives, literals, function pointers, etc. */
   readonly simpleClassName: string;
-  /** True when the variable's declarator contained one or more
-   *  `pointer_declarator` wrappers. */
-  readonly isPointer: boolean;
-  /** True when the variable's declarator was a `reference_declarator`. */
-  readonly isReference: boolean;
+  /** Template's own simple class-like name (e.g. `vector` for
+   *  `std::vector<N::T>`), empty when arg type is not a template spec. */
+  readonly templateSimpleClassName: string;
+  /** Template's own enclosing namespace (dot-qualified, e.g. `std`), empty
+   *  when unavailable / unqualified. */
+  readonly templateNamespace: string;
+  /** Class-like names extracted from explicit type template arguments,
+   *  recursively bounded. */
+  readonly templateArgClassNames: readonly string[];
+  /** Enclosing namespaces extracted from explicit type template arguments,
+   *  recursively bounded. */
+  readonly templateArgNamespaces: readonly string[];
+  /** When set, the arg is a potential free-function reference (not a locally-
+   *  declared function-pointer variable or function parameter). Contains the
+   *  identifier text as written in source (e.g. `"utils::worker"` or
+   *  `"worker"`). GitNexus approximation: the function's enclosing namespace
+   *  is contributed to the ADL associated set. For qualified refs a workspace
+   *  lookup confirms a Function/Method with that simple name exists in the
+   *  namespace before contributing; for unqualified refs every namespace
+   *  containing a matching Function/Method def is contributed. */
+  readonly functionRefText?: string;
 }
 
 const argInfoBySite = new Map<string, readonly CppAdlArgInfo[]>();
@@ -136,8 +170,8 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
  *
  * Fires only when:
  *   - the call site is not in `noAdlSites` (parenthesized form), AND
- *   - at least one argument resolves to a named class type (value or
- *     pointer, but not reference, function pointer, literal, or primitive).
+ *   - at least one argument resolves to a named class type (value,
+ *     pointer, or reference; but not function pointer, literal, or primitive).
  */
 export function pickCppAdlCandidates(
   site: {
@@ -153,15 +187,14 @@ export function pickCppAdlCandidates(
   const args = argInfoBySite.get(key);
   if (args === undefined || args.length === 0) return undefined;
 
-  // Collect associated namespace QNames from every participating class-typed arg.
+  // Collect associated namespace QNames from every participating class-typed arg
+  // and from function-reference args.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
-    if (arg.simpleClassName === '') continue;
-    if (arg.isReference) continue;
-    const classDef = findCppClassDefBySimpleName(arg.simpleClassName, scopes);
-    if (classDef === undefined) continue;
-    const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
-    if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+    collectAssociatedNamespacesForAdlArg(arg, scopes, associatedNamespaces);
+    if (arg.functionRefText !== undefined) {
+      collectFunctionRefNamespaces(arg.functionRefText, parsedFiles, associatedNamespaces);
+    }
   }
   if (associatedNamespaces.size === 0) return undefined;
 
@@ -195,6 +228,50 @@ export function pickCppAdlCandidates(
   }
   if (candidates.length === 0) return undefined;
   return candidates;
+}
+
+function collectAssociatedNamespacesForAdlArg(
+  arg: CppAdlArgInfo,
+  scopes: ScopeResolutionIndexes,
+  associatedNamespaces: Set<string>,
+): void {
+  // For template args this may be the template name itself (e.g. `vector`);
+  // simple-name lookup can match project classes with the same name (known
+  // V1/V2 simplification).
+  addAssociatedNamespaceForClassName(arg.simpleClassName, scopes, associatedNamespaces);
+
+  // Includes template-owner namespaces (e.g. `std` in std::vector<T>). If
+  // that surfaces extra candidates, ADL_AMBIGUOUS suppression below prevents
+  // arbitrary edge emission.
+  if (arg.templateNamespace.length > 0) associatedNamespaces.add(arg.templateNamespace);
+
+  for (const ns of arg.templateArgNamespaces) {
+    if (ns.length > 0) associatedNamespaces.add(ns);
+  }
+  for (const className of arg.templateArgClassNames) {
+    addAssociatedNamespaceForClassName(className, scopes, associatedNamespaces);
+  }
+}
+
+function addAssociatedNamespaceForClassName(
+  simpleClassName: string,
+  scopes: ScopeResolutionIndexes,
+  associatedNamespaces: Set<string>,
+): void {
+  if (simpleClassName.length === 0) return;
+  const classLookup = findCppClassDefBySimpleName(simpleClassName, scopes);
+  if (classLookup === undefined) return;
+  const { classDef, ambiguous } = classLookup;
+  const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
+  if (nsQName !== undefined) associatedNamespaces.add(nsQName);
+  // Preserve V1 collision behavior for the direct class namespace, but avoid
+  // amplifying a same-simple-name collision by walking an arbitrary class's
+  // full MRO chain.
+  if (ambiguous) return;
+  for (const ancestorDefId of scopes.methodDispatch.mroFor(classDef.nodeId)) {
+    const ancestorNsQName = classToNamespaceQualifiedName.get(ancestorDefId);
+    if (ancestorNsQName !== undefined) associatedNamespaces.add(ancestorNsQName);
+  }
 }
 
 /** Walk upward from a Class scope, finding the innermost enclosing
@@ -289,17 +366,93 @@ function findNamespaceDefInScope(scope: {
 }
 
 /** Find a class-like def by simple name across the workspace. V1
- *  arbitrary-pick on collisions (multiple classes share the simple name);
- *  C++ ADL strictness would require full type-driven lookup, but V1
- *  trades that for simplicity. */
+ *  still arbitrary-picks the first class on collisions (multiple classes
+ *  share the simple name), but reports the collision so callers can avoid
+ *  amplifying that uncertainty (for example by skipping MRO expansion).
+ *  C++ ADL strictness would require full type-driven lookup. */
 function findCppClassDefBySimpleName(
   simpleName: string,
   scopes: ScopeResolutionIndexes,
-): SymbolDefinition | undefined {
+): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
+  let firstMatch: SymbolDefinition | undefined;
   for (const def of scopes.defs.byId.values()) {
     if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-    if (simple === simpleName) return def;
+    if (simple !== simpleName) continue;
+    if (firstMatch === undefined) {
+      firstMatch = def;
+      continue;
+    }
+    return { classDef: firstMatch, ambiguous: true };
   }
-  return undefined;
+  if (firstMatch === undefined) return undefined;
+  return { classDef: firstMatch, ambiguous: false };
+}
+
+/**
+ * Contribute associated namespaces for a function-reference argument.
+ *
+ * - **Qualified refs** (`utils::worker`, `outer::inner::fn`): the namespace
+ *   is extracted from the qualifier text (converting `::` to `.` for dot-joined
+ *   QName matching). A workspace lookup then **verifies** that a Function or
+ *   Method def named `worker` (the simple name after the last `::`) actually
+ *   exists in the extracted namespace. This prevents false positives from
+ *   namespace-qualified variables, enum values, and static data members, which
+ *   also produce `qualified_identifier` AST nodes in tree-sitter-cpp (the
+ *   AST node type alone does not distinguish functions from non-function names).
+ * - **Unqualified refs** (`worker`): the workspace is searched for any
+ *   Function/Method def whose simple name matches. Every distinct enclosing
+ *   namespace found is added — overloads across the same namespace produce
+ *   a single entry; GitNexus does not select a specific overload at this stage.
+ */
+function collectFunctionRefNamespaces(
+  refText: string,
+  parsedFiles: readonly ParsedFile[],
+  out: Set<string>,
+): void {
+  const colonIdx = refText.lastIndexOf('::');
+  if (colonIdx !== -1) {
+    // Qualified ref: extract namespace prefix and normalise :: → dot notation.
+    const nsText = refText.slice(0, colonIdx).replace(/::/g, '.');
+    if (nsText === '') return;
+    const simpleName = refText.slice(colonIdx + 2);
+    // Verify that a Function/Method named `simpleName` exists in `nsText`.
+    // Without this guard every `a::b` qualified_identifier arg (variable,
+    // enum value, static member, type alias) would blindly contribute `a`
+    // to the associated set and risk a false-positive CALLS edge.
+    for (const parsed of parsedFiles) {
+      const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+      for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Namespace') continue;
+        if (computeNamespaceQName(scope, scopesById) !== nsText) continue;
+        for (const def of scope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method') continue;
+          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          if (simple === simpleName) {
+            out.add(nsText);
+            return; // Namespace confirmed; no need to scan further files.
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // Unqualified: search all namespace scopes for a Function def with this
+  // simple name and contribute its enclosing namespace.
+  for (const parsed of parsedFiles) {
+    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Function' && def.type !== 'Method') continue;
+        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+        if (simple !== refText) continue;
+        const nsQName = computeNamespaceQName(scope, scopesById);
+        if (nsQName !== '') out.add(nsQName);
+      }
+    }
+  }
 }

@@ -16,6 +16,7 @@ import {
   expandCppWildcardNames,
   isFileLocal,
   clearFileLocalNames,
+  populateCppAnonymousNamespaceScopes,
   populateCppNonGloballyVisible,
   isCppDefGloballyVisible,
 } from './file-local-linkage.js';
@@ -92,10 +93,11 @@ export const cppScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => {
     populateClassOwnedMembers(parsed);
-    // Resolve inline-namespace ranges (recorded at capture time) to
-    // ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so the
-    // inline-namespace exemption sees the populated Set.
+    // Resolve inline- and anonymous-namespace ranges (recorded at capture
+    // time) to ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so
+    // both exemptions see the populated Sets.
     populateCppInlineNamespaceScopes(parsed);
+    populateCppAnonymousNamespaceScopes(parsed);
     // Track namespace-nested and class-nested defs so the global free-call
     // fallback and wildcard expansion can suppress them as unqualified
     // cross-file callables.
@@ -217,8 +219,10 @@ export const cppScopeResolver: ScopeResolver = {
   // C++ argument-dependent / Koenig lookup (U2 of plan 2026-05-13-001).
   // Contributes candidates from associated namespaces of class-typed
   // arguments; caller merges with ordinary unqualified lookup candidates.
-  // V1 limitation: only direct enclosing-namespace closure for value
-  // class-typed args; pointer/reference/template-spec args excluded.
+  // Current boundary: class-typed value/pointer/reference args and template
+  // specializations with explicit type arguments contribute associated
+  // namespaces. Function-pointer args and full conversion-ranking remain
+  // excluded.
   resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
     // `using ns::name;` introduces `name` into ordinary unqualified lookup.
     // For template-class method bodies, lexical scope walks can miss this
