@@ -429,7 +429,7 @@ The Docker images are version-locked to the npm package:
   Both registries receive the same digest from a single build step, so you can
   pull from either and the signature verifies identically.
 - Release-candidate images (e.g. `:1.7.0-rc.1`) are published alongside each
-  RC npm release. They are built by `release-candidate.yml` calling `docker.yml`
+  RC npm release. They are built by `publish.yml` calling `docker.yml`
   as a reusable workflow after the RC tag is created and pushed.
 - `:latest` is auto-promoted only from non-prerelease tags by the Docker
   metadata action, so it always points at a real, npm-published version.
@@ -462,7 +462,7 @@ registries because both sets of tags were signed at the same digest in one
 workflow run.
 
 **Release candidates** — signed from `refs/heads/main` (the caller's ref when
-`release-candidate.yml` invokes `docker.yml` as a reusable workflow):
+`publish.yml` invokes `docker.yml` as a reusable workflow):
 
 ```bash
 cosign verify ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1 \

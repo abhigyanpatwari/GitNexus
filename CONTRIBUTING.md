@@ -144,16 +144,18 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 ## Releases
 
-Two publish workflows ship `gitnexus` to npm:
+One workflow ships `gitnexus` to npm — `.github/workflows/publish.yml`. It
+routes between two modes based on the triggering event:
 
-- **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
-  tag. Publishes to the `latest` dist-tag with a changelog-backed GitHub
-  release. Maintainers are expected to tag from `main` as a convention; the
-  workflow itself does not enforce branch reachability.
-- **Release Candidate** (`.github/workflows/release-candidate.yml`) — runs on
-  every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
-  changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with
-  version `X.Y.Z-rc.N` and a GitHub prerelease, where:
+- **Stable mode** — triggered by pushing any `v<X.Y.Z>` tag (no `-rc.*`
+  suffix; RC tags are excluded at trigger via a negative glob). Publishes to
+  the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
+  are expected to tag from `main` as a convention; the workflow itself does
+  not enforce branch reachability. No Docker build (RC-only).
+- **Release-candidate mode** — runs on every push to `main` (typically a
+  merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
+  via `paths-ignore`. Publishes to the `rc` dist-tag with version
+  `X.Y.Z-rc.N` and a GitHub prerelease, where:
   - `X.Y.Z` is selected automatically. On push (and on dispatch with
     `bump: auto`, the default) the workflow **continues the active rc cycle**:
     if the registry already has `X.Y.Z-rc.*` versions with `X.Y.Z` > current
@@ -170,11 +172,14 @@ Two publish workflows ship `gitnexus` to npm:
     caller's ref — see README.md § Docker for the verify command).
 
   Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
-  `v<RC>` release tag **atomically, before** calling `npm publish`. The guard
-  refuses to re-run once the marker exists, so a post-publish failure will
-  not mint a duplicate rc for the same commit. The `v<RC>` tag points at a
-  detached release commit whose `package.json` matches the npm tarball
-  exactly (traceable releases). Recovery after a partial failure:
+  `v<RC>` release tag **atomically, before** calling `npm publish`. The
+  RC guard refuses to re-run once the marker exists, so a post-publish
+  failure will not mint a duplicate rc for the same commit. The `v<RC>`
+  tag points at a detached release commit whose `package.json` matches
+  the npm tarball exactly (traceable releases). The RC tag is excluded
+  from this workflow's `push: tags:` filter, so it does **not** re-trigger
+  publishing — preventing the double-publish failure mode tracked in #1609.
+  Recovery after a partial failure:
 
   ```bash
   git push --delete origin rc/<HEAD_SHA> v<RC>
@@ -184,7 +189,7 @@ Two publish workflows ship `gitnexus` to npm:
   **Docker-only partial failure:** if `publish` succeeds (npm tarball + tags
   are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
   the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.
-  Re-running `release-candidate.yml` with `force: true` will abort at the
+  Re-running `publish.yml` with `force: true` will abort at the
   "Version already exists on npm" guard. To recover without cutting a new RC:
 
   ```bash

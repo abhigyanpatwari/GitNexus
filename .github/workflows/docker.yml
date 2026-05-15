@@ -73,7 +73,7 @@ jobs:
 
     steps:
       # Only the workflow_call path requires a non-empty `inputs.tag` — callers
-      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
+      # (publish.yml in RC mode) must pass the RC tag explicitly. On direct
       # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
       # empty and validating it here would break every real release (#1064).
       # The downstream "Verify tag matches gitnexus/package.json version" step
