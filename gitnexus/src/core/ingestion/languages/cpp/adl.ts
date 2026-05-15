@@ -160,6 +160,19 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
       classToNamespaceQualifiedName.set(def.nodeId, nsQName);
     }
   }
+
+  // Enum defs live in Namespace scopes directly (not inside Class scopes).
+  // Map each Enum def to its enclosing namespace so ADL on enum-typed
+  // arguments contributes the correct associated namespace.
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    const nsQName = computeNamespaceQName(scope, scopesById);
+    if (nsQName === '') continue;
+    for (const def of scope.ownedDefs) {
+      if (def.type !== 'Enum') continue;
+      classToNamespaceQualifiedName.set(def.nodeId, nsQName);
+    }
+  }
 }
 
 /**
@@ -365,18 +378,27 @@ function findNamespaceDefInScope(scope: {
   return undefined;
 }
 
-/** Find a class-like def by simple name across the workspace. V1
- *  still arbitrary-picks the first class on collisions (multiple classes
+/** Find a class-like or enum def by simple name across the workspace.
+ *  V1 still arbitrary-picks the first match on collisions (multiple defs
  *  share the simple name), but reports the collision so callers can avoid
  *  amplifying that uncertainty (for example by skipping MRO expansion).
- *  C++ ADL strictness would require full type-driven lookup. */
+ *  C++ ADL strictness would require full type-driven lookup.
+ *
+ *  ISO C++ `[basic.lookup.argdep]` §2: enumerations contribute their
+ *  enclosing namespace to the associated set, just like class types. */
 function findCppClassDefBySimpleName(
   simpleName: string,
   scopes: ScopeResolutionIndexes,
 ): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
   let firstMatch: SymbolDefinition | undefined;
   for (const def of scopes.defs.byId.values()) {
-    if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+    if (
+      def.type !== 'Class' &&
+      def.type !== 'Struct' &&
+      def.type !== 'Interface' &&
+      def.type !== 'Enum'
+    )
+      continue;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
     if (simple !== simpleName) continue;
     if (firstMatch === undefined) {

@@ -2460,6 +2460,29 @@ describe('C++ ADL — merged narrowing to zero suppresses global fallback', () =
 });
 
 // ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: enum types contribute their
+// enclosing namespace to the associated set, just like class types.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — enum-typed argument contributes enclosing namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-enum-arg'), () => {});
+  }, 60000);
+
+  it('serialize(ch) where ch is color::Channel resolves to color::serialize via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const serializeCalls = calls.filter((c) => c.source === 'run' && c.target === 'serialize');
+    // Exactly 1: ordinary lookup in app::run finds nothing for `serialize`.
+    // ADL surfaces color::serialize because color::Channel's enclosing
+    // namespace is `color`. Before the enum gap fix, this was 0.
+    expect(serializeCalls.length).toBe(1);
+    expect(serializeCalls[0].targetFilePath).toContain('color.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ADL V2 — free-function reference args contribute their namespace.
 //
 // GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
