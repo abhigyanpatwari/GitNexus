@@ -26,7 +26,8 @@ public:
     f(2.5);     // Variant 1: double literal -> f(double) wins (exact > standard)
     f(42);      // Variant 3: int literal -> f(int) wins (exact > standard)
     g(42);      // Variant 2: int/long both normalize to 'int' -> ambiguous
-    h(42, 2.5); // Variant 4: h(int,int) scores 0+2=2, h(double,double) scores 2+0=2 -> tied -> ambiguous
+    h(42, 2.5); // Variant 4: incomparable — neither dominates the other -> ambiguous
+    h('a', 2.5);// Variant 6: asymmetric — h(int,int) better at arg0 (promotion), h(double,double) better at arg1 (exact) -> ambiguous
     p('a');     // Variant 5: char literal -> p(int) wins via promotion (rank 1 < rank 2)
   }
 };

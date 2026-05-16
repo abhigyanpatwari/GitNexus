@@ -1822,14 +1822,16 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
     expect(tgt?.properties.parameterTypes?.[0]).toBe('int');
   });
 
-  it('h(42, 2.5) emits zero CALLS edges — multi-arg tied total score, ambiguous', () => {
+  it('h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous', () => {
     const calls = getRelationships(result, 'CALLS');
     const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
-    // h(42, 2.5): argTypes=['int','double']. Exact-type filter misses
-    // both h(int,int) and h(double,double), forcing the conversion ranker.
-    // h(int,int): rank('int','int') + rank('double','int') = 0 + 2 = 2
-    // h(double,double): rank('int','double') + rank('double','double') = 2 + 0 = 2
-    // Tied at cost 2 — both returned — suppressed as ambiguous.
+    // h(42, 2.5) + h('a', 2.5): both call sites produce incomparable
+    // pairwise rankings. For h(42, 2.5) with argTypes=['int','double']:
+    //   h(int,int):    [rank('int','int')=0,  rank('double','int')=2]
+    //   h(double,double): [rank('int','double')=2, rank('double','double')=0]
+    // h(int,int) better at arg0, h(double,double) better at arg1 → neither
+    // dominates → ambiguous. Same pattern for h('a',2.5).
+    // Contract: zero edges for ALL h() call sites combined (dedup).
     expect(hCalls.length).toBe(0);
   });
 });

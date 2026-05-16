@@ -185,9 +185,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // char-literal promotion exercises the conversion ranker (step 4b).
     // Legacy DAG has no conversion-rank scoring. Scope-resolver-only.
     "p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)",
-    // Multi-arg tied total score: h(int,int) and h(double,double) both
-    // score 2 for h(42, 2.5). Legacy picks arbitrarily. Scope-resolver-only.
-    'h(42, 2.5) emits zero CALLS edges — multi-arg tied total score, ambiguous',
+    // Multi-arg incomparable overloads: pairwise dominance check finds
+    // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
+    'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
     // PR #1598: ADL free-function reference arg negative fixtures rely on
     // scope-resolver-only correctness. The legacy DAG falls back to
     // `pickUniqueGlobalCallable` which resolves the callee by simple-name
