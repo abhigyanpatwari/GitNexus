@@ -445,6 +445,12 @@ export function emitReceiverBoundCalls(
           scopes,
           parsedFiles,
         );
+        if (memberDef === 'ambiguous') {
+          // Same-name ambiguity across inline-namespace children (#1564):
+          // suppress edge emission, mark site handled.
+          handledSites.add(siteKey);
+          continue;
+        }
         if (memberDef !== undefined) {
           const ok = tryEmitEdge(
             graph,
