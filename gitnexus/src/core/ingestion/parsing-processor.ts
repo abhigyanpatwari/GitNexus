@@ -30,7 +30,11 @@ import {
   constTagForId,
   buildCollisionGroups,
 } from './utils/method-props.js';
-import { extractTemplateArguments, templateArgumentsIdTag } from './utils/template-arguments.js';
+import {
+  extractTemplateArguments,
+  templateArgumentsIdTag,
+  templateConstraintsIdTag,
+} from './utils/template-arguments.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -651,9 +655,38 @@ const processParsingSequential = async (
         classTemplateArguments.length > 0
           ? templateArgumentsIdTag(classTemplateArguments)
           : '';
+      // SFINAE / `requires`-clause aware ID disambiguation (issue #1579).
+      // Function-template overloads with identical parameterTypes but
+      // mutually-exclusive constraints (e.g. `enable_if_t<is_integral_v<T>>`
+      // vs `enable_if_t<is_floating_point_v<T>>`) need distinct graph
+      // nodes so the constraint-filter step in `narrowOverloadCandidates`
+      // has two candidates to narrow between. Without this tag they
+      // collapse to a single Function node and the SFINAE call resolves
+      // to only one edge regardless of which overload's constraint holds.
+      // The provider hook is the right invocation point — parsing-processor
+      // sees raw tree-sitter matches without the `@`-prefixed synthetic
+      // captures `scope-extractor` consumes, so we delegate extraction to
+      // the language adapter (C++ implements this; other languages opt out).
+      let parsedTemplateConstraints: unknown = undefined;
+      let constraintsTag = '';
+      if (
+        (nodeLabel === 'Function' || nodeLabel === 'Method') &&
+        provider.extractTemplateConstraints !== undefined &&
+        definitionNode !== null
+      ) {
+        try {
+          parsedTemplateConstraints = provider.extractTemplateConstraints(definitionNode);
+          if (parsedTemplateConstraints !== undefined) {
+            constraintsTag = templateConstraintsIdTag(parsedTemplateConstraints);
+          }
+        } catch {
+          parsedTemplateConstraints = undefined;
+          constraintsTag = '';
+        }
+      }
       const nodeId = generateId(
         nodeLabel,
-        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}`,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}`,
       );
       const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
       const qualifiedTypeName =
@@ -689,6 +722,9 @@ const processParsingSequential = async (
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
             ? { templateArguments: classTemplateArguments }
+            : {}),
+          ...(parsedTemplateConstraints !== undefined
+            ? { templateConstraints: parsedTemplateConstraints }
             : {}),
           ...(frameworkHint
             ? {

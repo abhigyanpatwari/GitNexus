@@ -138,7 +138,7 @@ export function computeCppCallArity(node: SyntaxNode): number {
  * is an additive sidecar and does not participate in overload node ID
  * hashing.
  */
-function normalizeCppParamType(raw: string): string {
+export function normalizeCppParamType(raw: string): string {
   let t = raw.trim();
   // Strip const, volatile, etc.
   t = t.replace(/\b(const|volatile|restrict|mutable|constexpr)\b/g, '').trim();

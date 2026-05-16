@@ -142,3 +142,60 @@ describe('narrowOverloadCandidates — type narrowing', () => {
     expect(result.map((d) => d.nodeId)).toEqual(['m:int']);
   });
 });
+
+describe('narrowOverloadCandidates — constraint filter monotonicity (issue #1579)', () => {
+  // Language-agnostic contract: when `constraintCompatibility` returns
+  // 'unknown' for every candidate, the filter must keep every candidate.
+  // Adding a predicate to the registry can only narrow correctly, never
+  // produce a wrong edge — this guarantees the worst-case behavior is
+  // today's "degrade not lie" suppression, not a regression.
+  const a = mkDef({
+    nodeId: 'a',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['T'],
+    templateConstraints: { dummy: true },
+  });
+  const b = mkDef({
+    nodeId: 'b',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['T'],
+    templateConstraints: { dummy: true },
+  });
+
+  it('keeps every candidate when constraintCompatibility returns unknown for all', () => {
+    const result = narrowOverloadCandidates([a, b], 1, ['int'], {
+      constraintCompatibility: () => 'unknown',
+    });
+    expect(result.map((d) => d.nodeId).sort()).toEqual(['a', 'b']);
+  });
+
+  it('drops only candidates the hook explicitly marks incompatible', () => {
+    const result = narrowOverloadCandidates([a, b], 1, ['int'], {
+      constraintCompatibility: (_callsite, def) =>
+        def.nodeId === 'a' ? 'incompatible' : 'compatible',
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['b']);
+  });
+
+  it('skips the constraint filter when hookCtx is omitted (pre-#1579 behavior preserved)', () => {
+    const result = narrowOverloadCandidates([a, b], 1, ['int']);
+    expect(result.map((d) => d.nodeId).sort()).toEqual(['a', 'b']);
+  });
+
+  it('skips the constraint filter for candidates without templateConstraints', () => {
+    const plain = mkDef({
+      nodeId: 'plain',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['T'],
+    });
+    // Even though the hook would return 'incompatible' for everything, the
+    // candidate has no templateConstraints so the filter doesn't consult it.
+    const result = narrowOverloadCandidates([plain], 1, ['int'], {
+      constraintCompatibility: () => 'incompatible',
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['plain']);
+  });
+});
