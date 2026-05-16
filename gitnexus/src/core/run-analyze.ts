@@ -10,7 +10,6 @@
  */
 
 import path from 'path';
-import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
@@ -34,6 +33,9 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
+  createStagedLbugRebuildPath,
+  publishStagedLbugRebuild,
+  cleanupStagedLbugRebuild,
 } from '../storage/repo-manager.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
@@ -179,6 +181,7 @@ export async function runFullAnalysis(
     callbacks.onProgress(phase, percent, message);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  let stagedLbugPath: string | null = null;
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -422,19 +425,16 @@ export async function runFullAnalysis(
       },
     });
   } else {
-    // Full rebuild path: wipe DB files first.
+    // Full rebuild path: write a fresh LadybugDB beside the published DB.
+    // Publishing happens only after the staged DB is fully written and closed,
+    // so MCP readers that already have `.gitnexus/lbug` open are not disrupted
+    // by an analyze-time delete/recreate cycle.
     await closeLbug();
-    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-    for (const f of lbugFiles) {
-      try {
-        await fs.rm(f, { recursive: true, force: true });
-      } catch {
-        /* swallow */
-      }
-    }
+    stagedLbugPath = await createStagedLbugRebuildPath(storagePath);
   }
 
-  await initLbug(lbugPath);
+  const activeLbugPath = stagedLbugPath ?? lbugPath;
+  await initLbug(activeLbugPath);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -789,6 +789,14 @@ export async function runFullAnalysis(
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
     };
+    if (stagedLbugPath) {
+      progress('done', 98, 'Publishing LadybugDB index...');
+      await closeLbug();
+      await publishStagedLbugRebuild({ stagedPath: stagedLbugPath, lbugPath });
+      stagedLbugPath = null;
+      progress('done', 98, 'Saving metadata...');
+    }
+
     await saveMeta(storagePath, meta);
 
     // Persist the incremental parse cache for the next run. Wraps in
@@ -878,6 +886,7 @@ export async function runFullAnalysis(
     } catch {
       /* swallow */
     }
+    await cleanupStagedLbugRebuild(stagedLbugPath);
     throw err;
   }
 }

@@ -12,6 +12,9 @@ import { _captureLogger } from '../../src/core/logger.js';
 import {
   getStoragePath,
   getStoragePaths,
+  createStagedLbugRebuildPath,
+  publishStagedLbugRebuild,
+  cleanupStagedLbugRebuild,
   ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
@@ -61,6 +64,63 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+});
+
+// ─── Staged LadybugDB rebuilds ─────────────────────────────────────────────
+
+describe('staged LadybugDB rebuild publication', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-lbug-stage-');
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  it('creates a rebuild path under storage without targeting the published lbug file', async () => {
+    const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+    const stagedPath = await createStagedLbugRebuildPath(storagePath);
+
+    expect(stagedPath).not.toBe(lbugPath);
+    expect(stagedPath.startsWith(storagePath + path.sep)).toBe(true);
+    expect(path.basename(stagedPath)).toMatch(/^lbug\.rebuild-/);
+  });
+
+  it('publishes staged rebuilds by renaming over the canonical DB without pre-deleting it', async () => {
+    const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(lbugPath, 'old published db', 'utf-8');
+    const stagedPath = await createStagedLbugRebuildPath(storagePath);
+    await fs.writeFile(stagedPath, 'new staged db', 'utf-8');
+
+    const rmSpy = vi.spyOn(fs, 'rm');
+
+    await publishStagedLbugRebuild({ stagedPath, lbugPath });
+
+    await expect(fs.readFile(lbugPath, 'utf-8')).resolves.toBe('new staged db');
+    await expect(fs.access(stagedPath)).rejects.toThrow();
+    expect(rmSpy).not.toHaveBeenCalled();
+  });
+
+  it('cleans abandoned staged rebuild files and sidecars without touching the published DB', async () => {
+    const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(lbugPath, 'published db', 'utf-8');
+    const stagedPath = await createStagedLbugRebuildPath(storagePath);
+    await fs.writeFile(stagedPath, 'abandoned staged db', 'utf-8');
+    await fs.writeFile(`${stagedPath}.wal`, 'abandoned wal', 'utf-8');
+    await fs.writeFile(`${stagedPath}.lock`, 'abandoned lock', 'utf-8');
+
+    await cleanupStagedLbugRebuild(stagedPath);
+
+    await expect(fs.readFile(lbugPath, 'utf-8')).resolves.toBe('published db');
+    await expect(fs.access(stagedPath)).rejects.toThrow();
+    await expect(fs.access(`${stagedPath}.wal`)).rejects.toThrow();
+    await expect(fs.access(`${stagedPath}.lock`)).rejects.toThrow();
   });
 });
 

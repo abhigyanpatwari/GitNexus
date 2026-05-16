@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { logger } from '../core/logger.js';
 
@@ -130,6 +131,8 @@ export interface RegistryEntry {
 
 const GITNEXUS_DIR = '.gitnexus';
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
+const LBUG_REBUILD_PREFIX = 'lbug.rebuild-';
+const LBUG_SIDECAR_SUFFIXES = ['', '.wal', '.lock'];
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
@@ -150,6 +153,65 @@ export const getStoragePaths = (repoPath: string) => {
     lbugPath: path.join(storagePath, 'lbug'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
+};
+
+export interface StagedLbugRebuild {
+  stagedPath: string;
+  lbugPath: string;
+}
+
+/**
+ * Return a unique staging path for a full LadybugDB rebuild.
+ *
+ * Full rebuilds must not delete or write the published `.gitnexus/lbug`
+ * database in place: MCP readers may already have that file open. The
+ * analyzer writes to this staging path, closes LadybugDB, and then publishes
+ * the completed file with a single rename over the canonical path.
+ */
+export const createStagedLbugRebuildPath = async (storagePath: string): Promise<string> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  return path.join(
+    storagePath,
+    `${LBUG_REBUILD_PREFIX}${process.pid}-${Date.now()}-${randomUUID()}`,
+  );
+};
+
+/**
+ * Publish a completed staged LadybugDB rebuild.
+ *
+ * Do not remove the published DB before this rename. On POSIX systems, the
+ * rename replaces the directory entry atomically while existing MCP readers
+ * continue using their already-open handle to the previous file.
+ */
+export const publishStagedLbugRebuild = async ({
+  stagedPath,
+  lbugPath,
+}: StagedLbugRebuild): Promise<void> => {
+  await fs.rename(stagedPath, lbugPath);
+
+  for (const suffix of LBUG_SIDECAR_SUFFIXES.slice(1)) {
+    try {
+      await fs.rename(`${stagedPath}${suffix}`, `${lbugPath}${suffix}`);
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  }
+};
+
+/**
+ * Best-effort cleanup for abandoned staged rebuild files.
+ */
+export const cleanupStagedLbugRebuild = async (
+  stagedPath: string | null | undefined,
+): Promise<void> => {
+  if (!stagedPath) return;
+  for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+    try {
+      await fs.rm(`${stagedPath}${suffix}`, { recursive: true, force: true });
+    } catch {
+      /* missing staged artifact or cleanup failure — original error wins */
+    }
+  }
 };
 
 /**
