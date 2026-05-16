@@ -21,14 +21,28 @@
  *   - `audit::Event& r`, `audit::Event&& rr`
  *   - `std::vector<audit::Event>` (template namespace + template-arg namespaces)
  *
- * Function-pointer arguments and the rest of the full closure are still
- * deliberately excluded. V2 additionally walks class ancestors (via MRO),
- * so base-class enclosing namespaces also contribute associated namespaces.
+ * V2 additionally walks class ancestors (via MRO), so base-class enclosing
+ * namespaces also contribute associated namespaces.
  *
- * The current implementation also short-circuits to ADL only when ordinary lookup is empty
- * (`findCallableBindingInScope` returned undefined). ISO C++ would
- * normally merge ADL candidates with ordinary-lookup candidates and
- * run overload resolution over the union; V1 defers that merge to V2.
+ * **GitNexus approximation (not strict ISO C++ ADL):** passing a qualified
+ * function reference like `utils::worker` contributes `utils` to the associated
+ * set, enabling resolution of unqualified calls like `with_callback(utils::worker)`
+ * to `utils::with_callback`. Under ISO C++ `[basic.lookup.argdep]`, associated
+ * entities for function-type arguments come from the **parameter types and return
+ * type** of each function in the overload set — NOT the function's enclosing
+ * namespace. For `void worker()`, the standard-compliant associated set is empty.
+ * GitNexus instead contributes the enclosing namespace of any Function/Method
+ * def whose simple name matches, because it enables the dominant real-world ADL
+ * pattern at reasonable precision cost.
+ *
+ * For qualified refs (e.g. `utils::worker`) the namespace is confirmed via a
+ * workspace lookup (only contributed when a Function/Method named `worker` exists
+ * in `utils`). For unqualified refs the workspace is searched for any Function
+ * def with that simple name. Locally-declared function-pointer variables
+ * (e.g. `void (*g)()`) and function parameters are excluded from this path.
+ *
+ * ADL candidates are merged with ordinary unqualified-lookup candidates
+ * in the free-call fallback before overload narrowing.
  *
  * ## Parenthesized-name suppression
  *
@@ -56,15 +70,13 @@
 
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import {
-  isOverloadAmbiguousAfterNormalization,
-  narrowOverloadCandidates,
-} from '../../scope-resolution/passes/overload-narrowing.js';
+import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 
 /**
  * Per-argument shape information collected at capture time. ADL fires for
  * arguments where `simpleClassName !== ''`, including class pointers and
  * references whose declarator chain resolves to a named class type.
+ * Free-function reference arguments use `functionRefText`.
  */
 export interface CppAdlArgInfo {
   /** Simple class-like type name (last segment of qualified name); empty
@@ -82,18 +94,20 @@ export interface CppAdlArgInfo {
   /** Enclosing namespaces extracted from explicit type template arguments,
    *  recursively bounded. */
   readonly templateArgNamespaces: readonly string[];
+  /** When set, the arg is a potential free-function reference (not a locally-
+   *  declared function-pointer variable or function parameter). Contains the
+   *  identifier text as written in source (e.g. `"utils::worker"` or
+   *  `"worker"`). GitNexus approximation: the function's enclosing namespace
+   *  is contributed to the ADL associated set. For qualified refs a workspace
+   *  lookup confirms a Function/Method with that simple name exists in the
+   *  namespace before contributing; for unqualified refs every namespace
+   *  containing a matching Function/Method def is contributed. */
+  readonly functionRefText?: string;
 }
 
 const argInfoBySite = new Map<string, readonly CppAdlArgInfo[]>();
 const noAdlSites = new Set<string>();
 const classToNamespaceQualifiedName = new Map<string, string>();
-
-/** Sentinel returned by `pickCppAdlCandidates` when ADL surfaces multiple
- *  candidates that share normalized parameter types — the caller MUST
- *  suppress (zero edges) rather than pick arbitrarily. Mirrors the
- *  OVERLOAD_AMBIGUOUS contract from the receiver-bound path. */
-export const ADL_AMBIGUOUS = Symbol('ADL_AMBIGUOUS');
-export type AdlResult = SymbolDefinition | typeof ADL_AMBIGUOUS | undefined;
 
 function siteKey(filePath: string, line: number, col: number): string {
   return `${filePath}:${line}:${col}`;
@@ -147,16 +161,26 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
       classToNamespaceQualifiedName.set(def.nodeId, nsQName);
     }
   }
+
+  // Enum defs live in Namespace scopes directly (not inside Class scopes).
+  // Map each Enum def to its enclosing namespace so ADL on enum-typed
+  // arguments contributes the correct associated namespace.
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    const nsQName = computeNamespaceQName(scope, scopesById);
+    if (nsQName === '') continue;
+    for (const def of scope.ownedDefs) {
+      if (def.type !== 'Enum') continue;
+      classToNamespaceQualifiedName.set(def.nodeId, nsQName);
+    }
+  }
 }
 
 /**
- * V1 ADL candidate picker. Returns:
- *   - `SymbolDefinition` — exactly one ADL candidate (or unique survivor
- *     after narrowing); caller emits the CALLS edge.
- *   - `ADL_AMBIGUOUS` — multiple candidates with no disambiguator;
- *     caller MUST suppress (zero edges).
- *   - `undefined` — no ADL candidates; caller falls through to ordinary
- *     `pickUniqueGlobalCallable` fallback.
+ * ADL candidate collector. Returns:
+ *   - `readonly SymbolDefinition[]` — ADL candidates to merge with
+ *     ordinary unqualified lookup candidates.
+ *   - `undefined` — no ADL candidates.
  *
  * Fires only when:
  *   - the call site is not in `noAdlSites` (parenthesized form), AND
@@ -166,29 +190,33 @@ export function populateCppAssociatedNamespaces(parsed: ParsedFile): void {
 export function pickCppAdlCandidates(
   site: {
     readonly name: string;
-    readonly arity?: number;
-    readonly argumentTypes?: readonly string[];
     readonly atRange: { startLine: number; startCol: number };
   },
   callerParsed: ParsedFile,
   scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],
-): AdlResult {
+): readonly SymbolDefinition[] | undefined {
   const key = siteKey(callerParsed.filePath, site.atRange.startLine, site.atRange.startCol);
   if (noAdlSites.has(key)) return undefined;
   const args = argInfoBySite.get(key);
   if (args === undefined || args.length === 0) return undefined;
 
-  // Collect associated namespace QNames from every participating class-typed arg.
+  // Collect associated namespace QNames from every participating class-typed arg
+  // and from function-reference args.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
     collectAssociatedNamespacesForAdlArg(arg, scopes, associatedNamespaces);
+    if (arg.functionRefText !== undefined) {
+      collectFunctionRefNamespaces(arg.functionRefText, parsedFiles, associatedNamespaces);
+    }
   }
   if (associatedNamespaces.size === 0) return undefined;
 
   // Walk every namespace scope in every parsed file; collect callable
   // ownedDefs whose enclosing namespace matches one of the associated
   // QNames AND whose simple name matches the call's name.
+  // ISO C++: inline namespaces are transparent — candidates in inline
+  // children of an associated namespace are also ADL-reachable.
   const candidates: SymbolDefinition[] = [];
   const seenKey = new Set<string>();
   for (const parsed of parsedFiles) {
@@ -197,7 +225,17 @@ export function pickCppAdlCandidates(
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Namespace') continue;
       const qName = computeNamespaceQName(scope, scopesById);
-      if (!associatedNamespaces.has(qName)) continue;
+      if (!associatedNamespaces.has(qName)) {
+        // Check if this is an inline-namespace child of an associated NS.
+        // ISO C++ inline namespaces are transparent for ADL: if the outer
+        // namespace is in the associated set, candidates in the inline child
+        // are also reachable.
+        if (!isCppInlineNamespaceScope(scope.id)) continue;
+        const parentScope = scope.parent !== null ? scopesById.get(scope.parent) : undefined;
+        if (parentScope === undefined || parentScope.kind !== 'Namespace') continue;
+        const parentQName = computeNamespaceQName(parentScope, scopesById);
+        if (!associatedNamespaces.has(parentQName)) continue;
+      }
       for (const def of scope.ownedDefs) {
         if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
           continue;
@@ -213,22 +251,56 @@ export function pickCppAdlCandidates(
         candidates.push(def);
       }
     }
+    // ISO C++ `[basic.lookup.argdep]` §2: hidden friend functions declared
+    // inside a class body are visible via ADL when the class is an associated
+    // class. Scan Class scopes whose enclosing namespace is in the associated
+    // set for callable ownedDefs matching the call name. This enables the
+    // canonical "hidden friend" idiom:
+    //   struct Foo { friend void swap(Foo&, Foo&) {} };
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Class') continue;
+      // Check if ANY class def in this scope has an associated namespace.
+      let isAssociatedClass = false;
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+        const nsQName = classToNamespaceQualifiedName.get(def.nodeId);
+        if (nsQName !== undefined && associatedNamespaces.has(nsQName)) {
+          isAssociatedClass = true;
+          break;
+        }
+      }
+      if (!isAssociatedClass) continue;
+      // Also scan Function scopes that are direct children of this class
+      // scope — friend function definitions create their own Function scope
+      // underneath the Class scope.
+      for (const childScope of parsed.scopes) {
+        if (childScope.parent !== scope.id) continue;
+        if (childScope.kind !== 'Function') continue;
+        for (const def of childScope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+            continue;
+          }
+          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          if (simple !== site.name) continue;
+          if (seenKey.has(def.nodeId)) continue;
+          seenKey.add(def.nodeId);
+          candidates.push(def);
+        }
+      }
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+          continue;
+        }
+        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+        if (simple !== site.name) continue;
+        if (seenKey.has(def.nodeId)) continue;
+        seenKey.add(def.nodeId);
+        candidates.push(def);
+      }
+    }
   }
   if (candidates.length === 0) return undefined;
-  if (candidates.length === 1) return candidates[0];
-
-  // Multi-candidate: narrow then check ambiguity. Reuses the OVERLOAD_AMBIGUOUS
-  // sentinel contract from `overload-narrowing.ts` so int/long-collision-style
-  // ambiguity also suppresses on the ADL path.
-  const narrowed = narrowOverloadCandidates(candidates, site.arity, site.argumentTypes);
-  if (narrowed.length === 1) return narrowed[0];
-  if (narrowed.length === 0) return undefined;
-  if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return ADL_AMBIGUOUS;
-  // Multiple surviving candidates that aren't normalization-ambiguous —
-  // ISO C++ would run overload resolution; V1 lacks conversion ranking so
-  // suppress rather than pick arbitrarily. Mirrors `pickImplicitThisOverload`'s
-  // unique-survivor requirement (see `pick-implicit-this-overload.test.ts`).
-  return ADL_AMBIGUOUS;
+  return candidates;
 }
 
 function collectAssociatedNamespacesForAdlArg(
@@ -242,8 +314,8 @@ function collectAssociatedNamespacesForAdlArg(
   addAssociatedNamespaceForClassName(arg.simpleClassName, scopes, associatedNamespaces);
 
   // Includes template-owner namespaces (e.g. `std` in std::vector<T>). If
-  // that surfaces extra candidates, ADL_AMBIGUOUS suppression below prevents
-  // arbitrary edge emission.
+  // that surfaces extra candidates, merged-candidate overload narrowing in
+  // free-call-fallback suppresses arbitrary edge emission.
   if (arg.templateNamespace.length > 0) associatedNamespaces.add(arg.templateNamespace);
 
   for (const ns of arg.templateArgNamespaces) {
@@ -366,18 +438,27 @@ function findNamespaceDefInScope(scope: {
   return undefined;
 }
 
-/** Find a class-like def by simple name across the workspace. V1
- *  still arbitrary-picks the first class on collisions (multiple classes
+/** Find a class-like or enum def by simple name across the workspace.
+ *  V1 still arbitrary-picks the first match on collisions (multiple defs
  *  share the simple name), but reports the collision so callers can avoid
  *  amplifying that uncertainty (for example by skipping MRO expansion).
- *  C++ ADL strictness would require full type-driven lookup. */
+ *  C++ ADL strictness would require full type-driven lookup.
+ *
+ *  ISO C++ `[basic.lookup.argdep]` §2: enumerations contribute their
+ *  enclosing namespace to the associated set, just like class types. */
 function findCppClassDefBySimpleName(
   simpleName: string,
   scopes: ScopeResolutionIndexes,
 ): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
   let firstMatch: SymbolDefinition | undefined;
   for (const def of scopes.defs.byId.values()) {
-    if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+    if (
+      def.type !== 'Class' &&
+      def.type !== 'Struct' &&
+      def.type !== 'Interface' &&
+      def.type !== 'Enum'
+    )
+      continue;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
     if (simple !== simpleName) continue;
     if (firstMatch === undefined) {
@@ -388,4 +469,72 @@ function findCppClassDefBySimpleName(
   }
   if (firstMatch === undefined) return undefined;
   return { classDef: firstMatch, ambiguous: false };
+}
+
+/**
+ * Contribute associated namespaces for a function-reference argument.
+ *
+ * - **Qualified refs** (`utils::worker`, `outer::inner::fn`): the namespace
+ *   is extracted from the qualifier text (converting `::` to `.` for dot-joined
+ *   QName matching). A workspace lookup then **verifies** that a Function or
+ *   Method def named `worker` (the simple name after the last `::`) actually
+ *   exists in the extracted namespace. This prevents false positives from
+ *   namespace-qualified variables, enum values, and static data members, which
+ *   also produce `qualified_identifier` AST nodes in tree-sitter-cpp (the
+ *   AST node type alone does not distinguish functions from non-function names).
+ * - **Unqualified refs** (`worker`): the workspace is searched for any
+ *   Function/Method def whose simple name matches. Every distinct enclosing
+ *   namespace found is added — overloads across the same namespace produce
+ *   a single entry; GitNexus does not select a specific overload at this stage.
+ */
+function collectFunctionRefNamespaces(
+  refText: string,
+  parsedFiles: readonly ParsedFile[],
+  out: Set<string>,
+): void {
+  const colonIdx = refText.lastIndexOf('::');
+  if (colonIdx !== -1) {
+    // Qualified ref: extract namespace prefix and normalise :: → dot notation.
+    const nsText = refText.slice(0, colonIdx).replace(/::/g, '.');
+    if (nsText === '') return;
+    const simpleName = refText.slice(colonIdx + 2);
+    // Verify that a Function/Method named `simpleName` exists in `nsText`.
+    // Without this guard every `a::b` qualified_identifier arg (variable,
+    // enum value, static member, type alias) would blindly contribute `a`
+    // to the associated set and risk a false-positive CALLS edge.
+    for (const parsed of parsedFiles) {
+      const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+      for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Namespace') continue;
+        if (computeNamespaceQName(scope, scopesById) !== nsText) continue;
+        for (const def of scope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method') continue;
+          const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          if (simple === simpleName) {
+            out.add(nsText);
+            return; // Namespace confirmed; no need to scan further files.
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // Unqualified: search all namespace scopes for a Function def with this
+  // simple name and contribute its enclosing namespace.
+  for (const parsed of parsedFiles) {
+    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      for (const def of scope.ownedDefs) {
+        if (def.type !== 'Function' && def.type !== 'Method') continue;
+        const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+        if (simple !== refText) continue;
+        const nsQName = computeNamespaceQName(scope, scopesById);
+        if (nsQName !== '') out.add(nsQName);
+      }
+    }
+  }
 }
