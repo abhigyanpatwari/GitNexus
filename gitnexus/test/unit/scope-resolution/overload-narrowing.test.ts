@@ -142,3 +142,61 @@ describe('narrowOverloadCandidates — type narrowing', () => {
     expect(result.map((d) => d.nodeId)).toEqual(['m:int']);
   });
 });
+
+describe('narrowOverloadCandidates — conversion ranking', () => {
+  const byInt = mkDef({
+    nodeId: 'm:int',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['int'],
+  });
+  const byDouble = mkDef({
+    nodeId: 'm:double',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['double'],
+  });
+
+  const rank = (arg: string, param: string): number | undefined => {
+    if (arg === param) return 0;
+    if (arg === 'int' && param === 'double') return 2;
+    if (arg === 'double' && param === 'int') return 2;
+    return undefined;
+  };
+
+  it('chooses the unique lowest conversion rank', () => {
+    const result = narrowOverloadCandidates([byInt, byDouble], 1, ['double'], {
+      conversionRank: rank,
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['m:double']);
+  });
+
+  it('keeps an exact match ahead of a standard conversion', () => {
+    const result = narrowOverloadCandidates([byInt, byDouble], 1, ['int'], {
+      conversionRank: rank,
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['m:int']);
+  });
+
+  it('returns tied best candidates so callers can suppress ambiguity', () => {
+    const left = mkDef({
+      nodeId: 'm:left',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['long'],
+    });
+    const right = mkDef({
+      nodeId: 'm:right',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['double'],
+    });
+    const tiedRank = (arg: string, param: string): number | undefined =>
+      arg === 'int' && (param === 'long' || param === 'double') ? 2 : undefined;
+
+    const result = narrowOverloadCandidates([left, right], 1, ['int'], {
+      conversionRank: tiedRank,
+    });
+    expect(result.map((d) => d.nodeId).sort()).toEqual(['m:left', 'm:right']);
+  });
+});

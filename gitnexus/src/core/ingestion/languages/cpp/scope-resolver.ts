@@ -32,6 +32,7 @@ import {
   resolveCppQualifiedNamespaceMember,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
+import { cppPrimitiveConversionRank } from './conversion-ranking.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -83,6 +84,7 @@ export const cppScopeResolver: ScopeResolver = {
   // Adapter: cppArityCompatibility predates ScopeResolver and uses
   // (def, callsite). ScopeResolver contract is (callsite, def).
   arityCompatibility: (callsite, def) => cppArityCompatibility(def, callsite),
+  overloadConversionRank: cppPrimitiveConversionRank,
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),

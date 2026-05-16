@@ -21,18 +21,31 @@
  *      filter and return empty — the call is genuinely arity-incompatible
  *      (e.g., PHP `f(int $req, ...$rest)` called with zero args).
  *   4. If `argTypes` is present, filter further by per-slot type
- *      equality. An empty string in `argTypes[i]` means "unknown" and
- *      counts as a match. Mismatches disqualify. A non-empty typed
- *      result wins; otherwise return the arity-filtered candidates.
+ *      equality, or by an optional per-language conversion ranker.
+ *      An empty string in `argTypes[i]` means "unknown" and counts as
+ *      a match. Mismatches disqualify. A unique lowest-ranked result
+ *      wins; tied best ranks remain as multiple survivors so callers
+ *      can suppress ambiguous overloads. If no typed candidate matches,
+ *      return the arity-filtered candidates.
  *   5. Empty input returns empty output.
  */
 
 import type { SymbolDefinition } from 'gitnexus-shared';
 
+export type OverloadConversionRanker = (
+  argType: string,
+  paramType: string,
+) => number | undefined;
+
+export interface OverloadNarrowingOptions {
+  readonly conversionRank?: OverloadConversionRanker;
+}
+
 export function narrowOverloadCandidates(
   overloads: readonly SymbolDefinition[],
   argCount: number | undefined,
   argTypes: readonly string[] | undefined,
+  options: OverloadNarrowingOptions = {},
 ): readonly SymbolDefinition[] {
   if (overloads.length === 0) return [];
 
@@ -74,16 +87,32 @@ export function narrowOverloadCandidates(
     arityMatches.length > 0 ? arityMatches : anyUnknownBounds ? overloads : [];
 
   if (argTypes !== undefined && argTypes.length > 0) {
-    const typed = candidates.filter((d) => {
+    const scored: Array<{ readonly def: SymbolDefinition; readonly score: number }> = [];
+    for (const d of candidates) {
       const params = d.parameterTypes;
-      if (params === undefined) return false;
+      if (params === undefined) continue;
+      let score = 0;
+      let match = true;
       for (let i = 0; i < argTypes.length && i < params.length; i++) {
         if (argTypes[i] === '') continue;
-        if (argTypes[i] !== params[i]) return false;
+        const rank =
+          options.conversionRank !== undefined
+            ? options.conversionRank(argTypes[i], params[i])
+            : argTypes[i] === params[i]
+              ? 0
+              : undefined;
+        if (rank === undefined || !Number.isFinite(rank)) {
+          match = false;
+          break;
+        }
+        score += rank;
       }
-      return true;
-    });
-    if (typed.length > 0) return typed;
+      if (match) scored.push({ def: d, score });
+    }
+    if (scored.length > 0) {
+      const best = Math.min(...scored.map((s) => s.score));
+      return scored.filter((s) => s.score === best).map((s) => s.def);
+    }
   }
 
   return candidates;

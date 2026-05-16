@@ -278,6 +278,11 @@ export type LinearizeStrategy = (
 /** Result of `ScopeResolver.arityCompatibility` — mirrors `RegistryProviders.arityCompatibility`. */
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
 
+export type OverloadConversionRanker = (
+  argType: string,
+  paramType: string,
+) => number | undefined;
+
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
   readonly language: SupportedLanguages;
@@ -372,6 +377,17 @@ export interface ScopeResolver {
    * `(def, callsite)` and need an adapter at the wiring site.
    */
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Optional per-language overload conversion ranker. Lower ranks are
+   * better; undefined means the argument cannot convert to the parameter.
+   * Generic overload narrowing uses exact equality when this hook is absent.
+   *
+   * C++ uses this for primitive standard-conversion-sequence ranking
+   * (exact < promotion < standard conversion). Languages without a
+   * well-defined conversion ranking should leave it undefined.
+   */
+  readonly overloadConversionRank?: OverloadConversionRanker;
 
   // ─── Per-language strategies ───────────────────────────────────────────────
 

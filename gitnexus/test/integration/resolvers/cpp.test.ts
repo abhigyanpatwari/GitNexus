@@ -1072,6 +1072,35 @@ describe('C++ overload disambiguation by parameter types', () => {
   });
 });
 
+// ── Phase P: C++ standard-conversion-sequence ranking ──────────────────────
+
+describe('C++ overload disambiguation by primitive conversion ranking', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-conversion-ranking'),
+      () => {},
+    );
+  }, 60000);
+
+  it('callDoubleLiteral() emits exactly one CALLS edge to pick(double)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pickCalls = calls.filter((c) => c.source === 'callDoubleLiteral' && c.target === 'pick');
+    expect(pickCalls.length).toBe(1);
+    const targetNode = result.graph.getNode(pickCalls[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['double']);
+  });
+
+  it('callIntLiteral() emits exactly one CALLS edge to pick(int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pickCalls = calls.filter((c) => c.source === 'callIntLiteral' && c.target === 'pick');
+    expect(pickCalls.length).toBe(1);
+    const targetNode = result.graph.getNode(pickCalls[0].rel.targetId);
+    expect(targetNode?.properties.parameterTypes).toEqual(['int']);
+  });
+});
+
 // ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
 
 describe('C++ same-arity overload cross-file and chain resolution', () => {

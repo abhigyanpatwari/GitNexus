@@ -63,6 +63,10 @@ export function emitFreeCallFallback(
       scopes: ScopeResolutionIndexes,
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
+    readonly overloadConversionRank?: (
+      argType: string,
+      paramType: string,
+    ) => number | undefined;
   } = {},
 ): number {
   let emitted = 0;
@@ -90,7 +94,13 @@ export function emitFreeCallFallback(
       // the same name in a single class, choose the best match by
       // arity + argument types.
       if (fnDef === undefined) {
-        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model);
+        fnDef = pickImplicitThisOverload(
+          site,
+          scopes,
+          workspaceIndex,
+          model,
+          options.overloadConversionRank,
+        );
       }
       if (fnDef === undefined) {
         if (options.resolveAdlCandidates === undefined) {
@@ -123,7 +133,16 @@ export function emitFreeCallFallback(
           // Preserve existing ordinary-lookup behavior when ADL contributed
           // no candidates.
           if (adl === undefined || adl.length === 0) {
-            fnDef = ordinary[0];
+            const ordinaryPool = mergeCallableCandidates(
+              ordinary,
+              model.symbols.lookupExactAll(parsed.filePath, site.name),
+            );
+            fnDef = pickUniqueNarrowedFreeCallCandidate(
+              ordinaryPool,
+              site.arity,
+              site.argumentTypes,
+              options.overloadConversionRank,
+            );
           } else {
             const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
             const merged: SymbolDefinition[] = [];
@@ -138,7 +157,9 @@ export function emitFreeCallFallback(
             push(ordinary);
             push(adl);
 
-            const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes);
+            const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
+              conversionRank: options.overloadConversionRank,
+            });
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
             } else if (narrowed.length === 0) {
@@ -212,6 +233,43 @@ export function emitFreeCallFallback(
     }
   }
   return emitted;
+}
+
+function mergeCallableCandidates(
+  first: readonly SymbolDefinition[],
+  second: readonly SymbolDefinition[],
+): readonly SymbolDefinition[] {
+  if (second.length === 0) return first;
+  const merged: SymbolDefinition[] = [];
+  const seen = new Set<string>();
+  const push = (defs: readonly SymbolDefinition[]): void => {
+    for (const def of defs) {
+      if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+      if (seen.has(def.nodeId)) continue;
+      seen.add(def.nodeId);
+      merged.push(def);
+    }
+  };
+  push(first);
+  push(second);
+  return merged;
+}
+
+function pickUniqueNarrowedFreeCallCandidate(
+  candidates: readonly SymbolDefinition[],
+  arity: number | undefined,
+  argumentTypes: readonly string[] | undefined,
+  conversionRank?: (argType: string, paramType: string) => number | undefined,
+): SymbolDefinition | undefined {
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  const narrowed = narrowOverloadCandidates(candidates, arity, argumentTypes, {
+    conversionRank,
+  });
+  if (narrowed.length === 1) return narrowed[0];
+  const hasTypeSignal = argumentTypes !== undefined && argumentTypes.some((t) => t !== '');
+  if (!hasTypeSignal) return narrowed[0] ?? candidates[0];
+  return undefined;
 }
 
 function pickUniqueGlobalCallable(
@@ -362,6 +420,7 @@ export function pickImplicitThisOverload(
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   model: SemanticModel,
+  conversionRank?: (argType: string, paramType: string) => number | undefined,
 ): SymbolDefinition | undefined {
   // Find the enclosing Class scope by walking parents.
   let curId: ScopeId | null = site.inScope;
@@ -389,7 +448,9 @@ export function pickImplicitThisOverload(
   // ambiguous narrowing (multiple compatible candidates with no
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
-  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    conversionRank,
+  });
   if (candidates.length !== 1) return undefined;
   return candidates[0];
 }
