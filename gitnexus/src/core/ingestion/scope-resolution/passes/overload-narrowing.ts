@@ -24,15 +24,35 @@
  *      equality. An empty string in `argTypes[i]` means "unknown" and
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
+ *   4b. When the exact-type filter from step 4 returns empty AND a
+ *       `conversionRankFn` is provided, rank candidates via pairwise
+ *       dominance comparison (ISO C++ [over.ics.rank]): F1 beats F2
+ *       only when F1 is not worse for every arg and better for at
+ *       least one. Non-dominated candidates are returned; multiple
+ *       survivors are genuinely ambiguous.
  *   5. Empty input returns empty output.
  */
 
 import type { SymbolDefinition } from 'gitnexus-shared';
 
+/**
+ * Per-slot conversion-rank function. Returns a numeric cost for
+ * converting `argType` to `paramType`:
+ *   - 0 = exact match (no conversion)
+ *   - 1 = promotion (e.g. char→int, bool→int in C++)
+ *   - 2 = standard conversion (e.g. int→double)
+ *   - Infinity = incompatible types
+ *
+ * Each language provides its own implementation. The function operates
+ * on normalized type strings (output of the language's type normalizer).
+ */
+export type ConversionRankFn = (argType: string, paramType: string) => number;
+
 export function narrowOverloadCandidates(
   overloads: readonly SymbolDefinition[],
   argCount: number | undefined,
   argTypes: readonly string[] | undefined,
+  conversionRankFn?: ConversionRankFn,
 ): readonly SymbolDefinition[] {
   if (overloads.length === 0) return [];
 
@@ -84,9 +104,96 @@ export function narrowOverloadCandidates(
       return true;
     });
     if (typed.length > 0) return typed;
+
+    // ── Conversion-rank scoring (step 4b) ──────────────────────────
+    // The exact-type filter above rejected every candidate. When a
+    // per-language conversion-rank function is available, rank via
+    // pairwise dominance: F1 beats F2 only when F1 is not worse for
+    // every arg and better for at least one. Non-dominated candidates
+    // are returned; multiple survivors are genuinely ambiguous.
+    if (conversionRankFn !== undefined) {
+      const ranked = rankByConversion(candidates, argTypes, conversionRankFn);
+      if (ranked.length > 0) return ranked;
+    }
   }
 
   return candidates;
+}
+
+/**
+ * Pairwise dominance comparison (ISO C++ [over.ics.rank]).
+ *
+ * F1 is a better match than F2 when F1's conversion rank is **not
+ * worse** for every argument AND **strictly better** for at least one.
+ * Candidates dominated by any other viable candidate are removed.
+ * If more than one non-dominated candidate remains, they are genuinely
+ * ambiguous — callers suppress the edge rather than picking arbitrarily.
+ *
+ * Candidates with at least one `Infinity`-ranked slot (incompatible
+ * type) are excluded before pairwise comparison begins.
+ */
+function rankByConversion(
+  candidates: readonly SymbolDefinition[],
+  argTypes: readonly string[],
+  rankFn: ConversionRankFn,
+): readonly SymbolDefinition[] {
+  // Step 1: compute per-slot ranks and exclude non-viable candidates.
+  const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
+  for (const d of candidates) {
+    const params = d.parameterTypes;
+    if (params === undefined) continue;
+    const ranks: number[] = [];
+    let ok = true;
+    for (let i = 0; i < argTypes.length && i < params.length; i++) {
+      if (argTypes[i] === '') {
+        ranks.push(0); // unknown arg → any-match (rank 0)
+        continue;
+      }
+      const r = rankFn(argTypes[i], params[i]);
+      if (!isFinite(r)) {
+        ok = false;
+        break;
+      }
+      ranks.push(r);
+    }
+    if (!ok) continue;
+    viable.push({ def: d, ranks });
+  }
+  if (viable.length <= 1) return viable.map((v) => v.def);
+
+  // Step 2: pairwise dominance — remove candidates dominated by any other.
+  const dominated = new Set<number>();
+  for (let i = 0; i < viable.length; i++) {
+    if (dominated.has(i)) continue;
+    for (let j = i + 1; j < viable.length; j++) {
+      if (dominated.has(j)) continue;
+      const cmp = pairwiseCompare(viable[i].ranks, viable[j].ranks);
+      if (cmp < 0)
+        dominated.add(j); // i dominates j
+      else if (cmp > 0) dominated.add(i); // j dominates i
+    }
+  }
+  return viable.filter((_, idx) => !dominated.has(idx)).map((v) => v.def);
+}
+
+/**
+ * Compare two per-slot rank vectors.
+ * Returns  -1 if `a` dominates `b` (not worse everywhere, better somewhere),
+ *          +1 if `b` dominates `a`,
+ *           0 if neither dominates (incomparable or equal).
+ */
+function pairwiseCompare(a: readonly number[], b: readonly number[]): -1 | 0 | 1 {
+  let aBetter = false;
+  let bBetter = false;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] < b[i]) aBetter = true;
+    else if (b[i] < a[i]) bBetter = true;
+    if (aBetter && bBetter) return 0; // incomparable — early exit
+  }
+  if (aBetter && !bBetter) return -1;
+  if (bBetter && !aBetter) return 1;
+  return 0;
 }
 
 /**

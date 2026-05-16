@@ -1763,6 +1763,80 @@ describe('C++ ambiguous integer-width overloads', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C++ overload resolution: standard-conversion-sequence ranking (#1578)
+// Disambiguates overloads when exact normalized-type matching cannot,
+// by scoring each candidate's conversion cost. Exact match (rank 0) wins
+// over standard conversion (rank 2); same-rank ties still suppress.
+// ---------------------------------------------------------------------------
+
+describe('C++ overload resolution — conversion-rank disambiguation (#1578)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-conversion-rank'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(2.5) resolves to f(double) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // Conversion-rank scoring picks f(double) as the unique best:
+    // f(double) is exact match (rank 0), f(int) is standard conversion (rank 2).
+    const fDoubleEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'double';
+    });
+    expect(fDoubleEdges.length).toBe(1);
+  });
+
+  it('f(42) resolves to f(int) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // f(int) is exact match (rank 0), f(double) is standard conversion (rank 2).
+    const fIntEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'int';
+    });
+    expect(fIntEdges.length).toBe(1);
+  });
+
+  it('g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+    // g(int) and g(long) both normalize to parameterTypes=['int'],
+    // so isOverloadAmbiguousAfterNormalization triggers suppression.
+    expect(gCalls.length).toBe(0);
+  });
+
+  it("p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pCalls = calls.filter((c) => c.source === 'run' && c.target === 'p');
+    // p('a'): argType='char'. Exact-type filter misses both p(int) and
+    // p(double), forcing the conversion ranker (step 4b). char→int is an
+    // integral promotion (rank 1), char→double is a standard conversion
+    // (rank 2). p(int) wins with the lower total cost.
+    expect(pCalls.length).toBe(1);
+    const tgt = result.graph.getNode(pCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes?.[0]).toBe('int');
+  });
+
+  it('h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+    // h(42, 2.5) + h('a', 2.5): both call sites produce incomparable
+    // pairwise rankings. For h(42, 2.5) with argTypes=['int','double']:
+    //   h(int,int):    [rank('int','int')=0,  rank('double','int')=2]
+    //   h(double,double): [rank('int','double')=2, rank('double','double')=0]
+    // h(int,int) better at arg0, h(double,double) better at arg1 → neither
+    // dominates → ambiguous. Same pattern for h('a',2.5).
+    // Contract: zero edges for ALL h() call sites combined (dedup).
+    expect(hCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
 // PR #1520 review follow-up plan U3 / Claude review Finding 7
