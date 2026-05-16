@@ -63,6 +63,7 @@ import type {
   BindingRef,
   CaptureMatch,
   ImportEdge,
+  ParameterTypeClass,
   ParsedFile,
   ParsedImport,
   ReferenceSite,
@@ -545,8 +546,12 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
+    match['@declaration.parameter-type-classes'],
+  );
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
+  const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -556,16 +561,77 @@ function buildDefFromDeclarationMatch(
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(parameterTypeClasses !== undefined ? { parameterTypeClasses } : {}),
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
     ...(templateArguments !== undefined ? { templateArguments } : {}),
+    ...(templateConstraints !== undefined ? { templateConstraints } : {}),
   };
+}
+
+/** Parse an opaque JSON payload synthesized by per-language captures
+ *  (e.g. C++ `@declaration.template-constraints`). Producer owns the
+ *  shape; shared code threads it through as `unknown` per the
+ *  `SymbolDefinition.templateConstraints` contract. */
+function parseJsonCapture(cap: { readonly text: string } | undefined): unknown {
+  if (cap === undefined) return undefined;
+  try {
+    return JSON.parse(cap.text);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseIntCapture(cap: { readonly text: string } | undefined): number | undefined {
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function parseJsonParameterTypeClassesCapture(
+  cap: { readonly text: string } | undefined,
+): ParameterTypeClass[] | undefined {
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text);
+    if (!Array.isArray(parsed)) return undefined;
+    const out: ParameterTypeClass[] = [];
+    for (const item of parsed) {
+      if (item === null || typeof item !== 'object') return undefined;
+      const o = item as Record<string, unknown>;
+      if (typeof o.base !== 'string') return undefined;
+      if (
+        o.cv !== 'none' &&
+        o.cv !== 'const' &&
+        o.cv !== 'volatile' &&
+        o.cv !== 'const volatile' &&
+        o.cv !== 'unknown'
+      ) {
+        return undefined;
+      }
+      if (
+        o.indirection !== 'value' &&
+        o.indirection !== 'lvalue-ref' &&
+        o.indirection !== 'rvalue-ref' &&
+        o.indirection !== 'pointer' &&
+        o.indirection !== 'unknown'
+      ) {
+        return undefined;
+      }
+      if (typeof o.pointerDepth !== 'number' || !Number.isFinite(o.pointerDepth)) {
+        return undefined;
+      }
+      out.push({
+        base: o.base,
+        cv: o.cv,
+        indirection: o.indirection,
+        pointerDepth: o.pointerDepth,
+      });
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseJsonStringArrayCapture(
@@ -977,6 +1043,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.template-constraints',
 ]);
 
 /**

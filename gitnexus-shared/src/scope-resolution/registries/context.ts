@@ -30,9 +30,42 @@ export interface RegistryProviders {
    * when absent, every candidate receives `'unknown'` (neutral signal).
    */
   arityCompatibility?(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Language-specific constraint compatibility between a callsite and a
+   * candidate `def`. Mirrors `arityCompatibility` and shares its three-valued
+   * verdict shape; the third value `'unknown'` MUST keep the candidate
+   * (monotonicity: adding a predicate can only narrow correctly, never
+   * produce a wrong edge). Consulted by `narrowOverloadCandidates` after
+   * arity + type filters when a candidate carries `templateConstraints`.
+   *
+   * Optional; when absent the constraint filter is a pass-through. Languages
+   * with no constrained-overload semantics leave this undefined.
+   */
+  constraintCompatibility?(
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ): ArityVerdict;
 }
 
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+/**
+ * Context threaded into `constraintCompatibility`. Kept minimal in the
+ * Tier-A scope (only `argumentTypes`, riding here until a separate
+ * `Callsite`-widening refactor moves them onto the call site directly).
+ * Future Tier-B graph-aware predicates (`is_base_of_v`, etc.) will widen
+ * this interface with `lookupTypeByName` and similar helpers.
+ */
+export interface ConstraintContext {
+  /**
+   * Per-slot argument types at the call site, normalized per the language
+   * adapter. Empty string means unknown. Same convention as
+   * `narrowOverloadCandidates`' `argTypes` parameter.
+   */
+  readonly argumentTypes?: readonly string[];
+}
 
 // ─── Owner-scoped contributor (concrete shape for `RegistryContributor`) ────
 

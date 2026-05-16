@@ -7,6 +7,7 @@ import { cppArityCompatibility } from '../../../../src/core/ingestion/languages/
 import {
   computeCppDeclarationArity,
   computeCppCallArity,
+  classifyCppParameterType,
 } from '../../../../src/core/ingestion/languages/cpp/arity-metadata.js';
 import { getCppParser } from '../../../../src/core/ingestion/languages/cpp/query.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
@@ -97,6 +98,40 @@ describe('computeCppDeclarationArity', () => {
     expect(node).not.toBeNull();
     const arity = computeCppDeclarationArity(node!);
     expect(arity.parameterCount).toBe(1);
+  });
+
+  it('keeps coarse parameterTypes stable while preserving pointer/reference sidecar classes', () => {
+    const node = parseFuncDef('void f(int value, const int* ptr, int& ref, int&& move) {}');
+    expect(node).not.toBeNull();
+    const arity = computeCppDeclarationArity(node!);
+    expect(arity.parameterTypes).toEqual(['int', 'int', 'int', 'int']);
+    expect(arity.parameterTypeClasses).toEqual([
+      { base: 'int', cv: 'none', indirection: 'value', pointerDepth: 0 },
+      { base: 'int', cv: 'const', indirection: 'pointer', pointerDepth: 1 },
+      { base: 'int', cv: 'none', indirection: 'lvalue-ref', pointerDepth: 0 },
+      { base: 'int', cv: 'none', indirection: 'rvalue-ref', pointerDepth: 0 },
+    ]);
+  });
+
+  it('classifies int, int*, and int& as distinct sidecar shapes for future is_same_v consumers', () => {
+    expect(classifyCppParameterType('int')).toEqual({
+      base: 'int',
+      cv: 'none',
+      indirection: 'value',
+      pointerDepth: 0,
+    });
+    expect(classifyCppParameterType('int', '* p')).toEqual({
+      base: 'int',
+      cv: 'none',
+      indirection: 'pointer',
+      pointerDepth: 1,
+    });
+    expect(classifyCppParameterType('int', '& r')).toEqual({
+      base: 'int',
+      cv: 'none',
+      indirection: 'lvalue-ref',
+      pointerDepth: 0,
+    });
   });
 });
 

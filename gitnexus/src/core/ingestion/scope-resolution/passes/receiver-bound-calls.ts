@@ -74,6 +74,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
+  | 'constraintCompatibility'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -344,7 +345,10 @@ export function emitReceiverBoundCalls(
                 methodOverloads,
                 site.arity,
                 site.argumentTypes,
-                provider.conversionRankFn,
+                {
+                  conversionRankFn: provider.conversionRankFn,
+                  constraintCompatibility: provider.constraintCompatibility,
+                },
               );
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
                 ambiguous = true;
@@ -648,13 +652,7 @@ export function emitReceiverBoundCalls(
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
           for (const ownerId of chain) {
-            const picked = pickOverload(
-              ownerId,
-              memberName,
-              site,
-              model,
-              provider.conversionRankFn,
-            );
+            const picked = pickOverload(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               break;
@@ -722,7 +720,7 @@ function pickOverload(
   memberName: string,
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
-  conversionRankFn?: (argType: string, paramType: string) => number,
+  provider: ReceiverBoundProviderSubset,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | undefined {
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (overloads.length === 0) {
@@ -733,12 +731,10 @@ function pickOverload(
   }
   if (overloads.length === 1) return overloads[0];
 
-  const candidates = narrowOverloadCandidates(
-    overloads,
-    site.arity,
-    site.argumentTypes,
-    conversionRankFn,
-  );
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
   // When narrowing leaves >1 candidate that share identical normalized
   // parameter-types (e.g., C++ `f(int)` vs `f(long)` both collapsed to
   // `['int']` by `normalizeCppParamType`), suppress the edge entirely.
