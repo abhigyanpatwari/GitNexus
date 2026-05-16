@@ -55,6 +55,13 @@ export function tsBindingScopeFor(
     return walkToScope(innermost, tree, 'Class');
   }
 
+  // JS constructor body field (`this.address = new Address()` / JSDoc
+  // @type): hoist to the Class scope so compound-receiver resolution
+  // finds `User.address → Address` in the class's typeBindings.
+  if (decl['@type-binding.class-field'] !== undefined) {
+    return walkToScope(innermost, tree, 'Class');
+  }
+
   // `var` declarations: hoist to nearest enclosing Function or Module.
   const variable = decl['@declaration.variable'];
   if (variable !== undefined && isVarDeclaration(variable.text)) {
