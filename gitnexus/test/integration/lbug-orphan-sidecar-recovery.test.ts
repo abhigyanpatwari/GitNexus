@@ -156,6 +156,33 @@ describe('orphan sidecar recovery — native integration', () => {
 // ---------------------------------------------------------------------------
 
 describe('init lock — single-process ownership contract', () => {
+  itLbugReopen('acquireInitLock succeeds when parent directory does not exist yet', async () => {
+    const tmp = await createTempDir('gitnexus-lbug-orphan-');
+    // Use a nested path whose parent directory does NOT exist
+    const dbPath = path.join(tmp.dbPath, 'nonexistent-subdir', 'lbug');
+    const lockPath = `${dbPath}.init.lock`;
+
+    try {
+      // Precondition: parent directory must not exist
+      await expect(fs.access(path.dirname(dbPath))).rejects.toThrow();
+
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const release = await adapter.acquireInitLock(dbPath);
+
+      // Lock file should exist — parent dir was created automatically
+      const content = await fs.readFile(lockPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      expect(parsed.pid).toBe(process.pid);
+
+      await release();
+
+      // Lock file gone after release
+      await expect(fs.access(lockPath)).rejects.toThrow();
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
   itLbugReopen('acquireInitLock creates and releases lock file atomically', async () => {
     const tmp = await createTempDir('gitnexus-lbug-orphan-');
     const dbPath = path.join(tmp.dbPath, 'lbug');
