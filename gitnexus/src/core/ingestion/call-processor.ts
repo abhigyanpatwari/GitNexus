@@ -766,6 +766,15 @@ export const processCalls = async (
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   heritageMap?: HeritageMap,
   bindingAccumulator?: BindingAccumulator,
+  /**
+   * Optional cache for compiled `Parser.Query` objects keyed by language name.
+   * When provided, compiled queries are reused across calls instead of being
+   * re-compiled from the query string for every file. Callers that invoke
+   * `processCalls` many times with single-file batches (e.g. the cross-file
+   * propagation phase) should pass a long-lived map here to avoid O(N)
+   * query recompilation overhead.
+   */
+  compiledQueryCache?: Map<SupportedLanguages, Parser.Query>,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -843,7 +852,11 @@ export const processCalls = async (
     let matches;
     try {
       const lang = parser.getLanguage();
-      const query = new Parser.Query(lang, queryStr);
+      let query = compiledQueryCache?.get(language);
+      if (!query) {
+        query = new Parser.Query(lang, queryStr);
+        compiledQueryCache?.set(language, query);
+      }
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       logger.warn({ queryError }, `Query error for ${file.path}:`);

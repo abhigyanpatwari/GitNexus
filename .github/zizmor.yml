@@ -37,7 +37,8 @@ rules:
       - pr-labeler.yml
 
   # Note: cache-poisoning is NOT exempted. The two prior findings in
-  # publish.yml and release-candidate.yml were fixed structurally by
-  # dropping `cache: npm` from those workflows (matches the pattern used
-  # by PyO3/maturin for the same audit). See the commit that added this
-  # file for the rationale.
+  # publish.yml and the former release-candidate.yml were fixed structurally
+  # by dropping `cache: npm` from those workflows (matches the pattern used
+  # by PyO3/maturin for the same audit). After the publish-workflow
+  # unification (issue #1609), only publish.yml remains; the same
+  # cache-poisoning hardening applies there.
