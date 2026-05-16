@@ -76,6 +76,7 @@ import type {
 } from 'gitnexus-shared';
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
+import { extractTemplateArguments } from './utils/template-arguments.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -533,6 +534,9 @@ function buildDefFromDeclarationMatch(
 
   const qualifiedCap = match['@declaration.qualified_name'];
   const qualifiedName = qualifiedCap?.text;
+  const templateArguments =
+    extractTemplateArguments(match['@declaration.template-arguments']?.text ?? '') ??
+    extractTemplateArguments(qualifiedName ?? nameCap.text);
 
   // Optional arity metadata — producers (e.g. Python emit-captures)
   // synthesize these on function/method declarations. Their absence is
@@ -543,6 +547,7 @@ function buildDefFromDeclarationMatch(
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
+  const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -554,7 +559,22 @@ function buildDefFromDeclarationMatch(
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
+    ...(templateArguments !== undefined ? { templateArguments } : {}),
+    ...(templateConstraints !== undefined ? { templateConstraints } : {}),
   };
+}
+
+/** Parse an opaque JSON payload synthesized by per-language captures
+ *  (e.g. C++ `@declaration.template-constraints`). Producer owns the
+ *  shape; shared code threads it through as `unknown` per the
+ *  `SymbolDefinition.templateConstraints` contract. */
+function parseJsonCapture(cap: { readonly text: string } | undefined): unknown {
+  if (cap === undefined) return undefined;
+  try {
+    return JSON.parse(cap.text);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseIntCapture(cap: { readonly text: string } | undefined): number | undefined {
@@ -972,6 +992,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.template-constraints',
 ]);
 
 /**

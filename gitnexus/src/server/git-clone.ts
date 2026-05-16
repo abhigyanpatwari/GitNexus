@@ -11,6 +11,7 @@ import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 import { logger } from '../core/logger.js';
+import { parseRepoNameFromUrl } from '../storage/git.js';
 
 /** Root directory for all cloned repositories. Targets must resolve inside this. */
 const CLONE_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
@@ -29,20 +30,17 @@ const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
  * clone root via path traversal.
  */
 export function extractRepoName(url: string): string {
-  // Strip trailing slashes without a regex to avoid polynomial-ReDoS on
-  // pathological inputs like `https://x.com/y` + '/'.repeat(1e6). CodeQL's
-  // js/polynomial-redos flagged `/\/+$/` here.
-  let end = url.length;
-  while (end > 0 && url.charCodeAt(end - 1) === 47 /* '/' */) end--;
-  const cleaned = url.slice(0, end);
-
-  const lastSegment = cleaned.split(/[/:]/).pop() || '';
-  const stripped = lastSegment.endsWith('.git') ? lastSegment.slice(0, -4) : lastSegment;
-
-  if (!stripped || stripped === '.' || stripped === '..' || !REPO_NAME_PATTERN.test(stripped)) {
+  const name = parseRepoNameFromUrl(url);
+  if (
+    !name ||
+    name === '.' ||
+    name === '..' ||
+    name === 'unknown' ||
+    !REPO_NAME_PATTERN.test(name)
+  ) {
     throw new Error('Could not extract a valid repository name from URL');
   }
-  return stripped;
+  return name;
 }
 
 /** Get the clone target directory for a repo name. */
@@ -399,8 +397,8 @@ export async function cloneOrPull(
   }
 
   // Always validate the requested URL — the prior shape only ran this in
-  // the clone branch, leaving the pull branch as an SSRF / blocked-host
-  // bypass when an existing clone shared the basename of an attacker URL.
+  // the code path where the repo was cloned. Now it runs unconditionally,
+  // preventing SSRF / blocked-host bypasses even when targetDir already exists.
   validateGitUrl(url);
 
   const exists = await fs.access(path.join(safeTarget, '.git')).then(

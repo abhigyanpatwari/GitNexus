@@ -7,12 +7,12 @@ import {
   buildCloneArgs,
   normalizeGitUrlForCompare,
   assertRemoteMatchesRequestedUrl,
-  getRemoteOriginUrl,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { getRemoteOriginUrl } from '../../src/storage/git.js';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -50,17 +50,6 @@ describe('git-clone', () => {
       expect(() => extractRepoName('https://example.com/foo:.')).toThrow('valid repository name');
     });
 
-    it('rejects URLs with shell metacharacters in the last segment', () => {
-      // The split on /[/:]/ does not split on backslashes or other shell chars,
-      // so a name like `repo;rm -rf /` would slip through without the pattern.
-      expect(() => extractRepoName('https://example.com/foo:repo;rm')).toThrow(
-        'valid repository name',
-      );
-      expect(() => extractRepoName('https://example.com/foo:repo$x')).toThrow(
-        'valid repository name',
-      );
-    });
-
     it('rejects empty input', () => {
       expect(() => extractRepoName('')).toThrow('valid repository name');
     });
@@ -76,6 +65,31 @@ describe('git-clone', () => {
       // while still catching a true polynomial regression (which would take
       // multiple seconds on 10k slashes).
       expect(elapsedMs).toBeLessThan(500);
+    });
+
+    it('strips leading dashes to prevent argument injection', () => {
+      expect(extractRepoName('https://github.com/user/--upload-pack=payload.git')).toBe(
+        'upload-pack_payload',
+      );
+      expect(extractRepoName('https://github.com/user/-repo')).toBe('repo');
+    });
+
+    it('sanitizes unsafe directory characters', () => {
+      // sanitizeRepoName turns <tag> into _tag_
+      expect(extractRepoName('https://github.com/user/repo<tag>.git')).toBe('repo_tag_');
+    });
+
+    it('sanitizes shell metacharacters in URL segments', () => {
+      // The split on /[/:]/ does not split on backslashes or other shell chars,
+      // so a name like `repo;rm -rf /` would slip through without the pattern.
+      // After fix/sanitize-repo-name, these are sanitized to underscores.
+      expect(extractRepoName('https://example.com/foo:repo;rm')).toBe('repo_rm');
+      expect(extractRepoName('https://example.com/foo:repo$x')).toBe('repo_x');
+    });
+
+    it('sanitizes whitespace and backslashes', () => {
+      expect(extractRepoName('https://example.com/foo:repo name')).toBe('repo_name');
+      expect(extractRepoName('https://example.com/foo:repo\\name')).toBe('repo_name');
     });
   });
 
@@ -209,7 +223,7 @@ describe('git-clone', () => {
 
     it('blocks NAT64 with embedded RFC1918 addresses', () => {
       // The startsWith('64:ff9b:') check covers any embedded IPv4. These
-      // explicit RFC1918 cases document SSRF coverage for the full private
+      // explicit RFC1918 architectures document SSRF coverage for the full private
       // IPv4 surface — not just loopback and cloud metadata.
       expect(() => validateGitUrl('http://[64:ff9b::a00:1]/repo.git')).toThrow('private/internal'); // 10.0.0.1
       expect(() => validateGitUrl('http://[64:ff9b::ac10:1]/repo.git')).toThrow('private/internal'); // 172.16.0.1

@@ -21,6 +21,7 @@ import type { NodeLabel, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import { qualifiedKey, simpleKey, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -71,12 +72,36 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
  */
 export function resolveDefGraphId(
   filePath: string,
-  def: { qualifiedName?: string; type?: NodeLabel; parameterTypes?: readonly string[] },
+  def: {
+    qualifiedName?: string;
+    type?: NodeLabel;
+    parameterTypes?: readonly string[];
+    templateArguments?: readonly string[];
+    templateConstraints?: unknown;
+  },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
   if (qn === undefined || qn.length === 0) return undefined;
   if (def.type !== undefined) {
+    // SFINAE / `requires`-clause disambiguation (issue #1579) — try the
+    // constraint-fingerprinted key FIRST. Two function-template overloads
+    // with identical `parameterTypes` but mutually-exclusive SFINAE
+    // constraints route to their distinct graph nodes via this key.
+    // Must run before the parameter-types key because both overloads
+    // share the latter.
+    if (
+      (def.type === 'Function' || def.type === 'Method') &&
+      def.templateConstraints !== undefined
+    ) {
+      const cKey = qualifiedKey(
+        filePath,
+        def.type,
+        `${qn}${templateConstraintsIdTag(def.templateConstraints)}`,
+      );
+      const cHit = nodeLookup.get(cKey);
+      if (cHit !== undefined) return cHit;
+    }
     // Overload disambiguation: when the def carries parameter types,
     // try the parameter-typed key first so same-name same-arity
     // overloads route to their distinct graph nodes.
@@ -88,6 +113,19 @@ export function resolveDefGraphId(
       const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
       const pHit = nodeLookup.get(pKey);
       if (pHit !== undefined) return pHit;
+    }
+    if (
+      (def.type === 'Class' ||
+        def.type === 'Struct' ||
+        def.type === 'Interface' ||
+        def.type === 'Enum' ||
+        def.type === 'Record') &&
+      def.templateArguments !== undefined &&
+      def.templateArguments.length > 0
+    ) {
+      const tKey = qualifiedKey(filePath, def.type, `${qn}~${def.templateArguments.join(',')}`);
+      const tHit = nodeLookup.get(tKey);
+      if (tHit !== undefined) return tHit;
     }
     const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
     if (qualifiedHit !== undefined) return qualifiedHit;

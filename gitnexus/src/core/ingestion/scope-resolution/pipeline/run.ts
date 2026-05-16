@@ -32,16 +32,88 @@ import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
+import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import { findClassBindingInScope, findEnclosingClassDef } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 
 import { logger } from '../../../logger.js';
+
+/**
+ * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
+ * before MRO construction. This lets template-base captures contribute to the
+ * graph in time for `buildMro`, while `handledSites` prevents the generic
+ * reference-edge bridge from re-emitting the same sites later.
+ *
+ * @returns Site keys to seed the downstream handled-site skip set.
+ */
+function preEmitInheritanceEdges(
+  graph: KnowledgeGraph,
+  scopes: ReturnType<typeof finalizeScopeModel>,
+  nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+): Set<string> {
+  const handledSites = new Set<string>();
+  const seen = new Set<string>();
+  const existing = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
+    existing.add(`${rel.sourceId}->${rel.targetId}`);
+  }
+
+  for (const site of scopes.referenceSites) {
+    if (site.kind !== 'inherits') continue;
+    const scope = scopes.scopeTree.getScope(site.inScope);
+    const siteKey =
+      scope?.filePath !== undefined
+        ? `${scope.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`
+        : undefined;
+    if (siteKey !== undefined) {
+      // Intentionally suppress every `inherits` site from the generic
+      // reference bridge, even when this pre-pass can't emit an EXTENDS
+      // edge. The shared bridge resolves the source via
+      // `resolveCallerGraphId`, which can degrade class-heritage sites into
+      // method-owned EXTENDS edges once methods exist on the class. This
+      // pre-pass is the authoritative inheritance emitter, so broad
+      // suppression keeps `buildMro` and the final graph class-owned.
+      handledSites.add(siteKey);
+    }
+
+    const targetDef = findClassBindingInScope(site.inScope, site.name, scopes);
+    if (targetDef === undefined) continue;
+
+    const callerClass = findEnclosingClassDef(site.inScope, scopes);
+    if (callerClass === undefined) continue;
+    const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
+    const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
+    if (callerGraphId === undefined || targetGraphId === undefined) continue;
+    const edgeKey = `${callerGraphId}->${targetGraphId}`;
+    if (existing.has(edgeKey)) continue;
+
+    if (
+      tryEmitEdge(
+        graph,
+        scopes,
+        nodeLookup,
+        site,
+        targetDef,
+        'scope-resolution: inherits',
+        seen,
+        0.85,
+      )
+    ) {
+      existing.add(edgeKey);
+    }
+  }
+
+  return handledSites;
+}
+
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   /**
@@ -72,6 +144,22 @@ interface RunScopeResolutionInput {
    * provider doesn't supply a config loader.
    */
   readonly resolutionConfig?: unknown;
+  /**
+   * Pre-extracted ParsedFile artifacts keyed by file path. When a
+   * file is present here, the extract loop reuses it directly and
+   * skips `extractParsedFile` (which would re-parse the file with
+   * tree-sitter on the main thread). Only files matching the
+   * provider's language are honored — the loop verifies this
+   * implicitly by language filter at the call-site (scopeResolution
+   * phase).
+   *
+   * Worker-mode parses produce these ParsedFile artifacts as a side
+   * effect of `extractParsedFile` running inside the worker; threading
+   * them here is what lets the warm-cache analyze run skip the ~58s
+   * scope-resolution re-parse loop on a multi-thousand-file repo.
+   * Cache miss is safe — falls back to fresh extract.
+   */
+  readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
 }
 
 interface RunScopeResolutionStats {
@@ -104,21 +192,36 @@ export function runScopeResolution(
   const parsedFiles: ParsedFile[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
+  const preExtracted = input.preExtractedParsedFiles;
+  let preExtractedHits = 0;
   for (const file of files) {
-    const cachedTree = treeCache?.get(file.path);
-    const parsed = extractParsedFile(
-      provider.languageProvider,
-      file.content,
-      file.path,
-      onWarn,
-      cachedTree,
-    );
+    let parsed: ParsedFile | undefined;
+    // Fast path: a worker (during the parse phase) already produced a
+    // ParsedFile for this file via `extractParsedFile`. Reuse it
+    // directly — skips a tree-sitter re-parse on the main thread.
+    if (preExtracted !== undefined) {
+      parsed = preExtracted.get(file.path);
+      if (parsed !== undefined) preExtractedHits++;
+    }
     if (parsed === undefined) {
-      filesSkipped++;
-      continue;
+      const cachedTree = treeCache?.get(file.path);
+      parsed = extractParsedFile(
+        provider.languageProvider,
+        file.content,
+        file.path,
+        onWarn,
+        cachedTree,
+      );
+      if (parsed === undefined) {
+        filesSkipped++;
+        continue;
+      }
     }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
+  }
+  if (PROF && preExtracted !== undefined) {
+    logger.warn(`[scope-resolution prof] pre-extracted hits: ${preExtractedHits}/${files.length}`);
   }
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
 
@@ -152,7 +255,6 @@ export function runScopeResolution(
   // ── Phase 2: finalize → ScopeResolutionIndexes ─────────────────────────
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
   const nodeLookup = buildGraphNodeLookup(graph);
-  const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
 
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
@@ -165,6 +267,9 @@ export function runScopeResolution(
         provider.mergeBindings(existing, incoming, scopeId),
     },
   });
+  const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
+  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
 
   // Replace the empty MethodDispatchIndex that finalizeScopeModel
   // builds by design with the populated one derived from the
@@ -174,7 +279,7 @@ export function runScopeResolution(
   // the type system.
   const indexes = {
     ...finalized,
-    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId),
+    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId),
   };
 
   // Build the workspace resolution index ONCE — scope-valued lookups
@@ -241,7 +346,7 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
-  const handledSites = new Set<string>();
+  const handledSites = new Set<string>(preEmittedInheritanceSites);
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
@@ -252,6 +357,17 @@ export function runScopeResolution(
     workspaceIndex,
     readonlyModel,
   );
+  const unresolvedReceiverExtras =
+    provider.emitUnresolvedReceiverEdges !== undefined
+      ? provider.emitUnresolvedReceiverEdges(
+          graph,
+          indexes,
+          parsedFiles,
+          nodeLookup,
+          handledSites,
+          readonlyModel,
+        )
+      : 0;
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
@@ -261,7 +377,14 @@ export function runScopeResolution(
     handledSites,
     readonlyModel,
     workspaceIndex,
-    { allowGlobalFallback: provider.allowGlobalFreeCallFallback === true },
+    {
+      allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+      isFileLocalDef: provider.isFileLocalDef,
+      isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
+      resolveAdlCandidates: provider.resolveAdlCandidates,
+      conversionRankFn: provider.conversionRankFn,
+      constraintCompatibility: provider.constraintCompatibility,
+    },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
@@ -296,7 +419,7 @@ export function runScopeResolution(
     filesSkipped,
     importsEmitted,
     resolve: resolveStats,
-    referenceEdgesEmitted: emitted + receiverExtras + freeCallExtras,
+    referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
     referenceSkipped: skipped,
   };
 }

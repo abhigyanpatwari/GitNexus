@@ -4,6 +4,60 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.5] - 2026-05-16
+
+### Added
+
+- **C++ ADL V2** — Argument-Dependent Lookup overhaul. Class-typed reference args (incl. rvalue refs) contribute associated namespaces (#1595); class-pointer args and template-specialization args (with nested template args) included (#1592, #1596); base-class associated namespaces walked via MRO (#1597); free-function reference args contribute enclosing namespace (#1598); ordinary and ADL free-call candidates merged before overload selection (#1599)
+- **C++ standard-conversion-sequence ranking** for overload resolution (#1606)
+- **C++ scope-resolution migration** — C++ now runs on the registry-primary RFC #909 path (#938, #1520); template-body `this->` + `using ns::name` calls resolved in the scope resolver (#1590); template specializations disambiguated in class graph IDs and receiver routing (#1587); EXTENDS edges for template and qualified template bases (#1581)
+- **PHP scope-resolution migration** — PHP moved to scope-based resolution (#938, #1497, supersedes #1124)
+- **Java scope-resolution migration** — RFC #909 Ring 3 (#1482)
+- **C scope-resolution migration** — RFC #909 Ring 3 (#1481)
+- **Incremental indexing** — `gitnexus analyze` now reuses a parse cache, writes back to DB, and short-circuits scope resolution when nothing changed (#1479)
+- **`gitnexus:keep` marker** — preserves custom context sections (#605, #1508)
+- **`gitnexus analyze --skip-skills` and `--index-only`** flags (#742, #1485)
+- **`gitnexus wiki --timeout` and `--retries` flags** — mitigate timeout aborts on large module pages (#1543)
+- **HTTP embedding `dimensions` parameter** — now forwarded to the embedding endpoint (#1498)
+- **Cursor 2.4 `postToolUse` hooks** — upgraded for Read/Grep/Shell coverage (#1467)
+
+### Fixed
+
+- **Cross-file type propagation** — resolved a stall on large repos (#1626)
+- **C++ inline-namespace ambiguity** — detect same-name ambiguity across inline namespace children (#1564, #1600); workspace-wide dependent-base name resolution for cross-file templates (#1586)
+- **Parse cache persistence** — sharded on large repos to avoid corruption (#1580)
+- **TypeScript ESM `.js` extension** — fallback applied to tsconfig path-alias resolution (#1530) and `.js` → `.ts` source resolution (#1525)
+- **Markdown CRLF line endings** — section heading parser now handles them (#1469)
+- **`gitnexus analyze --no-stats`** — actually omits volatile counts (#1477, #1478)
+- **`ensureGitNexusIgnored`** — tolerate read-only workspaces (#1549, #1550)
+- **Claude augment hook** — skipped when GitNexus server owns the DB (#1493)
+- **Docker runtime image** — symlink `gitnexus` binary onto `$PATH` (#1551); install `ca-certificates` for TLS verification (#1545, #1547); include duckdb installer script (#1502)
+- **Windows reliability** — fix 32767-char tree-sitter crash and VECTOR-extension SIGSEGV (#1433); platform-aware `tsc` build command for win32 (#1531)
+- **Search / FTS** — guard against undefined `bm25Results` when FTS is unavailable (#1489, #1540); CONTAINS fallback in augment when FTS indexes unavailable (#1476)
+- **Wiki** — sanitize generated mermaid diagrams (#1539)
+- **Hooks** — cap concurrent augment subprocesses to prevent runaway fan-out (#1486, #1510)
+- **LadybugDB** — drain checkpoint result before close (#1506); recover `gitnexus analyze` from orphan sidecars when the main DB file is missing (#1622)
+- **Group / contracts** — detect `httpx` async consumers (#1408)
+- **Server hardening** — sanitize repo name to prevent argument injection on `/api/analyze` (#1305)
+
+### Changed
+
+- **CI release pipeline unified under `publish.yml`** — single source of truth for npm publish, provenance, and GitHub Release creation (#1610)
+- **CI: skip RC build on release PRs** — release/* branches no longer cut redundant RCs (#1474)
+- **CI (Claude review): make `/review` reliably post PR comments** (#1522); allow Bash in code-review job without interactive approval (#1523)
+- **CI publish (post-merge fixes)** — bump publish job to Node 24 for npm OIDC support (#1628); engage npm Trusted Publishing OIDC properly (#1627)
+- **Tests** — remove flaky regression test for resource exhaustion (#1521); de-flake regex linearity assertions in U8 (#1475)
+
+### Chore / Dependencies
+
+- `vitest` 4.1.5 → 4.1.6 in /gitnexus (#1605)
+- `@langchain/google-genai` bump in /gitnexus-web (#1554)
+- `vite` 8.0.10 → 8.0.11 in /gitnexus-web (#1555)
+- `mermaid` bump (#1514)
+- `protobufjs` 7.5.5 → 7.5.8 + `@protobufjs/utf8` in /gitnexus (#1535, #1536)
+- `urllib3` bump in /eval uv group (#1512)
+- GitHub Actions: `sigstore/cosign-installer` 4.1.1 → 4.1.2 (#1557)
+
 ## [1.6.4] - 2026-05-10
 
 ### Added

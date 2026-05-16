@@ -30,6 +30,15 @@ export interface SymbolDefinition {
   returnType?: string;
   /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
   declaredType?: string;
+  /** Generic/template specialization arguments for class-like symbols (e.g. ['User'], ['T*']). */
+  templateArguments?: string[];
+  /** Per-language constraint payload for template / generic overloads
+   *  (e.g. C++ `enable_if_t<P, T>` predicate trees, C++20 `requires` clauses).
+   *  Opaque to shared code — the producing language adapter owns the shape
+   *  and is the only consumer. Read via the optional
+   *  `ScopeResolver.constraintCompatibility` hook during overload narrowing.
+   *  Absent for symbols that have no constraints (the common case). */
+  templateConstraints?: unknown;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
 }

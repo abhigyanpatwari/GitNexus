@@ -1,11 +1,12 @@
 /**
  * Java: class extends + implements multiple interfaces + ambiguous package disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('java');
 
 // ---------------------------------------------------------------------------
 // Heritage: class extends + implements multiple interfaces
@@ -437,6 +440,54 @@ describe('Java variadic call resolution', () => {
       }
     }
     expect(allDangling).toEqual([]);
+  });
+
+  it('resolves 2-arg call to fixed-prefix varargs method format(int, String...) in Formatter.java', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fmtCall = calls.find((c) => c.target === 'format' && c.source === 'run');
+    expect(fmtCall).toBeDefined();
+    expect(fmtCall!.targetFilePath).toBe('com/example/util/Formatter.java');
+  });
+
+  it('0-arg call to format(int, String...) still resolves in legacy mode (arity rejection is registry-only)', () => {
+    // In REGISTRY_PRIMARY_JAVA=1 mode, `requiredParameterCount = 1` causes
+    // `javaArityCompatibility` to return 'incompatible' for 0-arg calls,
+    // preventing the CALLS edge. In default (legacy) mode, arity is not
+    // enforced so the edge is created. This test documents the legacy
+    // behavior; the negative assertion is a flip-blocker for registry-primary.
+    const calls = getRelationships(result, 'CALLS');
+    const zeroArgFmtCall = calls.find((c) => c.target === 'format' && c.source === 'badCall');
+    expect(zeroArgFmtCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wildcard import: `import com.example.models.*` resolves to a package file
+// ---------------------------------------------------------------------------
+
+describe('Java wildcard import resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-wildcard-import'), () => {});
+  }, 60000);
+
+  it('parses wildcard import without errors and creates graph nodes', () => {
+    // The wildcard import (`import com.example.models.*`) exercises the
+    // directoryChild branch in resolveJavaImportTarget.  Even if no IMPORTS
+    // edge is created (nondeterministic file selection — documented flip
+    // blocker), the graph must contain valid nodes for all classes.
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Main');
+    expect(classes).toContain('User');
+    expect(classes).toContain('Order');
+  });
+
+  it('resolves user.save() call via wildcard-imported User', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
+    expect(saveCall).toBeDefined();
+    expect(saveCall!.targetFilePath).toBe('com/example/models/User.java');
   });
 });
 

@@ -40,8 +40,11 @@ const readConfig = (): HttpConfig | null => {
   const rawDims = process.env.GITNEXUS_EMBEDDING_DIMS;
   let dimensions: number | undefined;
   if (rawDims !== undefined) {
+    if (!/^\d+$/.test(rawDims)) {
+      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
+    }
     const parsed = parseInt(rawDims, 10);
-    if (Number.isNaN(parsed) || parsed <= 0) {
+    if (parsed <= 0) {
       throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
     }
     dimensions = parsed;
@@ -91,7 +94,13 @@ interface EmbeddingItem {
  * @param model - Model name for the request body
  * @param apiKey - Bearer token (only used in Authorization header)
  * @param batchIndex - Logical batch number (for error context)
- * @param attempt - Current retry attempt (internal)
+ * @param dimensions - Optional output-vector size. When provided, sent as
+ *   the `dimensions` field in the request body. Endpoints that implement
+ *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3,
+ *   Voyage) return a truncated vector at that size; endpoints that do not
+ *   recognise the field may ignore it or return 400. Leave
+ *   `GITNEXUS_EMBEDDING_DIMS` unset for strict backends that reject
+ *   unknown fields.
  */
 const httpEmbedBatch = async (
   url: string,
@@ -99,7 +108,16 @@ const httpEmbedBatch = async (
   model: string,
   apiKey: string,
   batchIndex = 0,
+  dimensions?: number,
 ): Promise<EmbeddingItem[]> => {
+  const requestBody: { input: string[]; model: string; dimensions?: number } = {
+    input: batch,
+    model,
+  };
+  if (dimensions !== undefined) {
+    requestBody.dimensions = dimensions;
+  }
+
   let resp: Response;
   try {
     resp = await resilientFetch(
@@ -111,7 +129,7 @@ const httpEmbedBatch = async (
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ input: batch, model }),
+        body: JSON.stringify(requestBody),
       },
       {
         breakerKey: HTTP_BREAKER_KEY,
@@ -169,7 +187,14 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
   for (let i = 0; i < texts.length; i += HTTP_BATCH_SIZE) {
     const batch = texts.slice(i, i + HTTP_BATCH_SIZE);
     const batchIndex = Math.floor(i / HTTP_BATCH_SIZE);
-    const items = await httpEmbedBatch(url, batch, config.model, config.apiKey, batchIndex);
+    const items = await httpEmbedBatch(
+      url,
+      batch,
+      config.model,
+      config.apiKey,
+      batchIndex,
+      config.dimensions,
+    );
 
     if (items.length !== batch.length) {
       throw new Error(
@@ -212,7 +237,14 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
   if (!config) throw new Error('HTTP embedding not configured');
 
   const url = `${config.baseUrl}/embeddings`;
-  const items = await httpEmbedBatch(url, [text], config.model, config.apiKey);
+  const items = await httpEmbedBatch(
+    url,
+    [text],
+    config.model,
+    config.apiKey,
+    0,
+    config.dimensions,
+  );
   if (!items.length) {
     throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }

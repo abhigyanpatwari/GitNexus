@@ -23,6 +23,10 @@ export interface LLMConfig {
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
+  /** Per-attempt fetch timeout in ms (default: 60_000). */
+  requestTimeoutMs?: number;
+  /** Max fetch attempts before giving up (default: 3). */
+  maxAttempts?: number;
 }
 
 export interface LLMResponse {
@@ -237,12 +241,12 @@ export async function callLLM(
         // indefinitely on a frozen TCP connection — the per-call
         // signal is the only timeout `resilientFetch` honors;
         // `capDelayMs` only bounds the *backoff* between attempts.
-        // 60s matches typical LLM completion budgets.
-        signal: AbortSignal.timeout(60_000),
+        // Default 60s; raise via --timeout for slow models or large pages.
+        signal: AbortSignal.timeout(config.requestTimeoutMs ?? 60_000),
       },
       {
         breakerKey: `wiki-llm-${new URL(url).host}`,
-        retry: { maxAttempts: 3, baseDelayMs: 2_000, capDelayMs: 30_000 },
+        retry: { maxAttempts: config.maxAttempts ?? 3, baseDelayMs: 2_000, capDelayMs: 30_000 },
       },
     );
   } catch (err) {

@@ -755,8 +755,10 @@ export class LocalBackend {
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
     ]);
 
-    const bm25Results = bm25SearchResult.results;
-    const ftsUsed = bm25SearchResult.ftsUsed;
+    // Guard against undefined results (#1489) — when FTS is entirely
+    // unavailable the search helper may return an unexpected shape.
+    const bm25Results = bm25SearchResult?.results ?? [];
+    const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
@@ -774,8 +776,9 @@ export class LocalBackend {
       }
     }
 
-    for (let i = 0; i < semanticResults.length; i++) {
-      const result = semanticResults[i];
+    const safeSemanticResults = semanticResults ?? [];
+    for (let i = 0; i < safeSemanticResults.length; i++) {
+      const result = safeSemanticResults[i];
       const key = result.nodeId || result.filePath;
       const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
@@ -992,7 +995,17 @@ export class LocalBackend {
     query: string,
     limit: number,
   ): Promise<{ results: any[]; ftsUsed: boolean }> {
-    const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
+    let searchFTSFromLbug;
+    try {
+      ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
+    } catch (err: any) {
+      // Module import can fail in sandboxed MCP contexts (#1489)
+      logger.warn(
+        { err: err?.message },
+        'GitNexus: bm25-index.js import failed — falling back to semantic-only',
+      );
+      return { results: [], ftsUsed: false };
+    }
     let ftsResponse;
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.id);
@@ -1004,8 +1017,10 @@ export class LocalBackend {
       return { results: [], ftsUsed: false };
     }
 
-    const bm25Results = ftsResponse.results;
-    const ftsUsed = ftsResponse.ftsAvailable;
+    // Guard against unexpected response shape (#1489) — ftsResponse.results
+    // could be undefined when the FTS extension is unavailable in the MCP process.
+    const bm25Results = ftsResponse?.results ?? [];
+    const ftsUsed = ftsResponse?.ftsAvailable ?? false;
 
     const results: any[] = [];
 

@@ -10,6 +10,13 @@ export interface ExtractedClassSymbol {
   name: string;
   type: ClassLikeNodeLabel;
   qualifiedName: string;
+  templateArguments?: string[];
+}
+
+export interface ClassCaptureContext {
+  captureMap: Record<string, SyntaxNode>;
+  definitionNode: SyntaxNode | null;
+  nameNode: SyntaxNode | undefined;
 }
 
 /**
@@ -30,6 +37,10 @@ export interface ClassExtractor {
     },
   ): ExtractedClassSymbol | null;
   extractQualifiedName(node: SyntaxNode, simpleName: string): string | null;
+  shouldSkipClassCapture?(
+    context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
+  ): boolean;
+  extractTemplateArgumentsFromCapture?(context: ClassCaptureContext): string[] | undefined;
 }
 
 export interface ClassExtractionConfig {
@@ -41,4 +52,9 @@ export interface ClassExtractionConfig {
   extractName?: (node: SyntaxNode) => string | undefined;
   extractType?: (node: SyntaxNode) => ClassLikeNodeLabel | undefined;
   extractScopeSegments?: (node: SyntaxNode) => string[] | null | undefined;
+  extractTemplateArguments?: (node: SyntaxNode) => string[] | undefined;
+  shouldSkipClassCapture?(
+    context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
+  ): boolean;
+  extractTemplateArgumentsFromCapture?(context: ClassCaptureContext): string[] | undefined;
 }

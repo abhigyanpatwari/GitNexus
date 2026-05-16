@@ -129,6 +129,7 @@ export type {
   RegistryProviders,
   OwnerScopedContributor,
   ArityVerdict,
+  ConstraintContext,
 } from './scope-resolution/registries/context.js';
 
 // Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)

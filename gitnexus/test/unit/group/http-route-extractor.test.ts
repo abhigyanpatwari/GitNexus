@@ -14,12 +14,12 @@ import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-rout
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
 describe('HttpRouteExtractor', () => {
-  const tmpDir = path.join(os.tmpdir(), `gitnexus-http-extract-${Date.now()}`);
+  let tmpDir: string;
   let extractor: HttpRouteExtractor;
 
   beforeEach(() => {
     extractor = new HttpRouteExtractor();
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-http-extract-'));
   });
 
   afterEach(() => {
@@ -435,6 +435,74 @@ def create_order():
       expect(
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
       ).toBeDefined();
+    });
+    it('extracts Python httpx.AsyncClient calls assigned to attributes or aliases', async () => {
+      const dir = path.join(tmpDir, 'python-httpx-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import httpx
+
+module_client = httpx.AsyncClient(base_url="https://svc.local")
+
+class TopicClient:
+    def __init__(self):
+        self._client = httpx.AsyncClient(base_url="https://svc.local")
+
+    async def list_topics(self):
+        return await self._client.get("/topic")
+
+    async def publish(self):
+        return await self._client.request("POST", "/questions/import")
+
+    async def delete_topic(self):
+        return await self._client.delete("/topic")
+
+async def check_duplicate():
+    async with httpx.AsyncClient() as client:
+        data = {}
+        data.get("/nope")
+        service.request("POST", "/nope")
+        return await client.post("https://svc.local/questions/duplicate-check")
+
+def unrelated_scope_collision():
+    client = acquire_cache_client()
+    return client.get("/ignored-same-name")
+
+def module_scope_shadow_collision():
+    client = acquire_cache_client()
+    return client.get("/ignored-module-same-name")
+
+module_client.get("/module-topic")
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const expected = [
+        'http::GET::/topic',
+        'http::POST::/questions/import',
+        'http::DELETE::/topic',
+        'http::POST::/questions/duplicate-check',
+        'http::GET::/module-topic',
+      ];
+
+      for (const contractId of expected) {
+        const consumer = consumers.find((c) => c.contractId === contractId);
+        expect(consumer).toBeDefined();
+        expect(consumer?.meta.framework).toBe('python-httpx');
+      }
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/nope')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/nope')).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/ignored-same-name'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/ignored-module-same-name'),
+      ).toBeUndefined();
     });
 
     it('extracts Java RestTemplate, WebClient and OkHttp calls', async () => {

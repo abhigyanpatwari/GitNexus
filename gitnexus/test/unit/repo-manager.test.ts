@@ -4,10 +4,11 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
+import { _captureLogger } from '../../src/core/logger.js';
 import {
   getStoragePath,
   getStoragePaths,
@@ -73,6 +74,7 @@ describe('ensureGitNexusIgnored (#1233)', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await tmpRepo.cleanup();
   });
 
@@ -139,6 +141,74 @@ describe('ensureGitNexusIgnored (#1233)', () => {
     });
     expect(status).toBe('');
   });
+
+  // ─ Read-only workspace tolerance (#1549) ────────────────────────────
+  // The documented Docker workflow mounts the host workspace at /workspace:ro
+  // and runs `gitnexus index /workspace/<repo>`. The host has already created
+  // the .gitnexus dir during a prior `analyze`, so the gitignore file already
+  // exists with the correct content — there's no real work to do. The tests
+  // below pin two pieces of behaviour that make that workflow work:
+  //   (a) the function short-circuits when the file is already correct
+  //       (no write attempt, no mtime bump);
+  //   (b) when a write *is* needed but the FS is not writable
+  //       (EROFS / EACCES / EPERM), the function logs and continues instead of
+  //       throwing — so the caller's `registerRepo` work stays committed.
+
+  it('does not re-write .gitnexus/.gitignore when it already has the desired content', async () => {
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    const gitignorePath = path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore');
+    const before = await fs.stat(gitignorePath);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    const after = await fs.stat(gitignorePath);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'does not throw when .gitnexus/.gitignore is already correct and the storage dir is read-only',
+    async () => {
+      await ensureGitNexusIgnored(tmpRepo.dbPath);
+      const storagePath = path.join(tmpRepo.dbPath, '.gitnexus');
+
+      await fs.chmod(storagePath, 0o555);
+      try {
+        await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
+      } finally {
+        await fs.chmod(storagePath, 0o755);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'warns and continues when the storage dir is read-only and the file does not yet exist',
+    async () => {
+      const storagePath = path.join(tmpRepo.dbPath, '.gitnexus');
+      await fs.mkdir(storagePath, { recursive: true });
+      await fs.chmod(storagePath, 0o555);
+
+      const cap = _captureLogger();
+      try {
+        await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
+        expect(
+          cap
+            .records()
+            .some(
+              (r) =>
+                r.level === 40 &&
+                (r.code === 'EACCES' || r.code === 'EPERM') &&
+                String(r.msg ?? '').includes('.gitnexus/.gitignore') &&
+                String(r.path ?? '').includes('.gitnexus'),
+            ),
+        ).toBe(true);
+      } finally {
+        cap.restore();
+        await fs.chmod(storagePath, 0o755);
+      }
+    },
+  );
 });
 
 // ─── readRegistry ────────────────────────────────────────────────────

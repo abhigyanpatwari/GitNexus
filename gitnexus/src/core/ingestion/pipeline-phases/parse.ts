@@ -20,6 +20,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import type {
   ExtractedFetchCall,
   ExtractedRoute,
@@ -81,6 +82,19 @@ export interface ParseOutput {
    * `scopeTreeCache.clear()` after its extract loop finishes.
    */
   readonly scopeTreeCache: ASTCache;
+  /**
+   * Per-file `ParsedFile` artifacts produced by workers' calls to
+   * `extractParsedFile`. Threaded through to `scopeResolutionPhase`
+   * as a re-extraction cache: when a file's ParsedFile is present here,
+   * scope-resolution can skip its own `extractParsedFile` (which would
+   * otherwise re-parse the file with tree-sitter on the main thread,
+   * costing ~58s on a 1000-file repo).
+   *
+   * Empty for files that went through the sequential parse fallback —
+   * sequential doesn't emit ParsedFile artifacts; scope-resolution
+   * falls back to a fresh extract for those.
+   */
+  readonly parsedFiles: readonly ParsedFile[];
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

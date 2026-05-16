@@ -1,0 +1,8 @@
+{
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/App/",
+      "Vendor\\": "src/Vendor/"
+    }
+  }
+}

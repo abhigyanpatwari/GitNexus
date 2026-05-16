@@ -255,24 +255,63 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
 };
 
 /**
- * Parse a repository name out of a git remote URL. Handles the common
- * SSH (`git@host:owner/repo.git`), HTTPS (`https://host/owner/repo.git`),
- * `git://`, `ssh://`, and `file://` shapes. Returns `null` for empty /
- * unparseable input.
+ * Sanitize a repository name to prevent argument injection and ensure
+ * cross-platform filesystem compatibility.
  *
- * The heuristic: strip a trailing `.git` and trailing slashes, then
- * take the segment after the last `/` or `:`.
+ * 1. Strips leading dashes to prevent git command-line argument injection
+ *    (e.g., --upload-pack=evil).
+ * 2. Replaces characters that are unsafe for directory names across
+ *    platforms (Windows/macOS/Linux) with underscores.
+ * 3. Blocks path traversal segments ("." and "..") and Windows reserved
+ *    names (e.g., CON, NUL) to prevent directory escape.
+ */
+export const sanitizeRepoName = (name: string): string => {
+  // 1. Prevent argument injection by stripping leading dashes.
+  // 2. Remove characters that are not alphanumerics, dots, underscores, or dashes.
+  const sanitized = name.replace(/^-+/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+  // 3. Block path traversal segments and Windows reserved names.
+  // Windows reserved names like CON, PRN, AUX, NUL, COM1-9, LPT1-9 cannot
+  // be used as directory names on Windows even if they have an extension.
+  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+  if (!sanitized || sanitized === '.' || sanitized === '..' || reserved.test(sanitized)) {
+    return 'unknown';
+  }
+
+  return sanitized;
+};
+
+/**
+ * Parse a repository name out of a git remote URL. Handles common shapes
+ * including SSH (git@host:owner/repo.git) and HTTPS (https://host/owner/repo.git).
+ *
+ * Returns a sanitized, filesystem-safe name or null if no name could be inferred.
+ * Returning null (rather than 'unknown') allows callers to use ?? null-coalescing
+ * for fallbacks without risk of registry collisions on 'unknown'.
  */
 export const parseRepoNameFromUrl = (url: string | null | undefined): string | null => {
   if (!url) return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
-  // Strip `.git` suffix (case-insensitive) and any trailing slashes.
-  const withoutSuffix = trimmed.replace(/\.git\/*$/i, '').replace(/\/+$/, '');
-  // Last path segment, splitting on either `/` or `:` (covers SSH form).
-  const m = withoutSuffix.match(/[/:]([^/:]+)$/);
-  const candidate = m ? m[1] : withoutSuffix;
-  return candidate || null;
+
+  // Strip trailing slashes without a regex to avoid polynomial-ReDoS on
+  // pathological inputs like `https://x.com/y` + '/'.repeat(1e6).
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  let cleaned = trimmed.slice(0, end);
+
+  // Strip trailing .git (case-insensitive)
+  if (cleaned.toLowerCase().endsWith('.git')) {
+    cleaned = cleaned.slice(0, -4);
+  }
+
+  // Last path segment, handling colons for SSH URLs and path traversal.
+  // Split on both / and : to consistently extract the last part.
+  const candidate = cleaned.split(/[/:]/).pop() || '';
+  if (!candidate) return null;
+
+  const safe = sanitizeRepoName(candidate);
+  return safe === 'unknown' ? null : safe;
 };
 
 /**
