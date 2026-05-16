@@ -175,6 +175,19 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
+    // Conversion-rank scoring (#1578) disambiguates `f(int)` vs `f(double)`
+    // by ranking exact match over standard conversion. The legacy DAG has no
+    // conversion-rank scoring; it either picks arbitrarily or leaves the call
+    // unresolved. Scope-resolver-only correctness win.
+    'f(2.5) resolves to f(double) — exact match beats standard conversion',
+    'f(42) resolves to f(int) — exact match beats standard conversion',
+    'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
+    // char-literal promotion exercises the conversion ranker (step 4b).
+    // Legacy DAG has no conversion-rank scoring. Scope-resolver-only.
+    "p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)",
+    // Multi-arg incomparable overloads: pairwise dominance check finds
+    // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
+    'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
     // The legacy DAG path has no inline-namespace same-name ambiguity
     // detection. When two inline children declare the same name, the
     // legacy path picks an arbitrary match. The scope-resolver returns
