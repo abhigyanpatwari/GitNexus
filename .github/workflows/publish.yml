@@ -1,62 +1,404 @@
-name: Publish to npm
+name: Publish
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sole publisher for the `gitnexus` npm package, GitHub Releases, and Docker
+# images. Replaces the former two-workflow design — see issue #1609 for the
+# double-publish race this unification closes.
+#
+# Two release modes, both routed through this file:
+#   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
+#       The RC path computes the next rc version, applies it in-CI, pushes a
+#       detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
+#       atomically, then publishes to npm with --tag rc and creates a GitHub
+#       prerelease. RC-only docker.yml invocation follows.
+#   • Stable                  — triggered by push of a v<X.Y.Z> tag (no -rc.*
+#       suffix). Verifies package.json matches the tag, publishes to npm with
+#       --tag latest, creates a stable GitHub Release. No docker (RC-only).
+#
+# ⚠️  SELF-TRIGGER INVARIANT — DO NOT WEAKEN ⚠️
+# The `tags:` filter below uses a negative glob `'!v*-rc.*'` to prevent the
+# workflow from re-triggering itself when the RC path pushes its own v-tag.
+# Without this exclusion, every RC publish double-fires (the bug fixed by
+# #1609). If a NEW prerelease channel is introduced (e.g. `-beta.N`,
+# `-alpha.N`, `-next.N`), the negative-glob list MUST be extended in
+# lock-step or self-trigger returns. The same invariant applies to the
+# `Classify` step further below — its accepted-tag regex must align with
+# the trigger filter's exclusion list.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
     tags:
+      # Negative-globbed exclusion of RC tags this workflow itself produces
+      # (see the SELF-TRIGGER INVARIANT in the header comment).
       - 'v*'
-
-# No workflow-level permissions — scoped per job below.
+      - '!v*-rc.*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: >-
+          Cycle policy. 'auto' (default) continues the active rc cycle on
+          this branch if there is one, otherwise bumps patch from latest.
+          Choose 'patch' / 'minor' / 'major' to explicitly start or reset
+          an rc cycle.
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      force:
+        description: 'Publish even when HEAD already has an rc marker'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+# Workflow-level deny-all; each job declares the minimum it needs.
 permissions: {}
 
-# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
-# Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the
-# same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+# Distinct refs (refs/heads/main, refs/tags/v*) run in parallel. The
+# release-PR-skip in rc-guard is the load-bearing invariant that prevents
+# an RC main-push and a stable tag-push colliding on the same release commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # ── Phase 1: classify the triggering event into a release mode ─────────────
+  route:
+    name: Classify release event
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+      bump_input: ${{ inputs.bump }}
+      force_input: ${{ inputs.force }}
+    steps:
+      - name: Classify
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_REF: ${{ github.ref }}
+          GH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          HEAD_SHA="${GITHUB_SHA}"
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Sanitize before logging (annotation-injection defense in depth).
+          REF_SAFE="${GH_REF//::/__}"
+          REF_NAME_SAFE="${GH_REF_NAME//::/__}"
+          echo "event=${EVENT_NAME} ref=${REF_SAFE} ref_name=${REF_NAME_SAFE}"
+
+          MODE=""
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              # Manual dispatch is only valid on main — that's the only ref
+              # where a real publish makes sense.
+              if [ "${GH_REF}" = "refs/heads/main" ]; then
+                MODE="rc"
+              else
+                echo "::error::workflow_dispatch is only permitted on refs/heads/main (got ${REF_SAFE})."
+                exit 1
+              fi
+              ;;
+            push)
+              case "${GH_REF}" in
+                refs/heads/main)
+                  MODE="rc"
+                  ;;
+                refs/tags/v*)
+                  # The trigger filter already excluded v*-rc.* tags. Anything
+                  # reaching here is either a stable semver or a malformed v*.
+                  TAG="${GH_REF#refs/tags/}"
+                  if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    MODE="stable"
+                  else
+                    echo "::error::malformed v* tag rejected: ${REF_NAME_SAFE}"
+                    echo "::error::stable tags must match ^v[0-9]+\\.[0-9]+\\.[0-9]+\$"
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "::error::unexpected push ref ${REF_SAFE} reached publish workflow."
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "::error::unsupported event ${EVENT_NAME}."
+              exit 1
+              ;;
+          esac
+
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "Classified as mode=${MODE}"
+
+  # ── Phase 2 (RC only): dedup marker + release-PR skip ──────────────────────
+  rc-guard:
+    name: RC guard (marker + release-PR skip)
+    needs: route
+    if: needs.route.outputs.mode == 'rc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      head_sha: ${{ steps.decide.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # rc-guard reads only — no git pushes from this job. Skip the
+          # default extraheader credential persistence (artipacked audit).
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          FORCE: ${{ inputs.force }}
+          BUMP_INPUT: ${{ inputs.bump }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force flag set — running regardless of marker tag."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Explicit cycle reset on dispatch bypasses dedup.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
+             && [ -n "${BUMP_INPUT:-}" ] \
+             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+            echo "Explicit bump=$BUMP_INPUT — bypassing marker dedup."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ── Skip when the merge commit corresponds to a release ───────────
+          # This skip is load-bearing: it prevents an RC build firing on the
+          # release-PR commit from racing the imminent stable-tag push on the
+          # same SHA. Two complementary checks:
+          #   1. HEAD subject matches `chore: release vX.Y.Z` (the canonical
+          #      release-PR title). Anchored to require the bare title or the
+          #      squash-merge `(#NNNN)` suffix exactly. Case-insensitive so
+          #      `Chore: Release v1.2.3` (IDE auto-capitalization) still
+          #      matches — prior commit-author conventions left the door open.
+          #   2. Squash-merged PR carries the `release` label.
+          # Either match suppresses the rc build — stable releases publish on
+          # the v-tag instead.
+          HEAD_SUBJECT="$(git log -1 --pretty=%s HEAD)"
+          # Sanitize GitHub-Actions annotation prefixes before logging — even
+          # though %s strips newlines, a crafted subject containing `::error::`
+          # could forge log annotations.
+          HEAD_SUBJECT_SAFE="${HEAD_SUBJECT//::/__}"
+          RELEASE_SUBJECT_RE='^chore:[[:space:]]*release[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]+\(#[0-9]+\))?$'
+          shopt -s nocasematch
+          if [[ "$HEAD_SUBJECT" =~ $RELEASE_SUBJECT_RE ]]; then
+            shopt -u nocasematch
+            echo "HEAD commit subject matches a release commit — skipping rc."
+            echo "  subject (sanitised): $HEAD_SUBJECT_SAFE"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          shopt -u nocasematch
+
+          # Squash-merge commits include `(#NNNN)` at the end of the subject.
+          if [[ "$HEAD_SUBJECT" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
+            PR_NUM="${BASH_REMATCH[1]}"
+            echo "Detected squash-merge of PR #$PR_NUM — checking labels."
+            if LABELS_JSON="$(gh pr view "$PR_NUM" --repo "$REPO" --json labels 2>/dev/null)"; then
+              if printf '%s' "$LABELS_JSON" | jq -e '.labels[] | select(.name == "release")' >/dev/null; then
+                echo "PR #$PR_NUM has the 'release' label — skipping rc."
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "PR #$PR_NUM has no 'release' label — proceeding."
+            else
+              # Lookup failure is not fatal — fall through to dedup check.
+              echo "::warning::Could not read labels for PR #${PR_NUM} — falling through."
+            fi
+          fi
+
+          # Dedup: is there already an rc/<HEAD_SHA> marker pointing at HEAD?
+          MARKER="rc/${HEAD_SHA}"
+          if git rev-parse "refs/tags/$MARKER" >/dev/null 2>&1; then
+            echo "HEAD already has marker $MARKER — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No marker on HEAD — proceeding."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Phase 3: reusable CI gate ──────────────────────────────────────────────
+  # Runs for both rc (when guard says go) and stable. No `secrets:` passed —
+  # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
+  # ci-e2e, ci-scope-parity, ci-report) reference zero `secrets.*` values;
+  # passing any would be unused surface. GITHUB_TOKEN is implicit.
   ci:
+    needs: [route, rc-guard]
+    if: ${{ always() && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       actions: read
-      # No pull-requests:write — `ci.yml`'s save-pr-meta job is gated on
-      # `github.event_name == 'pull_request'`, so it never runs during a
-      # tag-triggered publish. Least-privilege for release-critical paths.
 
+  # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
+  # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
+  # for actions/create-github-app-token installation tokens). The atomic
+  # tag-push step relies on the token minted at job start; if the job ever
+  # runs longer than the TTL, the push fails with an opaque 401. If you
+  # need to raise the timeout, re-mint the token immediately before the
+  # `Create and push rc tags` step instead.
   publish:
-    needs: ci
+    name: Publish to npm
+    needs: [route, rc-guard, ci]
+    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
+      # contents: write — RC path needs it for `git push --atomic` (v-tag +
+      # marker). Stable path runs in the same job and inherits the grant; it
+      # never invokes `git push`, so the elevated scope is unused there.
+      # id-token: write — npm provenance attestation.
       contents: write
       id-token: write
+    outputs:
+      # Two distinct step IDs feed this output; exactly one fires per run.
+      vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # ── Mint short-lived GitHub App token (RC only) ──────────────────────
+      # Industry direction (2025-2026): GitHub Apps with
+      # `actions/create-github-app-token` over long-lived PATs for
+      # workflow-touching tag pushes. Same fine-grained permission surface,
+      # ~1h expiry, not tied to a user seat, organizationally auditable.
+      # Replaces a prior fine-grained PAT.
+      #
+      # Required secrets (set in repo Settings → Secrets and variables → Actions):
+      #   secrets.RELEASE_APP_ID         — the App's numeric ID
+      #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
+      # (The App ID is technically not sensitive — it's visible on the App's
+      # settings page — but storing it as a secret is harmless and avoids
+      # mixing storage classes for the same App.)
+      # The App must be installed on this repository with:
+      #   - Contents: write         (push the v-tag and rc marker)
+      #   - Workflows: write        (because the v-tag's tree may touch
+      #                              .github/workflows/**, which the default
+      #                              GITHUB_TOKEN cannot author)
+      #   - Metadata: read          (required for the `gh api /users/<slug>[bot]`
+      #                              bot-identity lookup in the tag-push step)
+      - name: Mint GitHub App token (RC)
+        if: needs.route.outputs.mode == 'rc'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # `client-id` is the renamed input that supersedes the deprecated
+          # `app-id` in v3.x. The action accepts the App's numeric ID or
+          # its Client ID under this name. We pass the numeric App ID,
+          # which the action resolves correctly.
+          client-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      # ── Separate checkout steps per mode ─────────────────────────────────
+      # Conditional `token:` expressions are footguns: empty string passed to
+      # actions/checkout fails opaquely, and `|| github.token` silently
+      # degrades a missing token to GITHUB_TOKEN, masking auth failures until
+      # the eventual `git push`. Two distinct steps make the auth contract
+      # explicit and fail loudly at checkout when the App token mint failed
+      # on the RC path.
+      - name: Checkout (RC)
+        if: needs.route.outputs.mode == 'rc'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # Short-lived GitHub App installation token. Required because the
+          # v-tag push lands at a SHA whose tree may touch
+          # `.github/workflows/**`, which the default GITHUB_TOKEN cannot
+          # author.
+          token: ${{ steps.app-token.outputs.token }}
+          # Do not persist the token in .git/config (artipacked audit). The
+          # RC tag push uses an inline `http.extraheader` at push time only;
+          # the credential never lands on disk. See the
+          # `Create and push rc tags` step below.
+          persist-credentials: false
+
+      - name: Checkout (stable)
+        if: needs.route.outputs.mode == 'stable'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
+        # path performs no git pushes; the default scope is sufficient.
+        with:
+          # No git pushes from the stable path either. Skip credential
+          # persistence (artipacked audit).
+          persist-credentials: false
+
+      - name: Working-tree sanity
+        # Defense in depth (mirrors the vtag integrity gate, but on the input side):
+        # if a route-mode regression skipped both checkout `if:` gates, all
+        # downstream steps would run on a bare runner and produce confusing
+        # ENOENT errors. Fail loudly and early here instead.
+        shell: bash
+        run: |
+          if [ ! -f gitnexus/package.json ]; then
+            echo "::error::no working tree at gitnexus/package.json — route classification likely failed silently."
+            exit 1
+          fi
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          # Hermetic install for the published artifact — no cache carry-over
-          # from non-tag contexts. setup-node v5+ caches by default when a
-          # packageManager field is present in package.json, so the explicit
-          # opt-out is required to clear the zizmor cache-poisoning audit.
-          # ~30s slower per release; runs rarely.
+          # Hermetic install for published artifacts — opt out of the v5+
+          # default packageManager-based caching (clears the zizmor
+          # zizmor cache-poisoning audit). ~30s slower per
+          # release; runs rarely.
           package-manager-cache: false
+
       - name: Build gitnexus-shared
         run: npm install && npm run build
         working-directory: gitnexus-shared
 
-      - run: npm ci
+      - name: Install gitnexus dependencies
+        run: npm ci
         working-directory: gitnexus
 
-      - name: Verify version consistency
+      # ── Stable-only: verify the tag and package.json agree ───────────────
+      - name: Verify version consistency (stable)
+        if: needs.route.outputs.mode == 'stable'
         shell: bash
+        working-directory: gitnexus
         run: |
+          set -euo pipefail
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+          # Stable mode REJECTS prerelease suffixes — those are filtered at
+          # trigger by the negative-glob filter, but defend at the bash layer too.
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
             exit 1
           fi
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -65,24 +407,367 @@ jobs:
             exit 1
           fi
           echo "Version verified: $PKG_VERSION"
-        working-directory: gitnexus
 
-      - name: Build
+      # ── RC-only: compute the next rc version against the live registry ──
+      - name: Resolve rc version (rc)
+        id: rc-version
+        if: needs.route.outputs.mode == 'rc'
+        shell: bash
+        working-directory: gitnexus
+        env:
+          BUMP_INPUT: ${{ inputs.bump }}
+          EVENT_NAME: ${{ github.event_name }}
+          PKG_NAME: gitnexus
+        run: |
+          set -euo pipefail
+
+          # 1. Current published `latest` — the floor for any new rc base.
+          #    Only E404 ("never published") falls back to package.json; any
+          #    other error (network, auth, malformed response) fails fast
+          #    (retry-loud policy: never silently substitute on transient errors).
+          NPM_STDERR_LATEST="$(mktemp)"
+          if CURRENT_LATEST="$(npm view "$PKG_NAME" version 2>"$NPM_STDERR_LATEST")"; then
+            :
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR_LATEST"; then
+              CURRENT_LATEST="$(node -p "require('./package.json').version")"
+              echo "Package not on registry (E404) — seeding from package.json: $CURRENT_LATEST"
+            else
+              echo "::error::npm registry unreachable for 'view version':" >&2
+              cat "$NPM_STDERR_LATEST" >&2
+              rm -f "$NPM_STDERR_LATEST"
+              exit 1
+            fi
+          fi
+          rm -f "$NPM_STDERR_LATEST"
+          CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
+
+          # 2. Full version list — needed for the counter and active-cycle
+          #    inference. Same E404-only fallback.
+          NPM_STDERR_VERSIONS="$(mktemp)"
+          if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
+            :
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR_VERSIONS"; then
+              VERSIONS_JSON='[]'
+              echo "No published versions for $PKG_NAME yet (E404)."
+            else
+              echo "::error::npm registry unreachable for 'view versions':" >&2
+              cat "$NPM_STDERR_VERSIONS" >&2
+              rm -f "$NPM_STDERR_VERSIONS"
+              exit 1
+            fi
+          fi
+          rm -f "$NPM_STDERR_VERSIONS"
+
+          # 3. Base selection.
+          #    - workflow_dispatch + bump != auto → explicit cycle reset.
+          #    - Otherwise (push, or dispatch with bump=auto) → continue the
+          #      highest active rc base > latest if any; else patch from latest.
+          # Curated wrapper around `npx semver` — bare npx errors are noisy
+          # and don't distinguish registry-unreachable from invalid-bump-spec.
+          semver_bump() {
+            local kind="$1" current="$2" stderr_file out
+            stderr_file="$(mktemp)"
+            if out="$(npx --yes -p semver@7 semver -i "$kind" "$current" 2>"$stderr_file")"; then
+              rm -f "$stderr_file"
+              printf '%s' "$out"
+              return 0
+            fi
+            echo "::error::semver bump failed (kind=${kind}, current=${current}):" >&2
+            cat "$stderr_file" >&2
+            rm -f "$stderr_file"
+            return 1
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
+             && [ -n "${BUMP_INPUT:-}" ] \
+             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
+            BASE="$(semver_bump "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
+            echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
+          else
+            cat > /tmp/active_base.mjs <<'NODESCRIPT'
+          const latest = process.env.LATEST;
+          let v;
+          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
+          if (!Array.isArray(v)) v = [v];
+          const parse = s => s.split(".").map(n => parseInt(n, 10));
+          const gt = (a, b) => {
+            const [A, B] = [parse(a), parse(b)];
+            for (let i = 0; i < 3; i++) if (A[i] !== B[i]) return A[i] > B[i];
+            return false;
+          };
+          const bases = new Set();
+          for (const s of v) {
+            const m = /^(\d+\.\d+\.\d+)-rc\.\d+$/.exec(s);
+            if (m && gt(m[1], latest)) bases.add(m[1]);
+          }
+          if (!bases.size) { process.stdout.write(""); process.exit(0); }
+          const sorted = [...bases].sort((a, b) => gt(a, b) ? 1 : -1);
+          process.stdout.write(sorted[sorted.length - 1]);
+          NODESCRIPT
+            ACTIVE_BASE="$(LATEST="$CURRENT_LATEST_CLEAN" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/active_base.mjs)"
+            if [ -n "$ACTIVE_BASE" ]; then
+              BASE="$ACTIVE_BASE"
+              echo "Continuing active rc cycle → BASE=$BASE"
+            else
+              BASE="$(semver_bump patch "$CURRENT_LATEST_CLEAN")"
+              echo "No active rc cycle → patch bump from latest → BASE=$BASE"
+            fi
+          fi
+
+          # 4. Counter: 1 + max existing N for `${BASE}-rc.*`, else 1.
+          cat > /tmp/next_rc.mjs <<'NODESCRIPT'
+          const base = process.env.BASE;
+          const prefix = base + "-rc.";
+          let v;
+          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
+          if (!Array.isArray(v)) v = [v];
+          const ns = v
+            .filter(s => typeof s === "string" && s.startsWith(prefix))
+            .map(s => parseInt(s.slice(prefix.length), 10))
+            .filter(n => Number.isInteger(n) && n >= 0);
+          process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
+          NODESCRIPT
+          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
+          RC_VERSION="${BASE}-rc.${NEXT_N}"
+          echo "Computed rc: $RC_VERSION"
+
+          # 5. Defensive: if the exact version already exists on the registry
+          #    (race with another run), abort before re-publishing.
+          NPM_STDERR_EXISTS="$(mktemp)"
+          if npm view "$PKG_NAME@$RC_VERSION" version 2>"$NPM_STDERR_EXISTS" >/dev/null; then
+            rm -f "$NPM_STDERR_EXISTS"
+            echo "::error::Version $RC_VERSION already exists on npm — aborting."
+            exit 1
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR_EXISTS"; then
+              rm -f "$NPM_STDERR_EXISTS"
+              # Version doesn't exist — safe to proceed.
+            else
+              echo "::error::npm registry unreachable for existence check:" >&2
+              cat "$NPM_STDERR_EXISTS" >&2
+              rm -f "$NPM_STDERR_EXISTS"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "base=$BASE"
+            echo "rc_n=$NEXT_N"
+            echo "rc_version=$RC_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply rc version in-CI
+        if: needs.route.outputs.mode == 'rc'
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          npm version "${{ steps.rc-version.outputs.rc_version }}" \
+            --no-git-tag-version --allow-same-version
+
+      - name: Build gitnexus
         run: npm run build
         working-directory: gitnexus
 
       - name: Dry-run publish
-        run: npm publish --dry-run
-        working-directory: gitnexus
-
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+        # Cheap verification that the tarball assembles before the real publish.
+        shell: bash
         working-directory: gitnexus
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
+        run: npm publish --dry-run --tag "$NPM_TAG"
 
-      - name: Extract release notes from CHANGELOG
+      # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
+      # We create two refs and push atomically:
+      #   v<RC_VERSION>  → annotated tag on a detached release commit whose
+      #                    tree contains the rewritten package.json, so the
+      #                    tag's source matches the npm tarball.
+      #   rc/<HEAD_SHA>  → lightweight tag on HEAD; the guard's dedup key.
+      # Push fails → nothing published. Push succeeds, npm fails → marker
+      # blocks retries until manual cleanup (see Rollback Runbook in plan).
+      - name: Create and push rc tags
+        id: rc-tags
+        if: needs.route.outputs.mode == 'rc'
+        shell: bash
+        working-directory: gitnexus
+        env:
+          RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
+          HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          # Short-lived GitHub App token. Auth is supplied inline at push
+          # time via `http.extraheader` (per GitHub's documented
+          # x-access-token Basic pattern). It is NOT persisted in
+          # .git/config (artipacked audit) — checkout above ran with
+          # `persist-credentials: false`.
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # App's slug from create-github-app-token (e.g. `gitnexus-release-bot`).
+          # Used to attribute the release commit to the App identity rather
+          # than the generic github-actions[bot]. The bot's numeric user-id
+          # is resolved at runtime via the GitHub API (the action does not
+          # expose it directly as of v3.2.0).
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          VTAG="v${RC_VERSION}"
+          MARKER="rc/${HEAD_SHA}"
+
+          # Resolve the App's bot user-id and construct the noreply email
+          # in the GitHub-canonical `<id>+<slug>[bot]@users.noreply.github.com`
+          # shape. `[bot]` is part of the actual login on GitHub.
+          #
+          # The lookup is wrapped in a bounded retry because the first RC
+          # after App installation may hit propagation delay (404), and
+          # transient api.github.com 5xx during heavy org activity is a real
+          # failure class. Without retry, every transient blip aborts the
+          # entire release after CI has already succeeded.
+          BOT_LOGIN="${APP_SLUG}[bot]"
+          BOT_USER_ID=""
+          api_stderr="$(mktemp)"
+          for attempt in 1 2 3; do
+            if BOT_USER_ID="$(gh api "/users/${BOT_LOGIN}" --jq .id 2>"$api_stderr")" \
+               && [[ "${BOT_USER_ID}" =~ ^[0-9]+$ ]]; then
+              break
+            fi
+            BOT_USER_ID=""
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::bot user-id lookup attempt ${attempt} failed; retrying in $((attempt * 5))s"
+              sleep $((attempt * 5))
+            fi
+          done
+          if ! [[ "${BOT_USER_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not resolve bot user-id for ${BOT_LOGIN} after 3 attempts."
+            echo "::error::gh api stderr:"
+            cat "$api_stderr" >&2 || true
+            echo "::error::Common causes: (a) newly-installed App — user record still propagating to /users/ (wait ~5min, redispatch with force=true); (b) App lacks Metadata: read permission; (c) transient api.github.com 5xx (redispatch)."
+            rm -f "$api_stderr"
+            exit 1
+          fi
+          rm -f "$api_stderr"
+          git config user.name  "${BOT_LOGIN}"
+          git config user.email "${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
+
+          # Detached release commit with the version bump — main stays
+          # pristine, but the v-tag's tree matches the published package
+          # exactly (release-integrity).
+          git add package.json package-lock.json 2>/dev/null || git add package.json
+          git commit -m "release: ${VTAG}" --allow-empty
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          echo "Detached release commit: $RELEASE_SHA"
+
+          git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
+          git tag "$MARKER" "$HEAD_SHA"
+
+          # Inline auth header. The base64-encoded form is masked as well
+          # as the raw token, because GitHub's secret-masker only masks the
+          # raw value — any subsequent `set -x` / GIT_TRACE line would
+          # otherwise expose the encoded credential.
+          #
+          # `set +x` wraps the compute+mask pair so that if an operator
+          # enables ACTIONS_STEP_DEBUG=true for triage (which turns on
+          # `set -x` globally), the assignment is NOT traced for the one
+          # line between compute and mask-registration. Without this wrap,
+          # debug mode would log `+ auth_header='Authorization: Basic <encoded>'`
+          # exposing a still-valid (~1h) App token.
+          { set +x; } 2>/dev/null
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          # Re-enable tracing only when explicitly requested via step-debug.
+          if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then set -x; fi
+
+          # Atomic push of both refs. If either would clobber an existing
+          # remote ref, the push fails and we stop before npm publish.
+          git -c http.extraheader="${auth_header}" \
+              push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
+
+          {
+            echo "vtag=$VTAG"
+            echo "marker=$MARKER"
+            echo "release_sha=$RELEASE_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set vtag (stable)
+        id: stable-vtag
+        if: needs.route.outputs.mode == 'stable'
+        shell: bash
+        # github.ref_name flows in via env to avoid templating into the
+        # shell source (template-injection audit). Even though refs are
+        # constrained by git naming rules, the env-passthrough pattern
+        # makes injection structurally impossible.
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "vtag=${REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      # ── vtag integrity gate ──────────────────────────────────────────────
+      # Fail closed before any artifact-producing step (npm publish, Release,
+      # Docker) runs against an empty or mode-mismatched vtag. Prevents the
+      # silent "Release named main" / "Docker tagged from ref fallback"
+      # failure modes that the previous draft was vulnerable to.
+      - name: vtag integrity gate
+        id: vtag-gate
+        shell: bash
+        env:
+          MODE: ${{ needs.route.outputs.mode }}
+          VTAG: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$VTAG" ]; then
+            echo "::error::vtag is empty — refusing to create GitHub Release or trigger Docker."
+            exit 1
+          fi
+
+          case "$MODE" in
+            rc)
+              if ! [[ "$VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+                echo "::error::vtag '${VTAG}' does not match rc shape ^v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+$"
+                exit 1
+              fi
+              ;;
+            stable)
+              if ! [[ "$VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::vtag '${VTAG}' does not match stable shape ^v[0-9]+.[0-9]+.[0-9]+$"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unknown mode '${MODE}' at vtag integrity gate."
+              exit 1
+              ;;
+          esac
+
+          echo "vtag verified: ${VTAG} (mode=${MODE})"
+          echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
+
+      # npm Trusted Publishing (GA'd 2025-07-31). With the package registered
+      # as a trusted publisher on npmjs.com bound to this repo + this
+      # workflow file, npm authenticates via OIDC at publish time —
+      # NODE_AUTH_TOKEN is intentionally NOT set (an empty string would
+      # short-circuit the OIDC fallback; the env var must be unset, not
+      # blanked). Provenance is auto-attached by the registry on
+      # trusted-publisher publishes, so the explicit --provenance flag is
+      # dropped.
+      #
+      # Prerequisite: configure the package as a trusted publisher at
+      # https://www.npmjs.com/package/gitnexus/access (Publishing access →
+      # Trusted Publishers → GitHub Actions) bound to:
+      #   Owner:       <repo owner>
+      #   Repository:  GitNexus
+      #   Workflow:    publish.yml
+      #   Environment: (none)
+      - name: Publish to npm
+        shell: bash
+        working-directory: gitnexus
+        env:
+          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
+        run: npm publish --access public --tag "$NPM_TAG"
+
+      # ── Stable-only: pull CHANGELOG body if present ──────────────────────
+      - name: Extract release notes from CHANGELOG (stable)
         id: changelog
+        if: needs.route.outputs.mode == 'stable'
         shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -98,5 +783,90 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
-          body_path: ${{ steps.changelog.outputs.fallback == 'false' && '/tmp/release-notes.md' || '' }}
-          generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}
+          tag_name: ${{ steps.vtag-gate.outputs.vtag }}
+          name: >-
+            ${{ needs.route.outputs.mode == 'rc'
+                && format('Release Candidate {0}', steps.vtag-gate.outputs.vtag)
+                || steps.vtag-gate.outputs.vtag }}
+          prerelease: ${{ needs.route.outputs.mode == 'rc' }}
+          make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
+          # Stable: prefer CHANGELOG body, fall back to auto-generated.
+          # RC: always auto-generated + the prerelease body block below.
+          body_path: >-
+            ${{ needs.route.outputs.mode == 'stable' && steps.changelog.outputs.fallback == 'false'
+                && '/tmp/release-notes.md' || '' }}
+          generate_release_notes: >-
+            ${{ needs.route.outputs.mode == 'rc'
+                || steps.changelog.outputs.fallback == 'true' }}
+          body: >-
+            ${{ needs.route.outputs.mode == 'rc' && format(
+              'Automated release candidate build from `main`.{0}{0}**npm:** `npm install gitnexus@rc`{0}**Version:** `{1}`{0}**Target base:** `{2}` (rc #{3}){0}**Source commit (main):** {4}{0}**Release commit (versioned tree):** {5}{0}{0}Release candidates are pre-stable builds intended for early testing. Stable releases remain on the `latest` dist-tag.',
+              '\n',
+              steps.rc-version.outputs.rc_version,
+              steps.rc-version.outputs.base,
+              steps.rc-version.outputs.rc_n,
+              needs.rc-guard.outputs.head_sha,
+              steps.rc-tags.outputs.release_sha
+            ) || '' }}
+
+      # ── RC partial-failure cleanup ───────────────────────────────────────
+      # If anything after the atomic tag-push step failed (npm publish
+      # blew up, GitHub Release call timed out, etc.), the v-tag and
+      # rc/<SHA> marker are already on origin. External consumers
+      # (Renovate, Dependabot, Releases RSS) can ingest a phantom tag for
+      # a version that was never published to npm. This step deletes them
+      # automatically so the operator's recovery is just "redispatch with
+      # force=true on the next commit", not a manual ref cleanup.
+      #
+      # Scoped strictly to RC + real (non-dry-run) + the rc-tags step
+      # actually produced a vtag (otherwise nothing to clean up). The
+      # App token is still valid (~1h TTL, job timeout 20min).
+      - name: Cleanup pushed tags on partial failure
+        if: ${{ failure() && needs.route.outputs.mode == 'rc' && steps.rc-tags.outputs.vtag != '' }}
+        shell: bash
+        working-directory: gitnexus
+        env:
+          VTAG: ${{ steps.rc-tags.outputs.vtag }}
+          MARKER: ${{ steps.rc-tags.outputs.marker }}
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          echo "::warning::Publish step failed after tag push. Cleaning up remote refs to prevent phantom-version ingestion by downstream consumers."
+
+          { set +x; } 2>/dev/null
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${PUSH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          if [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then set -x; fi
+
+          # Delete v-tag and marker. Each delete is best-effort — if one
+          # is already absent (atomic push partially rejected, or earlier
+          # cleanup ran), the other still gets attempted.
+          for ref in "refs/tags/${VTAG}" "refs/tags/${MARKER}"; do
+            if git -c http.extraheader="${auth_header}" push origin --delete "${ref}" 2>&1; then
+              echo "deleted origin ${ref}"
+            else
+              echo "::warning::could not delete origin ${ref} — may already be absent or protected. Manual cleanup may be required."
+            fi
+          done
+
+          echo "::notice::Cleanup complete. To retry the release, redispatch the workflow with force=true on the same SHA, or push a new commit to main."
+
+  # ── Phase 5 (RC only): Docker images ───────────────────────────────────────
+  # R6: Docker remains RC-only. Stable Docker builds are explicitly deferred.
+  # Secrets are passed explicitly (not via `secrets: inherit`) so the
+  # callee's secret surface is auditable from the caller's source.
+  docker:
+    name: Build & Push RC Docker images
+    needs: [route, publish]
+    if: ${{ needs.route.outputs.mode == 'rc' && needs.publish.outputs.vtag != '' }}
+    uses: ./.github/workflows/docker.yml
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      tag: ${{ needs.publish.outputs.vtag }}
