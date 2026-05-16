@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { createReadStream, createWriteStream } from 'fs';
+import { createReadStream, createWriteStream, constants as fsConstants } from 'fs';
 import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
@@ -201,6 +201,163 @@ export const isReadOnlyDbError = (err: unknown): boolean => {
   return /read-only database/i.test(msg);
 };
 
+const isMissingFileError = (err: unknown): boolean => {
+  const errno = err as NodeJS.ErrnoException;
+  return errno?.code === 'ENOENT';
+};
+
+const extractErrnoCode = (err: unknown): string | undefined => {
+  const errno = err as NodeJS.ErrnoException;
+  return errno?.code;
+};
+
+const MAX_LOGGED_ERROR_MESSAGE_LENGTH = 160;
+
+const summarizeError = (err: unknown): string =>
+  (err instanceof Error ? err.message : String(err)).slice(0, MAX_LOGGED_ERROR_MESSAGE_LENGTH);
+
+// ---------------------------------------------------------------------------
+// Cross-process init lock
+//
+// Prevents a TOCTOU race in orphan sidecar cleanup: between checking that
+// the main DB file is missing and unlinking sidecars, another process could
+// create a fresh DB. The lock file (`${dbPath}.init.lock`) is created with
+// O_CREAT | O_EXCL (atomic create-or-fail) and contains the owning PID +
+// timestamp so stale locks from crashed processes can be reclaimed.
+// ---------------------------------------------------------------------------
+
+/** Maximum age (ms) before an init lock is considered stale. */
+const INIT_LOCK_STALE_MS = 30_000;
+/** Maximum attempts to acquire the init lock before giving up. */
+const INIT_LOCK_MAX_ATTEMPTS = 6;
+/** Delay between lock-acquisition retries (ms). */
+const INIT_LOCK_RETRY_DELAY_MS = 500;
+
+const initLockPath = (dbPath: string): string => `${dbPath}.init.lock`;
+
+/**
+ * Returns true when the process identified by `pid` is still running.
+ * Uses `process.kill(pid, 0)` which sends signal 0 (a no-op probe) —
+ * it throws ESRCH when the process does not exist.
+ */
+const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Try to break a stale lock whose owning process has exited.
+ * Returns `true` if the stale lock was removed (caller should retry acquire).
+ * Returns `false` if the lock is still valid (another live process owns it).
+ */
+const tryBreakStaleLock = async (lockPath: string): Promise<boolean> => {
+  try {
+    const content = await fs.readFile(lockPath, 'utf-8');
+    const parsed = JSON.parse(content) as { pid?: number; ts?: number };
+
+    // If the owning process is still alive AND the lock is not stale, don't break.
+    if (typeof parsed.pid === 'number' && isProcessAlive(parsed.pid)) {
+      // Even a live process's lock can be stale if it's been held too long
+      // (e.g. the process is hung). Check the timestamp.
+      if (typeof parsed.ts === 'number' && Date.now() - parsed.ts < INIT_LOCK_STALE_MS) {
+        return false;
+      }
+    }
+
+    // PID is gone or lock exceeded INIT_LOCK_STALE_MS — reclaim it.
+    await fs.unlink(lockPath);
+    logger.warn(
+      `GitNexus: removed stale init lock (pid=${parsed.pid ?? '?'}, age=${typeof parsed.ts === 'number' ? `${Date.now() - parsed.ts}ms` : '?'})`,
+    );
+    return true;
+  } catch (err) {
+    // Lock file disappeared between our read and unlink, or is unreadable.
+    // Either way, let the caller retry the acquire.
+    if (isMissingFileError(err)) return true;
+    // Permission error or corrupt content — log and let caller retry.
+    const code = extractErrnoCode(err);
+    logger.warn(
+      `GitNexus: unable to inspect init lock (${code ?? 'UNKNOWN'}): ${summarizeError(err)}`,
+    );
+    return false;
+  }
+};
+
+/**
+ * Acquire a cross-process init lock for `dbPath`.
+ * Uses `O_CREAT | O_EXCL` for atomic create-or-fail semantics.
+ *
+ * Returns a release function that removes the lock file. The release
+ * function is idempotent and safe to call even if the lock was already
+ * cleaned up externally.
+ *
+ * Throws if the lock cannot be acquired after `INIT_LOCK_MAX_ATTEMPTS`.
+ */
+export const acquireInitLock = async (dbPath: string): Promise<() => Promise<void>> => {
+  const lockPath = initLockPath(dbPath);
+  const payload = JSON.stringify({ pid: process.pid, ts: Date.now() });
+
+  // Ensure the parent directory exists before creating the lock file.
+  // On a fresh repo the `.gitnexus/` directory may not exist yet, and
+  // fs.open with O_CREAT | O_EXCL would fail with ENOENT.
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+
+  for (let attempt = 1; attempt <= INIT_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const handle = await fs.open(
+        lockPath,
+        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+      );
+      await handle.writeFile(payload);
+      await handle.close();
+
+      // Return the idempotent release function
+      return async () => {
+        try {
+          await fs.unlink(lockPath);
+        } catch (err) {
+          if (!isMissingFileError(err)) {
+            const code = extractErrnoCode(err);
+            logger.warn(
+              `GitNexus: failed to release init lock (${code ?? 'UNKNOWN'}): ${summarizeError(err)}`,
+            );
+          }
+        }
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        throw err; // Unexpected error — propagate immediately
+      }
+
+      // Lock file exists — check if it's stale
+      const broken = await tryBreakStaleLock(lockPath);
+      if (broken && attempt < INIT_LOCK_MAX_ATTEMPTS) {
+        continue; // Stale lock removed — retry immediately
+      }
+
+      if (attempt === INIT_LOCK_MAX_ATTEMPTS) {
+        throw new Error(
+          `GitNexus: unable to acquire init lock after ${INIT_LOCK_MAX_ATTEMPTS} attempts — ` +
+            `another gitnexus process may be initializing the same database (${lockPath})`,
+        );
+      }
+
+      // Live process holds the lock — wait and retry
+      await new Promise((resolve) => setTimeout(resolve, INIT_LOCK_RETRY_DELAY_MS));
+    }
+  }
+
+  // Unreachable — loop always throws or returns
+  throw new Error('GitNexus: init lock acquisition failed unexpectedly');
+};
+
+/** Exported for testing — returns the lock file path for a given dbPath. */
+export const _initLockPathForTest = initLockPath;
+
 const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   const previous = sessionLock;
   let release: (() => void) | null = null;
@@ -364,17 +521,64 @@ const doInitLbug = async (dbPath: string) => {
       await fs.rm(dbPath, { recursive: true, force: true });
     }
     // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch {
+  } catch (err) {
+    if (!isMissingFileError(err)) {
+      throw err;
+    }
     // Path doesn't exist, which is what LadybugDB wants for a new database
   }
 
-  // Ensure parent directory exists
-  const parentDir = path.dirname(dbPath);
-  await fs.mkdir(parentDir, { recursive: true });
+  // ---------------------------------------------------------------------------
+  // Cross-process critical section: acquire init lock, clean orphan sidecars,
+  // and open the database. The lock prevents a TOCTOU race where another
+  // process could create a fresh DB between our access() check and the
+  // unlink() of stale sidecars.
+  // ---------------------------------------------------------------------------
+  const releaseInitLock = await acquireInitLock(dbPath);
+  try {
+    // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
+    // from an interrupted run can block fresh opens indefinitely.
+    try {
+      await fs.access(dbPath);
+    } catch (err) {
+      if (isMissingFileError(err)) {
+        // `.shadow` is documented by LadybugDB checkpointing and `.wal.checkpoint`
+        // was observed in the #1618 crash loop that motivated this recovery path.
+        const orphanSidecars = [`${dbPath}.shadow`, `${dbPath}.wal.checkpoint`];
+        for (const sidecar of orphanSidecars) {
+          try {
+            await fs.unlink(sidecar);
+            logger.warn(
+              `GitNexus: removed orphan sidecar ${path.basename(sidecar)} (no main DB file present)`,
+            );
+          } catch (err) {
+            if (isMissingFileError(err)) {
+              continue;
+            }
+            const code = extractErrnoCode(err);
+            logger.warn(
+              `GitNexus: failed to remove orphan sidecar ${path.basename(sidecar)} (${code ?? 'UNKNOWN'}) while main DB file is missing; LadybugDB open may still fail: ${summarizeError(err)}`,
+            );
+          }
+        }
+      } else {
+        const code = extractErrnoCode(err);
+        logger.warn(
+          `GitNexus: unable to verify main DB file before orphan sidecar cleanup (${code ?? 'UNKNOWN'}); skipping cleanup: ${summarizeError(err)}`,
+        );
+      }
+    }
 
-  const opened = await openLbugConnection(lbug, dbPath);
-  db = opened.db;
-  conn = opened.conn;
+    // Ensure parent directory exists
+    const parentDir = path.dirname(dbPath);
+    await fs.mkdir(parentDir, { recursive: true });
+
+    const opened = await openLbugConnection(lbug, dbPath);
+    db = opened.db;
+    conn = opened.conn;
+  } finally {
+    await releaseInitLock();
+  }
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
