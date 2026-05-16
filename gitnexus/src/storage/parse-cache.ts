@@ -70,13 +70,26 @@ const GITNEXUS_PKG_VERSION = (() => {
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
 
-const CACHE_FILENAME = 'parse-cache.json';
+const LEGACY_CACHE_FILENAME = 'parse-cache.json';
+const CACHE_DIRNAME = 'parse-cache';
+const CACHE_INDEX_FILENAME = 'index.json';
 
-/** On-disk shape. */
+/** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
+const CHUNK_CACHE_KEY_HEX_RE = /^[a-f0-9]{64}$/;
+
+const isValidChunkCacheKey = (chunkHash: string): boolean => CHUNK_CACHE_KEY_HEX_RE.test(chunkHash);
+
+/** On-disk shape for the legacy single-file format. */
 interface ParseCacheFile {
   version: string;
   /** key = chunk hash (hex) → cached chunk result list. */
   entries: Record<string, ParseWorkerResult[]>;
+}
+
+/** On-disk shape for the sharded directory format. */
+interface ShardedParseCacheIndex {
+  version: string;
+  keys: string[];
 }
 
 /** Runtime view: keyed Map for fast lookup; mutated in place during a run. */
@@ -144,12 +157,19 @@ const mapReviver = (_key: string, value: unknown): unknown => {
   return value;
 };
 
-/**
- * Load the parse cache. Returns an empty cache on any failure (missing
- * file, corrupt JSON, version mismatch). Never throws on a normal load.
- */
-export const loadParseCache = async (storagePath: string): Promise<ParseCache> => {
-  const cachePath = path.join(storagePath, CACHE_FILENAME);
+const getLegacyCachePath = (storagePath: string): string =>
+  path.join(storagePath, LEGACY_CACHE_FILENAME);
+
+const getCacheDirPath = (storagePath: string): string => path.join(storagePath, CACHE_DIRNAME);
+
+const getCacheIndexPath = (storagePath: string): string =>
+  path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
+
+const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+
+const loadLegacyParseCache = async (storagePath: string): Promise<ParseCache> => {
+  const cachePath = getLegacyCachePath(storagePath);
   try {
     const raw = await fs.readFile(cachePath, 'utf-8');
     const data = JSON.parse(raw, mapReviver) as ParseCacheFile;
@@ -172,22 +192,90 @@ export const loadParseCache = async (storagePath: string): Promise<ParseCache> =
   }
 };
 
+const loadShardedParseCache = async (storagePath: string): Promise<ParseCache | null> => {
+  const indexPath = getCacheIndexPath(storagePath);
+  try {
+    const raw = await fs.readFile(indexPath, 'utf-8');
+    const data = JSON.parse(raw) as ShardedParseCacheIndex;
+    if (
+      typeof data !== 'object' ||
+      data === null ||
+      data.version !== PARSE_CACHE_VERSION ||
+      !Array.isArray(data.keys)
+    ) {
+      return emptyCache();
+    }
+
+    const entries = new Map<string, ParseWorkerResult[]>();
+    for (const chunkHash of data.keys) {
+      if (typeof chunkHash !== 'string' || !isValidChunkCacheKey(chunkHash)) continue;
+      try {
+        const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
+        const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
+        if (Array.isArray(chunkData)) entries.set(chunkHash, chunkData);
+      } catch {
+        /* skip corrupt or missing shard */
+      }
+    }
+
+    return { version: PARSE_CACHE_VERSION, entries, usedKeys: new Set<string>() };
+  } catch {
+    return null;
+  }
+};
+
 /**
- * Persist the cache to disk atomically (write-and-rename) so a crash
- * mid-write doesn't leave a corrupt file.
+ * Load the parse cache. Returns an empty cache on any failure (missing
+ * file, corrupt JSON, version mismatch). Never throws on a normal load.
+ */
+export const loadParseCache = async (storagePath: string): Promise<ParseCache> => {
+  const sharded = await loadShardedParseCache(storagePath);
+  if (sharded) return sharded;
+  return loadLegacyParseCache(storagePath);
+};
+
+/**
+ * Persist the cache to disk using a temp directory + rename.
+ *
+ * Writes shards under `${cacheDir}.tmp`, then removes the old `cacheDir` and
+ * renames the temp directory into place. There is a crash window after
+ * `rm(cacheDir)` and before `rename(tmpDir, cacheDir)` where no cache exists;
+ * that is acceptable — `loadParseCache` yields empty and the next run
+ * reparses. This is not a single atomic swap of the whole tree, but avoids
+ * leaving a half-written shard set visible to readers.
  */
 export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
-  const cachePath = path.join(storagePath, CACHE_FILENAME);
-  const tmpPath = `${cachePath}.tmp`;
-  const out: ParseCacheFile = {
+  const cacheDir = getCacheDirPath(storagePath);
+  const tmpDir = `${cacheDir}.tmp`;
+  await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.mkdir(tmpDir, { recursive: true });
+
+  const keys: string[] = [];
+  for (const [chunkHash, chunkResults] of cache.entries) {
+    if (!isValidChunkCacheKey(chunkHash)) continue;
+    let payload: string;
+    try {
+      payload = JSON.stringify(chunkResults, mapReplacer);
+    } catch {
+      // Extremely dense chunks could theoretically exceed string limits; skip
+      // rather than failing the entire save (orchestrator catches save errors).
+      continue;
+    }
+    keys.push(chunkHash);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    await fs.writeFile(chunkPath, payload, 'utf-8');
+  }
+
+  const index: ShardedParseCacheIndex = {
     version: cache.version,
-    entries: Object.fromEntries(cache.entries),
+    keys,
   };
-  // Compact JSON; this file can be tens of MB on a large repo and pretty-
-  // printing roughly doubles size for no value.
-  await fs.writeFile(tmpPath, JSON.stringify(out, mapReplacer), 'utf-8');
-  await fs.rename(tmpPath, cachePath);
+  await fs.writeFile(path.join(tmpDir, CACHE_INDEX_FILENAME), JSON.stringify(index), 'utf-8');
+
+  await fs.rm(cacheDir, { recursive: true, force: true });
+  await fs.rename(tmpDir, cacheDir);
+  await fs.rm(getLegacyCachePath(storagePath), { force: true });
 };
 
 /**
