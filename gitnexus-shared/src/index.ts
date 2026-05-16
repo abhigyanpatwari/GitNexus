@@ -26,7 +26,7 @@ export type { PipelinePhase, PipelineProgress } from './pipeline.js';
 
 // ─── Scope-based resolution — RFC #909 (Ring 1 #910) ────────────────────────
 // Data model (RFC §2)
-export type { SymbolDefinition } from './scope-resolution/symbol-definition.js';
+export type { ParameterTypeClass, SymbolDefinition } from './scope-resolution/symbol-definition.js';
 export type {
   ScopeId,
   DefId,

@@ -114,6 +114,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypes),
           );
         }
+        if (arity.parameterTypeClasses !== undefined) {
+          grouped['@declaration.parameter-type-classes'] = syntheticCapture(
+            '@declaration.parameter-type-classes',
+            fnNode,
+            JSON.stringify(arity.parameterTypeClasses),
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {

@@ -1,9 +1,11 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import type { ParameterTypeClass } from 'gitnexus-shared';
 
 export interface CppArityInfo {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
 }
 
 /**
@@ -73,26 +75,35 @@ export function computeCppDeclarationArity(node: SyntaxNode): CppArityInfo {
   const totalNonVariadic = requiredCount + optionalCount;
 
   const types: string[] = [];
+  const typeClasses: ParameterTypeClass[] = [];
   for (const p of params) {
     if (p.type === 'variadic_parameter') {
       types.push('...');
+      typeClasses.push(unknownTypeClass('...'));
     } else if (p.type === 'variadic_parameter_declaration') {
       // Parameter pack: treated as variadic
       types.push('...');
+      typeClasses.push(unknownTypeClass('...'));
     } else {
       const typeNode = p.childForFieldName('type');
-      types.push(normalizeCppParamType(typeNode?.text ?? 'unknown'));
+      const rawType = typeNode?.text ?? 'unknown';
+      types.push(normalizeCppParamType(rawType));
+      typeClasses.push(
+        classifyCppParameterType(rawType, p.childForFieldName('declarator')?.text, p.text),
+      );
     }
   }
   // Append '...' for C-style variadic if not already in types
   if (hasEllipsis && !types.includes('...')) {
     types.push('...');
+    typeClasses.push(unknownTypeClass('...'));
   }
 
   return {
     parameterCount: isVariadic ? undefined : totalNonVariadic,
     requiredParameterCount: requiredCount,
     parameterTypes: types,
+    parameterTypeClasses: typeClasses,
   };
 }
 
@@ -120,6 +131,12 @@ export function computeCppCallArity(node: SyntaxNode): number {
  * so that `narrowOverloadCandidates` can match against literal-inferred
  * argument types (e.g. `inferCppLiteralType` returns `'string'` for
  * string literals, not `'std::string'`).
+ *
+ * This intentionally remains coarse and graph-ID-stable: cv-qualifiers,
+ * reference markers, and pointer markers are stripped here. C++ callers
+ * that need those distinctions should read `parameterTypeClasses`, which
+ * is an additive sidecar and does not participate in overload node ID
+ * hashing.
  */
 function normalizeCppParamType(raw: string): string {
   let t = raw.trim();
@@ -156,6 +173,52 @@ function normalizeCppParamType(raw: string): string {
     'std::nullptr_t': 'null',
   };
   return STD_MAP[t] ?? t;
+}
+
+export function classifyCppParameterType(
+  rawType: string,
+  declaratorText?: string,
+  fullParameterText?: string,
+): ParameterTypeClass {
+  const source = fullParameterText ?? `${rawType} ${declaratorText ?? ''}`.trim();
+  if (rawType === 'unknown') return unknownTypeClass('unknown');
+
+  const hasConst = /\bconst\b/.test(source);
+  const hasVolatile = /\bvolatile\b/.test(source);
+  const cv: ParameterTypeClass['cv'] =
+    hasConst && hasVolatile
+      ? 'const volatile'
+      : hasConst
+        ? 'const'
+        : hasVolatile
+          ? 'volatile'
+          : 'none';
+
+  const pointerDepth = (source.match(/\*/g) ?? []).length;
+  const indirection: ParameterTypeClass['indirection'] =
+    pointerDepth > 0
+      ? 'pointer'
+      : /&&/.test(source)
+        ? 'rvalue-ref'
+        : /&/.test(source)
+          ? 'lvalue-ref'
+          : 'value';
+
+  return {
+    base: normalizeCppParamType(rawType),
+    cv,
+    indirection,
+    pointerDepth,
+  };
+}
+
+function unknownTypeClass(base: string): ParameterTypeClass {
+  return {
+    base,
+    cv: 'unknown',
+    indirection: 'unknown',
+    pointerDepth: 0,
+  };
 }
 
 function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {

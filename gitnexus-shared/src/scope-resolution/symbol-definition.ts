@@ -11,6 +11,17 @@
 
 import type { NodeLabel } from '../graph/types.js';
 
+export interface ParameterTypeClass {
+  /** Normalized base type, matching the coarse `parameterTypes` vocabulary when known. */
+  base: string;
+  /** Top-level cv signal preserved from the original C++ parameter spelling. */
+  cv: 'none' | 'const' | 'volatile' | 'const volatile' | 'unknown';
+  /** Coarse value/reference/pointer shape. */
+  indirection: 'value' | 'lvalue-ref' | 'rvalue-ref' | 'pointer' | 'unknown';
+  /** Number of pointer markers when indirection is `pointer`; otherwise 0. */
+  pointerDepth: number;
+}
+
 export interface SymbolDefinition {
   nodeId: string;
   filePath: string;
@@ -26,6 +37,9 @@ export interface SymbolDefinition {
   /** Per-parameter type names for overload disambiguation (e.g. ['int', 'String']).
    *  Populated when parameter types are resolvable from AST (any typed language). */
   parameterTypes?: string[];
+  /** Additive per-parameter type shape sidecar for languages that need cv/ref/pointer distinctions.
+   *  Does not participate in graph node identity unless a resolver explicitly opts in. */
+  parameterTypeClasses?: ParameterTypeClass[];
   /** Raw return type text extracted from AST (e.g. 'User', 'Promise<User>') */
   returnType?: string;
   /** Declared type for non-callable symbols — fields/properties (e.g. 'Address', 'List<User>') */
