@@ -576,16 +576,15 @@ export interface ScopeResolver {
    * Optional argument-dependent-lookup (ADL / Koenig lookup) hook for
    * languages with C++-style associated-namespace candidate addition.
    *
-   * Runs in the free-call fallback AFTER `findCallableBindingInScope`
-   * returns `undefined` and BEFORE `pickUniqueGlobalCallable`. The hook
-   * inspects the call site's argument types, computes the associated
-   * namespace set, and returns either:
-   *   - a unique `SymbolDefinition` — emit the CALLS edge to it.
-   *   - `'ambiguous'` — multiple candidates share normalized parameter
-   *     types; the caller MUST suppress (zero edges). Mirrors the
-   *     OVERLOAD_AMBIGUOUS sentinel from `overload-narrowing.ts`.
-   *   - `undefined` — no ADL candidates; caller falls through to the
-   *     global free-call fallback (`pickUniqueGlobalCallable`).
+   * Runs in the free-call fallback alongside ordinary unqualified lookup.
+   * The fallback merges ordinary candidates with ADL candidates and applies
+   * overload narrowing over the union.
+   *
+   * The hook inspects the call site's argument types, computes the
+   * associated namespace set, and returns either:
+   *   - an array of candidate `SymbolDefinition`s to add to the
+   *     ordinary-lookup candidate pool.
+   *   - `undefined` when ADL contributes no candidates.
    *
    * Languages without C++-style ADL leave this undefined. The
    * cross-language contract is "additive tier" — defining the hook never
@@ -601,7 +600,7 @@ export interface ScopeResolver {
     callerParsed: ParsedFile,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
-  ) => SymbolDefinition | 'ambiguous' | undefined;
+  ) => readonly SymbolDefinition[] | undefined;
 
   /**
    * Optional resolver for qualified-receiver member calls where the
@@ -616,8 +615,9 @@ export interface ScopeResolver {
    *
    * Receiver-bound-calls invokes this hook AFTER Case 1 (namespace
    * imports) and AFTER Case 2 (class-name receiver) fail to resolve.
-   * Returns the target def, or `undefined` to fall through to the
-   * remaining cases.
+   * Returns the target def, `'ambiguous'` when multiple inline-namespace
+   * children declare the same name (suppresses edge emission), or
+   * `undefined` to fall through to the remaining cases.
    */
   readonly resolveQualifiedReceiverMember?: (
     receiverName: string,
@@ -625,7 +625,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
-  ) => SymbolDefinition | undefined;
+  ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`

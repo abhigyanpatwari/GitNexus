@@ -29,6 +29,10 @@
 
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import {
+  isOverloadAmbiguousAfterNormalization,
+  narrowOverloadCandidates,
+} from '../../scope-resolution/passes/overload-narrowing.js';
 
 interface RangeKey {
   readonly startLine: number;
@@ -95,15 +99,17 @@ export function isCppInlineNamespaceScope(scopeId: ScopeId): boolean {
  * Returns the most specific (innermost) match — for `outer::foo()`
  * where `inline namespace v1` declares `foo`, returns `v1::foo`. When
  * multiple inline-namespace children declare the same name, ISO C++
- * leaves the call ambiguous; V1 returns the first match in source
- * order (stable across runs).
+ * leaves the call ambiguous; returns `'ambiguous'` so the caller
+ * suppresses edge emission rather than picking arbitrarily (#1564).
  */
 export function resolveCppQualifiedNamespaceMember(
   receiverName: string,
   memberName: string,
   parsedFiles: readonly ParsedFile[],
   _scopes: ScopeResolutionIndexes,
-): SymbolDefinition | undefined {
+): SymbolDefinition | 'ambiguous' | undefined {
+  const allHits: SymbolDefinition[] = [];
+  const seenNodeId = new Set<string>();
   for (const parsed of parsedFiles) {
     const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
     for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
@@ -113,19 +119,45 @@ export function resolveCppQualifiedNamespaceMember(
       if (nsDef === undefined) continue;
       const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
       if (nsName !== receiverName) continue;
-      // Found a matching namespace scope in this file. Collect the
-      // member transitively through any inline-namespace children.
-      const hit = findMemberInNamespaceTransitive(scope, scopesById, memberName);
-      if (hit !== undefined) return hit;
+      // Found a matching namespace scope in this file. Collect ALL
+      // members transitively through any inline-namespace children.
+      const hits = findMemberInNamespaceTransitive(scope, scopesById, memberName);
+      for (const hit of hits) {
+        if (seenNodeId.has(hit.nodeId)) continue;
+        seenNodeId.add(hit.nodeId);
+        allHits.push(hit);
+      }
     }
   }
-  return undefined;
+  if (allHits.length === 0) return undefined;
+  if (allHits.length === 1) return allHits[0];
+
+  // Multi-candidate: the `resolveQualifiedReceiverMember` hook has no
+  // access to call-site arity or argument types, so
+  // `narrowOverloadCandidates` cannot actually narrow here — the call
+  // with `(allHits, undefined, undefined)` is effectively a pass-through.
+  // We retain it so that `isOverloadAmbiguousAfterNormalization` can
+  // still detect int/long-style normalization collisions on this path,
+  // but for any multi-hit case where candidates have genuinely distinct
+  // signatures (e.g. `foo(int)` vs `foo(double)` in different inline
+  // children), we conservatively suppress rather than pick arbitrarily.
+  // A future enhancement could thread call-site argument info through
+  // the `resolveQualifiedReceiverMember` contract to enable real
+  // narrowing here.
+  const narrowed = narrowOverloadCandidates(allHits, undefined, undefined);
+  if (narrowed.length === 1) return narrowed[0];
+  if (narrowed.length === 0) return undefined;
+  if (isOverloadAmbiguousAfterNormalization(narrowed, undefined)) return 'ambiguous';
+  // Multiple surviving candidates (distinct signatures) — conservative
+  // suppress because we lack call-site info to disambiguate.
+  return 'ambiguous';
 }
 
 /** Recursively search a namespace scope and any inline-namespace
- *  descendants for a callable def with the given simple name. Non-inline
+ *  descendants for callable defs with the given simple name. Non-inline
  *  nested namespaces are NOT traversed — they require explicit
- *  qualification (`outer::nested::foo`). */
+ *  qualification (`outer::nested::foo`). Returns ALL matches so the
+ *  caller can detect same-name ambiguity across inline children (#1564). */
 function findMemberInNamespaceTransitive(
   scope: {
     readonly id: ScopeId;
@@ -142,22 +174,23 @@ function findMemberInNamespaceTransitive(
     }
   >,
   memberName: string,
-): SymbolDefinition | undefined {
+): SymbolDefinition[] {
+  const results: SymbolDefinition[] = [];
   // Check this scope's own ownedDefs first.
   for (const def of scope.ownedDefs) {
     if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-    if (simple === memberName) return def;
+    if (simple === memberName) results.push(def);
   }
   // Descend into inline-namespace children.
   for (const childScope of scopesById.values()) {
     if (childScope.parent !== scope.id) continue;
     if (childScope.kind !== 'Namespace') continue;
     if (!inlineNamespaceScopeIds.has(childScope.id)) continue;
-    const hit = findMemberInNamespaceTransitive(childScope, scopesById, memberName);
-    if (hit !== undefined) return hit;
+    const childHits = findMemberInNamespaceTransitive(childScope, scopesById, memberName);
+    for (const hit of childHits) results.push(hit);
   }
-  return undefined;
+  return results;
 }
 
 function findNamespaceDefInScope(scope: {

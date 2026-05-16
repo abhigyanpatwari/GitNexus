@@ -2127,6 +2127,24 @@ describe('C++ ADL — basic associated-namespace closure', () => {
   });
 });
 
+describe('C++ ADL — merges with non-empty ordinary lookup', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-merge-nonempty-ordinary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a, b) prefers data::swap(Pair&, Pair&) over app::swap(int, int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
 describe('C++ ADL — base-class associated namespaces', () => {
   let result: PipelineResult;
 
@@ -2417,10 +2435,249 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
     // 'int', so both candidates have parameterTypes ['Token', 'int'].
     // narrowOverloadCandidates can't disambiguate (arg-types are
     // ['', 'int']), and isOverloadAmbiguousAfterNormalization detects
-    // the collision → ADL_AMBIGUOUS sentinel → caller suppresses.
+    // the collision in merged ordinary+ADL narrowing, so fallback suppresses.
     // count=1 is the bug (arbitrary first-pick); count=2 would require
     // an ambiguous-target edge model GitNexus does not have.
     expect(processCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — merged narrowing to zero suppresses global fallback', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-merged-narrow-zero'), () => {});
+  }, 60000);
+
+  it('probe(t, 42) emits zero CALLS when ADL contributes only arity-mismatched candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const probeCalls = calls.filter((c) => c.source === 'run' && c.target === 'probe');
+    // ADL surfaces alpha::probe(Token), but call arity is 2 (`probe(t, 42)`),
+    // so merged overload narrowing yields zero survivors. The site is treated
+    // as handled and must NOT fall through to global simple-name fallback.
+    expect(probeCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: enum types contribute their
+// enclosing namespace to the associated set, just like class types.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — enum-typed argument contributes enclosing namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-enum-arg'), () => {});
+  }, 60000);
+
+  it('serialize(ch) where ch is color::Channel resolves to color::serialize via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const serializeCalls = calls.filter((c) => c.source === 'run' && c.target === 'serialize');
+    // Exactly 1: ordinary lookup in app::run finds nothing for `serialize`.
+    // ADL surfaces color::serialize because color::Channel's enclosing
+    // namespace is `color`. Before the enum gap fix, this was 0.
+    expect(serializeCalls.length).toBe(1);
+    expect(serializeCalls[0].targetFilePath).toContain('color.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: "hidden friend" functions
+// declared inside a class body are visible via ADL. They are not namespace-
+// scope declarations (owned by the class scope in tree-sitter-cpp), so they
+// require scanning associated class scopes in addition to namespace scopes.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — hidden friend function visible via ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-hidden-friend'), () => {});
+  }, 60000);
+
+  it('process(f) where f is lib::Foo resolves to hidden friend process(Foo&) via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // Exactly 1: process(Foo&) is a hidden friend declared inside Foo's
+    // class body. Ordinary namespace-scope lookup won't find it — only ADL
+    // scanning the associated class's ownedDefs can surface it.
+    expect(processCalls.length).toBe(1);
+    expect(processCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.unqual]` §7: non-function ordinary lookup
+// result blocks ADL. If the name resolves to a variable/class/enum in scope,
+// ADL does not fire even if class-typed arguments are present.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-non-function-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a variable named record exists in scope', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: `int record = 0;` in namespace app means ordinary lookup
+    // finds a non-function entity. ADL should be suppressed — even though
+    // `e` is audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inner-callable-outer-noncallable'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    // Ordinary lookup finds `inner::swap(int,int)` at the nearest scope.
+    // The outer `app::swap` (variable) does NOT suppress ADL because
+    // ordinary lookup stopped at the inner scope. ADL contributes
+    // data::swap(Pair&,Pair&) which wins via argTypes narrowing.
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
+describe('C++ ADL — block-scope function declaration suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-block-scope-decl-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a block-scope function declaration exists', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++ [basic.lookup.argdep]: a block-scope function declaration
+    // (not via using-declaration) suppresses ADL — even though `e` is
+    // audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — free-function reference args contribute their namespace.
+//
+// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
+// like `utils::worker` is passed as an argument, GitNexus contributes the
+// enclosing namespace (`utils`) to the associated set, provided a Function or
+// Method named `worker` is found in the `utils` namespace at resolution time.
+// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
+// argument come from the parameter types and return type of the overload set —
+// NOT the function's enclosing namespace. For `void worker()`, the standard-
+// compliant associated set is empty. The approximation captures the dominant
+// real-world pattern (pass a utility function → find its sibling) at the cost
+// of potential false positives when an unrelated function with the same simple
+// name exists in the same namespace (bounded by the workspace-function lookup).
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
+  }, 60000);
+
+  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
+    // declaration). utils::worker is a qualified_identifier argument, so ADL
+    // contributes `utils` to the associated-namespace set. utils::with_callback
+    // is then discovered as the sole candidate.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — overloaded free-function reference does not crash', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-overloaded'),
+      () => {},
+    );
+  }, 60000);
+
+  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // utils::worker has two overloads (worker() and worker(int)). V1
+    // simplification: contribute the namespace if ANY overload exists in the
+    // workspace, regardless of which one would be selected. The namespace
+    // `utils` is still added, and utils::with_callback is discovered.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — namespace-qualified variable arg does NOT contribute namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-qualified-variable-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('process(data::value) emits zero CALLS edges — data::value is a variable, not a function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // data::value is a namespace-qualified integer variable. tree-sitter-cpp
+    // produces a qualified_identifier AST node regardless of whether `value`
+    // denotes a function, variable, enum, or static member. The GitNexus guard
+    // in collectFunctionRefNamespaces verifies that a Function/Method named
+    // `value` exists in the `data` namespace before contributing it. Since
+    // `data::value` is an int variable, `data` is never added to the associated
+    // set, so data::process is never found as an ADL candidate.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — function parameter does NOT trigger free-function-ref ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-param-not-free-func-ref'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // `callback` is an int parameter of `caller::run`. Function parameters
+    // live in the parameter_list, not in the compound_statement, so the
+    // local-scope declaration scan would not find it and would return null —
+    // previously misclassifying it as an unqualified free-function reference.
+    // The workspace contains utils::callback(), so the scan would find it and
+    // contribute `utils` to the ADL set, emitting a false-positive CALLS edge
+    // to utils::run_with. isIdentifierAFunctionParameter now catches this and
+    // returns EMPTY_ADL_ARG, preventing the workspace scan entirely.
+    expect(runWithCalls.length).toBe(0);
   });
 });
 
@@ -2431,6 +2688,51 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
 // (ISO C++ `[namespace.def]/p4`). Adds a C++-specific
 // `resolveQualifiedReceiverMember` hook on the ScopeResolver contract.
 // ---------------------------------------------------------------------------
+
+describe('C++ ADL — local function-pointer var shadows same-named free function', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-local-fp-shadows-free-func'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) emits zero CALLS edges even though audit::g() exists in the workspace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // `g` is a locally-declared `void (*g)()` variable. `audit::g()` also
+    // exists in the workspace. Without the foundAsLocalFunctionPointer guard,
+    // `g` would not be detected in the compound_statement (it IS there, but
+    // as a function-pointer declarator), and the workspace scan would find
+    // audit::g, contribute `audit` to the ADL set, and emit a false-positive
+    // CALLS edge to audit::record. The guard correctly returns EMPTY_ADL_ARG,
+    // so no namespace is contributed and no edge is emitted.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — unqualified free-function ref with namespace collision', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-unqualified-ref-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(worker) emits zero CALLS edges when worker exists in two namespaces', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // Unqualified `worker` → workspace scan finds alpha::worker and beta::worker.
+    // Both alpha and beta are added to the associated set. run_with() exists in
+    // both namespaces → two candidates → merged narrowing suppression →
+    // zero CALLS edges (suppressed rather than arbitrary pick).
+    expect(runWithCalls.length).toBe(0);
+  });
+});
 
 describe('C++ inline namespace — outer::foo resolves to inline child', () => {
   let result: PipelineResult;
@@ -2471,6 +2773,47 @@ describe('C++ inline namespace — versioned (v1 inline, v0 not)', () => {
     // `foo` is NOT visible as `outer::foo`.
     expect(fooCalls.length).toBe(1);
     expect(fooCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ inline namespace — ambiguous same-name across inline children (#1564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() emits zero CALLS edges when v1 and v2 both declare foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // ISO C++ leaves this ambiguous — both inline namespace children declare
+    // the same name. The resolver must suppress rather than pick arbitrarily.
+    expect(fooCalls.length).toBe(0);
+  });
+});
+
+describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-diff-sigs'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Even though the two overloads have distinct signatures and a compiler
+    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
+    // hook lacks call-site arity/argument-type information, so multi-hit cases
+    // are conservatively suppressed. Documents the limitation noted in
+    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    expect(fooCalls.length).toBe(0);
   });
 });
 
@@ -2517,6 +2860,29 @@ describe('C++ inline namespace — ADL participation', () => {
     // exempted from the non-globally-visible filter, the `record`
     // declared inside `inline namespace v1` is reachable. count=0
     // would be the bug — ADL failing to walk inline children.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — inline namespace expansion in associated set', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inline-ns-expansion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) resolves to audit::v1::record when Event is in outer audit and record is in inline v1 (arity-disambiguated from other::record(int))', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: inline namespaces are transparent — candidates in
+    // `audit::v1` are visible as if declared at `audit` level. With a
+    // competing `other::record(int)` (different arity), the merged
+    // ordinary+ADL overload narrowing must select `audit::v1::record(Event)`
+    // since it's the only arity-matching candidate for `record(e)`.
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
   });
