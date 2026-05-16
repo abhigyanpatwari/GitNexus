@@ -301,6 +301,11 @@ export const acquireInitLock = async (dbPath: string): Promise<() => Promise<voi
   const lockPath = initLockPath(dbPath);
   const payload = JSON.stringify({ pid: process.pid, ts: Date.now() });
 
+  // Ensure the parent directory exists before creating the lock file.
+  // On a fresh repo the `.gitnexus/` directory may not exist yet, and
+  // fs.open with O_CREAT | O_EXCL would fail with ENOENT.
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+
   for (let attempt = 1; attempt <= INIT_LOCK_MAX_ATTEMPTS; attempt++) {
     try {
       const handle = await fs.open(
