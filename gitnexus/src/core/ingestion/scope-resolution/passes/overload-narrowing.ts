@@ -25,11 +25,11 @@
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
  *   4b. When the exact-type filter from step 4 returns empty AND a
- *       `conversionRankFn` is provided, score each candidate by the
- *       sum of per-slot conversion ranks and return the unique best
- *       (lowest total cost). Ties return all tied candidates so that
- *       callers can run `isOverloadAmbiguousAfterNormalization` to
- *       detect same-rank ambiguity.
+ *       `conversionRankFn` is provided, rank candidates via pairwise
+ *       dominance comparison (ISO C++ [over.ics.rank]): F1 beats F2
+ *       only when F1 is not worse for every arg and better for at
+ *       least one. Non-dominated candidates are returned; multiple
+ *       survivors are genuinely ambiguous.
  *   5. Empty input returns empty output.
  */
 
@@ -107,11 +107,10 @@ export function narrowOverloadCandidates(
 
     // ── Conversion-rank scoring (step 4b) ──────────────────────────
     // The exact-type filter above rejected every candidate. When a
-    // per-language conversion-rank function is available, score each
-    // candidate by the sum of per-slot conversion costs and select
-    // the unique best (lowest total). Ties return all tied candidates
-    // so `isOverloadAmbiguousAfterNormalization` can detect same-rank
-    // ambiguity at the call site.
+    // per-language conversion-rank function is available, rank via
+    // pairwise dominance: F1 beats F2 only when F1 is not worse for
+    // every arg and better for at least one. Non-dominated candidates
+    // are returned; multiple survivors are genuinely ambiguous.
     if (conversionRankFn !== undefined) {
       const ranked = rankByConversion(candidates, argTypes, conversionRankFn);
       if (ranked.length > 0) return ranked;
