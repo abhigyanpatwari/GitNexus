@@ -8,6 +8,8 @@ import {
   getCurrentCommit,
   getGitRoot,
   findGitRootByDotGit,
+  parseRepoNameFromUrl,
+  sanitizeRepoName,
 } from '../../src/storage/git.js';
 
 // Mock child_process.execSync
@@ -162,6 +164,63 @@ describe('git utilities', () => {
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('sanitizeRepoName', () => {
+    it('strips leading dashes', () => {
+      expect(sanitizeRepoName('--repo')).toBe('repo');
+    });
+
+    it('replaces unsafe characters with underscores', () => {
+      expect(sanitizeRepoName('repo<tag>')).toBe('repo_tag_');
+      expect(sanitizeRepoName('repo:name')).toBe('repo_name');
+      expect(sanitizeRepoName('repo"quoted"')).toBe('repo_quoted_');
+    });
+
+    it('blocks path traversal segments', () => {
+      expect(sanitizeRepoName('.')).toBe('unknown');
+      expect(sanitizeRepoName('..')).toBe('unknown');
+    });
+
+    it('blocks Windows reserved names', () => {
+      expect(sanitizeRepoName('CON')).toBe('unknown');
+      expect(sanitizeRepoName('prn')).toBe('unknown');
+      expect(sanitizeRepoName('AUX')).toBe('unknown');
+      expect(sanitizeRepoName('NUL')).toBe('unknown');
+      expect(sanitizeRepoName('COM1')).toBe('unknown');
+      expect(sanitizeRepoName('LPT9')).toBe('unknown');
+
+      // Reserved names with extensions
+      expect(sanitizeRepoName('CON.txt')).toBe('unknown');
+      expect(sanitizeRepoName('NUL.tar.gz')).toBe('unknown');
+      expect(sanitizeRepoName('AUX.local')).toBe('unknown');
+    });
+
+    it('returns unknown for empty or invalid input', () => {
+      expect(sanitizeRepoName('')).toBe('unknown');
+      expect(sanitizeRepoName('---')).toBe('unknown');
+    });
+  });
+
+  describe('parseRepoNameFromUrl', () => {
+    it('extracts and sanitizes name from HTTPS URL', () => {
+      expect(parseRepoNameFromUrl('https://github.com/user/my-repo.git')).toBe('my-repo');
+      expect(parseRepoNameFromUrl('https://github.com/user/--payload.git')).toBe('payload');
+    });
+
+    it('extracts and sanitizes name from SSH URL', () => {
+      expect(parseRepoNameFromUrl('git@github.com:user/my-repo.git')).toBe('my-repo');
+      expect(parseRepoNameFromUrl('git@github.com:--payload.git')).toBe('payload');
+    });
+
+    it('returns null for all-dash inputs (prevents registry collision)', () => {
+      expect(parseRepoNameFromUrl('https://github.com/user/---.git')).toBeNull();
+    });
+
+    it('returns null for empty URL', () => {
+      expect(parseRepoNameFromUrl('')).toBeNull();
+      expect(parseRepoNameFromUrl(null)).toBeNull();
     });
   });
 });

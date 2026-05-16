@@ -7,9 +7,41 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
+  # Keep pinned Docker base-image digests current for the root Dockerfiles.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
+  # Keep the nested test-image Docker base digest current as well.
+  - package-ecosystem: docker
+    directory: /gitnexus
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
       include: scope
     labels:
       - dependencies
@@ -25,6 +57,11 @@ updates:
     directory: /gitnexus
     schedule:
       interval: daily
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     open-pull-requests-limit: 10
     commit-message:
       prefix: chore(deps)
@@ -54,6 +91,11 @@ updates:
     directory: /gitnexus-web
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(deps)
@@ -67,6 +109,11 @@ updates:
     directory: /gitnexus-shared
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(deps)

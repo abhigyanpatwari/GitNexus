@@ -35,6 +35,9 @@ on:
   pull_request_target:
     types: [opened, edited, reopened]
 
+permissions:
+  contents: read
+
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Include `github.event_name` so `pull_request` (validate-title) and
 # `pull_request_target` (autolabel) runs for the same PR do NOT share a slot

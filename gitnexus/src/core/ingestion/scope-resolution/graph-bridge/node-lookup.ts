@@ -67,6 +67,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       filePath?: string;
       name?: string;
       qualifiedName?: string;
+      templateArguments?: readonly string[];
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -96,6 +97,22 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         // Each overload is unique — set unconditionally.
         lookup.set(pKey, node.id);
       }
+      if (
+        (node.label === 'Class' ||
+          node.label === 'Struct' ||
+          node.label === 'Interface' ||
+          node.label === 'Enum' ||
+          node.label === 'Record') &&
+        props.templateArguments !== undefined &&
+        props.templateArguments.length > 0
+      ) {
+        const tKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${qualified}~${props.templateArguments.join(',')}`,
+        );
+        if (!lookup.has(tKey)) lookup.set(tKey, node.id);
+      }
     }
 
     // Fallback key: simple name. First-wins within a file — used when
@@ -117,6 +134,11 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     label === 'Interface' ||
     label === 'Struct' ||
     label === 'Enum' ||
+    // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
+    // defs between scope-resolution DefIds and the graph's node ids.
+    // IMPLEMENTS edges from classes to traits are otherwise invisible to
+    // the scope-resolution MRO pass.
+    label === 'Trait' ||
     // Variable / Property are linkable too — receiver-bound write/read
     // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
     // ACCESSES edge to User's `name` Variable/Property node).

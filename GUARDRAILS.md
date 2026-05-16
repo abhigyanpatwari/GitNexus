@@ -30,8 +30,14 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used).
+- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB.
 - **Why:** Tools query LadybugDB from last analyze; git changes are invisible until re-indexed.
+
+### Index seems corrupt or "incremental" is misbehaving
+
+- **Trigger:** `analyze` produces unexpected results, or `meta.json.incrementalInProgress` is set, or the index is in a half-state after a crash.
+- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. Safe to delete `.gitnexus/parse-cache.json` at any time — content-addressed, will be regenerated.
+- **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
 
 ### Embeddings vanished after analyze
 

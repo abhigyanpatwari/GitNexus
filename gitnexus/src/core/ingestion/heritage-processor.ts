@@ -22,6 +22,7 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, type NodeLabel, type SupportedLanguages } from 'gitnexus-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getProvider } from './languages/index.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
@@ -224,7 +225,7 @@ export const processHeritage = async (
       // re-parses see the same input as the cached AST.
       const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(parseContent, undefined, {
+        tree = parseSourceSafe(parser, parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch (parseError) {
@@ -419,7 +420,7 @@ export async function extractExtractedHeritageFromFiles(
     if (!tree) {
       const parseContent = provider.preprocessSource?.(file.content, file.path) ?? file.content;
       try {
-        tree = parser.parse(parseContent, undefined, {
+        tree = parseSourceSafe(parser, parseContent, undefined, {
           bufferSize: getTreeSitterBufferSize(parseContent),
         });
       } catch {

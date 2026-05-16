@@ -2,7 +2,7 @@
  * Augment CLI Command
  *
  * Fast-path command for platform hooks.
- * Shells out from Claude Code PreToolUse / Cursor beforeShellExecution hooks.
+ * Shells out from Claude Code PreToolUse / Cursor postToolUse hooks.
  *
  * Usage: gitnexus augment <pattern>
  * Returns enriched text to stdout.

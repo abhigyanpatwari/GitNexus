@@ -1,7 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+const { parseSourceSafeSpy } = vi.hoisted(() => ({ parseSourceSafeSpy: vi.fn() }));
+
+vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
+  const { buildSafeParseMock } = await import('../../helpers/parse-source-safe-mock.js');
+  return buildSafeParseMock(parseSourceSafeSpy);
+});
+
 import { IncludeExtractor } from '../../../src/core/group/extractors/include-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 import { normalizeContractId } from '../../../src/core/group/matching.js';
@@ -557,6 +565,37 @@ int auto_main() { return 0; }`,
       } finally {
         if (previous === undefined) delete process.env.GITNEXUS_MAX_FILE_SIZE;
         else process.env.GITNEXUS_MAX_FILE_SIZE = previous;
+      }
+    });
+  });
+
+  describe('Windows SIGSEGV regression — large input must route through parseSourceSafe', () => {
+    it('routes >32 767-char header file through parseSourceSafe (not direct parser.parse)', async () => {
+      parseSourceSafeSpy.mockClear();
+
+      // Bump the file-size cap so the >40 000-char file isn't filtered before
+      // it ever reaches the parser. Direct parser.parse(content) on a string
+      // this size SIGSEGVs the process on Windows. The spy assertion catches
+      // the regression — a "no throw" assertion alone is satisfied by the
+      // bypass on Linux/macOS where parser.parse(40 000 chars) succeeds.
+      const previousLimit = process.env.GITNEXUS_MAX_FILE_SIZE;
+      process.env.GITNEXUS_MAX_FILE_SIZE = '512';
+      try {
+        const includes = Array.from(
+          { length: 1500 },
+          (_, i) => `#include "lib/header_${i}.h"\n`,
+        ).join('');
+        const largeHeader = `#pragma once\n${includes}\nstruct Big {};\n`;
+        expect(largeHeader.length).toBeGreaterThan(40_000);
+
+        writeFile('big/big.cpp', largeHeader);
+
+        await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+        expect(parseSourceSafeSpy).toHaveBeenCalled();
+      } finally {
+        if (previousLimit === undefined) delete process.env.GITNEXUS_MAX_FILE_SIZE;
+        else process.env.GITNEXUS_MAX_FILE_SIZE = previousLimit;
       }
     });
   });

@@ -33,9 +33,20 @@ program
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
       'preserves any embeddings already present in the index.',
   )
-  .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option(
+    '--skills',
+    'Generate repo-specific skill files from detected communities ' +
+      '(no-op when --index-only is also set).',
+  )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-skills',
+    'Skip installing standard GitNexus skill files under .claude/skills/gitnexus/. ' +
+      'Does not suppress community skills from --skills (those use .claude/skills/generated/). ' +
+      'Use --index-only to skip all AI-context file injection.',
+  )
+  .option('--index-only', 'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)')
   .option(
     '--skip-git',
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
@@ -150,6 +161,8 @@ program
   )
   .option('--no-reasoning-model', 'Disable reasoning model mode (overrides saved config)')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
+  .option('--timeout <seconds>', 'Per-attempt LLM request timeout in seconds (default: 60)')
+  .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')

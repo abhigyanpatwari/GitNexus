@@ -744,8 +744,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         if (isMatch && ['queued', 'cloning', 'analyzing'].includes(job.status)) {
           if (process.env.DEBUG) {
-            console.log(
-              `[debug] resolveRepo waiting for active job ${job.id} (${normalizedName})...`,
+            // Sanitize user-controlled values to prevent log injection (CodeQL js/log-injection).
+            logger.debug(
+              {
+                jobId: String(job.id).replace(/[\r\n]/g, ' '),
+                repoName: String(normalizedName).replace(/[\r\n]/g, ' '),
+              },
+              '[debug] resolveRepo waiting for active job',
             );
           }
           for (let wait = 0; wait < HOLD_QUEUE_TIMEOUT_SECS; wait++) {
@@ -769,7 +774,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // (e.g. registry file not yet flushed after clone completes).
     if (!found && normalizedName && !isRetry) {
       if (process.env.DEBUG) {
-        console.log(`[debug] resolveRepo 404 for "${normalizedName}". Triggering deep init...`);
+        // Sanitize user-controlled values to prevent log injection (CodeQL js/log-injection).
+        logger.debug(
+          { repoName: String(normalizedName).replace(/[\r\n]/g, ' ') },
+          '[debug] resolveRepo 404, triggering deep init',
+        );
       }
       await backend.init();
       return await resolveRepo(normalizedName, true, req);

@@ -87,6 +87,9 @@
  *     attempting emission (even on dedup-collapse), because the
  *     per-(caller, target) collapse semantics require multiple call
  *     sites in the same caller body not produce multiple edges.
+ *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
+ *     the generic bridge cannot remap class heritage into method-owned
+ *     EXTENDS edges via `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
@@ -387,6 +390,26 @@ export interface ScopeResolver {
   ): Map<string /* DefId */, string[] /* ancestor DefIds */>;
 
   /**
+   * Optional parallel MRO that EXCLUDES mixin-like augmentation (e.g., PHP
+   * traits). Returns the inheritance-only ancestor chain — the same kind
+   * of map as `buildMro` but built only from inheritance edges (EXTENDS).
+   *
+   * Used by the shared super-branch dispatch in `receiver-bound-calls`
+   * so that `parent::method()` walks the inheritance chain only, not the
+   * trait-augmented one. PHP semantics: `parent::` explicitly bypasses
+   * traits, even when a composed trait shadows a same-named parent method.
+   *
+   * Languages without mixin-like semantics leave this undefined — callers
+   * fall back to `buildMro`/`mroFor`, which for those languages is already
+   * the inheritance chain.
+   */
+  readonly buildExtendsOnlyMro?: (
+    graph: KnowledgeGraph,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+  ) => Map<string /* DefId */, string[] /* ancestor DefIds */>;
+
+  /**
    * Mutate `parsed.localDefs[i].ownerId` to point at the structural
    * owner. Python's rule: methods (Function defs whose parent scope
    * is Class) AND class-body fields (defs in Class scopes) are owned
@@ -412,8 +435,46 @@ export interface ScopeResolver {
    * `/^super\s*\(/.test(t)`. Java returns `t === 'super'`. C++ may
    * also need `this` capture. Languages without inheritance return
    * constant `false`.
+   *
+   * For languages where the answer depends on caller context (e.g.
+   * C++, where `Base::method()` is a super call ONLY when `Base` is
+   * actually a base of the caller's enclosing class, and namespace-
+   * qualified calls like `Singleton::getInstance()` must NOT be
+   * misclassified), implement the optional `isSuperReceiverInContext`
+   * variant below. The receiver-bound-calls pass prefers the context-
+   * aware variant when both are defined.
    */
   isSuperReceiver(receiverText: string): boolean;
+
+  /**
+   * Optional context-aware variant of `isSuperReceiver`. When defined,
+   * the receiver-bound-calls pass prefers this hook over the simple
+   * `isSuperReceiver(text)` form. Languages where super classification
+   * is purely text-driven (Python, Java, PHP) omit this hook and the
+   * simple form is used unchanged.
+   *
+   * C++ uses this to distinguish `Base::method()` (super call when
+   * `Base` is in the caller's MRO) from `Singleton::getInstance()`
+   * (ordinary namespace-qualified call). Without this, the regex
+   * heuristic `/^[A-Z]\w*::/` misclassifies any uppercase-qualified
+   * call as a super-receiver call and routes it through the wrong
+   * resolution branch.
+   *
+   * Returns `true` ONLY when:
+   *   - the receiver text parses as `<Name>::<...>` (or another super-
+   *     form the language recognizes), AND
+   *   - `<Name>` resolves (via scope chain) to a class-like def, AND
+   *   - that class is in the MRO of the caller's enclosing class.
+   *
+   * Returns `false` for namespace-qualified calls, unresolved names,
+   * class-qualified calls where the class is NOT in the caller's MRO,
+   * and any text the simple `isSuperReceiver` hook also rejects.
+   */
+  readonly isSuperReceiverInContext?: (
+    receiverText: string,
+    callerScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+  ) => boolean;
 
   // ─── Optional toggles ──────────────────────────────────────────────────────
 
@@ -471,6 +532,112 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /**
+   * Optional predicate to identify definitions with file-local linkage
+   * (e.g. C `static` functions). When provided, `pickUniqueGlobalCallable`
+   * excludes defs where `isFileLocalDef(def) === true` and the def lives
+   * in a different file from the caller. This prevents the global free-call
+   * fallback from creating CALLS edges to file-local symbols that are
+   * logically invisible from the caller's translation unit.
+   *
+   * Languages without file-local linkage semantics leave this undefined.
+   */
+  readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Optional predicate to gate free-call fallback emission by caller-side
+   * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
+   * the caller cannot legally reach — e.g., a PHP function in a different
+   * namespace with no `use function` import, which PHP runtime would treat
+   * as `Call to undefined function`. Returning `false` blocks the candidate;
+   * returning `true` allows it; undefined-default keeps current behavior
+   * (no visibility filtering, equivalent to "all candidates visible").
+   *
+   * The hook receives the caller's `ParsedFile` (so it can consult
+   * `parsedImports`, `moduleScope`, etc.) and the candidate `SymbolDefinition`.
+   * The predicate must be pure: same inputs → same answer.
+   *
+   * Languages without namespace-scoped function resolution leave this undefined.
+   */
+  readonly isCallableVisibleFromCaller?: (ctx: {
+    readonly callerParsed: ParsedFile;
+    readonly candidate: SymbolDefinition;
+    /** Caller's enclosing scope id. Languages that gate visibility on
+     *  caller scope (e.g. C++ two-phase template lookup) consult it;
+     *  others ignore. Optional so existing implementations stay valid. */
+    readonly callerScope?: ScopeId;
+    /** ScopeResolutionIndexes for scope-tree walks. Optional for the
+     *  same reason as `callerScope`. */
+    readonly scopes?: ScopeResolutionIndexes;
+  }) => boolean;
+
+  /**
+   * Optional argument-dependent-lookup (ADL / Koenig lookup) hook for
+   * languages with C++-style associated-namespace candidate addition.
+   *
+   * Runs in the free-call fallback alongside ordinary unqualified lookup.
+   * The fallback merges ordinary candidates with ADL candidates and applies
+   * overload narrowing over the union.
+   *
+   * The hook inspects the call site's argument types, computes the
+   * associated namespace set, and returns either:
+   *   - an array of candidate `SymbolDefinition`s to add to the
+   *     ordinary-lookup candidate pool.
+   *   - `undefined` when ADL contributes no candidates.
+   *
+   * Languages without C++-style ADL leave this undefined. The
+   * cross-language contract is "additive tier" — defining the hook never
+   * removes candidates the prior tier would have produced.
+   */
+  readonly resolveAdlCandidates?: (
+    site: {
+      readonly name: string;
+      readonly arity?: number;
+      readonly argumentTypes?: readonly string[];
+      readonly atRange: { readonly startLine: number; readonly startCol: number };
+    },
+    callerParsed: ParsedFile,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+  ) => readonly SymbolDefinition[] | undefined;
+
+  /**
+   * Optional resolver for qualified-receiver member calls where the
+   * receiver is a namespace (not a class) and ordinary scope-chain /
+   * import resolution doesn't find the member. C++ uses this for
+   * `outer::foo()` style calls and to walk through inline-namespace
+   * children transitively (`outer::v1::foo` reachable as `outer::foo`).
+   *
+   * Languages whose qualified-name semantics are already covered by the
+   * receiver-bound-calls Case-1 namespace-targets path (e.g., Python's
+   * `import X; X.foo()`) leave this undefined.
+   *
+   * Receiver-bound-calls invokes this hook AFTER Case 1 (namespace
+   * imports) and AFTER Case 2 (class-name receiver) fail to resolve.
+   * Returns the target def, `'ambiguous'` when multiple inline-namespace
+   * children declare the same name (suppresses edge emission), or
+   * `undefined` to fall through to the remaining cases.
+   */
+  readonly resolveQualifiedReceiverMember?: (
+    receiverName: string,
+    memberName: string,
+    callerScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+  ) => SymbolDefinition | 'ambiguous' | undefined;
+
+  /**
+   * Enable the receiver-bound Case 0.5 fallback for explicit `this`
+   * receivers (`this->m()` / `this.m()`) that resolves against the
+   * enclosing class + MRO even when no explicit `this` typeBinding is
+   * present in scope.
+   *
+   * Keep disabled for languages where the existing type-binding path
+   * (Case 4) already handles `this` correctly and overload ambiguity
+   * suppression must remain unchanged.
+   */
+  readonly resolveThisViaEnclosingClass?: boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
@@ -564,4 +731,32 @@ export interface ScopeResolver {
       readonly treeCache?: { get(filePath: string): unknown };
     },
   ) => void;
+
+  /**
+   * Optional post-resolution pass: emit CALLS edges for member-call sites
+   * whose receiver cannot be typed by the scope chain (no `TypeRef`).
+   * Dynamically-typed languages with untyped/`mixed`/`Any` parameters use
+   * this hook to recover the call edge via workspace-wide method-name
+   * lookup, mirroring what their legacy resolvers did.
+   *
+   * Runs AFTER `emitReceiverBoundCalls` and BEFORE `emitFreeCallFallback`.
+   * Implementations MUST:
+   *   - Skip sites already in `handledSites` (Invariant I2).
+   *   - Add resolved site keys to `handledSites` before returning.
+   *   - Stay narrow: a unique workspace-wide match is the safe baseline.
+   *     Multi-candidate fallbacks should narrow by arity / argument types
+   *     before emitting to keep false-positive rate bounded.
+   *
+   * Returns the number of edges emitted (for telemetry).
+   *
+   * Default: undefined (no unresolved-receiver fallback).
+   */
+  readonly emitUnresolvedReceiverEdges?: (
+    graph: KnowledgeGraph,
+    scopes: ScopeResolutionIndexes,
+    parsedFiles: readonly ParsedFile[],
+    nodeLookup: GraphNodeLookup,
+    handledSites: Set<string>,
+    model: SemanticModel,
+  ) => number;
 }

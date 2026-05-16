@@ -3,6 +3,7 @@ import Parser from 'tree-sitter';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import {
   getPluginForFile,
   THRIFT_SCAN_GLOB,
@@ -311,7 +312,7 @@ export class ThriftExtractor implements ContractExtractor {
       let detections: ThriftDetection[] = [];
       try {
         parser.setLanguage(plugin.language);
-        const tree = parser.parse(content);
+        const tree = parseSourceSafe(parser, content);
         detections = plugin.scan(tree);
       } catch {
         continue;

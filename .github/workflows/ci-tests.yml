@@ -3,6 +3,9 @@ name: Tests
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     name: ubuntu / coverage

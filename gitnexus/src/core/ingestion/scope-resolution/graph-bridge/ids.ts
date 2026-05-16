@@ -71,7 +71,12 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
  */
 export function resolveDefGraphId(
   filePath: string,
-  def: { qualifiedName?: string; type?: NodeLabel; parameterTypes?: readonly string[] },
+  def: {
+    qualifiedName?: string;
+    type?: NodeLabel;
+    parameterTypes?: readonly string[];
+    templateArguments?: readonly string[];
+  },
   nodeLookup: GraphNodeLookup,
 ): string | undefined {
   const qn = def.qualifiedName;
@@ -88,6 +93,19 @@ export function resolveDefGraphId(
       const pKey = qualifiedKey(filePath, def.type, `${qn}~${def.parameterTypes.join(',')}`);
       const pHit = nodeLookup.get(pKey);
       if (pHit !== undefined) return pHit;
+    }
+    if (
+      (def.type === 'Class' ||
+        def.type === 'Struct' ||
+        def.type === 'Interface' ||
+        def.type === 'Enum' ||
+        def.type === 'Record') &&
+      def.templateArguments !== undefined &&
+      def.templateArguments.length > 0
+    ) {
+      const tKey = qualifiedKey(filePath, def.type, `${qn}~${def.templateArguments.join(',')}`);
+      const tHit = nodeLookup.get(tKey);
+      if (tHit !== undefined) return tHit;
     }
     const qualifiedHit = nodeLookup.get(qualifiedKey(filePath, def.type, qn));
     if (qualifiedHit !== undefined) return qualifiedHit;

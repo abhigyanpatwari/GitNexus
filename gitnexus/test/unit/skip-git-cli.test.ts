@@ -5,9 +5,11 @@ import os from 'os';
 import fs from 'fs';
 
 describe('--skip-git CLI flag', () => {
+  const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
+
   it('Commander maps --skip-git to options.skipGit (not --no-git inversion)', () => {
     // Verify the CLI defines --skip-git and --skip-agents-md in analyze help.
-    const helpOutput = execSync('node dist/cli/index.js analyze --help', {
+    const helpOutput = execSync(`node "${cliPath}" analyze --help`, {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
       timeout: 10000,
@@ -15,7 +17,39 @@ describe('--skip-git CLI flag', () => {
 
     expect(helpOutput).toContain('--skip-git');
     expect(helpOutput).toContain('--skip-agents-md');
+    expect(helpOutput).toContain('--skip-skills');
+    expect(helpOutput).toContain('--index-only');
     expect(helpOutput).not.toContain('--no-git');
+  });
+
+  it('warns when --index-only overrides --skills (PR 1485)', () => {
+    // `--index-only` suppresses the post-index skill step that `--skills`
+    // would otherwise trigger. Without an explicit warning, the user sees a
+    // pipeline re-index complete and silently no skill files written — the
+    // silent-contradiction case flagged in PR 1485 review.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-index-only-skills-'));
+    const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-index-only-skills-home-'));
+    // Make tmpDir a git repo so analyze accepts it without --skip-git.
+    execSync('git init', { cwd: tmpDir, stdio: 'ignore' });
+    fs.writeFileSync(path.join(tmpDir, 'a.ts'), 'export const a = 1;\n');
+
+    const env = {
+      ...process.env,
+      HOME: gitnexusHome,
+      GITNEXUS_HOME: gitnexusHome,
+      GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
+    };
+
+    try {
+      const output = execSync(
+        `node "${cliPath}" analyze "${tmpDir}" --index-only --skills --skip-agents-md`,
+        { encoding: 'utf8', timeout: 60000, env },
+      );
+      expect(output).toContain('--index-only overrides --skills');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(gitnexusHome, { recursive: true, force: true });
+    }
   });
 
   it('rejects non-git folder without --skip-git', () => {
@@ -37,8 +71,59 @@ describe('--skip-git CLI flag', () => {
     }
   });
 
+  it('still respects .gitnexusignore when run with --skip-git', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-skip-git-ignore-'));
+    const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-skip-git-ignore-home-'));
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'customskip'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.gitnexusignore'), 'customskip/\n');
+    fs.writeFileSync(path.join(tmpDir, 'src', 'keep.ts'), 'export function keep() { return 1; }\n');
+    fs.writeFileSync(
+      path.join(tmpDir, 'customskip', 'leaked.ts'),
+      'export function leaked() { return 42; }\n',
+    );
+
+    const env = {
+      ...process.env,
+      HOME: gitnexusHome,
+      GITNEXUS_HOME: gitnexusHome,
+      GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
+    };
+
+    try {
+      execSync(`node "${cliPath}" analyze "${tmpDir}" --skip-git --skip-agents-md`, {
+        encoding: 'utf8',
+        timeout: 60000,
+        env,
+      });
+
+      const keepContext = execSync(
+        `node "${cliPath}" context keep --repo "${path.basename(tmpDir)}"`,
+        {
+          encoding: 'utf8',
+          timeout: 60000,
+          env,
+        },
+      );
+      expect(keepContext).toContain('"status": "found"');
+      expect(keepContext).toContain('"filePath": "src/keep.ts"');
+
+      const leakedContext = execSync(
+        `node "${cliPath}" context leaked --repo "${path.basename(tmpDir)}"`,
+        {
+          encoding: 'utf8',
+          timeout: 60000,
+          env,
+        },
+      );
+      expect(leakedContext).toContain(`"error": "Symbol 'leaked' not found"`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(gitnexusHome, { recursive: true, force: true });
+    }
+  });
+
   describe('--skip-git does not walk up to parent git repo (#1232)', () => {
-    const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
     let parentDir: string;
     let gitnexusHome: string;
 

@@ -149,10 +149,15 @@ Indexed as **GitNexus** (4325 symbols, 10556 relationships, 300 execution flows)
 ## Keeping the Index Fresh
 
 ```bash
-npx gitnexus analyze                 # basic refresh; preserves any existing embeddings
+npx gitnexus analyze                 # incremental by default; preserves embeddings
+npx gitnexus analyze --force         # full rebuild from scratch (opt out of incremental)
 npx gitnexus analyze --embeddings    # also generate embeddings for new/changed nodes
 npx gitnexus analyze --drop-embeddings  # explicit opt-in to wipe existing embeddings
 ```
+
+`analyze` runs **incrementally by default**. The pipeline still parses every file every run (cross-file resolution requires it), but tree-sitter parsing is **served from a content-addressed cache** at `.gitnexus/parse-cache.json` for chunks whose file contents haven't changed since the last run. Only changed-file rows (and their importers) are rewritten in LadybugDB; unchanged-file rows are preserved. Output is byte-equivalent to a full rebuild. Pass `--force` to wipe and re-index from scratch (e.g., to recover from a corrupt index, or after upgrading GitNexus).
+
+The parse cache key is **content-addressed and version-tagged**: it survives `--force` runs, and is automatically invalidated by a `gitnexus` package upgrade (so a new tree-sitter grammar doesn't silently replay stale parse output). Safe to delete `.gitnexus/parse-cache.json` at any time — it'll be rebuilt on the next analyze.
 
 Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no longer drops existing vectors — pass `--drop-embeddings` to wipe.
 
@@ -168,6 +173,20 @@ Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no 
 | Refactoring | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools/resources/schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | CLI commands (index, status, clean, wiki) | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+## Hook env knobs
+
+The Claude Code hook (`gitnexus/hooks/claude/gitnexus-hook.cjs` and the mirrored plugin copy under `gitnexus-claude-plugin/hooks/`) honours these env vars. Defaults work for normal installations; set them only to override resolution. All path overrides ignore values that do not exist on disk and fall through to the standard resolution chain.
+
+| Env var | Type | Default | Purpose |
+|---------|------|---------|---------|
+| `GITNEXUS_HOOK_CLI_PATH` | path | resolved via package layout / `require.resolve` | Override path to the `gitnexus` CLI entry the hook spawns for `augment`. |
+| `GITNEXUS_HOOK_LSOF_PATH` | path | `lsof` on `PATH` (with `/usr/bin/lsof`, `/usr/sbin/lsof`, `/sbin/lsof` fallbacks) | Override POSIX `lsof` location for the DB-lock probe. |
+| `GITNEXUS_HOOK_PS_PATH` | path | `ps` on `PATH` (with `/bin/ps`, `/usr/bin/ps` fallbacks) | Override POSIX `ps` location. |
+| `GITNEXUS_HOOK_POWERSHELL_PATH` | path | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` (then `SysWOW64`, then `powershell.exe` on `PATH`) | Override Windows PowerShell location used by the Restart-Manager probe. |
+| `GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS` | integer ms | `1200` | Max wall-clock for the Linux `/proc` fd scan before bailing out to the `lsof` fallback. |
+| `GITNEXUS_HOOK_RM_TARGET` | path | derived | Restart-Manager target file (the LadybugDB path under `.gitnexus/`). Set internally by the hook; rarely overridden manually. |
+| `GITNEXUS_DEBUG` | boolean (`1`/`true`) | unset | Verbose stderr from the hook: prints discarded augment-stderr prefixes and one-shot `.ps1` load-failure warnings. |
 
 <!-- gitnexus:end -->
 

@@ -1,5 +1,5 @@
 name: Setup GitNexus Web
-description: Setup Node.js 20.19+ (vite 7 floor), build gitnexus-shared, install web dependencies
+description: Setup Node.js 22, build gitnexus-shared, install web dependencies
 
 runs:
   using: composite
@@ -7,9 +7,7 @@ runs:
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         # Vite 7 requires Node ^20.19.0 || >=22.12.0 (require(esm) support).
-        # Pin explicitly so we don't depend on the floating "20" alias resolving
-        # to a high enough patch version on every runner image.
-        node-version: '20.19.0'
+        node-version: 22
         cache: npm
         cache-dependency-path: gitnexus-web/package-lock.json
 

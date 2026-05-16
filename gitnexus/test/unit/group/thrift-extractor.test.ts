@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+const { parseSourceSafeSpy } = vi.hoisted(() => ({ parseSourceSafeSpy: vi.fn() }));
+
+vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
+  const { buildSafeParseMock } = await import('../../helpers/parse-source-safe-mock.js');
+  return buildSafeParseMock(parseSourceSafeSpy);
+});
+
 import {
   ThriftExtractor,
   buildThriftContext,
@@ -579,6 +587,39 @@ class PaymentWorkflow {
     const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
 
     expect(contracts).toEqual([]);
+  });
+
+  describe('Windows SIGSEGV regression — large input must route through parseSourceSafe', () => {
+    it('routes >32 767-char source file through parseSourceSafe (not direct parser.parse)', async () => {
+      parseSourceSafeSpy.mockClear();
+
+      // Need a base .thrift file so buildThriftContext finds at least one
+      // service to scan; without it the source-scan loop short-circuits.
+      writeFile(
+        'idl/order.thrift',
+        `namespace java billing.v1
+service OrderService {
+  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
+}`,
+      );
+
+      // >40 000-char Java client file. Direct parser.parse(content) on a
+      // string this size SIGSEGVs the process on Windows. The spy assertion
+      // catches the regression — a "no throw" assertion alone is satisfied
+      // by the bypass on Linux/macOS where parser.parse(40 000 chars) succeeds.
+      const padding = Array.from(
+        { length: 600 },
+        (_, i) => `    public String helper${i}() { return "padding-${i}-aaaaaaaaaaaaaaaaaaa"; }\n`,
+      ).join('');
+      const largeJava = `package com.example;\n\nimport billing.v1.OrderService;\n\npublic class BigClient {\n  private OrderService.Iface client;\n${padding}}\n`;
+      expect(largeJava.length).toBeGreaterThan(40_000);
+
+      writeFile('src/main/java/com/example/BigClient.java', largeJava);
+
+      await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+      expect(parseSourceSafeSpy).toHaveBeenCalled();
+    });
   });
 });
 

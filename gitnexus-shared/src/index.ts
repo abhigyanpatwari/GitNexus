@@ -143,6 +143,22 @@ export type { ScopeTree } from './scope-resolution/scope-tree.js';
 export { buildPositionIndex } from './scope-resolution/position-index.js';
 export type { PositionIndex } from './scope-resolution/position-index.js';
 
+// Resilient fetch primitives — bounded retries + per-process circuit breaker.
+// Test-only helpers (`__resetBreakerRegistry__`, `classifyOutcome`) are
+// reachable via the separate `gitnexus-shared/test-helpers` subpath; do
+// NOT add them here. Production consumers must not call them.
+export { withRetry, computeBackoffMs } from './integrations/retry.js';
+export type { RetryOptions, RetryDecision } from './integrations/retry.js';
+export { CircuitBreaker, CircuitOpenError, getBreaker } from './integrations/circuit-breaker.js';
+export type { CircuitBreakerOptions } from './integrations/circuit-breaker.js';
+export {
+  resilientFetch,
+  ResilientFetchExhaustedError,
+  RETRY_AFTER_CAP_MS,
+  parseRetryAfter,
+} from './integrations/resilient-fetch.js';
+export type { ResilientFetchOptions } from './integrations/resilient-fetch.js';
+
 // Understand-Quickly registry integration (opt-in)
 export {
   UNDERSTAND_QUICKLY_DISPATCH_URL,

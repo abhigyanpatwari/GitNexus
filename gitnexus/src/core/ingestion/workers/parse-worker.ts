@@ -20,6 +20,7 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
 
@@ -81,6 +82,7 @@ import {
   constTagForId,
   buildCollisionGroups,
 } from '../utils/method-props.js';
+import { extractTemplateArguments, templateArgumentsIdTag } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
@@ -128,6 +130,7 @@ interface ParsedSymbol {
   parameterTypes?: string[];
   returnType?: string;
   declaredType?: string;
+  templateArguments?: string[];
   ownerId?: string;
   visibility?: string;
   isStatic?: boolean;
@@ -180,6 +183,8 @@ export interface ExtractedAssignment {
   propertyName: string;
   /** Resolved type name of the receiver if available from TypeEnv */
   receiverTypeName?: string;
+  /** 1-indexed line number of the assignment site (used for per-site dedup) */
+  line?: number;
 }
 
 // `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
@@ -1416,7 +1421,7 @@ const processFileGroup = (
 
     let tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
@@ -1579,6 +1584,7 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
+            line: captureMap['assignment'].startPosition.row + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }
@@ -1997,6 +2003,23 @@ const processFileGroup = (
             })
           : null;
       const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
+      const isClassLikeLabel =
+        nodeLabel === 'Class' ||
+        nodeLabel === 'Struct' ||
+        nodeLabel === 'Interface' ||
+        nodeLabel === 'Enum' ||
+        nodeLabel === 'Record';
+      if (
+        isClassLikeLabel &&
+        provider.classExtractor?.shouldSkipClassCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+          nodeLabel,
+        }) === true
+      ) {
+        continue;
+      }
 
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
@@ -2110,7 +2133,31 @@ const processFileGroup = (
         );
         arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, groups);
       }
-      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
+      const classTemplateArguments =
+        extractedClassSymbol?.templateArguments ??
+        provider.classExtractor?.extractTemplateArgumentsFromCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+        }) ??
+        (captureMap['template-arguments']
+          ? extractTemplateArguments(captureMap['template-arguments'].text)
+          : undefined) ??
+        (nameNode && nameNode.text ? extractTemplateArguments(nameNode.text) : undefined);
+      const classTemplateTag =
+        (nodeLabel === 'Class' ||
+          nodeLabel === 'Struct' ||
+          nodeLabel === 'Interface' ||
+          nodeLabel === 'Enum' ||
+          nodeLabel === 'Record') &&
+        classTemplateArguments !== undefined &&
+        classTemplateArguments.length > 0
+          ? templateArgumentsIdTag(classTemplateArguments)
+          : '';
+      const nodeId = generateId(
+        nodeLabel,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}`,
+      );
       const classNodeForSymbol = definitionNode || nameNode;
       const qualifiedTypeName =
         extractedClassSymbol?.qualifiedName ??
@@ -2233,6 +2280,9 @@ const processFileGroup = (
               ? isVueSetupTopLevel(nameNode || definitionNode)
               : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
+          ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
+            ? { templateArguments: classTemplateArguments }
+            : {}),
           ...(frameworkHint
             ? {
                 astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
@@ -2258,6 +2308,9 @@ const processFileGroup = (
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         ...(declaredType !== undefined ? { declaredType } : {}),
+        ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
+          ? { templateArguments: classTemplateArguments }
+          : {}),
         ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,

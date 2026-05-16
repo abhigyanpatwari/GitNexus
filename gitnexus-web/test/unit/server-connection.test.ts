@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchGraph, normalizeServerUrl, setBackendUrl } from '../../src/services/backend-client';
+import {
+  fetchGraph,
+  getBackendUrl,
+  normalizeServerUrl,
+  setBackendUrl,
+  validateBackendUrl,
+} from '../../src/services/backend-client';
 
 describe('normalizeServerUrl', () => {
   it('adds http:// to localhost', () => {
@@ -163,5 +169,63 @@ describe('fetchGraph', () => {
     await expect(fetchGraph('big-repo')).rejects.toMatchObject({
       message: 'stream failed',
     });
+  });
+});
+
+describe('validateBackendUrl', () => {
+  it('allows http:// URLs', () => {
+    expect(() => validateBackendUrl('http://localhost:4747')).not.toThrow();
+    expect(() => validateBackendUrl('http://127.0.0.1:4747')).not.toThrow();
+  });
+
+  it('allows https:// URLs', () => {
+    expect(() => validateBackendUrl('https://gitnexus.example.com')).not.toThrow();
+    expect(() => validateBackendUrl('https://my-server.internal:4747')).not.toThrow();
+  });
+
+  it('rejects non-http schemes', () => {
+    expect(() => validateBackendUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
+    expect(() => validateBackendUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
+    expect(() => validateBackendUrl('data:text/plain,evil')).toThrow(
+      'must use http:// or https://',
+    );
+  });
+
+  it('rejects malformed URLs', () => {
+    expect(() => validateBackendUrl('not-a-url')).toThrow('Invalid backend URL');
+  });
+
+  it('does not include the raw URL in error messages (credential hygiene)', () => {
+    const urlWithCreds = 'javascript:alert("sk-secret")';
+    let msg = '';
+    try {
+      validateBackendUrl(urlWithCreds);
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).not.toContain('sk-secret');
+    expect(msg).not.toContain(urlWithCreds);
+  });
+});
+
+describe('setBackendUrl', () => {
+  it('accepts valid http URLs', () => {
+    expect(() => setBackendUrl('http://localhost:4747')).not.toThrow();
+  });
+
+  it('accepts valid https URLs', () => {
+    expect(() => setBackendUrl('https://my-server.example.com')).not.toThrow();
+  });
+
+  it('rejects non-http/https schemes', () => {
+    expect(() => setBackendUrl('javascript:alert(1)')).toThrow('must use http:// or https://');
+    expect(() => setBackendUrl('file:///etc/passwd')).toThrow('must use http:// or https://');
+  });
+
+  it('does not mutate _backendUrl when validation fails', () => {
+    setBackendUrl('http://localhost:4747');
+    expect(() => setBackendUrl('javascript:alert(1)')).toThrow();
+    // State must be preserved — validation must happen before the assignment
+    expect(getBackendUrl()).toBe('http://localhost:4747');
   });
 });

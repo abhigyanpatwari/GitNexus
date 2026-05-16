@@ -151,7 +151,8 @@ export function propagateImportedReturnTypes(
 
         const refs = lookupBindingsAt(importerModule.id, localName, indexes);
         for (const ref of refs) {
-          if (ref.origin !== 'import' && ref.origin !== 'reexport') continue;
+          if (ref.origin !== 'import' && ref.origin !== 'reexport' && ref.origin !== 'wildcard')
+            continue;
           const sourceModule = moduleScopeByFile.get(ref.def.filePath);
           if (sourceModule === undefined) continue;
 

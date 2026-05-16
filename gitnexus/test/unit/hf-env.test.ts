@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import { join } from 'node:path';
+import { CircuitBreaker } from 'gitnexus-shared';
 import {
   applyHfEnvOverrides,
   isNetworkFetchError,
   isHfDownloadFailure,
   isHfCircuitOpenError,
-  HfDownloadCircuitBreaker,
   withDownloadTimeout,
   withHfDownloadRetry,
   CIRCUIT_OPEN_TAG,
@@ -154,85 +154,13 @@ describe('isHfDownloadFailure', () => {
   });
 });
 
-describe('HfDownloadCircuitBreaker', () => {
-  it('starts in closed state', () => {
-    const cb = new HfDownloadCircuitBreaker();
-    expect(cb.isOpen()).toBe(false);
-    expect(cb.state).toBe('closed');
-  });
-
-  it('opens after reaching the failure threshold', () => {
-    const cb = new HfDownloadCircuitBreaker(3);
-    cb.recordFailure();
-    cb.recordFailure();
-    expect(cb.isOpen()).toBe(false);
-    cb.recordFailure(); // threshold reached
-    expect(cb.isOpen()).toBe(true);
-    expect(cb.state).toBe('open');
-  });
-
-  it('closes on recordSuccess after being open', () => {
-    const cb = new HfDownloadCircuitBreaker(1);
-    cb.recordFailure();
-    expect(cb.isOpen()).toBe(true);
-    cb.recordSuccess();
-    expect(cb.isOpen()).toBe(false);
-    expect(cb.state).toBe('closed');
-  });
-
-  it('transitions to half-open after the reset timeout', () => {
-    vi.useFakeTimers();
-    try {
-      const cb = new HfDownloadCircuitBreaker(1, 100 /* 100ms */);
-      cb.recordFailure();
-      expect(cb.isOpen()).toBe(true);
-      vi.advanceTimersByTime(200);
-      expect(cb.isOpen()).toBe(false);
-      expect(cb.state).toBe('half-open');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('reset() restores closed state', () => {
-    const cb = new HfDownloadCircuitBreaker(1);
-    cb.recordFailure();
-    expect(cb.isOpen()).toBe(true);
-    cb.reset();
-    expect(cb.isOpen()).toBe(false);
-    expect(cb.state).toBe('closed');
-  });
-
-  it('re-opens when a failure is recorded in half-open state', () => {
-    vi.useFakeTimers();
-    try {
-      const cb = new HfDownloadCircuitBreaker(1, 100 /* 100ms */);
-      cb.recordFailure(); // opens the circuit
-      vi.advanceTimersByTime(200); // advance past reset timeout
-      expect(cb.state).toBe('half-open'); // getter transitions _state to half-open
-      cb.recordFailure(); // failure in half-open → re-opens
-      expect(cb.isOpen()).toBe(true);
-      expect(cb.state).toBe('open');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('closes the circuit when success is recorded in half-open state', () => {
-    vi.useFakeTimers();
-    try {
-      const cb = new HfDownloadCircuitBreaker(1, 100 /* 100ms */);
-      cb.recordFailure(); // opens the circuit
-      vi.advanceTimersByTime(200); // advance past reset timeout
-      expect(cb.state).toBe('half-open');
-      cb.recordSuccess(); // success in half-open → closes
-      expect(cb.isOpen()).toBe(false);
-      expect(cb.state).toBe('closed');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
+// CircuitBreaker state-machine tests live in
+// `gitnexus/test/unit/integrations/circuit-breaker.test.ts` — that suite
+// already covers the closed/open/half-open transitions, recordSuccess/
+// recordFailure semantics, half-open probe gating, and configurable
+// thresholds. No need to duplicate here; this file's remaining tests
+// focus on HF-specific composition (withHfDownloadRetry, env-var
+// overrides, error classification).
 
 describe('withDownloadTimeout', () => {
   it('resolves when fn completes before the timeout', async () => {
@@ -262,7 +190,7 @@ describe('withDownloadTimeout', () => {
 describe('withHfDownloadRetry', () => {
   it('returns the result on first success', async () => {
     const fn = vi.fn().mockResolvedValue('ok');
-    const cb = new HfDownloadCircuitBreaker();
+    const cb = new CircuitBreaker();
     const result = await withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 });
     expect(result).toBe('ok');
     expect(fn).toHaveBeenCalledTimes(1);
@@ -270,7 +198,7 @@ describe('withHfDownloadRetry', () => {
 
   it('retries on network errors and succeeds on second attempt', async () => {
     const fn = vi.fn().mockRejectedValueOnce(new Error('fetch failed')).mockResolvedValue('ok');
-    const cb = new HfDownloadCircuitBreaker();
+    const cb = new CircuitBreaker();
     const result = await withHfDownloadRetry(fn, {
       circuit: cb,
       maxAttempts: 3,
@@ -282,7 +210,7 @@ describe('withHfDownloadRetry', () => {
 
   it('throws the last network error after all attempts are exhausted', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:443'));
-    const cb = new HfDownloadCircuitBreaker(99 /* high threshold */);
+    const cb = new CircuitBreaker({ failureThreshold: 99 });
     await expect(
       withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 3, baseDelayMs: 0 }),
     ).rejects.toThrow('ECONNREFUSED');
@@ -291,7 +219,7 @@ describe('withHfDownloadRetry', () => {
 
   it('does not retry non-network errors', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('Failed to initialize CUDA backend'));
-    const cb = new HfDownloadCircuitBreaker();
+    const cb = new CircuitBreaker();
     await expect(
       withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 3, baseDelayMs: 0 }),
     ).rejects.toThrow('Failed to initialize CUDA backend');
@@ -300,7 +228,7 @@ describe('withHfDownloadRetry', () => {
 
   it('fails immediately when the circuit is already open', async () => {
     const fn = vi.fn().mockResolvedValue('ok');
-    const cb = new HfDownloadCircuitBreaker(1);
+    const cb = new CircuitBreaker({ failureThreshold: 1 });
     cb.recordFailure(); // open the circuit
     await expect(withHfDownloadRetry(fn, { circuit: cb })).rejects.toThrow(CIRCUIT_OPEN_TAG);
     expect(fn).not.toHaveBeenCalled();
@@ -308,12 +236,12 @@ describe('withHfDownloadRetry', () => {
 
   it('opens the circuit after failureThreshold failures and throws a circuit-open error', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('ENOTFOUND huggingface.co'));
-    const cb = new HfDownloadCircuitBreaker(2 /* threshold */, 60_000);
+    const cb = new CircuitBreaker({ failureThreshold: 2, cooldownMs: 60_000 });
     // First call: 2 attempts, threshold=2 → circuit opens on 2nd failure
     await expect(
       withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 2, baseDelayMs: 0 }),
     ).rejects.toThrow(CIRCUIT_OPEN_TAG);
-    expect(cb.isOpen()).toBe(true);
+    expect(cb.getState()).toBe('open');
   });
 
   it('calls onRetry with correct arguments on each retry', async () => {
@@ -322,7 +250,7 @@ describe('withHfDownloadRetry', () => {
       .mockRejectedValueOnce(new Error('fetch failed'))
       .mockRejectedValueOnce(new Error('fetch failed'))
       .mockResolvedValue('ok');
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new CircuitBreaker({ failureThreshold: 99 });
     const onRetry = vi.fn();
     await withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 3, baseDelayMs: 0, onRetry });
     expect(onRetry).toHaveBeenCalledTimes(2);
@@ -342,11 +270,11 @@ describe('withHfDownloadRetry', () => {
 
   it('resets the circuit on success', async () => {
     const fn = vi.fn().mockResolvedValue('value');
-    const cb = new HfDownloadCircuitBreaker(5);
+    const cb = new CircuitBreaker({ failureThreshold: 5 });
     cb.recordFailure();
     cb.recordFailure(); // 2 failures, circuit still closed
     await withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 });
-    expect(cb.state).toBe('closed');
+    expect(cb.getState()).toBe('closed');
   });
 });
 
@@ -371,7 +299,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=1 gives exactly 1 attempt', async () => {
     process.env.HF_MAX_ATTEMPTS = '1';
     const fn = vi.fn().mockRejectedValue(new Error('ECONNREFUSED 127.0.0.1:443'));
-    const cb = new HfDownloadCircuitBreaker(99_999 /* high threshold */);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'ECONNREFUSED',
     );
@@ -381,7 +309,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=2 gives exactly 2 attempts', async () => {
     process.env.HF_MAX_ATTEMPTS = '2';
     const fn = vi.fn().mockRejectedValue(new Error('ENOTFOUND huggingface.co'));
-    const cb = new HfDownloadCircuitBreaker(99_999);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'ENOTFOUND',
     );
@@ -391,7 +319,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=abc falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = 'abc';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99_999);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -401,7 +329,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=0 falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = '0';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99_999);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -411,7 +339,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=-1 falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = '-1';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99_999);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -421,7 +349,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS is clamped to HF_MAX_ATTEMPTS_CAP', async () => {
     process.env.HF_MAX_ATTEMPTS = '9999';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99_999 /* very high threshold */);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -431,7 +359,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('HF_MAX_ATTEMPTS=2.9 is floored to 2', async () => {
     process.env.HF_MAX_ATTEMPTS = '2.9';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99_999);
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
     await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
       'fetch failed',
     );
@@ -443,7 +371,7 @@ describe('withHfDownloadRetry env overrides', () => {
     try {
       process.env.HF_DOWNLOAD_TIMEOUT_MS = '50';
       const neverResolves = () => new Promise<never>(() => {});
-      const cb = new HfDownloadCircuitBreaker(99);
+      const cb = new CircuitBreaker({ failureThreshold: 99 });
       const promise = withHfDownloadRetry(neverResolves, { circuit: cb, maxAttempts: 1 });
       vi.advanceTimersByTime(100);
       await expect(promise).rejects.toThrow('ETIMEDOUT');
@@ -458,7 +386,7 @@ describe('withHfDownloadRetry env overrides', () => {
     // we just verify that the env var rejection causes options.timeoutMs to be
     // the default constant (not -1) by confirming the resolved value is used.
     const fn = vi.fn().mockResolvedValue('ok');
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new CircuitBreaker({ failureThreshold: 99 });
     // Provide explicit timeoutMs to avoid the default 5-minute wait
     const result = await withHfDownloadRetry(fn, { circuit: cb, timeoutMs: 100 });
     expect(result).toBe('ok');
@@ -470,7 +398,7 @@ describe('withHfDownloadRetry env overrides', () => {
       // Set an env value exceeding the 30-minute cap
       process.env.HF_DOWNLOAD_TIMEOUT_MS = String(HF_MAX_TIMEOUT_MS + 60_000);
       const neverResolves = () => new Promise<never>(() => {});
-      const cb = new HfDownloadCircuitBreaker(99);
+      const cb = new CircuitBreaker({ failureThreshold: 99 });
       const promise = withHfDownloadRetry(neverResolves, { circuit: cb, maxAttempts: 1 });
       // Advance just past the 30-minute cap
       vi.advanceTimersByTime(HF_MAX_TIMEOUT_MS + 1);
@@ -483,7 +411,7 @@ describe('withHfDownloadRetry env overrides', () => {
   it('explicit options override env vars', async () => {
     process.env.HF_MAX_ATTEMPTS = '5';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
-    const cb = new HfDownloadCircuitBreaker(99);
+    const cb = new CircuitBreaker({ failureThreshold: 99 });
     // explicit maxAttempts: 2 must win over HF_MAX_ATTEMPTS=5
     await expect(
       withHfDownloadRetry(fn, { circuit: cb, maxAttempts: 2, baseDelayMs: 0 }),

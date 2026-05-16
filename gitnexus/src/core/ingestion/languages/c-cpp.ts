@@ -46,6 +46,24 @@ import { createCallExtractor } from '../call-extractors/generic.js';
 import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import { stripUeMacros } from '../cpp-ue-preprocessor.js';
+import {
+  emitCScopeCaptures,
+  interpretCImport,
+  interpretCTypeBinding,
+  cArityCompatibility,
+  cBindingScopeFor,
+  cImportOwningScope,
+  cReceiverBinding,
+} from './c/index.js';
+import {
+  emitCppScopeCaptures,
+  interpretCppImport,
+  interpretCppTypeBinding,
+  cppArityCompatibility,
+  cppBindingScopeFor,
+  cppImportOwningScope,
+  cppReceiverBinding,
+} from './cpp/index.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -294,12 +312,19 @@ const cCppExtractFunctionName = (
   return { funcName, label };
 };
 
-/** Check if a C/C++ function_definition is inside a class or struct body.
+/** Check if a C/C++ function_definition is inside a class or struct body
+ *  (and NOT a friend declaration).
  *  Used by cppLabelOverride to skip duplicate function captures
- *  that are already covered by definition.method queries. */
+ *  that are already covered by definition.method queries.
+ *  Friend functions are free functions defined inside class bodies —
+ *  they must NOT be skipped (ISO C++ hidden-friend idiom). */
 function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
   let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
   while (ancestor) {
+    // Friend declarations: the function_definition is wrapped in
+    // `friend_declaration` → `field_declaration_list` → class_specifier.
+    // These are free functions, not methods — don't skip them.
+    if (ancestor.type === 'friend_declaration') return false;
     if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
     ancestor = ancestor.parent;
   }
@@ -367,6 +392,16 @@ export const cProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.C),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  emitScopeCaptures: emitCScopeCaptures,
+  interpretImport: interpretCImport,
+  interpretTypeBinding: interpretCTypeBinding,
+  bindingScopeFor: cBindingScopeFor,
+  importOwningScope: cImportOwningScope,
+  receiverBinding: cReceiverBinding,
+  arityCompatibility: cArityCompatibility,
+  // mergeBindings + resolveImportTarget live on ScopeResolver (see c/scope-resolver.ts).
 });
 
 export const cppProvider = defineLanguage({
@@ -428,4 +463,14 @@ export const cppProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.CPlusPlus),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  emitScopeCaptures: emitCppScopeCaptures,
+  interpretImport: interpretCppImport,
+  interpretTypeBinding: interpretCppTypeBinding,
+  bindingScopeFor: cppBindingScopeFor,
+  importOwningScope: cppImportOwningScope,
+  receiverBinding: cppReceiverBinding,
+  arityCompatibility: cppArityCompatibility,
+  // mergeBindings + resolveImportTarget live on ScopeResolver (see cpp/scope-resolver.ts).
 });

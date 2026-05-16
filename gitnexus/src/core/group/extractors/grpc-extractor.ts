@@ -5,6 +5,7 @@ import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { logger } from '../../logger.js';
 import {
   GRPC_SCAN_GLOB,
@@ -428,7 +429,7 @@ export class GrpcExtractor implements ContractExtractor {
       let detections: GrpcDetection[] = [];
       try {
         parser.setLanguage(plugin.language);
-        const tree = parser.parse(content);
+        const tree = parseSourceSafe(parser, content);
         detections = plugin.scan(tree);
       } catch {
         continue;
