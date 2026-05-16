@@ -372,12 +372,33 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
+          # `registry-url:` is intentionally OMITTED. Under npm Trusted
+          # Publishing, OIDC only engages when no credential is configured.
+          # Setting `registry-url:` would make setup-node write
+          # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into the
+          # runner's .npmrc AND export NODE_AUTH_TOKEN from its `token:`
+          # input (default github.token). `npm publish` would then attempt
+          # GITHUB_TOKEN as the npm token, get rejected with 404, and OIDC
+          # would never be tried. See actions/setup-node#1440 and the GitHub
+          # Community discussion #176761 for the upstream bug and consensus
+          # workaround.
+          #
           # Hermetic install for published artifacts — opt out of the v5+
           # default packageManager-based caching (clears the zizmor
-          # zizmor cache-poisoning audit). ~30s slower per
-          # release; runs rarely.
+          # cache-poisoning audit). ~30s slower per release; runs rarely.
           package-manager-cache: false
+
+      # npm Trusted Publishing requires npm >= 11.5.1. The Node 22 runner
+      # currently ships with npm 10.9.x which has no OIDC support — without
+      # this upgrade, `npm publish` falls back to classic auth and the
+      # registry returns 404 because no token is configured. Upgrade
+      # globally so subsequent `npm` invocations in this job use the new
+      # binary.
+      - name: Upgrade npm for Trusted Publishing
+        shell: bash
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: Build gitnexus-shared
         run: npm install && npm run build
@@ -741,19 +762,28 @@ jobs:
           echo "vtag verified: ${VTAG} (mode=${MODE})"
           echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
 
-      # npm Trusted Publishing (GA'd 2025-07-31). With the package registered
-      # as a trusted publisher on npmjs.com bound to this repo + this
-      # workflow file, npm authenticates via OIDC at publish time —
-      # NODE_AUTH_TOKEN is intentionally NOT set (an empty string would
-      # short-circuit the OIDC fallback; the env var must be unset, not
-      # blanked). Provenance is auto-attached by the registry on
-      # trusted-publisher publishes, so the explicit --provenance flag is
-      # dropped.
+      # npm Trusted Publishing (GA'd 2025-07-31). OIDC authentication only
+      # engages when no npm credential is configured anywhere — the absence
+      # is the signal. Two upstream behaviors had to be neutralized for
+      # this to work:
       #
-      # Prerequisite: configure the package as a trusted publisher at
+      #   1. setup-node's `registry-url:` is omitted (see the setup-node
+      #      step above). With it, setup-node writes
+      #      `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into
+      #      .npmrc and exports NODE_AUTH_TOKEN from `token:` (defaulting
+      #      to github.token). npm publish then sends GITHUB_TOKEN as the
+      #      bearer credential and the registry returns 404. OIDC is never
+      #      tried because npm thinks it already has a credential.
+      #   2. The runner's bundled npm (10.9.x on Node 22) has no OIDC
+      #      support; the upgrade step above pins it to >= 11.5.1.
+      #
+      # Provenance is auto-attached by the registry on trusted-publisher
+      # publishes — no --provenance flag needed.
+      #
+      # Prerequisite: register the package as a trusted publisher at
       # https://www.npmjs.com/package/gitnexus/access (Publishing access →
-      # Trusted Publishers → GitHub Actions) bound to:
-      #   Owner:       <repo owner>
+      # Trusted Publishers → GitHub Actions):
+      #   Owner:       abhigyanpatwari
       #   Repository:  GitNexus
       #   Workflow:    publish.yml
       #   Environment: (none)
