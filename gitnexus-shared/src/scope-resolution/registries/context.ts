@@ -13,7 +13,7 @@
  */
 
 import type { NodeLabel } from '../../graph/types.js';
-import type { SymbolDefinition } from '../symbol-definition.js';
+import type { ParameterTypeClass, SymbolDefinition } from '../symbol-definition.js';
 import type { Callsite, DefId } from '../types.js';
 import type { DefIndex } from '../def-index.js';
 import type { QualifiedNameIndex } from '../qualified-name-index.js';
@@ -65,6 +65,13 @@ export interface ConstraintContext {
    * `narrowOverloadCandidates`' `argTypes` parameter.
    */
   readonly argumentTypes?: readonly string[];
+  /**
+   * Optional shape-preserving sidecar aligned with `argumentTypes`.
+   * Unknown or unsupported slots should be omitted by producers or
+   * marked with `indirection: 'unknown'`; consumers must preserve the
+   * monotonic fallback and return 'unknown' instead of guessing.
+   */
+  readonly argumentTypeClasses?: readonly ParameterTypeClass[];
 }
 
 // ─── Owner-scoped contributor (concrete shape for `RegistryContributor`) ────

@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, ParameterTypeClass } from 'gitnexus-shared';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -9,7 +9,11 @@ import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
-import { computeCppDeclarationArity, computeCppCallArity } from './arity-metadata.js';
+import {
+  classifyCppParameterType,
+  computeCppDeclarationArity,
+  computeCppCallArity,
+} from './arity-metadata.js';
 import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
@@ -215,6 +219,14 @@ export function emitCppScopeCaptures(
             '@reference.parameter-types',
             cNode,
             JSON.stringify(argTypes),
+          );
+        }
+        const argTypeClasses = inferCppCallArgTypeClasses(cNode);
+        if (argTypeClasses !== undefined && argTypeClasses.length > 0) {
+          grouped['@reference.parameter-type-classes'] = syntheticCapture(
+            '@reference.parameter-type-classes',
+            cNode,
+            JSON.stringify(argTypeClasses),
           );
         }
       }
@@ -683,6 +695,35 @@ function inferCppCallArgTypes(node: SyntaxNode): string[] | undefined {
   return types.length > 0 ? types : undefined;
 }
 
+function inferCppCallArgTypeClasses(node: SyntaxNode): ParameterTypeClass[] | undefined {
+  const argList = node.childForFieldName('arguments');
+  if (argList === null) return undefined;
+
+  const classes: ParameterTypeClass[] = [];
+  for (let i = 0; i < argList.childCount; i++) {
+    const child = argList.child(i);
+    if (child === null) continue;
+    if (child.type === ',' || child.type === '(' || child.type === ')') continue;
+    const litType = inferCppLiteralType(child);
+    if (litType !== '') {
+      classes.push(valueTypeClass(litType));
+    } else if (child.type === 'identifier') {
+      classes.push(lookupDeclaredTypeClassForIdentifier(child));
+    } else {
+      classes.push(unknownTypeClass('unknown'));
+    }
+  }
+  return classes.length > 0 ? classes : undefined;
+}
+
+function valueTypeClass(base: string): ParameterTypeClass {
+  return { base, cv: 'none', indirection: 'value', pointerDepth: 0 };
+}
+
+function unknownTypeClass(base: string): ParameterTypeClass {
+  return { base, cv: 'unknown', indirection: 'unknown', pointerDepth: 0 };
+}
+
 /**
  * Infer the canonical type name of a C++ literal AST node.
  * Returns empty string for non-literal / unknown nodes.
@@ -763,16 +804,61 @@ function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
     // Check init_declarator children for the variable name
     const declarator = stmt.childForFieldName('declarator');
     if (declarator === null) continue;
-    if (declarator.type === 'init_declarator') {
-      const nameChild = declarator.childForFieldName('declarator');
-      if (nameChild !== null && nameChild.text === varName) {
-        return normalizeCppTypeText(typeNode.text);
-      }
-    } else if (declarator.text === varName) {
+    const nameChild = declaredNameNode(declarator);
+    if (nameChild !== null && extractDeclaratorLeafName(nameChild) === varName) {
       return normalizeCppTypeText(typeNode.text);
     }
   }
   return '';
+}
+
+function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterTypeClass {
+  const varName = identNode.text;
+  let scope: SyntaxNode | null = identNode.parent;
+  while (
+    scope !== null &&
+    scope.type !== 'compound_statement' &&
+    scope.type !== 'translation_unit'
+  ) {
+    scope = scope.parent;
+  }
+  if (scope === null) return unknownTypeClass('unknown');
+
+  for (let i = 0; i < scope.childCount; i++) {
+    const stmt = scope.child(i);
+    if (stmt === null || stmt.type !== 'declaration') continue;
+
+    const typeNode = stmt.childForFieldName('type');
+    if (typeNode === null) continue;
+    if (typeNode.type === 'placeholder_type_specifier') continue;
+
+    const declarator = stmt.childForFieldName('declarator');
+    if (declarator === null) continue;
+    const nameChild = declaredNameNode(declarator);
+    if (nameChild === null || extractDeclaratorLeafName(nameChild) !== varName) continue;
+
+    const typeClass = classifyCppParameterType(
+      typeNode.text,
+      nameChild.text,
+      stmt.text.replace(/;\s*$/, ''),
+    );
+    if (isKnownEnumName(identNode, typeClass.base)) {
+      return { ...typeClass, base: `enum:${typeClass.base}` };
+    }
+    return typeClass;
+  }
+  return unknownTypeClass('unknown');
+}
+
+function declaredNameNode(declarator: SyntaxNode): SyntaxNode | null {
+  if (declarator.type !== 'init_declarator') return declarator;
+  for (let i = 0; i < declarator.namedChildCount; i++) {
+    const child = declarator.namedChild(i);
+    if (child === null) continue;
+    if (child.type === 'identifier') return child;
+    if (child.type.endsWith('_declarator')) return child;
+  }
+  return declarator.childForFieldName('declarator');
 }
 
 /** Normalize a type-specifier text for argument type matching.
@@ -784,6 +870,25 @@ function normalizeCppTypeText(text: string): string {
   t = t.replace(/^.*::/, ''); // strip namespace prefix
   t = t.replace(/[*&]/g, '').trim();
   return t;
+}
+
+function isKnownEnumName(node: SyntaxNode, typeName: string): boolean {
+  if (typeName === '' || typeName === 'unknown') return false;
+  let root: SyntaxNode = node;
+  while (root.parent !== null) root = root.parent;
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur.type === 'enum_specifier') {
+      const name = cur.childForFieldName('name');
+      if (name?.text === typeName) return true;
+    }
+    for (let i = 0; i < cur.childCount; i++) {
+      const child = cur.child(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return false;
 }
 
 /**
@@ -1247,7 +1352,9 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
     const next =
       cur.childForFieldName('declarator') ??
       // parenthesized_declarator: single named child
-      (cur.type === 'parenthesized_declarator' ? cur.namedChild(0) : null);
+      (cur.type === 'parenthesized_declarator' || cur.type.endsWith('_declarator')
+        ? cur.namedChild(0)
+        : null);
     if (next === null) return null;
     cur = next;
   }
