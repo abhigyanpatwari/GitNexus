@@ -3,12 +3,22 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 describe('api query read-only wiring', () => {
-  it('uses withLbugDb readOnly mode for /api/query', async () => {
+  it('uses withLbugDb readOnly mode inside handleQueryRequest', async () => {
     const source = await fs.readFile(
       path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
       'utf-8',
     );
-    expect(source).toMatch(/app\.post\('\/api\/query'[\s\S]*withLbugDb\([\s\S]*readOnly:\s*true/);
+    expect(source).toMatch(
+      /handleQueryRequest[\s\S]*withLbugDb\([\s\S]*readOnly:\s*true/,
+    );
+  });
+
+  it('routes /api/query through handleQueryRequest', async () => {
+    const source = await fs.readFile(
+      path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
+      'utf-8',
+    );
+    expect(source).toMatch(/app\.post\('\/api\/query'[\s\S]*handleQueryRequest\(req,\s*res,\s*resolveRepo\)/);
   });
 
   it('opens Ladybug connection with readOnly option when requested', async () => {

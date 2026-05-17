@@ -623,7 +623,7 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
             `  Original error: ${msg.slice(0, 200)}`,
         );
       }
-      if (!msg.includes('already exists') && !isDbBusyError(err)) {
+      if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
     }
