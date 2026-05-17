@@ -18,7 +18,11 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
-import { createLbugDatabase, isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from './lbug-config.js';
+import {
+  createLbugDatabase,
+  isWalCorruptionError,
+  WAL_RECOVERY_SUGGESTION,
+} from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {

@@ -135,11 +135,16 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
         const msg = err instanceof Error ? err.message : String(err);
         return /corrupt.*wal|invalid.*wal.*record/i.test(msg);
       }),
-      WAL_RECOVERY_SUGGESTION: 'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
+      WAL_RECOVERY_SUGGESTION:
+        'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
-      extensionManager: { ensure: vi.fn(async () => true), getCapabilities: vi.fn(() => []), reset: vi.fn() },
+      extensionManager: {
+        ensure: vi.fn(async () => true),
+        getCapabilities: vi.fn(() => []),
+        reset: vi.fn(),
+      },
     }));
     vi.doMock('../../src/core/logger.js', () => ({
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -182,11 +187,16 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       isDbBusyError: vi.fn(() => false),
       isOpenRetryExhausted: vi.fn(() => false),
       isWalCorruptionError: vi.fn(() => false), // always false → generic warn path
-      WAL_RECOVERY_SUGGESTION: 'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
+      WAL_RECOVERY_SUGGESTION:
+        'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
-      extensionManager: { ensure: vi.fn(async () => true), getCapabilities: vi.fn(() => []), reset: vi.fn() },
+      extensionManager: {
+        ensure: vi.fn(async () => true),
+        getCapabilities: vi.fn(() => []),
+        reset: vi.fn(),
+      },
     }));
     vi.doMock('../../src/core/logger.js', () => ({
       logger: { warn: warnMock, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -224,11 +234,16 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
         const msg = err instanceof Error ? err.message : String(err);
         return /corrupt.*wal|invalid.*wal.*record/i.test(msg);
       }),
-      WAL_RECOVERY_SUGGESTION: 'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
+      WAL_RECOVERY_SUGGESTION:
+        'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
-      extensionManager: { ensure: vi.fn(async () => true), getCapabilities: vi.fn(() => []), reset: vi.fn() },
+      extensionManager: {
+        ensure: vi.fn(async () => true),
+        getCapabilities: vi.fn(() => []),
+        reset: vi.fn(),
+      },
     }));
     vi.doMock('../../src/core/logger.js', () => ({
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },

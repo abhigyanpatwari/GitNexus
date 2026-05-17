@@ -13,7 +13,7 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { isWalCorruptionError } from '../core/lbug/lbug-config.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
 import {
   getStoragePaths,
   getGlobalRegistryPath,
@@ -646,9 +646,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       cliError(
         `  The GitNexus index has a corrupted WAL file.\n` +
           `  This usually happens when a previous analysis was interrupted mid-write.\n` +
-          `  Recovery: run the following command to rebuild the index from scratch:\n\n` +
-          `    gitnexus analyze --force\n\n` +
-          `  If the problem persists after a force rebuild, please open an issue.\n`,
+          `  ${WAL_RECOVERY_SUGGESTION}\n`,
         { recoveryHint: 'wal-corruption' },
       );
       process.exitCode = 1;
