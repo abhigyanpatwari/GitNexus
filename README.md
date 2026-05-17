@@ -728,6 +728,8 @@ gitnexus wiki --force
 gitnexus wiki --timeout <seconds> # LLM request timeout in seconds (default: disabled)
 gitnexus wiki --retries <n>      # Max LLM retry attempts per request (default: 3)
 
+# Change the language generation for wiki
+gitnexus wiki --lang <lang>  # Output language for generated documentation (e.g. english, chinese, spanish, japanese)
 ```
 
 The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
