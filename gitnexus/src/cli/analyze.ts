@@ -13,6 +13,7 @@ import { execFileSync } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
 import {
   getStoragePaths,
   getGlobalRegistryPath,
@@ -633,6 +634,20 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `    2. Inspect ${err.storagePath} - a leftover lbug.wal indicates an aborted write.\n` +
           `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
           `       and attach the trace to the GitNexus issue tracker.\n\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // WAL corruption — the index file is unreadable. Give a clear recovery
+    // path without a confusing stack trace (the native error message alone
+    // is enough signal).
+    if (isWalCorruptionError(err) || msg.includes('LadybugDB WAL corruption')) {
+      cliError(
+        `  The GitNexus index has a corrupted WAL file.\n` +
+          `  This usually happens when a previous analysis was interrupted mid-write.\n` +
+          `  ${WAL_RECOVERY_SUGGESTION}\n`,
+        { recoveryHint: 'wal-corruption' },
       );
       process.exitCode = 1;
       return;

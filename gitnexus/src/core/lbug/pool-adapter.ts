@@ -18,7 +18,11 @@
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
-import { createLbugDatabase, isWalCorruptionError } from './lbug-config.js';
+import {
+  createLbugDatabase,
+  isWalCorruptionError,
+  WAL_RECOVERY_SUGGESTION,
+} from './lbug-config.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -375,8 +379,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             break;
           } catch (retryErr) {
             throw new Error(
-              `LadybugDB WAL corruption detected for ${repoId}. ` +
-                `Run \`gitnexus analyze\` to rebuild the index. ` +
+              `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
                 `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
             );
           }
