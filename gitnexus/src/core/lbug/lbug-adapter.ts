@@ -1730,19 +1730,15 @@ export const queryFTS = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  // Escape backslashes and single quotes to prevent Cypher injection
-  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
-
   const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := ${conjunctive})
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
   `;
 
   try {
-    const queryResult = await conn.query(cypher);
-    const rows = await readQueryRows(queryResult);
+    const rows = await executePrepared(cypher, { query });
 
     return rows.map((row: any) => {
       const node = row.node || row[0] || {};
