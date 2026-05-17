@@ -16,6 +16,7 @@ import {
   isLbugReady,
   isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { isReadOnlyDbError } from '../../core/lbug/lbug-adapter.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 export { isWriteQuery };
@@ -1233,10 +1234,7 @@ export class LocalBackend {
     if (!isLbugReady(repo.id)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
-    if (
-      request.params !== undefined &&
-      (request.params === null || typeof request.params !== 'object' || Array.isArray(request.params))
-    ) {
+    if (request.params !== undefined && !isValidQueryParams(request.params)) {
       return { error: 'params must be an object when provided.' };
     }
 

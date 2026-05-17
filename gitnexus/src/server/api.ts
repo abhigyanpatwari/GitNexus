@@ -24,6 +24,7 @@ import {
   withLbugDb,
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
+import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -1027,7 +1028,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const params = req.body.params;
-      if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params))) {
+      if (params !== undefined && !isValidQueryParams(params)) {
         res.status(400).json({ error: '"params" must be an object when provided' });
         return;
       }
