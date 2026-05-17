@@ -181,15 +181,24 @@ export class WikiGenerator {
   }
 
   /**
-   * Append an output-language instruction to a system prompt when --lang is set.
+   * Return the effective lang string: strip control characters, trim, cap at 50 chars,
+   * then validate against a character allowlist. Returns '' if the value is absent or invalid.
+   * Used for both prompt construction and meta storage/comparison so they are always in sync.
    */
-  private buildSystemPrompt(base: string): string {
-    // Strip control characters, trim, cap length, then validate against a character allowlist.
+  private effectiveLang(): string {
     const lang = (this.options.lang ?? '')
       .replace(/[\x00-\x1F\x7F]/g, '')
       .trim()
       .slice(0, 50);
-    if (!lang || !/^[a-zA-Z -]+$/.test(lang)) return base;
+    return /^[a-zA-Z -]+$/.test(lang) ? lang : '';
+  }
+
+  /**
+   * Append an output-language instruction to a system prompt when --lang is set.
+   */
+  private buildSystemPrompt(base: string): string {
+    const lang = this.effectiveLang();
+    if (!lang) return base;
     return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. Note: page titles (H1 headings) are generated separately and will remain in English.`;
   }
 
@@ -223,7 +232,7 @@ export class WikiGenerator {
 
     // Up-to-date check (skip if --force)
     if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
-      const currentLang = this.options.lang ?? '';
+      const currentLang = this.effectiveLang();
       const metaLang = existingMeta.lang ?? '';
       if (currentLang !== metaLang) {
         const prevDisplay = metaLang || 'english (default)';
@@ -393,7 +402,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
-      lang: this.options.lang ?? '',
+      lang: this.effectiveLang(),
       moduleFiles,
       moduleTree,
     });
@@ -854,7 +863,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
-      lang: this.options.lang ?? '',
+      lang: this.effectiveLang(),
     });
 
     this.onProgress('done', 100, 'Incremental update complete');
