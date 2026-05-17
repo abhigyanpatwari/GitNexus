@@ -209,6 +209,8 @@ gitnexus mcp                     # Start MCP server (stdio) — serves all index
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
 gitnexus status                  # Show index status for current repo
+gitnexus governance [path]       # Detect advisory governance surfaces and sensitive operations
+gitnexus governance --json       # Emit governance report as JSON for agent/tool consumption
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate repository wiki from knowledge graph
