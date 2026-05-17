@@ -186,7 +186,7 @@ export class WikiGenerator {
   private buildSystemPrompt(base: string): string {
     if (!this.options.lang) return base;
     const lang = this.options.lang.trim();
-    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes headings, prose, code comments in examples, and diagram labels.`;
+    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. Note: page titles (H1 headings) are generated separately and will remain in English.`;
   }
 
   /**
@@ -437,9 +437,12 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
+    // Grouping is a structured-data phase (JSON output), not documentation.
+    // Do NOT apply buildSystemPrompt here — a language instruction would risk
+    // translating module-name keys, breaking slug stability and JSON parsing.
     const response = await this.invokeLLM(
       prompt,
-      this.buildSystemPrompt(GROUPING_SYSTEM_PROMPT),
+      GROUPING_SYSTEM_PROMPT,
       this.streamOpts('Grouping files', 15, 13),
     );
     const grouping = this.parseGroupingResponse(response.content, files);
@@ -617,7 +620,7 @@ export class WikiGenerator {
       this.streamOpts(node.name),
     );
 
-    // Write page with front matter
+    // H1 uses the English module name (stable slug source); body is LLM-translated.
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
