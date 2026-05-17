@@ -5,6 +5,8 @@ describe('isValidQueryParams', () => {
   it('accepts plain objects', () => {
     expect(isValidQueryParams({})).toBe(true);
     expect(isValidQueryParams({ name: 'main', limit: 10 })).toBe(true);
+    expect(isValidQueryParams({ enabled: true, score: null })).toBe(true);
+    expect(isValidQueryParams(Object.create(null))).toBe(true);
   });
 
   it('rejects null and arrays', () => {
@@ -17,5 +19,12 @@ describe('isValidQueryParams', () => {
     expect(isValidQueryParams(1)).toBe(false);
     expect(isValidQueryParams(false)).toBe(false);
     expect(isValidQueryParams(undefined)).toBe(false);
+  });
+
+  it('rejects non-plain objects and non-scalar values', () => {
+    expect(isValidQueryParams(new Date())).toBe(false);
+    expect(isValidQueryParams(new Map())).toBe(false);
+    expect(isValidQueryParams({ nested: { value: 1 } })).toBe(false);
+    expect(isValidQueryParams({ list: ['x'] })).toBe(false);
   });
 });

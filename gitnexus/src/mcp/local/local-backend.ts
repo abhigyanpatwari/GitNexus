@@ -1235,7 +1235,10 @@ export class LocalBackend {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
     if (request.params !== undefined && !isValidQueryParams(request.params)) {
-      return { error: '"params" must be a plain object (not null or array).' };
+      return {
+        error:
+          '"params" must be a plain object with scalar values (string/number/boolean/null).',
+      };
     }
 
     try {

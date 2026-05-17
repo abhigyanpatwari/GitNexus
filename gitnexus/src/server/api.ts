@@ -1029,7 +1029,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const queryParams = req.body.params;
       if (queryParams !== undefined && !isValidQueryParams(queryParams)) {
-        res.status(400).json({ error: '"params" must be a plain object (not null or array)' });
+        res
+          .status(400)
+          .json({ error: '"params" must be a plain object with scalar values (string/number/boolean/null)' });
         return;
       }
 
