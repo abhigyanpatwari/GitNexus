@@ -14,12 +14,10 @@ import {
   executeParameterized,
   closeLbug,
   isLbugReady,
-  isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { isReadOnlyDbError } from '../../core/lbug/lbug-adapter.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
-export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
