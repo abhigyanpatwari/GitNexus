@@ -638,6 +638,10 @@ export const executeParameterized = async (
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
+  if (isWriteQuery(cypher)) {
+    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+  }
+
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
@@ -695,8 +699,73 @@ export const CYPHER_WRITE_RE =
 
 const CYPHER_STRING_LITERAL_RE = /'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"/g;
 
+function stripCypherNonCodeSections(query: string): string {
+  const chars = [...query];
+  let i = 0;
+
+  while (i < chars.length) {
+    const ch = chars[i];
+    const next = i + 1 < chars.length ? chars[i + 1] : '';
+
+    // Single-line comments
+    if (ch === '-' && next === '-') {
+      chars[i] = ' ';
+      i++;
+      chars[i] = ' ';
+      i++;
+      while (i < chars.length && chars[i] !== '\n') {
+        chars[i] = ' ';
+        i++;
+      }
+      continue;
+    }
+
+    // Block comments
+    if (ch === '/' && next === '*') {
+      chars[i] = ' ';
+      i++;
+      chars[i] = ' ';
+      i++;
+      while (i < chars.length) {
+        const blockCh = chars[i];
+        const blockNext = i + 1 < chars.length ? chars[i + 1] : '';
+        chars[i] = blockCh === '\n' ? '\n' : ' ';
+        if (blockCh === '*' && blockNext === '/') {
+          i++;
+          chars[i] = ' ';
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    // Backtick-quoted identifiers
+    if (ch === '`') {
+      chars[i] = ' ';
+      i++;
+      while (i < chars.length) {
+        const identCh = chars[i];
+        if (identCh === '`') {
+          chars[i] = ' ';
+          i++;
+          break;
+        }
+        chars[i] = identCh === '\n' ? '\n' : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    i++;
+  }
+
+  return chars.join('');
+}
+
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
-  const stripped = query.replace(CYPHER_STRING_LITERAL_RE, ' ');
+  const stripped = stripCypherNonCodeSections(query).replace(CYPHER_STRING_LITERAL_RE, ' ');
   return CYPHER_WRITE_RE.test(stripped);
 }

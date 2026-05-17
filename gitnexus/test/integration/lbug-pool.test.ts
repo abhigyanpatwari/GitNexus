@@ -118,6 +118,13 @@ withTestLbugDB(
         // Should return 0 rows, not all rows
         expect(rows).toHaveLength(0);
       });
+
+      it('rejects parameterized write queries in read-only mode', async () => {
+        await initLbug('test-repo', handle.dbPath);
+        await expect(
+          executeParameterized('test-repo', 'MATCH (n) SET n.name = $name RETURN n', { name: 'x' }),
+        ).rejects.toThrow(/Write operations are not allowed/);
+      });
     });
 
     // ─── Error handling ──────────────────────────────────────────────────

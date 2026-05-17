@@ -100,6 +100,15 @@ describe('isWriteQuery', () => {
     );
   });
 
+  it('does not block write keywords inside comments', () => {
+    expect(isWriteQuery('MATCH (n) -- CREATE n\nRETURN n')).toBe(false);
+    expect(isWriteQuery('MATCH (n) /* DELETE n */ RETURN n')).toBe(false);
+  });
+
+  it('does not block write keywords inside backtick identifiers', () => {
+    expect(isWriteQuery('MATCH (`Create`:`Delete`) RETURN `Set`')).toBe(false);
+  });
+
   it('handles empty string', () => {
     expect(isWriteQuery('')).toBe(false);
   });
