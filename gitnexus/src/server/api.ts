@@ -1038,9 +1038,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () =>
-        executePrepared(cypher, (params as Record<string, unknown> | undefined) ?? {}),
-      );
+      const result = await withLbugDb(lbugPath, () => executePrepared(cypher, params ?? {}));
       res.json({ result });
     } catch (err: any) {
       if (isReadOnlyDbError(err)) {
