@@ -668,10 +668,12 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
  */
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
-/** Regex to detect write operations in user-supplied Cypher queries.
- * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
- * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
+/**
+ * Legacy Cypher write-keyword helper kept for diagnostics/tests only.
+ * SECURITY NOTE: this regex is NOT the enforcement mechanism for runtime
+ * query execution paths. Live write protection relies on Ladybug native
+ * read-only database mode and read-only error handling at execution time.
+ */
 export const CYPHER_WRITE_RE =
   /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
 
@@ -751,7 +753,7 @@ function stripCypherNonCodeSections(query: string): string {
   return chars.join('');
 }
 
-/** Check if a Cypher query contains write operations */
+/** Legacy helper for non-authoritative write-keyword checks. */
 export function isWriteQuery(query: string): boolean {
   const stripped = stripCypherNonCodeSections(query).replace(CYPHER_STRING_LITERAL_RE, ' ');
   return CYPHER_WRITE_RE.test(stripped);

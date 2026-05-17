@@ -1,11 +1,13 @@
 /**
  * P0 Unit Tests: Security Hardening
  *
- * Tests all security hardening in isolation:
- * - Write blocking (CYPHER_WRITE_RE)
+ * Tests security-related utility helpers in isolation:
+ * - Write-keyword helper behavior (CYPHER_WRITE_RE / isWriteQuery)
  * - Relation type allowlist
  * - Path traversal detection
- * - isWriteQuery wrapper
+ *
+ * NOTE: Runtime write protection is enforced natively by Ladybug read-only
+ * mode on execution paths; these tests only validate helper behavior.
  * - isTestFilePath patterns
  */
 import { describe, it, expect } from 'vitest';
