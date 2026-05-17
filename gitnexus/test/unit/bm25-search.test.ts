@@ -216,10 +216,10 @@ describe('BM25 search', () => {
     it('queries existing FTS indexes without issuing CREATE_FTS_INDEX', async () => {
       mockExecuteParameterized.mockImplementation(
         async (_repo: string, cypher: string, params: Record<string, any>) => {
-          if (params.query !== 'login') return [];
           if (cypher.includes('CREATE_FTS_INDEX')) {
             throw new Error('query path must stay read-only');
           }
+          if (params.query !== 'login') return [];
 
           if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
             return [{ node: { filePath: 'src/auth.ts', id: 'func:login' }, score: 8 }];
