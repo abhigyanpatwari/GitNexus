@@ -219,9 +219,8 @@ describe('BM25 search', () => {
           if (cypher.includes('CREATE_FTS_INDEX')) {
             throw new Error('query path must stay read-only');
           }
-          if (params.query !== 'login') return [];
 
-          if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+          if (params.query === 'login' && cypher.includes("QUERY_FTS_INDEX('Function'")) {
             return [{ node: { filePath: 'src/auth.ts', id: 'func:login' }, score: 8 }];
           }
           return [];
@@ -245,8 +244,11 @@ describe('BM25 search', () => {
 
       expect(mockExecuteParameterized).toHaveBeenCalled();
       for (const call of mockExecuteParameterized.mock.calls) {
-        expect(call[1]).toContain('$query');
-        expect(String(call[1])).not.toContain("BrowserWindow create 'main' window");
+        const cypher = String(call[1]);
+        expect(cypher).toContain('$query');
+        expect(cypher).not.toContain("BrowserWindow create 'main' window");
+        expect(cypher.toUpperCase()).not.toMatch(/\bCREATE\b/);
+        expect(cypher.toUpperCase()).not.toMatch(/\bDELETE\b/);
         expect(call[2]).toEqual({ query: "BrowserWindow create 'main' window" });
       }
     });
