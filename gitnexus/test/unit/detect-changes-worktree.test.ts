@@ -10,7 +10,7 @@
  * after verifying it belongs to the same canonical repository.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from 'fs';
 import { execSync, execFileSync } from 'child_process';
 import path from 'path';
 import os from 'os';
@@ -69,14 +69,110 @@ describe('detect_changes worktree support — structural', () => {
     expect(backendSrc).toMatch(/is not a worktree of repo/);
   });
 
+  it('auto-detects linked worktree via process.cwd() when worktree param is omitted', () => {
+    // The else branch must delegate to the exported resolveWorktreeCwd helper.
+    expect(backendSrc).toMatch(/resolveWorktreeCwd/);
+    // The helper must be exported so tests can call it directly.
+    expect(backendSrc).toMatch(/export function resolveWorktreeCwd/);
+    // detectChanges passes process.cwd() to the helper.
+    expect(backendSrc).toMatch(/resolveWorktreeCwd\(repo\.repoPath,\s*process\.cwd\(\)\)/);
+  });
+
   it('git worktree support is documented in the tool description', () => {
     expect(toolsSrc).toMatch(/GIT WORKTREE SUPPORT/);
+    // Auto-detection is the primary path now.
+    expect(toolsSrc).toMatch(/automatically detects/);
+  });
+});
+
+// ── resolveWorktreeCwd — auto-detection helper (behavioural) ─────────────────
+//
+// resolveWorktreeCwd is extracted from detectChanges specifically so tests can
+// pass any launchCwd instead of being stuck with the fixed process.cwd().
+
+import { resolveWorktreeCwd } from '../../src/mcp/local/local-backend.js';
+import { getCanonicalRepoRoot } from '../../src/storage/git.js';
+
+describe('resolveWorktreeCwd — auto-detection helper', () => {
+  it('returns repoPath unchanged when launchCwd is the same git root', () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-same-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      // launchCwd == repoPath → same directory → resolveWorktreeCwd must return repoPath.
+      // Compare via realpathSync: mkdtempSync may return a symlink path on macOS
+      // while getGitRoot returns the realpath (/var vs /private/var).
+      const result = resolveWorktreeCwd(repoDir, repoDir);
+      expect(realpathSync(result)).toBe(realpathSync(repoDir));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns repoPath unchanged when launchCwd is a non-git directory', () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-repo-'));
+    const plainDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-plain-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      // plainDir has no git repo — no git root found → fall through to repoPath
+      const result = resolveWorktreeCwd(repoDir, plainDir);
+      expect(result).toBe(repoDir);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(plainDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns worktreeDir when launchCwd is a linked worktree of the same repo', () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-wt-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
+      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+      const worktreeDir = path.join(repoDir, 'wt-auto');
+      execSync(`git worktree add -q -b auto "${worktreeDir}"`, {
+        cwd: repoDir,
+        stdio: 'ignore',
+      });
+
+      // Key assertion: passing the worktree as launchCwd returns it,
+      // proving the auto-detect logic in detectChanges works correctly.
+      // Use realpathSync for comparison: mkdtempSync may return a symlink
+      // path while getGitRoot returns the realpath (/var vs /private/var).
+      const result = resolveWorktreeCwd(repoDir, worktreeDir);
+      expect(realpathSync(result)).toBe(realpathSync(worktreeDir));
+      // Confirm it's NOT the canonical root (auto-detection fired).
+      expect(realpathSync(result)).not.toBe(realpathSync(repoDir));
+    } finally {
+      try {
+        execSync('git worktree remove -f wt-auto', { cwd: repoDir, stdio: 'ignore' });
+      } catch {
+        // ignore
+      }
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns repoPath when launchCwd belongs to a different (unrelated) repo', () => {
+    const repoA = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-a-'));
+    const repoB = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-b-'));
+    try {
+      execSync('git init -q', { cwd: repoA, stdio: 'ignore' });
+      execSync('git init -q', { cwd: repoB, stdio: 'ignore' });
+      // repoB has a different canonical root — guard must reject it.
+      const result = resolveWorktreeCwd(repoA, repoB);
+      expect(result).toBe(repoA);
+    } finally {
+      rmSync(repoA, { recursive: true, force: true });
+      rmSync(repoB, { recursive: true, force: true });
+    }
   });
 });
 
 // ── Guard logic via real path arithmetic ─────────────────────────────────────
-
-import { getCanonicalRepoRoot } from '../../src/storage/git.js';
 
 describe('detect_changes worktree support — guard logic', () => {
   it('getCanonicalRepoRoot returns the same root for the main checkout and a sub-path', () => {

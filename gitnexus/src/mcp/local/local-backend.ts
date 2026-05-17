@@ -22,7 +22,13 @@ export { isWriteQuery };
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
-import { parseDiffHunks, getCanonicalRepoRoot, type FileDiff } from '../../storage/git.js';
+import {
+  parseDiffHunks,
+  getCanonicalRepoRoot,
+  getGitRoot,
+  type FileDiff,
+} from '../../storage/git.js';
+import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
@@ -209,6 +215,52 @@ interface RepoHandle {
   lastCommit: string;
   remoteUrl?: string;
   stats?: RegistryEntry['stats'];
+}
+
+/** Resolve symlinks for path comparison; falls back to path.resolve on error. */
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * Resolve the git diff cwd for detect_changes, auto-detecting linked worktrees.
+ *
+ * When `launchCwd` is a linked worktree of the same canonical repository as
+ * `repoPath` (i.e. `getGitRoot(launchCwd)` differs from `repoPath` but both
+ * share the same `getCanonicalRepoRoot`), returns the worktree's git root so
+ * that `git diff` sees the correct working directory and index.
+ *
+ * Returns `repoPath` unchanged in all other cases (non-worktree, git
+ * unavailable, unrelated repo).
+ *
+ * Extracted as a module-level export so tests can pass any `launchCwd` instead
+ * of relying on `process.cwd()`, which is fixed to the server launch directory
+ * and cannot be changed mid-process.
+ */
+export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
+  try {
+    const launchGitRoot = getGitRoot(launchCwd);
+    if (launchGitRoot) {
+      // Normalise via realpathSync before comparing so macOS /var → /private/var
+      // symlinks (and Windows 8.3 short names) don't create false mismatches.
+      const realLaunch = tryRealpath(launchGitRoot);
+      const realRepo = tryRealpath(repoPath);
+      if (realLaunch !== realRepo) {
+        const launchCanonical = getCanonicalRepoRoot(launchCwd);
+        const repoCanonical = getCanonicalRepoRoot(repoPath);
+        if (launchCanonical && repoCanonical && launchCanonical === repoCanonical) {
+          return launchGitRoot;
+        }
+      }
+    }
+  } catch {
+    // Best-effort; fall through to repoPath.
+  }
+  return repoPath;
 }
 
 export class LocalBackend {
@@ -2162,11 +2214,23 @@ export class LocalBackend {
 
     let diffOutput: string;
     try {
-      // Resolve the cwd for git diff. When the caller is working inside a
-      // linked worktree (git add/edit from /repo/wt-feature/ rather than
-      // /repo/), running git diff from the canonical root sees a different
-      // working directory and returns empty output. The "worktree" param
-      // lets the caller pin the correct worktree path.
+      // Resolve the cwd for git diff.
+      //
+      // In a linked worktree (e.g. /repo/wt-feature/), the user's staged and
+      // unstaged changes live in that worktree's separate working directory and
+      // index. Running `git diff` from the canonical repo root sees a different
+      // working tree and returns empty output.
+      //
+      // Resolution order:
+      //   1. params.worktree — explicit override, validated against the
+      //      registered repo's canonical root.
+      //   2. Auto-detect — if the server's launch cwd (process.cwd()) is a
+      //      linked worktree of the same canonical repo, use its git root.
+      //      Covers the common pattern: `npx gitnexus serve` run from inside
+      //      a linked worktree. Note: in stdio MCP mode process.cwd() is
+      //      fixed to the server launch dir, so this is reliable as long as
+      //      `serve` and `analyze` were both run from the same worktree.
+      //   3. repo.repoPath — fallback (original behaviour).
       let diffCwd = repo.repoPath;
       if (params.worktree) {
         if (!path.isAbsolute(params.worktree)) {
@@ -2188,6 +2252,11 @@ export class LocalBackend {
           };
         }
         diffCwd = providedResolved;
+      } else {
+        // Auto-detect: if the server was launched from inside a linked
+        // worktree of the same canonical repo, use that worktree as the diff
+        // cwd. resolveWorktreeCwd is extracted for testability.
+        diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
       }
 
       // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on

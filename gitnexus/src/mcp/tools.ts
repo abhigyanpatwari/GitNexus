@@ -253,7 +253,7 @@ Maps git diff hunks to indexed symbols, then traces which processes are impacted
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
-GIT WORKTREE SUPPORT: If you are working inside a linked git worktree (i.e. a path whose .git entry is a file, not a directory), pass the worktree's absolute path via the "worktree" parameter so that git diff runs against that worktree's working directory and index — otherwise changes in the linked worktree will not be detected.
+GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
 
 Returns: changed symbols, affected processes, and a risk summary.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
