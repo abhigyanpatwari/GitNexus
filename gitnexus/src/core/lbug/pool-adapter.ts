@@ -700,39 +700,40 @@ export const CYPHER_WRITE_RE =
 const CYPHER_STRING_LITERAL_RE = /'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"/g;
 
 function stripCypherNonCodeSections(query: string): string {
-  const chars = [...query];
+  const chars: string[] = [];
   let i = 0;
 
-  while (i < chars.length) {
-    const ch = chars[i];
-    const next = i + 1 < chars.length ? chars[i + 1] : '';
+  while (i < query.length) {
+    const ch = query[i];
+    const next = i + 1 < query.length ? query[i + 1] : '';
 
     // Single-line comments
     if (ch === '-' && next === '-') {
-      chars[i] = ' ';
+      chars.push(' ');
       i++;
-      chars[i] = ' ';
+      chars.push(' ');
       i++;
-      while (i < chars.length && chars[i] !== '\n') {
-        chars[i] = ' ';
+      while (i < query.length && query[i] !== '\n') {
+        chars.push(' ');
         i++;
       }
+      if (i < query.length && query[i] === '\n') chars.push('\n');
       continue;
     }
 
     // Block comments
     if (ch === '/' && next === '*') {
-      chars[i] = ' ';
+      chars.push(' ');
       i++;
-      chars[i] = ' ';
+      chars.push(' ');
       i++;
-      while (i < chars.length) {
-        const blockCh = chars[i];
-        const blockNext = i + 1 < chars.length ? chars[i + 1] : '';
-        chars[i] = blockCh === '\n' ? '\n' : ' ';
+      while (i < query.length) {
+        const blockCh = query[i];
+        const blockNext = i + 1 < query.length ? query[i + 1] : '';
+        chars.push(blockCh === '\n' ? '\n' : ' ');
         if (blockCh === '*' && blockNext === '/') {
           i++;
-          chars[i] = ' ';
+          chars.push(' ');
           i++;
           break;
         }
@@ -743,21 +744,29 @@ function stripCypherNonCodeSections(query: string): string {
 
     // Backtick-quoted identifiers
     if (ch === '`') {
-      chars[i] = ' ';
+      chars.push(' ');
       i++;
-      while (i < chars.length) {
-        const identCh = chars[i];
+      while (i < query.length) {
+        const identCh = query[i];
+        const identNext = i + 1 < query.length ? query[i + 1] : '';
+        if (identCh === '`' && identNext === '`') {
+          chars.push(' ');
+          chars.push(' ');
+          i += 2;
+          continue;
+        }
         if (identCh === '`') {
-          chars[i] = ' ';
+          chars.push(' ');
           i++;
           break;
         }
-        chars[i] = identCh === '\n' ? '\n' : ' ';
+        chars.push(identCh === '\n' ? '\n' : ' ');
         i++;
       }
       continue;
     }
 
+    chars.push(ch);
     i++;
   }
 

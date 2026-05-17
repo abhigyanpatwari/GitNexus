@@ -107,6 +107,7 @@ describe('isWriteQuery', () => {
 
   it('does not block write keywords inside backtick identifiers', () => {
     expect(isWriteQuery('MATCH (`Create`:`Delete`) RETURN `Set`')).toBe(false);
+    expect(isWriteQuery('MATCH (`field``Delete`) RETURN n')).toBe(false);
   });
 
   it('handles empty string', () => {

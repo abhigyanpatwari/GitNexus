@@ -26,6 +26,7 @@ describe('isWriteQuery regex tests', () => {
     'MATCH (n) -- CREATE n\nRETURN n',
     'MATCH (n) /* DELETE n */ RETURN n',
     'MATCH (`Create`:`Delete`) RETURN `Set`',
+    'MATCH (`field``Delete`) RETURN n',
   ];
 
   it('adapter isWriteQuery should detect real write queries', () => {
