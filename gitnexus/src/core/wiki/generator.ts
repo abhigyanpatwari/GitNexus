@@ -768,6 +768,7 @@ export class WikiGenerator {
         ...existingMeta,
         fromCommit: currentCommit,
         generatedAt: new Date().toISOString(),
+        lang: this.effectiveLang(),
       });
       return { pagesGenerated: 0, mode: 'incremental', failedModules: [] };
     }
