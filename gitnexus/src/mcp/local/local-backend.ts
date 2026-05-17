@@ -1226,7 +1226,7 @@ export class LocalBackend {
 
   private async cypher(
     repo: RepoHandle,
-    params: { query: string; params?: Record<string, unknown> },
+    request: { query: string; params?: Record<string, unknown> },
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
@@ -1234,14 +1234,14 @@ export class LocalBackend {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
     if (
-      params.params !== undefined &&
-      (params.params === null || typeof params.params !== 'object' || Array.isArray(params.params))
+      request.params !== undefined &&
+      (request.params === null || typeof request.params !== 'object' || Array.isArray(request.params))
     ) {
       return { error: 'params must be an object when provided.' };
     }
 
     try {
-      const result = await executeParameterized(repo.id, params.query, params.params ?? {});
+      const result = await executeParameterized(repo.id, request.query, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
