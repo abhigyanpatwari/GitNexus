@@ -10,12 +10,14 @@ const makeOpenMock = () =>
     close: vi.fn(async () => {}),
   }));
 
+/** Mock prepared statement shape for executePrepared/prepare+execute paths. */
 const makePreparedStatement = (sql: string) => ({
   sql,
   isSuccess: () => true,
   getErrorMessage: () => '',
 });
 
+/** Mock connection supporting both query() and prepare/execute() call paths. */
 const makeConn = (runQuery: (sql: string) => Promise<unknown>) => {
   const query = vi.fn(runQuery);
   return {
