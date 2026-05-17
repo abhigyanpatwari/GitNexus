@@ -269,6 +269,15 @@ export class WikiGenerator {
     let result: WikiRunResult;
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
+        const currentLang = this.effectiveLang();
+        const metaLang = existingMeta.lang ?? '';
+        if (currentLang !== metaLang) {
+          const prevDisplay = metaLang || 'english (default)';
+          const nextDisplay = currentLang || 'english (default)';
+          throw new Error(
+            `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
+          );
+        }
         result = await this.incrementalUpdate(existingMeta, currentCommit);
       } else {
         result = await this.fullGeneration(currentCommit);
