@@ -56,7 +56,7 @@ Generates repository documentation from the knowledge graph using an LLM. Requir
 
 | Flag | Effect |
 |------|--------|
-| `--force` | Force full regeneration |
+| `--force` | Force full regeneration, also required to re-gerenate an existing wiki in a different language |
 | `--model <model>` | LLM model (default: minimax/minimax-m2.5) |
 | `--base-url <url>` | LLM API base URL |
 | `--api-key <key>` | LLM API key |
@@ -64,7 +64,7 @@ Generates repository documentation from the knowledge graph using an LLM. Requir
 | `--gist` | Publish wiki as a public GitHub Gist |
 | `--timeout <seconds>` | LLM request timeout in seconds (default: disabled) |
 | `--retries <n>` | Max LLM retry attempts per request (default: 3) |
-
+| `--lang <lang>`  | Output language for generated documentation (e.g. english, chinese, spanish, japanese)|
 ### list — Show all indexed repos
 
 ```bash
