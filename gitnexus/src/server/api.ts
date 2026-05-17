@@ -1029,7 +1029,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const params = req.body.params;
       if (params !== undefined && !isValidQueryParams(params)) {
-        res.status(400).json({ error: '"params" must be an object when provided' });
+        res.status(400).json({ error: '"params" must be a plain object (not null or array)' });
         return;
       }
 
