@@ -693,7 +693,10 @@ export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 export const CYPHER_WRITE_RE =
   /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
 
+const CYPHER_STRING_LITERAL_RE = /'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"/g;
+
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  const stripped = query.replace(CYPHER_STRING_LITERAL_RE, ' ');
+  return CYPHER_WRITE_RE.test(stripped);
 }

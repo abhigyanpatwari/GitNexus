@@ -58,6 +58,14 @@ withTestLbugDB(
         );
         expect(rows.length).toBeGreaterThanOrEqual(3);
       });
+
+      it('allows read queries with write-keyword text inside literals', async () => {
+        const rows = await executeQuery(
+          handle.repoId,
+          "MATCH (n:Function) WHERE n.name CONTAINS 'create' RETURN n.name AS name",
+        );
+        expect(Array.isArray(rows)).toBe(true);
+      });
     });
 
     // ─── Parameterized queries ───────────────────────────────────────────
@@ -229,6 +237,17 @@ withTestLbugDB(
         const result = isWriteQuery("MATCH (n) WHERE n.name = 'CREATED' RETURN n");
         // The regex uses word boundaries so substring "CREATE" inside "CREATED" is NOT matched
         expect(result).toBe(false);
+      });
+
+      it('does not block keywords that only appear inside string literals', () => {
+        expect(
+          isWriteQuery("MATCH (n:Function) WHERE n.filePath CONTAINS 'src/Delete/api.ts' RETURN n"),
+        ).toBe(false);
+        expect(
+          isWriteQuery(
+            "CALL QUERY_FTS_INDEX('Function', 'function_fts', 'BrowserWindow create main window', false)",
+          ),
+        ).toBe(false);
       });
 
       it('blocks multi-line queries with write keywords', () => {

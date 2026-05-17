@@ -89,6 +89,17 @@ describe('isWriteQuery', () => {
     expect(isWriteQuery('MATCH (n) RETURN n')).toBe(false);
   });
 
+  it('does not block write keywords inside string literals', () => {
+    expect(
+      isWriteQuery(
+        "MATCH (n:Function) WHERE n.filePath CONTAINS 'src/Create/helpers.ts' RETURN n.name",
+      ),
+    ).toBe(false);
+    expect(isWriteQuery("CALL QUERY_FTS_INDEX('Function', 'function_fts', 'create', false)")).toBe(
+      false,
+    );
+  });
+
   it('handles empty string', () => {
     expect(isWriteQuery('')).toBe(false);
   });
