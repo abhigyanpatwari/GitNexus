@@ -253,6 +253,8 @@ Maps git diff hunks to indexed symbols, then traces which processes are impacted
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
+GIT WORKTREE SUPPORT: If you are working inside a linked git worktree (i.e. a path whose .git entry is a file, not a directory), pass the worktree's absolute path via the "worktree" parameter so that git diff runs against that worktree's working directory and index — otherwise changes in the linked worktree will not be detected.
+
 Returns: changed symbols, affected processes, and a risk summary.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
@@ -267,6 +269,11 @@ Returns: changed symbols, affected processes, and a risk summary.`,
         base_ref: {
           type: 'string',
           description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        worktree: {
+          type: 'string',
+          description:
+            'Absolute path to a linked git worktree. Pass this when your changes are in a worktree (the .git entry at that path is a file, not a directory). GitNexus will run git diff from that worktree so staged/unstaged changes are correctly detected.',
         },
         repo: {
           type: 'string',

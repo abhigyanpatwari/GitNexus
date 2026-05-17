@@ -2133,6 +2133,7 @@ export class LocalBackend {
     params: {
       scope?: string;
       base_ref?: string;
+      worktree?: string;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
@@ -2161,11 +2162,30 @@ export class LocalBackend {
 
     let diffOutput: string;
     try {
+      // Resolve the cwd for git diff. When the caller is working inside a
+      // linked worktree (git add/edit from /repo/wt-feature/ rather than
+      // /repo/), running git diff from the canonical root sees a different
+      // working directory and returns empty output. The "worktree" param
+      // lets the caller pin the correct worktree path.
+      let diffCwd = repo.repoPath;
+      if (params.worktree) {
+        const { getCanonicalRepoRoot } = await import('../../storage/git.js');
+        const providedResolved = path.resolve(params.worktree);
+        const worktreeCanonical = getCanonicalRepoRoot(providedResolved);
+        const repoCanonical = getCanonicalRepoRoot(repo.repoPath);
+        if (!worktreeCanonical || !repoCanonical || worktreeCanonical !== repoCanonical) {
+          return {
+            error: `worktree "${params.worktree}" is not a worktree of repo "${repo.repoPath}". Ensure the path is inside the same git repository.`,
+          };
+        }
+        diffCwd = providedResolved;
+      }
+
       // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
       // repos with large unstaged/untracked diffs (e.g. unignored build folders).
       // See issue: spawnSync git ENOBUFS in detect_changes(scope="unstaged").
       diffOutput = execFileSync('git', diffArgs, {
-        cwd: repo.repoPath,
+        cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
       });
