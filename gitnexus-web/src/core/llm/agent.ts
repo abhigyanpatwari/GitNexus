@@ -400,7 +400,7 @@ export const serializeAgentHistoryMessages = (
       serialized.push({
         role: 'assistant',
         content: normalizeMessageContent(msg.content),
-        ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}),
+        ...(toolCalls?.length && typeof reasoningContent === 'string' ? { reasoningContent } : {}),
         ...(toolCalls?.length ? { toolCalls } : {}),
       });
       continue;

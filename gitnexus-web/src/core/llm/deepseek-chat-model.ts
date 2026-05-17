@@ -229,7 +229,7 @@ export const buildDeepSeekRequestMessages = (
       if (additionalKwargs.function_call != null) {
         requestMessage.function_call = additionalKwargs.function_call;
       }
-      if (typeof additionalKwargs.reasoning_content === 'string') {
+      if (toolCalls?.length && typeof additionalKwargs.reasoning_content === 'string') {
         requestMessage.reasoning_content = additionalKwargs.reasoning_content;
       }
       return requestMessage;

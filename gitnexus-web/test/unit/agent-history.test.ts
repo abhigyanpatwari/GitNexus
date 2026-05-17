@@ -108,7 +108,6 @@ describe('serializeAgentHistoryMessages', () => {
       {
         role: 'assistant',
         content: 'Tomorrow will be cloudy.',
-        reasoningContent: 'Result received.',
       },
     ]);
   });
@@ -166,6 +165,44 @@ describe('buildDeepSeekRequestMessages', () => {
       },
     ]);
   });
+});
+
+it('drops reasoning_content from assistant messages without tool calls', () => {
+  const messages = buildLangChainMessages([
+    { role: 'user', content: 'Hello' },
+    {
+      role: 'assistant',
+      content: 'Hi there',
+      reasoningContent: 'I should greet the user.',
+    },
+  ]);
+
+  const requestMessages = buildDeepSeekRequestMessages(messages);
+
+  expect(requestMessages).toEqual([
+    { role: 'user', content: 'Hello' },
+    { role: 'assistant', content: 'Hi there' },
+  ]);
+});
+
+it('drops reasoningContent from serialized assistant messages without tool calls', () => {
+  const serialized = serializeAgentHistoryMessages(
+    [
+      {
+        _getType: () => 'ai',
+        content: 'Simple answer.',
+        additional_kwargs: { reasoning_content: 'Thinking about it.' },
+      },
+    ],
+    0,
+  );
+
+  expect(serialized).toEqual([
+    {
+      role: 'assistant',
+      content: 'Simple answer.',
+    },
+  ]);
 });
 
 describe('createChatModel', () => {
