@@ -22,7 +22,7 @@ export { isWriteQuery };
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
-import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
+import { parseDiffHunks, getCanonicalRepoRoot, type FileDiff } from '../../storage/git.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
@@ -2169,11 +2169,20 @@ export class LocalBackend {
       // lets the caller pin the correct worktree path.
       let diffCwd = repo.repoPath;
       if (params.worktree) {
-        const { getCanonicalRepoRoot } = await import('../../storage/git.js');
+        if (!path.isAbsolute(params.worktree)) {
+          return {
+            error: `worktree must be an absolute path, got: "${params.worktree}"`,
+          };
+        }
         const providedResolved = path.resolve(params.worktree);
-        const worktreeCanonical = getCanonicalRepoRoot(providedResolved);
         const repoCanonical = getCanonicalRepoRoot(repo.repoPath);
-        if (!worktreeCanonical || !repoCanonical || worktreeCanonical !== repoCanonical) {
+        if (!repoCanonical) {
+          return {
+            error: `Could not determine canonical root for repo "${repo.repoPath}". Is git available?`,
+          };
+        }
+        const worktreeCanonical = getCanonicalRepoRoot(providedResolved);
+        if (!worktreeCanonical || worktreeCanonical !== repoCanonical) {
           return {
             error: `worktree "${params.worktree}" is not a worktree of repo "${repo.repoPath}". Ensure the path is inside the same git repository.`,
           };

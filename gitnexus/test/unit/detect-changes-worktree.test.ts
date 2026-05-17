@@ -24,8 +24,23 @@ const backendSrc = readFileSync(
 const toolsSrc = readFileSync(path.join(__dirname, '../../src/mcp/tools.ts'), 'utf-8');
 
 // ── Structural tests (source-grep) ───────────────────────────────────────────
+//
+// NOTE: These grep the source as plain text and verify that key patterns are
+// present. They are a useful backstop to catch accidental regressions (e.g.
+// someone moves the import back to a dynamic one, or removes the error
+// messages). They do NOT prove the guards work correctly at runtime — that is
+// what the E2E real-worktree tests below are for.
 
 describe('detect_changes worktree support — structural', () => {
+  it('getCanonicalRepoRoot is statically imported from storage/git (not dynamic)', () => {
+    // Must be a top-level static import, not a dynamic await import inside the function.
+    expect(backendSrc).toMatch(
+      /^import\s*\{[^}]*getCanonicalRepoRoot[^}]*\}\s*from\s*['"].*storage\/git/m,
+    );
+    // Confirm the dynamic import is gone.
+    expect(backendSrc).not.toMatch(/await import\(.*storage\/git/);
+  });
+
   it('detect_changes tool schema declares a "worktree" property', () => {
     expect(toolsSrc).toMatch(/worktree/);
   });
@@ -34,21 +49,23 @@ describe('detect_changes worktree support — structural', () => {
     expect(backendSrc).toMatch(/worktree\?:\s*string/);
   });
 
-  it('imports getCanonicalRepoRoot from storage/git to validate the worktree', () => {
-    expect(backendSrc).toMatch(/getCanonicalRepoRoot/);
-  });
-
   it('uses diffCwd as the cwd for execFileSync (not hard-coded repo.repoPath)', () => {
-    // The git diff call must reference diffCwd, not repo.repoPath directly.
     expect(backendSrc).toMatch(/cwd:\s*diffCwd/);
   });
 
   it('defaults diffCwd to repo.repoPath when worktree param is not provided', () => {
-    // Backward-compat: omitting worktree keeps current behavior.
     expect(backendSrc).toMatch(/diffCwd\s*=\s*repo\.repoPath/);
   });
 
-  it('returns a structured error when the worktree canonical root does not match the repo', () => {
+  it('rejects relative paths with an absolute-path error', () => {
+    expect(backendSrc).toMatch(/worktree must be an absolute path/);
+  });
+
+  it('returns a distinct error when git is unavailable (null repoCanonical)', () => {
+    expect(backendSrc).toMatch(/Could not determine canonical root for repo/);
+  });
+
+  it('returns a mismatch error when the worktree belongs to a different repo', () => {
     expect(backendSrc).toMatch(/is not a worktree of repo/);
   });
 
@@ -57,7 +74,7 @@ describe('detect_changes worktree support — structural', () => {
   });
 });
 
-// ── Behavioural: guard logic via real path arithmetic ────────────────────────
+// ── Guard logic via real path arithmetic ─────────────────────────────────────
 
 import { getCanonicalRepoRoot } from '../../src/storage/git.js';
 
@@ -73,19 +90,64 @@ describe('detect_changes worktree support — guard logic', () => {
   });
 
   it('getCanonicalRepoRoot returns null for a non-git directory', () => {
-    const result = getCanonicalRepoRoot('/tmp');
-    expect(result === null || typeof result === 'string').toBe(true);
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-nonrepo-'));
+    try {
+      expect(getCanonicalRepoRoot(tmpDir)).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it('mismatching canonical roots are correctly identified', () => {
-    const worktreeCanonical: string = '/some/other/repo';
-    const repoCanonical: string = '/canonical/repo';
-    expect(worktreeCanonical === repoCanonical).toBe(false);
+  it('getCanonicalRepoRoot equates a worktree path with the canonical root', () => {
+    // This directly exercises the comparison the guard performs:
+    // both paths must yield the same canonical root for the guard to pass.
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-guard-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      writeFileSync(path.join(repoDir, 'a.ts'), 'export const a = 1;\n');
+      execSync('git add a.ts', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+      const worktreeDir = path.join(repoDir, 'wt-guard');
+      execSync(`git worktree add -q -b guard "${worktreeDir}"`, {
+        cwd: repoDir,
+        stdio: 'ignore',
+      });
+
+      const fromRepo = getCanonicalRepoRoot(repoDir);
+      const fromWorktree = getCanonicalRepoRoot(worktreeDir);
+
+      // Both must be non-null and equal — the guard's passing condition.
+      expect(fromRepo).not.toBeNull();
+      expect(fromWorktree).toBe(fromRepo);
+    } finally {
+      try {
+        execSync('git worktree remove -f wt-guard', { cwd: repoDir, stdio: 'ignore' });
+      } catch {
+        // ignore cleanup failure
+      }
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 
-  it('matching canonical roots are correctly accepted', () => {
-    const canonical: string = '/canonical/repo';
-    expect(canonical === canonical).toBe(true);
+  it('getCanonicalRepoRoot returns different roots for two unrelated repos', () => {
+    // The guard's rejection condition: roots must NOT match for unrelated repos.
+    const repoA = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-repoA-'));
+    const repoB = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-repoB-'));
+    try {
+      execSync('git init -q', { cwd: repoA, stdio: 'ignore' });
+      execSync('git init -q', { cwd: repoB, stdio: 'ignore' });
+      const rootA = getCanonicalRepoRoot(repoA);
+      const rootB = getCanonicalRepoRoot(repoB);
+      expect(rootA).not.toBeNull();
+      expect(rootB).not.toBeNull();
+      expect(rootA).not.toBe(rootB);
+    } finally {
+      rmSync(repoA, { recursive: true, force: true });
+      rmSync(repoB, { recursive: true, force: true });
+    }
   });
 });
 
@@ -95,7 +157,6 @@ describe('detect_changes worktree support — guard logic', () => {
 //   - git diff from the canonical root misses changes in a linked worktree
 //   - git diff with cwd set to the worktree correctly finds them
 //   - getCanonicalRepoRoot equates canonical root and worktree (guard passes)
-// They mirror the pattern used in git-utils.test.ts (#1259).
 
 describe('detect_changes worktree support — end-to-end with real worktree', () => {
   it('git diff from canonical root misses unstaged changes in a linked worktree, but worktree cwd finds them', () => {
