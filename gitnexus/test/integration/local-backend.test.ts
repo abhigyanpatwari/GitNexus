@@ -150,11 +150,12 @@ withTestLbugDB(
         const readOnlyRepo = 'local-backend-read-only';
         await initLbug(readOnlyRepo, handle.dbPath);
         await expect(
-          executeQuery(
+          executeParameterized(
             readOnlyRepo,
-            `CREATE (n:Function {id: 'new', name: 'new', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})`,
+            `MATCH (n:Function) SET n.name = $name RETURN n`,
+            { name: 'changed' },
           ),
-        ).rejects.toThrow();
+        ).rejects.toThrow(/Write operations are not allowed|read-only database/i);
         await closeLbug(readOnlyRepo);
       });
     });

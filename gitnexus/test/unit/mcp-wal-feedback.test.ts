@@ -104,7 +104,7 @@ describe('WAL corruption feedback in MCP responses (#1402)', () => {
 
   it('cypher returns WAL recoverySuggestion on corrupted WAL error', async () => {
     const backend = await makeBackend();
-    lbugMocks.executeQuery.mockRejectedValueOnce(new Error('Corrupted wal file'));
+    lbugMocks.executeParameterized.mockRejectedValueOnce(new Error('Corrupted wal file'));
 
     const result = await backend.callTool('cypher', {
       repo: 'test-repo',

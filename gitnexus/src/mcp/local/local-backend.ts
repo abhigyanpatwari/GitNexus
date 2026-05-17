@@ -16,7 +16,6 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
-import { isReadOnlyDbError } from '../../core/lbug/lbug-adapter.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -174,6 +173,9 @@ function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   logger.error({ context, err: msg }, 'GitNexus query failed');
 }
+
+const isReadOnlyDbError = (err: unknown): boolean =>
+  /read-only database/i.test(err instanceof Error ? err.message : String(err));
 
 /**
  * Per-query latency telemetry for production aggregation (#553).
