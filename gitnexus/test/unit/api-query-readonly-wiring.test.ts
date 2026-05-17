@@ -18,7 +18,8 @@ describe('api query read-only wiring', () => {
       path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
       'utf-8',
     );
-    expect(source).toMatch(/app\.post\('\/api\/query'[\s\S]*handleQueryRequest\(req,\s*res,\s*resolveRepo\)/);
+    expect(source).toContain("app.post('/api/query', async (req, res) => {");
+    expect(source).toContain('await handleQueryRequest(req, res, resolveRepo);');
   });
 
   it('opens Ladybug connection with readOnly option when requested', async () => {

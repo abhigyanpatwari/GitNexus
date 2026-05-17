@@ -1,13 +1,11 @@
 import express from 'express';
 import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { hasLadybugNative } from '../helpers/ladybug-native.js';
 
-const hasLadybugNative = fs.existsSync(
-  path.join(process.cwd(), 'node_modules', '@ladybugdb', 'core', 'lbugjs.node'),
-);
+const WRITE_QUERY_TEST_CYPHER =
+  "CREATE (n:Function {id: 'api-write-test', name: 'api-write-test', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})";
 
 const startServer = (app: express.Express): Promise<{ server: http.Server; baseUrl: string }> =>
   new Promise((resolve) => {
@@ -24,7 +22,7 @@ const stopServer = (server: http.Server): Promise<void> =>
 withTestLbugDB(
   'api-query-http',
   (handle) => {
-    describe.skipIf(!hasLadybugNative)('/api/query runtime contract', () => {
+    describe.skipIf(!hasLadybugNative())('/api/query runtime contract', () => {
       let server: http.Server;
       let baseUrl = '';
       let handleQueryRequest: typeof import('../../src/server/api.js').handleQueryRequest;
@@ -60,8 +58,7 @@ withTestLbugDB(
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            cypher:
-              "CREATE (n:Function {id: 'api-write-test', name: 'api-write-test', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})",
+            cypher: WRITE_QUERY_TEST_CYPHER,
           }),
         });
         expect(response.status).toBe(403);
