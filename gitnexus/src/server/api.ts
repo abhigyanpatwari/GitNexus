@@ -637,7 +637,9 @@ export const handleQueryRequest = async (
     if (queryParams !== undefined && !isValidQueryParams(queryParams)) {
       res
         .status(400)
-        .json({ error: '"params" must be a plain object with scalar values (string/number/boolean/null)' });
+        .json({
+          error: '"params" must be a plain object with scalar values (string/number/boolean/null)',
+        });
       return;
     }
 
@@ -647,11 +649,9 @@ export const handleQueryRequest = async (
       return;
     }
     const lbugPath = path.join(entry.storagePath, 'lbug');
-    const result = await withLbugDb(
-      lbugPath,
-      () => executePrepared(cypher, queryParams ?? {}),
-      { readOnly: true },
-    );
+    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
+      readOnly: true,
+    });
     res.json({ result });
   } catch (err: any) {
     if (isReadOnlyDbError(err)) {

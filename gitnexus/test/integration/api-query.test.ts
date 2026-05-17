@@ -32,7 +32,9 @@ withTestLbugDB(
         const app = express();
         app.use(express.json());
         app.post('/api/query', async (req, res) => {
-          await handleQueryRequest(req, res, async () => ({ storagePath: handle.tmpHandle.dbPath }));
+          await handleQueryRequest(req, res, async () => ({
+            storagePath: handle.tmpHandle.dbPath,
+          }));
         });
         ({ server, baseUrl } = await startServer(app));
       });

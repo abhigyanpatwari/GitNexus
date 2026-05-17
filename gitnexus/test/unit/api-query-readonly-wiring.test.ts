@@ -8,9 +8,7 @@ describe('api query read-only wiring', () => {
       path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
       'utf-8',
     );
-    expect(source).toMatch(
-      /handleQueryRequest[\s\S]*withLbugDb\([\s\S]*readOnly:\s*true/,
-    );
+    expect(source).toMatch(/handleQueryRequest[\s\S]*withLbugDb\([\s\S]*readOnly:\s*true/);
   });
 
   it('routes /api/query through handleQueryRequest', async () => {
