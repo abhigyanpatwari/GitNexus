@@ -725,7 +725,7 @@ gitnexus wiki --force
 
 
 # Increase the timeout or retries for large codebase or slow LLM providers
-gitnexus wiki --timeout <seconds> # Per-attempt LLM request timeout in seconds (default: 60) 
+gitnexus wiki --timeout <seconds> # LLM request timeout in seconds (default: disabled)
 gitnexus wiki --retries <n>      # Max LLM retry attempts per request (default: 3)
 
 # Change the language generation for wiki

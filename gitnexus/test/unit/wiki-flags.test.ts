@@ -264,6 +264,384 @@ describe('WikiGenerator --review mode', () => {
   });
 });
 
+describe('wikiCommand --timeout validation', () => {
+  const originalExitCode = process.exitCode;
+  const tooLargeTimeout = String(Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1);
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  it.each(['', '   ', '0', '-1', 'abc', '3.14', tooLargeTimeout])(
+    'rejects invalid --timeout value %s before starting generation',
+    async (timeout) => {
+      const generatorCtor = vi.fn().mockImplementation(() => ({
+        run: vi.fn(),
+      }));
+
+      vi.doMock('../../src/storage/git.js', () => ({
+        getGitRoot: vi.fn(),
+        isGitRepo: vi.fn().mockReturnValue(true),
+      }));
+      vi.doMock('../../src/storage/repo-manager.js', () => ({
+        getStoragePaths: vi
+          .fn()
+          .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+        loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+        loadCLIConfig: vi.fn().mockResolvedValue({
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          provider: 'openai',
+        }),
+        saveCLIConfig: vi.fn(),
+      }));
+      vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+        return {
+          ...actual,
+          resolveLLMConfig: vi.fn().mockResolvedValue({
+            apiKey: 'sk-test',
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-4o',
+            maxTokens: 16_384,
+            temperature: 0,
+            provider: 'openai',
+          }),
+        };
+      });
+      vi.doMock('../../src/core/wiki/generator.js', () => ({
+        WikiGenerator: generatorCtor,
+      }));
+      vi.doMock('cli-progress', () => ({
+        default: {
+          SingleBar: vi.fn(function () {
+            return {
+              start: vi.fn(),
+              update: vi.fn(),
+              stop: vi.fn(),
+            };
+          }),
+          Presets: { shades_grey: {} },
+        },
+      }));
+
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { wikiCommand } = await import('../../src/cli/wiki.js');
+
+      await wikiCommand('/tmp/repo', { timeout });
+
+      expect(process.exitCode).toBe(1);
+      expect(generatorCtor).not.toHaveBeenCalled();
+      const expectedMessage =
+        timeout === tooLargeTimeout
+          ? '  Error: --timeout is too large\n'
+          : '  Error: --timeout must be a positive integer\n';
+      expect(consoleSpy).toHaveBeenCalledWith(expectedMessage);
+    },
+  );
+});
+
+describe('wikiCommand --retries validation', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  it.each(['', '   ', '0', '-1', 'abc', '3.14'])(
+    'rejects invalid --retries value %s before starting generation',
+    async (retries) => {
+      const generatorCtor = vi.fn().mockImplementation(() => ({
+        run: vi.fn(),
+      }));
+
+      vi.doMock('../../src/storage/git.js', () => ({
+        getGitRoot: vi.fn(),
+        isGitRepo: vi.fn().mockReturnValue(true),
+      }));
+      vi.doMock('../../src/storage/repo-manager.js', () => ({
+        getStoragePaths: vi
+          .fn()
+          .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+        loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+        loadCLIConfig: vi.fn().mockResolvedValue({
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          provider: 'openai',
+        }),
+        saveCLIConfig: vi.fn(),
+      }));
+      vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+        return {
+          ...actual,
+          resolveLLMConfig: vi.fn().mockResolvedValue({
+            apiKey: 'sk-test',
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-4o',
+            maxTokens: 16_384,
+            temperature: 0,
+            provider: 'openai',
+          }),
+        };
+      });
+      vi.doMock('../../src/core/wiki/generator.js', () => ({
+        WikiGenerator: generatorCtor,
+      }));
+      vi.doMock('cli-progress', () => ({
+        default: {
+          SingleBar: vi.fn(function () {
+            return {
+              start: vi.fn(),
+              update: vi.fn(),
+              stop: vi.fn(),
+            };
+          }),
+          Presets: { shades_grey: {} },
+        },
+      }));
+
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const { wikiCommand } = await import('../../src/cli/wiki.js');
+
+      await wikiCommand('/tmp/repo', { retries });
+
+      expect(process.exitCode).toBe(1);
+      expect(generatorCtor).not.toHaveBeenCalled();
+      expect(consoleSpy).toHaveBeenCalledWith('  Error: --retries must be a positive integer\n');
+    },
+  );
+});
+
+describe('wikiCommand --timeout mapping', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  async function loadWikiCommandHarness() {
+    let capturedConfig: Record<string, unknown> | undefined;
+    const generatorCtor = vi
+      .fn()
+      .mockImplementation(function (_repoPath, _storagePath, _lbugPath, config) {
+        capturedConfig = config;
+        return {
+          run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }),
+        };
+      });
+
+    vi.doMock('../../src/storage/git.js', () => ({
+      getGitRoot: vi.fn(),
+      isGitRepo: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      getStoragePaths: vi
+        .fn()
+        .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+      loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        provider: 'openai',
+      }),
+      saveCLIConfig: vi.fn(),
+    }));
+    vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+      return {
+        ...actual,
+        resolveLLMConfig: vi.fn().mockResolvedValue({
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          maxTokens: 16_384,
+          temperature: 0,
+          provider: 'openai',
+        }),
+      };
+    });
+    vi.doMock('../../src/core/wiki/generator.js', () => ({
+      WikiGenerator: generatorCtor,
+    }));
+    vi.doMock('cli-progress', () => ({
+      default: {
+        SingleBar: vi.fn(function () {
+          return {
+            start: vi.fn(),
+            update: vi.fn(),
+            stop: vi.fn(),
+          };
+        }),
+        Presets: { shades_grey: {} },
+      },
+    }));
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { wikiCommand } = await import('../../src/cli/wiki.js');
+    return {
+      wikiCommand,
+      generatorCtor,
+      consoleSpy,
+      getCapturedConfig: () => capturedConfig,
+    };
+  }
+
+  it('maps --timeout seconds to requestTimeoutMs before constructing WikiGenerator', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { timeout: '120' });
+
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.requestTimeoutMs).toBe(120_000);
+  });
+
+  it('leaves requestTimeoutMs undefined when --timeout is omitted', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', {});
+
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.requestTimeoutMs).toBeUndefined();
+  });
+
+  it('maps --retries to maxAttempts before constructing WikiGenerator', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { retries: '5' });
+
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.maxAttempts).toBe(5);
+  });
+});
+
+describe('wikiCommand timeout messaging', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  it('surfaces a dedicated timeout message when wiki generation hits the configured timeout', async () => {
+    const generatorCtor = vi.fn().mockImplementation(function () {
+      return {
+        run: vi
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              'LLM request timed out after 120s. Increase --timeout or omit it to disable the request timeout.',
+            ),
+          ),
+      };
+    });
+
+    vi.doMock('../../src/storage/git.js', () => ({
+      getGitRoot: vi.fn(),
+      isGitRepo: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      getStoragePaths: vi
+        .fn()
+        .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+      loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        provider: 'openai',
+      }),
+      saveCLIConfig: vi.fn(),
+    }));
+    vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+      return {
+        ...actual,
+        resolveLLMConfig: vi.fn().mockResolvedValue({
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          maxTokens: 16_384,
+          temperature: 0,
+          provider: 'openai',
+        }),
+      };
+    });
+    vi.doMock('../../src/core/wiki/generator.js', () => ({
+      WikiGenerator: generatorCtor,
+    }));
+    vi.doMock('cli-progress', () => ({
+      default: {
+        SingleBar: vi.fn(function () {
+          return {
+            start: vi.fn(),
+            update: vi.fn(),
+            stop: vi.fn(),
+          };
+        }),
+        Presets: { shades_grey: {} },
+      },
+    }));
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { wikiCommand } = await import('../../src/cli/wiki.js');
+
+    await wikiCommand('/tmp/repo', { timeout: '120' });
+
+    expect(process.exitCode).toBe(1);
+    expect(generatorCtor).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '\n  Timeout: LLM request timed out after 120s. Increase --timeout or omit it to disable the request timeout.\n',
+    );
+  });
+});
+
 // ─── CLI config round-trip with cursor provider ──────────────────────
 
 describe('CLI config round-trip with cursor provider', () => {

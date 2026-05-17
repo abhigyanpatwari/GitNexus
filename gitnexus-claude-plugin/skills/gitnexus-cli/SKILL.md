@@ -62,7 +62,7 @@ Generates repository documentation from the knowledge graph using an LLM. Requir
 | `--api-key <key>` | LLM API key |
 | `--concurrency <n>` | Parallel LLM calls (default: 3) |
 | `--gist` | Publish wiki as a public GitHub Gist |
-| `--timeout <seconds>` | Per-attempt LLM request timeout in seconds (default: 60) |
+| `--timeout <seconds>` | LLM request timeout in seconds (default: disabled) |
 | `--retries <n>` | Max LLM retry attempts per request (default: 3) |
 | `--lang <lang>`  | Output language for generated documentation (e.g. english, chinese, spanish, japanese)|
 ### list — Show all indexed repos
