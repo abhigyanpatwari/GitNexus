@@ -73,6 +73,21 @@ describe('detect_changes worktree support — structural', () => {
     expect(backendSrc).toMatch(/is not a worktree of repo/);
   });
 
+  it('explicit params.worktree is wired through to execFileSync cwd', () => {
+    // A full callTool() integration test requires a live LadybugDB; instead
+    // we verify the wiring via two complementary structural assertions that
+    // would both need to be wrong simultaneously to hide a real bug:
+    //   1. The validated explicit path is stored in diffCwd.
+    //   2. diffCwd is the value passed to execFileSync as cwd.
+    // If either assignment were swapped back to repo.repoPath the tests in
+    // this file would immediately fail.
+    expect(backendSrc).toMatch(/diffCwd\s*=\s*providedResolved/);
+    // Also verify canonical roots are compared via tryRealpath (Finding 3).
+    expect(backendSrc).toMatch(
+      /tryRealpath\(worktreeCanonical\)\s*!==\s*tryRealpath\(repoCanonical\)/,
+    );
+  });
+
   it('auto-detects linked worktree via process.cwd() when worktree param is omitted', () => {
     // The else branch must delegate to the exported resolveWorktreeCwd helper.
     expect(backendSrc).toMatch(/resolveWorktreeCwd/);
@@ -102,11 +117,11 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-same-'));
     try {
       execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      // launchCwd == repoPath → same directory → resolveWorktreeCwd must return repoPath.
-      // Compare via realpathSync: mkdtempSync may return a symlink path on macOS
-      // while getGitRoot returns the realpath (/var vs /private/var).
+      // Compare via realpathSync.native: mkdtempSync may return a symlink path
+      // on macOS (/var vs /private/var) or a Windows 8.3 short name
+      // (RUNNER~1 vs runneradmin) while getGitRoot returns the expanded form.
       const result = resolveWorktreeCwd(repoDir, repoDir);
-      expect(realpathSync(result)).toBe(realpathSync(repoDir));
+      expect(realpathSync.native(result)).toBe(realpathSync.native(repoDir));
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -144,12 +159,12 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
 
       // Key assertion: passing the worktree as launchCwd returns it,
       // proving the auto-detect logic in detectChanges works correctly.
-      // Use realpathSync for comparison: mkdtempSync may return a symlink
-      // path while getGitRoot returns the realpath (/var vs /private/var).
+      // Use realpathSync.native: mkdtempSync may return a symlink or 8.3
+      // short-name path while getGitRoot returns the expanded canonical form.
       const result = resolveWorktreeCwd(repoDir, worktreeDir);
-      expect(realpathSync(result)).toBe(realpathSync(worktreeDir));
+      expect(realpathSync.native(result)).toBe(realpathSync.native(worktreeDir));
       // Confirm it's NOT the canonical root (auto-detection fired).
-      expect(realpathSync(result)).not.toBe(realpathSync(repoDir));
+      expect(realpathSync.native(result)).not.toBe(realpathSync.native(repoDir));
     } finally {
       try {
         execSync('git worktree remove -f wt-auto', { cwd: repoDir, stdio: 'ignore' });

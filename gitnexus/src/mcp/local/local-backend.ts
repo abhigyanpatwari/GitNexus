@@ -217,10 +217,13 @@ interface RepoHandle {
   stats?: RegistryEntry['stats'];
 }
 
-/** Resolve symlinks for path comparison; falls back to path.resolve on error. */
+/** Resolve symlinks for path comparison; falls back to path.resolve on error.
+ * Uses `realpathSync.native` (not the pure-JS `realpathSync`) so that Windows
+ * 8.3 short names (e.g. RUNNER~1 → runneradmin) are expanded to long form,
+ * matching the output of `git rev-parse --show-toplevel`. */
 function tryRealpath(p: string): string {
   try {
-    return realpathSync(p);
+    return realpathSync.native(p);
   } catch {
     return path.resolve(p);
   }
@@ -2246,7 +2249,7 @@ export class LocalBackend {
           };
         }
         const worktreeCanonical = getCanonicalRepoRoot(providedResolved);
-        if (!worktreeCanonical || worktreeCanonical !== repoCanonical) {
+        if (!worktreeCanonical || tryRealpath(worktreeCanonical) !== tryRealpath(repoCanonical)) {
           return {
             error: `worktree "${params.worktree}" is not a worktree of repo "${repo.repoPath}". Ensure the path is inside the same git repository.`,
           };
