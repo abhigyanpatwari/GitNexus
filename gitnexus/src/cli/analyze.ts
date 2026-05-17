@@ -68,13 +68,69 @@ const installFatalHandlers = (): void => {
   });
 };
 
-const HEAP_MB = 8192;
-const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
+const HEAP_MB = 16384;
+const TEST_RESPAWN_HEAP_MB = Number(process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB);
+const RESPAWN_HEAP_MB =
+  Number.isFinite(TEST_RESPAWN_HEAP_MB) && TEST_RESPAWN_HEAP_MB > 0
+    ? Math.floor(TEST_RESPAWN_HEAP_MB)
+    : HEAP_MB;
+const HEAP_FLAG = `--max-old-space-size=${RESPAWN_HEAP_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
 const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
 
-/** Re-exec the process with an 8GB heap and larger stack if we're currently below that. */
+/**
+ * Heuristic for "child re-exec likely died from V8 OOM".
+ *
+ * Platform-independent detection is best-effort: V8/Node usually emit
+ * stable heap-exhaustion phrases in stderr/message across Linux/macOS/Windows
+ * (for example "JavaScript heap out of memory" or "Reached heap limit"),
+ * while some environments only expose status/signal (e.g. 134/SIGABRT).
+ * We combine both text signatures and process-exit signatures.
+ */
+const childProcessLikelyOom = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    status?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+    stdout?: unknown;
+    message?: unknown;
+  };
+
+  const hasHeapOomSignature = (v: unknown): boolean => {
+    const text = (
+      Buffer.isBuffer(v) ? v.toString('utf8') : typeof v === 'string' ? v : ''
+    ).toLowerCase();
+    if (!text) return false;
+    return (
+      text.includes('javascript heap out of memory') ||
+      text.includes('reached heap limit') ||
+      text.includes('allocation failed - javascript heap out of memory') ||
+      text.includes('fatalprocessoutofmemory')
+    );
+  };
+
+  const fields = [e.message, e.stderr, e.stdout];
+  if (fields.some((v) => hasHeapOomSignature(v))) return true;
+
+  const hasAnyChildOutput = [e.stderr, e.stdout].some(
+    (v) => (Buffer.isBuffer(v) && v.length > 0) || (typeof v === 'string' && v.length > 0),
+  );
+  if (hasAnyChildOutput) return false;
+
+  return e.status === 134 || e.signal === 'SIGABRT';
+};
+
+const forceHeapOOMForTestIfEnabled = (): void => {
+  if (process.env.GITNEXUS_TEST_FORCE_HEAP_OOM !== '1') return;
+  // Allocate JS strings (not Buffers) so pressure lands on V8 heap itself.
+  // Buffers can allocate off-heap, which makes OOM triggering less reliable.
+  const chunks: string[] = [];
+  for (;;) chunks.push('x'.repeat(1024 * 1024));
+};
+
+/** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
 function ensureHeap(): boolean {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
@@ -93,6 +149,16 @@ function ensureHeap(): boolean {
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
   } catch (e: any) {
+    if (childProcessLikelyOom(e)) {
+      cliError(
+        `  Analysis likely ran out of memory.\n` +
+          `  Retry with a larger heap if your machine allows it:\n` +
+          `    NODE_OPTIONS="--max-old-space-size=24576" gitnexus analyze [your-args]\n` +
+          `    (Windows: set NODE_OPTIONS=--max-old-space-size=24576 && gitnexus analyze [your-args])\n` +
+          `  If this persists, it may be a native crash unrelated to heap size.\n`,
+        { recoveryHint: 'heap-oom-respawn' },
+      );
+    }
     process.exitCode = e.status ?? 1;
   }
   return true;
@@ -185,6 +251,7 @@ export const shouldGenerateCommunitySkillFiles = (
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
+  forceHeapOOMForTestIfEnabled();
 
   // Install fatal handlers immediately after re-exec resolution so any
   // async error that escapes the try/catch below (#1169) surfaces with
