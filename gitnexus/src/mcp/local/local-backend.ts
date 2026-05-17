@@ -2221,17 +2221,17 @@ export class LocalBackend {
       // index. Running `git diff` from the canonical repo root sees a different
       // working tree and returns empty output.
       //
-      // Resolution order:
+      // Resolution order (see resolveWorktreeCwd for details):
       //   1. params.worktree — explicit override, validated against the
       //      registered repo's canonical root.
       //   2. Auto-detect — if the server's launch cwd (process.cwd()) is a
       //      linked worktree of the same canonical repo, use its git root.
-      //      Covers the common pattern: `npx gitnexus serve` run from inside
-      //      a linked worktree. Note: in stdio MCP mode process.cwd() is
-      //      fixed to the server launch dir, so this is reliable as long as
-      //      `serve` and `analyze` were both run from the same worktree.
-      //   3. repo.repoPath — fallback (original behaviour).
-      let diffCwd = repo.repoPath;
+      //   3. repo.repoPath — fallback (original behaviour, handled inside
+      //      resolveWorktreeCwd when no worktree is detected).
+      //
+      // Start with the auto-detected value; override with the validated
+      // explicit param when provided. This avoids a dead initial assignment.
+      let diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
       if (params.worktree) {
         if (!path.isAbsolute(params.worktree)) {
           return {
@@ -2252,11 +2252,6 @@ export class LocalBackend {
           };
         }
         diffCwd = providedResolved;
-      } else {
-        // Auto-detect: if the server was launched from inside a linked
-        // worktree of the same canonical repo, use that worktree as the diff
-        // cwd. resolveWorktreeCwd is extracted for testability.
-        diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
       }
 
       // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
