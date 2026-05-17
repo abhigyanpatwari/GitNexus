@@ -74,6 +74,7 @@ export interface WikiMeta {
   fromCommit: string;
   generatedAt: string;
   model: string;
+  lang: string;
   moduleFiles: Record<string, string[]>;
   moduleTree: ModuleTreeNode[];
 }
@@ -218,6 +219,15 @@ export class WikiGenerator {
 
     // Up-to-date check (skip if --force)
     if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+      const currentLang = this.options.lang ?? '';
+      const metaLang = existingMeta.lang ?? '';
+      if (currentLang !== metaLang) {
+        const prevDisplay = metaLang || 'english (default)';
+        const nextDisplay = currentLang || 'english (default)';
+        throw new Error(
+          `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
+        );
+      }
       // Still regenerate the HTML viewer in case it's missing
       await this.ensureHTMLViewer();
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
@@ -379,6 +389,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
+      lang: this.options.lang ?? '',
       moduleFiles,
       moduleTree,
     });
@@ -836,6 +847,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
+      lang: this.options.lang ?? '',
     });
 
     this.onProgress('done', 100, 'Incremental update complete');
