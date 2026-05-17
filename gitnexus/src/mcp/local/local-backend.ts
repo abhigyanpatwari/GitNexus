@@ -1219,20 +1219,29 @@ export class LocalBackend {
     }
   }
 
-  async executeCypher(repoName: string, query: string): Promise<any> {
+  async executeCypher(repoName: string, query: string, queryParams: Record<string, unknown> = {}): Promise<any> {
     const repo = await this.resolveRepo(repoName);
-    return this.cypher(repo, { query });
+    return this.cypher(repo, { query, params: queryParams });
   }
 
-  private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
+  private async cypher(
+    repo: RepoHandle,
+    params: { query: string; params?: Record<string, unknown> },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     if (!isLbugReady(repo.id)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
+    if (
+      params.params !== undefined &&
+      (params.params === null || typeof params.params !== 'object' || Array.isArray(params.params))
+    ) {
+      return { error: 'params must be an object when provided.' };
+    }
 
     try {
-      const result = await executeQuery(repo.id, params.query);
+      const result = await executeParameterized(repo.id, params.query, params.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';

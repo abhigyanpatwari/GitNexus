@@ -187,6 +187,11 @@ TIPS:
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Cypher query to execute' },
+        params: {
+          type: 'object',
+          description:
+            'Optional query parameters for placeholders (e.g. $name) to execute via prepared statement binding.',
+        },
         repo: {
           type: 'string',
           description: 'Repository name or path. Omit if only one repo is indexed.',

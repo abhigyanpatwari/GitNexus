@@ -1058,12 +1058,7 @@ export const batchInsertNodesToLbug = async (
 };
 
 export const executeQuery = async (cypher: string): Promise<any[]> => {
-  if (!conn) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-
-  const queryResult = await conn.query(cypher);
-  return await readQueryRows(queryResult);
+  return await executePrepared(cypher, {});
 };
 
 export const streamQuery = async (

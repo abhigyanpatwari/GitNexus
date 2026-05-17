@@ -1026,6 +1026,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(400).json({ error: 'Missing "cypher" in request body' });
         return;
       }
+      const params = req.body.params;
+      if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params))) {
+        res.status(400).json({ error: '"params" must be an object when provided' });
+        return;
+      }
 
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
@@ -1033,7 +1038,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
+      const result = await withLbugDb(lbugPath, () =>
+        executePrepared(cypher, (params as Record<string, unknown> | undefined) ?? {}),
+      );
       res.json({ result });
     } catch (err: any) {
       if (isReadOnlyDbError(err)) {
