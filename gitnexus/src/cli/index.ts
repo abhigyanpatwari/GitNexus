@@ -166,6 +166,10 @@ program
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
+  .option(
+    '--lang <lang>',
+    'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
+  )
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
