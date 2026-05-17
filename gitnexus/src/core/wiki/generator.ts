@@ -184,12 +184,12 @@ export class WikiGenerator {
    * Append an output-language instruction to a system prompt when --lang is set.
    */
   private buildSystemPrompt(base: string): string {
-    // Strip control characters and newlines, then cap length to prevent prompt injection.
+    // Strip control characters, trim, cap length, then validate against a character allowlist.
     const lang = (this.options.lang ?? '')
       .replace(/[\x00-\x1F\x7F]/g, '')
       .trim()
       .slice(0, 50);
-    if (!lang) return base;
+    if (!lang || !/^[a-zA-Z -]+$/.test(lang)) return base;
     return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. Note: page titles (H1 headings) are generated separately and will remain in English.`;
   }
 
