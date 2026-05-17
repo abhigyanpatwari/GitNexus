@@ -87,14 +87,14 @@ describe('detect_changes worktree support — guard logic', () => {
 
   it('mismatching canonical roots are correctly identified', () => {
     // Simulate what the guard does: if canonical roots differ, reject.
-    const worktreeCanonical = '/some/other/repo';
-    const repoCanonical = '/canonical/repo';
+    const worktreeCanonical: string = '/some/other/repo';
+    const repoCanonical: string = '/canonical/repo';
     const isSameRepo = worktreeCanonical === repoCanonical;
     expect(isSameRepo).toBe(false);
   });
 
   it('matching canonical roots are correctly accepted', () => {
-    const canonical = '/canonical/repo';
+    const canonical: string = '/canonical/repo';
     const isSameRepo = canonical === canonical;
     expect(isSameRepo).toBe(true);
   });
