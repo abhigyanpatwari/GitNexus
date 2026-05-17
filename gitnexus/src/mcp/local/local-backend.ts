@@ -1273,7 +1273,11 @@ export class LocalBackend {
     }
   }
 
-  async executeCypher(repoName: string, query: string, params: Record<string, unknown> = {}): Promise<any> {
+  async executeCypher(
+    repoName: string,
+    query: string,
+    params: Record<string, unknown> = {},
+  ): Promise<any> {
     const repo = await this.resolveRepo(repoName);
     return this.cypher(repo, { query, params });
   }
@@ -1289,8 +1293,7 @@ export class LocalBackend {
     }
     if (request.params !== undefined && !isValidQueryParams(request.params)) {
       return {
-        error:
-          '"params" must be a plain object with scalar values (string/number/boolean/null).',
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null).',
       };
     }
 
