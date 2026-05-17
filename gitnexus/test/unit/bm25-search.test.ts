@@ -13,9 +13,10 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
 // Pool adapter is dynamically imported by the MCP-pool path of
 // `searchFTSFromLbug`. We mock it so we can drive the executor without
 // spinning up a real LadybugDB pool.
-const mockExecuteQuery = vi.fn();
+const mockExecuteParameterized = vi.fn();
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
-  executeQuery: (repoId: string, cypher: string) => mockExecuteQuery(repoId, cypher),
+  executeParameterized: (repoId: string, cypher: string, params: Record<string, any>) =>
+    mockExecuteParameterized(repoId, cypher, params),
   addPoolCloseListener: vi.fn(),
 }));
 
@@ -209,20 +210,23 @@ describe('BM25 search', () => {
     const REPO = 'test-repo-readonly-fts';
 
     beforeEach(() => {
-      mockExecuteQuery.mockReset();
+      mockExecuteParameterized.mockReset();
     });
 
     it('queries existing FTS indexes without issuing CREATE_FTS_INDEX', async () => {
-      mockExecuteQuery.mockImplementation(async (_repo: string, cypher: string) => {
-        if (cypher.includes('CREATE_FTS_INDEX')) {
-          throw new Error('query path must stay read-only');
-        }
+      mockExecuteParameterized.mockImplementation(
+        async (_repo: string, cypher: string, params: Record<string, any>) => {
+          if (params.query !== 'login') return [];
+          if (cypher.includes('CREATE_FTS_INDEX')) {
+            throw new Error('query path must stay read-only');
+          }
 
-        if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
-          return [{ node: { filePath: 'src/auth.ts', id: 'func:login' }, score: 8 }];
-        }
-        return [];
-      });
+          if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+            return [{ node: { filePath: 'src/auth.ts', id: 'func:login' }, score: 8 }];
+          }
+          return [];
+        },
+      );
 
       const { results } = await searchFTSFromLbug('login', 5, REPO);
 
@@ -230,16 +234,29 @@ describe('BM25 search', () => {
         { filePath: 'src/auth.ts', score: 8, rank: 1, nodeIds: ['func:login'] },
       ]);
       expect(
-        mockExecuteQuery.mock.calls.some((c) => String(c[1]).includes('CREATE_FTS_INDEX')),
+        mockExecuteParameterized.mock.calls.some((c) => String(c[1]).includes('CREATE_FTS_INDEX')),
       ).toBe(false);
     });
 
+    it('binds FTS user query text as a parameter in pool mode', async () => {
+      mockExecuteParameterized.mockResolvedValue([]);
+
+      await searchFTSFromLbug("BrowserWindow create 'main' window", 5, REPO);
+
+      expect(mockExecuteParameterized).toHaveBeenCalled();
+      for (const call of mockExecuteParameterized.mock.calls) {
+        expect(call[1]).toContain('$query');
+        expect(String(call[1])).not.toContain("BrowserWindow create 'main' window");
+        expect(call[2]).toEqual({ query: "BrowserWindow create 'main' window" });
+      }
+    });
+
     it('uses the configured FTS query set on every call', async () => {
-      mockExecuteQuery.mockResolvedValue([]);
+      mockExecuteParameterized.mockResolvedValue([]);
 
       await searchFTSFromLbug('anything', 5, REPO);
 
-      const queryCalls = mockExecuteQuery.mock.calls.filter((c) =>
+      const queryCalls = mockExecuteParameterized.mock.calls.filter((c) =>
         String(c[1]).includes('QUERY_FTS_INDEX'),
       );
       expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual([
