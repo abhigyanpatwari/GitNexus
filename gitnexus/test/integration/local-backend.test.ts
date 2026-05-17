@@ -16,6 +16,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   CYPHER_WRITE_RE,
+  initLbug,
+  closeLbug,
   executeQuery,
   executeParameterized,
   isWriteQuery,
@@ -180,12 +182,15 @@ withTestLbugDB(
 
     describe('read-only database', () => {
       it('rejects write operations at DB level', async () => {
+        const readOnlyRepo = 'local-backend-read-only';
+        await initLbug(readOnlyRepo, handle.dbPath);
         await expect(
           executeQuery(
-            handle.repoId,
+            readOnlyRepo,
             `CREATE (n:Function {id: 'new', name: 'new', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})`,
           ),
         ).rejects.toThrow();
+        await closeLbug(readOnlyRepo);
       });
     });
 
