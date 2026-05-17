@@ -240,16 +240,19 @@ describe('BM25 search', () => {
     it('binds FTS user query text as a parameter in pool mode', async () => {
       mockExecuteParameterized.mockResolvedValue([]);
 
-      await searchFTSFromLbug("BrowserWindow create 'main' window", 5, REPO);
+      const userQuery = "BrowserWindow create delete set remove 'main' window";
+      await searchFTSFromLbug(userQuery, 5, REPO);
 
       expect(mockExecuteParameterized).toHaveBeenCalled();
       for (const call of mockExecuteParameterized.mock.calls) {
         const cypher = String(call[1]);
         expect(cypher).toContain('$query');
-        expect(cypher).not.toContain("BrowserWindow create 'main' window");
+        expect(cypher).not.toContain(userQuery);
         expect(cypher.toUpperCase()).not.toMatch(/\bCREATE\b/);
         expect(cypher.toUpperCase()).not.toMatch(/\bDELETE\b/);
-        expect(call[2]).toEqual({ query: "BrowserWindow create 'main' window" });
+        expect(cypher.toUpperCase()).not.toMatch(/\bSET\b/);
+        expect(cypher.toUpperCase()).not.toMatch(/\bREMOVE\b/);
+        expect(call[2]).toEqual({ query: userQuery });
       }
     });
 
