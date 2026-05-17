@@ -16,6 +16,7 @@ import {
   isLbugReady,
   isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isReadOnlyDbError } from '../../core/lbug/lbug-adapter.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -1230,19 +1231,17 @@ export class LocalBackend {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
 
-    // Block write operations (defense-in-depth — DB is already read-only)
-    if (isWriteQuery(params.query)) {
-      return {
-        error:
-          'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
-      };
-    }
-
     try {
       const result = await executeQuery(repo.id, params.query);
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
+      if (isReadOnlyDbError(err)) {
+        return {
+          error:
+            'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,

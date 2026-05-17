@@ -17,7 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
-import { loadFTSExtension } from './lbug-adapter.js';
+import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -603,10 +603,6 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
-  }
-
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
@@ -617,6 +613,11 @@ export const executeQuery = async (repoId: string, cypher: string): Promise<any[
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
+  } catch (err) {
+    if (isReadOnlyDbError(err)) {
+      throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+    }
+    throw err;
   } finally {
     activeQueryCount--;
     restoreStdout();
@@ -638,10 +639,6 @@ export const executeParameterized = async (
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
-  }
-
   entry.lastUsed = Date.now();
 
   const conn = await checkout(entry);
@@ -657,6 +654,11 @@ export const executeParameterized = async (
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
+  } catch (err) {
+    if (isReadOnlyDbError(err)) {
+      throw new Error('Write operations are not allowed. The pool adapter is read-only.');
+    }
+    throw err;
   } finally {
     activeQueryCount--;
     restoreStdout();

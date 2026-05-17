@@ -22,8 +22,8 @@ import {
   flushWAL,
   closeLbug,
   withLbugDb,
+  isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
-import { isWriteQuery } from '../core/lbug/pool-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -1027,11 +1027,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      if (isWriteQuery(cypher)) {
-        res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
-        return;
-      }
-
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
@@ -1041,6 +1036,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
       res.json({ result });
     } catch (err: any) {
+      if (isReadOnlyDbError(err)) {
+        res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
+        return;
+      }
       res.status(500).json({ error: err.message || 'Query failed' });
     }
   });
