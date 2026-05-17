@@ -21,7 +21,9 @@ import {
   closeLbugConnection,
   isDbBusyError,
   isOpenRetryExhausted,
+  isWalCorruptionError,
   openLbugConnection,
+  WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
 } from './lbug-config.js';
@@ -594,6 +596,24 @@ const doInitLbug = async (dbPath: string) => {
       //     anyway and any genuine cross-process lock contention surfaces
       //     on the next operation via withLbugDb's retry. Logging it here
       //     would just be noise in CI.
+      //
+      // WAL corruption: the first DDL write after DB open triggers WAL
+      // replay — if the WAL file was left in a corrupt state by an
+      // interrupted previous run, the native engine throws here. Rather
+      // than logging a WARN and continuing in a broken state, close the
+      // DB cleanly and surface an actionable error so the caller (serve,
+      // MCP, analyze) can exit with a clear recovery message.
+      if (isWalCorruptionError(err)) {
+        await safeClose();
+        currentDbPath = null;
+        ftsLoaded = false;
+        vectorExtensionLoaded = false;
+        ensuredFTSIndexes.clear();
+        throw new Error(
+          `LadybugDB WAL corruption detected at ${dbPath}. ${WAL_RECOVERY_SUGGESTION}\n` +
+            `  Original error: ${msg.slice(0, 200)}`,
+        );
+      }
       if (!msg.includes('already exists') && !isDbBusyError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }

@@ -37,6 +37,23 @@ export interface WikiCommandOptions {
   retries?: string;
 }
 
+function parsePositiveIntegerOption(
+  value: string | undefined,
+  flag: string,
+  multiplier = 1,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${flag} must be a positive integer`);
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (parsed > Math.floor(Number.MAX_SAFE_INTEGER / multiplier)) {
+    throw new Error(`${flag} is too large`);
+  }
+  return parsed;
+}
+
 /**
  * Prompt the user for input via stdin.
  */
@@ -123,6 +140,17 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   if (!meta) {
     console.log('  Error: No GitNexus index found.');
     console.log('  Run `gitnexus analyze` first to index this repository.\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  let timeoutSeconds: number | undefined;
+  let retries: number | undefined;
+  try {
+    timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
+    retries = parsePositiveIntegerOption(options?.retries, '--retries');
+  } catch (error) {
+    console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
     return;
   }
@@ -350,13 +378,11 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   }
 
   // ── Apply per-run overrides not saved to config ────────────────────
-  if (options?.timeout) {
-    const secs = parseInt(options.timeout, 10);
-    if (!isNaN(secs) && secs > 0) llmConfig.requestTimeoutMs = secs * 1000;
+  if (timeoutSeconds !== undefined) {
+    llmConfig.requestTimeoutMs = timeoutSeconds * 1000;
   }
-  if (options?.retries) {
-    const n = parseInt(options.retries, 10);
-    if (!isNaN(n) && n > 0) llmConfig.maxAttempts = n;
+  if (retries !== undefined) {
+    llmConfig.maxAttempts = retries;
   }
 
   // ── Setup progress bar with elapsed timer ──────────────────────────
@@ -563,6 +589,8 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
     if (err.message?.includes('No source files')) {
       console.log(`\n  ${err.message}\n`);
+    } else if (err.message?.includes('LLM request timed out after')) {
+      console.log(`\n  Timeout: ${err.message}\n`);
     } else if (err.message?.includes('content filter')) {
       // Content filter block — actionable message
       console.log(`\n  Content Filter: ${err.message}\n`);
