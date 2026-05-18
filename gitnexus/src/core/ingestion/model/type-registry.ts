@@ -8,6 +8,8 @@
 
 import type { SymbolDefinition } from 'gitnexus-shared';
 
+const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
+
 // ---------------------------------------------------------------------------
 // Public read-only interface
 // ---------------------------------------------------------------------------
@@ -35,6 +37,14 @@ export interface TypeRegistry {
    * Returned array is a view into the live index — do not mutate.
    */
   lookupImplByName(name: string): readonly SymbolDefinition[];
+
+  /**
+   * Look up nested-type defs registered under `(ownerNodeId, simpleName)`
+   * in registration order. Returns `[]` on miss. Used by Step 2 Receiver/MRO
+   * resolution when the receiver's owner declares nested classes/structs/
+   * enums/typedefs/etc. that the caller's `acceptedKinds` includes.
+   */
+  lookupAllByOwner(ownerNodeId: string, simpleName: string): readonly SymbolDefinition[];
 }
 
 // ---------------------------------------------------------------------------
@@ -46,6 +56,8 @@ export interface MutableTypeRegistry extends TypeRegistry {
   registerClass(name: string, qualifiedName: string, def: SymbolDefinition): void;
   /** Register a Rust Impl block by name. */
   registerImpl(name: string, def: SymbolDefinition): void;
+  /** Register a nested type under its owner. Appends when the key already exists. */
+  registerByOwner(ownerNodeId: string, simpleName: string, def: SymbolDefinition): void;
   /** Clear all entries. */
   clear(): void;
 }
@@ -58,6 +70,7 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
   const classByName = new Map<string, SymbolDefinition[]>();
   const classByQualifiedName = new Map<string, SymbolDefinition[]>();
   const implByName = new Map<string, SymbolDefinition[]>();
+  const nestedByOwner = new Map<string, SymbolDefinition[]>();
 
   const lookupClassByName = (name: string): SymbolDefinition[] => {
     return classByName.get(name) ?? [];
@@ -69,6 +82,13 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
 
   const lookupImplByName = (name: string): SymbolDefinition[] => {
     return implByName.get(name) ?? [];
+  };
+
+  const lookupAllByOwner = (
+    ownerNodeId: string,
+    simpleName: string,
+  ): readonly SymbolDefinition[] => {
+    return nestedByOwner.get(`${ownerNodeId}\0${simpleName}`) ?? EMPTY;
   };
 
   const registerClass = (name: string, qualifiedName: string, def: SymbolDefinition): void => {
@@ -96,18 +116,35 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
     }
   };
 
+  const registerByOwner = (
+    ownerNodeId: string,
+    simpleName: string,
+    def: SymbolDefinition,
+  ): void => {
+    const key = `${ownerNodeId}\0${simpleName}`;
+    const existing = nestedByOwner.get(key);
+    if (existing) {
+      existing.push(def);
+    } else {
+      nestedByOwner.set(key, [def]);
+    }
+  };
+
   const clear = (): void => {
     classByName.clear();
     classByQualifiedName.clear();
     implByName.clear();
+    nestedByOwner.clear();
   };
 
   return {
     lookupClassByName,
     lookupClassByQualifiedName,
     lookupImplByName,
+    lookupAllByOwner,
     registerClass,
     registerImpl,
+    registerByOwner,
     clear,
   };
 };
