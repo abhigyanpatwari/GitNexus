@@ -223,6 +223,54 @@ func main() {
       expect(healthRoute?.symbolName).toBe('healthHandler');
     });
 
+    it('extracts mux.HandleFunc providers (local ServeMux receiver)', async () => {
+      const dir = path.join(tmpDir, 'go-mux-provider');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  mux := http.NewServeMux()
+  mux.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(healthRoute).toBeDefined();
+      expect(healthRoute?.symbolName).toBe('healthHandler');
+    });
+
+    it('extracts HandleFunc providers with method-reference handlers', async () => {
+      const dir = path.join(tmpDir, 'go-method-handler-provider');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func main() {
+  mux := http.NewServeMux()
+  mux.HandleFunc("/api/users", apiHandler.ListUsers)
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const usersRoute = providers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(usersRoute).toBeDefined();
+      expect(usersRoute?.symbolName).toBe('apiHandler.ListUsers');
+    });
+
     it('extracts NestJS controller decorators', async () => {
       const dir = path.join(tmpDir, 'nestjs');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });

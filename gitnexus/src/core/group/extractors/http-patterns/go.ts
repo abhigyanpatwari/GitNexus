@@ -37,7 +37,17 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Provider: net/http `http.HandleFunc("/p", handler)` ─────────────
+// ─── Provider: any `<receiver>.HandleFunc("/p", handler)` ────────────
+// Matches the stdlib `http.HandleFunc(...)` form AND the idiomatic
+// `mux.HandleFunc(...)` / `router.HandleFunc(...)` form used by code
+// that wires a local `*http.ServeMux` or gorilla/mux router. The
+// operand is not constrained to a particular identifier; the field
+// name `HandleFunc` plus the (path, handler) argument shape is
+// sufficient signal to identify a stdlib-compatible route registration.
+//
+// Two pattern variants cover both bare-identifier handlers
+// (`HandleFunc("/p", handler)`) and method-reference handlers
+// (`HandleFunc("/p", apiHandler.Foo)`), which are equally common.
 const HANDLE_FUNC_PATTERNS = compilePatterns({
   name: 'go-handle-func',
   language: Go,
@@ -47,11 +57,21 @@ const HANDLE_FUNC_PATTERNS = compilePatterns({
       query: `
         (call_expression
           function: (selector_expression
-            operand: (identifier) @pkg (#eq? @pkg "http")
             field: (field_identifier) @fn (#eq? @fn "HandleFunc"))
           arguments: (argument_list
             (interpreted_string_literal) @path
             (identifier) @handler))
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (call_expression
+          function: (selector_expression
+            field: (field_identifier) @fn (#eq? @fn "HandleFunc"))
+          arguments: (argument_list
+            (interpreted_string_literal) @path
+            (selector_expression) @handler))
       `,
     },
   ],
