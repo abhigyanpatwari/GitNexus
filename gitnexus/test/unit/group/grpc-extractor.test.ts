@@ -15,6 +15,7 @@ import {
   buildProtoMap,
   resolveProtoConflict,
   serviceContractId,
+  BUILD_TOOL_CONFIG_RE,
 } from '../../../src/core/group/extractors/grpc-extractor.js';
 import type { ProtoServiceInfo } from '../../../src/core/group/extractors/grpc-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
@@ -1118,5 +1119,117 @@ service AuthService {
     );
     expect(protoProvider).toBeDefined();
     expect(protoProvider!.contractId).toBe('grpc::auth.v1.AuthService/Login');
+  });
+});
+
+describe('BUILD_TOOL_CONFIG_RE', () => {
+  it.each([
+    // Standard two-segment names
+    'webpack.config.js',
+    'webpack.config.ts',
+    'vite.config.ts',
+    'vite.config.mjs',
+    'babel.config.js',
+    'babel.config.cjs',
+    'jest.config.ts',
+    'vitest.config.ts',
+    'rollup.config.js',
+    'esbuild.config.ts',
+    'postcss.config.js',
+    'tailwind.config.ts',
+    'next.config.js',
+    'nuxt.config.ts',
+    'svelte.config.js',
+    'astro.config.mjs',
+    // Three-segment names (env suffix)
+    'webpack.config.prod.js',
+    'vite.config.test.ts',
+    // Path-prefixed
+    'src/webpack.config.js',
+    'config/vite.config.ts',
+  ])('matches build-tool config: %s', (path) => {
+    expect(BUILD_TOOL_CONFIG_RE.test(path)).toBe(true);
+  });
+
+  it.each([
+    // Generic config names that may contain gRPC — must NOT be filtered
+    'grpc.config.ts',
+    'server.config.ts',
+    'db.config.js',
+    'app.config.ts',
+    // Utility files that happen to contain the keyword
+    'my-webpack-utils.ts',
+    'vite-plugin-grpc.ts',
+    // Non-config webpack files
+    'webpack.common.js',
+    'webpack.dev.js',
+    'webpack.prod.js',
+  ])('does not match non-config file: %s', (path) => {
+    expect(BUILD_TOOL_CONFIG_RE.test(path)).toBe(false);
+  });
+});
+
+describe('GrpcExtractor — build-tool config filter integration', () => {
+  let tmpDir: string;
+  const extractor = new GrpcExtractor();
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'grpc-build-tool-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does not extract gRPC consumer from webpack.config.ts even if it contains loadPackageDefinition', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'webpack.config.ts'),
+      `import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
+const def = protoLoader.loadSync('service.proto');
+const pkg = grpc.loadPackageDefinition(def);
+export default { plugins: [] };`,
+    );
+    fs.mkdirSync(path.join(tmpDir, 'proto'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'proto', 'service.proto'),
+      `syntax = "proto3"; package svc; service Svc { rpc Call(Req) returns (Res); }`,
+    );
+
+    const repo: RepoHandle = {
+      id: 'test-repo',
+      path: 'test/app',
+      repoPath: tmpDir,
+      storagePath: path.join(tmpDir, '.gitnexus'),
+    };
+    const contracts = await extractor.extract(null, tmpDir, repo);
+    const consumers = contracts.filter((c) => c.role === 'consumer');
+    expect(consumers).toHaveLength(0);
+  });
+
+  it('still extracts gRPC consumer from grpc.config.ts (generic name, not a build-tool config)', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'grpc.config.ts'),
+      `import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
+const definition = protoLoader.loadSync('proto/service.proto');
+const pkg = grpc.loadPackageDefinition(definition) as any;
+export const client = new pkg.svc.Svc('localhost:50051', grpc.credentials.createInsecure());`,
+    );
+    fs.mkdirSync(path.join(tmpDir, 'proto'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'proto', 'service.proto'),
+      `syntax = "proto3"; package svc; service Svc { rpc Call(Req) returns (Res); }`,
+    );
+
+    const repo: RepoHandle = {
+      id: 'test-repo',
+      path: 'test/app',
+      repoPath: tmpDir,
+      storagePath: path.join(tmpDir, '.gitnexus'),
+    };
+    const contracts = await extractor.extract(null, tmpDir, repo);
+    const consumers = contracts.filter((c) => c.role === 'consumer');
+    expect(consumers.length).toBeGreaterThan(0);
   });
 });

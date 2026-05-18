@@ -35,6 +35,20 @@ import {
  *    tree-sitter grammars or query strings — each plugin owns its own.
  */
 
+// ─── Build-tool config file filter ───────────────────────────────────────────
+//
+// Matches well-known build-tool config files by name convention.
+// These files are never gRPC sources but can trigger false-positive contracts
+// when their plugin instantiation patterns look like `loadPackageDefinition`.
+//
+// Only files whose names follow established build-tool conventions are excluded.
+// Generic names like `grpc.config.ts` or `server.config.ts` are intentionally
+// left unfiltered — they may contain legitimate gRPC client setup.
+//
+// @internal exported for testing only
+export const BUILD_TOOL_CONFIG_RE =
+  /(?:^|\/)(webpack|rollup|vite|esbuild|babel|jest|vitest|postcss|tailwind|next|nuxt|svelte|astro)\.config(\.[^/]+)?\.[cm]?[jt]sx?$/i;
+
 // ─── .proto fallback parser (used only when tree-sitter-proto is absent) ───
 
 function contractId(pkg: string, service: string, method: string): string {
@@ -419,9 +433,21 @@ export class GrpcExtractor implements ContractExtractor {
       ignore: sourceIgnoreFilter,
       nodir: true,
     });
+    // Exclude well-known build-tool config files. These files never contain
+    // gRPC service definitions or client calls, but their plugin instantiation
+    // patterns (e.g. `new UglifyJsPlugin()`) can look like gRPC
+    // `loadPackageDefinition` usage and trigger false-positive contracts.
+    //
+    // The list is intentionally conservative: only files whose *names* are
+    // established conventions for specific build tools are excluded.
+    // Generic names like `grpc.config.ts` or `server.config.ts` are NOT
+    // excluded because they may legitimately contain gRPC client setup.
+    const filteredSourceFiles = sourceFiles.filter(
+      (rel) => !BUILD_TOOL_CONFIG_RE.test(rel.replace(/\\/g, '/')),
+    );
 
     const parser = new Parser();
-    for (const rel of sourceFiles) {
+    for (const rel of filteredSourceFiles) {
       const plugin = getPluginForFile(rel);
       if (!plugin) continue;
       const content = readSafe(repoPath, rel);
