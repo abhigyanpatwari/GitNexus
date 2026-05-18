@@ -162,8 +162,8 @@ Each mode has a `system_{mode}.jinja` + `instance_{mode}.jinja` pair. The agent 
 
 ```
 Agent → bash command → /usr/local/bin/gitnexus-query
-  → curl localhost:4848/tool/query     (fast path: eval-server, ~100ms)
-  → npx gitnexus query                 (fallback: cold CLI, ~5-10s)
+  → curl http://127.0.0.1:4848/tool/query   (fast path: eval-server, ~100ms)
+  → npx gitnexus query                       (fallback: cold CLI, ~5-10s)
 ```
 
 Each tool script in `/usr/local/bin/` is standalone — no sourcing, no env inheritance needed. This is critical because mini-swe-agent runs every command via `subprocess.run` in a fresh subshell.
@@ -175,6 +175,28 @@ The eval-server is a lightweight HTTP daemon that:
 - Returns LLM-friendly text (not raw JSON — saves tokens)
 - Includes next-step hints to guide tool chaining (query → context → impact → fix)
 - Auto-shuts down after idle timeout
+
+**CLI flags:**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--port <port>` | `4848` | Port to listen on |
+| `--host <host>` | `127.0.0.1` | Bind address — use `0.0.0.0` for cross-container access |
+| `--idle-timeout <seconds>` | `0` (disabled) | Auto-shutdown after N seconds of inactivity |
+
+**READY signal:**
+
+When the server is ready, it writes to stdout:
+
+```
+# IPv4
+GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
+
+# IPv6 (bracketed to avoid colon ambiguity)
+GITNEXUS_EVAL_SERVER_READY:[::1]:4848
+```
+
+Parse the port as the last colon-segment (`split(':').pop()`) — not `split(':')[1]`, which breaks for IPv6 and for non-loopback IPv4 hosts added in this release.
 
 ### Index caching
 
