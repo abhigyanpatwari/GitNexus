@@ -55,13 +55,6 @@ export function tsBindingScopeFor(
     return walkToScope(innermost, tree, 'Class');
   }
 
-  // JS constructor body field (`this.address = new Address()` / JSDoc
-  // @type): hoist to the Class scope so compound-receiver resolution
-  // finds `User.address → Address` in the class's typeBindings.
-  if (decl['@type-binding.class-field'] !== undefined) {
-    return walkToScope(innermost, tree, 'Class');
-  }
-
   // `var` declarations: hoist to nearest enclosing Function or Module.
   const variable = decl['@declaration.variable'];
   if (variable !== undefined && isVarDeclaration(variable.text)) {
@@ -82,8 +75,11 @@ export function tsBindingScopeFor(
  * any of `kinds`. Returns the matching scope's id or `null` when no
  * ancestor matches (e.g., a return type binding emitted outside any
  * Module scope — shouldn't happen in well-formed input).
+ *
+ * Exported so language-specific hook wrappers (e.g. `jsBindingScopeFor`)
+ * can reuse it without duplicating the traversal logic.
  */
-function walkToScope(
+export function walkToScope(
   from: Scope,
   tree: ScopeTree,
   ...kinds: readonly Scope['kind'][]

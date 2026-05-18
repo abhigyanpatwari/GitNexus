@@ -227,7 +227,6 @@ export function interpretTsTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   else if (captures['@type-binding.alias'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
   else if (captures['@type-binding.parameter-property'] !== undefined) source = 'annotation';
-  else if (captures['@type-binding.class-field'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.destructured'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.map-tuple-entry'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.instanceof-narrow'] !== undefined) source = 'annotation';

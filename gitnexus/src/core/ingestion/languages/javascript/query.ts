@@ -15,9 +15,11 @@
  *
  * What IS shared with the TypeScript query:
  *
- *   - Scope patterns: `program`, `class_declaration`, `class_expression`,
- *     `function_declaration`, `generator_function_declaration`,
- *     `function_expression`, `arrow_function`, `method_definition`.
+ *   - Scope patterns: `program`, `class_declaration`, `(class)` (the JS
+ *     grammar node for class expressions — NOT `class_expression`, which
+ *     does not exist in `tree-sitter-javascript`), `function_declaration`,
+ *     `generator_function_declaration`, `function_expression`,
+ *     `arrow_function`, `method_definition`.
  *   - Declaration patterns for functions, classes, const/let/var,
  *     object-property arrows (Zustand, TanStack, etc.), and HOC-wrapped
  *     variable declarations (forwardRef / memo / useCallback / useMemo).

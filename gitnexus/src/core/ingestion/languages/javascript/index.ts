@@ -26,9 +26,9 @@
  *
  * ## Known limitations
  *
- *   1. **JSDoc coverage** — Only `@param {T} name` and `@returns {T}` /
- *      `@return {T}` tags are parsed. `@type {T}` on variable declarations
- *      and `@typedef` are not yet synthesized.
+ *   1. **JSDoc coverage** — `@param {T} name`, `@returns {T}` / `@return {T}`,
+ *      and `@type {T}` on variable declarations are synthesized. `@typedef`
+ *      is not yet synthesized (tracked in #1646).
  *   2. **CJS chained destructuring** — `const { X: { Y } } = require(...)`
  *      (nested destructuring) emits only the outer `X` binding; `Y` is not
  *      resolved.

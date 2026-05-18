@@ -287,11 +287,10 @@ function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
     const isFnDecl =
       node.type === 'function_declaration' || node.type === 'generator_function_declaration';
     const isMethodDef = node.type === 'method_definition';
-    const isExprStmt = node.type === 'expression_statement';
     // Also check lexical_declaration containing an arrow/fn-expression
     const isLexDecl = node.type === 'lexical_declaration' || node.type === 'variable_declaration';
 
-    if (!isFnDecl && !isMethodDef && !isExprStmt && !isLexDecl) continue;
+    if (!isFnDecl && !isMethodDef && !isLexDecl) continue;
 
     // For `export function foo() { ... }`, the JSDoc comment precedes the
     // wrapping export_statement, not the inner function_declaration.
