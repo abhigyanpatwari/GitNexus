@@ -1217,7 +1217,7 @@ describe('CLI end-to-end', () => {
 
         child.stdout.on('data', (chunk: Buffer) => {
           stdoutBuffer += chunk.toString();
-          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
             foundOnStdout = true;
             child.kill('SIGTERM');
           }
