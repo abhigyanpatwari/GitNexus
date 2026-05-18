@@ -76,10 +76,23 @@ export const walkRepositoryPaths = async (
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
     const suffix = isDefault ? ', likely generated/vendored' : '';
     logger.warn(`  Skipped ${skippedLarge} large files (>${maxFileSizeBytes / 1024}KB${suffix})`);
-    if (isVerboseIngestionEnabled()) {
-      for (const p of skippedLargePaths) {
-        logger.warn(`  - ${p}`);
-      }
+
+    // Always show at least the first few paths so users can diagnose why
+    // edges are missing from a specific file (issue #1659). The full list is
+    // gated behind GITNEXUS_VERBOSE=1 to avoid flooding output on repos with
+    // many generated/vendored blobs.
+    const SKIPPED_PREVIEW_CAP = 5;
+    const showAll = isVerboseIngestionEnabled() || skippedLargePaths.length <= SKIPPED_PREVIEW_CAP;
+    const preview = showAll ? skippedLargePaths : skippedLargePaths.slice(0, SKIPPED_PREVIEW_CAP);
+    for (const p of preview) {
+      logger.warn(`  - ${p}`);
+    }
+    if (!showAll) {
+      const remaining = skippedLargePaths.length - SKIPPED_PREVIEW_CAP;
+      logger.warn(`  ...and ${remaining} more (set GITNEXUS_VERBOSE=1 to list them all)`);
+    }
+    if (isDefault) {
+      logger.warn(`  Set GITNEXUS_MAX_FILE_SIZE=<KB> to include files above the default cap.`);
     }
   }
 

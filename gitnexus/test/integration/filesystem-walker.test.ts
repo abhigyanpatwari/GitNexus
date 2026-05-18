@@ -398,5 +398,92 @@ describe('filesystem-walker', () => {
       expect(skipWarnings.length).toBeGreaterThan(0);
       expect(String(skipWarnings[0].msg ?? '')).toContain('generated/vendored');
     });
+
+    // Regression: issue #1659. The skipped-paths list and the
+    // GITNEXUS_MAX_FILE_SIZE hint must appear by default, otherwise users
+    // see "Skipped N large files" with no actionable detail and misdiagnose
+    // missing IMPORTS/CALLS edges as a resolver bug.
+    it('lists the skipped path by default (not gated behind GITNEXUS_VERBOSE)', async () => {
+      await walkRepositoryPaths(sizeDir);
+      const pathWarnings = cap.records().filter((r) => String(r.msg ?? '').includes(BIG_FILE));
+      expect(pathWarnings.length).toBeGreaterThan(0);
+    });
+
+    it('emits a GITNEXUS_MAX_FILE_SIZE hint when running with the default cap', async () => {
+      await walkRepositoryPaths(sizeDir);
+      const hint = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
+      expect(hint.length).toBe(1);
+    });
+
+    it('omits the GITNEXUS_MAX_FILE_SIZE hint when an override is active', async () => {
+      process.env.GITNEXUS_MAX_FILE_SIZE = '1';
+      await walkRepositoryPaths(sizeDir);
+      const hint = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
+      expect(hint.length).toBe(0);
+    });
+  });
+
+  describe('large file skip preview cap (#1659)', () => {
+    let manyDir: string;
+    const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
+    const ORIGINAL_VERBOSE = process.env.GITNEXUS_VERBOSE;
+    let cap: ReturnType<typeof _captureLogger>;
+
+    beforeAll(async () => {
+      manyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-size-many-'));
+      await fs.mkdir(path.join(manyDir, 'src'), { recursive: true });
+      // 8 files >512KB so the preview-cap path (5) is exercised.
+      for (let i = 0; i < 8; i++) {
+        await fs.writeFile(path.join(manyDir, 'src', `big${i}.ts`), 'x'.repeat(600 * 1024));
+      }
+    });
+
+    afterAll(async () => {
+      await fs.rm(manyDir, { recursive: true, force: true });
+    });
+
+    beforeEach(() => {
+      delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      delete process.env.GITNEXUS_VERBOSE;
+      _resetMaxFileSizeWarnings();
+      cap = _captureLogger();
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env.GITNEXUS_MAX_FILE_SIZE;
+      } else {
+        process.env.GITNEXUS_MAX_FILE_SIZE = ORIGINAL_ENV;
+      }
+      if (ORIGINAL_VERBOSE === undefined) {
+        delete process.env.GITNEXUS_VERBOSE;
+      } else {
+        process.env.GITNEXUS_VERBOSE = ORIGINAL_VERBOSE;
+      }
+      cap.restore();
+    });
+
+    it('truncates the path list to 5 and mentions GITNEXUS_VERBOSE when over the cap', async () => {
+      await walkRepositoryPaths(manyDir);
+      const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+      expect(pathLines.length).toBe(5);
+      const more = cap
+        .records()
+        .filter((r) => String(r.msg ?? '').includes('and 3 more (set GITNEXUS_VERBOSE=1'));
+      expect(more.length).toBe(1);
+    });
+
+    it('lists every skipped path when GITNEXUS_VERBOSE=1', async () => {
+      process.env.GITNEXUS_VERBOSE = '1';
+      await walkRepositoryPaths(manyDir);
+      const pathLines = cap.records().filter((r) => /^\s*-\s/.test(String(r.msg ?? '')));
+      expect(pathLines.length).toBe(8);
+      const more = cap.records().filter((r) => String(r.msg ?? '').includes('and '));
+      expect(more.length).toBe(0);
+    });
   });
 });
