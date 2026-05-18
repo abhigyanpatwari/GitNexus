@@ -132,6 +132,7 @@ export function emitFreeCallFallback(
                 site.arity,
                 site.argumentTypes,
                 {
+                  argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: options.conversionRankFn,
                   constraintCompatibility: options.constraintCompatibility,
                 },
@@ -196,6 +197,7 @@ export function emitFreeCallFallback(
               fnDef = ordinary[0];
             } else {
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
+                argumentTypeClasses: site.argumentTypeClasses,
                 conversionRankFn: options.conversionRankFn,
                 constraintCompatibility: options.constraintCompatibility,
               });
@@ -231,6 +233,7 @@ export function emitFreeCallFallback(
             push(adl);
 
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
+              argumentTypeClasses: site.argumentTypeClasses,
               conversionRankFn: options.conversionRankFn,
               constraintCompatibility: options.constraintCompatibility,
             });
@@ -490,6 +493,7 @@ export function pickImplicitThisOverload(
     readonly name: string;
     readonly arity?: number;
     readonly argumentTypes?: readonly string[];
+    readonly argumentTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
   },
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
@@ -526,6 +530,7 @@ export function pickImplicitThisOverload(
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });

@@ -62,6 +62,8 @@ export type ConversionRankFn = (argType: string, paramType: string) => number;
  * undefined preserves the legacy arity + exact-type behavior.
  */
 export interface OverloadNarrowingHookCtx {
+  /** Shape-preserving per-argument sidecar aligned with `argTypes`. */
+  readonly argumentTypeClasses?: ConstraintContext['argumentTypeClasses'];
   /** Conversion-rank scoring fallback (step 4b). Engages when the
    *  exact-type filter rejects every candidate. */
   readonly conversionRankFn?: ConversionRankFn;
@@ -163,7 +165,15 @@ export function narrowOverloadCandidates(
   // than emitting a wrong edge.
   if (hookCtx?.constraintCompatibility !== undefined && argCount !== undefined) {
     const callsite: Callsite = { arity: argCount };
-    const ctx: ConstraintContext = argTypes !== undefined ? { argumentTypes: argTypes } : {};
+    const ctx: ConstraintContext =
+      argTypes !== undefined
+        ? {
+            argumentTypes: argTypes,
+            ...(hookCtx.argumentTypeClasses !== undefined
+              ? { argumentTypeClasses: hookCtx.argumentTypeClasses }
+              : {}),
+          }
+        : {};
     result = result.filter((def) => {
       if (def.templateConstraints === undefined) return true;
       return hookCtx.constraintCompatibility!(callsite, def, ctx) !== 'incompatible';
