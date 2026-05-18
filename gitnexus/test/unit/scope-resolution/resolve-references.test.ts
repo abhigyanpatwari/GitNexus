@@ -158,6 +158,70 @@ describe('resolveReferenceSites', () => {
     expect(result.referenceIndex.bySourceScope.get('scope:call')?.[0]?.toDef).toBe('def:User.save');
   });
 
+  it('produces identical referenceIndex with hook wired vs hook absent (parity)', () => {
+    // Fixture: 1 method hit + 1 field hit + 2-level MRO chain.
+    const parentClass = mkDef({ nodeId: 'def:Parent', type: 'Class', qualifiedName: 'Parent' });
+    const childClass = mkDef({ nodeId: 'def:Child', type: 'Class', qualifiedName: 'Child' });
+    const parentSave = mkDef({
+      nodeId: 'def:Parent.save',
+      type: 'Method',
+      qualifiedName: 'Parent.save',
+      ownerId: 'def:Parent',
+    });
+    const childName = mkDef({
+      nodeId: 'def:Child.name',
+      type: 'Property',
+      qualifiedName: 'Child.name',
+      ownerId: 'def:Child',
+    });
+    const allDefs = [parentClass, childClass, parentSave, childName];
+
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { c: typeRef('Child', 'scope:call') },
+    });
+    const callSite: ReferenceSite = {
+      name: 'save',
+      atRange: range(5, 2, 5, 6),
+      inScope: 'scope:call',
+      kind: 'call',
+      explicitReceiver: { name: 'c' },
+      arity: 0,
+    };
+    const fieldSite: ReferenceSite = {
+      name: 'name',
+      atRange: range(6, 2, 6, 6),
+      inScope: 'scope:call',
+      kind: 'read',
+      explicitReceiver: { name: 'c' },
+    };
+    const sites = [callSite, fieldSite];
+    const mro = { 'def:Child': ['def:Parent'] };
+
+    const ownedMembersByOwner = (ownerDefId: string, memberName: string) => {
+      const hits = allDefs.filter((d) => d.ownerId === ownerDefId && d.qualifiedName?.endsWith(`.${memberName}`));
+      return hits.length === 0 ? [] : hits;
+    };
+
+    const withHook = resolveReferenceSites({
+      scopes: makeIndexes([scope], allDefs, sites, mro),
+      ownedMembersByOwner,
+    });
+    const withoutHook = resolveReferenceSites({
+      scopes: makeIndexes([scope], allDefs, sites, mro),
+    });
+
+    expect(withHook.stats).toEqual(withoutHook.stats);
+    const hookSites = withHook.referenceIndex.bySourceScope.get('scope:call') ?? [];
+    const noHookSites = withoutHook.referenceIndex.bySourceScope.get('scope:call') ?? [];
+    expect(hookSites).toHaveLength(noHookSites.length);
+    expect(hookSites.map((s) => s.toDef).sort()).toEqual(noHookSites.map((s) => s.toDef).sort());
+    for (let i = 0; i < hookSites.length; i++) {
+      expect(hookSites[i]).toEqual(noHookSites[i]);
+    }
+  });
+
   it('threads providers.arityCompatibility through to filter hook-provided overloads', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const saveOne = mkDef({
