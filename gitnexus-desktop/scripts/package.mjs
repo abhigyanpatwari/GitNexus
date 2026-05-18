@@ -36,6 +36,12 @@ const requiredBuilderRuntimeModules = ['app-builder-bin'];
 const appBuilderLibVersion =
   desktopPackageLock.packages?.['node_modules/app-builder-lib']?.version ??
   electronBuilderVersion.replace(/^[^\d]*/, '');
+// Validate version is safe semver before embedding in a CLI argument.
+if (!/^\d+\.\d+\.\d+(?:[.-][a-zA-Z0-9._-]*)?$/.test(appBuilderLibVersion)) {
+  throw new Error(
+    `Invalid app-builder-lib version in lockfile: ${JSON.stringify(appBuilderLibVersion)}`,
+  );
+}
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outputDir = path.join(releaseRoot, stamp);
 const latestReleasePointerPath = path.join(releaseRoot, '.latest-unpacked-release');
@@ -279,7 +285,14 @@ const syncPackagedRuntimeResources = () => {
     for (const entry of packagedResourceEntries) {
       const destinationPath = path.join(resourceRoot, entry.to);
 
-      if (fs.statSync(entry.from).isDirectory()) {
+      let isDirectory;
+      try {
+        isDirectory = fs.statSync(entry.from).isDirectory();
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        continue;
+      }
+      if (isDirectory) {
         mirrorDirectory(entry.from, destinationPath);
         continue;
       }
