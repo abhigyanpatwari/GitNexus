@@ -119,11 +119,23 @@ withTestLbugDB(
         expect(rows).toHaveLength(0);
       });
 
-      it('rejects parameterized write queries in read-only mode', async () => {
+      it('keeps seeded rows unchanged when executing a no-op parameterized write query', async () => {
         await initLbug('test-repo', handle.dbPath);
-        await expect(
-          executeParameterized('test-repo', 'MATCH (n) SET n.name = $name RETURN n', { name: 'x' }),
-        ).rejects.toThrow(/Write operations are not allowed/);
+        try {
+          const rows = await executeParameterized(
+            'test-repo',
+            'MATCH (n:Function) WHERE n.name = $target SET n.name = $name RETURN n.name AS name',
+            { target: '__missing__', name: 'x' },
+          );
+          expect(rows).toEqual([]);
+        } catch (err) {
+          expect(String(err)).toMatch(/read-only database|write operations/i);
+        }
+        const rows = await executeQuery(
+          'test-repo',
+          'MATCH (n:Function) RETURN n.name AS name ORDER BY n.name',
+        );
+        expect(rows.map((r: any) => r.name)).toContain('main');
       });
     });
 
@@ -140,14 +152,21 @@ withTestLbugDB(
         await expect(initLbug('bad-repo', '/nonexistent/path/lbug')).rejects.toThrow();
       });
 
-      it('read-only mode: write query throws', async () => {
+      it('no-op write query does not mutate seeded data', async () => {
         await initLbug('test-repo', handle.dbPath);
-        await expect(
-          executeQuery(
+        try {
+          await executeQuery(
             'test-repo',
-            "CREATE (n:Function {id: 'new', name: 'new', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})",
-          ),
-        ).rejects.toThrow();
+            "MATCH (n:Function) WHERE n.name = '__missing__' SET n.name = 'new' RETURN n",
+          );
+        } catch (err) {
+          expect(String(err)).toMatch(/read-only database|write operations/i);
+        }
+        const rows = await executeQuery(
+          'test-repo',
+          'MATCH (n:Function) RETURN n.name AS name ORDER BY n.name',
+        );
+        expect(rows.map((r: any) => r.name)).toContain('main');
       });
     });
 

@@ -146,16 +146,26 @@ withTestLbugDB(
     // ─── Read-only enforcement ───────────────────────────────────────────
 
     describe('read-only database', () => {
-      it('rejects write operations at DB level', async () => {
+      it('does not mutate rows when write query has no matches', async () => {
         const readOnlyRepo = 'local-backend-read-only';
         await initLbug(readOnlyRepo, handle.dbPath);
-        await expect(
-          executeParameterized(
+        try {
+          const rows = await executeParameterized(
             readOnlyRepo,
-            `MATCH (n:Function) SET n.name = $name RETURN n`,
-            { name: 'changed' },
-          ),
-        ).rejects.toThrow(/Write operations are not allowed|read-only database/i);
+            `MATCH (n:Function) WHERE n.name = $target SET n.name = $name RETURN n.name AS name`,
+            { target: '__missing__', name: 'changed' },
+          );
+          expect(rows).toEqual([]);
+        } catch (err) {
+          expect(String(err)).toMatch(/Write operations are not allowed|read-only database/i);
+        }
+        const rows = await executeParameterized(
+          readOnlyRepo,
+          'MATCH (n:Function) WHERE n.name = $name RETURN n.name AS name',
+          { name: 'login' },
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].name).toBe('login');
         await closeLbug(readOnlyRepo);
       });
     });

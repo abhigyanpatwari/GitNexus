@@ -635,11 +635,9 @@ export const handleQueryRequest = async (
     }
     const queryParams = req.body.params;
     if (queryParams !== undefined && !isValidQueryParams(queryParams)) {
-      res
-        .status(400)
-        .json({
-          error: '"params" must be a plain object with scalar values (string/number/boolean/null)',
-        });
+      res.status(400).json({
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null)',
+      });
       return;
     }
 
