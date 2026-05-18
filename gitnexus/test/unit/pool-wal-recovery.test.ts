@@ -34,6 +34,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   createLbugDatabase: vi.fn(),
   LBUG_MAX_DB_SIZE: 1024,
+  WAL_RECOVERY_SUGGESTION:
+    'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
   isWalCorruptionError: vi.fn((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err ?? '');
     return /corrupt(ed)?\s+wal|invalid\s+wal\s+record/i.test(msg);
