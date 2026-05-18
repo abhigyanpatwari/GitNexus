@@ -199,7 +199,7 @@ func main() {
       expect(echoRoute?.symbolName).toBe('listOrders');
     });
 
-    it('extracts stdlib HandleFunc providers', async () => {
+    it('extracts stdlib HandleFunc providers (all common verbs)', async () => {
       const dir = path.join(tmpDir, 'go-stdlib-provider');
       fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
       fs.writeFileSync(
@@ -218,9 +218,14 @@ func main() {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
-      expect(healthRoute).toBeDefined();
-      expect(healthRoute?.symbolName).toBe('healthHandler');
+      // HandleFunc registers a handler for ALL methods; the matcher
+      // needs one provider entry per common verb so non-GET consumer
+      // calls (POST /api/health, etc.) still cross-link.
+      for (const method of ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']) {
+        const route = providers.find((c) => c.contractId === `http::${method}::/api/health`);
+        expect(route, `expected ${method} /api/health provider`).toBeDefined();
+        expect(route?.symbolName).toBe('healthHandler');
+      }
     });
 
     it('extracts NestJS controller decorators', async () => {

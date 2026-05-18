@@ -148,21 +148,31 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    // net/http HandleFunc: default method GET
+    // net/http HandleFunc: registers a handler for ALL HTTP methods.
+    // The method check happens inside the handler body, not at
+    // registration. Emitting only method='GET' silently breaks
+    // cross-repo matching for every consumer doing POST/PUT/DELETE/
+    // PATCH against a HandleFunc-registered route. Emit one
+    // detection per common verb so the matcher can pair any
+    // consumer method; confidence is lowered (0.6) since we don't
+    // actually know which methods the handler accepts.
+    const HANDLE_FUNC_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
     for (const match of runCompiledPatterns(HANDLE_FUNC_PATTERNS, tree)) {
       const pathNode = match.captures.path;
       const handlerNode = match.captures.handler;
       if (!pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
-      out.push({
-        role: 'provider',
-        framework: 'go-stdlib',
-        method: 'GET',
-        path,
-        name: handlerNode?.text ?? null,
-        confidence: 0.8,
-      });
+      for (const method of HANDLE_FUNC_METHODS) {
+        out.push({
+          role: 'provider',
+          framework: 'go-stdlib',
+          method,
+          path,
+          name: handlerNode?.text ?? null,
+          confidence: 0.6,
+        });
+      }
     }
 
     // net/http client: http.Get/Post/Head
