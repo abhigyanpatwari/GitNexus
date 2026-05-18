@@ -174,6 +174,17 @@ export function scanFile<TMeta>(
 export function unquoteLiteral(raw: string): string | null {
   if (!raw) return null;
 
+  // Strip Python string prefixes (`f`, `r`, `b`, `u`, and their two-letter
+  // combinations `fr`/`rf`/`br`/`rb`/`bf` etc.) when followed by a quote.
+  // Without this, f-strings like `f"{x}/api/foo"` survive unquoting with
+  // the `f"` prefix intact, which then poisons downstream path
+  // normalization with literal `f"` at the start of every consumer URL.
+  // The lookahead constraint (`(?=["'`])`) keeps this Python-specific:
+  // the only way 1-2 letters from this set can appear immediately before
+  // a quote in Java/Go/JS/TS source is also a string literal, where
+  // stripping them is harmless because the next pass unquotes the rest.
+  raw = raw.replace(/^[fFrRbBuU]{1,2}(?=["'`])/, '');
+
   // Python triple-quoted
   if (
     (raw.startsWith('"""') && raw.endsWith('"""')) ||

@@ -436,6 +436,58 @@ def create_order():
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
       ).toBeDefined();
     });
+
+    it('strips Python string prefixes (f/r/b/u) before path normalization', async () => {
+      // Without prefix handling, an f-string `f"{base}/api/items"` survives
+      // unquoteLiteral as `f"{base}/api/items"` (the `f` is part of the raw
+      // token, not the quotes). It then poisons the consumer contractId
+      // with a literal `f"` at the start of the path. Cover the common
+      // prefixes here so the regression is visible.
+      const dir = path.join(tmpDir, 'python-prefix-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import requests
+
+BASE = "https://svc.local"
+
+def call_fstring():
+    return requests.get(f"{BASE}/api/items")
+
+def call_raw():
+    return requests.get(r"/api/raw")
+
+def call_bytes():
+    return requests.request("PUT", b"/api/bytes")
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // f-string: `{BASE}` collapses to `{param}` (a base-URL placeholder
+      // appearing as a path segment). We're not trying to be smart about
+      // that here; the test only asserts the `f"` prefix is gone.
+      const fstring = consumers.find((c) =>
+        c.contractId.startsWith('http::GET::') &&
+        c.contractId.includes('/api/items') &&
+        !c.contractId.includes('f"'),
+      );
+      expect(fstring, 'expected f-string consumer with no literal f"').toBeDefined();
+
+      // Raw string: the `r` prefix should also disappear.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/raw'),
+        'expected r-string consumer to normalize cleanly',
+      ).toBeDefined();
+
+      // Bytes literal: `b"/api/bytes"` should still produce a consumer entry.
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/bytes'),
+        'expected b-string consumer to normalize cleanly',
+      ).toBeDefined();
+    });
     it('extracts Python httpx.AsyncClient calls assigned to attributes or aliases', async () => {
       const dir = path.join(tmpDir, 'python-httpx-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
