@@ -212,6 +212,61 @@ describe('reconcileOwnership', () => {
     expect(model.methods.lookupAllByOwner('def:User', 'save')).toHaveLength(1);
   });
 
+  it('registers nested class-like types (Class/Enum/Interface) into TypeRegistry by owner', () => {
+    const model = createSemanticModel();
+    const inner: SymbolDefinition = {
+      nodeId: 'def:Outer.Inner',
+      filePath: 'm.ts',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+      ownerId: 'def:Outer',
+    };
+    const status: SymbolDefinition = {
+      nodeId: 'def:Outer.Status',
+      filePath: 'm.ts',
+      type: 'Enum',
+      qualifiedName: 'Outer.Status',
+      ownerId: 'def:Outer',
+    };
+    const visitor: SymbolDefinition = {
+      nodeId: 'def:Outer.Visitor',
+      filePath: 'm.ts',
+      type: 'Interface',
+      qualifiedName: 'Outer.Visitor',
+      ownerId: 'def:Outer',
+    };
+    const file = mkFile('m.ts', [inner, status, visitor]);
+
+    const stats = reconcileOwnership([file], model);
+
+    expect(stats.nestedTypesRegistered).toBe(3);
+    expect(stats.methodsRegistered).toBe(0);
+    expect(stats.fieldsRegistered).toBe(0);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Inner')).toEqual([inner]);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Status')).toEqual([status]);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Visitor')).toEqual([visitor]);
+  });
+
+  it('is idempotent for nested type registration', () => {
+    const model = createSemanticModel();
+    const inner: SymbolDefinition = {
+      nodeId: 'def:Outer.Inner',
+      filePath: 'm.ts',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+      ownerId: 'def:Outer',
+    };
+    const file = mkFile('m.ts', [inner]);
+
+    const first = reconcileOwnership([file], model);
+    const second = reconcileOwnership([file], model);
+
+    expect(first.nestedTypesRegistered).toBe(1);
+    expect(second.nestedTypesRegistered).toBe(0);
+    expect(second.skippedAlreadyPresent).toBe(1);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Inner')).toHaveLength(1);
+  });
+
   it('registers multiple overloads under the same (owner, name)', () => {
     const model = createSemanticModel();
     const log1 = mkMethod({

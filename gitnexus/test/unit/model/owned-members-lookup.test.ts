@@ -80,6 +80,46 @@ describe('lookupOwnedMembersByOwner', () => {
 
     expect(lookupOwnedMembersByOwner(model, 'def:User', 'id')).toEqual([prop, variable]);
   });
+
+  it('returns nested-type hits when registered under (owner, simpleName)', () => {
+    const model = createSemanticModel();
+    const inner = mkDef({
+      nodeId: 'def:Outer.Inner',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+      ownerId: 'def:Outer',
+    });
+    model.types.registerByOwner('def:Outer', 'Inner', inner);
+
+    expect(lookupOwnedMembersByOwner(model, 'def:Outer', 'Inner')).toEqual([inner]);
+  });
+
+  it('merges methods + fields + nested-type hits under the same (owner, name)', () => {
+    const model = createSemanticModel();
+    const method = mkDef({
+      nodeId: 'def:Outer.x#method',
+      type: 'Method',
+      qualifiedName: 'Outer.x',
+      ownerId: 'def:Outer',
+    });
+    const field = mkDef({
+      nodeId: 'def:Outer.x#field',
+      type: 'Property',
+      qualifiedName: 'Outer.x',
+      ownerId: 'def:Outer',
+    });
+    const nested = mkDef({
+      nodeId: 'def:Outer.x#class',
+      type: 'Class',
+      qualifiedName: 'Outer.x',
+      ownerId: 'def:Outer',
+    });
+    model.methods.register('def:Outer', 'x', method);
+    model.fields.register('def:Outer', 'x', field);
+    model.types.registerByOwner('def:Outer', 'x', nested);
+
+    expect(lookupOwnedMembersByOwner(model, 'def:Outer', 'x')).toEqual([method, field, nested]);
+  });
 });
 
 describe('Step 2 perf contract', () => {

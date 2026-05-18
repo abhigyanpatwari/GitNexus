@@ -45,11 +45,29 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { simpleQualifiedName } from '../graph-bridge/ids.js';
 
+const NESTED_TYPE_KINDS = new Set<string>([
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Union',
+  'Trait',
+  'TypeAlias',
+  'Typedef',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Template',
+  'Namespace',
+]);
+
 export interface ReconcileStats {
   /** Method/Function/Constructor defs registered into MethodRegistry. */
   readonly methodsRegistered: number;
   /** Property/Variable defs registered into FieldRegistry. */
   readonly fieldsRegistered: number;
+  /** Class-like nested type defs registered into TypeRegistry by owner. */
+  readonly nestedTypesRegistered: number;
   /** Defs already present (idempotent skip). */
   readonly skippedAlreadyPresent: number;
 }
@@ -60,6 +78,7 @@ export function reconcileOwnership(
 ): ReconcileStats {
   let methodsRegistered = 0;
   let fieldsRegistered = 0;
+  let nestedTypesRegistered = 0;
   let skippedAlreadyPresent = 0;
 
   for (const parsed of parsedFiles) {
@@ -90,11 +109,19 @@ export function reconcileOwnership(
         }
         model.fields.register(ownerId, simple, def);
         fieldsRegistered++;
+      } else if (NESTED_TYPE_KINDS.has(def.type)) {
+        const existing = model.types.lookupAllByOwner(ownerId, simple);
+        if (existing.some((e) => e.nodeId === def.nodeId)) {
+          skippedAlreadyPresent++;
+          continue;
+        }
+        model.types.registerByOwner(ownerId, simple, def);
+        nestedTypesRegistered++;
       }
     }
   }
 
-  return { methodsRegistered, fieldsRegistered, skippedAlreadyPresent };
+  return { methodsRegistered, fieldsRegistered, nestedTypesRegistered, skippedAlreadyPresent };
 }
 
 /**
@@ -147,6 +174,15 @@ export function validateOwnershipParity(
           onWarn(
             `semantic-model parity: ${def.type} ${def.nodeId} (${parsed.filePath}) ` +
               `owned by ${ownerId} as "${simple}" not in FieldRegistry`,
+          );
+          mismatches++;
+        }
+      } else if (NESTED_TYPE_KINDS.has(def.type)) {
+        const found = model.types.lookupAllByOwner(ownerId, simple);
+        if (!found.some((d) => d.nodeId === def.nodeId)) {
+          onWarn(
+            `semantic-model parity: ${def.type} ${def.nodeId} (${parsed.filePath}) ` +
+              `owned by ${ownerId} as "${simple}" not in TypeRegistry owner index`,
           );
           mismatches++;
         }

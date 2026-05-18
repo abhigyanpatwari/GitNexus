@@ -15,20 +15,31 @@ const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
 /**
  * Production hook for `RegistryContext.ownedMembersByOwner`.
  * Returns `[]` on miss (authoritative indexed empty) — never `undefined`.
+ *
+ * Merges hits from all three owner-keyed registries (methods, fields,
+ * nested types) under the same `(ownerDefId, memberName)` key. The
+ * caller's `acceptedKinds` filter in `lookupCore` picks the right subset.
  */
 export function lookupOwnedMembersByOwner(
-  model: Pick<SemanticModel, 'methods' | 'fields'>,
+  model: Pick<SemanticModel, 'methods' | 'fields' | 'types'>,
   ownerDefId: DefId,
   memberName: string,
 ): readonly SymbolDefinition[] {
   const methods = model.methods.lookupAllByOwner(ownerDefId, memberName);
   const fields = model.fields.lookupAllByOwner(ownerDefId, memberName);
+  const nestedTypes = model.types.lookupAllByOwner(ownerDefId, memberName);
   const methodCount = methods.length;
   const fieldCount = fields.length;
-  if (fieldCount === 0) return methodCount === 0 ? EMPTY : methods;
-  if (methodCount === 0) return fields;
-  const merged = new Array<SymbolDefinition>(methodCount + fieldCount);
-  for (let i = 0; i < methodCount; i++) merged[i] = methods[i]!;
-  for (let i = 0; i < fieldCount; i++) merged[methodCount + i] = fields[i]!;
+  const typeCount = nestedTypes.length;
+  const total = methodCount + fieldCount + typeCount;
+  if (total === 0) return EMPTY;
+  if (methodCount === total) return methods;
+  if (fieldCount === total) return fields;
+  if (typeCount === total) return nestedTypes;
+  const merged = new Array<SymbolDefinition>(total);
+  let i = 0;
+  for (let j = 0; j < methodCount; j++) merged[i++] = methods[j]!;
+  for (let j = 0; j < fieldCount; j++) merged[i++] = fields[j]!;
+  for (let j = 0; j < typeCount; j++) merged[i++] = nestedTypes[j]!;
   return merged;
 }
