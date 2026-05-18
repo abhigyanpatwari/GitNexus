@@ -64,8 +64,8 @@ export interface ResolveReferencesInput {
   readonly scopes: ScopeResolutionIndexes;
   /** Provider hooks consumed by the registries (e.g. `arityCompatibility`). */
   readonly providers?: RegistryProviders;
-  /** Optional owner-keyed member lookup used by Step 2 receiver/MRO walks. */
-  readonly ownedMembersByOwner?: RegistryContext['ownedMembersByOwner'];
+  /** Required owner-keyed member lookup used by Step 2 receiver/MRO walks. */
+  readonly ownedMembersByOwner: RegistryContext['ownedMembersByOwner'];
 }
 
 export interface ResolveStats {

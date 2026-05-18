@@ -126,12 +126,25 @@ function makeCtx(
       return out;
     },
   });
+  // Default hook: scan supplied defs by (ownerId, simpleName) — the same
+  // semantics the byId fallback used to provide. Tests that need a custom
+  // hook override via opts.ownedMembersByOwner.
+  const defaultOwnedMembersByOwner = (ownerDefId: string, memberName: string) => {
+    const out: SymbolDefinition[] = [];
+    for (const def of defs) {
+      if (def.ownerId !== ownerDefId) continue;
+      const dot = def.qualifiedName?.lastIndexOf('.') ?? -1;
+      const simple = dot === -1 ? def.qualifiedName : def.qualifiedName?.slice(dot + 1);
+      if (simple === memberName) out.push(def);
+    }
+    return out;
+  };
   return {
     scopes: buildScopeTree(scopes),
     defs: defIndex,
     qualifiedNames: qualifiedNameIndex,
     moduleScopes,
-    ownedMembersByOwner: opts.ownedMembersByOwner,
+    ownedMembersByOwner: opts.ownedMembersByOwner ?? defaultOwnedMembersByOwner,
     methodDispatch,
     providers: opts.arity !== undefined ? { arityCompatibility: opts.arity } : {},
   };
@@ -717,31 +730,6 @@ describe('Step 2: type-binding + MRO walk', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]!.def).toBe(counterStatic);
-  });
-
-  it('falls back to defs scan when ownedMembersByOwner returns undefined', () => {
-    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
-    const maxConst = mkDef({
-      nodeId: 'def:User.MAX',
-      type: 'Const',
-      qualifiedName: 'User.MAX',
-      ownerId: 'def:User',
-    });
-    const readScope = mkScope({
-      id: 'scope:read',
-      parent: null,
-      typeBindings: { user: typeRef('User', 'scope:read') },
-    });
-    const ctx = makeCtx([readScope], [userClass, maxConst], {
-      ownedMembersByOwner: () => undefined,
-    });
-
-    const results = buildFieldRegistry(ctx).lookup('MAX', 'scope:read', {
-      explicitReceiver: { name: 'user' },
-    });
-
-    expect(results).toHaveLength(1);
-    expect(results[0]!.def).toBe(maxConst);
   });
 
   it('returns every hook-provided field kind that shares (owner, name)', () => {

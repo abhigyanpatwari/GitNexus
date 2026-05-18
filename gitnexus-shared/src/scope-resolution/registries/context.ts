@@ -94,16 +94,17 @@ export interface OwnerScopedContributor {
 }
 
 /**
- * Optional owner-keyed lookup hook for Step 2 receiver/MRO member walks.
- * Callers with per-owner registries can supply this to avoid full-definition
- * scans for each `(ownerDefId, memberName)` probe. Return `undefined` when
- * the hook does not index that owner/name (Step 2 falls back to `defs`).
- * Return `[]` only for an authoritative indexed miss.
+ * Required owner-keyed lookup hook for Step 2 receiver/MRO member walks.
+ * Production callers wire this to the SemanticModel's authoritative
+ * method/field/nested-type registries so each `(ownerDefId, memberName)`
+ * probe is O(1). Implementations MUST return `[]` on an indexed miss —
+ * Step 2 treats `[]` as authoritative and does not consult `defs` for a
+ * fallback scan.
  */
 export type OwnedMembersByOwnerLookup = (
   ownerDefId: DefId,
   memberName: string,
-) => readonly SymbolDefinition[] | undefined;
+) => readonly SymbolDefinition[];
 
 // ─── Top-level context threaded through every lookup ───────────────────────
 
@@ -112,7 +113,7 @@ export interface RegistryContext {
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
-  readonly ownedMembersByOwner?: OwnedMembersByOwnerLookup;
+  readonly ownedMembersByOwner: OwnedMembersByOwnerLookup;
   /**
    * Method-dispatch index; required for method/field registries that
    * honor `useReceiverTypeBinding`. Omit for class-only lookups.

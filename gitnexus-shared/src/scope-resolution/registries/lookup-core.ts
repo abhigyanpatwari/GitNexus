@@ -336,25 +336,7 @@ function collectOwnedMembers(
   memberName: string,
   ctx: RegistryContext,
 ): readonly SymbolDefinition[] {
-  const indexed = ctx.ownedMembersByOwner?.(ownerDefId, memberName);
-  if (indexed !== undefined) return indexed;
-
-  // Compatibility fallback only when the hook is absent (tests / legacy).
-  // Production `runScopeResolution` always wires `lookupOwnedMembersByOwner`
-  // so Step 2 stays O(1) per registry — never O(|defs|).
-  const out: SymbolDefinition[] = [];
-  for (const def of ctx.defs.byId.values()) {
-    if (def.ownerId !== ownerDefId) continue;
-    if (simpleNameOf(def) !== memberName) continue;
-    out.push(def);
-  }
-  return out;
-}
-
-function simpleNameOf(def: SymbolDefinition): string | undefined {
-  if (def.qualifiedName === undefined || def.qualifiedName.length === 0) return undefined;
-  const dot = def.qualifiedName.lastIndexOf('.');
-  return dot === -1 ? def.qualifiedName : def.qualifiedName.slice(dot + 1);
+  return ctx.ownedMembersByOwner(ownerDefId, memberName);
 }
 
 function recordTypeBindingHit(
