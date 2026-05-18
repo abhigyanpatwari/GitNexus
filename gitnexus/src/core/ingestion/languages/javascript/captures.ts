@@ -251,6 +251,12 @@ function parseJsDocReturn(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+/** Extract `@type {Type}` from a JSDoc comment (variable-level annotation). */
+function parseJsDocType(text: string): string | null {
+  const m = /@type\s+\{([^}]+)\}/.exec(text);
+  return m ? m[1].trim() : null;
+}
+
 /**
  * Walk the AST and synthesize `@type-binding.*` captures from JSDoc
  * comments immediately preceding function declarations / expressions.
@@ -261,6 +267,9 @@ function parseJsDocReturn(text: string): string | null {
  * Emits:
  *   - `@type-binding.parameter` for each `@param {T} n` tag.
  *   - `@type-binding.return` for `@returns {T}` / `@return {T}`.
+ *   - `@type-binding.annotation` for `@type {T}` on `let`/`const`/`var`
+ *     declarations — covers the common `/** @type {User} *​/ const u = …`
+ *     pattern (ECMA-262 §14.3.1/§14.3.2 variable declarations).
  *
  * The binding is anchored on the function node so `tsBindingScopeFor`
  * can hoist method return-type bindings to Module scope (matching the
@@ -298,6 +307,7 @@ function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
         // Found a JSDoc block.
         const params = parseJsDocParams(text);
         const retType = parseJsDocReturn(text);
+        const varType = isLexDecl ? parseJsDocType(text) : null;
 
         // Determine the anchor node (the function-like node, for hoisting).
         const anchor = node;
@@ -333,6 +343,27 @@ function synthesizeJsDocBindings(root: SyntaxNode, out: CaptureMatch[]): void {
             });
           }
         }
+
+        // @type {T} on let/const/var: `/** @type {User} */ const u = getUser()`.
+        // Emits annotation-strength binding (source = 'annotation') so it
+        // overrides any weaker constructor/alias inference on the same name.
+        if (varType !== null) {
+          for (const declarator of node.namedChildren) {
+            if (declarator === null || declarator.type !== 'variable_declarator') continue;
+            const nameNode = declarator.childForFieldName('name');
+            if (nameNode === null || nameNode.type !== 'identifier') continue;
+            out.push({
+              '@type-binding.name': syntheticCapture('@type-binding.name', nameNode, nameNode.text),
+              '@type-binding.type': syntheticCapture('@type-binding.type', nameNode, varType),
+              '@type-binding.annotation': syntheticCapture(
+                '@type-binding.annotation',
+                nameNode,
+                '1',
+              ),
+            });
+          }
+        }
+
         break;
       }
       sibling = sibling.previousNamedSibling;
