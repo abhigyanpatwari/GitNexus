@@ -94,11 +94,9 @@ describe('Step 2 perf contract', () => {
       [userClass.nodeId, userClass],
       [saveMethod.nodeId, saveMethod],
     ]);
-    const originalValues = trapById.values.bind(trapById);
-    trapById.values = function values() {
+    trapById.values = () => {
       throw new Error('defs.byId.values() must not run when ownedMembersByOwner is provided');
-      return originalValues();
-    } as typeof trapById.values;
+    };
 
     const defs: DefIndex = {
       byId: trapById,

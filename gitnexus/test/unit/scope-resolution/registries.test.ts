@@ -693,6 +693,32 @@ describe('Step 2: type-binding + MRO walk', () => {
     expect(results[0]!.def).toBe(maxConst);
   });
 
+  it('resolves Static members from ownedMembersByOwner through accepted-kind filtering', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const counterStatic = mkDef({
+      nodeId: 'def:User.counter',
+      type: 'Static',
+      qualifiedName: 'User.counter',
+      ownerId: 'def:User',
+    });
+    const readScope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:read') },
+    });
+    const ctx = makeCtx([readScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'counter' ? [counterStatic] : [],
+    });
+
+    const results = buildFieldRegistry(ctx).lookup('counter', 'scope:read', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(counterStatic);
+  });
+
   it('falls back to defs scan when ownedMembersByOwner returns undefined', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const maxConst = mkDef({

@@ -7,7 +7,7 @@
  * compatibility scan inside `lookupCore.collectOwnedMembers`.
  */
 
-import type { SymbolDefinition } from 'gitnexus-shared';
+import type { DefId, SymbolDefinition } from 'gitnexus-shared';
 import type { SemanticModel } from './semantic-model.js';
 
 const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
@@ -18,7 +18,7 @@ const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
  */
 export function lookupOwnedMembersByOwner(
   model: Pick<SemanticModel, 'methods' | 'fields'>,
-  ownerDefId: string,
+  ownerDefId: DefId,
   memberName: string,
 ): readonly SymbolDefinition[] {
   const methods = model.methods.lookupAllByOwner(ownerDefId, memberName);
