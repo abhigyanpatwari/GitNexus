@@ -791,6 +791,9 @@ function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
   }
   if (scope === null) return '';
 
+  const paramType = lookupFunctionParameterType(scope, varName);
+  if (paramType !== '') return paramType;
+
   // Scan declarations in the scope for a matching variable name
   for (let i = 0; i < scope.childCount; i++) {
     const stmt = scope.child(i);
@@ -824,6 +827,9 @@ function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterT
   }
   if (scope === null) return unknownTypeClass('unknown');
 
+  const paramTypeClass = lookupFunctionParameterTypeClass(scope, varName, identNode);
+  if (paramTypeClass !== undefined) return paramTypeClass;
+
   for (let i = 0; i < scope.childCount; i++) {
     const stmt = scope.child(i);
     if (stmt === null || stmt.type !== 'declaration') continue;
@@ -848,6 +854,58 @@ function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterT
     return typeClass;
   }
   return unknownTypeClass('unknown');
+}
+
+function lookupFunctionParameterType(scope: SyntaxNode, varName: string): string {
+  const param = findEnclosingFunctionParameter(scope, varName);
+  if (param === null) return '';
+  const typeNode = param.childForFieldName('type');
+  if (typeNode === null) return '';
+  return normalizeCppTypeText(typeNode.text);
+}
+
+function lookupFunctionParameterTypeClass(
+  scope: SyntaxNode,
+  varName: string,
+  identNode: SyntaxNode,
+): ParameterTypeClass | undefined {
+  const param = findEnclosingFunctionParameter(scope, varName);
+  if (param === null) return undefined;
+  const typeNode = param.childForFieldName('type');
+  if (typeNode === null) return undefined;
+  const declarator = param.childForFieldName('declarator');
+  if (declarator === null) return undefined;
+  const typeClass = classifyCppParameterType(typeNode.text, declarator.text, param.text);
+  if (isKnownEnumName(identNode, typeClass.base)) {
+    return { ...typeClass, base: `enum:${typeClass.base}` };
+  }
+  return typeClass;
+}
+
+function findEnclosingFunctionParameter(scope: SyntaxNode, varName: string): SyntaxNode | null {
+  let node: SyntaxNode | null = scope.parent;
+  while (node !== null) {
+    if (node.type === 'function_definition' || node.type === 'function_declarator') {
+      const fnDecl =
+        node.type === 'function_declarator'
+          ? node
+          : findFirstDescendantOfType(node, 'function_declarator');
+      const params = fnDecl?.childForFieldName('parameters') ?? null;
+      if (params !== null) {
+        for (let i = 0; i < params.namedChildCount; i++) {
+          const param = params.namedChild(i);
+          if (param === null || param.type !== 'parameter_declaration') continue;
+          const declarator = param.childForFieldName('declarator');
+          if (declarator !== null && extractDeclaratorLeafName(declarator) === varName) {
+            return param;
+          }
+        }
+      }
+      return null;
+    }
+    node = node.parent;
+  }
+  return null;
 }
 
 function declaredNameNode(declarator: SyntaxNode): SyntaxNode | null {

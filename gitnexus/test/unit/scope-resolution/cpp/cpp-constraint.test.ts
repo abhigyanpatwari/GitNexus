@@ -317,6 +317,12 @@ describe('Tier-A predicate registry', () => {
       }),
     ).toBe('incompatible');
     expect(verdict('is_pointer_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_pointer_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'unknown', 'none')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
   });
 
   it('is_reference_v uses the argument type-class sidecar conservatively', () => {
@@ -333,9 +339,15 @@ describe('Tier-A predicate registry', () => {
       }),
     ).toBe('incompatible');
     expect(verdict('is_reference_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_reference_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'unknown', 'none')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
   });
 
-  it('is_const_v and is_volatile_v read cv from the sidecar', () => {
+  it('is_const_v and is_volatile_v read top-level cv from the sidecar conservatively', () => {
     expect(
       verdict('is_const_v', ['T'], ['int'], {
         argumentTypeClasses: [shape('int', 'value', 'const')],
@@ -356,6 +368,18 @@ describe('Tier-A predicate registry', () => {
       }),
     ).toBe('compatible');
     expect(verdict('is_volatile_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'pointer', 'const')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'value', 'unknown')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
   });
 
   it('shape-sensitive predicates stay unknown when T is not the whole parameter type', () => {

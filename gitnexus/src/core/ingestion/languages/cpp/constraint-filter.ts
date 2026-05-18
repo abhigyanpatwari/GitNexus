@@ -98,12 +98,16 @@ const REGISTRY = new Map<string, AtomicEvaluator>([
   [
     'is_const_v',
     (args) =>
-      unaryShapeVerdict(args, (shape) => shape.cv === 'const' || shape.cv === 'const volatile'),
+      unaryShapeVerdict(args, (shape) => shape.cv === 'const' || shape.cv === 'const volatile', {
+        requireTopLevelCv: true,
+      }),
   ],
   [
     'is_volatile_v',
     (args) =>
-      unaryShapeVerdict(args, (shape) => shape.cv === 'volatile' || shape.cv === 'const volatile'),
+      unaryShapeVerdict(args, (shape) => shape.cv === 'volatile' || shape.cv === 'const volatile', {
+        requireTopLevelCv: true,
+      }),
   ],
   [
     'is_same_v',
@@ -128,11 +132,15 @@ function unaryVerdict(
 function unaryShapeVerdict(
   args: readonly ConstraintArgClass[],
   predicate: (shape: ParameterTypeClass) => boolean,
+  options: { readonly requireTopLevelCv?: boolean } = {},
 ): ArityVerdict {
   const arg = args[0];
   if (arg === undefined || arg.typeClass === 'unknown') return 'unknown';
   const shape = arg.shape;
   if (shape === undefined || shape.indirection === 'unknown' || shape.cv === 'unknown') {
+    return 'unknown';
+  }
+  if (options.requireTopLevelCv === true && shape.indirection === 'pointer') {
     return 'unknown';
   }
   return predicate(shape) ? 'compatible' : 'incompatible';
