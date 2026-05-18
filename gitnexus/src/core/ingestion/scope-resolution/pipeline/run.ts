@@ -25,6 +25,7 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
 import { validateBindingsImmutability } from './validate-bindings-immutability.js';
@@ -342,6 +343,8 @@ export function runScopeResolution(
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    ownedMembersByOwner: (ownerDefId, memberName) =>
+      lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
   });
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
