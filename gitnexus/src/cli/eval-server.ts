@@ -506,9 +506,12 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     // Plain-text banner for the human watching stderr; structured record
     // for log aggregation (split into two so the user sees a real banner
     // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
+    // Use server.address().port so --port 0 (OS-assigned) emits the real port.
+    const addr = server.address();
+    const boundPort = typeof addr === 'object' && addr !== null ? addr.port : port;
     const displayHost = host.includes(':') ? `[${host}]` : host;
     const bannerLines = [
-      `GitNexus eval-server: listening on http://${displayHost}:${port}`,
+      `GitNexus eval-server: listening on http://${displayHost}:${boundPort}`,
       `  POST /tool/query    — search execution flows`,
       `  POST /tool/context  — 360-degree symbol view`,
       `  POST /tool/impact   — blast radius analysis`,
@@ -520,7 +523,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       bannerLines.push(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
     }
     cliInfo(bannerLines.join('\n'), {
-      port,
+      port: boundPort,
       host,
       idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
       endpoints: [
@@ -535,7 +538,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
       const readyHost = host.includes(':') ? `[${host}]` : host;
-      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${readyHost}:${port}\n`);
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${readyHost}:${boundPort}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
