@@ -16,12 +16,18 @@ import {
 } from '../call-processor.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
-import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
+import {
+  type PipelineProgress,
+  getLanguageFromFilename,
+  type SupportedLanguages,
+} from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
+import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { topologicalLevelSort } from '../utils/graph-sort.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { isDev } from '../utils/env.js';
+import type Parser from 'tree-sitter';
 
 import { logger } from '../../logger.js';
 /** Max AST trees to keep in LRU cache for cross-file binding propagation. */
@@ -114,6 +120,36 @@ export async function runCrossFileBindingPropagation(
   let crossFileResolved = 0;
   const crossFileStart = Date.now();
   const astCache = createASTCache(AST_CACHE_CAP);
+  // Compiled query objects keyed by language name. Shared across all processCalls
+  // invocations in this phase so the same tree-sitter query string is only
+  // compiled once per language instead of once per file (O(1) vs O(N)).
+  const compiledQueryCache = new Map<SupportedLanguages, Parser.Query>();
+
+  // Snapshot total topological candidates for progress math.  We walk the
+  // levels once more here (fast — no I/O) so we can report meaningful
+  // percentages rather than a frozen display.
+  let totalCandidates = 0;
+  for (const level of levels) {
+    for (const filePath of level) {
+      if (totalCandidates >= MAX_CROSS_FILE_REPROCESS) break;
+      const imports = ctx.namedImportMap.get(filePath);
+      if (!imports) continue;
+      if (!allPathSet.has(filePath)) continue;
+      const lang = getLanguageFromFilename(filePath);
+      if (!lang || !isLanguageAvailable(lang)) continue;
+      // Registry-primary languages have their call resolution handled by the
+      // scope-resolution pipeline — processCalls skips them immediately. Skip
+      // here too so we avoid the I/O cost (readFileContents) and map-building
+      // overhead for files that would be no-ops anyway.
+      if (isRegistryPrimary(lang)) continue;
+      totalCandidates++;
+    }
+    if (totalCandidates >= MAX_CROSS_FILE_REPROCESS) break;
+  }
+  const cappedTotal = Math.min(totalCandidates, MAX_CROSS_FILE_REPROCESS);
+
+  /** Emit a progress event every PROGRESS_INTERVAL files so the UI stays alive. */
+  const PROGRESS_INTERVAL = 25;
 
   for (const level of levels) {
     const levelCandidates: {
@@ -151,6 +187,10 @@ export async function runCrossFileBindingPropagation(
 
       const lang = getLanguageFromFilename(filePath);
       if (!lang || !isLanguageAvailable(lang)) continue;
+      // Registry-primary languages have their call resolution handled by the
+      // scope-resolution pipeline — processCalls skips them immediately. Skip
+      // here to avoid readFileContents I/O and map-building for no-op files.
+      if (isRegistryPrimary(lang)) continue;
 
       levelCandidates.push({ filePath, seeded, importedReturns, importedRawReturns });
     }
@@ -188,8 +228,24 @@ export async function runCrossFileBindingPropagation(
         bindings.size > 0 ? bindings : undefined,
         importedReturnTypesMap.size > 0 ? importedReturnTypesMap : undefined,
         importedRawReturnTypesMap.size > 0 ? importedRawReturnTypesMap : undefined,
+        undefined,
+        undefined,
+        compiledQueryCache,
       );
       crossFileResolved++;
+
+      // Emit progress every PROGRESS_INTERVAL files so the UI shows real
+      // movement instead of a frozen display (cross-file can take minutes
+      // on large repos with many cross-file imports).
+      if (crossFileResolved % PROGRESS_INTERVAL === 0 || crossFileResolved === cappedTotal) {
+        const pct = cappedTotal > 0 ? Math.round((crossFileResolved / cappedTotal) * 8) : 0;
+        onProgress({
+          phase: 'parsing',
+          percent: 82 + pct,
+          message: `Cross-file type propagation (${crossFileResolved}/${cappedTotal} files)...`,
+          stats: { filesProcessed: crossFileResolved, totalFiles, nodesCreated: graph.nodeCount },
+        });
+      }
     }
 
     if (crossFileResolved >= MAX_CROSS_FILE_REPROCESS) {

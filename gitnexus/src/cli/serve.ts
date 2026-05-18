@@ -1,6 +1,7 @@
 import { createServer } from '../server/api.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 import { cliError } from './cli-message.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
 
 // Catch anything that would cause a silent exit. Pino v10's default
 // destination is `sync: false` (SonicBoom buffered) — call
@@ -34,7 +35,13 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
   try {
     await createServer(port, host);
   } catch (err: any) {
-    if (err.code === 'EADDRINUSE') {
+    if (isWalCorruptionError(err)) {
+      cliError(
+        `\nGitNexus server could not start: the index has a corrupted WAL file.\n` +
+          `  ${WAL_RECOVERY_SUGGESTION}\n`,
+        { recoveryHint: 'wal-corruption' },
+      );
+    } else if (err.code === 'EADDRINUSE') {
       cliError(
         `\nFailed to start GitNexus server:\n` +
           `  ${err.message || err}\n\n` +

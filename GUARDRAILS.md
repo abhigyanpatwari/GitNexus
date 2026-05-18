@@ -36,7 +36,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Index seems corrupt or "incremental" is misbehaving
 
 - **Trigger:** `analyze` produces unexpected results, or `meta.json.incrementalInProgress` is set, or the index is in a half-state after a crash.
-- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. Safe to delete `.gitnexus/parse-cache.json` at any time — content-addressed, will be regenerated.
+- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
 - **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
 
 ### Embeddings vanished after analyze

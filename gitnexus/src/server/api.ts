@@ -22,8 +22,9 @@ import {
   flushWAL,
   closeLbug,
   withLbugDb,
+  isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
-import { isWriteQuery } from '../core/lbug/pool-adapter.js';
+import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -621,6 +622,44 @@ export const handleFileRequest = async (
   }
 };
 
+export const handleQueryRequest = async (
+  req: express.Request,
+  res: express.Response,
+  resolveRepo: (repoName?: string) => Promise<{ storagePath: string } | undefined>,
+): Promise<void> => {
+  try {
+    const cypher = req.body.cypher as string;
+    if (!cypher) {
+      res.status(400).json({ error: 'Missing "cypher" in request body' });
+      return;
+    }
+    const queryParams = req.body.params;
+    if (queryParams !== undefined && !isValidQueryParams(queryParams)) {
+      res.status(400).json({
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null)',
+      });
+      return;
+    }
+
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return;
+    }
+    const lbugPath = path.join(entry.storagePath, 'lbug');
+    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
+      readOnly: true,
+    });
+    res.json({ result });
+  } catch (err: any) {
+    if (isReadOnlyDbError(err)) {
+      res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
+      return;
+    }
+    res.status(500).json({ error: err.message || 'Query failed' });
+  }
+};
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
   app.disable('x-powered-by');
@@ -1020,29 +1059,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
-    try {
-      const cypher = req.body.cypher as string;
-      if (!cypher) {
-        res.status(400).json({ error: 'Missing "cypher" in request body' });
-        return;
-      }
-
-      if (isWriteQuery(cypher)) {
-        res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
-        return;
-      }
-
-      const entry = await resolveRepo(requestedRepo(req));
-      if (!entry) {
-        res.status(404).json({ error: 'Repository not found' });
-        return;
-      }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
-      res.json({ result });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Query failed' });
-    }
+    await handleQueryRequest(req, res, resolveRepo);
   });
 
   // Search (supports mode: 'hybrid' | 'semantic' | 'bm25', and optional enrichment)

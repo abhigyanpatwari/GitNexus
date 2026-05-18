@@ -135,12 +135,15 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
   it('round-trips an empty cache', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
+      const fs = await import('fs/promises');
       const cache: ParseCache = {
         version: PARSE_CACHE_VERSION,
         entries: new Map(),
         usedKeys: new Set(),
       };
       await saveParseCache(dir, cache);
+      await expect(fs.access(path.join(dir, 'parse-cache', 'index.json'))).resolves.toBeUndefined();
+      await expect(fs.access(path.join(dir, 'parse-cache.json'))).rejects.toThrow();
       const loaded = await loadParseCache(dir);
       expect(loaded.version).toBe(PARSE_CACHE_VERSION);
       expect(loaded.entries.size).toBe(0);
@@ -189,6 +192,60 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     }
   });
 
+  it('loads a legacy single-file cache for backwards compatibility', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      await fs.writeFile(
+        path.join(dir, 'parse-cache.json'),
+        JSON.stringify({
+          version: PARSE_CACHE_VERSION,
+          entries: {
+            legacyChunk: [minimalResult({ fileCount: 7 })],
+          },
+        }),
+        'utf-8',
+      );
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(1);
+      expect(loaded.entries.get('legacyChunk')?.[0]?.fileCount).toBe(7);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips corrupt or missing shards while loading the sharded cache', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      const cacheDir = path.join(dir, 'parse-cache');
+      const goodKey = 'a'.repeat(64);
+      const missingKey = 'b'.repeat(64);
+      const badKey = 'c'.repeat(64);
+      await fs.mkdir(cacheDir, { recursive: true });
+      await fs.writeFile(
+        path.join(cacheDir, 'index.json'),
+        JSON.stringify({
+          version: PARSE_CACHE_VERSION,
+          keys: [goodKey, missingKey, badKey],
+        }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(cacheDir, `${goodKey}.json`),
+        JSON.stringify([minimalResult({ fileCount: 3 })]),
+        'utf-8',
+      );
+      await fs.writeFile(path.join(cacheDir, `${badKey}.json`), '{not-json', 'utf-8');
+
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(1);
+      expect(loaded.entries.get(goodKey)?.[0]?.fileCount).toBe(3);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips Map and Set values through the JSON replacer/reviver', async () => {
     // ParsedFile.scopes[*].typeBindings is a ReadonlyMap<string, TypeRef>.
     // Without the replacer/reviver pair, JSON.stringify collapses Maps to
@@ -196,6 +253,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     // with "is not iterable". This test pins the round-trip behaviour.
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
+      const fs = await import('fs/promises');
       const innerMap = new Map<string, string>([
         ['k1', 'v1'],
         ['k2', 'v2'],
@@ -218,14 +276,18 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         ],
       });
 
+      const chunkKey = 'd'.repeat(64);
       const cache: ParseCache = {
         version: PARSE_CACHE_VERSION,
-        entries: new Map<string, ParseWorkerResult[]>([['chunk-h', [fake]]]),
-        usedKeys: new Set(['chunk-h']),
+        entries: new Map<string, ParseWorkerResult[]>([[chunkKey, [fake]]]),
+        usedKeys: new Set([chunkKey]),
       };
       await saveParseCache(dir, cache);
+      const persisted = await fs.readdir(path.join(dir, 'parse-cache'));
+      expect(persisted).toContain('index.json');
+      expect(persisted).toContain(`${chunkKey}.json`);
       const loaded = await loadParseCache(dir);
-      const reloaded = loaded.entries.get('chunk-h')?.[0];
+      const reloaded = loaded.entries.get(chunkKey)?.[0];
       expect(reloaded).toBeDefined();
       const scope = (reloaded as ParseWorkerResult).parsedFiles[0]?.scopes[0] as unknown as {
         typeBindings?: unknown;
@@ -236,6 +298,142 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       expect((scope.typeBindings as Map<string, string>).size).toBe(2);
       expect(scope.extras).toBeInstanceOf(Set);
       expect((scope.extras as Set<string>).has('s2')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores traversal-like and non-hex keys in sharded index.json', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      const cacheDir = path.join(dir, 'parse-cache');
+      await fs.mkdir(cacheDir, { recursive: true });
+      const safeKey = 'e'.repeat(64);
+      await fs.writeFile(
+        path.join(cacheDir, 'index.json'),
+        JSON.stringify({
+          version: PARSE_CACHE_VERSION,
+          keys: ['../evil', '/absolute', 'G'.repeat(64), safeKey],
+        }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(cacheDir, `${safeKey}.json`),
+        JSON.stringify([minimalResult({ fileCount: 9 })]),
+        'utf-8',
+      );
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(1);
+      expect(loaded.entries.get(safeKey)?.[0]?.fileCount).toBe(9);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes one shard file per cache entry (three distinct keys)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      const k1 = '1'.repeat(64);
+      const k2 = '2'.repeat(64);
+      const k3 = '3'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map<string, ParseWorkerResult[]>([
+          [k1, [minimalResult({ fileCount: 1 })]],
+          [k2, [minimalResult({ fileCount: 2 })]],
+          [k3, [minimalResult({ fileCount: 3 })]],
+        ]),
+        usedKeys: new Set([k1, k2, k3]),
+      };
+      await saveParseCache(dir, cache);
+      const cacheDir = path.join(dir, 'parse-cache');
+      const names = await fs.readdir(cacheDir);
+      expect(names).toContain('index.json');
+      expect(names.filter((n) => n.endsWith('.json') && n !== 'index.json').length).toBe(3);
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(3);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns empty when sharded index version mismatches even if legacy parse-cache.json is valid', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      const cacheDir = path.join(dir, 'parse-cache');
+      await fs.mkdir(cacheDir, { recursive: true });
+      await fs.writeFile(
+        path.join(cacheDir, 'index.json'),
+        JSON.stringify({ version: 'foreign-sharded-1', keys: [] }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(dir, 'parse-cache.json'),
+        JSON.stringify({
+          version: PARSE_CACHE_VERSION,
+          entries: { legacyChunk: [minimalResult({ fileCount: 42 })] },
+        }),
+        'utf-8',
+      );
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('second saveParseCache replaces the first sharded cache', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      const k1 = '4'.repeat(64);
+      const k2 = '5'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[k1, [minimalResult()]]]),
+        usedKeys: new Set([k1]),
+      });
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[k2, [minimalResult({ fileCount: 99 })]]]),
+        usedKeys: new Set([k2]),
+      });
+      const names = await fs.readdir(path.join(dir, 'parse-cache'));
+      expect(names).not.toContain(`${k1}.json`);
+      expect(names).toContain(`${k2}.json`);
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(1);
+      expect(loaded.entries.get(k2)?.[0]?.fileCount).toBe(99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes legacy parse-cache.json after a successful sharded save', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const fs = await import('fs/promises');
+      await fs.writeFile(
+        path.join(dir, 'parse-cache.json'),
+        JSON.stringify({
+          version: PARSE_CACHE_VERSION,
+          entries: { oldLegacy: [minimalResult({ fileCount: 5 })] },
+        }),
+        'utf-8',
+      );
+      const k = '6'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[k, [minimalResult({ fileCount: 6 })]]]),
+        usedKeys: new Set([k]),
+      });
+      await expect(fs.access(path.join(dir, 'parse-cache.json'))).rejects.toThrow();
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.get(k)?.[0]?.fileCount).toBe(6);
+      expect(loaded.entries.has('oldLegacy')).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
