@@ -559,4 +559,75 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'group_trace',
+    description: `Trace cross-repo call chains starting from a symbol or file path.
+
+Performs BFS within each repo's call graph (CALLS edges), then follows cross-repo
+links from contracts.json to continue tracing into dependent services.
+
+WHEN TO USE: Understanding end-to-end execution flows that span multiple microservices.
+For example: "what does this API handler ultimately call across all repos?"
+
+Returns: segments (per-repo BFS nodes), cross-repo hops, skipped repos, and truncation flag.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name (e.g. "flight-all")' },
+        repo: {
+          type: 'string',
+          description: 'Entry repo path key from group.yaml (e.g. "app/backend")',
+        },
+        target: {
+          type: 'string',
+          description: 'Symbol name or file path to start tracing from',
+        },
+        direction: {
+          type: 'string',
+          enum: ['downstream', 'upstream'],
+          description: 'Trace direction. Default: "downstream"',
+          default: 'downstream',
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Max BFS depth within each repo. 0 = unlimited. Default: 0',
+          default: 0,
+          minimum: 0,
+        },
+        maxCrossDepth: {
+          type: 'number',
+          description: 'Max cross-repo hops. 0 = unlimited. Default: 10. Capped at 50.',
+          default: 10,
+          minimum: 0,
+          maximum: 50,
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Relation types for BFS edges. Default: ["CALLS"]',
+          default: ['CALLS'],
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test files in traversal. Default: false',
+          default: false,
+        },
+        minConfidence: {
+          type: 'number',
+          description: 'Minimum edge confidence (0–1). Default: 0',
+          default: 0,
+          minimum: 0,
+          maximum: 1,
+        },
+        verbose: {
+          type: 'boolean',
+          description:
+            'Return full trace data including all nodes. Default: false returns slim summary with deduplicated cross-hops and stats only.',
+          default: false,
+        },
+      },
+      required: ['name', 'repo', 'target'],
+    },
+  },
 ];

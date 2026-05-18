@@ -10,15 +10,15 @@
 import { describe, it, expect } from 'vitest';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
-const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
+const GROUP_TOOLS = new Set(['group_list', 'group_sync', 'group_trace']);
 const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 // Read-only tools that legitimately reach external systems. Add a tool name
 // here when introducing a read-only tool that needs openWorldHint: true.
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group + 1 group_trace)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(14);
   });
 
   it('contains all expected tool names', () => {
@@ -150,6 +150,15 @@ describe('GITNEXUS_TOOLS', () => {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
       expect(tool.inputSchema.properties).not.toHaveProperty('repo');
     }
+  });
+
+  it('group_trace requires name, repo, and target', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_trace')!;
+    expect(tool.inputSchema.required).toContain('name');
+    expect(tool.inputSchema.required).toContain('repo');
+    expect(tool.inputSchema.required).toContain('target');
+    expect(tool.inputSchema.properties.repo).toBeDefined();
+    expect(tool.inputSchema.properties.target).toBeDefined();
   });
 
   it('impact, query, and context expose optional service with minLength', () => {

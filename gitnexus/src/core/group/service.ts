@@ -308,6 +308,77 @@ export class GroupService {
     return runGroupImpact({ port: this.port, gitnexusDir: getDefaultGitnexusDir() }, params);
   }
 
+  async groupTrace(params: Record<string, unknown>): Promise<unknown> {
+    const { runGroupTrace } = await import('./trace.js');
+    const traceParams = {
+      name: String(params.name ?? ''),
+      repo: String(params.repo ?? ''),
+      target: String(params.target ?? ''),
+      direction: (params.direction as 'downstream' | 'upstream' | undefined) ?? 'downstream',
+      maxDepth:
+        typeof params.maxDepth === 'number' && !Number.isNaN(params.maxDepth)
+          ? Math.max(0, params.maxDepth)
+          : 0,
+      maxCrossDepth:
+        typeof params.maxCrossDepth === 'number' && !Number.isNaN(params.maxCrossDepth)
+          ? Math.min(50, Math.max(0, params.maxCrossDepth))
+          : 10,
+      relationTypes: Array.isArray(params.relationTypes)
+        ? (params.relationTypes as string[])
+        : ['CALLS'],
+      includeTests: Boolean(params.includeTests),
+      minConfidence:
+        typeof params.minConfidence === 'number' && !Number.isNaN(params.minConfidence)
+          ? Math.min(1, Math.max(0, params.minConfidence))
+          : 0,
+    };
+    const result = await runGroupTrace(
+      { port: this.port, gitnexusDir: getDefaultGitnexusDir() },
+      traceParams,
+    );
+    if ('error' in (result as object)) return result;
+    if (params.verbose) return result;
+
+    // Default: slim response — strip nodes, deduplicate crossHops by contractId.
+    // Avoids returning 40MB+ full trace data over MCP.
+    const full = result as import('./trace.js').TraceResult;
+    const seen = new Set<string>();
+    const dedupHops: unknown[] = [];
+    for (const seg of full.segments ?? []) {
+      for (const hop of seg.crossHops ?? []) {
+        const key = `${hop.from?.repo}\0${hop.to?.repo}\0${hop.contractId}\0${hop.contractType}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          dedupHops.push({
+            contractId: hop.contractId,
+            contractType: hop.contractType,
+            from: {
+              repo: hop.from?.repo,
+              symbolName: hop.from?.symbolName ?? hop.from?.symbolUid ?? '',
+            },
+            to: { repo: hop.to?.repo, symbolName: hop.to?.symbolName ?? hop.to?.symbolUid ?? '' },
+          });
+        }
+      }
+    }
+    return {
+      group: full.group,
+      entryRepo: full.entryRepo,
+      entryTarget: full.entryTarget,
+      direction: full.direction,
+      truncated: full.truncated,
+      skippedRepos: full.skippedRepos,
+      crossHops: dedupHops,
+      stats: {
+        totalRepos: new Set(full.segments?.map((s) => s.repoPath) ?? []).size,
+        totalSegments: full.segments?.length ?? 0,
+        totalNodes: full.segments?.reduce((sum, s) => sum + (s.nodes?.length ?? 0), 0) ?? 0,
+        rawCrossHops: full.segments?.reduce((sum, s) => sum + (s.crossHops?.length ?? 0), 0) ?? 0,
+        dedupCrossHops: dedupHops.length,
+      },
+    };
+  }
+
   async groupContext(params: Record<string, unknown>): Promise<GroupContextResult> {
     const name = String(params.name ?? '').trim();
     const target = typeof params.target === 'string' ? params.target.trim() : '';
