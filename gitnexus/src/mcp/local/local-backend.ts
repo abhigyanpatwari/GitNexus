@@ -248,6 +248,21 @@ function tryRealpath(p: string): string {
  */
 export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
   try {
+    // Early exit: if repoPath is itself a linked worktree (its path differs
+    // from the canonical main-checkout root returned by getCanonicalRepoRoot),
+    // it is already the correct diff cwd. Do NOT override it with the server's
+    // launch directory — that would silently replace the explicitly-resolved
+    // worktree index with the main checkout.
+    //
+    // getCanonicalRepoRoot returns path.dirname(--git-common-dir), which equals
+    // the main checkout path for both the checkout and all its linked worktrees.
+    // Therefore: repoPath === canonical → main checkout (auto-detect may fire).
+    //            repoPath !== canonical → linked worktree (return as-is).
+    const repoCanonical = getCanonicalRepoRoot(repoPath);
+    if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
+      return repoPath;
+    }
+
     const launchGitRoot = getGitRoot(launchCwd);
     if (launchGitRoot) {
       // Normalise via realpathSync before comparing so macOS /var → /private/var
@@ -256,8 +271,12 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
       const realRepo = tryRealpath(repoPath);
       if (realLaunch !== realRepo) {
         const launchCanonical = getCanonicalRepoRoot(launchCwd);
-        const repoCanonical = getCanonicalRepoRoot(repoPath);
-        if (launchCanonical && repoCanonical && launchCanonical === repoCanonical) {
+        // Use tryRealpath on both canonical values for cross-platform safety.
+        if (
+          launchCanonical &&
+          repoCanonical &&
+          tryRealpath(launchCanonical) === tryRealpath(repoCanonical)
+        ) {
           return launchGitRoot;
         }
       }
