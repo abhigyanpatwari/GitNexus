@@ -146,7 +146,7 @@ withTestLbugDB(
     // ─── Read-only enforcement ───────────────────────────────────────────
 
     describe('read-only database', () => {
-      it('does not mutate rows when write query has no matches', async () => {
+      it('keeps seeded rows unchanged for a no-match write probe', async () => {
         const readOnlyRepo = 'local-backend-read-only';
         await initLbug(readOnlyRepo, handle.dbPath);
         try {

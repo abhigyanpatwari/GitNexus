@@ -119,7 +119,7 @@ withTestLbugDB(
         expect(rows).toHaveLength(0);
       });
 
-      it('keeps seeded rows unchanged when executing a no-op parameterized write query', async () => {
+      it('keeps seeded rows unchanged for a no-match parameterized write probe', async () => {
         await initLbug('test-repo', handle.dbPath);
         try {
           const rows = await executeParameterized(
@@ -152,7 +152,7 @@ withTestLbugDB(
         await expect(initLbug('bad-repo', '/nonexistent/path/lbug')).rejects.toThrow();
       });
 
-      it('no-op write query does not mutate seeded data', async () => {
+      it('keeps seeded data unchanged for a no-match write probe', async () => {
         await initLbug('test-repo', handle.dbPath);
         try {
           await executeQuery(

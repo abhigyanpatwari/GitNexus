@@ -52,7 +52,7 @@ withTestLbugDB(
         expect(result.markdown).toContain('hash');
       });
 
-      it('cypher write query response is safe for no-match writes', async () => {
+      it('cypher no-match write probe returns read-only error or empty rows', async () => {
         const result = await backend.callTool('cypher', {
           query:
             "MATCH (n:Function) WHERE n.name = '__missing__' SET n.name = 'x' RETURN n.name AS name",
