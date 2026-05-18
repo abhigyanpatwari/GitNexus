@@ -209,7 +209,7 @@ environment:
   eval_server_host: "0.0.0.0"   # bind all interfaces — needed for cross-container setups
 ```
 
-Defaults are `port: 4848` and `host: 127.0.0.1` (loopback only). Use `0.0.0.0` only when the agent container needs to reach the eval-server from a separate network namespace. The health probe and tool scripts always connect via `127.0.0.1`, which is reachable for both loopback and all-interface binds.
+Defaults are `port: 4848` and `host: 127.0.0.1` (loopback only). Use `0.0.0.0` only when the agent container needs to reach the eval-server from a separate network namespace. The health probe and tool scripts connect via the configured bind host (defaulting to `127.0.0.1`), which is reachable for both loopback and all-interface binds.
 
 **Running eval-server directly in Docker / Docker Compose:**
 
