@@ -187,6 +187,11 @@ TIPS:
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Cypher query to execute' },
+        params: {
+          type: 'object',
+          description:
+            'Optional query parameters for placeholders (e.g. $name) to execute via prepared statement binding.',
+        },
         repo: {
           type: 'string',
           description: 'Repository name or path. Omit if only one repo is indexed.',
@@ -253,6 +258,8 @@ Maps git diff hunks to indexed symbols, then traces which processes are impacted
 WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
 AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
 
+GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
+
 Returns: changed symbols, affected processes, and a risk summary.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
@@ -267,6 +274,11 @@ Returns: changed symbols, affected processes, and a risk summary.`,
         base_ref: {
           type: 'string',
           description: 'Branch/commit for "compare" scope (e.g., "main")',
+        },
+        worktree: {
+          type: 'string',
+          description:
+            'Absolute path to a linked git worktree. Pass this when your changes are in a worktree (the .git entry at that path is a file, not a directory). GitNexus will run git diff from that worktree so staged/unstaged changes are correctly detected.',
         },
         repo: {
           type: 'string',

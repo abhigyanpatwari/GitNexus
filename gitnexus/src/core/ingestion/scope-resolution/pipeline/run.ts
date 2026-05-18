@@ -383,6 +383,7 @@ export function runScopeResolution(
       isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
       resolveAdlCandidates: provider.resolveAdlCandidates,
       conversionRankFn: provider.conversionRankFn,
+      constraintCompatibility: provider.constraintCompatibility,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(

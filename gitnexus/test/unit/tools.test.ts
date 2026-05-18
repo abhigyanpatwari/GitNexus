@@ -103,6 +103,9 @@ describe('GITNEXUS_TOOLS', () => {
   it('cypher tool requires "query" parameter', () => {
     const cypherTool = GITNEXUS_TOOLS.find((t) => t.name === 'cypher')!;
     expect(cypherTool.inputSchema.required).toContain('query');
+    expect(cypherTool.inputSchema.properties.params).toBeDefined();
+    expect(cypherTool.inputSchema.properties.params.type).toBe('object');
+    expect(cypherTool.inputSchema.properties.params.description).toContain('prepared statement');
   });
 
   it('context tool has no required parameters', () => {
