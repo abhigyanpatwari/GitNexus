@@ -377,7 +377,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -453,7 +453,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {aiReferences.length} reference{aiReferences.length !== 1 ? 's' : ''}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label
