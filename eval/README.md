@@ -198,6 +198,37 @@ GITNEXUS_EVAL_SERVER_READY:[::1]:4848
 
 Parse the port as the last colon-segment (`split(':').pop()`) — not `split(':')[1]`, which breaks for IPv6 and for non-loopback IPv4 hosts added in this release.
 
+### Custom port and host
+
+`run_eval.py` does not expose `--port` or `--host` as CLI flags. Configure them in your mode YAML under the `environment:` key:
+
+```yaml
+# configs/modes/native_augment.yaml (or whichever mode you're running)
+environment:
+  eval_server_port: 4849         # change if 4848 is already in use on the host
+  eval_server_host: "0.0.0.0"   # bind all interfaces — needed for cross-container setups
+```
+
+Defaults are `port: 4848` and `host: 127.0.0.1` (loopback only). Use `0.0.0.0` only when the agent container needs to reach the eval-server from a separate network namespace. The health probe and tool scripts always connect via `127.0.0.1`, which is reachable for both loopback and all-interface binds.
+
+**Running eval-server directly in Docker / Docker Compose:**
+
+```bash
+# Bind to all interfaces so sibling containers can reach it
+gitnexus eval-server --host 0.0.0.0 --port 4848
+
+# Then probe from a sibling container via its service hostname
+curl http://eval-container:4848/health
+```
+
+If you need a non-default port (e.g. to avoid conflicts), pass `--port <port>` alongside `--host`. The READY signal will reflect both:
+
+```
+GITNEXUS_EVAL_SERVER_READY:0.0.0.0:5000
+```
+
+Parse the port as the last colon-segment (`split(':').pop()`) — safe for both IPv4 and bracketed IPv6 forms.
+
 ### Index caching
 
 SWE-bench repos repeat (Django has 200+ instances at different commits). The harness caches GitNexus indexes per `(repo, commit)` hash in `~/.gitnexus-eval-cache/` to avoid redundant re-indexing.
