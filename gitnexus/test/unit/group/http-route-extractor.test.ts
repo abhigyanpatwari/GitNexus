@@ -443,8 +443,14 @@ def create_order():
         path.join(dir, 'src', 'client.py'),
         `
 import httpx
+import httpx as hx
+from httpx import AsyncClient
+from httpx import AsyncClient as HttpxAsyncClient
 
 module_client = httpx.AsyncClient(base_url="https://svc.local")
+module_alias_client = hx.AsyncClient(base_url="https://svc.local")
+module_direct_client = AsyncClient(base_url="https://svc.local")
+module_renamed_client = HttpxAsyncClient(base_url="https://svc.local")
 
 class TopicClient:
     def __init__(self):
@@ -466,6 +472,18 @@ async def check_duplicate():
         service.request("POST", "/nope")
         return await client.post("https://svc.local/questions/duplicate-check")
 
+async def import_aliases():
+    local_alias_client = hx.AsyncClient(base_url="https://svc.local")
+    local_direct_client = AsyncClient(base_url="https://svc.local")
+    local_renamed_client = HttpxAsyncClient(base_url="https://svc.local")
+    await local_alias_client.get("/alias-topic")
+    await local_direct_client.patch("/direct-topic")
+    await local_renamed_client.request("PUT", "/renamed-topic")
+    async with hx.AsyncClient() as alias_context:
+        await alias_context.delete("/alias-context")
+    async with AsyncClient() as direct_context:
+        return await direct_context.post("/direct-context")
+
 def unrelated_scope_collision():
     client = acquire_cache_client()
     return client.get("/ignored-same-name")
@@ -475,6 +493,9 @@ def module_scope_shadow_collision():
     return client.get("/ignored-module-same-name")
 
 module_client.get("/module-topic")
+module_alias_client.get("/module-alias-topic")
+module_direct_client.get("/module-direct-topic")
+module_renamed_client.get("/module-renamed-topic")
 `,
       );
 
@@ -486,7 +507,15 @@ module_client.get("/module-topic")
         'http::POST::/questions/import',
         'http::DELETE::/topic',
         'http::POST::/questions/duplicate-check',
+        'http::GET::/alias-topic',
+        'http::PATCH::/direct-topic',
+        'http::PUT::/renamed-topic',
+        'http::DELETE::/alias-context',
+        'http::POST::/direct-context',
         'http::GET::/module-topic',
+        'http::GET::/module-alias-topic',
+        'http::GET::/module-direct-topic',
+        'http::GET::/module-renamed-topic',
       ];
 
       for (const contractId of expected) {

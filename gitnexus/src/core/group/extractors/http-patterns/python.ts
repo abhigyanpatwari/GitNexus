@@ -80,12 +80,50 @@ const REQUESTS_GENERIC_PATTERNS = compilePatterns({
 } satisfies LanguagePatterns<Record<string, never>>);
 
 // ─── Consumer: httpx.AsyncClient assignments ────────────────────────
-// NOTE: This targeted detector only tracks explicit `httpx.AsyncClient(...)`
-// construction. Direct imports (`from httpx import AsyncClient`) and module
-// aliases (`import httpx as hx`) and annotated assignments (`client: httpx.AsyncClient = ...`)
-// are intentionally left for a follow-up. Module-scope clients are only matched
+// Module-scope clients are only matched
 // at module scope; calls inside functions require a function/class-local tracked
 // client to avoid false positives from same-name local variables.
+const HTTPX_MODULE_IMPORT_PATTERNS = compilePatterns({
+  name: 'python-httpx-module-imports',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (import_statement
+          name: (aliased_import
+            name: (dotted_name (identifier) @module)
+            alias: (identifier) @alias))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const HTTPX_ASYNC_CLIENT_IMPORT_PATTERNS = compilePatterns({
+  name: 'python-httpx-async-client-imports',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (import_from_statement
+          module_name: (dotted_name (identifier) @module)
+          name: (dotted_name (identifier) @client_class))
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (import_from_statement
+          module_name: (dotted_name (identifier) @module)
+          name: (aliased_import
+            name: (dotted_name (identifier) @client_class)
+            alias: (identifier) @alias))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 const HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS = compilePatterns({
   name: 'python-httpx-async-client-assign',
   language: Python,
@@ -97,8 +135,24 @@ const HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS = compilePatterns({
           left: (_) @client
           right: (call
             function: (attribute
-              object: (identifier) @module (#eq? @module "httpx")
-              attribute: (identifier) @client_class (#eq? @client_class "AsyncClient"))))
+              object: (identifier) @module
+              attribute: (identifier) @client_class)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const HTTPX_ASYNC_CLIENT_DIRECT_ASSIGN_PATTERNS = compilePatterns({
+  name: 'python-httpx-async-client-direct-assign',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (assignment
+          left: (_) @client
+          right: (call
+            function: (identifier) @client_class))
       `,
     },
   ],
@@ -115,8 +169,24 @@ const HTTPX_ASYNC_CLIENT_WITH_ALIAS_PATTERNS = compilePatterns({
         (as_pattern
           (call
             function: (attribute
-              object: (identifier) @module (#eq? @module "httpx")
-              attribute: (identifier) @client_class (#eq? @client_class "AsyncClient")))
+              object: (identifier) @module
+              attribute: (identifier) @client_class))
+          (as_pattern_target (identifier) @client))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const HTTPX_ASYNC_CLIENT_DIRECT_WITH_ALIAS_PATTERNS = compilePatterns({
+  name: 'python-httpx-async-client-direct-with-alias',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (as_pattern
+          (call
+            function: (identifier) @client_class)
           (as_pattern_target (identifier) @client))
       `,
     },
@@ -159,8 +229,32 @@ function callScopeKeys(clientNode: Parser.SyntaxNode): string[] {
   return [...keys];
 }
 
+function collectHttpxImportAliases(tree: Parser.Tree): {
+  moduleAliases: Set<string>;
+  asyncClientAliases: Set<string>;
+} {
+  const moduleAliases = new Set<string>(['httpx']);
+  const asyncClientAliases = new Set<string>();
+
+  for (const match of runCompiledPatterns(HTTPX_MODULE_IMPORT_PATTERNS, tree)) {
+    const moduleNode = match.captures.module;
+    const aliasNode = match.captures.alias;
+    if (moduleNode?.text === 'httpx' && aliasNode) moduleAliases.add(aliasNode.text);
+  }
+
+  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_IMPORT_PATTERNS, tree)) {
+    const moduleNode = match.captures.module;
+    const classNode = match.captures.client_class;
+    if (moduleNode?.text !== 'httpx' || classNode?.text !== 'AsyncClient') continue;
+    asyncClientAliases.add(match.captures.alias?.text ?? classNode.text);
+  }
+
+  return { moduleAliases, asyncClientAliases };
+}
+
 function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
   const clients = new Map<string, Set<string>>();
+  const { moduleAliases, asyncClientAliases } = collectHttpxImportAliases(tree);
 
   const addClient = (clientNode: Parser.SyntaxNode | undefined) => {
     if (!clientNode) return;
@@ -172,10 +266,30 @@ function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
   };
 
   for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_ASSIGN_PATTERNS, tree)) {
+    const moduleNode = match.captures.module;
+    const classNode = match.captures.client_class;
+    if (!moduleNode || !classNode) continue;
+    if (!moduleAliases.has(moduleNode.text) || classNode.text !== 'AsyncClient') continue;
+    addClient(match.captures.client);
+  }
+
+  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_DIRECT_ASSIGN_PATTERNS, tree)) {
+    const classNode = match.captures.client_class;
+    if (!classNode || !asyncClientAliases.has(classNode.text)) continue;
     addClient(match.captures.client);
   }
 
   for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_WITH_ALIAS_PATTERNS, tree)) {
+    const moduleNode = match.captures.module;
+    const classNode = match.captures.client_class;
+    if (!moduleNode || !classNode) continue;
+    if (!moduleAliases.has(moduleNode.text) || classNode.text !== 'AsyncClient') continue;
+    addClient(match.captures.client);
+  }
+
+  for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_DIRECT_WITH_ALIAS_PATTERNS, tree)) {
+    const classNode = match.captures.client_class;
+    if (!classNode || !asyncClientAliases.has(classNode.text)) continue;
     addClient(match.captures.client);
   }
 
