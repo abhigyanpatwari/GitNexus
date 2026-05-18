@@ -26,7 +26,7 @@ export type { PipelinePhase, PipelineProgress } from './pipeline.js';
 
 // ─── Scope-based resolution — RFC #909 (Ring 1 #910) ────────────────────────
 // Data model (RFC §2)
-export type { SymbolDefinition } from './scope-resolution/symbol-definition.js';
+export type { ParameterTypeClass, SymbolDefinition } from './scope-resolution/symbol-definition.js';
 export type {
   ScopeId,
   DefId,
@@ -127,8 +127,10 @@ export { CLASS_KINDS, METHOD_KINDS, FIELD_KINDS } from './scope-resolution/regis
 export type {
   RegistryContext,
   RegistryProviders,
+  OwnedMembersByOwnerLookup,
   OwnerScopedContributor,
   ArityVerdict,
+  ConstraintContext,
 } from './scope-resolution/registries/context.js';
 
 // Scope tree spine + position lookup (RFC §2.2 + §3.1; Ring 2 SHARED #912)

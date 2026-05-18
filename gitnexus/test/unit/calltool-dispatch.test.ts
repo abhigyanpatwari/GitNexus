@@ -292,13 +292,14 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
+    (executeParameterized as any).mockRejectedValueOnce(new Error('read-only database'));
     const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Write operations');
   });
 
   it('dispatches cypher tool with valid read query', async () => {
-    (executeQuery as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
+    (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
     });
@@ -999,6 +1000,7 @@ describe('callTool cypher write blocking', () => {
 
   for (const query of writeQueries) {
     it(`blocks write query: ${query.slice(0, 30)}...`, async () => {
+      (executeParameterized as any).mockRejectedValueOnce(new Error('read-only database'));
       const result = await backend.callTool('cypher', { query });
       expect(result).toHaveProperty('error');
       expect(result.error).toContain('Write operations');
@@ -1006,7 +1008,7 @@ describe('callTool cypher write blocking', () => {
   }
 
   it('allows read query through callTool', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 5',
     });
@@ -1105,7 +1107,7 @@ describe('cypher result formatting', () => {
   });
 
   it('formats tabular results as markdown table', async () => {
-    (executeQuery as any).mockResolvedValue([
+    (executeParameterized as any).mockResolvedValue([
       { name: 'main', filePath: 'src/index.ts' },
       { name: 'helper', filePath: 'src/utils.ts' },
     ]);
@@ -1119,7 +1121,7 @@ describe('cypher result formatting', () => {
   });
 
   it('returns empty array as-is', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 0',
     });
@@ -1127,7 +1129,7 @@ describe('cypher result formatting', () => {
   });
 
   it('returns error object when cypher fails', async () => {
-    (executeQuery as any).mockRejectedValue(new Error('Syntax error'));
+    (executeParameterized as any).mockRejectedValue(new Error('Syntax error'));
     const result = await backend.callTool('cypher', {
       query: 'INVALID CYPHER SYNTAX',
     });

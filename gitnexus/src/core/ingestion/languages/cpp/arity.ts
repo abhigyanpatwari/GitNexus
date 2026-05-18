@@ -8,7 +8,10 @@ import type { Callsite, SymbolDefinition } from 'gitnexus-shared';
  *   - Default parameters (requiredParameterCount < parameterCount)
  *   - Variadic functions (C-style `...`)
  *   - Parameter packs (V1: treated as variadic)
- *   - Templates (V1: generic-ignored, arity check on non-template params)
+ *   - Templates: arity check on non-template params; SFINAE / `requires`
+ *     constraints are filtered separately via `constraintCompatibility`
+ *     (see `constraint-filter.ts` and issue #1579). Type-argument generic
+ *     substitution (`List<T>` ≡ `List<U>`) remains out of V1 scope.
  *
  * Verdict:
  *   - 'compatible':    callsite.arity fits within [required, total] range

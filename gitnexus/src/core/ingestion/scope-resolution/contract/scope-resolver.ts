@@ -254,6 +254,7 @@
 import type {
   BindingRef,
   Callsite,
+  ConstraintContext,
   ParsedFile,
   ScopeId,
   SupportedLanguages,
@@ -264,6 +265,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
+import type { ConversionRankFn } from '../passes/overload-narrowing.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -277,6 +279,10 @@ export type LinearizeStrategy = (
 
 /** Result of `ScopeResolver.arityCompatibility` — mirrors `RegistryProviders.arityCompatibility`. */
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+/** Re-exported for ScopeResolver consumers — same shape as
+ *  `RegistryProviders.constraintCompatibility`'s third parameter. */
+export type { ConstraintContext } from 'gitnexus-shared';
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -372,6 +378,28 @@ export interface ScopeResolver {
    * `(def, callsite)` and need an adapter at the wiring site.
    */
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Per-language constraint compatibility between a callsite and a
+   * candidate `def` that carries `templateConstraints` metadata.
+   * Mirrors `arityCompatibility` semantics: the three-valued verdict
+   * MUST treat `'unknown'` as keep-candidate (monotonicity — adding
+   * a predicate can only narrow correctly, never produce a wrong
+   * edge). Consulted by `narrowOverloadCandidates` after the arity
+   * and parameter-type filters.
+   *
+   * Optional. Languages without constrained-overload semantics
+   * (SFINAE, `requires` clauses, trait bounds, conditional types)
+   * leave this undefined and the constraint filter is a pass-through.
+   *
+   * C++ is the first consumer; see `languages/cpp/constraint-filter.ts`
+   * for the Tier-A predicate registry and Kleene 3-valued evaluator.
+   */
+  readonly constraintCompatibility?: (
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ) => ArityVerdict;
 
   // ─── Per-language strategies ───────────────────────────────────────────────
 
@@ -532,6 +560,20 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /**
+   * Optional per-slot conversion-rank function for overload resolution.
+   * When provided, `narrowOverloadCandidates` uses ranked scoring as a
+   * fallback when the exact-type filter produces no match. The function
+   * returns a numeric cost (0 = exact, 1 = promotion, 2 = standard
+   * conversion, Infinity = incompatible) for converting an argument
+   * type to a parameter type.
+   *
+   * The conversion-rank table is language-specific (issue #1578 pitfall:
+   * keep it out of shared overload-narrowing). C++ provides
+   * `cppConversionRank`; other languages define their own if needed.
+   */
+  readonly conversionRankFn?: ConversionRankFn;
 
   /**
    * Optional predicate to identify definitions with file-local linkage

@@ -9,6 +9,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cppProvider } from '../c-cpp.js';
 import { cppArityCompatibility } from './arity.js';
+import { cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
 import { scanCppHeaderFiles } from './header-scan.js';
@@ -32,6 +33,7 @@ import {
   resolveCppQualifiedNamespaceMember,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
+import { cppConstraintCompatibility } from './constraint-filter.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -83,6 +85,12 @@ export const cppScopeResolver: ScopeResolver = {
   // Adapter: cppArityCompatibility predates ScopeResolver and uses
   // (def, callsite). ScopeResolver contract is (callsite, def).
   arityCompatibility: (callsite, def) => cppArityCompatibility(def, callsite),
+
+  // SFINAE / `requires`-clause aware overload filter (issue #1579).
+  // Drops candidates whose template constraints (`enable_if_t<P, T>`,
+  // C++20 `requires P`) provably fail at the call site. Three-valued —
+  // `'unknown'` keeps the candidate, preserving "degrade not lie".
+  constraintCompatibility: cppConstraintCompatibility,
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
@@ -169,6 +177,10 @@ export const cppScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   // C++ #include brings in all symbols — enable global free call fallback
   allowGlobalFreeCallFallback: true,
+  // C++ standard-conversion-sequence ranking for overload resolution (#1578).
+  // Disambiguates `f(int)` vs `f(double)` called with `f(2.5)` by scoring
+  // each candidate's conversion cost; exact match wins over standard conversion.
+  conversionRankFn: cppConversionRank,
   // Range-for element type inference: for (auto& user : users) → bind user to User
   populateRangeBindings: populateCppRangeBindings,
   // C++ method return-type bindings need to be visible from module scope

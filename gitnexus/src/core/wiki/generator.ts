@@ -66,12 +66,15 @@ export interface WikiOptions {
   concurrency?: number;
   /** If true, stop after building module tree for user review */
   reviewOnly?: boolean;
+  /** Output language for generated documentation (e.g. 'english', 'chinese', 'spanish') */
+  lang?: string;
 }
 
 export interface WikiMeta {
   fromCommit: string;
   generatedAt: string;
   model: string;
+  lang: string;
   moduleFiles: Record<string, string[]>;
   moduleTree: ModuleTreeNode[];
 }
@@ -178,6 +181,28 @@ export class WikiGenerator {
   }
 
   /**
+   * Return the effective lang string: strip control characters, trim, cap at 50 chars,
+   * then validate against a character allowlist. Returns '' if the value is absent or invalid.
+   * Used for both prompt construction and meta storage/comparison so they are always in sync.
+   */
+  private effectiveLang(): string {
+    const lang = (this.options.lang ?? '')
+      .replace(/[\x00-\x1F\x7F]/g, '')
+      .trim()
+      .slice(0, 50);
+    return /^[a-zA-Z -]+$/.test(lang) ? lang : '';
+  }
+
+  /**
+   * Append an output-language instruction to a system prompt when --lang is set.
+   */
+  private buildSystemPrompt(base: string): string {
+    const lang = this.effectiveLang();
+    if (!lang) return base;
+    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. Note: page titles (H1 headings) are generated separately and will remain in English.`;
+  }
+
+  /**
    * Route LLM call to the appropriate provider (OpenAI-compatible or Cursor CLI).
    */
   private async invokeLLM(
@@ -207,6 +232,15 @@ export class WikiGenerator {
 
     // Up-to-date check (skip if --force)
     if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+      const currentLang = this.effectiveLang();
+      const metaLang = existingMeta.lang ?? '';
+      if (currentLang !== metaLang) {
+        const prevDisplay = metaLang || 'english (default)';
+        const nextDisplay = currentLang || 'english (default)';
+        throw new Error(
+          `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
+        );
+      }
       // Still regenerate the HTML viewer in case it's missing
       await this.ensureHTMLViewer();
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
@@ -235,6 +269,15 @@ export class WikiGenerator {
     let result: WikiRunResult;
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
+        const currentLang = this.effectiveLang();
+        const metaLang = existingMeta.lang ?? '';
+        if (currentLang !== metaLang) {
+          const prevDisplay = metaLang || 'english (default)';
+          const nextDisplay = currentLang || 'english (default)';
+          throw new Error(
+            `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
+          );
+        }
         result = await this.incrementalUpdate(existingMeta, currentCommit);
       } else {
         result = await this.fullGeneration(currentCommit);
@@ -368,6 +411,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
+      lang: this.effectiveLang(),
       moduleFiles,
       moduleTree,
     });
@@ -415,6 +459,9 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
+    // Grouping is a structured-data phase (JSON output), not documentation.
+    // Do NOT apply buildSystemPrompt here — a language instruction would risk
+    // translating module-name keys, breaking slug stability and JSON parsing.
     const response = await this.invokeLLM(
       prompt,
       GROUPING_SYSTEM_PROMPT,
@@ -589,9 +636,13 @@ export class WikiGenerator {
       PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, MODULE_SYSTEM_PROMPT, this.streamOpts(node.name));
+    const response = await this.invokeLLM(
+      prompt,
+      this.buildSystemPrompt(MODULE_SYSTEM_PROMPT),
+      this.streamOpts(node.name),
+    );
 
-    // Write page with front matter
+    // H1 uses the English module name (stable slug source); body is LLM-translated.
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
@@ -630,7 +681,11 @@ export class WikiGenerator {
       CROSS_PROCESSES: formatProcesses(processes),
     });
 
-    const response = await this.invokeLLM(prompt, PARENT_SYSTEM_PROMPT, this.streamOpts(node.name));
+    const response = await this.invokeLLM(
+      prompt,
+      this.buildSystemPrompt(PARENT_SYSTEM_PROMPT),
+      this.streamOpts(node.name),
+    );
 
     const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
@@ -678,7 +733,7 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(
       prompt,
-      OVERVIEW_SYSTEM_PROMPT,
+      this.buildSystemPrompt(OVERVIEW_SYSTEM_PROMPT),
       this.streamOpts('Generating overview', 88),
     );
 
@@ -713,6 +768,7 @@ export class WikiGenerator {
         ...existingMeta,
         fromCommit: currentCommit,
         generatedAt: new Date().toISOString(),
+        lang: this.effectiveLang(),
       });
       return { pagesGenerated: 0, mode: 'incremental', failedModules: [] };
     }
@@ -817,6 +873,7 @@ export class WikiGenerator {
       fromCommit: currentCommit,
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
+      lang: this.effectiveLang(),
     });
 
     this.onProgress('done', 100, 'Incremental update complete');

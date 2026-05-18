@@ -11,14 +11,14 @@ permissions:
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Hardcoded `CI-` prefix (not `${{ github.workflow }}`) because this workflow is
-# invoked as a reusable workflow from publish.yml and release-candidate.yml. In
-# called-workflow context `github.workflow` evaluation is ambiguous across GitHub
-# Actions versions, and a prefix that could resolve to the caller's name would
-# share a concurrency group with the caller → deadlock. A literal prefix is
-# immune. Direct `pull_request` invocations use `CI-<ref>`; invocations from a
-# reusable-workflow caller fall into a per-run-unique group that never serializes
-# with the caller. `push` to main is handled by release-candidate.yml, which
-# calls this workflow once before publishing.
+# invoked as a reusable workflow from publish.yml. In called-workflow context
+# `github.workflow` evaluation is ambiguous across GitHub Actions versions, and a
+# prefix that could resolve to the caller's name would share a concurrency group
+# with the caller → deadlock. A literal prefix is immune. Direct `pull_request`
+# invocations use `CI-<ref>`; invocations from a reusable-workflow caller fall
+# into a per-run-unique group that never serializes with the caller. `push` to
+# main is handled by publish.yml (RC mode), which calls this workflow once
+# before publishing.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('CI-{0}', github.ref) || format('CI-nested-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

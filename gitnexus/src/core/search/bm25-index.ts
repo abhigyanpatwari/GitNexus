@@ -27,22 +27,20 @@ export interface FTSSearchResponse {
  * caller can distinguish "zero matches" from "index missing".
  */
 async function queryFTSViaExecutor(
-  executor: (cypher: string) => Promise<any[]>,
+  executor: (cypher: string, params: Record<string, any>) => Promise<any[]>,
   tableName: string,
   indexName: string,
   query: string,
   limit: number,
 ): Promise<Array<{ filePath: string; score: number; nodeId: string }> | null> {
-  // Escape single quotes and backslashes to prevent Cypher injection
-  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := false)
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := false)
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
   `;
   try {
-    const rows = await executor(cypher);
+    const rows = await executor(cypher, { query });
     return rows.map((row: any) => {
       const node = row.node || row[0] || {};
       const score = row.score ?? row[1] ?? 0;
@@ -81,8 +79,9 @@ export const searchFTSFromLbug = async (
     // IMPORTANT: FTS queries run sequentially to avoid connection contention.
     // The MCP pool supports multiple connections, but FTS is best run serially.
     const poolMod = await import('../lbug/pool-adapter.js');
-    const { executeQuery } = poolMod;
-    const executor = (cypher: string) => executeQuery(repoId, cypher);
+    const { executeParameterized } = poolMod;
+    const executor = (cypher: string, params: Record<string, any>) =>
+      executeParameterized(repoId, cypher, params);
 
     for (const { table, indexName } of FTS_INDEXES) {
       const result = await queryFTSViaExecutor(executor, table, indexName, query, limit);
