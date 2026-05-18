@@ -151,7 +151,13 @@ export function createRouteLimiter(opts?: RouteLimiterOverrides): RateLimitReque
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     passOnStoreError: true,
-    keyGenerator: (req: Request) => ipKeyGenerator(req.ip ?? req.socket?.remoteAddress ?? ''),
+    keyGenerator: (req: Request) => {
+      // Pass through ipKeyGenerator so IPv6 addresses are normalised to their /56
+      // subnet — without this, each IPv6 address gets its own counter and the limit
+      // is trivially bypassed (#1360).
+      const ip = req.ip ?? req.socket?.remoteAddress;
+      return ip ? ipKeyGenerator(ip) : 'unknown';
+    },
     message: { error: 'Too many requests, please try again later.' },
     ...opts,
   });
