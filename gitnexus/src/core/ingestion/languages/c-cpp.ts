@@ -64,6 +64,7 @@ import {
   cppImportOwningScope,
   cppReceiverBinding,
 } from './cpp/index.js';
+import { extractCppTemplateConstraints } from './cpp/constraint-extractor.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -463,6 +464,7 @@ export const cppProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.CPlusPlus),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+  extractTemplateConstraints: extractCppTemplateConstraintsForProvider,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   emitScopeCaptures: emitCppScopeCaptures,
@@ -474,3 +476,46 @@ export const cppProvider = defineLanguage({
   arityCompatibility: cppArityCompatibility,
   // mergeBindings + resolveImportTarget live on ScopeResolver (see cpp/scope-resolver.ts).
 });
+
+/**
+ * LanguageProvider hook: walk from a function definition node up to its
+ * enclosing `template_declaration` and extract the SFINAE / `requires`-
+ * clause constraint payload. Used by `parsing-processor` to fingerprint
+ * the graph node ID so two SFINAE overloads with identical
+ * `parameterTypes` get distinct nodes (issue #1579).
+ *
+ * Returns `undefined` for non-templated functions and for templated
+ * functions whose constraints the extractor can't model — both cases
+ * result in no constraint suffix on the node ID.
+ */
+function extractCppTemplateConstraintsForProvider(definitionNode: SyntaxNode): unknown {
+  // Walk up to the enclosing template_declaration. Bound the walk so we
+  // can't accidentally land on a far-ancestor template_declaration that
+  // wraps an unrelated function.
+  let cur: SyntaxNode | null = definitionNode.parent;
+  let hops = 8;
+  let templateDecl: SyntaxNode | null = null;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'template_declaration') {
+      templateDecl = cur;
+      break;
+    }
+    if (cur.type === 'translation_unit') break;
+    cur = cur.parent;
+  }
+  if (templateDecl === null) return undefined;
+
+  // Find the function_declarator inside the function definition so the
+  // extractor can map template params to function-argument indices.
+  let declarator: SyntaxNode | null = definitionNode.childForFieldName('declarator');
+  let walk = 8;
+  while (declarator !== null && walk-- > 0) {
+    if (declarator.type === 'function_declarator') break;
+    if (declarator.type === 'pointer_declarator' || declarator.type === 'reference_declarator') {
+      declarator = declarator.childForFieldName('declarator');
+      continue;
+    }
+    break;
+  }
+  return extractCppTemplateConstraints(templateDecl, declarator);
+}

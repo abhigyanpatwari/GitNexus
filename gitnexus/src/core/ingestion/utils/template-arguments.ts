@@ -55,3 +55,34 @@ export function templateArgumentsIdTag(templateArguments?: readonly string[]): s
   if (templateArguments === undefined || templateArguments.length === 0) return '';
   return `~${templateArguments.join(',')}`;
 }
+
+/**
+ * Stable short hash for the opaque `SymbolDefinition.templateConstraints`
+ * payload (issue #1579). Two function-template overloads with identical
+ * `parameterTypes` but mutually-exclusive SFINAE constraints
+ * (`enable_if_t<is_integral_v<T>>` vs `enable_if_t<is_floating_point_v<T>>`)
+ * must produce distinct graph node IDs so the constraint-filter step
+ * has two candidates to narrow between. Without this they collapse to
+ * a single Function node and the SFINAE golden case can only emit one
+ * edge regardless of resolver fixes.
+ *
+ * FNV-1a 32-bit, base36 encoded. Deterministic; non-cryptographic — the
+ * tag's job is collision-avoidance among same-name overloads in one
+ * file, not security.
+ */
+export function constraintsHash(jsonText: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < jsonText.length; i++) {
+    h ^= jsonText.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** Build the `~c:<hash>` ID suffix from an opaque constraint payload.
+ *  Returns empty string when the payload is absent so callers can
+ *  string-concatenate unconditionally. */
+export function templateConstraintsIdTag(payload: unknown): string {
+  if (payload === undefined || payload === null) return '';
+  return `~c:${constraintsHash(JSON.stringify(payload))}`;
+}
