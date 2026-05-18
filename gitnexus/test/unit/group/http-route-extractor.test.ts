@@ -593,6 +593,63 @@ Route::delete('/users/{id}', [UserController::class, 'destroy']);
     });
   });
 
+  describe('consumer extraction — Swift', () => {
+    it('extracts labeled `path:` wrapper-style calls', async () => {
+      const dir = path.join(tmpDir, 'swift-labeled-path');
+      fs.mkdirSync(path.join(dir, 'Sources/Client'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'Sources/Client/RelayClient.swift'),
+        `
+import Foundation
+
+enum RelayClient {
+    static func get(path: String) async throws -> Data { Data() }
+    static func post(path: String, body: Data) async throws -> Data { Data() }
+}
+
+func caller() async throws {
+    _ = try await RelayClient.get(path: "/api/customers")
+    _ = try await RelayClient.post(path: "/api/devices/register", body: Data())
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/customers')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/devices/register'),
+      ).toBeDefined();
+    });
+
+    it('extracts positional first-argument calls (Alamofire-style)', async () => {
+      const dir = path.join(tmpDir, 'swift-positional');
+      fs.mkdirSync(path.join(dir, 'Sources'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'Sources/Caller.swift'),
+        `
+import Alamofire
+
+func fetchAll() {
+    AF.request("/api/items")
+    AF.delete("/api/items/42")
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // AF.request is currently matched via its name (\`request\`) which is
+      // NOT in the verb set, so it should be ignored. AF.delete IS in the
+      // verb set and should be extracted.
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/api/items/{param}')).toBeDefined();
+      // AF.request is not a verb method — skip.
+      expect(consumers.find((c) => c.contractId === 'http::REQUEST::/api/items')).toBeUndefined();
+    });
+  });
+
   describe('consumer extraction — PHP', () => {
     it('extracts Laravel Http facade calls', async () => {
       const dir = path.join(tmpDir, 'php-http-facade');
