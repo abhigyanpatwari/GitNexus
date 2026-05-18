@@ -175,5 +175,4 @@ describe('resolveReferenceSites', () => {
       'def:User.save#1',
     );
   });
-
 });
