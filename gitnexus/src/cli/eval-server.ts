@@ -20,7 +20,8 @@
  *   gitnexus eval-server --idle-timeout 300     # auto-shutdown after 300s idle
  *
  * READY signal format: GITNEXUS_EVAL_SERVER_READY:<host>:<port>
- *   e.g. GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
+ *   IPv4: GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
+ *   IPv6: GITNEXUS_EVAL_SERVER_READY:[::1]:4848
  *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
@@ -533,7 +534,8 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
-      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${host}:${port}\n`);
+      const readyHost = host.includes(':') ? `[${host}]` : host;
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${readyHost}:${port}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
