@@ -25,15 +25,20 @@
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
  *   4b. When the exact-type filter from step 4 returns empty AND a
- *       `conversionRankFn` is provided, rank candidates via pairwise
- *       dominance comparison (ISO C++ [over.ics.rank]): F1 beats F2
- *       only when F1 is not worse for every arg and better for at
- *       least one. Non-dominated candidates are returned; multiple
- *       survivors are genuinely ambiguous.
+ *       `conversionRankFn` is provided (via `hookCtx`), rank candidates
+ *       via pairwise dominance comparison (ISO C++ [over.ics.rank]):
+ *       F1 beats F2 only when F1 is not worse for every arg and better
+ *       for at least one. Non-dominated candidates are returned;
+ *       multiple survivors are genuinely ambiguous.
+ *   4c. Final per-candidate constraint filter (SFINAE / `requires`).
+ *       When `constraintCompatibility` is provided via `hookCtx`, drop
+ *       candidates whose template constraints provably fail at the
+ *       call site. Three-valued; `'unknown'` keeps the candidate
+ *       (monotonicity).
  *   5. Empty input returns empty output.
  */
 
-import type { SymbolDefinition } from 'gitnexus-shared';
+import type { ArityVerdict, Callsite, ConstraintContext, SymbolDefinition } from 'gitnexus-shared';
 
 /**
  * Per-slot conversion-rank function. Returns a numeric cost for
@@ -48,11 +53,34 @@ import type { SymbolDefinition } from 'gitnexus-shared';
  */
 export type ConversionRankFn = (argType: string, paramType: string) => number;
 
+/**
+ * Optional hook bundle for narrowing extension points. Threaded in
+ * from `pickOverload` / `pickImplicitThisOverload` so per-language
+ * narrowing can layer in conversion-rank scoring (#1606) and
+ * constraint filtering (#1579) without changing the call signature
+ * at every site. Each hook is independently optional — leaving both
+ * undefined preserves the legacy arity + exact-type behavior.
+ */
+export interface OverloadNarrowingHookCtx {
+  /** Conversion-rank scoring fallback (step 4b). Engages when the
+   *  exact-type filter rejects every candidate. */
+  readonly conversionRankFn?: ConversionRankFn;
+  /** Constraint filter (step 4c). Drops candidates whose template
+   *  guards (SFINAE `enable_if_t`, C++20 `requires`, future Rust
+   *  trait bounds, etc.) provably fail at the call site. Three-valued
+   *  — `'unknown'` keeps the candidate (monotonicity). */
+  readonly constraintCompatibility?: (
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ) => ArityVerdict;
+}
+
 export function narrowOverloadCandidates(
   overloads: readonly SymbolDefinition[],
   argCount: number | undefined,
   argTypes: readonly string[] | undefined,
-  conversionRankFn?: ConversionRankFn,
+  hookCtx?: OverloadNarrowingHookCtx,
 ): readonly SymbolDefinition[] {
   if (overloads.length === 0) return [];
 
@@ -93,6 +121,7 @@ export function narrowOverloadCandidates(
   const candidates: readonly SymbolDefinition[] =
     arityMatches.length > 0 ? arityMatches : anyUnknownBounds ? overloads : [];
 
+  let result: readonly SymbolDefinition[] = candidates;
   if (argTypes !== undefined && argTypes.length > 0) {
     const typed = candidates.filter((d) => {
       const params = d.parameterTypes;
@@ -103,21 +132,45 @@ export function narrowOverloadCandidates(
       }
       return true;
     });
-    if (typed.length > 0) return typed;
-
-    // ── Conversion-rank scoring (step 4b) ──────────────────────────
-    // The exact-type filter above rejected every candidate. When a
-    // per-language conversion-rank function is available, rank via
-    // pairwise dominance: F1 beats F2 only when F1 is not worse for
-    // every arg and better for at least one. Non-dominated candidates
-    // are returned; multiple survivors are genuinely ambiguous.
-    if (conversionRankFn !== undefined) {
-      const ranked = rankByConversion(candidates, argTypes, conversionRankFn);
-      if (ranked.length > 0) return ranked;
+    if (typed.length > 0) {
+      result = typed;
+    } else if (hookCtx?.conversionRankFn !== undefined) {
+      // ── Conversion-rank scoring (step 4b) ──────────────────────────
+      // The exact-type filter rejected every candidate. Rank via
+      // pairwise dominance: F1 beats F2 only when F1 is not worse for
+      // every arg and better for at least one. Non-dominated candidates
+      // are returned; multiple survivors are genuinely ambiguous. When
+      // ranking also yields empty, fall through to the arity-filtered
+      // `candidates` set — matches pre-#1606 behavior.
+      const ranked = rankByConversion(candidates, argTypes, hookCtx.conversionRankFn);
+      if (ranked.length > 0) result = ranked;
     }
   }
 
-  return candidates;
+  // Constraint filter (step 4c; Tier-A — SFINAE / `requires` clauses).
+  // Runs after arity, exact-type, and conversion-rank filters so the
+  // hook only sees candidates already viable on the other axes.
+  // Three-valued: `'compatible'` and `'unknown'` keep the candidate
+  // (monotonicity — adding a predicate must never cause a wrong edge);
+  // only `'incompatible'` drops it. Candidates without
+  // `templateConstraints` are always kept.
+  //
+  // No fallback to the unconstrained set when this filter empties the
+  // candidate list: a fully-`'incompatible'` verdict is authoritative.
+  // The downstream `OVERLOAD_AMBIGUOUS` sentinel still guards the empty
+  // case, so a buggy hook that wrongly returns `'incompatible'` for
+  // every candidate degrades to today's "suppress edge" behavior rather
+  // than emitting a wrong edge.
+  if (hookCtx?.constraintCompatibility !== undefined && argCount !== undefined) {
+    const callsite: Callsite = { arity: argCount };
+    const ctx: ConstraintContext = argTypes !== undefined ? { argumentTypes: argTypes } : {};
+    result = result.filter((def) => {
+      if (def.templateConstraints === undefined) return true;
+      return hookCtx.constraintCompatibility!(callsite, def, ctx) !== 'incompatible';
+    });
+  }
+
+  return result;
 }
 
 /**

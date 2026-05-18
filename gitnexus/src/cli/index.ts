@@ -161,11 +161,15 @@ program
   )
   .option('--no-reasoning-model', 'Disable reasoning model mode (overrides saved config)')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
-  .option('--timeout <seconds>', 'Per-attempt LLM request timeout in seconds (default: 60)')
+  .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
+  .option(
+    '--lang <lang>',
+    'Output language for generated documentation (e.g. english, chinese, spanish, japanese)',
+  )
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
@@ -237,6 +241,10 @@ program
   .command('eval-server')
   .description('Start lightweight HTTP server for fast tool calls during evaluation')
   .option('-p, --port <port>', 'Port number', '4848')
+  .option(
+    '--host <host>',
+    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+  )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 

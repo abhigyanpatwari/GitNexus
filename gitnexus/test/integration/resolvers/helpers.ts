@@ -175,10 +175,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
-    // Conversion-rank scoring (#1578) disambiguates `f(int)` vs `f(double)`
-    // by ranking exact match over standard conversion. The legacy DAG has no
-    // conversion-rank scoring; it either picks arbitrarily or leaves the call
-    // unresolved. Scope-resolver-only correctness win.
+    // Conversion-rank scoring (#1578 / #1606) disambiguates `f(int)` vs
+    // `f(double)` by ranking exact match over standard conversion. The
+    // legacy DAG has no conversion-rank scoring; it either picks
+    // arbitrarily or leaves the call unresolved. Scope-resolver-only
+    // correctness win.
     'f(2.5) resolves to f(double) — exact match beats standard conversion',
     'f(42) resolves to f(int) — exact match beats standard conversion',
     'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
@@ -188,6 +189,17 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    // The legacy DAG path lacks the SFINAE / `requires`-clause aware
+    // overload filter (issue #1579). The two `process<T>` overloads
+    // guarded by mutually-exclusive `enable_if_t` predicates collapse
+    // into false multi-candidate ambiguity → 0 CALLS edges. The
+    // registry-primary path filters via `constraintCompatibility` and
+    // emits exactly 2 edges (one per ISO-resolved overload). Scope-
+    // resolver-only correctness win; backporting requires a constexpr
+    // evaluation engine in the legacy DAG.
+    'enable_if_t<is_integral_v<T>> overload binds only on integral call sites',
+    'enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites',
+    'requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)',
     // The legacy DAG path has no inline-namespace same-name ambiguity
     // detection. When two inline children declare the same name, the
     // legacy path picks an arbitrary match. The scope-resolver returns
