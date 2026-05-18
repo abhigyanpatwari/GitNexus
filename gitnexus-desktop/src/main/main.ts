@@ -304,6 +304,10 @@ const spawnGitNexusServer = (): ChildProcess => {
     appendGitNexusServerOutput(getErrorMessage(error));
   });
 
+  childProcess.once('exit', () => {
+    serverReadyPromise = null;
+  });
+
   return childProcess;
 };
 
@@ -805,10 +809,12 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (openWindows.size === 0) {
-      void createWindow().catch((error) => {
-        showStartupError(error);
-        exitStartupFailure();
-      });
+      void ensureGitNexusServerStarted()
+        .then(() => createWindow())
+        .catch((error) => {
+          showStartupError(error);
+          exitStartupFailure();
+        });
     }
   });
 });
