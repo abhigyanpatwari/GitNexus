@@ -1217,7 +1217,7 @@ describe('CLI end-to-end', () => {
 
         child.stdout.on('data', (chunk: Buffer) => {
           stdoutBuffer += chunk.toString();
-          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
             foundOnStdout = true;
             child.kill('SIGTERM');
           }
@@ -1252,6 +1252,159 @@ describe('CLI end-to-end', () => {
             reject(err);
           }
         });
+      });
+    }, 35000);
+  });
+
+  // ─── eval-server --host flag tests ───────────────────────────────────
+  // Verifies --host is wired to the actual bind address, not just accepted.
+  // Original flag registration test by Val Vladescu (PR #1602).
+
+  describe('eval-server --host flag', () => {
+    it('emits READY signal containing the bound host 127.0.0.1', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            '127.0.0.1',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let stderrBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+            if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
+              settle(resolve);
+            } else {
+              settle(() =>
+                reject(
+                  new Error(
+                    `READY signal did not contain expected host 127.0.0.1:\n${stdoutBuffer}`,
+                  ),
+                ),
+              );
+            }
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderrBuffer += chunk.toString();
+          if (stderrBuffer.includes('unknown option') || stderrBuffer.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${stderrBuffer}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() => reject(new Error('eval-server did not emit READY signal within 30s')));
+        }, 30000);
+      });
+    }, 35000);
+
+    it('binds to 0.0.0.0 and serves /health on 127.0.0.1 (cross-container use case)', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            '0.0.0.0',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', async (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          const readyLine = stdoutBuffer
+            .split('\n')
+            .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:0.0.0.0:'));
+          if (!readyLine || settled) return;
+
+          // Parse the actual OS-assigned port from the READY signal
+          const boundPort = readyLine.split(':').pop()?.trim();
+          if (!boundPort || isNaN(Number(boundPort))) {
+            settle(() => reject(new Error(`Could not parse port from READY signal: ${readyLine}`)));
+            return;
+          }
+
+          // A server bound to 0.0.0.0 must be reachable on 127.0.0.1 from the same host
+          try {
+            const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
+            if (res.status === 200) {
+              settle(resolve);
+            } else {
+              settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+            }
+          } catch (err) {
+            settle(() =>
+              reject(
+                new Error(
+                  `eval-server bound to 0.0.0.0 but /health unreachable on 127.0.0.1:${boundPort}: ${err}`,
+                ),
+              ),
+            );
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes('unknown option') || text.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${text}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() =>
+            reject(new Error('eval-server --host 0.0.0.0 did not emit READY signal within 30s')),
+          );
+        }, 30000);
       });
     }, 35000);
   });
