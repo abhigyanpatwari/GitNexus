@@ -1,17 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,10 +23,6 @@ const gitnexusServerPort = 4747;
 const gitnexusWebDevPort = 5173;
 const desktopRendererPort = 5174;
 const shouldCleanupDevPort = process.argv.includes('--cleanup-dev-port');
-
-const getNodeModulePackagePath = (packageRoot, packageName) => {
-  return path.join(packageRoot, 'node_modules', ...packageName.split('/'));
-};
 
 const getNodeModulePackageJsonPath = (packageRoot, packageName) => {
   return path.join(packageRoot, 'node_modules', ...packageName.split('/'), 'package.json');
@@ -276,85 +261,9 @@ const runNpm = (args, cwd) => {
   }
 };
 
-const overlayDependencyPackages = (sourceDirectory, destinationDirectory, dependencyMap) => {
-  mkdirSync(destinationDirectory, { recursive: true });
-
-  for (const packageName of Object.keys(dependencyMap)) {
-    const sourcePath = path.join(sourceDirectory, ...packageName.split('/'));
-    const destinationPath = path.join(destinationDirectory, ...packageName.split('/'));
-
-    if (!existsSync(sourcePath)) {
-      continue;
-    }
-
-    if (existsSync(destinationPath)) {
-      continue;
-    }
-
-    mkdirSync(path.dirname(destinationPath), { recursive: true });
-
-    try {
-      cpSync(sourcePath, destinationPath, {
-        dereference: true,
-        force: true,
-        recursive: true,
-      });
-    } catch (error) {
-      const errorCode = error?.code;
-      const isLockedPathError =
-        (errorCode === 'EPIPE' || errorCode === 'EBUSY' || errorCode === 'EPERM') &&
-        existsSync(destinationPath);
-      const isExistingPathError = errorCode === 'EEXIST' && existsSync(destinationPath);
-
-      if (!isLockedPathError && !isExistingPathError) {
-        throw error;
-      }
-
-      console.warn(
-        `[gitnexus-desktop] Skipping already-present dependency path during repair: ${destinationPath}`,
-      );
-    }
-  }
-};
-
-const replaceDirectGitNexusPackages = (dependencyMap) => {
-  for (const packageName of Object.keys(dependencyMap)) {
-    rmSync(getNodeModulePackagePath(gitnexusRoot, packageName), {
-      force: true,
-      recursive: true,
-    });
-  }
-};
-
-const repairGitNexusPackages = (dependencyMap, label) => {
-  const repairDirectory = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-desktop-gitnexus-repair-'));
-
-  try {
-    writeFileSync(
-      path.join(repairDirectory, 'package.json'),
-      JSON.stringify(
-        {
-          name: 'gitnexus-desktop-gitnexus-repair',
-          private: true,
-          dependencies: dependencyMap,
-        },
-        null,
-        2,
-      ),
-    );
-
-    console.info(`[gitnexus-desktop] ${label}.`);
-    runNpm(['install', '--no-package-lock'], repairDirectory);
-
-    replaceDirectGitNexusPackages(dependencyMap);
-    overlayDependencyPackages(
-      path.join(repairDirectory, 'node_modules'),
-      path.join(gitnexusRoot, 'node_modules'),
-      dependencyMap,
-    );
-  } finally {
-    rmSync(repairDirectory, { force: true, recursive: true });
-  }
+const repairGitNexusPackages = (_dependencyMap, label) => {
+  console.info(`[gitnexus-desktop] ${label}.`);
+  runNpm(['ci'], gitnexusRoot);
 };
 
 const runCommand = (command, args) => {
