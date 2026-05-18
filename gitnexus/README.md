@@ -24,6 +24,12 @@ npx gitnexus analyze
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
 
+If you only want to refresh the index and leave existing agent files and skills untouched, use:
+
+```bash
+npx gitnexus analyze --index-only
+```
+
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
