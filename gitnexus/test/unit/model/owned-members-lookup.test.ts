@@ -5,7 +5,6 @@
 import { describe, it, expect } from 'vitest';
 import type { DefIndex, SymbolDefinition } from 'gitnexus-shared';
 import {
-  buildFieldRegistry,
   buildMethodRegistry,
   EvidenceWeights,
   buildScopeTree,
