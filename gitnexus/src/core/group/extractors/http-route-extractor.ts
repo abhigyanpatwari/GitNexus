@@ -192,21 +192,47 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
+    // Polyglot-repo correctness: union the graph-assisted (Strategy A)
+    // and source-scan (Strategy B) results, with graph entries
+    // preferred on contractId collisions for their richer symbol
+    // metadata. The previous ternary fell back to source-scan ONLY
+    // when the graph returned zero entries -- which means in a repo
+    // where one language has a route ingester (e.g. Python's
+    // @app.get / Java's @RequestMapping populate HANDLES_ROUTE
+    // edges) and another doesn't (e.g. Go's mux.HandleFunc), the
+    // source-scan path is skipped for the WHOLE repo and the
+    // non-ingested language's providers are silently dropped.
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
-    const providers =
-      graphProviders.length > 0
-        ? graphProviders
-        : this.extractProvidersSourceScan(await getScannedFiles(), getDetections);
+    const providers = await this.unionGraphAndSourceScan(graphProviders, async () =>
+      this.extractProvidersSourceScan(await getScannedFiles(), getDetections),
+    );
 
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
-    const consumers =
-      graphConsumers.length > 0
-        ? graphConsumers
-        : this.extractConsumersSourceScan(await getScannedFiles(), getDetections);
+    const consumers = await this.unionGraphAndSourceScan(graphConsumers, async () =>
+      this.extractConsumersSourceScan(await getScannedFiles(), getDetections),
+    );
 
     return [...providers, ...consumers];
+  }
+
+  /**
+   * Merge graph-assisted contracts with source-scan contracts, preferring
+   * graph entries on `contractId` collisions. Source-scan is invoked
+   * lazily so we don't pay the glob+parse cost when the per-language
+   * supplement isn't needed (e.g. a homogenous Java repo where every
+   * provider already has a HANDLES_ROUTE edge from the ingestion
+   * pipeline). Callers should still await it; the laziness here is just
+   * about ordering and dedup keying.
+   */
+  private async unionGraphAndSourceScan<T extends { contractId: string }>(
+    graph: T[],
+    sourceScan: () => Promise<T[]>,
+  ): Promise<T[]> {
+    const seen = new Set(graph.map((c) => c.contractId));
+    const supplemental = (await sourceScan()).filter((c) => !seen.has(c.contractId));
+    return [...graph, ...supplemental];
   }
 
   private async scanFiles(repoPath: string): Promise<string[]> {

@@ -94,6 +94,83 @@ public class UserController {
     });
   });
 
+  describe('provider extraction — graph + source-scan union (polyglot repo)', () => {
+    it('does not drop source-scan providers in another language when graph returns any entries', async () => {
+      // Polyglot repo: a Java file is registered in HANDLES_ROUTE (graph
+      // strategy returns one provider), and a Go file has a stdlib
+      // HandleFunc registration that no ingester populated. The union
+      // must include both -- previously the source-scan fallback was
+      // skipped entirely the moment the graph returned any entries.
+      const dir = path.join(tmpDir, 'polyglot');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+@RestController
+@RequestMapping("/api/v2")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+
+      fs.writeFileSync(
+        path.join(dir, 'cmd', 'server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) {
+          return [
+            {
+              fileId: 'file-uid-ctrl',
+              filePath: 'src/controller/UserController.java',
+              routePath: '/api/v2/users',
+              routeId: 'route-uid-users',
+              responseKeys: null,
+              routeSource: 'decorator-GetMapping',
+            },
+          ];
+        }
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'uid-ctrl-list',
+              name: 'list',
+              filePath: 'src/controller/UserController.java',
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // Graph-derived Java provider
+      const javaRoute = providers.find((c) => c.contractId === 'http::GET::/api/v2/users');
+      expect(javaRoute, 'expected graph-derived Java provider').toBeDefined();
+
+      // Source-scan-derived Go provider must NOT be dropped just because
+      // the graph returned a row for a different file.
+      const goRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(goRoute, 'expected source-scan Go provider to survive the union').toBeDefined();
+      expect(goRoute?.symbolName).toBe('healthHandler');
+    });
+  });
+
   describe('provider extraction — source-scan fallback (Strategy B)', () => {
     it('extracts Spring @GetMapping annotation', async () => {
       const dir = path.join(tmpDir, 'spring');
