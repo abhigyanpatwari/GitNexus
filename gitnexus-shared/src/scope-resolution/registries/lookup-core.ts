@@ -339,8 +339,9 @@ function collectOwnedMembers(
   const indexed = ctx.ownedMembersByOwner?.(ownerDefId, memberName);
   if (indexed !== undefined) return indexed;
 
-  // Compatibility fallback for callers that still build `RegistryContext`
-  // without an owner-keyed lookup hook.
+  // Compatibility fallback only when the hook is absent (tests / legacy).
+  // Production `runScopeResolution` always wires `lookupOwnedMembersByOwner`
+  // so Step 2 stays O(1) per registry — never O(|defs|).
   const out: SymbolDefinition[] = [];
   for (const def of ctx.defs.byId.values()) {
     if (def.ownerId !== ownerDefId) continue;
