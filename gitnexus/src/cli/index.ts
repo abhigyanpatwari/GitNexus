@@ -241,6 +241,10 @@ program
   .command('eval-server')
   .description('Start lightweight HTTP server for fast tool calls during evaluation')
   .option('-p, --port <port>', 'Port number', '4848')
+  .option(
+    '--host <host>',
+    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+  )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 

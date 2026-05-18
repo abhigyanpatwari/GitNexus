@@ -25,14 +25,26 @@
  */
 
 import http from 'http';
+import { isIPv4, isIPv6 } from 'node:net';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
-import { cliInfo, cliWarn } from './cli-message.js';
+import { cliInfo, cliWarn, cliError } from './cli-message.js';
 
 export interface EvalServerOptions {
   port?: string;
+  host?: string;
   idleTimeout?: string;
+}
+
+/**
+ * Validate the --host value. Accepts IPv4, IPv6, or "localhost".
+ * Returns the normalised host string, or null if invalid.
+ */
+export function validateHost(raw: string): string | null {
+  if (raw === 'localhost') return raw;
+  if (isIPv4(raw) || isIPv6(raw)) return raw;
+  return null;
 }
 
 // ─── Text Formatters ──────────────────────────────────────────────────
@@ -330,6 +342,22 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const port = parseInt(options?.port || '4848');
   const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
 
+  const rawHost = options?.host ?? '127.0.0.1';
+  const host = validateHost(rawHost);
+  if (!host) {
+    cliError(
+      `Invalid --host value "${rawHost}":\n` +
+        `  Must be an IP address or "localhost".\n\n` +
+        `  Examples:\n` +
+        `    gitnexus eval-server --host 127.0.0.1    (loopback only, default)\n` +
+        `    gitnexus eval-server --host 0.0.0.0      (all network interfaces)\n` +
+        `    gitnexus eval-server --host 192.168.1.5  (specific interface)\n` +
+        `    gitnexus eval-server --host localhost     (OS-resolved loopback)\n`,
+      { flag: '--host', value: rawHost },
+    );
+    process.exit(1);
+  }
+
   const backend = new LocalBackend();
   const ok = await backend.init();
 
@@ -426,12 +454,13 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, host, () => {
     // Plain-text banner for the human watching stderr; structured record
     // for log aggregation (split into two so the user sees a real banner
     // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
+    const displayHost = host.includes(':') ? `[${host}]` : host;
     const bannerLines = [
-      `GitNexus eval-server: listening on http://127.0.0.1:${port}`,
+      `GitNexus eval-server: listening on http://${displayHost}:${port}`,
       `  POST /tool/query    — search execution flows`,
       `  POST /tool/context  — 360-degree symbol view`,
       `  POST /tool/impact   — blast radius analysis`,
@@ -444,7 +473,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
     cliInfo(bannerLines.join('\n'), {
       port,
-      host: '127.0.0.1',
+      host,
       idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
       endpoints: [
         'POST /tool/query',
