@@ -1023,8 +1023,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.once('close', abortStreaming);
 
         try {
-          await withLbugDb(lbugPath, async () =>
-            streamGraphNdjson(res, includeContent, abortController.signal),
+          // Read-only open: /api/graph never writes. Write-mode opens engage
+          // LadybugDB's checkpoint machinery (`.shadow` sidecar), which on
+          // Windows races with the OS file handle release and trips
+          // "Cannot open file ... lbug.shadow - Error 2". See pool-adapter.ts
+          // which already opens read-only for the same reason, and the
+          // /api/query precedent in PR #1655.
+          await withLbugDb(
+            lbugPath,
+            async () => streamGraphNdjson(res, includeContent, abortController.signal),
+            { readOnly: true },
           );
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
@@ -1037,7 +1045,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent));
+      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent), {
+        readOnly: true,
+      });
       res.json(graph);
     } catch (err: any) {
       if (err instanceof ClientDisconnectedError) {
@@ -1084,68 +1094,70 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const mode: string = req.body.mode ?? 'hybrid';
       const enrich: boolean = req.body.enrich !== false; // default true
 
-      const results = await withLbugDb(lbugPath, async () => {
-        let searchResults: any[];
-        let ftsAvailable: boolean | undefined;
+      const results = await withLbugDb(
+        lbugPath,
+        async () => {
+          let searchResults: any[];
+          let ftsAvailable: boolean | undefined;
 
-        if (mode === 'semantic') {
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-          if (!isEmbedderReady()) {
-            return { searchResults: [] as any[], ftsAvailable: undefined };
-          }
-          const { semanticSearch: semSearch } =
-            await import('../core/embeddings/embedding-pipeline.js');
-          searchResults = await semSearch(executeQuery, query, limit);
-          // Normalize semantic results to HybridSearchResult shape
-          searchResults = searchResults.map((r: any, i: number) => ({
-            ...r,
-            score: r.score ?? 1 - (r.distance ?? 0),
-            rank: i + 1,
-            sources: ['semantic'],
-          }));
-        } else if (mode === 'bm25') {
-          const ftsResponse = await searchFTSFromLbug(query, limit);
-          ftsAvailable = ftsResponse.ftsAvailable;
-          searchResults = ftsResponse.results.map((r: any, i: number) => ({
-            ...r,
-            rank: i + 1,
-            sources: ['bm25'],
-          }));
-        } else {
-          // hybrid (default)
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-          if (isEmbedderReady()) {
+          if (mode === 'semantic') {
+            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+            if (!isEmbedderReady()) {
+              return { searchResults: [] as any[], ftsAvailable: undefined };
+            }
             const { semanticSearch: semSearch } =
               await import('../core/embeddings/embedding-pipeline.js');
-            searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
-          } else {
+            searchResults = await semSearch(executeQuery, query, limit);
+            // Normalize semantic results to HybridSearchResult shape
+            searchResults = searchResults.map((r: any, i: number) => ({
+              ...r,
+              score: r.score ?? 1 - (r.distance ?? 0),
+              rank: i + 1,
+              sources: ['semantic'],
+            }));
+          } else if (mode === 'bm25') {
             const ftsResponse = await searchFTSFromLbug(query, limit);
             ftsAvailable = ftsResponse.ftsAvailable;
-            searchResults = ftsResponse.results;
+            searchResults = ftsResponse.results.map((r: any, i: number) => ({
+              ...r,
+              rank: i + 1,
+              sources: ['bm25'],
+            }));
+          } else {
+            // hybrid (default)
+            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+            if (isEmbedderReady()) {
+              const { semanticSearch: semSearch } =
+                await import('../core/embeddings/embedding-pipeline.js');
+              searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
+            } else {
+              const ftsResponse = await searchFTSFromLbug(query, limit);
+              ftsAvailable = ftsResponse.ftsAvailable;
+              searchResults = ftsResponse.results;
+            }
           }
-        }
 
-        if (!enrich) return { searchResults, ftsAvailable };
+          if (!enrich) return { searchResults, ftsAvailable };
 
-        // Server-side enrichment: add connections, cluster, processes per result
-        // Uses parameterized queries to prevent Cypher injection via nodeId
-        const validLabel = (label: string): boolean =>
-          (NODE_TABLES as readonly string[]).includes(label);
+          // Server-side enrichment: add connections, cluster, processes per result
+          // Uses parameterized queries to prevent Cypher injection via nodeId
+          const validLabel = (label: string): boolean =>
+            (NODE_TABLES as readonly string[]).includes(label);
 
-        const enriched = await Promise.all(
-          searchResults.slice(0, limit).map(async (r: any) => {
-            const nodeId: string = r.nodeId || r.id || '';
-            const nodeLabel = nodeId.split(':')[0];
-            const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
+          const enriched = await Promise.all(
+            searchResults.slice(0, limit).map(async (r: any) => {
+              const nodeId: string = r.nodeId || r.id || '';
+              const nodeLabel = nodeId.split(':')[0];
+              const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
 
-            if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
+              if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
 
-            // Run connections, cluster, and process queries in parallel
-            // Label is validated against NODE_TABLES (compile-time safe identifiers);
-            // nodeId uses $nid parameter binding to prevent injection
-            const [connRes, clusterRes, procRes] = await Promise.all([
-              executePrepared(
-                `
+              // Run connections, cluster, and process queries in parallel
+              // Label is validated against NODE_TABLES (compile-time safe identifiers);
+              // nodeId uses $nid parameter binding to prevent injection
+              const [connRes, clusterRes, procRes] = await Promise.all([
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
               OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
@@ -1154,61 +1166,63 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
               LIMIT 1
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-              executePrepared(
-                `
+                  { nid: nodeId },
+                ).catch(() => []),
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
               RETURN c.label AS label, c.description AS description
               LIMIT 1
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-              executePrepared(
-                `
+                  { nid: nodeId },
+                ).catch(() => []),
+                executePrepared(
+                  `
               MATCH (n:${nodeLabel} {id: $nid})
               MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
               RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
               ORDER BY rel.step
             `,
-                { nid: nodeId },
-              ).catch(() => []),
-            ]);
+                  { nid: nodeId },
+                ).catch(() => []),
+              ]);
 
-            if (connRes.length > 0) {
-              const row = connRes[0];
-              const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
-                .filter((c: any) => c?.name)
-                .slice(0, 5);
-              const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
-                .filter((c: any) => c?.name)
-                .slice(0, 5);
-              enrichment.connections = { outgoing, incoming };
-            }
+              if (connRes.length > 0) {
+                const row = connRes[0];
+                const outgoing = (Array.isArray(row) ? row[0] : row.outgoing || [])
+                  .filter((c: any) => c?.name)
+                  .slice(0, 5);
+                const incoming = (Array.isArray(row) ? row[1] : row.incoming || [])
+                  .filter((c: any) => c?.name)
+                  .slice(0, 5);
+                enrichment.connections = { outgoing, incoming };
+              }
 
-            if (clusterRes.length > 0) {
-              const row = clusterRes[0];
-              enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
-            }
+              if (clusterRes.length > 0) {
+                const row = clusterRes[0];
+                enrichment.cluster = Array.isArray(row) ? row[0] : row.label;
+              }
 
-            if (procRes.length > 0) {
-              enrichment.processes = procRes
-                .map((row: any) => ({
-                  id: Array.isArray(row) ? row[0] : row.id,
-                  label: Array.isArray(row) ? row[1] : row.label,
-                  step: Array.isArray(row) ? row[2] : row.step,
-                  stepCount: Array.isArray(row) ? row[3] : row.stepCount,
-                }))
-                .filter((p: any) => p.id && p.label);
-            }
+              if (procRes.length > 0) {
+                enrichment.processes = procRes
+                  .map((row: any) => ({
+                    id: Array.isArray(row) ? row[0] : row.id,
+                    label: Array.isArray(row) ? row[1] : row.label,
+                    step: Array.isArray(row) ? row[2] : row.step,
+                    stepCount: Array.isArray(row) ? row[3] : row.stepCount,
+                  }))
+                  .filter((p: any) => p.id && p.label);
+              }
 
-            return { ...r, ...enrichment };
-          }),
-        );
+              return { ...r, ...enrichment };
+            }),
+          );
 
-        return { searchResults: enriched, ftsAvailable };
-      });
+          return { searchResults: enriched, ftsAvailable };
+        },
+        { readOnly: true },
+      );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
         response.warning =
@@ -1288,8 +1302,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const fileRows = await withLbugDb(lbugPath, () =>
-        executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+      const fileRows = await withLbugDb(
+        lbugPath,
+        () =>
+          executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
+        { readOnly: true },
       );
 
       // Search files on disk one at a time (constant memory)
