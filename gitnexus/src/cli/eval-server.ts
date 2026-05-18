@@ -14,9 +14,13 @@
  *   Agent bash cmd → curl localhost:PORT/tool/query → eval-server → LocalBackend → format → text
  *
  * Usage:
- *   gitnexus eval-server                    # default port 4848
- *   gitnexus eval-server --port 4848        # explicit port
- *   gitnexus eval-server --idle-timeout 300 # auto-shutdown after 300s idle
+ *   gitnexus eval-server                        # default port 4848, binds 127.0.0.1
+ *   gitnexus eval-server --port 4848            # explicit port
+ *   gitnexus eval-server --host 0.0.0.0         # reachable from other VMs / containers
+ *   gitnexus eval-server --idle-timeout 300     # auto-shutdown after 300s idle
+ *
+ * READY signal format: GITNEXUS_EVAL_SERVER_READY:<host>:<port>
+ *   e.g. GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
  *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
@@ -42,7 +46,7 @@ export interface EvalServerOptions {
  * Returns the normalised host string, or null if invalid.
  */
 export function validateHost(raw: string): string | null {
-  if (raw === 'localhost') return raw;
+  if (raw === 'localhost') return '127.0.0.1';
   if (isIPv4(raw) || isIPv6(raw)) return raw;
   return null;
 }
@@ -454,6 +458,49 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
   });
 
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Port ${port} is already in use.\n\n` +
+          `  Either:\n` +
+          `    1. Stop the process already using port ${port}\n` +
+          `    2. Use a different port: gitnexus eval-server --port 4849\n`,
+        { code: err.code, port, host },
+      );
+    } else if (err.code === 'EADDRNOTAVAIL') {
+      const isIPv6Host = isIPv6(host);
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Address ${host} is not available on this machine.\n\n` +
+          (isIPv6Host
+            ? `  IPv6 address ${host} is not reachable — IPv6 may be disabled on this system or container.\n` +
+              `  Docker containers and many CI environments disable IPv6 by default.\n\n`
+            : `  The --host value must be an IP assigned to a local network interface.\n` +
+              `  Run \`ip addr\` (Linux) or \`ipconfig\` (Windows) to list available addresses.\n\n`) +
+          `  Common fixes:\n` +
+          `    gitnexus eval-server --host 127.0.0.1  (loopback, this machine only)\n` +
+          `    gitnexus eval-server --host 0.0.0.0    (all interfaces, reachable from other VMs)\n`,
+        { code: err.code, port, host },
+      );
+    } else if (err.code === 'EACCES') {
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Permission denied binding to port ${port}.\n\n` +
+          `  Ports below 1024 require elevated privileges.\n` +
+          `  Use a port above 1024: gitnexus eval-server --port 4848\n`,
+        { code: err.code, port, host },
+      );
+    } else {
+      cliError(`\nGitNexus eval-server failed to start:\n  ${err.message}\n`, {
+        code: err.code,
+        port,
+        host,
+      });
+    }
+    process.exit(1);
+  });
+
   server.listen(port, host, () => {
     // Plain-text banner for the human watching stderr; structured record
     // for log aggregation (split into two so the user sees a real banner
@@ -486,7 +533,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
-      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${host}:${port}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
