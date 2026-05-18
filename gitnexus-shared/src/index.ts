@@ -127,6 +127,7 @@ export { CLASS_KINDS, METHOD_KINDS, FIELD_KINDS } from './scope-resolution/regis
 export type {
   RegistryContext,
   RegistryProviders,
+  OwnedMembersByOwnerLookup,
   OwnerScopedContributor,
   ArityVerdict,
   ConstraintContext,

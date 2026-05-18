@@ -78,6 +78,12 @@ export function emitFreeCallFallback(
   let emitted = 0;
   const seen = new Set<string>();
 
+  // Build an O(1) simple-name -> callable defs index over scopes.defs once
+  // per pass so pickUniqueGlobalCallable doesn't re-scan defs.byId.values()
+  // per call site. Same name + callable-kind filter that the previous scan
+  // applied (see pickUniqueGlobalCallable JSDoc). Cost: O(|defs|) once.
+  const globalCallablesBySimpleName = buildGlobalCallableIndex(scopes);
+
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
@@ -126,6 +132,7 @@ export function emitFreeCallFallback(
                 site.arity,
                 site.argumentTypes,
                 {
+                  argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: options.conversionRankFn,
                   constraintCompatibility: options.constraintCompatibility,
                 },
@@ -190,6 +197,7 @@ export function emitFreeCallFallback(
               fnDef = ordinary[0];
             } else {
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
+                argumentTypeClasses: site.argumentTypeClasses,
                 conversionRankFn: options.conversionRankFn,
                 constraintCompatibility: options.constraintCompatibility,
               });
@@ -225,6 +233,7 @@ export function emitFreeCallFallback(
             push(adl);
 
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
+              argumentTypeClasses: site.argumentTypeClasses,
               conversionRankFn: options.conversionRankFn,
               constraintCompatibility: options.constraintCompatibility,
             });
@@ -254,7 +263,7 @@ export function emitFreeCallFallback(
         fnDef = pickUniqueGlobalCallable(
           site.name,
           model,
-          scopes,
+          globalCallablesBySimpleName,
           parsed.filePath,
           options.isFileLocalDef,
           site.arity,
@@ -299,10 +308,35 @@ export function emitFreeCallFallback(
   return emitted;
 }
 
+/**
+ * Build a `simpleName -> callable defs` index from `scopes.defs` once per
+ * pass. Mirrors the filter the old per-site scan applied: Function /
+ * Method / Constructor, keyed by the last `.`-segment of `qualifiedName`
+ * (falling back to the qualifiedName itself when undotted). Used by
+ * `pickUniqueGlobalCallable` so every free-call fallback site is O(1)
+ * instead of O(|defs|).
+ */
+function buildGlobalCallableIndex(
+  scopes: ScopeResolutionIndexes,
+): ReadonlyMap<string, readonly SymbolDefinition[]> {
+  const out = new Map<string, SymbolDefinition[]>();
+  for (const def of scopes.defs.byId.values()) {
+    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    const qualified = def.qualifiedName;
+    if (qualified === undefined || qualified.length === 0) continue;
+    const dot = qualified.lastIndexOf('.');
+    const simple = dot === -1 ? qualified : qualified.slice(dot + 1);
+    const bucket = out.get(simple);
+    if (bucket) bucket.push(def);
+    else out.set(simple, [def]);
+  }
+  return out;
+}
+
 function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
-  scopes: ScopeResolutionIndexes,
+  globalCallablesBySimpleName: ReadonlyMap<string, readonly SymbolDefinition[]>,
   callerFilePath: string,
   isFileLocalDef?: (def: SymbolDefinition) => boolean,
   callArity?: number,
@@ -312,10 +346,7 @@ function pickUniqueGlobalCallable(
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
-  for (const def of scopes.defs.byId.values()) {
-    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
-    if (simple !== name) continue;
-    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+  for (const def of globalCallablesBySimpleName.get(name) ?? []) {
     // Skip file-local defs (e.g. C `static` functions) that live in a
     // different file from the caller — they are logically invisible.
     if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
@@ -462,6 +493,7 @@ export function pickImplicitThisOverload(
     readonly name: string;
     readonly arity?: number;
     readonly argumentTypes?: readonly string[];
+    readonly argumentTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
   },
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
@@ -498,6 +530,7 @@ export function pickImplicitThisOverload(
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });

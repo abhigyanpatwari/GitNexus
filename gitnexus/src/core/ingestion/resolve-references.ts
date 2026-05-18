@@ -64,6 +64,8 @@ export interface ResolveReferencesInput {
   readonly scopes: ScopeResolutionIndexes;
   /** Provider hooks consumed by the registries (e.g. `arityCompatibility`). */
   readonly providers?: RegistryProviders;
+  /** Required owner-keyed member lookup used by Step 2 receiver/MRO walks. */
+  readonly ownedMembersByOwner: RegistryContext['ownedMembersByOwner'];
 }
 
 export interface ResolveStats {
@@ -92,6 +94,7 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     defs: scopes.defs,
     qualifiedNames: scopes.qualifiedNames,
     moduleScopes: scopes.moduleScopes,
+    ownedMembersByOwner: input.ownedMembersByOwner,
     methodDispatch: scopes.methodDispatch,
     providers,
   };
@@ -191,7 +194,10 @@ function lookupForSite(
     case 'write': {
       // Try field first; fall through to method then class so bare-name
       // reads of a function (e.g. `cb = save`) still resolve.
-      const fieldHits = fieldRegistry.lookup(site.name, site.inScope);
+      const fieldOpts: Parameters<FieldRegistry['lookup']>[2] = {
+        ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
+      };
+      const fieldHits = fieldRegistry.lookup(site.name, site.inScope, fieldOpts);
       if (fieldHits.length > 0) return fieldHits;
       const methodHits = methodRegistry.lookup(site.name, site.inScope);
       if (methodHits.length > 0) return methodHits;
