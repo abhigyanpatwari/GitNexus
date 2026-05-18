@@ -158,6 +158,54 @@ describe('resolveReferenceSites', () => {
     expect(result.referenceIndex.bySourceScope.get('scope:call')?.[0]?.toDef).toBe('def:User.save');
   });
 
+  it('threads providers.arityCompatibility through to filter hook-provided overloads', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const saveOne = mkDef({
+      nodeId: 'def:User.save#1',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+      parameterCount: 1,
+    });
+    const saveTwo = mkDef({
+      nodeId: 'def:User.save#2',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+      parameterCount: 2,
+    });
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:call') },
+    });
+    const referenceSite: ReferenceSite = {
+      name: 'save',
+      atRange: range(5, 2, 5, 6),
+      inScope: 'scope:call',
+      kind: 'call',
+      explicitReceiver: { name: 'user' },
+      arity: 1,
+    };
+    const indexes = makeIndexes([scope], [userClass], [referenceSite]);
+
+    const result = resolveReferenceSites({
+      scopes: indexes,
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'save' ? [saveOne, saveTwo] : [],
+      providers: {
+        arityCompatibility: (callsite, def) =>
+          def.parameterCount === callsite.arity ? 'compatible' : 'incompatible',
+      },
+    });
+
+    expect(result.stats).toEqual({ sitesProcessed: 1, referencesEmitted: 1, unresolved: 0 });
+    expect(result.referenceIndex.bySourceScope.get('scope:call')).toHaveLength(1);
+    expect(result.referenceIndex.bySourceScope.get('scope:call')?.[0]?.toDef).toBe(
+      'def:User.save#1',
+    );
+  });
+
   it('falls back to defs scan when ownedMembersByOwner returns undefined for a Const member', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const maxConst = mkDef({
