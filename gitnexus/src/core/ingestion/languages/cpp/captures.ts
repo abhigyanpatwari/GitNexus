@@ -14,6 +14,7 @@ import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-link
 import { markCppDependentBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
+import { extractCppTemplateConstraints } from './constraint-extractor.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -114,6 +115,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypes),
           );
         }
+        if (arity.parameterTypeClasses !== undefined) {
+          grouped['@declaration.parameter-type-classes'] = syntheticCapture(
+            '@declaration.parameter-type-classes',
+            fnNode,
+            JSON.stringify(arity.parameterTypeClasses),
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {
@@ -128,6 +136,24 @@ export function emitCppScopeCaptures(
           const nameText = grouped['@declaration.name']?.text;
           if (nameText !== undefined) {
             markFileLocal(filePath, nameText);
+          }
+        }
+
+        // SFINAE / `requires`-clause aware constraints for overload
+        // narrowing (issue #1579). Walk from the enclosing
+        // `template_declaration` — not the inner `function_definition` —
+        // so inline method templates (`template<...> class C { template<...> void f(); }`)
+        // pick up the correct outer constraint scope.
+        const templateDecl = findEnclosingTemplateDeclaration(fnNode);
+        if (templateDecl !== null) {
+          const funcDeclarator = findFunctionDeclarator(fnNode);
+          const constraints = extractCppTemplateConstraints(templateDecl, funcDeclarator);
+          if (constraints !== undefined) {
+            grouped['@declaration.template-constraints'] = syntheticCapture(
+              '@declaration.template-constraints',
+              fnNode,
+              JSON.stringify(constraints),
+            );
           }
         }
       }
@@ -552,6 +578,52 @@ function extractBaseLookupName(baseNode: SyntaxNode): string {
   return '';
 }
 
+/**
+ * Walk parent chain from a function_definition / declaration / field_declaration
+ * to find the enclosing `template_declaration`. Returns null when the function
+ * isn't templated. The walk only ascends through wrapper nodes the C++
+ * grammar inserts between `template_declaration` and the function — direct
+ * parent in the common case, two hops for member templates whose outer
+ * class is also templated (we return the INNERMOST template_declaration,
+ * which carries this function's own template parameters).
+ */
+function findEnclosingTemplateDeclaration(fnNode: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = fnNode.parent;
+  // Cap the walk — `template_declaration` is typically the immediate parent
+  // or one wrapper away. Anything deeper is an inline-method-in-template
+  // shape and we still want the innermost templates_declaration whose body
+  // wraps `fnNode`.
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'template_declaration') return cur;
+    // Don't ascend past structural boundaries that should reset template scope.
+    if (cur.type === 'translation_unit') return null;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Locate the `function_declarator` AST node within a function definition
+ * or declaration. Unwraps pointer/reference declarator wrappers. Returns
+ * null when no function_declarator is found (e.g. variable declaration
+ * mis-classified upstream).
+ */
+function findFunctionDeclarator(fnNode: SyntaxNode): SyntaxNode | null {
+  const direct = fnNode.childForFieldName('declarator');
+  let cur: SyntaxNode | null = direct;
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'function_declarator') return cur;
+    if (cur.type === 'pointer_declarator' || cur.type === 'reference_declarator') {
+      cur = cur.childForFieldName('declarator');
+      continue;
+    }
+    break;
+  }
+  return findFirstDescendantOfType(fnNode, 'function_declarator');
+}
+
 /** Find the first direct child matching one of the given types. */
 function findChildOfType(node: SyntaxNode, types: readonly string[]): SyntaxNode | null {
   for (let i = 0; i < node.childCount; i++) {
@@ -655,6 +727,15 @@ function inferCppLiteralType(node: SyntaxNode): string {
  *   - `int n = ...` → 'int'
  *   - `const int n = ...` → 'int'
  * Returns empty string if no declaration found or type is auto/placeholder.
+ *
+ * Limitation: only `declaration` siblings inside the enclosing
+ * `compound_statement` are inspected. Function parameters live in the
+ * `function_declarator`'s `parameter_list` and are NOT resolved here, so
+ *   `void run(int n) { process(n); }`
+ * infers `''` for `n` and the constraint filter falls through to
+ * `'unknown'` → ambiguity suppression → 0 CALLS edges. This is a
+ * "degrade not lie" gap (no wrong edges, just missing ones); extending
+ * the scan to `parameter_list` is tracked under #1579 as a follow-up.
  */
 function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
   const varName = identNode.text;

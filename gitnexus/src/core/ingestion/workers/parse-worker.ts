@@ -71,7 +71,7 @@ import {
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
 import type { VariableExtractorContext } from '../variable-types.js';
@@ -128,6 +128,7 @@ interface ParsedSymbol {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
   returnType?: string;
   declaredType?: string;
   templateArguments?: string[];
@@ -2306,6 +2307,7 @@ const processFileGroup = (
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        parameterTypeClasses: methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         ...(declaredType !== undefined ? { declaredType } : {}),
         ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0

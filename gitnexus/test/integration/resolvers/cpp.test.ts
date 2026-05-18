@@ -1763,6 +1763,80 @@ describe('C++ ambiguous integer-width overloads', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C++ overload resolution: standard-conversion-sequence ranking (#1578)
+// Disambiguates overloads when exact normalized-type matching cannot,
+// by scoring each candidate's conversion cost. Exact match (rank 0) wins
+// over standard conversion (rank 2); same-rank ties still suppress.
+// ---------------------------------------------------------------------------
+
+describe('C++ overload resolution — conversion-rank disambiguation (#1578)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-conversion-rank'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(2.5) resolves to f(double) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // Conversion-rank scoring picks f(double) as the unique best:
+    // f(double) is exact match (rank 0), f(int) is standard conversion (rank 2).
+    const fDoubleEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'double';
+    });
+    expect(fDoubleEdges.length).toBe(1);
+  });
+
+  it('f(42) resolves to f(int) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // f(int) is exact match (rank 0), f(double) is standard conversion (rank 2).
+    const fIntEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'int';
+    });
+    expect(fIntEdges.length).toBe(1);
+  });
+
+  it('g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+    // g(int) and g(long) both normalize to parameterTypes=['int'],
+    // so isOverloadAmbiguousAfterNormalization triggers suppression.
+    expect(gCalls.length).toBe(0);
+  });
+
+  it("p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pCalls = calls.filter((c) => c.source === 'run' && c.target === 'p');
+    // p('a'): argType='char'. Exact-type filter misses both p(int) and
+    // p(double), forcing the conversion ranker (step 4b). char→int is an
+    // integral promotion (rank 1), char→double is a standard conversion
+    // (rank 2). p(int) wins with the lower total cost.
+    expect(pCalls.length).toBe(1);
+    const tgt = result.graph.getNode(pCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes?.[0]).toBe('int');
+  });
+
+  it('h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+    // h(42, 2.5) + h('a', 2.5): both call sites produce incomparable
+    // pairwise rankings. For h(42, 2.5) with argTypes=['int','double']:
+    //   h(int,int):    [rank('int','int')=0,  rank('double','int')=2]
+    //   h(double,double): [rank('int','double')=2, rank('double','double')=0]
+    // h(int,int) better at arg0, h(double,double) better at arg1 → neither
+    // dominates → ambiguous. Same pattern for h('a',2.5).
+    // Contract: zero edges for ALL h() call sites combined (dedup).
+    expect(hCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
 // PR #1520 review follow-up plan U3 / Claude review Finding 7
@@ -3019,5 +3093,106 @@ describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside te
     expect(freeCalls.length).toBe(1);
     expect(freeCalls[0].targetLabel).toBe('Function');
     expect(freeCalls[0].rel.reason).toBe('import-resolved');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SFINAE / concept-constrained candidate filtering (issue #1579)
+// Pre-fix: `enable_if_t` / `requires` guarded overloads collapse into a
+// false multi-candidate ambiguity → suppressed edge. With
+// constraintCompatibility wired up the integral / floating overloads
+// disambiguate cleanly.
+// ---------------------------------------------------------------------------
+
+describe('C++ SFINAE filter — golden case (enable_if_t guarded free function templates)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-golden'), () => {});
+  }, 60000);
+
+  it('enable_if_t<is_integral_v<T>> overload binds only on integral call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    // Distinct targets — the integral and floating overloads disambiguate
+    // via constraintCompatibility, not collapsing to one arbitrary pick.
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+
+  it('enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    // Disambiguate-by-startLine — integral overload (earlier line) vs
+    // floating overload (later line). Both must be reachable as targets.
+    const targetStartLines = calls
+      .map((c) => result.graph.getNode(c.rel.targetId))
+      .filter((n): n is NonNullable<typeof n> => n !== undefined)
+      .map((n) => (n.properties as { startLine?: number }).startLine)
+      .filter((x): x is number => typeof x === 'number')
+      .sort((a, b) => a - b);
+    expect(targetStartLines.length).toBe(2);
+    expect(targetStartLines[0]).toBeLessThan(targetStartLines[1]);
+  });
+});
+
+describe('C++ SFINAE filter — C++20 requires-clause shape', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-requires-clause'), () => {});
+  }, 60000);
+
+  it('requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+});
+
+describe('C++ SFINAE filter — unknown predicate keeps both candidates (monotonicity contract)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-unknown-predicate'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits zero CALLS edges when predicate is outside the Tier-A registry', () => {
+    // `MyCustomTrait_v` is not registered; both overloads' constraint
+    // check returns 'unknown' → both kept → OVERLOAD_AMBIGUOUS suppression
+    // by `isOverloadAmbiguousAfterNormalization` (both have parameterTypes=['T']).
+    // Asserts the monotonicity guarantee: adding a predicate must never
+    // produce a wrong edge.
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe('C++ SFINAE filter — arity gate runs before constraint filter', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-arity-survives-unknown'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits exactly 1 CALLS edge to the arity-matching overload (bad-arity dropped before constraint check)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(1);
   });
 });

@@ -1,5 +1,18 @@
 {
   "permissions": {
-    "allow": ["mcp__plugin_claude-mem_mcp-search__get_observations"]
-  }
+    "allow": [
+      "mcp__plugin_claude-mem_mcp-search__get_observations",
+      "Skill(gitnexus-exploring)",
+      "Bash(npx gitnexus *)",
+      "mcp__obsidian-memory__search_nodes",
+      "mcp__obsidian-memory__add_observations",
+      "WebSearch",
+      "WebFetch(domain:cppreference.net)",
+      "Bash(xargs grep -l \"templateArguments\\\\|parameterTypes\")",
+      "Bash(gh issue *)",
+      "Bash(gh pr *)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["gitnexus"]
 }

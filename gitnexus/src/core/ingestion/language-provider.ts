@@ -210,6 +210,37 @@ interface LanguageProviderConfig {
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
 
+  // ── Template constraint extraction (SFINAE / `requires`) ────────────
+  /**
+   * Extract a per-language template-constraint payload for a templated
+   * function / method definition. Used by `parsing-processor` to
+   * disambiguate same-name same-arity overloads whose distinguishing
+   * signal is their template constraints rather than their parameter
+   * types — the canonical C++ SFINAE case (issue #1579):
+   *
+   *   template<class T, std::enable_if_t<is_integral_v<T>, int> = 0>
+   *   void process(T);   // overload A
+   *
+   *   template<class T, std::enable_if_t<is_floating_point_v<T>, int> = 0>
+   *   void process(T);   // overload B
+   *
+   * Both overloads' `parameterTypes` collapse to `['T']`, so without a
+   * constraint fingerprint in the graph node ID they merge into one
+   * Function node and the resolver only ever sees one candidate to
+   * narrow. The hook's return value is stamped onto the node's ID via
+   * `templateConstraintsIdTag()` AND stored on the node's
+   * `templateConstraints` property so `resolveDefGraphId` can look up
+   * the right overload by re-hashing the def's constraints at resolve
+   * time.
+   *
+   * Returns the opaque payload (any JSON-serializable shape — the
+   * producing adapter owns it; shared code MUST NOT inspect) or
+   * `undefined` when no constraints exist / the node isn't a templated
+   * function. Languages without SFINAE / concept semantics leave this
+   * undefined and the disambiguation is a pass-through.
+   */
+  readonly extractTemplateConstraints?: (definitionNode: SyntaxNode) => unknown;
+
   // ── Labels ────────────────────────────────────────────────────────
   /** Override the default node label for definition.function captures.
    *  Return null to skip (C/C++ duplicate), a different label to reclassify
