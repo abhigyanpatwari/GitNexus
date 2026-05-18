@@ -19,8 +19,10 @@ const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
 export interface FieldRegistry {
   /**
    * First field registered under `(ownerNodeId, fieldName)`, if any.
-   * Prefer `lookupAllByOwner` when overloads or duplicate-kind entries
-   * under the same name must all be visible.
+   * Registration order is first-wins: when a Property and a Variable share
+   * an `(owner, simpleName)` key, the earlier `register(...)` call's def is
+   * returned. Prefer `lookupAllByOwner` when overloads or duplicate-kind
+   * entries under the same name must all be visible.
    */
   lookupFieldByOwner(ownerNodeId: string, fieldName: string): SymbolDefinition | undefined;
 
