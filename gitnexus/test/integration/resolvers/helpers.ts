@@ -200,6 +200,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'enable_if_t<is_integral_v<T>> overload binds only on integral call sites',
     'enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites',
     'requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)',
+    'is_pointer_v and is_class_v disambiguate pointer vs class arguments',
+    'is_reference_v keeps reference-shaped arguments distinct from values',
+    'is_class_v rejects primitive arguments while keeping class arguments',
+    'is_enum_v distinguishes known enum declarations from primitives',
+    'is_const_v and is_volatile_v disambiguate cv-qualified locals',
+    'is_void_v does not misclassify void pointers as void values',
     // The legacy DAG path has no inline-namespace same-name ambiguity
     // detection. When two inline children declare the same name, the
     // legacy path picks an arbitrary match. The scope-resolver returns

@@ -21,6 +21,7 @@
  * (defined in `./types.ts`).
  */
 
+import type { ParameterTypeClass } from './symbol-definition.js';
 import type { Range, ScopeId } from './types.js';
 
 /**
@@ -79,4 +80,11 @@ export interface ReferenceSite {
    * (C#: `42` → `'int'`, `"alice"` → `'string'`).
    */
   readonly argumentTypes?: readonly string[];
+  /**
+   * Optional per-argument type-shape sidecar for languages that need
+   * cv/ref/pointer distinctions during constraint filtering. This is
+   * intentionally separate from `argumentTypes`, which stays normalized
+   * for existing overload narrowing and conversion-rank logic.
+   */
+  readonly argumentTypeClasses?: readonly ParameterTypeClass[];
 }
