@@ -875,7 +875,7 @@ export const processParsing = async (
       );
     }
     try {
-      return await processParsingWithWorkers(
+      const data = await processParsingWithWorkers(
         graph,
         files,
         symbolTable,
@@ -884,6 +884,28 @@ export const processParsing = async (
         reportProgress,
         outRawResults,
       );
+      // Session-scoped quarantine (worker-pool resilience Layer 3): surface
+      // any files this pool has decided are unsafe for workers so the
+      // operator can see what was skipped. The pool already filtered them
+      // out of dispatch; we only need to log + progress-report. Quarantine
+      // is session-scoped per pool instance — a fresh `createWorkerPool`
+      // call clears it.
+      const quarantineSet = new Set(workerPool.getQuarantinedPaths?.() ?? []);
+      if (quarantineSet.size > 0) {
+        const quarantinedInChunk = files.filter((file) => quarantineSet.has(file.path));
+        if (quarantinedInChunk.length > 0) {
+          logger.warn(
+            { quarantinedFiles: quarantinedInChunk.map((file) => file.path) },
+            `Worker quarantine: ${quarantinedInChunk.length} file(s) skipped in this chunk (cumulative pool quarantine: ${quarantineSet.size}).`,
+          );
+          reportProgress?.(
+            lastProgress,
+            files.length,
+            `${quarantinedInChunk.length} worker-quarantined file(s) skipped`,
+          );
+        }
+      }
+      return data;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       let fallbackFiles = files;

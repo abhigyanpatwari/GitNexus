@@ -1401,6 +1401,13 @@ const processFileGroup = (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
+    // Authoritative in-flight signal for the pool: lets `WorkerPool` exclude
+    // exactly this file if the worker dies during parse/extract, instead of
+    // guessing from `items[lastProgress]` (which the language-grouped order
+    // here would defeat). The pool gracefully ignores this when running an
+    // older worker build that doesn't emit it.
+    if (parentPort) parentPort.postMessage({ type: 'starting-file', path: file.path });
+
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
     let lineOffset = 0;
