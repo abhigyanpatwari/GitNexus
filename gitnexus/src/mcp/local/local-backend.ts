@@ -248,21 +248,25 @@ function tryRealpath(p: string): string {
  */
 export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
   try {
-    // Early exit: if repoPath is itself a linked worktree (its path differs
-    // from the canonical main-checkout root returned by getCanonicalRepoRoot),
-    // it is already the correct diff cwd. Do NOT override it with the server's
-    // launch directory — that would silently replace the explicitly-resolved
-    // worktree index with the main checkout.
+    // Verify repoPath is a git root before comparing against its canonical
+    // root. If getGitRoot returns a different path, repoPath is an arbitrary
+    // subdirectory — skip both the linked-worktree guard and auto-detection
+    // and fall through to the repoPath fallback.
+    const repoGitRoot = getGitRoot(repoPath);
+    const repoCanonical =
+      repoGitRoot && tryRealpath(repoGitRoot) === tryRealpath(repoPath)
+        ? getCanonicalRepoRoot(repoPath)
+        : null;
+
+    // Early exit: if repoPath is a linked worktree (differs from its canonical
+    // main-checkout root), return it unchanged. Do NOT override it with the
+    // server's launch directory — that would silently replace the explicitly-
+    // resolved worktree index with the main checkout.
     //
-    // getCanonicalRepoRoot returns path.dirname(--git-common-dir), which equals
-    // the main checkout path for both the checkout and all its linked worktrees.
-    // Therefore: repoPath === canonical → main checkout (auto-detect may fire).
-    //            repoPath !== canonical → linked worktree (return as-is).
-    //
-    // Assumes repoPath is a git root or linked-worktree root — not an arbitrary
-    // subdirectory. In practice, gitnexus analyze and resolveRepoIdentityRoot
-    // always normalize to a git root before registration, so this holds.
-    const repoCanonical = getCanonicalRepoRoot(repoPath);
+    // getCanonicalRepoRoot returns the main-checkout path for both the checkout
+    // and all linked worktrees:
+    //   repoPath === canonical → main checkout (auto-detect may fire below)
+    //   repoPath !== canonical → linked worktree (return as-is)
     if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
       return repoPath;
     }
