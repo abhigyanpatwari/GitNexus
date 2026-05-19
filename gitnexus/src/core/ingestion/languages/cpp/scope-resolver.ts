@@ -9,6 +9,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cppProvider } from '../c-cpp.js';
 import { cppArityCompatibility } from './arity.js';
+import { cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
 import { scanCppHeaderFiles } from './header-scan.js';
@@ -16,6 +17,7 @@ import {
   expandCppWildcardNames,
   isFileLocal,
   clearFileLocalNames,
+  populateCppAnonymousNamespaceScopes,
   populateCppNonGloballyVisible,
   isCppDefGloballyVisible,
 } from './file-local-linkage.js';
@@ -24,22 +26,14 @@ import {
   clearCppDependentBases,
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
-import {
-  populateCppAssociatedNamespaces,
-  clearCppAdlState,
-  pickCppAdlCandidates,
-  ADL_AMBIGUOUS,
-} from './adl.js';
+import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
 import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
-import {
-  isOverloadAmbiguousAfterNormalization,
-  narrowOverloadCandidates,
-} from '../../scope-resolution/passes/overload-narrowing.js';
+import { cppConstraintCompatibility } from './constraint-filter.js';
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -92,15 +86,22 @@ export const cppScopeResolver: ScopeResolver = {
   // (def, callsite). ScopeResolver contract is (callsite, def).
   arityCompatibility: (callsite, def) => cppArityCompatibility(def, callsite),
 
+  // SFINAE / `requires`-clause aware overload filter (issue #1579).
+  // Drops candidates whose template constraints (`enable_if_t<P, T>`,
+  // C++20 `requires P`) provably fail at the call site. Three-valued —
+  // `'unknown'` keeps the candidate, preserving "degrade not lie".
+  constraintCompatibility: cppConstraintCompatibility,
+
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
 
   populateOwners: (parsed: ParsedFile) => {
     populateClassOwnedMembers(parsed);
-    // Resolve inline-namespace ranges (recorded at capture time) to
-    // ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so the
-    // inline-namespace exemption sees the populated Set.
+    // Resolve inline- and anonymous-namespace ranges (recorded at capture
+    // time) to ScopeIds BEFORE `populateCppNonGloballyVisible` runs, so
+    // both exemptions see the populated Sets.
     populateCppInlineNamespaceScopes(parsed);
+    populateCppAnonymousNamespaceScopes(parsed);
     // Track namespace-nested and class-nested defs so the global free-call
     // fallback and wildcard expansion can suppress them as unqualified
     // cross-file callables.
@@ -176,6 +177,10 @@ export const cppScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   // C++ #include brings in all symbols — enable global free call fallback
   allowGlobalFreeCallFallback: true,
+  // C++ standard-conversion-sequence ranking for overload resolution (#1578).
+  // Disambiguates `f(int)` vs `f(double)` called with `f(2.5)` by scoring
+  // each candidate's conversion cost; exact match wins over standard conversion.
+  conversionRankFn: cppConversionRank,
   // Range-for element type inference: for (auto& user : users) → bind user to User
   populateRangeBindings: populateCppRangeBindings,
   // C++ method return-type bindings need to be visible from module scope
@@ -220,10 +225,12 @@ export const cppScopeResolver: ScopeResolver = {
   },
 
   // C++ argument-dependent / Koenig lookup (U2 of plan 2026-05-13-001).
-  // Fires after `findCallableBindingInScope` returns undefined; surfaces
-  // candidates from the associated namespaces of class-typed arguments.
-  // V1 limitation: only direct enclosing-namespace closure for value
-  // class-typed args; pointer/reference/template-spec args excluded.
+  // Contributes candidates from associated namespaces of class-typed
+  // arguments; caller merges with ordinary unqualified lookup candidates.
+  // Current boundary: class-typed value/pointer/reference args and template
+  // specializations with explicit type arguments contribute associated
+  // namespaces. Function-pointer args and full conversion-ranking remain
+  // excluded.
   resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
     // `using ns::name;` introduces `name` into ordinary unqualified lookup.
     // For template-class method bodies, lexical scope walks can miss this
@@ -240,21 +247,26 @@ export const cppScopeResolver: ScopeResolver = {
         parsedFiles,
         scopes,
       );
-      if (member === undefined) continue;
+      if (member === undefined || member === 'ambiguous') continue;
       if (seenUsing.has(member.nodeId)) continue;
       seenUsing.add(member.nodeId);
       usingNamedHits.push(member);
     }
-    if (usingNamedHits.length > 0) {
-      const narrowed = narrowOverloadCandidates(usingNamedHits, site.arity, site.argumentTypes);
-      if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) return 'ambiguous';
-      if (narrowed.length === 1) return narrowed[0];
-      if (narrowed.length > 1) return 'ambiguous';
+    const adlHits = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
+    if (usingNamedHits.length === 0) return adlHits;
+    if (adlHits === undefined || adlHits.length === 0) return usingNamedHits;
+    const merged: SymbolDefinition[] = [];
+    const seen = new Set<string>();
+    for (const hit of usingNamedHits) {
+      seen.add(hit.nodeId);
+      merged.push(hit);
     }
-
-    const result = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
-    if (result === ADL_AMBIGUOUS) return 'ambiguous';
-    return result;
+    for (const hit of adlHits) {
+      if (seen.has(hit.nodeId)) continue;
+      seen.add(hit.nodeId);
+      merged.push(hit);
+    }
+    return merged;
   },
 
   // C++ qualified namespace-member resolution (U5 of plan 2026-05-13-001).

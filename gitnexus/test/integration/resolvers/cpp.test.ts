@@ -1763,6 +1763,80 @@ describe('C++ ambiguous integer-width overloads', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C++ overload resolution: standard-conversion-sequence ranking (#1578)
+// Disambiguates overloads when exact normalized-type matching cannot,
+// by scoring each candidate's conversion cost. Exact match (rank 0) wins
+// over standard conversion (rank 2); same-rank ties still suppress.
+// ---------------------------------------------------------------------------
+
+describe('C++ overload resolution — conversion-rank disambiguation (#1578)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-conversion-rank'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(2.5) resolves to f(double) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // Conversion-rank scoring picks f(double) as the unique best:
+    // f(double) is exact match (rank 0), f(int) is standard conversion (rank 2).
+    const fDoubleEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'double';
+    });
+    expect(fDoubleEdges.length).toBe(1);
+  });
+
+  it('f(42) resolves to f(int) — exact match beats standard conversion', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+    // f(int) is exact match (rank 0), f(double) is standard conversion (rank 2).
+    const fIntEdges = fCalls.filter((c) => {
+      const tgt = result.graph.getNode(c.rel.targetId);
+      return tgt?.properties.parameterTypes?.[0] === 'int';
+    });
+    expect(fIntEdges.length).toBe(1);
+  });
+
+  it('g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+    // g(int) and g(long) both normalize to parameterTypes=['int'],
+    // so isOverloadAmbiguousAfterNormalization triggers suppression.
+    expect(gCalls.length).toBe(0);
+  });
+
+  it("p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pCalls = calls.filter((c) => c.source === 'run' && c.target === 'p');
+    // p('a'): argType='char'. Exact-type filter misses both p(int) and
+    // p(double), forcing the conversion ranker (step 4b). char→int is an
+    // integral promotion (rank 1), char→double is a standard conversion
+    // (rank 2). p(int) wins with the lower total cost.
+    expect(pCalls.length).toBe(1);
+    const tgt = result.graph.getNode(pCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes?.[0]).toBe('int');
+  });
+
+  it('h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+    // h(42, 2.5) + h('a', 2.5): both call sites produce incomparable
+    // pairwise rankings. For h(42, 2.5) with argTypes=['int','double']:
+    //   h(int,int):    [rank('int','int')=0,  rank('double','int')=2]
+    //   h(double,double): [rank('int','double')=2, rank('double','double')=0]
+    // h(int,int) better at arg0, h(double,double) better at arg1 → neither
+    // dominates → ambiguous. Same pattern for h('a',2.5).
+    // Contract: zero edges for ALL h() call sites combined (dedup).
+    expect(hCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
 // PR #1520 review follow-up plan U3 / Claude review Finding 7
@@ -2103,7 +2177,9 @@ describe('C++ two-phase template lookup — cross-file namespace variant', () =>
 // Free-function calls with class-typed arguments must consider candidates
 // declared in the argument's enclosing namespace (associated namespace).
 // V1 boundary: only direct enclosing-namespace closure for value class-
-// typed args; pointer and reference args included, template-spec args excluded.
+// typed args; pointer/reference args and template specializations with
+// explicit type arguments included. Function pointers and base-class
+// associated namespaces remain excluded.
 // ---------------------------------------------------------------------------
 
 describe('C++ ADL — basic associated-namespace closure', () => {
@@ -2122,6 +2198,110 @@ describe('C++ ADL — basic associated-namespace closure', () => {
     // declaration in audit.h.
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — merges with non-empty ordinary lookup', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-merge-nonempty-ordinary'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a, b) prefers data::swap(Pair&, Pair&) over app::swap(int, int)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
+describe('C++ ADL — base-class associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves log(d) to base_lib::log via ADL when Derived inherits from base_lib::Base', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCalls = calls.filter((c) => c.source === 'run_single' && c.target === 'log');
+    expect(logCalls.length).toBe(1);
+    expect(logCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(logCalls[0].rel.targetId);
+    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Base']);
+  });
+
+  it('resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const traceCalls = calls.filter((c) => c.source === 'run_multi' && c.target === 'trace');
+    expect(traceCalls.length).toBe(1);
+    expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(traceCalls[0].rel.targetId);
+    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace');
+    expect(targetNode?.properties.parameterTypes).toEqual(['Root']);
+  });
+
+  it('diamond inheritance contributes base namespace once (no duplicate/crash)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const pingCalls = calls.filter((c) => c.source === 'run_diamond' && c.target === 'ping');
+    expect(pingCalls.length).toBe(1);
+    expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
+    const targetNode = result.graph.getNode(pingCalls[0].rel.targetId);
+    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping');
+    expect(targetNode?.properties.parameterTypes).toEqual(['DiamondBase']);
+  });
+});
+
+describe('C++ ADL — base-class namespace MRO with simple-name class collisions', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does NOT emit CALLS for collide(t) when class-name lookup is ambiguous', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const collideCalls = calls.filter((c) => c.source === 'run' && c.target === 'collide');
+    expect(collideCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — base-class namespace mapping skips anonymous/unresolved bases', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-base-associated-namespaces-negative'),
+      () => {},
+    );
+  }, 60000);
+
+  it('hidden_probe(d) still resolves via ordinary lookup when declaration is visible', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hiddenProbeCalls = calls.filter(
+      (c) => c.source === 'run_hidden' && c.target === 'hidden_probe',
+    );
+    expect(hiddenProbeCalls.length).toBe(1);
+    expect(hiddenProbeCalls[0].targetFilePath).toContain('base_lib.h');
+  });
+
+  it('unresolved_probe(d) emits zero CALLS when base class cannot be resolved', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const unresolvedProbeCalls = calls.filter(
+      (c) => c.source === 'run_missing' && c.target === 'unresolved_probe',
+    );
+    expect(unresolvedProbeCalls.length).toBe(0);
   });
 });
 
@@ -2276,6 +2456,43 @@ describe('C++ ADL — pointer-to-pointer args participate', () => {
   });
 });
 
+describe('C++ ADL — template specialization args contribute associated namespaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-template-args'), () => {});
+  }, 60000);
+
+  it('apply(v) where v is std::vector<N::T> resolves to N::apply via ADL template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'run' && c.target === 'apply');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyNested(m) where m is std::map<std::string, std::vector<N::T>> resolves via nested template-arg namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runNested' && c.target === 'applyNested');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyArray(a) where a is std::array<N::T, 4> resolves to N::applyArray (non-type arg ignored)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter((c) => c.source === 'runArray' && c.target === 'applyArray');
+    expect(applyCalls.length).toBe(1);
+    expect(applyCalls[0].targetFilePath).toContain('audit.h');
+  });
+
+  it('applyStdConflict(v) is suppressed when ADL surfaces both N and std candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const applyCalls = calls.filter(
+      (c) => c.source === 'runStdConflict' && c.target === 'applyStdConflict',
+    );
+    expect(applyCalls.length).toBe(0);
+  });
+});
+
 describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUOUS', () => {
   let result: PipelineResult;
 
@@ -2292,10 +2509,249 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
     // 'int', so both candidates have parameterTypes ['Token', 'int'].
     // narrowOverloadCandidates can't disambiguate (arg-types are
     // ['', 'int']), and isOverloadAmbiguousAfterNormalization detects
-    // the collision → ADL_AMBIGUOUS sentinel → caller suppresses.
+    // the collision in merged ordinary+ADL narrowing, so fallback suppresses.
     // count=1 is the bug (arbitrary first-pick); count=2 would require
     // an ambiguous-target edge model GitNexus does not have.
     expect(processCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — merged narrowing to zero suppresses global fallback', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-merged-narrow-zero'), () => {});
+  }, 60000);
+
+  it('probe(t, 42) emits zero CALLS when ADL contributes only arity-mismatched candidates', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const probeCalls = calls.filter((c) => c.source === 'run' && c.target === 'probe');
+    // ADL surfaces alpha::probe(Token), but call arity is 2 (`probe(t, 42)`),
+    // so merged overload narrowing yields zero survivors. The site is treated
+    // as handled and must NOT fall through to global simple-name fallback.
+    expect(probeCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: enum types contribute their
+// enclosing namespace to the associated set, just like class types.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — enum-typed argument contributes enclosing namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-enum-arg'), () => {});
+  }, 60000);
+
+  it('serialize(ch) where ch is color::Channel resolves to color::serialize via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const serializeCalls = calls.filter((c) => c.source === 'run' && c.target === 'serialize');
+    // Exactly 1: ordinary lookup in app::run finds nothing for `serialize`.
+    // ADL surfaces color::serialize because color::Channel's enclosing
+    // namespace is `color`. Before the enum gap fix, this was 0.
+    expect(serializeCalls.length).toBe(1);
+    expect(serializeCalls[0].targetFilePath).toContain('color.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.argdep]` §2: "hidden friend" functions
+// declared inside a class body are visible via ADL. They are not namespace-
+// scope declarations (owned by the class scope in tree-sitter-cpp), so they
+// require scanning associated class scopes in addition to namespace scopes.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — hidden friend function visible via ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-hidden-friend'), () => {});
+  }, 60000);
+
+  it('process(f) where f is lib::Foo resolves to hidden friend process(Foo&) via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // Exactly 1: process(Foo&) is a hidden friend declared inside Foo's
+    // class body. Ordinary namespace-scope lookup won't find it — only ADL
+    // scanning the associated class's ownedDefs can surface it.
+    expect(processCalls.length).toBe(1);
+    expect(processCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — ISO C++ `[basic.lookup.unqual]` §7: non-function ordinary lookup
+// result blocks ADL. If the name resolves to a variable/class/enum in scope,
+// ADL does not fire even if class-typed arguments are present.
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-non-function-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a variable named record exists in scope', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: `int record = 0;` in namespace app means ordinary lookup
+    // finds a non-function entity. ADL should be suppressed — even though
+    // `e` is audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inner-callable-outer-noncallable'),
+      () => {},
+    );
+  }, 60000);
+
+  it('swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const swapCalls = calls.filter((c) => c.source === 'run' && c.target === 'swap');
+    // Ordinary lookup finds `inner::swap(int,int)` at the nearest scope.
+    // The outer `app::swap` (variable) does NOT suppress ADL because
+    // ordinary lookup stopped at the inner scope. ADL contributes
+    // data::swap(Pair&,Pair&) which wins via argTypes narrowing.
+    expect(swapCalls.length).toBe(1);
+    expect(swapCalls[0].targetFilePath).toContain('data.h');
+  });
+});
+
+describe('C++ ADL — block-scope function declaration suppresses ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-block-scope-decl-blocks'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) emits zero CALLS when a block-scope function declaration exists', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++ [basic.lookup.argdep]: a block-scope function declaration
+    // (not via using-declaration) suppresses ADL — even though `e` is
+    // audit::Event, audit::record should NOT be discovered.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADL V2 — free-function reference args contribute their namespace.
+//
+// GitNexus approximation (not strict ISO C++ ADL): when a qualified_identifier
+// like `utils::worker` is passed as an argument, GitNexus contributes the
+// enclosing namespace (`utils`) to the associated set, provided a Function or
+// Method named `worker` is found in the `utils` namespace at resolution time.
+// Under ISO C++ [basic.lookup.argdep] the associated entities for a function-type
+// argument come from the parameter types and return type of the overload set —
+// NOT the function's enclosing namespace. For `void worker()`, the standard-
+// compliant associated set is empty. The approximation captures the dominant
+// real-world pattern (pass a utility function → find its sibling) at the cost
+// of potential false positives when an unrelated function with the same simple
+// name exists in the same namespace (bounded by the workspace-function lookup).
+// ---------------------------------------------------------------------------
+
+describe('C++ ADL — qualified free-function reference contributes its namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-adl-free-func-ref'), () => {});
+  }, 60000);
+
+  it('with_callback(utils::worker) resolves to utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // Ordinary lookup inside caller::run finds nothing (no `using`, no local
+    // declaration). utils::worker is a qualified_identifier argument, so ADL
+    // contributes `utils` to the associated-namespace set. utils::with_callback
+    // is then discovered as the sole candidate.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — overloaded free-function reference does not crash', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-free-func-ref-overloaded'),
+      () => {},
+    );
+  }, 60000);
+
+  it('with_callback(utils::worker) with overloaded utils::worker still resolves utils::with_callback via ADL', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const cbCalls = calls.filter((c) => c.source === 'run' && c.target === 'with_callback');
+    // utils::worker has two overloads (worker() and worker(int)). V1
+    // simplification: contribute the namespace if ANY overload exists in the
+    // workspace, regardless of which one would be selected. The namespace
+    // `utils` is still added, and utils::with_callback is discovered.
+    expect(cbCalls.length).toBe(1);
+    expect(cbCalls[0].targetFilePath).toContain('utils.h');
+  });
+});
+
+describe('C++ ADL — namespace-qualified variable arg does NOT contribute namespace', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-qualified-variable-arg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('process(data::value) emits zero CALLS edges — data::value is a variable, not a function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const processCalls = calls.filter((c) => c.source === 'run' && c.target === 'process');
+    // data::value is a namespace-qualified integer variable. tree-sitter-cpp
+    // produces a qualified_identifier AST node regardless of whether `value`
+    // denotes a function, variable, enum, or static member. The GitNexus guard
+    // in collectFunctionRefNamespaces verifies that a Function/Method named
+    // `value` exists in the `data` namespace before contributing it. Since
+    // `data::value` is an int variable, `data` is never added to the associated
+    // set, so data::process is never found as an ADL candidate.
+    expect(processCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — function parameter does NOT trigger free-function-ref ADL', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-param-not-free-func-ref'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // `callback` is an int parameter of `caller::run`. Function parameters
+    // live in the parameter_list, not in the compound_statement, so the
+    // local-scope declaration scan would not find it and would return null —
+    // previously misclassifying it as an unqualified free-function reference.
+    // The workspace contains utils::callback(), so the scan would find it and
+    // contribute `utils` to the ADL set, emitting a false-positive CALLS edge
+    // to utils::run_with. isIdentifierAFunctionParameter now catches this and
+    // returns EMPTY_ADL_ARG, preventing the workspace scan entirely.
+    expect(runWithCalls.length).toBe(0);
   });
 });
 
@@ -2306,6 +2762,51 @@ describe('C++ ADL — int/long-collision overloads suppress via OVERLOAD_AMBIGUO
 // (ISO C++ `[namespace.def]/p4`). Adds a C++-specific
 // `resolveQualifiedReceiverMember` hook on the ScopeResolver contract.
 // ---------------------------------------------------------------------------
+
+describe('C++ ADL — local function-pointer var shadows same-named free function', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-local-fp-shadows-free-func'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(g) emits zero CALLS edges even though audit::g() exists in the workspace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // `g` is a locally-declared `void (*g)()` variable. `audit::g()` also
+    // exists in the workspace. Without the foundAsLocalFunctionPointer guard,
+    // `g` would not be detected in the compound_statement (it IS there, but
+    // as a function-pointer declarator), and the workspace scan would find
+    // audit::g, contribute `audit` to the ADL set, and emit a false-positive
+    // CALLS edge to audit::record. The guard correctly returns EMPTY_ADL_ARG,
+    // so no namespace is contributed and no edge is emitted.
+    expect(recordCalls.length).toBe(0);
+  });
+});
+
+describe('C++ ADL — unqualified free-function ref with namespace collision', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-unqualified-ref-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('run_with(worker) emits zero CALLS edges when worker exists in two namespaces', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const runWithCalls = calls.filter((c) => c.source === 'run' && c.target === 'run_with');
+    // Unqualified `worker` → workspace scan finds alpha::worker and beta::worker.
+    // Both alpha and beta are added to the associated set. run_with() exists in
+    // both namespaces → two candidates → merged narrowing suppression →
+    // zero CALLS edges (suppressed rather than arbitrary pick).
+    expect(runWithCalls.length).toBe(0);
+  });
+});
 
 describe('C++ inline namespace — outer::foo resolves to inline child', () => {
   let result: PipelineResult;
@@ -2346,6 +2847,47 @@ describe('C++ inline namespace — versioned (v1 inline, v0 not)', () => {
     // `foo` is NOT visible as `outer::foo`.
     expect(fooCalls.length).toBe(1);
     expect(fooCalls[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ inline namespace — ambiguous same-name across inline children (#1564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo() emits zero CALLS edges when v1 and v2 both declare foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // ISO C++ leaves this ambiguous — both inline namespace children declare
+    // the same name. The resolver must suppress rather than pick arbitrarily.
+    expect(fooCalls.length).toBe(0);
+  });
+});
+
+describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-diff-sigs'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // Even though the two overloads have distinct signatures and a compiler
+    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
+    // hook lacks call-site arity/argument-type information, so multi-hit cases
+    // are conservatively suppressed. Documents the limitation noted in
+    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    expect(fooCalls.length).toBe(0);
   });
 });
 
@@ -2392,6 +2934,29 @@ describe('C++ inline namespace — ADL participation', () => {
     // exempted from the non-globally-visible filter, the `record`
     // declared inside `inline namespace v1` is reachable. count=0
     // would be the bug — ADL failing to walk inline children.
+    expect(recordCalls.length).toBe(1);
+    expect(recordCalls[0].targetFilePath).toContain('audit.h');
+  });
+});
+
+describe('C++ ADL — inline namespace expansion in associated set', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-adl-inline-ns-expansion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('record(e) resolves to audit::v1::record when Event is in outer audit and record is in inline v1 (arity-disambiguated from other::record(int))', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const recordCalls = calls.filter((c) => c.source === 'run' && c.target === 'record');
+    // ISO C++: inline namespaces are transparent — candidates in
+    // `audit::v1` are visible as if declared at `audit` level. With a
+    // competing `other::record(int)` (different arity), the merged
+    // ordinary+ADL overload narrowing must select `audit::v1::record(Event)`
+    // since it's the only arity-matching candidate for `record(e)`.
     expect(recordCalls.length).toBe(1);
     expect(recordCalls[0].targetFilePath).toContain('audit.h');
   });
@@ -2528,5 +3093,159 @@ describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside te
     expect(freeCalls.length).toBe(1);
     expect(freeCalls[0].targetLabel).toBe('Function');
     expect(freeCalls[0].rel.reason).toBe('import-resolved');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SFINAE / concept-constrained candidate filtering (issue #1579)
+// Pre-fix: `enable_if_t` / `requires` guarded overloads collapse into a
+// false multi-candidate ambiguity → suppressed edge. With
+// constraintCompatibility wired up the integral / floating overloads
+// disambiguate cleanly.
+// ---------------------------------------------------------------------------
+
+describe('C++ SFINAE filter — golden case (enable_if_t guarded free function templates)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-golden'), () => {});
+  }, 60000);
+
+  it('enable_if_t<is_integral_v<T>> overload binds only on integral call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    // Distinct targets — the integral and floating overloads disambiguate
+    // via constraintCompatibility, not collapsing to one arbitrary pick.
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+
+  it('enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    // Disambiguate-by-startLine — integral overload (earlier line) vs
+    // floating overload (later line). Both must be reachable as targets.
+    const targetStartLines = calls
+      .map((c) => result.graph.getNode(c.rel.targetId))
+      .filter((n): n is NonNullable<typeof n> => n !== undefined)
+      .map((n) => (n.properties as { startLine?: number }).startLine)
+      .filter((x): x is number => typeof x === 'number')
+      .sort((a, b) => a - b);
+    expect(targetStartLines.length).toBe(2);
+    expect(targetStartLines[0]).toBeLessThan(targetStartLines[1]);
+  });
+});
+
+describe('C++ SFINAE filter — C++20 requires-clause shape', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-requires-clause'), () => {});
+  }, 60000);
+
+  it('requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+});
+
+describe('C++ SFINAE filter — Tier-A type_traits predicates', () => {
+  async function runFixture(name: string): Promise<PipelineResult> {
+    return runPipelineFromRepo(path.join(FIXTURES, name), () => {});
+  }
+
+  function callsFromRunToPick(result: PipelineResult) {
+    return getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+  }
+
+  it('is_pointer_v and is_class_v disambiguate pointer vs class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-pointer');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_reference_v keeps reference-shaped arguments distinct from values', async () => {
+    const result = await runFixture('cpp-sfinae-is-reference');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_class_v rejects primitive arguments while keeping class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-class');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_enum_v distinguishes known enum declarations from primitives', async () => {
+    const result = await runFixture('cpp-sfinae-is-enum');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_const_v and is_volatile_v disambiguate cv-qualified locals', async () => {
+    const result = await runFixture('cpp-sfinae-is-const-volatile');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_void_v does not misclassify void pointers as void values', async () => {
+    const result = await runFixture('cpp-sfinae-is-void');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(1);
+  }, 60000);
+});
+
+describe('C++ SFINAE filter — unknown predicate keeps both candidates (monotonicity contract)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-unknown-predicate'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits zero CALLS edges when predicate is outside the Tier-A registry', () => {
+    // `MyCustomTrait_v` is not registered; both overloads' constraint
+    // check returns 'unknown' → both kept → OVERLOAD_AMBIGUOUS suppression
+    // by `isOverloadAmbiguousAfterNormalization` (both have parameterTypes=['T']).
+    // Asserts the monotonicity guarantee: adding a predicate must never
+    // produce a wrong edge.
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe('C++ SFINAE filter — arity gate runs before constraint filter', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-arity-survives-unknown'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits exactly 1 CALLS edge to the arity-matching overload (bad-arity dropped before constraint check)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(1);
   });
 });

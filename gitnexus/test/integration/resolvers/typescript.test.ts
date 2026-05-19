@@ -2684,6 +2684,44 @@ describe('TypeScript Child extends Parent — inherited method resolution (SM-9)
 });
 
 // ---------------------------------------------------------------------------
+// PR #1657 finding #6: ambient base class — Step 2 MRO ancestor whose body
+// is never parsed (declare class). Probes whether the owner-keyed lookup
+// can still resolve inherited members on owners that reconcile-ownership
+// skipped because they have no parsed body.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript Derived extends declare class AmbientBase — ambient MRO ancestor', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-ambient-base-class'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects AmbientBase and Derived classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('AmbientBase');
+    expect(classes).toContain('Derived');
+  });
+
+  it('emits EXTENDS edge: Derived → AmbientBase', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → AmbientBase');
+  });
+
+  it('resolves d.ambientMethod() to AmbientBase.ambientMethod via MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ambientCall = calls.find(
+      (c) => c.target === 'ambientMethod' && c.targetFilePath.includes('ambient.ts'),
+    );
+    expect(ambientCall).toBeDefined();
+    expect(ambientCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PR #1050: tsconfig path alias resolution under registry-primary path
 // (Adversarial review Finding 1 — `@/services/user` must resolve via tsconfig
 //  paths even when imports go through ScopeResolver.resolveImportTarget.)

@@ -13,7 +13,55 @@ import {
   formatDetectChangesResult,
   formatListReposResult,
   MAX_BODY_SIZE,
+  validateHost,
 } from '../../src/cli/eval-server.js';
+
+// ─── validateHost ────────────────────────────────────────────────────
+
+describe('validateHost', () => {
+  it('normalizes "localhost" to "127.0.0.1"', () => {
+    expect(validateHost('localhost')).toBe('127.0.0.1');
+  });
+
+  it('accepts valid IPv4 addresses', () => {
+    expect(validateHost('127.0.0.1')).toBe('127.0.0.1');
+    expect(validateHost('0.0.0.0')).toBe('0.0.0.0');
+    expect(validateHost('192.168.1.5')).toBe('192.168.1.5');
+    expect(validateHost('10.0.0.1')).toBe('10.0.0.1');
+  });
+
+  it('accepts valid IPv6 addresses', () => {
+    expect(validateHost('::1')).toBe('::1');
+    expect(validateHost('::')).toBe('::');
+    expect(validateHost('2001:db8::1')).toBe('2001:db8::1');
+  });
+
+  it('returns null for a non-IP hostname', () => {
+    expect(validateHost('foo.bar')).toBeNull();
+    expect(validateHost('myhost.local')).toBeNull();
+    expect(validateHost('example.com')).toBeNull();
+  });
+
+  it('returns null for out-of-range IPv4 octets', () => {
+    expect(validateHost('999.999.999.999')).toBeNull();
+    expect(validateHost('192.168.1.256')).toBeNull();
+  });
+
+  it('returns null for incomplete IPv4 addresses', () => {
+    expect(validateHost('192.168.1')).toBeNull();
+    expect(validateHost('192.168')).toBeNull();
+  });
+
+  it('returns null for an empty string', () => {
+    expect(validateHost('')).toBeNull();
+  });
+
+  it('returns null for whitespace or padded IPs', () => {
+    expect(validateHost(' ')).toBeNull();
+    expect(validateHost(' 127.0.0.1')).toBeNull();
+    expect(validateHost('127.0.0.1 ')).toBeNull();
+  });
+});
 
 // ─── MAX_BODY_SIZE ───────────────────────────────────────────────────
 

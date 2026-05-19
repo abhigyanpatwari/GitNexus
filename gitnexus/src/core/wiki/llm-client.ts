@@ -23,7 +23,7 @@ export interface LLMConfig {
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
-  /** Per-attempt fetch timeout in ms (default: 60_000). */
+  /** Per-attempt fetch timeout in ms. Omit to disable request timeouts. */
   requestTimeoutMs?: number;
   /** Max fetch attempts before giving up (default: 3). */
   maxAttempts?: number;
@@ -79,6 +79,19 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
  */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    return `${timeoutMs / 1000}s`;
+  }
+  return `${timeoutMs}ms`;
+}
+
+function isTimeoutLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  return /time(d)?\s*out|timeout/i.test(err.message);
 }
 
 /**
@@ -237,12 +250,13 @@ export async function callLLM(
           ...authHeaders,
         },
         body: JSON.stringify(body),
-        // Per-attempt timeout. Without this each retry can hang
-        // indefinitely on a frozen TCP connection — the per-call
-        // signal is the only timeout `resilientFetch` honors;
-        // `capDelayMs` only bounds the *backoff* between attempts.
-        // Default 60s; raise via --timeout for slow models or large pages.
-        signal: AbortSignal.timeout(config.requestTimeoutMs ?? 60_000),
+        // Request timeout is opt-in for wiki generation. Large local
+        // model runs can legitimately take well over a minute, so the
+        // default runtime path must not impose a hidden 60s ceiling.
+        signal:
+          config.requestTimeoutMs !== undefined
+            ? AbortSignal.timeout(config.requestTimeoutMs)
+            : undefined,
       },
       {
         breakerKey: `wiki-llm-${new URL(url).host}`,
@@ -259,6 +273,12 @@ export async function callLLM(
       const errorText = await err.response.text().catch(() => 'unknown error');
       throw new Error(
         `LLM API error (${err.response.status} after retries): ${errorText.slice(0, 500)}`,
+      );
+    }
+    if (config.requestTimeoutMs !== undefined && isTimeoutLikeError(err)) {
+      throw new Error(
+        `LLM request timed out after ${formatTimeoutDuration(config.requestTimeoutMs)}. ` +
+          'Increase --timeout or omit it to disable the request timeout.',
       );
     }
     throw err;

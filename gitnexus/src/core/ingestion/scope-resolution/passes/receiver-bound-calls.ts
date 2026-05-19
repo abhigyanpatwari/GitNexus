@@ -73,6 +73,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'hoistTypeBindingsToModule'
   | 'resolveQualifiedReceiverMember'
   | 'resolveThisViaEnclosingClass'
+  | 'conversionRankFn'
+  | 'constraintCompatibility'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -343,6 +345,11 @@ export function emitReceiverBoundCalls(
                 methodOverloads,
                 site.arity,
                 site.argumentTypes,
+                {
+                  argumentTypeClasses: site.argumentTypeClasses,
+                  conversionRankFn: provider.conversionRankFn,
+                  constraintCompatibility: provider.constraintCompatibility,
+                },
               );
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
                 ambiguous = true;
@@ -354,6 +361,12 @@ export function emitReceiverBoundCalls(
                 // ([basic.lookup.classref]). A non-viable derived overload set
                 // therefore terminates lookup instead of falling through to base.
                 hiddenByName = true;
+                break;
+              }
+              // Multiple tied survivors with distinct param types (e.g.
+              // h(int,double) vs h(double,int) both scoring 2) → ambiguous.
+              if (narrowed.length > 1) {
+                ambiguous = true;
                 break;
               }
               memberDef = narrowed[0] ?? methodOverloads[0];
@@ -445,6 +458,12 @@ export function emitReceiverBoundCalls(
           scopes,
           parsedFiles,
         );
+        if (memberDef === 'ambiguous') {
+          // Same-name ambiguity across inline-namespace children (#1564):
+          // suppress edge emission, mark site handled.
+          handledSites.add(siteKey);
+          continue;
+        }
         if (memberDef !== undefined) {
           const ok = tryEmitEdge(
             graph,
@@ -634,7 +653,7 @@ export function emitReceiverBoundCalls(
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
           for (const ownerId of chain) {
-            const picked = pickOverload(ownerId, memberName, site, model);
+            const picked = pickOverload(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               break;
@@ -702,6 +721,7 @@ function pickOverload(
   memberName: string,
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
+  provider: ReceiverBoundProviderSubset,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | undefined {
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (overloads.length === 0) {
@@ -712,7 +732,11 @@ function pickOverload(
   }
   if (overloads.length === 1) return overloads[0];
 
-  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes);
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
   // When narrowing leaves >1 candidate that share identical normalized
   // parameter-types (e.g., C++ `f(int)` vs `f(long)` both collapsed to
   // `['int']` by `normalizeCppParamType`), suppress the edge entirely.
@@ -720,6 +744,11 @@ function pickOverload(
   // would arbitrarily pick a candidate and lie about the call's target.
   // PR #1520 review follow-up plan U2 / Claude review Finding 5.
   if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
+  // When conversion-rank scoring leaves >1 tied candidate with distinct
+  // parameter types (e.g. h(int,double) vs h(double,int) both scoring 2),
+  // suppress rather than picking arbitrarily — C++ would call this
+  // ambiguous. Mirrors ADL merged-candidate suppression behavior.
+  if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
   return candidates[0] ?? overloads[0];
 }
 

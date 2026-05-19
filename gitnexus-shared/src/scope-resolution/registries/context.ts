@@ -13,7 +13,7 @@
  */
 
 import type { NodeLabel } from '../../graph/types.js';
-import type { SymbolDefinition } from '../symbol-definition.js';
+import type { ParameterTypeClass, SymbolDefinition } from '../symbol-definition.js';
 import type { Callsite, DefId } from '../types.js';
 import type { DefIndex } from '../def-index.js';
 import type { QualifiedNameIndex } from '../qualified-name-index.js';
@@ -30,9 +30,49 @@ export interface RegistryProviders {
    * when absent, every candidate receives `'unknown'` (neutral signal).
    */
   arityCompatibility?(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Language-specific constraint compatibility between a callsite and a
+   * candidate `def`. Mirrors `arityCompatibility` and shares its three-valued
+   * verdict shape; the third value `'unknown'` MUST keep the candidate
+   * (monotonicity: adding a predicate can only narrow correctly, never
+   * produce a wrong edge). Consulted by `narrowOverloadCandidates` after
+   * arity + type filters when a candidate carries `templateConstraints`.
+   *
+   * Optional; when absent the constraint filter is a pass-through. Languages
+   * with no constrained-overload semantics leave this undefined.
+   */
+  constraintCompatibility?(
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ): ArityVerdict;
 }
 
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+/**
+ * Context threaded into `constraintCompatibility`. Kept minimal in the
+ * Tier-A scope (only `argumentTypes`, riding here until a separate
+ * `Callsite`-widening refactor moves them onto the call site directly).
+ * Future Tier-B graph-aware predicates (`is_base_of_v`, etc.) will widen
+ * this interface with `lookupTypeByName` and similar helpers.
+ */
+export interface ConstraintContext {
+  /**
+   * Per-slot argument types at the call site, normalized per the language
+   * adapter. Empty string means unknown. Same convention as
+   * `narrowOverloadCandidates`' `argTypes` parameter.
+   */
+  readonly argumentTypes?: readonly string[];
+  /**
+   * Optional shape-preserving sidecar aligned with `argumentTypes`.
+   * Unknown or unsupported slots should be omitted by producers or
+   * marked with `indirection: 'unknown'`; consumers must preserve the
+   * monotonic fallback and return 'unknown' instead of guessing.
+   */
+  readonly argumentTypeClasses?: readonly ParameterTypeClass[];
+}
 
 // ─── Owner-scoped contributor (concrete shape for `RegistryContributor`) ────
 
@@ -60,6 +100,19 @@ export interface OwnerScopedContributor {
   byName(name: string): readonly SymbolDefinition[];
 }
 
+/**
+ * Required owner-keyed lookup hook for Step 2 receiver/MRO member walks.
+ * Production callers wire this to the SemanticModel's authoritative
+ * method/field/nested-type registries so each `(ownerDefId, memberName)`
+ * probe is O(1). Implementations MUST return `[]` on an indexed miss —
+ * Step 2 treats `[]` as authoritative and does not consult `defs` for a
+ * fallback scan.
+ */
+export type OwnedMembersByOwnerLookup = (
+  ownerDefId: DefId,
+  memberName: string,
+) => readonly SymbolDefinition[];
+
 // ─── Top-level context threaded through every lookup ───────────────────────
 
 export interface RegistryContext {
@@ -67,6 +120,7 @@ export interface RegistryContext {
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
+  readonly ownedMembersByOwner: OwnedMembersByOwnerLookup;
   /**
    * Method-dispatch index; required for method/field registries that
    * honor `useReceiverTypeBinding`. Omit for class-only lookups.

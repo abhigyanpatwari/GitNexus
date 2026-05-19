@@ -49,7 +49,7 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 
 export const WAL_RECOVERY_SUGGESTION =
-  'WAL corruption detected. Run `gitnexus analyze` to rebuild the index.';
+  'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.';
 
 export function isWalCorruptionError(err: unknown): boolean {
   if (!err) return false;

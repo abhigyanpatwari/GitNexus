@@ -122,20 +122,18 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // (PR #1520 review follow-up plan 2026-05-13-001 U3); backporting
     // is out of scope.
     'Derived<T>::g() -> f() does NOT bind to Base<T>::f (dependent base)',
-    // The legacy DAG path has no V1/V2 ADL boundary — pointer-typed
-    // arguments resolve via the workspace-wide simple-name walk. The
-    // scope-resolver V1 ADL pass excludes pointer args (closure rules
-    // deferred to V2) per plan 2026-05-13-001 U2 / R4. Scope-resolver-
-    // only correctness win; backporting is out of scope.
-    'record(p) where p is audit::Event* emits zero CALLS — V1 ADL excludes pointer args',
-    // The legacy DAG path has no ADL_AMBIGUOUS suppression sentinel.
+    // The legacy DAG path does not apply merged ordinary+ADL narrowing
+    // with ambiguity suppression.
     // When ADL surfaces multiple overloads that collide after C++
     // int/long normalization, legacy picks the first match arbitrarily.
-    // The scope-resolver path suppresses via the ADL_AMBIGUOUS sentinel
-    // (mirroring OVERLOAD_AMBIGUOUS for receiver-bound paths). Scope-
-    // resolver-only correctness win (PR #1520 review follow-up plan
+    // The scope-resolver path suppresses in free-call-fallback after
+    // merged-candidate overload narrowing. Scope-resolver-only
+    // correctness win (PR #1520 review follow-up plan
     // 2026-05-13-001 U2); backporting is out of scope.
     'process(t, 42) emits zero CALLS edges when ADL surfaces process(Token,int)/process(Token,long) (collide after C++ int normalization)',
+    // Legacy DAG path does not merge ordinary and ADL candidate sets for
+    // non-empty ordinary lookup, so it misses ADL's better-match overload.
+    'swap(a, b) prefers data::swap(Pair&, Pair&) over app::swap(int, int)',
     // The legacy DAG path has no qualified namespace-member resolver
     // and no inline-namespace awareness. For the versioned fixture
     // (`outer::v1::foo` inline, `outer::v0::foo` not), the registry-
@@ -177,6 +175,65 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
+    // Conversion-rank scoring (#1578 / #1606) disambiguates `f(int)` vs
+    // `f(double)` by ranking exact match over standard conversion. The
+    // legacy DAG has no conversion-rank scoring; it either picks
+    // arbitrarily or leaves the call unresolved. Scope-resolver-only
+    // correctness win.
+    'f(2.5) resolves to f(double) — exact match beats standard conversion',
+    'f(42) resolves to f(int) — exact match beats standard conversion',
+    'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
+    // char-literal promotion exercises the conversion ranker (step 4b).
+    // Legacy DAG has no conversion-rank scoring. Scope-resolver-only.
+    "p('a') resolves to p(int) — char promotion (rank 1) beats char→double conversion (rank 2)",
+    // Multi-arg incomparable overloads: pairwise dominance check finds
+    // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
+    'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    // The legacy DAG path lacks the SFINAE / `requires`-clause aware
+    // overload filter (issue #1579). The two `process<T>` overloads
+    // guarded by mutually-exclusive `enable_if_t` predicates collapse
+    // into false multi-candidate ambiguity → 0 CALLS edges. The
+    // registry-primary path filters via `constraintCompatibility` and
+    // emits exactly 2 edges (one per ISO-resolved overload). Scope-
+    // resolver-only correctness win; backporting requires a constexpr
+    // evaluation engine in the legacy DAG.
+    'enable_if_t<is_integral_v<T>> overload binds only on integral call sites',
+    'enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites',
+    'requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)',
+    'is_pointer_v and is_class_v disambiguate pointer vs class arguments',
+    'is_reference_v keeps reference-shaped arguments distinct from values',
+    'is_class_v rejects primitive arguments while keeping class arguments',
+    'is_enum_v distinguishes known enum declarations from primitives',
+    'is_const_v and is_volatile_v disambiguate cv-qualified locals',
+    'is_void_v does not misclassify void pointers as void values',
+    // The legacy DAG path has no inline-namespace same-name ambiguity
+    // detection. When two inline children declare the same name, the
+    // legacy path picks an arbitrary match. The scope-resolver returns
+    // 'ambiguous' and suppresses edge emission. Scope-resolver-only
+    // correctness win (#1564); backporting to legacy is out of scope.
+    'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
+    // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
+    // `foo(double)` in v2. The scope-resolver conservatively suppresses
+    // because `resolveQualifiedReceiverMember` lacks call-site argument
+    // types. Legacy DAG has no inline-namespace resolver. Scope-resolver-
+    // only correctness win (#1600 / Claude review Finding 1).
+    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)',
+    // PR #1598: ADL free-function reference arg negative fixtures rely on
+    // scope-resolver-only correctness. The legacy DAG falls back to
+    // `pickUniqueGlobalCallable` which resolves the callee by simple-name
+    // workspace lookup, ignoring argument analysis. These fixtures expect
+    // zero CALLS edges (the registry-primary path correctly avoids a false-
+    // positive), but the legacy path emits one edge via the global fallback.
+    // Scope-resolver-only correctness wins; backporting is out of scope.
+    'process(data::value) emits zero CALLS edges \u2014 data::value is a variable, not a function',
+    'run_with(callback) emits zero CALLS edges when callback is a parameter, not a function reference',
+    // PR #1599 adversarial review findings: nearest-scope ADL blocker
+    // semantics and block-scope function declaration ADL suppression are
+    // scope-resolver-only. The legacy DAG has no scope-aware ADL blocker
+    // detection; it falls back to `pickUniqueGlobalCallable`. Scope-
+    // resolver-only correctness wins; backporting is out of scope.
+    'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
+    'record(e) emits zero CALLS when a block-scope function declaration exists',
   ]),
 };
 

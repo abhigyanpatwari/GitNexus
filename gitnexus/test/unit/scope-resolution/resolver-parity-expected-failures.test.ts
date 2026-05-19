@@ -7,6 +7,11 @@ import {
 
 const csharpNamespaceRootImportTest =
   'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path';
+const cppBaseNamespaceAdlTests = [
+  'resolves log(d) to base_lib::log via ADL when Derived inherits from base_lib::Base',
+  'resolves trace(m) via full MRO walk when MultiLevel inherits via middle_lib::Mid -> base_lib::Root',
+  'diamond inheritance contributes base namespace once (no duplicate/crash)',
+] as const;
 
 describe('resolver parity expected legacy failures', () => {
   it('uses the same env var convention as the parity workflow', () => {
@@ -43,5 +48,15 @@ describe('resolver parity expected legacy failures', () => {
         },
       ),
     ).toBe(false);
+  });
+
+  it('does not mark cpp base-namespace ADL coverage as expected failures in legacy parity', () => {
+    for (const testName of cppBaseNamespaceAdlTests) {
+      expect(
+        isLegacyResolverParityExpectedFailure('cpp', testName, {
+          REGISTRY_PRIMARY_CPP: '0',
+        }),
+      ).toBe(false);
+    }
   });
 });

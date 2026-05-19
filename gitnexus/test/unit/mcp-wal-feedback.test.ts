@@ -10,7 +10,6 @@ const { lbugMocks, platformMocks, repoMocks } = vi.hoisted(() => ({
     executeParameterized: vi.fn(),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-    isWriteQuery: vi.fn().mockReturnValue(false),
   },
   platformMocks: {
     isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
@@ -81,7 +80,6 @@ describe('WAL corruption feedback in MCP responses (#1402)', () => {
     lbugMocks.executeQuery.mockResolvedValue([]);
     lbugMocks.executeParameterized.mockResolvedValue([]);
     lbugMocks.isLbugReady.mockReturnValue(true);
-    lbugMocks.isWriteQuery.mockReturnValue(false);
     repoMocks.listRegisteredRepos.mockResolvedValue([MOCK_REPO_ENTRY]);
   });
 
@@ -106,7 +104,7 @@ describe('WAL corruption feedback in MCP responses (#1402)', () => {
 
   it('cypher returns WAL recoverySuggestion on corrupted WAL error', async () => {
     const backend = await makeBackend();
-    lbugMocks.executeQuery.mockRejectedValueOnce(new Error('Corrupted wal file'));
+    lbugMocks.executeParameterized.mockRejectedValueOnce(new Error('Corrupted wal file'));
 
     const result = await backend.callTool('cypher', {
       repo: 'test-repo',

@@ -254,6 +254,7 @@
 import type {
   BindingRef,
   Callsite,
+  ConstraintContext,
   ParsedFile,
   ScopeId,
   SupportedLanguages,
@@ -264,6 +265,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
+import type { ConversionRankFn } from '../passes/overload-narrowing.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
  *  algorithms (which need to merge each parent's MRO) can implement
@@ -277,6 +279,10 @@ export type LinearizeStrategy = (
 
 /** Result of `ScopeResolver.arityCompatibility` — mirrors `RegistryProviders.arityCompatibility`. */
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+/** Re-exported for ScopeResolver consumers — same shape as
+ *  `RegistryProviders.constraintCompatibility`'s third parameter. */
+export type { ConstraintContext } from 'gitnexus-shared';
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -372,6 +378,28 @@ export interface ScopeResolver {
    * `(def, callsite)` and need an adapter at the wiring site.
    */
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Per-language constraint compatibility between a callsite and a
+   * candidate `def` that carries `templateConstraints` metadata.
+   * Mirrors `arityCompatibility` semantics: the three-valued verdict
+   * MUST treat `'unknown'` as keep-candidate (monotonicity — adding
+   * a predicate can only narrow correctly, never produce a wrong
+   * edge). Consulted by `narrowOverloadCandidates` after the arity
+   * and parameter-type filters.
+   *
+   * Optional. Languages without constrained-overload semantics
+   * (SFINAE, `requires` clauses, trait bounds, conditional types)
+   * leave this undefined and the constraint filter is a pass-through.
+   *
+   * C++ is the first consumer; see `languages/cpp/constraint-filter.ts`
+   * for the Tier-A predicate registry and Kleene 3-valued evaluator.
+   */
+  readonly constraintCompatibility?: (
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ) => ArityVerdict;
 
   // ─── Per-language strategies ───────────────────────────────────────────────
 
@@ -534,6 +562,20 @@ export interface ScopeResolver {
   readonly allowGlobalFreeCallFallback?: boolean;
 
   /**
+   * Optional per-slot conversion-rank function for overload resolution.
+   * When provided, `narrowOverloadCandidates` uses ranked scoring as a
+   * fallback when the exact-type filter produces no match. The function
+   * returns a numeric cost (0 = exact, 1 = promotion, 2 = standard
+   * conversion, Infinity = incompatible) for converting an argument
+   * type to a parameter type.
+   *
+   * The conversion-rank table is language-specific (issue #1578 pitfall:
+   * keep it out of shared overload-narrowing). C++ provides
+   * `cppConversionRank`; other languages define their own if needed.
+   */
+  readonly conversionRankFn?: ConversionRankFn;
+
+  /**
    * Optional predicate to identify definitions with file-local linkage
    * (e.g. C `static` functions). When provided, `pickUniqueGlobalCallable`
    * excludes defs where `isFileLocalDef(def) === true` and the def lives
@@ -576,16 +618,15 @@ export interface ScopeResolver {
    * Optional argument-dependent-lookup (ADL / Koenig lookup) hook for
    * languages with C++-style associated-namespace candidate addition.
    *
-   * Runs in the free-call fallback AFTER `findCallableBindingInScope`
-   * returns `undefined` and BEFORE `pickUniqueGlobalCallable`. The hook
-   * inspects the call site's argument types, computes the associated
-   * namespace set, and returns either:
-   *   - a unique `SymbolDefinition` — emit the CALLS edge to it.
-   *   - `'ambiguous'` — multiple candidates share normalized parameter
-   *     types; the caller MUST suppress (zero edges). Mirrors the
-   *     OVERLOAD_AMBIGUOUS sentinel from `overload-narrowing.ts`.
-   *   - `undefined` — no ADL candidates; caller falls through to the
-   *     global free-call fallback (`pickUniqueGlobalCallable`).
+   * Runs in the free-call fallback alongside ordinary unqualified lookup.
+   * The fallback merges ordinary candidates with ADL candidates and applies
+   * overload narrowing over the union.
+   *
+   * The hook inspects the call site's argument types, computes the
+   * associated namespace set, and returns either:
+   *   - an array of candidate `SymbolDefinition`s to add to the
+   *     ordinary-lookup candidate pool.
+   *   - `undefined` when ADL contributes no candidates.
    *
    * Languages without C++-style ADL leave this undefined. The
    * cross-language contract is "additive tier" — defining the hook never
@@ -601,7 +642,7 @@ export interface ScopeResolver {
     callerParsed: ParsedFile,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
-  ) => SymbolDefinition | 'ambiguous' | undefined;
+  ) => readonly SymbolDefinition[] | undefined;
 
   /**
    * Optional resolver for qualified-receiver member calls where the
@@ -616,8 +657,9 @@ export interface ScopeResolver {
    *
    * Receiver-bound-calls invokes this hook AFTER Case 1 (namespace
    * imports) and AFTER Case 2 (class-name receiver) fail to resolve.
-   * Returns the target def, or `undefined` to fall through to the
-   * remaining cases.
+   * Returns the target def, `'ambiguous'` when multiple inline-namespace
+   * children declare the same name (suppresses edge emission), or
+   * `undefined` to fall through to the remaining cases.
    */
   readonly resolveQualifiedReceiverMember?: (
     receiverName: string,
@@ -625,7 +667,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
-  ) => SymbolDefinition | undefined;
+  ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`

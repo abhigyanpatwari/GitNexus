@@ -34,7 +34,7 @@
  * logic up the dependency chain instead.
  */
 
-import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass, SymbolDefinition } from 'gitnexus-shared';
 
 /**
  * Class-like NodeLabels — used for qualifiedName fallback inside
@@ -126,6 +126,7 @@ export interface AddMetadata {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
   returnType?: string;
   declaredType?: string;
   templateArguments?: string[];
@@ -275,6 +276,9 @@ export const createSymbolTable = (): InternalSymbolTable => {
         : {}),
       ...(metadata?.parameterTypes !== undefined
         ? { parameterTypes: metadata.parameterTypes }
+        : {}),
+      ...(metadata?.parameterTypeClasses !== undefined
+        ? { parameterTypeClasses: metadata.parameterTypeClasses }
         : {}),
       ...(metadata?.returnType !== undefined ? { returnType: metadata.returnType } : {}),
       ...(metadata?.declaredType !== undefined ? { declaredType: metadata.declaredType } : {}),
