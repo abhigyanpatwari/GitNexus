@@ -62,6 +62,14 @@ const DEFAULT_SUB_BATCH_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_TIMEOUT_RETRIES = 1;
 const DEFAULT_TIMEOUT_BACKOFF_FACTOR = 2;
 
+/**
+ * Upper bound on per-job timeout regardless of backoff. Prevents runaway
+ * doubling on pathological files (e.g. 30s -> 5min ceiling instead of
+ * unbounded growth like 30s -> 60s -> 120s -> 240s -> 480s after just 4
+ * splits). Defensive — does not address any currently-reproducible runaway.
+ */
+const MAX_TIMEOUT_BACKOFF_MS = 5 * 60 * 1000;
+
 function positiveInteger(value: unknown): number | undefined {
   const parsed = typeof value === 'string' ? Number(value) : value;
   return typeof parsed === 'number' && Number.isFinite(parsed) && parsed > 0
@@ -276,7 +284,10 @@ export const createWorkerPool = (
         job: WorkerJob<TInput>,
         lastProgress: number,
       ): boolean => {
-        const nextTimeout = Math.ceil(job.timeoutMs * poolOptions.timeoutBackoffFactor);
+        const nextTimeout = Math.min(
+          Math.ceil(job.timeoutMs * poolOptions.timeoutBackoffFactor),
+          MAX_TIMEOUT_BACKOFF_MS,
+        );
 
         if (job.items.length > 1) {
           const midpoint = Math.ceil(job.items.length / 2);
