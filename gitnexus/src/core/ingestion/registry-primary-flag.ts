@@ -74,6 +74,7 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.C,
   SupportedLanguages.CPlusPlus,
   SupportedLanguages.PHP,
+  SupportedLanguages.JavaScript,
 ]);
 
 /**

@@ -3,6 +3,7 @@ export class User {
   getName() { return ''; }
 }
 
+/** @returns {User} */
 export function getUser() {
   return new User();
 }
