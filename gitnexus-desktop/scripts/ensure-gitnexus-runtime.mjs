@@ -263,7 +263,11 @@ const runNpm = (args, cwd) => {
 
 const repairGitNexusPackages = (_dependencyMap, label) => {
   console.info(`[gitnexus-desktop] ${label}.`);
-  runNpm(['ci'], gitnexusRoot);
+  // Skip lifecycle scripts (postinstall/prepare) — the prepare script triggers
+  // a full gitnexus + web build which can exceed its 120 s execSync timeout on
+  // a cold machine. The runtime artifacts are rebuilt separately via
+  // runNpm(['run', 'build'], gitnexusRoot) below when isGitNexusBuildStale().
+  runNpm(['ci', '--ignore-scripts'], gitnexusRoot);
 };
 
 const runCommand = (command, args) => {

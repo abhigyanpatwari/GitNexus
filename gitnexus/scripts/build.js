@@ -82,9 +82,9 @@ if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
   console.log('[build] building gitnexus-web…');
   if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
     console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 120_000 });
+    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 600_000 });
   }
-  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 120_000 });
+  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 600_000 });
 
   // Copy dist → gitnexus/web/ (shipped in the npm package)
   fs.rmSync(WEB_DEST, { recursive: true, force: true });

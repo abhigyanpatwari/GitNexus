@@ -50,6 +50,7 @@ export default [
   {
     ignores: [
       '**/dist/**',
+      'gitnexus-desktop/release/**',
       '**/node_modules/**',
       '**/coverage/**',
       'gitnexus/vendor/**',
