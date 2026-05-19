@@ -306,6 +306,186 @@ describe('worker pool resilience', () => {
     expect(workerInstances.length).toBe(baselineWorkers);
     await pool.terminate();
   });
+
+  it('quarantines on worker `error` event (errorHandler path)', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 3,
+    });
+    nextActions.push({ kind: 'crash-error', message: 'segfault', afterStartingFiles: 1 });
+    nextActions.push({
+      kind: 'parse-ok',
+      files: [{ path: 'src/ok.ts' }],
+      result: { fileCount: 1 },
+    });
+
+    const results = await pool.dispatch<{ path: string; content: string }, unknown>([
+      { path: 'src/bad.ts', content: '' },
+      { path: 'src/ok.ts', content: '' },
+    ]);
+
+    expect(results).toEqual([{ fileCount: 1 }]);
+    expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['src/bad.ts']);
+    await pool.terminate();
+  });
+
+  it('drops the job on second unattributable death when items have no paths (F5 drop branch)', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 5,
+    });
+    // Items without a `path` field — itemPath returns undefined, so
+    // inFlightExcludePath returns [] and F5's unattributed-death branch
+    // is the only path that fires. First death re-queues intact; second
+    // death drops the job entirely to break the loop (no identifiable
+    // file to quarantine).
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 0 });
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 0 });
+
+    const results = await pool.dispatch<{ content: string }, unknown>([
+      { content: 'no-path-1' },
+      { content: 'no-path-2' },
+    ]);
+
+    // F5 dropped the job; no results, no quarantine (no path to quarantine).
+    expect(results).toEqual([]);
+    expect(pool.getQuarantinedPaths?.() ?? []).toEqual([]);
+    await pool.terminate();
+  });
+
+  it('common-case unattributable crash falls back to the items[0] heuristic for attribution', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 5,
+    });
+    // Worker dies BEFORE emitting starting-file or progress. The pool's
+    // heuristic attributes to items[0] (lastProgress=0, items.length>0,
+    // path-bearing item). Validates the heuristic fallback before F5
+    // would take over — confirms today's behavior for the most common
+    // unattributable-crash mode.
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 0 });
+    nextActions.push({
+      kind: 'parse-ok',
+      files: [{ path: 'src/clean.ts' }],
+      result: { fileCount: 1 },
+    });
+
+    const results = await pool.dispatch<{ path: string; content: string }, unknown>([
+      { path: 'src/heuristic-target.ts', content: '' },
+      { path: 'src/clean.ts', content: '' },
+    ]);
+
+    expect(results).toEqual([{ fileCount: 1 }]);
+    expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['src/heuristic-target.ts']);
+    await pool.terminate();
+  });
+
+  it('drops slot when waitForWorkerOnline rejects (replaceWorker failure path)', async () => {
+    let factoryCallCount = 0;
+    const pool = createWorkerPool(workerUrl, 2, {
+      workerFactory: () => {
+        factoryCallCount++;
+        const worker = new FakeWorker();
+        // Slot 0's initial worker is healthy; the replacement (3rd factory
+        // call after slot 0 dies once) exits before emitting 'online'.
+        if (factoryCallCount === 3) {
+          // Override the queued 'online' microtask with an immediate 'exit'.
+          queueMicrotask(() => worker.emit('exit', 1));
+        }
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+      consecutiveFailureThreshold: 10,
+      maxRespawnsPerSlot: 5,
+    });
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
+    nextActions.push({
+      kind: 'parse-ok',
+      files: [{ path: 'src/b.ts' }, { path: 'src/c.ts' }],
+      result: { fileCount: 2 },
+    });
+
+    const results = await pool.dispatch<{ path: string; content: string }, unknown>([
+      { path: 'src/a.ts', content: '' },
+      { path: 'src/b.ts', content: '' },
+      { path: 'src/c.ts', content: '' },
+    ]);
+
+    expect(results).toEqual([{ fileCount: 2 }]);
+    expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['src/a.ts']);
+    // Initial 2 workers + 1 failed replacement = 3 factory calls.
+    expect(factoryCallCount).toBe(3);
+    await pool.terminate();
+  });
+
+  it('trips the breaker when all slots exhaust their respawn budget', async () => {
+    const pool = createWorkerPool(workerUrl, 2, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+      consecutiveFailureThreshold: 100,
+      maxRespawnsPerSlot: 0,
+    });
+    // Both slots die on first job: budget=0 means slot is dropped on first death.
+    // After both slots dropped, activeSlots.size === 0 trips the breaker.
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
+
+    await expect(
+      pool.dispatch<{ path: string; content: string }, unknown>([
+        { path: 'src/x.ts', content: '' },
+        { path: 'src/y.ts', content: '' },
+      ]),
+    ).rejects.toBeInstanceOf(WorkerPoolDispatchError);
+
+    // After breaker, no respawns happen so workerInstances === initial 2.
+    expect(workerInstances.length).toBe(2);
+    await pool.terminate();
+  });
+});
+
+describe('worker pool option resolution', () => {
+  it('resolves maxRespawnsPerSlot from explicit options', () => {
+    const opts = resolveWorkerPoolOptions({ maxRespawnsPerSlot: 7 }, 4);
+    expect(opts.maxRespawnsPerSlot).toBe(7);
+  });
+
+  it('defaults consecutiveFailureThreshold to max(3, poolSize)', () => {
+    expect(resolveWorkerPoolOptions({}, 1).consecutiveFailureThreshold).toBe(3);
+    expect(resolveWorkerPoolOptions({}, 8).consecutiveFailureThreshold).toBe(8);
+  });
+
+  it('defaults maxCumulativeTimeoutMs to 5x subBatchIdleTimeoutMs', () => {
+    const opts = resolveWorkerPoolOptions({ subBatchIdleTimeoutMs: 1000 }, 1);
+    expect(opts.maxCumulativeTimeoutMs).toBe(5000);
+  });
+
+  it('reads GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT env override', () => {
+    vi.stubEnv('GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT', '2');
+    try {
+      expect(resolveWorkerPoolOptions({}, 1).maxRespawnsPerSlot).toBe(2);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('reads GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD env override', () => {
+    vi.stubEnv('GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD', '12');
+    try {
+      expect(resolveWorkerPoolOptions({}, 1).consecutiveFailureThreshold).toBe(12);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('reads GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS env override', () => {
+    vi.stubEnv('GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS', '60000');
+    try {
+      expect(resolveWorkerPoolOptions({}, 1).maxCumulativeTimeoutMs).toBe(60000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('worker pool option resolution', () => {

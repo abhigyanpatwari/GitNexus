@@ -832,6 +832,14 @@ const processParsingSequential = async (
 // Public API
 // ============================================================================
 
+/**
+ * Per-`WorkerPool` log-dedup state for quarantine reporting. Keyed on the
+ * pool instance so multiple concurrent pools (test fixtures, future
+ * multi-pool callers) each get their own seen-set. WeakMap entries vanish
+ * when the pool is garbage-collected.
+ */
+const loggedQuarantineByPool = new WeakMap<WorkerPool, Set<string>>();
+
 export const processParsing = async (
   graph: KnowledgeGraph,
   files: { path: string; content: string }[],
@@ -890,14 +898,34 @@ export const processParsing = async (
       // out of dispatch; we only need to log + progress-report. Quarantine
       // is session-scoped per pool instance — a fresh `createWorkerPool`
       // call clears it.
-      const quarantineSet = new Set(workerPool.getQuarantinedPaths?.() ?? []);
+      //
+      // Dedup: log full path list only for entries newly quarantined since
+      // the previous dispatch on the same pool. The per-chunk progress
+      // message still surfaces the count for UX continuity, but the
+      // structured `quarantinedFiles` payload is only emitted when there
+      // is new signal — prevents O(quarantine × chunks) log spam.
+      const quarantineSnapshot = workerPool.getQuarantinedPaths?.() ?? [];
+      const quarantineSet = new Set(quarantineSnapshot);
       if (quarantineSet.size > 0) {
         const quarantinedInChunk = files.filter((file) => quarantineSet.has(file.path));
         if (quarantinedInChunk.length > 0) {
-          logger.warn(
-            { quarantinedFiles: quarantinedInChunk.map((file) => file.path) },
-            `Worker quarantine: ${quarantinedInChunk.length} file(s) skipped in this chunk (cumulative pool quarantine: ${quarantineSet.size}).`,
-          );
+          const seenForPool = loggedQuarantineByPool.get(workerPool) ?? new Set<string>();
+          const newlyQuarantined = quarantinedInChunk
+            .map((file) => file.path)
+            .filter((p) => !seenForPool.has(p));
+          for (const p of newlyQuarantined) seenForPool.add(p);
+          loggedQuarantineByPool.set(workerPool, seenForPool);
+          if (newlyQuarantined.length > 0) {
+            logger.warn(
+              {
+                newlyQuarantined,
+                cumulativeQuarantine: quarantineSet.size,
+                chunkSkipped: quarantinedInChunk.length,
+              },
+              `Worker quarantine: ${newlyQuarantined.length} new file(s) skipped this chunk ` +
+                `(${quarantinedInChunk.length} skipped total, ${quarantineSet.size} cumulative).`,
+            );
+          }
           reportProgress?.(
             lastProgress,
             files.length,

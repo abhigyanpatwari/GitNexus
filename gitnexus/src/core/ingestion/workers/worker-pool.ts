@@ -31,8 +31,13 @@ export interface WorkerPool {
    * worker dies with an authoritative in-flight file (Layer 4 starting-file
    * message) or a singleton-timeout exclusion. Cleared only by pool teardown
    * — quarantine is session-scoped per `createWorkerPool` invocation.
+   *
+   * Optional so external `WorkerPool` shapes (test doubles, alternate
+   * implementations) can omit the method without compile errors. Callers
+   * (`processParsing`) use optional chaining at the call site to handle
+   * absence gracefully.
    */
-  getQuarantinedPaths(): readonly string[];
+  getQuarantinedPaths?(): readonly string[];
 }
 
 export interface WorkerPoolOptions {
@@ -328,7 +333,11 @@ export const createWorkerPool = (
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
   const quarantined: Set<string> = new Set();
-  let consecutiveFailures = 0;
+  // Per-slot consecutive-failure counter (F6): replaces the prior pool-wide
+  // scalar so a chronically-failing slot trips the breaker on its own
+  // failure streak instead of being masked by another slot's successes.
+  // Reset to 0 on that slot's next successful job.
+  const consecutiveFailuresPerSlot: number[] = new Array(size).fill(0);
   let poolBroken = false;
   let poolFailure: Error | undefined;
 
@@ -380,6 +389,11 @@ export const createWorkerPool = (
       // Tracks which slots are currently mid-job so the "wake idle slots"
       // pass after a requeue doesn't double-dispatch to a busy slot.
       const busySlots: Set<number> = new Set();
+      // Per-conceptual-job (identified by startIndex) death count for the
+      // unattributable-crash path (F5). On the 2nd time a job dies with
+      // no exclusion attribution, requeueRemainder quarantines items[0]
+      // as a best-guess culprit to break the death loop.
+      const unattributedJobDeaths: Map<number, number> = new Map();
       let completedFiles = 0;
       let activeWorkers = 0;
       let stopped = false;
@@ -434,15 +448,21 @@ export const createWorkerPool = (
       // outer dispatch promise with the cumulative exclude paths. This is the
       // ONLY place that sets `poolBroken = true` — recoverable single-worker
       // failures stay local to `handleWorkerDeath`.
-      const tripBreaker = async (err: WorkerPoolDispatchError) => {
+      //
+      // Reject the caller's promise BEFORE awaiting `worker.terminate()` so a
+      // stuck terminate (OOM-killed thread, hung native addon) can't block
+      // the caller indefinitely. Worker cleanup runs in the background; the
+      // next `dispatch` call sees `poolBroken=true` and rejects up front.
+      const tripBreaker = (err: WorkerPoolDispatchError) => {
         poolBroken = true;
         poolFailure = err;
         if (stopped) return;
         stopped = true;
-        await Promise.all(workers.map((worker) => worker?.terminate().catch(() => undefined)));
+        reject(err);
+        const liveWorkers = workers.slice();
         for (let i = 0; i < workers.length; i++) workers[i] = undefined;
         activeSlots.clear();
-        reject(err);
+        void Promise.all(liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)));
       };
 
       const maybeDone = () => {
@@ -460,27 +480,66 @@ export const createWorkerPool = (
       // healthy worker can finish the work. Earlier items in the dead job
       // were never flushed back to the main thread, so they must be
       // re-processed. The new job carries the existing job's startIndex so
-      // result ordering is preserved.
+      // result ordering is preserved. `cumulativeTimeoutMs` is carried
+      // forward unchanged — the death itself consumed no timeout budget,
+      // so charging another timeoutMs here would double-bill the next
+      // `requeueAfterTimeout` call's accumulation.
+      //
+      // Unattributed-death tracking (F5): when called with `excluded=[]`
+      // the worker died without identifying a culprit (no `starting-file`
+      // observed, `lastProgress=0`, `items[lastProgress]` heuristic empty).
+      // The first time, re-queue the job intact and hope another worker
+      // succeeds. On the second such death of the SAME conceptual job
+      // (same `startIndex`), quarantine `items[0]` as a best-guess
+      // culprit so the next attempt isn't condemned to the same death.
+      // This bounds the unattributable-crash death loop and ensures the
+      // pool's final `fallbackExcludePaths` carries SOME signal for
+      // sequential fallback instead of silently re-hitting the bad file.
       const requeueRemainder = (job: WorkerJob<TInput>, excluded: readonly string[]) => {
+        let effectiveExcluded = excluded;
         if (excluded.length === 0) {
-          jobs.unshift(job);
-          return;
+          const deaths = (unattributedJobDeaths.get(job.startIndex) ?? 0) + 1;
+          unattributedJobDeaths.set(job.startIndex, deaths);
+          if (deaths < 2) {
+            jobs.unshift(job);
+            return;
+          }
+          const firstPath = itemPath(job.items[0]);
+          if (firstPath !== undefined) {
+            quarantined.add(firstPath);
+            logger.warn(
+              { startIndex: job.startIndex, firstPath, deaths },
+              `Conceptual job ${job.startIndex} died ${deaths} times unattributably; ` +
+                `quarantining items[0] (${firstPath}) as best-guess culprit.`,
+            );
+            effectiveExcluded = [firstPath];
+          } else {
+            // No identifiable file on items[0] either — drop the job to
+            // break the loop. The breaker counter still increments via
+            // handleWorkerDeath, so consecutive unattributable deaths
+            // eventually trip it even without quarantine signal.
+            logger.warn(
+              { startIndex: job.startIndex, deaths },
+              `Conceptual job ${job.startIndex} died ${deaths} times unattributably with ` +
+                `no identifiable file; dropping job to break the death loop.`,
+            );
+            return;
+          }
         }
-        const excludeSet = new Set(excluded);
+        const excludeSet = new Set(effectiveExcluded);
         const filtered = job.items.filter((item) => {
           const p = itemPath(item);
           return p === undefined || !excludeSet.has(p);
         });
         if (filtered.length === 0) return;
-        const requeueTimeoutMs = job.timeoutMs;
         jobs.unshift({
           startIndex: job.startIndex,
           items: filtered,
           estimatedBytes: filtered.reduce((sum, item) => sum + estimateItemBytes(item), 0),
           attempt: job.attempt,
           splitDepth: job.splitDepth,
-          timeoutMs: requeueTimeoutMs,
-          cumulativeTimeoutMs: job.cumulativeTimeoutMs + requeueTimeoutMs,
+          timeoutMs: job.timeoutMs,
+          cumulativeTimeoutMs: job.cumulativeTimeoutMs,
         });
       };
 
@@ -494,15 +553,16 @@ export const createWorkerPool = (
         excludePaths: readonly string[],
       ) => {
         if (stopped) return;
-        consecutiveFailures++;
+        consecutiveFailuresPerSlot[workerIndex]++;
         for (const p of excludePaths) {
           if (p) quarantined.add(p);
         }
-        if (consecutiveFailures >= poolOptions.consecutiveFailureThreshold) {
-          void tripBreaker(
+        if (consecutiveFailuresPerSlot[workerIndex] >= poolOptions.consecutiveFailureThreshold) {
+          tripBreaker(
             new WorkerPoolDispatchError(
-              `${reason}. Pool circuit breaker tripped after ${consecutiveFailures} ` +
-                `consecutive failures (threshold: ${poolOptions.consecutiveFailureThreshold}).`,
+              `${reason}. Pool circuit breaker tripped: slot ${workerIndex} hit ` +
+                `${consecutiveFailuresPerSlot[workerIndex]} consecutive failures ` +
+                `(threshold: ${poolOptions.consecutiveFailureThreshold}).`,
               Array.from(quarantined),
             ),
           );
@@ -524,7 +584,7 @@ export const createWorkerPool = (
           workers[workerIndex] = undefined;
           activeSlots.delete(workerIndex);
           if (activeSlots.size === 0) {
-            void tripBreaker(
+            tripBreaker(
               new WorkerPoolDispatchError(
                 `${reason}. All ${size} worker slot(s) exhausted their respawn budget.`,
                 Array.from(quarantined),
@@ -547,7 +607,7 @@ export const createWorkerPool = (
         if (!respawned) {
           activeSlots.delete(workerIndex);
           if (activeSlots.size === 0) {
-            void tripBreaker(
+            tripBreaker(
               new WorkerPoolDispatchError(
                 `${reason}. Replacement worker startup failed and no slots remain.`,
                 Array.from(quarantined),
@@ -571,11 +631,12 @@ export const createWorkerPool = (
         // exhausted, surface the in-flight file via WorkerPoolDispatchError
         // instead of letting exponential backoff stall further.
         if (nextCumulative > poolOptions.maxCumulativeTimeoutMs) {
-          const exhausted =
+          const firstPath = itemPath(job.items[0]);
+          const exhausted: string[] =
             inFlightPath !== undefined
               ? [inFlightPath]
-              : itemPath(job.items[0])
-                ? [itemPath(job.items[0]) as string]
+              : firstPath !== undefined
+                ? [firstPath]
                 : [];
           logger.warn(
             {
@@ -587,6 +648,10 @@ export const createWorkerPool = (
             },
             `Worker ${workerIndex} parse job exhausted cumulative timeout budget. Surfacing in-flight file(s).`,
           );
+          // Re-queue the rest of the job so other workers can finish the
+          // non-exhausted items. Without this, the job was already shifted
+          // off `jobs` in `runWorker` and would be silently lost.
+          requeueRemainder(job, exhausted);
           void handleWorkerDeath(
             workerIndex,
             `Worker ${workerIndex} parse job exhausted cumulative timeout budget ` +
@@ -668,6 +733,12 @@ export const createWorkerPool = (
           },
           `Worker ${workerIndex} parse job idle timeout exhausted retries; quarantining file and respawning slot.`,
         );
+        // Defensive re-queue for symmetry with the Layer 5 path. Singleton
+        // jobs have at most one item; filtering by `excludes` typically
+        // drops it (filtered.length === 0 → no-op). When `excludes` is
+        // empty (unidentifiable stall), F5's unattributed-death tracking
+        // in requeueRemainder bounds the loop.
+        requeueRemainder(job, excludes);
         void handleWorkerDeath(
           workerIndex,
           `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
@@ -681,25 +752,19 @@ export const createWorkerPool = (
       const runWorker = (workerIndex: number) => {
         if (stopped) return;
         if (!activeSlots.has(workerIndex)) return;
-        const job = jobs.shift();
-        if (!job) {
-          maybeDone();
-          return;
-        }
-
         // Drop quarantined items that may have been re-queued before a death
         // added them to quarantine — keeps the worker from ever seeing a
-        // known-bad file.
-        if (quarantined.size > 0) {
+        // known-bad file. Loops until we find a job with dispatchable items
+        // or exhaust the queue (avoids recursion depth growth when many
+        // queued jobs are fully quarantined back-to-back).
+        let job: WorkerJob<TInput> | undefined;
+        while ((job = jobs.shift()) !== undefined) {
+          if (quarantined.size === 0) break;
           const dispatchable = job.items.filter((item) => {
             const p = itemPath(item);
             return p === undefined || !quarantined.has(p);
           });
-          if (dispatchable.length === 0) {
-            // Whole job was quarantined; drop and try next.
-            runWorker(workerIndex);
-            return;
-          }
+          if (dispatchable.length === 0) continue;
           if (dispatchable.length !== job.items.length) {
             job.items = dispatchable;
             job.estimatedBytes = dispatchable.reduce(
@@ -707,6 +772,11 @@ export const createWorkerPool = (
               0,
             );
           }
+          break;
+        }
+        if (!job) {
+          maybeDone();
+          return;
         }
 
         activeWorkers++;
@@ -790,38 +860,61 @@ export const createWorkerPool = (
                 stalledPath,
               );
               if (!shouldContinue) {
-                // handleWorkerDeath path was taken by requeueAfterTimeout;
-                // recover the slot (respawn if budget allows) and continue.
-                void (async () => {
-                  activeWorkers--;
-                  busySlots.delete(workerIndex);
-                  if (stopped) return;
-                  if (activeSlots.has(workerIndex)) {
-                    const respawned = await replaceWorker(workerIndex);
-                    if (!respawned) activeSlots.delete(workerIndex);
-                  }
-                  if (stopped) return;
-                  if (activeSlots.has(workerIndex)) {
-                    runWorker(workerIndex);
-                  }
-                  wakeIdleSlots();
-                  maybeDone();
-                })();
+                // Give-up path: `requeueAfterTimeout` already kicked off
+                // `void handleWorkerDeath(...)` which owns slot management
+                // (quarantine, respawn, budget enforcement, breaker). We
+                // only need to update local bookkeeping and let
+                // `wakeIdleSlots` pick up the requeued remainder on any
+                // live slot. handleWorkerDeath's own `runWorker` post-
+                // respawn fires from inside that async chain — we do NOT
+                // re-call replaceWorker here, which previously double-
+                // spawned the slot.
+                activeWorkers--;
+                busySlots.delete(workerIndex);
+                wakeIdleSlots();
+                maybeDone();
                 return;
               }
-              // Timeout-retry path: spawn a fresh worker on this slot to
-              // pick up the next attempt.
+              // Timeout-retry path: enforce the per-slot respawn budget
+              // BEFORE spawning a fresh worker. The previous version
+              // called `replaceWorker` unconditionally, letting a
+              // chronically-timing-out slot respawn forever.
               void (async () => {
                 try {
-                  const respawned = await replaceWorker(workerIndex);
-                  if (!respawned) {
+                  respawnCount[workerIndex]++;
+                  if (respawnCount[workerIndex] > poolOptions.maxRespawnsPerSlot) {
+                    logger.warn(
+                      {
+                        workerIndex,
+                        respawnCount: respawnCount[workerIndex],
+                        maxRespawns: poolOptions.maxRespawnsPerSlot,
+                      },
+                      `Worker ${workerIndex} exceeded respawn budget during idle-timeout retry; dropping slot.`,
+                    );
+                    const dead = workers[workerIndex];
+                    await dead?.terminate().catch(() => undefined);
+                    workers[workerIndex] = undefined;
                     activeSlots.delete(workerIndex);
+                  } else {
+                    const respawned = await replaceWorker(workerIndex);
+                    if (!respawned) {
+                      activeSlots.delete(workerIndex);
+                    }
                   }
                 } finally {
                   activeWorkers--;
                   busySlots.delete(workerIndex);
                 }
                 if (stopped) return;
+                if (activeSlots.size === 0) {
+                  tripBreaker(
+                    new WorkerPoolDispatchError(
+                      `Worker pool exhausted all slots during idle-timeout retry.`,
+                      Array.from(quarantined),
+                    ),
+                  );
+                  return;
+                }
                 reportProgress();
                 if (activeSlots.has(workerIndex)) runWorker(workerIndex);
                 wakeIdleSlots();
@@ -861,7 +954,7 @@ export const createWorkerPool = (
             if (!waitingForFlush) {
               settled = true;
               cleanup();
-              void tripBreaker(
+              tripBreaker(
                 new WorkerPoolDispatchError(
                   `Worker ${workerIndex} protocol error: result before flush`,
                   Array.from(quarantined),
@@ -873,12 +966,18 @@ export const createWorkerPool = (
             cleanup();
             results.push({ startIndex: job.startIndex, data: msg.data as TResult });
             completedFiles += job.items.length;
-            // Layer 2: a successful job resets the consecutive-failure
-            // counter so transient bursts of bad files don't trip the
-            // breaker prematurely.
-            consecutiveFailures = 0;
+            // Layer 2 (F6): a successful job resets THIS slot's
+            // consecutive-failure counter so the breaker only trips
+            // when a specific slot is chronically failing — another
+            // slot's successes can't mask a single bad slot.
+            consecutiveFailuresPerSlot[workerIndex] = 0;
             reportProgress();
             finishJob();
+          } else {
+            // F7: exhaustiveness check — drift-catcher when a future
+            // WorkerOutgoingMessage variant is added without a handler.
+            const _exhaustive: never = msg;
+            void _exhaustive;
           }
         };
 
