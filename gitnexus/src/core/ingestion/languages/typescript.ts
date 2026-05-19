@@ -56,6 +56,16 @@ import {
   typescriptArityCompatibility,
   resolveTsImportTarget,
 } from './typescript/index.js';
+import {
+  emitJsScopeCaptures,
+  interpretJsImport,
+  interpretJsTypeBinding,
+  jsBindingScopeFor,
+  jsImportOwningScope,
+  jsReceiverBinding,
+  jsMergeBindings,
+  jsArityCompatibility,
+} from './javascript/index.js';
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
@@ -359,4 +369,19 @@ export const javascriptProvider = defineLanguage({
   classExtractor: createClassExtractor(javascriptClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.JavaScript),
   builtInNames: BUILT_INS,
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
+  // JavaScript is the fourth migration after Python, C#, and TypeScript.
+  // Hooks are thin wrappers over the TypeScript implementations where
+  // semantics are identical; JS-specific additions (CJS require(),
+  // JSDoc type bindings) live in ./javascript/captures.ts.
+  // See ./javascript/index.ts for the full per-module rationale.
+  emitScopeCaptures: emitJsScopeCaptures,
+  interpretImport: interpretJsImport,
+  interpretTypeBinding: interpretJsTypeBinding,
+  bindingScopeFor: jsBindingScopeFor,
+  importOwningScope: jsImportOwningScope,
+  mergeBindings: (_scope, bindings) => jsMergeBindings(bindings),
+  receiverBinding: jsReceiverBinding,
+  arityCompatibility: jsArityCompatibility,
 });
