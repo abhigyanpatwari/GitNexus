@@ -258,6 +258,10 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
     // the main checkout path for both the checkout and all its linked worktrees.
     // Therefore: repoPath === canonical → main checkout (auto-detect may fire).
     //            repoPath !== canonical → linked worktree (return as-is).
+    //
+    // Assumes repoPath is a git root or linked-worktree root — not an arbitrary
+    // subdirectory. In practice, gitnexus analyze and resolveRepoIdentityRoot
+    // always normalize to a git root before registration, so this holds.
     const repoCanonical = getCanonicalRepoRoot(repoPath);
     if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
       return repoPath;
