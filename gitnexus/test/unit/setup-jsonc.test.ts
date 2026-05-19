@@ -404,6 +404,22 @@ describe('setupCursor — JSONC preservation', () => {
     const raw = await fs.readFile(mcpPath(), 'utf-8');
     expect(raw).toBe(corrupt);
   });
+
+  it('uses Windows npx fallback when where returns only a non-wrapper shim', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(mcpPath(), 'utf-8');
+    const config = parseJsonc(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
 });
 
 describe('setupClaudeCode — JSONC preservation', () => {
