@@ -17,8 +17,11 @@ const DESKTOP_APP_NAME = 'GitNexus Desktop';
 const DESKTOP_SHELL_TITLEBAR_HEIGHT = 38;
 const DESKTOP_BACKGROUND_COLOR = '#0d0d0d';
 const DESKTOP_APP_ICON_PATH = app.isPackaged
-  ? path.join(process.resourcesPath, 'icon.png')
-  : path.resolve(__dirname, '../../build/icon.png');
+  ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'icon.png')
+  : path.resolve(
+      __dirname,
+      process.platform === 'win32' ? '../../build/icon.ico' : '../../build/icon.png',
+    );
 const DESKTOP_GET_SHELL_STATE_CHANNEL = 'gitnexus-desktop:get-shell-state';
 const DESKTOP_WINDOW_ACTION_CHANNEL = 'gitnexus-desktop:window-action';
 const DESKTOP_WINDOW_STATE_CHANGED_CHANNEL = 'gitnexus-desktop:window-state-changed';
@@ -43,7 +46,7 @@ const GITNEXUS_WEB_PACKAGED_DIR = path.join(process.resourcesPath, 'gitnexus-web
 // Bundling a real node.exe and using it as the subprocess host avoids the crash.
 const GITNEXUS_PACKAGED_NODE_BINARY = path.join(process.resourcesPath, 'runtime', 'node.exe');
 const GITNEXUS_WEB_EXPECTED_MARKERS = ['<title>GitNexus</title>', '<div id="root"></div>'];
-const GITNEXUS_SERVER_READY_TIMEOUT_MS = 30_000;
+const GITNEXUS_SERVER_READY_TIMEOUT_MS = 120_000;
 const GITNEXUS_WEB_READY_TIMEOUT_MS = 60_000;
 const GITNEXUS_WEB_READY_POLL_MS = 500;
 const PACKAGED_WEB_SERVER_HOST = '127.0.0.1';

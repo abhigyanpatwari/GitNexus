@@ -34,12 +34,14 @@ extraResources:
     to: gitnexus/package.json
   - from: 'build/icon.png'
     to: icon.png
+  - from: 'build/icon.ico'
+    to: icon.ico
 asar: false
 npmRebuild: false
 afterPack: scripts/after-pack.mjs
 win:
   signAndEditExecutable: false
-  icon: build/icon.png
+  icon: build/icon.ico
   target:
     - nsis
 mac:
