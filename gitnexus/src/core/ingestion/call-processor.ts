@@ -2380,7 +2380,8 @@ const resolveMethodByOwner = (
       filePath,
     );
     if (orderedTypeCandidates && orderedTypeCandidates.length > 0) {
-      const preferred = orderedTypeCandidates[0]!;
+      const [preferred] = orderedTypeCandidates;
+      if (preferred === undefined) return undefined;
       const singletonOverride =
         ancestryView === 'singleton' && canWalkMRO && heritageMap
           ? heritageMap.getSingletonAncestry(preferred.nodeId).map((e) => e.parentId)
