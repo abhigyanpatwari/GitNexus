@@ -301,9 +301,7 @@ describe('setupClaudeCode', () => {
 
   it('falls back to npx on Windows when where returns only a .ps1 path', async () => {
     setPlatform('win32');
-    execFileSyncMock.mockReturnValueOnce(
-      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n',
-    );
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
