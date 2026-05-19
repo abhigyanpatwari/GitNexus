@@ -142,6 +142,26 @@ function itemPath(item: unknown): string | undefined {
   return typeof path === 'string' ? path : undefined;
 }
 
+/**
+ * Best-guess path of the file in flight when a worker dies mid-job.
+ *
+ * `lastProgress` is the number of files the worker has acknowledged via
+ * `progress` messages, so `items[lastProgress]` is the next file it was
+ * about to process — the most likely culprit when the worker crashes
+ * (OOM, native addon SIGSEGV) or reports an error.
+ *
+ * Excluding only this single path keeps the blast radius small: earlier
+ * files in the job get re-tried by the sequential fallback, and any
+ * pathological file gets the same skip treatment as the singleton-
+ * timeout path. Returns `[]` when no path is determinable so sequential
+ * retries the whole job.
+ */
+function inFlightExcludePath<TInput>(job: WorkerJob<TInput>, lastProgress: number): string[] {
+  if (lastProgress >= job.items.length) return [];
+  const path = itemPath(job.items[lastProgress]);
+  return path ? [path] : [];
+}
+
 function createJobs<TInput>(
   items: TInput[],
   maxItems: number,
@@ -435,7 +455,12 @@ export const createWorkerPool = (
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();
-            void fail(new Error(`Worker ${workerIndex} error: ${msg.error}`));
+            void fail(
+              new WorkerPoolDispatchError(
+                `Worker ${workerIndex} error: ${msg.error}`,
+                inFlightExcludePath(job, lastProgress),
+              ),
+            );
           } else if (msg.type === 'result') {
             if (!waitingForFlush) {
               settled = true;
@@ -456,7 +481,12 @@ export const createWorkerPool = (
           if (!settled) {
             settled = true;
             cleanup();
-            void fail(err);
+            void fail(
+              new WorkerPoolDispatchError(
+                `Worker ${workerIndex} error: ${err.message}`,
+                inFlightExcludePath(job, lastProgress),
+              ),
+            );
           }
         };
 
@@ -464,9 +494,13 @@ export const createWorkerPool = (
           if (!settled) {
             settled = true;
             cleanup();
+            const excludes = inFlightExcludePath(job, lastProgress);
+            const inFlightSuffix = excludes.length > 0 ? ` (in-flight: ${excludes[0]})` : '';
             void fail(
-              new Error(
-                `Worker ${workerIndex} exited with code ${code}. Likely OOM or native addon failure.`,
+              new WorkerPoolDispatchError(
+                `Worker ${workerIndex} exited with code ${code}. ` +
+                  `Likely OOM or native addon failure${inFlightSuffix}.`,
+                excludes,
               ),
             );
           }

@@ -78,4 +78,120 @@ describe('processParsing worker fallback', () => {
       graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'stuck'),
     ).toBe(false);
   });
+
+  it('skips worker-error in-flight file during sequential fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const progressDetails: string[] = [];
+    const workerPool: WorkerPool = {
+      size: 1,
+      dispatch: vi.fn(async () => {
+        throw new WorkerPoolDispatchError('Worker 0 error: native crash', ['src/crashed.ts']);
+      }),
+      terminate: vi.fn(async () => undefined),
+    };
+
+    const result = await processParsing(
+      graph,
+      [
+        { path: 'src/crashed.ts', content: 'export function crashed() { return 0; }\n' },
+        { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
+      ],
+      createSymbolTable(),
+      createASTCache(),
+      createASTCache(),
+      (_current, _total, detail) => {
+        progressDetails.push(detail);
+      },
+      workerPool,
+    );
+
+    expect(result).toBeNull();
+    expect(progressDetails).toContain('Skipping 1 worker-timeout file(s) in sequential fallback');
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
+    ).toBe(true);
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'crashed'),
+    ).toBe(false);
+  });
+
+  it('skips worker-exit in-flight file during sequential fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const progressDetails: string[] = [];
+    const workerPool: WorkerPool = {
+      size: 1,
+      dispatch: vi.fn(async () => {
+        throw new WorkerPoolDispatchError(
+          'Worker 0 exited with code 134. Likely OOM or native addon failure (in-flight: src/oom.ts).',
+          ['src/oom.ts'],
+        );
+      }),
+      terminate: vi.fn(async () => undefined),
+    };
+
+    const result = await processParsing(
+      graph,
+      [
+        { path: 'src/oom.ts', content: 'export function oom() { return 0; }\n' },
+        { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
+      ],
+      createSymbolTable(),
+      createASTCache(),
+      createASTCache(),
+      (_current, _total, detail) => {
+        progressDetails.push(detail);
+      },
+      workerPool,
+    );
+
+    expect(result).toBeNull();
+    expect(progressDetails).toContain('Skipping 1 worker-timeout file(s) in sequential fallback');
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
+    ).toBe(true);
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'oom'),
+    ).toBe(false);
+  });
+
+  it('runs full sequential fallback when the worker pool throws a non-WorkerPoolDispatchError', async () => {
+    const graph = createKnowledgeGraph();
+    const progressDetails: string[] = [];
+    const workerPool: WorkerPool = {
+      size: 1,
+      dispatch: vi.fn(async () => {
+        throw new Error('replacement worker failed');
+      }),
+      terminate: vi.fn(async () => undefined),
+    };
+
+    const result = await processParsing(
+      graph,
+      [
+        { path: 'src/keep.ts', content: 'export function keep() { return 0; }\n' },
+        { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
+      ],
+      createSymbolTable(),
+      createASTCache(),
+      createASTCache(),
+      (_current, _total, detail) => {
+        progressDetails.push(detail);
+      },
+      workerPool,
+    );
+
+    expect(result).toBeNull();
+    expect(progressDetails).toContain(
+      'Sequential fallback after worker issue: replacement worker failed',
+    );
+    expect(
+      progressDetails.some((d) => d.startsWith('Skipping ') && d.includes('worker-timeout file')),
+    ).toBe(false);
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
+    ).toBe(true);
+    expect(
+      graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'keep'),
+    ).toBe(true);
+  });
 });
