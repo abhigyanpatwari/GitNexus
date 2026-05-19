@@ -58,7 +58,7 @@ const orderJavaSameNameTypeCandidates = ({
     score: sharedPrefixLength(callerDir, splitDirectorySegments(candidate.filePath)),
   }));
   const bestScore = Math.max(...scored.map((entry) => entry.score));
-  if (bestScore <= 0) return null;
+  if (bestScore === 0) return null;
   // When all candidates tie, we have no structural signal to prefer one path.
   // Returning null keeps downstream ambiguity handling conservative.
   if (scored.every((entry) => entry.score === bestScore)) return null;
@@ -71,6 +71,7 @@ const orderJavaSameNameTypeCandidates = ({
 
 const splitDirectorySegments = (filePath: string): string[] => {
   const normalized = filePath.replace(/\\/g, '/');
+  // Remove empty segments from leading/trailing/multiple slashes, then drop filename.
   const segments = normalized.split('/').filter(Boolean);
   return segments.slice(0, -1);
 };
