@@ -27,6 +27,7 @@ import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   emitJavaScopeCaptures,
   interpretJavaImport,
@@ -38,6 +39,43 @@ import {
   javaArityCompatibility,
   resolveJavaImportTarget,
 } from './java/index.js';
+
+const orderJavaSameNameTypeCandidates = ({
+  callSiteFilePath,
+  candidates,
+}: {
+  readonly typeName: string;
+  readonly callSiteFilePath: string;
+  readonly candidates: readonly SymbolDefinition[];
+}): readonly SymbolDefinition[] | null => {
+  if (!callSiteFilePath.endsWith('.java')) return null;
+  if (candidates.length <= 1) return null;
+  const callerModule = detectJavaModuleKey(callSiteFilePath);
+  if (callerModule === undefined) return null;
+
+  const sameModule = candidates.filter((candidate) => {
+    const moduleKey = detectJavaModuleKey(candidate.filePath);
+    return moduleKey !== undefined && moduleKey === callerModule;
+  });
+  if (sameModule.length === 0) return null;
+
+  const sameModuleSet = new Set(sameModule.map((candidate) => candidate.nodeId));
+  const orderedSameModule = [...sameModule].sort((a, b) => a.filePath.localeCompare(b.filePath));
+  const remaining = candidates.filter((candidate) => !sameModuleSet.has(candidate.nodeId));
+  return [...orderedSameModule, ...remaining];
+};
+
+const detectJavaModuleKey = (filePath: string): string | undefined => {
+  const normalized = filePath.replace(/\\/g, '/');
+  for (const marker of ['/src/main/', '/src/test/', '/src/']) {
+    const idx = normalized.indexOf(marker);
+    if (idx > 0) {
+      const prefix = normalized.slice(0, idx).split('/').filter(Boolean);
+      return prefix[prefix.length - 1];
+    }
+  }
+  return undefined;
+};
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
@@ -87,4 +125,5 @@ export const javaProvider = defineLanguage({
   receiverBinding: javaReceiverBinding,
   arityCompatibility: javaArityCompatibility,
   resolveImportTarget: resolveJavaImportTarget,
+  orderSameNameTypeCandidates: orderJavaSameNameTypeCandidates,
 });

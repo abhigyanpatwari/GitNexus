@@ -191,9 +191,22 @@ export function findClassBindingInScope(
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
   // when the scope-chain walk found nothing; single-match wins.
   const qnames = scopes.qualifiedNames.get(receiverName);
+  const callerFilePath = scopes.scopeTree.getScope(startScope)?.filePath;
   if (qnames.length === 1) {
     const def = scopes.defs.get(qnames[0]!);
     if (def !== undefined && isClassLike(def.type)) return def;
+  }
+  if (qnames.length > 1) {
+    const classDefs = qnames
+      .map((id) => scopes.defs.get(id))
+      .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
+    const prioritized = prioritizeDefsByCallerModule(classDefs, callerFilePath);
+    if (prioritized.length === 1) return prioritized[0];
+  }
+  const simpleDefs = findClassDefsBySimpleName(receiverName, scopes);
+  if (simpleDefs.length > 0) {
+    const prioritized = prioritizeDefsByCallerModule(simpleDefs, callerFilePath);
+    if (prioritized.length === 1) return prioritized[0];
   }
   // Second fallback: dotted names like "models.User" — try the simple
   // name (tail after last dot) for languages where defs are indexed by
@@ -206,6 +219,57 @@ export function findClassBindingInScope(
         const def = scopes.defs.get(simpleIds[0]!);
         if (def !== undefined && isClassLike(def.type)) return def;
       }
+      if (simpleIds.length > 1) {
+        const classDefs = simpleIds
+          .map((id) => scopes.defs.get(id))
+          .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
+        const prioritized = prioritizeDefsByCallerModule(classDefs, callerFilePath);
+        if (prioritized.length === 1) return prioritized[0];
+      }
+      const simpleDefs = findClassDefsBySimpleName(simple, scopes);
+      if (simpleDefs.length > 0) {
+        const prioritized = prioritizeDefsByCallerModule(simpleDefs, callerFilePath);
+        if (prioritized.length === 1) return prioritized[0];
+      }
+    }
+  }
+  return undefined;
+}
+
+function findClassDefsBySimpleName(
+  simpleName: string,
+  scopes: ScopeResolutionIndexes,
+): readonly SymbolDefinition[] {
+  const out: SymbolDefinition[] = [];
+  for (const def of scopes.defs.byId.values()) {
+    if (!isClassLike(def.type)) continue;
+    const qn = def.qualifiedName;
+    if (qn === undefined || qn.length === 0) continue;
+    const tail = qn.slice(qn.lastIndexOf('.') + 1);
+    if (tail !== simpleName) continue;
+    out.push(def);
+  }
+  return out;
+}
+
+function prioritizeDefsByCallerModule(
+  defs: readonly SymbolDefinition[],
+  callerFilePath?: string,
+): readonly SymbolDefinition[] {
+  if (defs.length <= 1 || callerFilePath === undefined) return defs;
+  const callerModule = detectModuleKey(callerFilePath);
+  if (callerModule === undefined) return defs;
+  const sameModule = defs.filter((def) => detectModuleKey(def.filePath) === callerModule);
+  return sameModule.length > 0 ? sameModule : defs;
+}
+
+function detectModuleKey(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/g, '/');
+  for (const marker of ['/src/main/', '/src/test/', '/src/']) {
+    const idx = normalized.indexOf(marker);
+    if (idx > 0) {
+      const prefix = normalized.slice(0, idx).split('/').filter(Boolean);
+      return prefix[prefix.length - 1];
     }
   }
   return undefined;

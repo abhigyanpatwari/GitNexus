@@ -174,6 +174,40 @@ describe('Java call resolution with arity filtering', () => {
   });
 });
 
+describe('Java same-module priority for duplicate FQNs', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-duplicate-fqn-modules'), () => {});
+  }, 60000);
+
+  it('resolves Module1App.run calls to module1 UserService, not module2', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'run' &&
+          c.target === 'UserService' &&
+          c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
+          c.targetFilePath === 'module1/src/main/java/com/example/UserService.java',
+      ),
+    ).toBeDefined();
+  });
+
+  it('resolves Module2App.run calls to module2 UserService, not module1', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.find(
+        (c) =>
+          c.source === 'run' &&
+          c.target === 'UserService' &&
+          c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
+          c.targetFilePath === 'module2/src/main/java/com/example/UserService.java',
+      ),
+    ).toBeDefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Member-call resolution: obj.method() resolves through pipeline
 // ---------------------------------------------------------------------------

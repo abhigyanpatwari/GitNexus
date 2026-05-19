@@ -2325,6 +2325,9 @@ const resolveMethodByOwner = (
   const language = heritageMap ? getLanguageFromFilename(filePath) : null;
   const mroStrategy = language != null ? getProvider(language).mroStrategy : null;
   const canWalkMRO = heritageMap != null && mroStrategy != null;
+  const classLikeCandidates = typeResolved.candidates.filter((candidate) =>
+    CLASS_LIKE_TYPES.has(candidate.type),
+  );
 
   // Iterate all class-like candidates tracking the first unambiguous hit.
   // Zero-allocation fast path: the common case is exactly one class candidate,
@@ -2341,8 +2344,7 @@ const resolveMethodByOwner = (
   // owner-scoped lookup rather than collapsing to an arbitrary first pick.
   let firstDef: SymbolDefinition | undefined;
   let ambiguous = false;
-  for (const candidate of typeResolved.candidates) {
-    if (!CLASS_LIKE_TYPES.has(candidate.type)) continue;
+  for (const candidate of classLikeCandidates) {
     // Singleton dispatch: when the DAG decision requested the singleton
     // ancestry view, pass `heritageMap.getSingletonAncestry` as the walker's
     // ancestry override. Kind-aware strategies (e.g. MroStrategy 'ruby-mixin')
@@ -2369,6 +2371,34 @@ const resolveMethodByOwner = (
       ambiguous = true;
       break;
     }
+  }
+
+  if (ambiguous) {
+    const orderedTypeCandidates = orderProviderSameNameTypeCandidates(
+      classLikeCandidates,
+      receiverTypeName,
+      filePath,
+    );
+    if (orderedTypeCandidates && orderedTypeCandidates.length > 0) {
+      const preferred = orderedTypeCandidates[0]!;
+      const singletonOverride =
+        ancestryView === 'singleton' && canWalkMRO && heritageMap
+          ? heritageMap.getSingletonAncestry(preferred.nodeId).map((e) => e.parentId)
+          : undefined;
+      const def = canWalkMRO
+        ? lookupMethodByOwnerWithMRO(
+            preferred.nodeId,
+            methodName,
+            heritageMap,
+            ctx.model,
+            mroStrategy,
+            argCount,
+            singletonOverride,
+          )
+        : ctx.model.methods.lookupMethodByOwner(preferred.nodeId, methodName, argCount);
+      if (def) return { def, tier: typeResolved.tier };
+    }
+    return undefined;
   }
 
   if (!firstDef && !ambiguous) {
