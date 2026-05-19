@@ -64,13 +64,21 @@ const CALL_TAGS = [
   '@reference.call.constructor',
 ] as const;
 
-function pickFirstDefined<T>(
-  grouped: Record<string, T | undefined>,
-  tags: readonly string[],
-): T | undefined {
+function pickFirstCapture(grouped: CaptureMatch, tags: readonly string[]): Capture | undefined {
   for (const tag of tags) {
     const cap = grouped[tag];
     if (cap !== undefined) return cap;
+  }
+  return undefined;
+}
+
+function pickFirstNode(
+  grouped: Record<string, SyntaxNode | undefined>,
+  tags: readonly string[],
+): SyntaxNode | undefined {
+  for (const tag of tags) {
+    const node = grouped[tag];
+    if (node !== undefined) return node;
   }
   return undefined;
 }
@@ -117,8 +125,9 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
 }
 
 function findSelfOrAncestorOfType(node: SyntaxNode | undefined, type: string): SyntaxNode | null {
-  let current: SyntaxNode | null | undefined = node;
-  while (current !== undefined && current !== null) {
+  if (node === undefined) return null;
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
     if (current.type === type) return current;
     current = current.parent;
   }
@@ -129,8 +138,9 @@ function findSelfOrAncestorOfTypes(
   node: SyntaxNode | undefined,
   types: readonly string[],
 ): SyntaxNode | null {
-  let current: SyntaxNode | null | undefined = node;
-  while (current !== undefined && current !== null) {
+  if (node === undefined) return null;
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
     if (types.includes(current.type)) return current;
     current = current.parent;
   }
@@ -242,8 +252,8 @@ export function emitTsScopeCaptures(
     // overloads — TypeScript supports overload signatures via
     // function_signature, so `parameterTypes` is populated when
     // available.
-    const declAnchor = pickFirstDefined(grouped, FUNCTION_DECL_TAGS);
-    const declAnchorNode = pickFirstDefined(groupedNodes, FUNCTION_DECL_TAGS);
+    const declAnchor = pickFirstCapture(grouped, FUNCTION_DECL_TAGS);
+    const declAnchorNode = pickFirstNode(groupedNodes, FUNCTION_DECL_TAGS);
     if (declAnchor !== undefined) {
       const fnNode = findFunctionNode(tree.rootNode, declAnchor.range, declAnchorNode);
       if (fnNode !== null) {
@@ -290,8 +300,8 @@ export function emitTsScopeCaptures(
     // calls to disambiguate by props-arity, a JSX-aware arity
     // synthesizer would need to count `jsx_attribute` children of the
     // opening tag instead of `arguments`.
-    const callAnchor = pickFirstDefined(grouped, CALL_TAGS);
-    const callAnchorNode = pickFirstDefined(groupedNodes, CALL_TAGS);
+    const callAnchor = pickFirstCapture(grouped, CALL_TAGS);
+    const callAnchorNode = pickFirstNode(groupedNodes, CALL_TAGS);
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode =
         findSelfOrAncestorOfTypes(callAnchorNode, ['call_expression', 'new_expression']) ??
