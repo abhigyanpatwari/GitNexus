@@ -51,7 +51,6 @@ const orderJavaSameNameTypeCandidates = ({
   if (!callSiteFilePath.endsWith('.java')) return null;
   if (candidates.length <= 1) return null;
   const callerDir = splitDirectorySegments(callSiteFilePath);
-  if (callerDir.length === 0) return null;
 
   const scored = candidates.map((candidate, index) => ({
     candidate,
@@ -60,6 +59,8 @@ const orderJavaSameNameTypeCandidates = ({
   }));
   const bestScore = Math.max(...scored.map((entry) => entry.score));
   if (bestScore <= 0) return null;
+  // When all candidates tie, we have no structural signal to prefer one path.
+  // Returning null keeps downstream ambiguity handling conservative.
   if (scored.every((entry) => entry.score === bestScore)) return null;
 
   const ordered = [...scored]
@@ -71,7 +72,7 @@ const orderJavaSameNameTypeCandidates = ({
 const splitDirectorySegments = (filePath: string): string[] => {
   const normalized = filePath.replace(/\\/g, '/');
   const segments = normalized.split('/').filter(Boolean);
-  return segments.slice(0, Math.max(0, segments.length - 1));
+  return segments.slice(0, -1);
 };
 
 const sharedPrefixLength = (left: readonly string[], right: readonly string[]): number => {
