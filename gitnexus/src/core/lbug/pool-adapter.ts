@@ -40,16 +40,17 @@ import {
  * cleanly without ever attempting dlopen of a stale binary. The install
  * path that the #1199/#1217 SIGSEGV documented is never exercised at
  * query time.
+ *
+ * Exported so unit tests can exercise the probe directly against a
+ * temp-dir plus spied `os.homedir()` — see lbug-pool-win-fts-probe.test.ts.
  */
-async function hasLocalWinFtsExtension(): Promise<boolean> {
+export async function hasLocalWinFtsExtension(): Promise<boolean> {
   try {
     const extRoot = path.join(os.homedir(), '.lbdb', 'extension');
     const versions = await fs.readdir(extRoot);
     for (const v of versions) {
       try {
-        await fs.stat(
-          path.join(extRoot, v, 'win_amd64', 'fts', 'libfts.lbug_extension'),
-        );
+        await fs.stat(path.join(extRoot, v, 'win_amd64', 'fts', 'libfts.lbug_extension'));
         return true;
       } catch {
         /* missing for this version, keep looking */
