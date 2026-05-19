@@ -37,7 +37,7 @@ import {
 } from './utils/template-arguments.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import { WorkerPool } from './workers/worker-pool.js';
+import { WorkerPool, WorkerPoolDispatchError } from './workers/worker-pool.js';
 import { logger } from '../logger.js';
 import type {
   ParseWorkerResult,
@@ -886,12 +886,37 @@ export const processParsing = async (
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      let fallbackFiles = files;
+      if (err instanceof WorkerPoolDispatchError && err.fallbackExcludePaths.length > 0) {
+        const excluded = new Set(err.fallbackExcludePaths);
+        fallbackFiles = files.filter((file) => !excluded.has(file.path));
+        logger.warn(
+          {
+            skippedPaths: err.fallbackExcludePaths,
+          },
+          'Skipping worker-timeout files in sequential fallback:',
+        );
+        reportProgress?.(
+          lastProgress,
+          files.length,
+          `Skipping ${files.length - fallbackFiles.length} worker-timeout file(s) in sequential fallback`,
+        );
+      }
       logger.warn({ message }, 'Worker pool parsing stopped; continuing with sequential parser:');
       reportProgress?.(
         lastProgress,
         files.length,
         `Sequential fallback after worker issue: ${message}`,
       );
+      await processParsingSequential(
+        graph,
+        fallbackFiles,
+        symbolTable,
+        astCache,
+        scopeTreeCache,
+        reportProgress,
+      );
+      return null;
     }
   }
 

@@ -29,6 +29,16 @@ export interface WorkerPoolOptions {
   timeoutBackoffFactor?: number;
 }
 
+export class WorkerPoolDispatchError extends Error {
+  readonly fallbackExcludePaths: readonly string[];
+
+  constructor(message: string, fallbackExcludePaths: readonly string[] = []) {
+    super(message);
+    this.name = 'WorkerPoolDispatchError';
+    this.fallbackExcludePaths = fallbackExcludePaths;
+  }
+}
+
 /** Message shapes sent back by worker threads. */
 type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
@@ -336,13 +346,15 @@ export const createWorkerPool = (
           return true;
         }
 
+        const stalledPath = itemPath(job.items[0]);
         void fail(
-          new Error(
+          new WorkerPoolDispatchError(
             `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
-              `(single item${itemPath(job.items[0]) ? `: ${itemPath(job.items[0])}` : ''}, ` +
+              `(single item${stalledPath ? `: ${stalledPath}` : ''}, ` +
               `${job.estimatedBytes} bytes, last progress: ${lastProgress}). ` +
               `Analyze will retry through sequential fallback. Increase with ` +
               `--worker-timeout or GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS.`,
+            stalledPath ? [stalledPath] : [],
           ),
         );
         return false;
