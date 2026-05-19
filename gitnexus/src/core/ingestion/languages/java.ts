@@ -50,28 +50,35 @@ const orderJavaSameNameTypeCandidates = ({
 }): readonly SymbolDefinition[] | null => {
   if (!callSiteFilePath.endsWith('.java')) return null;
   if (candidates.length <= 1) return null;
-  const callerModule = detectJavaModuleKey(callSiteFilePath);
-  if (callerModule === undefined) return null;
+  const callerDir = splitDirectorySegments(callSiteFilePath);
+  if (callerDir.length === 0) return null;
 
-  const sameModule = candidates.filter((candidate) => {
-    const moduleKey = detectJavaModuleKey(candidate.filePath);
-    return moduleKey !== undefined && moduleKey === callerModule;
-  });
-  if (sameModule.length === 0) return null;
+  const scored = candidates.map((candidate, index) => ({
+    candidate,
+    index,
+    score: sharedPrefixLength(callerDir, splitDirectorySegments(candidate.filePath)),
+  }));
+  const bestScore = Math.max(...scored.map((entry) => entry.score));
+  if (bestScore <= 0) return null;
+  if (scored.every((entry) => entry.score === bestScore)) return null;
 
-  const sameModuleSet = new Set(sameModule.map((candidate) => candidate.nodeId));
-  const orderedSameModule = [...sameModule].sort((a, b) => a.filePath.localeCompare(b.filePath));
-  const remaining = candidates.filter((candidate) => !sameModuleSet.has(candidate.nodeId));
-  return [...orderedSameModule, ...remaining];
+  const ordered = [...scored]
+    .sort((a, b) => (b.score - a.score !== 0 ? b.score - a.score : a.index - b.index))
+    .map((entry) => entry.candidate);
+  return ordered;
 };
 
-const detectJavaModuleKey = (filePath: string): string | undefined => {
+const splitDirectorySegments = (filePath: string): string[] => {
   const normalized = filePath.replace(/\\/g, '/');
-  for (const marker of ['/src/main/', '/src/test/', '/src/']) {
-    const idx = normalized.indexOf(marker);
-    if (idx > 0) return normalized.slice(0, idx);
-  }
-  return undefined;
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.slice(0, Math.max(0, segments.length - 1));
+};
+
+const sharedPrefixLength = (left: readonly string[], right: readonly string[]): number => {
+  const max = Math.min(left.length, right.length);
+  let idx = 0;
+  while (idx < max && left[idx] === right[idx]) idx += 1;
+  return idx;
 };
 
 export const javaProvider = defineLanguage({
