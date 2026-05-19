@@ -212,12 +212,7 @@ const processParsingWithWorkers = async (
 
   const total = files.length;
 
-  // Files whose parse worker aborted with a native crash (e.g. tree-sitter
-  // threw an uncatchable C++ `Napi::Error` — see GitNexus#1665). The pool
-  // isolates them via binary-search retry, then skips the offender so
-  // indexing can continue. We collect them here so the analyze summary
-  // can surface them as "skipped (native parser crash)" instead of having
-  // them silently disappear from the resulting graph.
+  // Files skipped due to native parser crash (see GitNexus#1665).
   const crashedPaths: string[] = [];
 
   // Dispatch to worker pool — pool handles splitting into chunks and sub-batching

@@ -356,31 +356,15 @@ export const createWorkerPool = (
       };
 
       /**
-       * Worker exited unexpectedly mid-job (non-zero exit, settled=false).
-       * The most common cause is a native parser binding throwing an
-       * unrecoverable C++ exception (`terminate called after throwing an
-       * instance of 'Napi::Error'`) — `worker_threads` cannot catch
-       * `std::terminate`, so the entire worker process aborts.
-       *
-       * Strategy: mirror `requeueAfterTimeout`. If the job had more than
-       * one item we cannot tell which one killed the worker, so split the
-       * job in half and re-queue both halves (binary-search isolation).
-       * Once isolated to a single item we know that item is the killer:
-       * skip it, notify the caller via `onItemCrash`, and continue.
-       *
-       * Returns true if the pool should keep going (worker should be
-       * replaced and another job pulled), false if the situation is
-       * unrecoverable and the pool should fail. Under the current rules
-       * this only returns false when `replaceWorker` itself ultimately
-       * fails — see `exitHandler`.
-       *
-       * See GitNexus#1665.
+       * Mirror of {@link requeueAfterTimeout} for the worker-exit path:
+       * binary-search the offending file via job splitting, then skip
+       * the isolated single item. See GitNexus#1665.
        */
       const requeueAfterCrash = (
         workerIndex: number,
         job: WorkerJob<TInput>,
         exitCode: number,
-      ): boolean => {
+      ): void => {
         if (job.items.length > 1) {
           const midpoint = Math.ceil(job.items.length / 2);
           const firstItems = job.items.slice(0, midpoint);
@@ -410,19 +394,14 @@ export const createWorkerPool = (
               firstSplitItems: first.items.length,
               secondSplitItems: second.items.length,
             },
-            `Worker ${workerIndex} exited with code ${exitCode}. Splitting job into ${first.items.length}/${second.items.length} items to isolate the offending file (likely native parser crash — see GitNexus#1665).`,
+            `Worker ${workerIndex} exited with code ${exitCode}. Splitting into ${first.items.length}/${second.items.length} item jobs to isolate the offending file (likely native parser crash — see GitNexus#1665).`,
           );
           jobs.unshift(first, second);
-          return true;
+          return;
         }
 
         const item = job.items[0];
         const offendingPath = itemPath(item) ?? '<unknown>';
-        const reason = new Error(
-          `Worker ${workerIndex} crashed (exit ${exitCode}) parsing ${offendingPath}. ` +
-            `Skipping file — native tree-sitter binding likely threw an unrecoverable ` +
-            `C++ exception (see GitNexus#1665). Other files continue indexing.`,
-        );
         logger.warn(
           {
             workerIndex,
@@ -433,20 +412,10 @@ export const createWorkerPool = (
           `Worker ${workerIndex} crashed on a single file (${offendingPath}). Skipping and continuing.`,
         );
         if (onItemCrash) {
-          try {
-            onItemCrash(item, reason);
-          } catch (callbackErr) {
-            logger.warn(
-              { err: callbackErr },
-              'onItemCrash callback threw — continuing with item skipped.',
-            );
-          }
+          onItemCrash(item, new Error(`exit ${exitCode} parsing ${offendingPath}`));
         }
-        // The file is now considered "processed" for progress accounting —
-        // it has reached a terminal state, just not a successful one.
         completedFiles += 1;
         reportProgress();
-        return true;
       };
 
       const runWorker = (workerIndex: number) => {
@@ -555,26 +524,10 @@ export const createWorkerPool = (
           cleanup();
           inFlightProgress[workerIndex] = 0;
 
-          // Clean exit shouldn't really happen mid-job (the worker stays
-          // alive until terminated by the pool), but if it does just move
-          // on to the next job without poisoning the pool.
-          if (code === 0) {
-            activeWorkers--;
-            runWorker(workerIndex);
-            maybeDone();
-            return;
-          }
-
-          // Non-zero exit mid-job: most commonly a native parser binding
-          // aborted the worker process (e.g. `terminate called after
-          // throwing an instance of 'Napi::Error'`). Try to isolate and
-          // skip the offending file rather than failing the whole pool.
+          // Native parser crash (e.g. `Napi::Error` thrown out of
+          // tree-sitter) — isolate and skip rather than poison the pool.
           // See GitNexus#1665.
-          const shouldContinue = requeueAfterCrash(workerIndex, job, code);
-          if (!shouldContinue) {
-            activeWorkers--;
-            return;
-          }
+          requeueAfterCrash(workerIndex, job, code);
 
           void (async () => {
             try {
