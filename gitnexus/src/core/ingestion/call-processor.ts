@@ -2380,24 +2380,33 @@ const resolveMethodByOwner = (
       filePath,
     );
     if (orderedTypeCandidates && orderedTypeCandidates.length > 0) {
-      const [preferred] = orderedTypeCandidates;
-      if (preferred === undefined) return undefined;
-      const singletonOverride =
-        ancestryView === 'singleton' && canWalkMRO && heritageMap
-          ? heritageMap.getSingletonAncestry(preferred.nodeId).map((e) => e.parentId)
-          : undefined;
-      const def = canWalkMRO
-        ? lookupMethodByOwnerWithMRO(
-            preferred.nodeId,
-            methodName,
-            heritageMap,
-            ctx.model,
-            mroStrategy,
-            argCount,
-            singletonOverride,
-          )
-        : ctx.model.methods.lookupMethodByOwner(preferred.nodeId, methodName, argCount);
-      if (def) return { def, tier: typeResolved.tier };
+      let orderedFirst: SymbolDefinition | undefined;
+      let orderedAmbiguous = false;
+      for (const candidate of orderedTypeCandidates) {
+        const singletonOverride =
+          ancestryView === 'singleton' && canWalkMRO && heritageMap
+            ? heritageMap.getSingletonAncestry(candidate.nodeId).map((e) => e.parentId)
+            : undefined;
+        const def = canWalkMRO
+          ? lookupMethodByOwnerWithMRO(
+              candidate.nodeId,
+              methodName,
+              heritageMap,
+              ctx.model,
+              mroStrategy,
+              argCount,
+              singletonOverride,
+            )
+          : ctx.model.methods.lookupMethodByOwner(candidate.nodeId, methodName, argCount);
+        if (!def) continue;
+        if (!orderedFirst) {
+          orderedFirst = def;
+        } else if (def.nodeId !== orderedFirst.nodeId) {
+          orderedAmbiguous = true;
+          break;
+        }
+      }
+      if (orderedFirst && !orderedAmbiguous) return { def: orderedFirst, tier: typeResolved.tier };
     }
     return undefined;
   }

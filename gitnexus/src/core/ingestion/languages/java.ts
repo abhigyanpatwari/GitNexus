@@ -69,10 +69,7 @@ const detectJavaModuleKey = (filePath: string): string | undefined => {
   const normalized = filePath.replace(/\\/g, '/');
   for (const marker of ['/src/main/', '/src/test/', '/src/']) {
     const idx = normalized.indexOf(marker);
-    if (idx > 0) {
-      const prefix = normalized.slice(0, idx).split('/').filter(Boolean);
-      return prefix[prefix.length - 1];
-    }
+    if (idx > 0) return normalized.slice(0, idx);
   }
   return undefined;
 };
