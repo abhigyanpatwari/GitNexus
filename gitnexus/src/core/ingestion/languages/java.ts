@@ -58,13 +58,12 @@ const orderJavaSameNameTypeCandidates = ({
     score: sharedPrefixLength(callerDir, splitDirectorySegments(candidate.filePath)),
   }));
   const bestScore = Math.max(...scored.map((entry) => entry.score));
-  if (bestScore === 0) return null;
   // When all candidates tie, we have no structural signal to prefer one path.
   // Returning null keeps downstream ambiguity handling conservative.
   if (scored.every((entry) => entry.score === bestScore)) return null;
 
   const ordered = [...scored]
-    .sort((a, b) => (b.score - a.score !== 0 ? b.score - a.score : a.index - b.index))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((entry) => entry.candidate);
   return ordered;
 };
