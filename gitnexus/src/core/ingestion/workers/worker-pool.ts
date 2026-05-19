@@ -136,6 +136,15 @@ const DEFAULT_TIMEOUT_BACKOFF_FACTOR = 2;
 const DEFAULT_MAX_RESPAWNS_PER_SLOT = 3;
 const DEFAULT_MAX_CUMULATIVE_TIMEOUT_FACTOR = 5;
 const DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR = 3;
+/**
+ * Default upper bound on auto-resolved pool size. Past 16 workers the
+ * dominant cost shifts from worker-side parsing to main-thread merge /
+ * extraction / structured-clone overhead, and the marginal worker adds
+ * memory pressure (tree-sitter state + sub-batch buffer) without much
+ * throughput gain. Operators on bigger machines override via
+ * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`.
+ */
+const DEFAULT_POOL_SIZE_CAP = 16;
 
 function positiveInteger(value: unknown): number | undefined {
   const parsed = typeof value === 'string' ? Number(value) : value;
@@ -193,6 +202,30 @@ export function resolveWorkerPoolOptions(
       positiveInteger(process.env.GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD) ??
       Math.max(DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR, poolSize ?? 0),
   };
+}
+
+/**
+ * Resolve the auto-default worker pool size when no explicit `poolSize`
+ * arg is passed to `createWorkerPool`. Precedence:
+ *
+ * 1. `GITNEXUS_WORKER_POOL_SIZE` env var (operator override; set by
+ *    `--workers <N>` on the CLI).
+ * 2. `os.cpus().length - 1`, clamped to `[1, DEFAULT_POOL_SIZE_CAP]`.
+ *
+ * The cap exists because past ~16 workers the main-thread merge /
+ * extraction work and structured-clone overhead dominate; adding more
+ * worker threads costs memory without much throughput gain. Operators
+ * who want to push past the cap set the env var explicitly.
+ *
+ * Exported for unit tests; production code should not call this
+ * directly — pass an explicit `poolSize` to `createWorkerPool` or rely
+ * on the env / default.
+ */
+export function resolveAutoPoolSize(): number {
+  const envOverride = nonNegativeInteger(process.env.GITNEXUS_WORKER_POOL_SIZE);
+  if (envOverride !== undefined) return envOverride;
+  const cores = os.cpus().length;
+  return Math.min(DEFAULT_POOL_SIZE_CAP, Math.max(1, cores - 1));
 }
 
 function waitForWorkerOnline(worker: Worker): Promise<void> {
@@ -326,7 +359,7 @@ export const createWorkerPool = (
     throw new Error(`Worker script not found: ${workerPath}`);
   }
 
-  const size = poolSize ?? Math.min(8, Math.max(1, os.cpus().length - 1));
+  const size = poolSize ?? resolveAutoPoolSize();
   const poolOptions = resolveWorkerPoolOptions(options, size);
   const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url));
   const workers: (Worker | undefined)[] = new Array(size);

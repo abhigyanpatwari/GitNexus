@@ -55,6 +55,7 @@ import type {
   ExtractedCall,
   ExtractedDecoratorRoute,
   ExtractedFetchCall,
+  ExtractedImport,
   ExtractedORMQuery,
   ExtractedRoute,
   ExtractedToolDef,
@@ -301,6 +302,16 @@ export async function runChunkedParseAndResolve(
   const deferredWorkerHeritage: ExtractedHeritage[] = [];
   const deferredConstructorBindings: FileConstructorBindings[] = [];
   const deferredAssignments: ExtractedAssignment[] = [];
+  // Imports accumulated across chunks. Previously processed per-chunk
+  // via `processImportsFromExtracted` inside the chunk loop, which
+  // forced workers to sit idle on the main thread's extraction pass
+  // between chunk dispatches (4-5% CPU utilization symptom). Deferring
+  // to a single end-of-loop pass lets the worker pool start chunk N+1
+  // immediately after chunk N's worker dispatch returns. Resolution is
+  // strictly-more-information at end-of-loop because graph now has
+  // every chunk's symbols — improves cross-chunk import targets.
+  const deferredWorkerImports: ExtractedImport[] = [];
+  let anyChunkNeedsWildcardSynth = false;
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
   // to `extractParsedFile`. Threaded through to the scope-resolution
   // phase so it can SKIP its own re-extraction on cache hits — this is
@@ -409,46 +420,21 @@ export async function runChunkedParseAndResolve(
         }
       }
 
-      const chunkBasePercent = 20 + (filesParsedSoFar / totalParseable) * 62;
-
+      // Per-chunk extraction passes (processImportsFromExtracted,
+      // processHeritageFromExtracted, processRoutesFromExtracted,
+      // synthesizeWildcardImportBindings, seedCrossFileReceiverTypes)
+      // moved out of the chunk loop into a single end-of-loop pass below.
+      // Reason: per-chunk extraction blocked the chunk loop on
+      // main-thread work between worker dispatches — workers sat idle
+      // and total CPU utilization plateaued at 4-5% on multi-core boxes.
+      // Deferring keeps workers busy chunk-after-chunk; resolution sees
+      // strictly-more-information (full repo graph) so cross-chunk import
+      // and heritage targets resolve at least as well as before.
       if (chunkWorkerData) {
-        await processImportsFromExtracted(
-          graph,
-          allPathObjects,
-          chunkWorkerData.imports,
-          ctx,
-          (current, total) => {
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(chunkBasePercent),
-              message: `Resolving imports (chunk ${chunkIdx + 1}/${numChunks})...`,
-              detail: `${current}/${total} files`,
-              stats: {
-                filesProcessed: filesParsedSoFar,
-                totalFiles: totalParseable,
-                nodesCreated: graph.nodeCount,
-              },
-            });
-          },
-          repoPath,
-          importCtx,
-        );
         if (chunkNeedsSynthesis[chunkIdx]) {
-          synthesizeWildcardImportBindings(graph, ctx);
-          hasSynthesized = true;
+          anyChunkNeedsWildcardSynth = true;
         }
-        if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0) {
-          const { enrichedCount } = seedCrossFileReceiverTypes(
-            chunkWorkerData.calls,
-            ctx.namedImportMap,
-            exportedTypeMap,
-          );
-          if (isDev && enrichedCount > 0) {
-            logger.info(
-              `🔗 E1: Seeded ${enrichedCount} cross-file receiver types (chunk ${chunkIdx + 1})`,
-            );
-          }
-        }
+        for (const item of chunkWorkerData.imports) deferredWorkerImports.push(item);
         for (const item of chunkWorkerData.calls) deferredWorkerCalls.push(item);
         for (const item of chunkWorkerData.heritage) deferredWorkerHeritage.push(item);
         for (const item of chunkWorkerData.constructorBindings)
@@ -462,35 +448,6 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.assignments?.length) {
           for (const item of chunkWorkerData.assignments) deferredAssignments.push(item);
         }
-
-        await Promise.all([
-          processHeritageFromExtracted(graph, chunkWorkerData.heritage, ctx, (current, total) => {
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(chunkBasePercent),
-              message: `Resolving heritage (chunk ${chunkIdx + 1}/${numChunks})...`,
-              detail: `${current}/${total} records`,
-              stats: {
-                filesProcessed: filesParsedSoFar,
-                totalFiles: totalParseable,
-                nodesCreated: graph.nodeCount,
-              },
-            });
-          }),
-          processRoutesFromExtracted(graph, chunkWorkerData.routes ?? [], ctx, (current, total) => {
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(chunkBasePercent),
-              message: `Resolving routes (chunk ${chunkIdx + 1}/${numChunks})...`,
-              detail: `${current}/${total} routes`,
-              stats: {
-                filesProcessed: filesParsedSoFar,
-                totalFiles: totalParseable,
-                nodesCreated: graph.nodeCount,
-              },
-            });
-          }),
-        ]);
 
         if (chunkWorkerData.fileScopeBindings?.length) {
           for (const { filePath, bindings } of chunkWorkerData.fileScopeBindings) {
@@ -536,6 +493,83 @@ export async function runChunkedParseAndResolve(
       logger.info(
         `📦 parse-cache summary: ${chunkCacheHits} chunk hit(s), ${chunkCacheMisses} miss(es) across ${numChunks} chunk(s)`,
       );
+    }
+
+    // Deferred end-of-loop extraction (moved out of the per-chunk block):
+    //   1. processImportsFromExtracted on all chunks' imports
+    //   2. synthesizeWildcardImportBindings (if any chunk had wildcards)
+    //   3. seedCrossFileReceiverTypes on deferred calls (depends on
+    //      namedImportMap populated by step 1)
+    //   4. processHeritageFromExtracted on all chunks' heritage
+    //   5. processRoutesFromExtracted on all chunks' routes
+    // Same logic as the prior per-chunk passes, just batched — resolution
+    // sees the full repo graph instead of just current-and-earlier chunks.
+    if (deferredWorkerImports.length > 0) {
+      await processImportsFromExtracted(
+        graph,
+        allPathObjects,
+        deferredWorkerImports,
+        ctx,
+        (current, total) => {
+          onProgress({
+            phase: 'parsing',
+            percent: 82,
+            message: 'Resolving imports (all chunks)...',
+            detail: `${current}/${total} files`,
+            stats: {
+              filesProcessed: filesParsedSoFar,
+              totalFiles: totalParseable,
+              nodesCreated: graph.nodeCount,
+            },
+          });
+        },
+        repoPath,
+        importCtx,
+      );
+    }
+    if (anyChunkNeedsWildcardSynth) {
+      synthesizeWildcardImportBindings(graph, ctx);
+      hasSynthesized = true;
+    }
+    if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0 && deferredWorkerCalls.length > 0) {
+      const { enrichedCount } = seedCrossFileReceiverTypes(
+        deferredWorkerCalls,
+        ctx.namedImportMap,
+        exportedTypeMap,
+      );
+      if (isDev && enrichedCount > 0) {
+        logger.info(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (all chunks)`);
+      }
+    }
+    if (deferredWorkerHeritage.length > 0) {
+      await processHeritageFromExtracted(graph, deferredWorkerHeritage, ctx, (current, total) => {
+        onProgress({
+          phase: 'parsing',
+          percent: 82,
+          message: 'Resolving heritage (all chunks)...',
+          detail: `${current}/${total} records`,
+          stats: {
+            filesProcessed: filesParsedSoFar,
+            totalFiles: totalParseable,
+            nodesCreated: graph.nodeCount,
+          },
+        });
+      });
+    }
+    if (allExtractedRoutes.length > 0) {
+      await processRoutesFromExtracted(graph, allExtractedRoutes, ctx, (current, total) => {
+        onProgress({
+          phase: 'parsing',
+          percent: 82,
+          message: 'Resolving routes (all chunks)...',
+          detail: `${current}/${total} routes`,
+          stats: {
+            filesProcessed: filesParsedSoFar,
+            totalFiles: totalParseable,
+            nodesCreated: graph.nodeCount,
+          },
+        });
+      });
     }
 
     const fullWorkerHeritageMap =

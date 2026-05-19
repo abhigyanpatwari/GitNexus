@@ -225,6 +225,8 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
+  /** Parse worker pool size; 0 disables workers (sequential fallback). */
+  workers?: string;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
@@ -276,6 +278,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
       Math.round(workerTimeoutSeconds * 1000),
     );
+  }
+
+  if (options?.workers !== undefined) {
+    const parsedWorkers = Number(options.workers);
+    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
+      cliError(
+        '  --workers must be a non-negative integer. ' +
+          'Pass 0 to disable the worker pool (sequential fallback).\n',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WORKER_POOL_SIZE = String(parsedWorkers);
   }
 
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap

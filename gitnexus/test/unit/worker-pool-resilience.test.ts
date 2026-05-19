@@ -8,6 +8,7 @@ import {
   createWorkerPool,
   WorkerPoolDispatchError,
   resolveWorkerPoolOptions,
+  resolveAutoPoolSize,
 } from '../../src/core/ingestion/workers/worker-pool.js';
 
 /**
@@ -485,6 +486,57 @@ describe('worker pool option resolution', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('resolveAutoPoolSize', () => {
+  it('honors GITNEXUS_WORKER_POOL_SIZE env override (positive integer)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '12');
+    try {
+      expect(resolveAutoPoolSize()).toBe(12);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('honors GITNEXUS_WORKER_POOL_SIZE=0 (sequential-fallback signal)', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '0');
+    try {
+      expect(resolveAutoPoolSize()).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('honors GITNEXUS_WORKER_POOL_SIZE override above the auto cap', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', '32');
+    try {
+      expect(resolveAutoPoolSize()).toBe(32);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('ignores invalid env values and falls back to the auto formula', () => {
+    vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', 'abc');
+    try {
+      const expected = Math.min(16, Math.max(1, os.cpus().length - 1));
+      expect(resolveAutoPoolSize()).toBe(expected);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('matches the auto formula min(16, max(1, cores - 1)) with no env override', () => {
+    // Exact-count per DoD §2.7: compute the expected value the same
+    // way the resolver does so the assertion stays deterministic on
+    // any machine.
+    const expected = Math.min(16, Math.max(1, os.cpus().length - 1));
+    expect(resolveAutoPoolSize()).toBe(expected);
+  });
+
+  it('returns an integer (never a float)', () => {
+    expect(Number.isInteger(resolveAutoPoolSize())).toBe(true);
   });
 });
 

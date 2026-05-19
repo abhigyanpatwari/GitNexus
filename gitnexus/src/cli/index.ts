@@ -70,6 +70,10 @@ program
     '--worker-timeout <seconds>',
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   )
+  .option(
+    '--workers <n>',
+    'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
+  )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
@@ -81,6 +85,8 @@ program
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
+      '  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n' +
+      '  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n' +
       '  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n' +
       '  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n' +
       '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
