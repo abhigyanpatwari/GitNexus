@@ -62,131 +62,64 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-Indexed as **GitNexus** (4325 symbols, 10556 relationships, 300 execution flows). Use MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any tool warns the index is stale, run `npx gitnexus analyze` first.
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** `gitnexus_impact({target: "symbolName", direction: "upstream"})` — report blast radius to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** — verify only expected symbols and flows are affected.
-- **MUST warn the user** if impact returns HIGH or CRITICAL risk.
-- Explore unfamiliar code with `gitnexus_query({query: "concept"})` (process-grouped, ranked) instead of grepping.
-- Full context on a symbol: `gitnexus_context({name: "symbolName"})`.
-
-## When Debugging
-
-1. `gitnexus_query({query: "<error or symptom>"})` — find related execution flows
-2. `gitnexus_context({name: "<suspect function>"})` — callers, callees, process participation
-3. `READ gitnexus://repo/GitNexus/process/{processName}` — trace flow step by step
-4. Regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})`
-
-## When Refactoring
-
-- **Rename:** `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Graph edits are safe; text_search edits need manual review.
-- **Extract/Split:** `gitnexus_context` (incoming/outgoing refs) then `gitnexus_impact` (upstream callers) before moving code.
-- **After any refactor:** `gitnexus_detect_changes({scope: "all"})` to verify scope.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
 
 ## Never Do
 
-- Edit a symbol without running `gitnexus_impact` first.
-- Ignore HIGH/CRITICAL risk warnings.
-- Rename with find-and-replace — use `gitnexus_rename`.
-- Commit without `gitnexus_detect_changes()`.
-- Add language-specific behavior to shared ingestion code (`gitnexus/src/core/ingestion/`) — use a `LanguageProvider` hook. Seeing `provider.mroStrategy === 'xxx'` or an import from `languages/xxx.ts` in shared code means stop and add a hook.
-
-## Tools Quick Reference
-
-| Tool | When to use | Example |
-|------|-------------|---------|
-| `list_repos` | Discover indexed repos | `gitnexus_list_repos({})` |
-| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
-| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
-| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
-| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
-| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
-| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
-| `api_impact` | Pre-change API route impact | `gitnexus_api_impact({route: "/api/users", method: "GET"})` |
-| `route_map` | Route → handler → consumer map | `gitnexus_route_map({})` |
-| `tool_map` | MCP/RPC tool definitions | `gitnexus_tool_map({})` |
-| `shape_check` | Response shape vs consumer access | `gitnexus_shape_check({route: "/api/users"})` |
-| `group_list` | List repo groups | `gitnexus_group_list({})` |
-| `group_sync` | Rebuild group Contract Registry | `gitnexus_group_sync({name: "myGroup"})` |
-| `query` (group mode) | Cross-repo search in a group (RRF-merged) | `gitnexus_query({repo: "@myGroup", query: "auth"})` |
-| `context` (group mode) | 360° view across all member repos | `gitnexus_context({repo: "@myGroup", name: "validateUser"})` |
-| `impact` (group mode) | Cross-repo blast radius via Contract Bridge | `gitnexus_impact({repo: "@myGroup", target: "X", direction: "upstream"})` |
-
-> Group mode: pass `repo: "@<groupName>"` to fan out across all member repos, or `repo: "@<groupName>/<memberPath>"` to target a single member (path keys from `group.yaml`). Optional `service: "<monorepo/path>"` filters by service root. Group-level state (contracts, staleness) lives in the resources table below — there are **no** `group_query` / `group_context` / `group_impact` / `group_contracts` / `group_status` MCP tools.
->
-> For a full walkthrough of setting up a group across multiple repos that communicate over gRPC, see [docs/guides/microservices-grpc.md](docs/guides/microservices-grpc.md).
-
-## Impact Risk Levels
-
-| Depth | Meaning | Action |
-|-------|---------|--------|
-| d=1 | WILL BREAK — direct callers/importers | MUST update |
-| d=2 | LIKELY AFFECTED — indirect deps | Should test |
-| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
 
 ## Resources
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/GitNexus/context` | Codebase overview, index freshness |
+| `gitnexus://repo/GitNexus/context` | Codebase overview, check index freshness |
 | `gitnexus://repo/GitNexus/clusters` | All functional areas |
 | `gitnexus://repo/GitNexus/processes` | All execution flows |
 | `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
-| `gitnexus://group/{name}/contracts` | Group Contract Registry (provider/consumer rows + cross-links) |
-| `gitnexus://group/{name}/status` | Per-member index + Contract Registry staleness report |
 
-## Self-Check Before Finishing
+## CLI
 
-1. `gitnexus_impact` was run for all modified symbols
-2. No HIGH/CRITICAL warnings were ignored
-3. `gitnexus_detect_changes()` confirms expected scope
-4. All d=1 dependents were updated
-
-## Keeping the Index Fresh
-
-```bash
-npx gitnexus analyze                 # incremental by default; preserves embeddings
-npx gitnexus analyze --force         # full rebuild from scratch (opt out of incremental)
-npx gitnexus analyze --embeddings    # also generate embeddings for new/changed nodes
-npx gitnexus analyze --drop-embeddings  # explicit opt-in to wipe existing embeddings
-```
-
-`analyze` runs **incrementally by default**. The pipeline still parses every file every run (cross-file resolution requires it), but tree-sitter parsing is **served from a content-addressed cache** under `.gitnexus/parse-cache/` (per-chunk JSON shards plus `index.json`) for chunks whose file contents haven't changed since the last run. Older installs may still have a legacy single file `.gitnexus/parse-cache.json`, which is read for backward compatibility but no longer written. Only changed-file rows (and their importers) are rewritten in LadybugDB; unchanged-file rows are preserved. Output is byte-equivalent to a full rebuild. Pass `--force` to wipe and re-index from scratch (e.g., to recover from a corrupt index, or after upgrading GitNexus).
-
-The parse cache key is **content-addressed and version-tagged**: it survives `--force` runs, and is automatically invalidated by a `gitnexus` package upgrade (so a new tree-sitter grammar doesn't silently replay stale parse output). Safe to delete the whole `.gitnexus/parse-cache/` directory (and remove any legacy `.gitnexus/parse-cache.json` if present) at any time — it'll be rebuilt on the next analyze.
-
-Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no longer drops existing vectors — pass `--drop-embeddings` to wipe.
-
-> Claude Code: PostToolUse hook detects a stale index after `git commit` and `git merge` and prompts the agent to run `analyze`. The hook does not invoke `analyze` itself.
-
-## CLI Skills
-
-| Task | Skill file |
-|------|-----------|
-| Architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Debugging / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Refactoring | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools/resources/schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| CLI commands (index, status, clean, wiki) | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-## Hook env knobs
-
-The Claude Code hook (`gitnexus/hooks/claude/gitnexus-hook.cjs` and the mirrored plugin copy under `gitnexus-claude-plugin/hooks/`) honours these env vars. Defaults work for normal installations; set them only to override resolution. All path overrides ignore values that do not exist on disk and fall through to the standard resolution chain.
-
-| Env var | Type | Default | Purpose |
-|---------|------|---------|---------|
-| `GITNEXUS_HOOK_CLI_PATH` | path | resolved via package layout / `require.resolve` | Override path to the `gitnexus` CLI entry the hook spawns for `augment`. |
-| `GITNEXUS_HOOK_LSOF_PATH` | path | `lsof` on `PATH` (with `/usr/bin/lsof`, `/usr/sbin/lsof`, `/sbin/lsof` fallbacks) | Override POSIX `lsof` location for the DB-lock probe. |
-| `GITNEXUS_HOOK_PS_PATH` | path | `ps` on `PATH` (with `/bin/ps`, `/usr/bin/ps` fallbacks) | Override POSIX `ps` location. |
-| `GITNEXUS_HOOK_POWERSHELL_PATH` | path | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` (then `SysWOW64`, then `powershell.exe` on `PATH`) | Override Windows PowerShell location used by the Restart-Manager probe. |
-| `GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS` | integer ms | `1200` | Max wall-clock for the Linux `/proc` fd scan before bailing out to the `lsof` fallback. |
-| `GITNEXUS_HOOK_RM_TARGET` | path | derived | Restart-Manager target file (the LadybugDB path under `.gitnexus/`). Set internally by the hook; rarely overridden manually. |
-| `GITNEXUS_DEBUG` | boolean (`1`/`true`) | unset | Verbose stderr from the hook: prints discarded augment-stderr prefixes and one-shot `.ps1` load-failure warnings. |
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Work in the Ingestion area (239 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
+| Work in the Extractors area (135 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
+| Work in the Components area (112 symbols) | `.claude/skills/generated/components/SKILL.md` |
+| Work in the Lbug area (96 symbols) | `.claude/skills/generated/lbug/SKILL.md` |
+| Work in the Group area (94 symbols) | `.claude/skills/generated/group/SKILL.md` |
+| Work in the Cli area (92 symbols) | `.claude/skills/generated/cli/SKILL.md` |
+| Work in the Configs area (92 symbols) | `.claude/skills/generated/configs/SKILL.md` |
+| Work in the Type-extractors area (90 symbols) | `.claude/skills/generated/type-extractors/SKILL.md` |
+| Work in the Hooks area (88 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
+| Work in the Unit area (80 symbols) | `.claude/skills/generated/unit/SKILL.md` |
+| Work in the Cpp area (73 symbols) | `.claude/skills/generated/cpp/SKILL.md` |
+| Work in the Scope-resolution area (72 symbols) | `.claude/skills/generated/scope-resolution/SKILL.md` |
+| Work in the Server area (66 symbols) | `.claude/skills/generated/server/SKILL.md` |
+| Work in the Local area (61 symbols) | `.claude/skills/generated/local/SKILL.md` |
+| Work in the Wiki area (60 symbols) | `.claude/skills/generated/wiki/SKILL.md` |
+| Work in the Workers area (57 symbols) | `.claude/skills/generated/workers/SKILL.md` |
+| Work in the Embeddings area (56 symbols) | `.claude/skills/generated/embeddings/SKILL.md` |
+| Work in the Typescript area (53 symbols) | `.claude/skills/generated/typescript/SKILL.md` |
+| Work in the Storage area (51 symbols) | `.claude/skills/generated/storage/SKILL.md` |
+| Work in the Php area (48 symbols) | `.claude/skills/generated/php/SKILL.md` |
 
 <!-- gitnexus:end -->
 
