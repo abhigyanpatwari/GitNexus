@@ -263,6 +263,28 @@ describe('setupOpenCode — JSONC preservation', () => {
     });
   });
 
+  it('uses Windows npx fallback when where returns only a .ps1 path', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n');
+
+    const jsonc = `{
+  "model": "test",
+  "mcp": {}
+}`;
+    await fs.writeFile(opencodeJsonPath(), jsonc, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(opencodeJsonPath(), 'utf-8');
+    const config = parseJsonc(raw);
+
+    expect(config.mcp.gitnexus).toEqual({
+      type: 'local',
+      command: ['cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
+
   it('preserves tab indentation in existing file', async () => {
     const tabbed = `{\n\t"model": "test"\n}`;
     await fs.writeFile(opencodeJsonPath(), tabbed, 'utf-8');

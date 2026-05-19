@@ -298,4 +298,22 @@ describe('setupClaudeCode', () => {
       args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
+
+  it('falls back to npx on Windows when where returns only a .ps1 path', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
 });
