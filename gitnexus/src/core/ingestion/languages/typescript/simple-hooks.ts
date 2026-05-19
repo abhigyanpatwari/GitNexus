@@ -75,8 +75,11 @@ export function tsBindingScopeFor(
  * any of `kinds`. Returns the matching scope's id or `null` when no
  * ancestor matches (e.g., a return type binding emitted outside any
  * Module scope — shouldn't happen in well-formed input).
+ *
+ * Exported so language-specific hook wrappers (e.g. `jsBindingScopeFor`)
+ * can reuse it without duplicating the traversal logic.
  */
-function walkToScope(
+export function walkToScope(
   from: Scope,
   tree: ScopeTree,
   ...kinds: readonly Scope['kind'][]
