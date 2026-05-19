@@ -124,6 +124,9 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   }
 }
 
+/** Walks the parent chain from `node` (inclusive), returning the first node
+ *  whose type matches, or null. Faster than `findNodeAtRange` when the caller
+ *  already holds the anchor node — avoids re-scanning the tree from the root. */
 function findSelfOrAncestorOfType(node: SyntaxNode | undefined, type: string): SyntaxNode | null {
   if (node === undefined) return null;
   let current: SyntaxNode | null = node;
@@ -134,6 +137,8 @@ function findSelfOrAncestorOfType(node: SyntaxNode | undefined, type: string): S
   return null;
 }
 
+/** Walks the parent chain from `node` (inclusive), returning the first node
+ *  whose type is in the set, or null. Plural form of {@link findSelfOrAncestorOfType}. */
 function findSelfOrAncestorOfTypes(
   node: SyntaxNode | undefined,
   types: readonly string[],

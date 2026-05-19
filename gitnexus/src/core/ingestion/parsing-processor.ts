@@ -894,12 +894,12 @@ export const processParsing = async (
           {
             skippedPaths: err.fallbackExcludePaths,
           },
-          'Skipping worker-timeout files in sequential fallback:',
+          'Skipping worker-excluded files in sequential fallback:',
         );
         reportProgress?.(
           lastProgress,
           files.length,
-          `Skipping ${files.length - fallbackFiles.length} worker-timeout file(s) in sequential fallback`,
+          `Skipping ${files.length - fallbackFiles.length} worker-excluded file(s) in sequential fallback`,
         );
       }
       logger.warn({ message }, 'Worker pool parsing stopped; continuing with sequential parser:');

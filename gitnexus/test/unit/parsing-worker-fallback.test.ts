@@ -70,7 +70,7 @@ describe('processParsing worker fallback', () => {
     );
 
     expect(result).toBeNull();
-    expect(progressDetails).toContain('Skipping 1 worker-timeout file(s) in sequential fallback');
+    expect(progressDetails).toContain('Skipping 1 worker-excluded file(s) in sequential fallback');
     expect(
       graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
     ).toBe(true);
@@ -106,7 +106,7 @@ describe('processParsing worker fallback', () => {
     );
 
     expect(result).toBeNull();
-    expect(progressDetails).toContain('Skipping 1 worker-timeout file(s) in sequential fallback');
+    expect(progressDetails).toContain('Skipping 1 worker-excluded file(s) in sequential fallback');
     expect(
       graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
     ).toBe(true);
@@ -145,7 +145,7 @@ describe('processParsing worker fallback', () => {
     );
 
     expect(result).toBeNull();
-    expect(progressDetails).toContain('Skipping 1 worker-timeout file(s) in sequential fallback');
+    expect(progressDetails).toContain('Skipping 1 worker-excluded file(s) in sequential fallback');
     expect(
       graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
     ).toBe(true);
@@ -185,7 +185,7 @@ describe('processParsing worker fallback', () => {
       'Sequential fallback after worker issue: replacement worker failed',
     );
     expect(
-      progressDetails.some((d) => d.startsWith('Skipping ') && d.includes('worker-timeout file')),
+      progressDetails.some((d) => d.startsWith('Skipping ') && d.includes('worker-excluded file')),
     ).toBe(false);
     expect(
       graph.nodes.some((node) => node.label === 'Function' && node.properties.name === 'a'),
