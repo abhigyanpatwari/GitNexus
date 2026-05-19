@@ -618,12 +618,20 @@ export const createWorkerPool = (
         }
       };
 
+      // Decision returned by `requeueAfterTimeout`. The caller owns the
+      // post-decision orchestration so the death + respawn + dispatch
+      // sequence can `await` cleanly (which is required to know when the
+      // slot is ready to pick up new work after a give-up).
+      type TimeoutDecision =
+        | { kind: 'retry' }
+        | { kind: 'give-up'; reason: string; excludePaths: readonly string[] };
+
       const requeueAfterTimeout = (
         workerIndex: number,
         job: WorkerJob<TInput>,
         lastProgress: number,
         inFlightPath: string | undefined,
-      ): boolean => {
+      ): TimeoutDecision => {
         const nextTimeout = Math.ceil(job.timeoutMs * poolOptions.timeoutBackoffFactor);
         const nextCumulative = job.cumulativeTimeoutMs + nextTimeout;
 
@@ -648,17 +656,13 @@ export const createWorkerPool = (
             },
             `Worker ${workerIndex} parse job exhausted cumulative timeout budget. Surfacing in-flight file(s).`,
           );
-          // Re-queue the rest of the job so other workers can finish the
-          // non-exhausted items. Without this, the job was already shifted
-          // off `jobs` in `runWorker` and would be silently lost.
-          requeueRemainder(job, exhausted);
-          void handleWorkerDeath(
-            workerIndex,
-            `Worker ${workerIndex} parse job exhausted cumulative timeout budget ` +
+          return {
+            kind: 'give-up',
+            reason:
+              `Worker ${workerIndex} parse job exhausted cumulative timeout budget ` +
               `(${(nextCumulative / 1000).toFixed(0)}s > ${(poolOptions.maxCumulativeTimeoutMs / 1000).toFixed(0)}s cap)`,
-            exhausted,
-          );
-          return false;
+            excludePaths: exhausted,
+          };
         }
 
         if (job.items.length > 1) {
@@ -698,7 +702,7 @@ export const createWorkerPool = (
           );
           // Preserve intuitive retry order; final result order is still enforced by startIndex sort.
           jobs.unshift(first, second);
-          return true;
+          return { kind: 'retry' };
         }
 
         const nextAttempt = job.attempt + 1;
@@ -719,7 +723,7 @@ export const createWorkerPool = (
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           });
-          return true;
+          return { kind: 'retry' };
         }
 
         const stalledPath = inFlightPath ?? itemPath(job.items[0]);
@@ -733,20 +737,14 @@ export const createWorkerPool = (
           },
           `Worker ${workerIndex} parse job idle timeout exhausted retries; quarantining file and respawning slot.`,
         );
-        // Defensive re-queue for symmetry with the Layer 5 path. Singleton
-        // jobs have at most one item; filtering by `excludes` typically
-        // drops it (filtered.length === 0 → no-op). When `excludes` is
-        // empty (unidentifiable stall), F5's unattributed-death tracking
-        // in requeueRemainder bounds the loop.
-        requeueRemainder(job, excludes);
-        void handleWorkerDeath(
-          workerIndex,
-          `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
+        return {
+          kind: 'give-up',
+          reason:
+            `Worker ${workerIndex} parse job idle timeout after ${job.timeoutMs / 1000}s ` +
             `(single item${stalledPath ? `: ${stalledPath}` : ''}, ` +
             `${job.estimatedBytes} bytes, last progress: ${lastProgress})`,
-          excludes,
-        );
-        return false;
+          excludePaths: excludes,
+        };
       };
 
       const runWorker = (workerIndex: number) => {
@@ -784,12 +782,19 @@ export const createWorkerPool = (
         inFlightProgress[workerIndex] = 0;
         const worker = workers[workerIndex];
         if (!worker) {
-          // Slot was dropped between scheduling and execution; requeue the
-          // job for another slot and bail.
+          // Slot's worker is undefined — typically mid-respawn (replaceWorker
+          // clears `workers[i]` before awaiting `waitForWorkerOnline`). The
+          // respawn IIFE / handleWorkerDeath that started the respawn owns
+          // calling runWorker when the new worker is online; we just
+          // unshift the job and bail.
+          //
+          // Do NOT call wakeIdleSlots from here: it would iterate
+          // `activeSlots` and re-enter `runWorker` for this same slot
+          // (now non-busy), find `workers[i]` still undefined, and
+          // recurse until the call stack overflows.
           activeWorkers--;
           busySlots.delete(workerIndex);
           jobs.unshift(job);
-          wakeIdleSlots();
           maybeDone();
           return;
         }
@@ -853,26 +858,22 @@ export const createWorkerPool = (
               cleanup();
               inFlightProgress[workerIndex] = 0;
               const stalledPath = inFlightPath;
-              const shouldContinue = requeueAfterTimeout(
-                workerIndex,
-                job,
-                lastProgress,
-                stalledPath,
-              );
-              if (!shouldContinue) {
-                // Give-up path: `requeueAfterTimeout` already kicked off
-                // `void handleWorkerDeath(...)` which owns slot management
-                // (quarantine, respawn, budget enforcement, breaker). We
-                // only need to update local bookkeeping and let
-                // `wakeIdleSlots` pick up the requeued remainder on any
-                // live slot. handleWorkerDeath's own `runWorker` post-
-                // respawn fires from inside that async chain — we do NOT
-                // re-call replaceWorker here, which previously double-
-                // spawned the slot.
-                activeWorkers--;
-                busySlots.delete(workerIndex);
-                wakeIdleSlots();
-                maybeDone();
+              const decision = requeueAfterTimeout(workerIndex, job, lastProgress, stalledPath);
+              if (decision.kind === 'give-up') {
+                // Give-up path: re-queue the non-quarantined remainder,
+                // then await handleWorkerDeath so we know when the slot
+                // is respawned (or dropped) and can dispatch the next
+                // job deterministically.
+                void (async () => {
+                  activeWorkers--;
+                  busySlots.delete(workerIndex);
+                  requeueRemainder(job, decision.excludePaths);
+                  await handleWorkerDeath(workerIndex, decision.reason, decision.excludePaths);
+                  if (stopped) return;
+                  if (activeSlots.has(workerIndex)) runWorker(workerIndex);
+                  wakeIdleSlots();
+                  maybeDone();
+                })();
                 return;
               }
               // Timeout-retry path: enforce the per-slot respawn budget

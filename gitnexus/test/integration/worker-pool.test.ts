@@ -7,7 +7,11 @@
  * but workers need compiled .js files.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { createWorkerPool, WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import {
+  createWorkerPool,
+  WorkerPool,
+  WorkerPoolDispatchError,
+} from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -353,9 +357,18 @@ describe('worker pool integration', () => {
     });
 
     try {
-      await expect(pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }])).rejects.toThrow(
-        /simulated startup crash|exited with code|idle timeout/,
-      );
+      // Resilience refactor (PR #1693): even with a startup-crashing
+      // replacement worker, Node's `online` event fires BEFORE the
+      // worker's main script runs — `waitForWorkerOnline` resolves
+      // optimistically, the slot is re-occupied with a doomed worker,
+      // the second idle timeout triggers the give-up path, and the
+      // file is quarantined. Dispatch resolves with empty results and
+      // the file is in quarantine. A warning is still emitted for the
+      // operator. Documented race: `waitForWorkerOnline` does not wait
+      // for a grace period after `online` before resolving.
+      const results = await pool.dispatch<any, any>([{ path: 'crash.ts', content: '' }]);
+      expect(results).toEqual([]);
+      expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['crash.ts']);
       const warnRecords = cap.records().filter((r) => Number(r.level) >= 40 /* warn or above */);
       expect(warnRecords.length).toBeGreaterThan(0);
     } finally {
@@ -430,7 +443,12 @@ describe('worker pool integration', () => {
     }
   });
 
-  it('rejects a persistently stalled singleton so the caller can fall back sequentially', async () => {
+  it('quarantines a persistently stalled singleton so subsequent dispatches skip it', async () => {
+    // Resilience refactor (PR #1693): a singleton-timeout no longer
+    // rejects the whole dispatch. The stalled file is quarantined and
+    // the slot respawns; the dispatch resolves with empty results (no
+    // files parsed). Subsequent dispatches with the same path filter it
+    // out via the pool's quarantine.
     const { tempDir, workerPath } = writeTempWorker(
       'gitnexus-worker-stalled-',
       `
@@ -444,12 +462,14 @@ describe('worker pool integration', () => {
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
       subBatchIdleTimeoutMs: 150,
       maxTimeoutRetries: 0,
+      consecutiveFailureThreshold: 10,
+      maxRespawnsPerSlot: 3,
     });
 
     try {
-      await expect(pool.dispatch<any, any>([{ path: 'stalled.ts', content: '' }])).rejects.toThrow(
-        /sequential fallback/,
-      );
+      const results = await pool.dispatch<any, any>([{ path: 'stalled.ts', content: '' }]);
+      expect(results).toEqual([]);
+      expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['stalled.ts']);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -604,8 +624,10 @@ describe('worker pool integration', () => {
       await expect(pool.dispatch<any, any>([{ path: 'bad.ts', content: '' }])).rejects.toThrow(
         /protocol error/,
       );
+      // Resilience refactor (PR #1693): subsequent dispatches reject with
+      // the circuit-breaker message instead of the prior-failure wording.
       await expect(pool.dispatch<any, any>([{ path: 'after.ts', content: '' }])).rejects.toThrow(
-        /previous failure.*protocol error/,
+        /circuit breaker.*protocol error/i,
       );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -666,6 +688,363 @@ describe('worker pool integration', () => {
       );
     } finally {
       await zeroPool.terminate();
+    }
+  });
+
+  // --- Resilience layers (PR #1693 follow-on) ----------------------------
+
+  it('respawns the slot after worker process.exit and finishes the work on the replacement', async () => {
+    // Worker exits with code 1 on its first sub-batch, then the replacement
+    // processes whatever lands in its sub-batch successfully. Exercises
+    // Layer 1 auto-respawn + Layer 3 quarantine end-to-end through real
+    // worker IPC and real waitForWorkerOnline timing.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-respawn-'));
+    const markerPath = path.join(tempDir, 'crashed-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          if (!fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'crash once');
+            parentPort.postMessage({ type: 'starting-file', path: current[0] });
+            process.exit(134);
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: current.length, paths: current } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 3,
+    });
+
+    try {
+      const results = await pool.dispatch<
+        { path: string; content: string },
+        { fileCount: number; paths: string[] }
+      >([
+        { path: 'killer.ts', content: '' },
+        { path: 'good.ts', content: '' },
+      ]);
+      // killer.ts was quarantined; replacement processes only the
+      // non-quarantined remainder.
+      expect(results.length).toBe(1);
+      expect(results[0].paths).toEqual(['good.ts']);
+      expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['killer.ts']);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('attributes exactly via authoritative starting-file message on worker crash', async () => {
+    // Worker emits starting-file for the SECOND file, then crashes. The
+    // pool must quarantine exactly that file (not items[0] from the
+    // heuristic). Validates Layer 4 end-to-end through real IPC ordering.
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-resilience-attribution-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((file) => file.path);
+          // Pretend we successfully processed the first file, then crash
+          // mid-second.
+          parentPort.postMessage({ type: 'starting-file', path: current[0] });
+          parentPort.postMessage({ type: 'progress', filesProcessed: 1 });
+          parentPort.postMessage({ type: 'starting-file', path: current[1] });
+          process.exit(134);
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 1,
+    });
+
+    try {
+      // Job dies, respawn re-tries with filtered job (without items[1]
+      // and items[0] since items[0] was already processed but flush
+      // never landed). Second worker crashes on items[0] of the
+      // re-queued job (which is the original items[0]); slot drops
+      // after budget=1 exceeded.
+      await expect(
+        pool.dispatch<{ path: string; content: string }, unknown>([
+          { path: 'first.ts', content: '' },
+          { path: 'second-mid-crash.ts', content: '' },
+          { path: 'third.ts', content: '' },
+        ]),
+      ).rejects.toBeInstanceOf(WorkerPoolDispatchError);
+      // The crash attribution names the file authoritatively from the
+      // starting-file message, not items[0].
+      const quarantine = pool.getQuarantinedPaths?.() ?? [];
+      expect(quarantine).toContain('second-mid-crash.ts');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantine filters subsequent dispatches without sending to a worker', async () => {
+    // After dispatch A quarantines path X, dispatch B with X in input
+    // must NOT include X in the sub-batch the worker receives. Records
+    // the paths each sub-batch sees.
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'gitnexus-resilience-quarantine-filter-'),
+    );
+    const seenPath = path.join(tempDir, 'sub-batches.json');
+    const markerPath = path.join(tempDir, 'crashed-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const seenPath = ${JSON.stringify(seenPath)};
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      function recordSeen(paths) {
+        const prior = fs.existsSync(seenPath) ? JSON.parse(fs.readFileSync(seenPath, 'utf-8')) : [];
+        prior.push(paths);
+        fs.writeFileSync(seenPath, JSON.stringify(prior));
+      }
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((f) => f.path);
+          recordSeen(current);
+          if (!fs.existsSync(markerPath) && current.includes('poison.ts')) {
+            fs.writeFileSync(markerPath, 'crash once on poison');
+            parentPort.postMessage({ type: 'starting-file', path: 'poison.ts' });
+            process.exit(134);
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { fileCount: current.length, paths: current } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 3,
+    });
+
+    try {
+      // Dispatch A quarantines poison.ts.
+      await pool.dispatch<{ path: string; content: string }, unknown>([
+        { path: 'poison.ts', content: '' },
+        { path: 'companion.ts', content: '' },
+      ]);
+      expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['poison.ts']);
+
+      // Dispatch B includes poison.ts; pool must filter it out before
+      // the worker sees it.
+      const results = await pool.dispatch<{ path: string; content: string }, { paths: string[] }>([
+        { path: 'poison.ts', content: '' },
+        { path: 'fresh.ts', content: '' },
+      ]);
+      expect(results.length).toBe(1);
+      expect(results[0].paths).toEqual(['fresh.ts']);
+
+      // Audit: which sub-batches did the worker actually receive?
+      const allSubBatches: string[][] = JSON.parse(fs.readFileSync(seenPath, 'utf-8'));
+      const dispatchBSubBatches = allSubBatches.slice(-1);
+      expect(dispatchBSubBatches[0]).toEqual(['fresh.ts']);
+      // No sub-batch sent during dispatch B contained 'poison.ts'.
+      expect(dispatchBSubBatches.some((b) => b.includes('poison.ts'))).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops a slot after maxRespawnsPerSlot and continues on the survivor', async () => {
+    // 2-worker pool, budget=1. Worker A crashes twice on its assigned
+    // chunk; slot A is dropped. Slot B handles the requeued remainder
+    // successfully. Validates the per-slot drop + wakeIdleSlots flow
+    // under real worker timing.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-slot-drop-'));
+    const counterPath = path.join(tempDir, 'crash-count.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const counterPath = ${JSON.stringify(counterPath)};
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((f) => f.path);
+          const prior = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf-8')) : 0;
+          if (prior < 2) {
+            fs.writeFileSync(counterPath, String(prior + 1));
+            parentPort.postMessage({ type: 'starting-file', path: current[0] });
+            process.exit(134);
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { paths: current } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 2, {
+      subBatchSize: 2,
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 10,
+      maxRespawnsPerSlot: 1,
+    });
+
+    try {
+      const results = await pool.dispatch<{ path: string; content: string }, { paths: string[] }>([
+        { path: 'a.ts', content: '' },
+        { path: 'b.ts', content: '' },
+        { path: 'c.ts', content: '' },
+        { path: 'd.ts', content: '' },
+      ]);
+
+      // Two crashes both attributed to their starting-file (a.ts, then
+      // whatever the requeued chunk's items[0] was — b.ts or c.ts
+      // depending on dispatch order). At minimum a.ts is quarantined.
+      const quarantine = pool.getQuarantinedPaths?.() ?? [];
+      expect(quarantine.length).toBe(2);
+      expect(quarantine).toContain('a.ts');
+      // All non-quarantined files eventually parsed.
+      const allPaths = results.flatMap((r) => r.paths).sort();
+      const expectedAllowed = ['a.ts', 'b.ts', 'c.ts', 'd.ts'].filter(
+        (p) => !quarantine.includes(p),
+      );
+      expect(allPaths.sort()).toEqual(expectedAllowed.sort());
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('trips the circuit breaker on cascading per-slot consecutive failures', async () => {
+    // Single-slot pool with consecutiveFailureThreshold=2. Worker dies
+    // on every job; after 2 consecutive deaths on slot 0 the breaker
+    // trips and dispatch rejects with WorkerPoolDispatchError.
+    const { tempDir, workerPath } = writeTempWorker(
+      'gitnexus-resilience-breaker-',
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          const path = msg.files[0]?.path;
+          if (path) parentPort.postMessage({ type: 'starting-file', path });
+          process.exit(134);
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 2,
+      maxRespawnsPerSlot: 5,
+    });
+
+    try {
+      const err = await pool
+        .dispatch<{ path: string; content: string }, unknown>([
+          { path: 'one.ts', content: '' },
+          { path: 'two.ts', content: '' },
+        ])
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(WorkerPoolDispatchError);
+      const dispatchErr = err as WorkerPoolDispatchError;
+      // Breaker tripped with the cumulative quarantine surfaced for
+      // sequential fallback.
+      expect(dispatchErr.fallbackExcludePaths.length).toBeGreaterThan(0);
+      expect(/circuit breaker tripped/i.test(dispatchErr.message)).toBe(true);
+
+      // Subsequent dispatch rejects up front with the same error class.
+      await expect(
+        pool.dispatch<{ path: string; content: string }, unknown>([
+          { path: 'after.ts', content: '' },
+        ]),
+      ).rejects.toBeInstanceOf(WorkerPoolDispatchError);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('survives a worker `error` event (uncaught throw) the same as a process.exit', async () => {
+    // Worker throws an uncaught error on first sub-batch (triggers Node
+    // Worker 'error' event), then the replacement succeeds. Validates
+    // recoverAndResume on the errorHandler path with real async timing.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-error-event-'));
+    const markerPath = path.join(tempDir, 'thrown-once.txt');
+    const workerPath = path.join(tempDir, 'worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const fs = require('node:fs');
+      const { parentPort } = require('node:worker_threads');
+      const markerPath = ${JSON.stringify(markerPath)};
+      let current = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          current = msg.files.map((f) => f.path);
+          if (!fs.existsSync(markerPath)) {
+            fs.writeFileSync(markerPath, 'throw once');
+            parentPort.postMessage({ type: 'starting-file', path: current[0] });
+            // Uncaught throw — Node Worker emits an 'error' event.
+            throw new Error('simulated native error');
+          }
+          parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { paths: current } });
+        }
+      });
+    `,
+    );
+
+    pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
+      subBatchIdleTimeoutMs: 2000,
+      consecutiveFailureThreshold: 5,
+      maxRespawnsPerSlot: 3,
+    });
+
+    try {
+      const results = await pool.dispatch<{ path: string; content: string }, { paths: string[] }>([
+        { path: 'thrown.ts', content: '' },
+        { path: 'recovered.ts', content: '' },
+      ]);
+      expect(results.length).toBe(1);
+      expect(results[0].paths).toEqual(['recovered.ts']);
+      expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['thrown.ts']);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });
