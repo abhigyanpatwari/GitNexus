@@ -212,13 +212,34 @@ const processParsingWithWorkers = async (
 
   const total = files.length;
 
+  // Files whose parse worker aborted with a native crash (e.g. tree-sitter
+  // threw an uncatchable C++ `Napi::Error` — see GitNexus#1665). The pool
+  // isolates them via binary-search retry, then skips the offender so
+  // indexing can continue. We collect them here so the analyze summary
+  // can surface them as "skipped (native parser crash)" instead of having
+  // them silently disappear from the resulting graph.
+  const crashedPaths: string[] = [];
+
   // Dispatch to worker pool — pool handles splitting into chunks and sub-batching
   const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
     parseableFiles,
     (filesProcessed) => {
       onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
     },
+    (item) => {
+      crashedPaths.push(item.path);
+    },
   );
+
+  if (crashedPaths.length > 0) {
+    const preview = crashedPaths.slice(0, 5).join(', ');
+    const more = crashedPaths.length > 5 ? `, … (${crashedPaths.length - 5} more)` : '';
+    logger.warn(
+      { crashedPaths },
+      `[ingestion] Skipped ${crashedPaths.length} file(s) that crashed the parser worker: ${preview}${more}. ` +
+        `These files are excluded from the index. See GitNexus#1665.`,
+    );
+  }
 
   // Capture the raw chunk results for the incremental parse cache before
   // merging — the cache stores the unmerged worker output so a future run
