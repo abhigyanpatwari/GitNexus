@@ -19,6 +19,7 @@ import { javaScopeResolver } from '../../languages/java/scope-resolver.js';
 import { cScopeResolver } from '../../languages/c/scope-resolver.js';
 import { cppScopeResolver } from '../../languages/cpp/scope-resolver.js';
 import { phpScopeResolver } from '../../languages/php/scope-resolver.js';
+import { javascriptScopeResolver } from '../../languages/javascript/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
  *  this map intersected with `MIGRATED_LANGUAGES` (the per-language
@@ -36,4 +37,5 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.C, cScopeResolver],
   [SupportedLanguages.CPlusPlus, cppScopeResolver],
   [SupportedLanguages.PHP, phpScopeResolver],
+  [SupportedLanguages.JavaScript, javascriptScopeResolver],
 ]);
