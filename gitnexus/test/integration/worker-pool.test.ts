@@ -152,9 +152,8 @@ describe('worker pool integration', () => {
     expect(results).toHaveLength(1);
     const result = results[0];
     expect(result.fileCount).toBe(1);
-    expect(result.nodes.length).toBeGreaterThan(0);
-
-    // Should find the validateInput function
+    // Stronger than `nodes.length > 0`: the file MUST emit the
+    // validateInput function symbol or the parse is broken.
     const names = result.nodes.map((n: any) => n.properties.name);
     expect(names).toContain('validateInput');
   });
@@ -172,12 +171,18 @@ describe('worker pool integration', () => {
         content: fs.readFileSync(path.join(fixturesDir, f), 'utf-8'),
       }));
 
-    expect(files.length).toBeGreaterThanOrEqual(4);
+    // mini-repo/src/ ships exactly 7 .ts files (db, formatter, handler,
+    // index, logger, middleware, validator). Pinning the count surfaces
+    // a fixture change as a test signal instead of letting the rest of
+    // the test silently rebalance.
+    expect(files.length).toBe(7);
 
     const results = await pool.dispatch<any, any>(files);
 
-    // Each worker chunk returns a result
-    expect(results.length).toBeGreaterThan(0);
+    // All 7 files fit one default sub-batch (size 200 / budget 8MB),
+    // so the dispatch returns exactly one chunk result regardless of
+    // pool size.
+    expect(results).toHaveLength(1);
 
     // Total files parsed should match input
     const totalParsed = results.reduce((sum: number, r: any) => sum + r.fileCount, 0);
@@ -265,7 +270,13 @@ describe('worker pool integration', () => {
       expect(results).toHaveLength(1);
       const result = results[0];
       expect(typeof result.fileCount).toBe('number');
-      expect(result.fileCount).toBeGreaterThanOrEqual(0);
+      // Empty content → tree-sitter parse produces no symbols. The
+      // fileCount on the result reflects how many files the worker
+      // successfully processed (1 in this case — an empty file is still
+      // "processed", just without emitting symbols). Pinning exactly 1
+      // catches a regression that would silently start dropping
+      // empty-content files from the count.
+      expect(result.fileCount).toBe(1);
       expect(Array.isArray(result.nodes)).toBe(true);
     },
   );
@@ -442,7 +453,17 @@ describe('worker pool integration', () => {
       expect(results).toEqual([]);
       expect(pool.getQuarantinedPaths?.() ?? []).toEqual(['crash.ts']);
       const warnRecords = cap.records().filter((r) => Number(r.level) >= 40 /* warn or above */);
-      expect(warnRecords.length).toBeGreaterThan(0);
+      // The pool must emit at least one warn naming the crash recovery
+      // path so an operator can distinguish a startup-crash from a
+      // stalled-worker rejection. Content match is stronger than a
+      // length bound: a future refactor that drops the warning would
+      // pass a length check but fail this predicate.
+      const sawRecoveryWarn = warnRecords.some(
+        (r) =>
+          typeof r.msg === 'string' &&
+          /(respawn|dropping slot|replacement|did not report ready|exceeded respawn)/i.test(r.msg),
+      );
+      expect(sawRecoveryWarn).toBe(true);
     } finally {
       cap.restore();
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -1064,8 +1085,13 @@ describe('worker pool integration', () => {
       expect(err).toBeInstanceOf(WorkerPoolDispatchError);
       const dispatchErr = err as WorkerPoolDispatchError;
       // Breaker tripped with the cumulative quarantine surfaced for
-      // sequential fallback.
-      expect(dispatchErr.fallbackExcludePaths.length).toBeGreaterThan(0);
+      // sequential fallback. With threshold=2 + single-slot pool +
+      // both items crashing in sequence, both files are in-flight
+      // when their respective deaths fire, so both end up in
+      // quarantine before the breaker trips. Pinning the exact set is
+      // stronger than `length > 0` and surfaces a regression where
+      // only one path makes it through.
+      expect([...dispatchErr.fallbackExcludePaths].sort()).toEqual(['one.ts', 'two.ts']);
       expect(/circuit breaker tripped/i.test(dispatchErr.message)).toBe(true);
 
       // Subsequent dispatch rejects up front with the same error class.

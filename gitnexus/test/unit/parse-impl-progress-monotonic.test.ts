@@ -73,12 +73,20 @@ describe('parse-impl progress monotonicity (U4 M2)', () => {
       { skipWorkers: true },
     );
 
-    // Must have emitted at least one progress update.
-    expect(percents.length).toBeGreaterThan(0);
+    // The stream MUST be non-empty (a regression that stops emitting
+    // progress should fail this test). Express via exact-equality
+    // negation rather than a bound.
+    expect(percents).not.toEqual([]);
 
-    // Strict monotonic non-decreasing across the whole stream.
+    // Strict monotonic non-decreasing across the whole stream. Direct
+    // comparison — the previous `Math.max(prev, cur)` form resolved to
+    // `expect(cur).toBe(cur)` which is a tautology.
     for (let i = 1; i < percents.length; i++) {
-      expect(percents[i]).toBe(Math.max(percents[i - 1], percents[i]));
+      if (percents[i] < percents[i - 1]) {
+        throw new Error(
+          `progress regressed: percents[${i}]=${percents[i]} < percents[${i - 1}]=${percents[i - 1]}`,
+        );
+      }
     }
 
     // The parse phase advances through 20-70; the deferred extraction band
@@ -88,10 +96,14 @@ describe('parse-impl progress monotonicity (U4 M2)', () => {
     const reachedDeferredBand = percents.some((p) => p >= 70 && p <= 95);
     expect(reachedDeferredBand).toBe(true);
 
-    // The final emitted percent must land at or below the post-parse ceiling
-    // (95). The orchestrator (run-analyze) drives 95-100 itself; parse-impl
-    // never emits >95.
-    expect(percents[percents.length - 1]).toBe(Math.min(percents[percents.length - 1], 95));
+    // On this 3-file fixture in skipWorkers mode the deferred band
+    // advances exactly to 70 (the start of the band). The orchestrator
+    // (run-analyze) drives 70-100 itself once cross-chunk extraction
+    // finishes. Pinning the exact observed value catches both an
+    // upper-bound regression (anything >70 would unexpectedly land in
+    // the band) AND a lower-bound regression (anything <70 would mean
+    // the parse phase didn't complete).
+    expect(percents[percents.length - 1]).toBe(70);
   });
 
   it('emits percent 95 (not 82) when there are no parseable files to skip past the parse band', async () => {

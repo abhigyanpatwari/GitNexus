@@ -252,10 +252,18 @@ export async function runChunkedParseAndResolve(
   const MIN_BYTES_FOR_WORKERS = options?.workerThresholdsForTest?.minBytes ?? 512 * 1024;
   const totalBytes = parseableScanned.reduce((s, f) => s + f.size, 0);
 
-  // Create worker pool once, reuse across chunks
+  // Create worker pool once, reuse across chunks.
+  //
+  // `workerPoolSize === 0` is a programmatic equivalent of `skipWorkers:
+  // true` per the `PipelineOptions.workerPoolSize` contract. Short-
+  // circuiting here avoids constructing a useless pool that rejects
+  // every dispatch (with a `Worker pool parsing stopped` warn log per
+  // chunk) just to fall back to the sequential path via the error
+  // catch — the gate honors the docstring directly.
   let workerPool: WorkerPool | undefined;
   if (
     !options?.skipWorkers &&
+    options?.workerPoolSize !== 0 &&
     (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
   ) {
     try {
@@ -386,16 +394,21 @@ export async function runChunkedParseAndResolve(
       startChunkPrefetch(i);
     }
 
+    // Hoisted loop-invariant: GITNEXUS_VERBOSE / NODE_ENV are read once
+    // (not on every chunk). Previously evaluated at the top of the loop
+    // body, which re-read process.env on every iteration even though
+    // the env can't change mid-run.
+    const verboseThroughputLog = isDev || isVerboseIngestionEnabled();
+
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkPaths = chunks[chunkIdx];
       // Start wall-clock for the per-chunk throughput log emitted at end
-      // of this iteration. Computed when either NODE_ENV=development OR
-      // the operator passed `--verbose` (GITNEXUS_VERBOSE) — the previous
-      // `isDev`-only gate meant operators running `gitnexus analyze
-      // --verbose` in production never saw the log (M3 from PR #1693
-      // review). Timestamp is cheap; the log line only fires under the
-      // same combined gate below.
-      const verboseThroughputLog = isDev || isVerboseIngestionEnabled();
+      // of this iteration. The gate is computed once above; here we just
+      // sample the clock if the gate is on. Computed when either
+      // NODE_ENV=development OR the operator passed `--verbose`
+      // (GITNEXUS_VERBOSE) — the previous `isDev`-only gate meant
+      // operators running `gitnexus analyze --verbose` in production
+      // never saw the log (M3 from PR #1693 review).
       const chunkStartMs: number | null = verboseThroughputLog ? Date.now() : null;
 
       const chunkContents = await chunkContentPromises[chunkIdx]!;

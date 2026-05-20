@@ -193,6 +193,10 @@ describe('worker pool resilience', () => {
       droppedSlots: 0,
       quarantined: 0,
       poolBroken: false,
+      // Code-review F16: `terminated` distinguishes graceful shutdown
+      // from a circuit-breaker trip. Fresh pool has not been
+      // terminated.
+      terminated: false,
       // U12: every slot starts at generation 0; no respawns yet on a
       // fresh pool. Per-slot zeros (not a single scalar) because each
       // slot tracks its own respawn history independently.
@@ -225,6 +229,8 @@ describe('worker pool resilience', () => {
       droppedSlots: 1,
       quarantined: 1,
       poolBroken: false,
+      // F16: pool is still alive (just lost a slot); terminated=false.
+      terminated: false,
       // U12: slot 0 was dropped before any successful respawn (budget=0),
       // so its generation stays at 0. Slot 1 never died, also 0.
       slotGenerations: [0, 0],

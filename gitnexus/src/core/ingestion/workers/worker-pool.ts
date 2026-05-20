@@ -55,30 +55,52 @@ function decodeIncomingWorkerMessage(raw: unknown): WorkerOutgoingMessage {
  *    and avoiding transfer here means we can't accidentally detach an
  *    unrelated Buffer that shares the pool.
  */
+type ParseWorkerItem = { path: string; content: string };
+
+/**
+ * Type guard: every element of `items` has the parse-worker shape
+ * (`{path: string, content: string}`). Used to narrow the generic input
+ * inside `buildDispatchMessage` without an `as unknown as Array<...>`
+ * double-cast, so a future rename of `ParseWorkerInput.content` would
+ * fail to compile inside the narrowed branch instead of silently
+ * mismatching at runtime.
+ */
+function isParseWorkerItemArray<T>(
+  items: readonly T[],
+): items is readonly T[] & readonly ParseWorkerItem[] {
+  if (items.length === 0) return false;
+  for (const it of items) {
+    if (it == null || typeof it !== 'object') return false;
+    if (typeof (it as { path?: unknown }).path !== 'string') return false;
+    if (typeof (it as { content?: unknown }).content !== 'string') return false;
+  }
+  return true;
+}
+
+/**
+ * @internal Exported only so the unit test suite
+ * (`test/unit/worker-pool-transferlist.test.ts`) can pin the return-
+ * shape and transferList contract directly. Not part of the public
+ * package API; the return-type union and shape-detection heuristic may
+ * change without a semver signal.
+ */
 export function buildDispatchMessage<T>(items: readonly T[]): {
   message: Uint8Array | { envelope: Uint8Array; contents: Uint8Array[] };
   transferList?: ArrayBuffer[];
 } {
-  const isParseWorkerShape =
-    items.length > 0 &&
-    items.every(
-      (it) =>
-        it != null &&
-        typeof it === 'object' &&
-        typeof (it as { path?: unknown }).path === 'string' &&
-        typeof (it as { content?: unknown }).content === 'string',
-    );
-
-  if (!isParseWorkerShape) {
+  if (!isParseWorkerItemArray(items)) {
     return {
       message: encodeMessage(MessageTag.DispatchJob, { type: 'sub-batch', files: items }),
     };
   }
 
+  // After the type guard, `items` is narrowed to `readonly ParseWorkerItem[]`.
+  // No cast needed — `item.path` and `item.content` are statically typed
+  // as strings inside this branch.
   const encoder = new TextEncoder();
   const filesMeta: Array<{ path: string; byteLength: number }> = [];
   const contents: Uint8Array[] = [];
-  for (const item of items as unknown as Array<{ path: string; content: string }>) {
+  for (const item of items) {
     const u8 = encoder.encode(item.content);
     filesMeta.push({ path: item.path, byteLength: u8.byteLength });
     contents.push(u8);
@@ -155,13 +177,22 @@ export interface WorkerPoolStats {
   /** Whether the circuit breaker has tripped (no further dispatches
    *  will be accepted by this pool instance). */
   readonly poolBroken: boolean;
+  /** Whether `terminate()` has been called on this pool. Distinguishes
+   *  graceful shutdown (terminated=true, activeSlots=0) from a circuit-
+   *  breaker trip (terminated=false, poolBroken=true, activeSlots=0).
+   *  Optional for backward compatibility with external `WorkerPoolStats`
+   *  implementations that predate this field. */
+  readonly terminated?: boolean;
   /** Per-slot generation counter (U12). Increments by 1 on every
    *  successful worker replacement for that slot. Operators / tests
    *  observe this to confirm a death-then-respawn actually happened
    *  vs. the same worker being recycled in place. Initial value is 0
    *  for every slot at pool creation; dropped slots keep their last
-   *  generation (they don't decrement). */
-  readonly slotGenerations: readonly number[];
+   *  generation (they don't decrement). Optional so external
+   *  `WorkerPoolStats` implementations that predate U12 can omit the
+   *  field without a TypeScript compile error — in-repo callers use
+   *  optional chaining (`stats?.slotGenerations`) consistently. */
+  readonly slotGenerations?: readonly number[];
 }
 
 export interface WorkerPoolOptions {
@@ -599,23 +630,65 @@ export const createWorkerPool = (
     activeSlots.add(i);
   }
 
-  const dispatch = <TInput, TResult>(
+  // Symmetrize the readiness gate across initial and replacement spawn
+  // paths. `replaceWorker` already awaits `waitForWorkerReady` per
+  // replacement so an init-crashing worker is dropped before dispatch
+  // sees it. The initial-spawn loop above didn't — a worker whose
+  // top-of-script init crashes (failed tree-sitter native binding,
+  // missing dependency) would only be noticed at the first dispatch's
+  // 30s idle timeout, vs the 5s WORKER_READY_TIMEOUT_MS bound that
+  // replacements enjoy.
+  //
+  // The promise below settles every initial slot in parallel and drops
+  // unready slots from `activeSlots` before any dispatch can fire.
+  // `dispatch` awaits it via `initialReadyGate` on first invocation.
+  // Wrapped in a single `Promise.allSettled` so a slow worker doesn't
+  // block ready workers from being usable — first dispatch waits for
+  // all slots' verdicts (good or bad).
+  const initialReadyGate: Promise<void> = Promise.allSettled(
+    workers.map(async (w, i) => {
+      if (!w) return;
+      try {
+        await waitForWorkerReady(w);
+      } catch (err) {
+        logger.warn(
+          {
+            workerIndex: i,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          `Worker ${i} did not report ready on initial spawn; dropping slot.`,
+        );
+        await w.terminate().catch(() => undefined);
+        workers[i] = undefined;
+        activeSlots.delete(i);
+      }
+    }),
+  ).then(() => undefined);
+
+  const dispatch = async <TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
   ): Promise<TResult[]> => {
+    // Await the initial-spawn readiness gate (F13). On first dispatch
+    // this blocks for up to WORKER_READY_TIMEOUT_MS while every initial
+    // worker's `{type:'ready'}` handshake is checked; on subsequent
+    // dispatches the promise is already settled and resolves
+    // synchronously. Slots whose initial worker crashed in top-of-
+    // script init have been dropped from `activeSlots` by the gate
+    // before this point — they don't surface here as "no active
+    // workers" until *all* initial slots fail.
+    await initialReadyGate;
     if (poolBroken) {
       const reason = poolFailure ? `: ${poolFailure.message}` : '';
-      return Promise.reject(
-        new WorkerPoolDispatchError(
-          `Worker pool circuit breaker tripped${reason}. ` +
-            `Subsequent dispatches require a fresh pool instance.`,
-          [],
-        ),
+      throw new WorkerPoolDispatchError(
+        `Worker pool circuit breaker tripped${reason}. ` +
+          `Subsequent dispatches require a fresh pool instance.`,
+        [],
       );
     }
-    if (items.length === 0) return Promise.resolve([]);
+    if (items.length === 0) return [];
     if (activeSlots.size === 0) {
-      return Promise.reject(new WorkerPoolDispatchError('Worker pool has no active workers', []));
+      throw new WorkerPoolDispatchError('Worker pool has no active workers', []);
     }
 
     // Layer 3: filter out quarantined paths so a known-bad file never reaches
@@ -627,7 +700,7 @@ export const createWorkerPool = (
       if (path !== undefined && quarantine.has(path)) continue;
       dispatchableItems.push(item);
     }
-    if (dispatchableItems.length === 0) return Promise.resolve([]);
+    if (dispatchableItems.length === 0) return [];
 
     const jobs = createJobs(
       dispatchableItems,
@@ -1140,9 +1213,18 @@ export const createWorkerPool = (
               // BEFORE spawning a fresh worker. The previous version
               // called `replaceWorker` unconditionally, letting a
               // chronically-timing-out slot respawn forever.
+              //
+              // Also increment `consecutiveFailuresPerSlot` here so the
+              // per-slot circuit breaker sees pure-timeout death loops
+              // (not just crashes). Without it, a slot that consistently
+              // times out will consume its full respawn budget without
+              // the breaker ever firing — chronic timeouts are
+              // structurally the same kind of failure as crashes from
+              // the breaker's perspective.
               void (async () => {
                 try {
                   respawnCount[workerIndex]++;
+                  consecutiveFailuresPerSlot[workerIndex]++;
                   if (respawnCount[workerIndex] > poolOptions.maxRespawnsPerSlot) {
                     logger.warn(
                       {
@@ -1198,10 +1280,12 @@ export const createWorkerPool = (
           if (settled || stopped) return;
           // U17: production parse-worker.ts emits Buffer-encoded messages;
           // FakeWorkers in the test suite still emit POJOs. Tolerate both
-          // via `decodeIncomingWorkerMessage`. A malformed frame from a
-          // real worker is treated as a worker-side bug — the protocol
-          // error escapes and is caught by the `messageerror` handler
-          // below, routing through the existing recovery layer.
+          // via `decodeIncomingWorkerMessage`. A protocol-decode failure
+          // (malformed frame) is caught by THIS try/catch — distinct
+          // from `messageerror`, which fires for V8 structured-clone
+          // deserialization failures before the message body would
+          // reach this handler. Both paths route through
+          // `recoverAndResume` but the error class differs.
           let msg: WorkerOutgoingMessage;
           try {
             msg = decodeIncomingWorkerMessage(raw);
@@ -1212,6 +1296,22 @@ export const createWorkerPool = (
               `Worker ${workerIndex} protocol decode error: ${
                 err instanceof Error ? err.message : String(err)
               }`,
+              resolveExcludePaths(),
+            );
+            return;
+          }
+          // Defensive guard for malformed-but-decode-successful payloads
+          // (e.g., a `null` body, which the protocol allows per
+          // `encodeMessage` docs but the dispatch handler must not
+          // dereference). Without this guard, `null.type` throws a
+          // TypeError out of the EventEmitter listener → uncaughtException
+          // on the main thread, crashing the entire analyze run instead
+          // of routing through the existing recovery layer.
+          if (msg === null || typeof msg !== 'object' || typeof msg.type !== 'string') {
+            settled = true;
+            cleanup();
+            void recoverAndResume(
+              `Worker ${workerIndex} sent a malformed message (no type discriminant)`,
               resolveExcludePaths(),
             );
             return;
@@ -1347,8 +1447,16 @@ export const createWorkerPool = (
     });
   };
 
+  let terminated = false;
   const terminate = async (): Promise<void> => {
-    await Promise.all(workers.map((w) => w?.terminate()));
+    terminated = true;
+    // `.catch(() => undefined)` per-worker matches every other terminate
+    // site in this file. Without it, a hung/OOM-killed worker's terminate
+    // rejection escapes `Promise.all` and replaces the original pipeline
+    // exception when this is called from `runChunkedParseAndResolve`'s
+    // finally block — masking the real failure and leaving `workers[]`
+    // populated with dead references because the lines below never run.
+    await Promise.all(workers.map((w) => w?.terminate().catch(() => undefined)));
     workers.length = 0;
     activeSlots.clear();
   };
@@ -1364,6 +1472,7 @@ export const createWorkerPool = (
       droppedSlots: size - activeSlots.size,
       quarantined: quarantine.size,
       poolBroken,
+      terminated,
       slotGenerations: slotGenerations.slice(),
     }),
   };

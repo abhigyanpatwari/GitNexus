@@ -148,7 +148,7 @@ function ensureHeap(): boolean {
       stdio: 'inherit',
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
     if (childProcessLikelyOom(e)) {
       cliError(
         `  Analysis likely ran out of memory.\n` +
@@ -159,7 +159,11 @@ function ensureHeap(): boolean {
         { recoveryHint: 'heap-oom-respawn' },
       );
     }
-    process.exitCode = e.status ?? 1;
+    const status =
+      typeof e === 'object' && e !== null && 'status' in e && typeof e.status === 'number'
+        ? e.status
+        : 1;
+    process.exitCode = status;
   }
   return true;
 }
@@ -740,7 +744,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     }
 
     console.log('');
-  } catch (err: any) {
+  } catch (err: unknown) {
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);
     console.log = origLog;
@@ -750,7 +754,7 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     console.error = origError;
     bar.stop();
 
-    const msg = err.message || String(err);
+    const msg = err instanceof Error ? err.message : String(err);
 
     // Registry name-collision from --name (#829) — surface as an
     // actionable error rather than a generic stack-trace.

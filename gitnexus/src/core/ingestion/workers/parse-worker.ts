@@ -2469,6 +2469,12 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
 // strict — every outgoing message is encoded.
 parentPort!.postMessage(encodeMessage(MessageTag.Ready, { type: 'ready' }));
 
+// Module-scope `TextDecoder` for the U19 hybrid-envelope path. Hoisted
+// out of `decodeIncomingMessage` so we don't allocate a new ICU-backed
+// decoder per sub-batch — `TextDecoder.decode()` is stateless across
+// calls and safe to share.
+const sharedHybridDecoder = new TextDecoder('utf-8');
+
 // Decode a single incoming message. The pool always sends Buffer-encoded
 // frames post-U17, but the parameter type is `unknown` because Node's
 // worker_threads typings declare `on('message', (value: any) => void)`.
@@ -2502,12 +2508,37 @@ function decodeIncomingMessage(raw: unknown): WorkerIncomingMessage {
   ) {
     const envelope = (raw as { envelope: Uint8Array }).envelope;
     const contents = (raw as { contents: Uint8Array[] }).contents;
-    const decoded = decodeMessage(envelope).payload as {
+    const decodedPayload = decodeMessage(envelope).payload;
+    // The protocol allows `null` payloads (per `encodeMessage` docs).
+    // Reject them here rather than letting `.type` access throw a
+    // TypeError that escapes uncaught — the outer try/catch routes the
+    // thrown Error back to the pool as a worker `error` reply, which
+    // goes through `recoverAndResume` instead of producing silently-
+    // empty graph data.
+    if (
+      decodedPayload === null ||
+      typeof decodedPayload !== 'object' ||
+      typeof (decodedPayload as { type?: unknown }).type !== 'string'
+    ) {
+      throw new Error('hybrid envelope decode produced a non-object or non-typed payload');
+    }
+    const decoded = decodedPayload as {
       type: string;
       files: Array<{ path: string; byteLength: number }>;
     };
     if (decoded.type === 'sub-batch' && Array.isArray(decoded.files)) {
-      const decoder = new TextDecoder('utf-8');
+      // Length-equality assertion. Without it, `TextDecoder.decode(undefined)`
+      // silently returns `""` and produces zero-content graph nodes — a
+      // silent data-loss failure mode. Throwing routes through the
+      // outer try/catch -> worker `error` reply -> `recoverAndResume`,
+      // making the contract violation observable instead of masking it.
+      if (decoded.files.length !== contents.length) {
+        throw new Error(
+          `hybrid envelope contract violation: files.length=${decoded.files.length} ` +
+            `but contents.length=${contents.length}`,
+        );
+      }
+      const decoder = sharedHybridDecoder;
       const files: ParseWorkerInput[] = decoded.files.map((meta, i) => ({
         path: meta.path,
         content: decoder.decode(contents[i]),

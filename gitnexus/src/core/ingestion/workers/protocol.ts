@@ -99,16 +99,24 @@ function isValidTag(byte: number): byte is MessageTagValue {
  * explicit instead of silently truncating.
  */
 export function encodeMessage(tag: MessageTagValue, payload: unknown): Buffer {
-  const json = Buffer.from(JSON.stringify(payload ?? null), 'utf8');
-  if (json.length > 0xffffffff) {
-    throw new RangeError(
-      `protocol payload exceeds uint32 length cap (${json.length} > ${0xffffffff})`,
-    );
+  const json = JSON.stringify(payload ?? null);
+  // `Buffer.byteLength(string, 'utf8')` returns the encoded byte length
+  // without allocating an intermediate Buffer. Pre-checking it lets us
+  // surface the uint32 cap as a RangeError before any allocation.
+  const length = Buffer.byteLength(json, 'utf8');
+  if (length > 0xffffffff) {
+    throw new RangeError(`protocol payload exceeds uint32 length cap (${length} > ${0xffffffff})`);
   }
-  const buf = Buffer.alloc(PROTOCOL_HEADER_BYTES + json.length);
+  // Single allocation, single write pass: `buf.write(string, offset,
+  // 'utf8')` writes UTF-8 bytes directly into the target without an
+  // intermediate `Buffer.from(string, 'utf8')` allocation + memcpy.
+  // Halves the per-frame allocation count vs the previous two-Buffer +
+  // copy approach — material under high message volume (every dispatch
+  // envelope, every worker reply).
+  const buf = Buffer.allocUnsafe(PROTOCOL_HEADER_BYTES + length);
   buf.writeUInt8(tag, 0);
-  buf.writeUInt32LE(json.length, 1);
-  json.copy(buf, PROTOCOL_HEADER_BYTES);
+  buf.writeUInt32LE(length, 1);
+  buf.write(json, PROTOCOL_HEADER_BYTES, 'utf8');
   return buf;
 }
 
