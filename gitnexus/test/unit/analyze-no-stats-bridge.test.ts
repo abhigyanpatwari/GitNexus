@@ -1,16 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock } = vi.hoisted(
-  () => {
+const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock, cliErrorMock } =
+  vi.hoisted(() => {
     const runFullAnalysisMock = vi.fn();
     const generateAIContextFilesMock = vi.fn(async () => ({ files: [] as string[] }));
     const generateSkillFilesMock = vi.fn(async () => ({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills/generated',
     }));
-    return { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock };
-  },
-);
+    const cliErrorMock = vi.fn();
+    return {
+      runFullAnalysisMock,
+      generateAIContextFilesMock,
+      generateSkillFilesMock,
+      cliErrorMock,
+    };
+  });
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
@@ -22,6 +27,10 @@ vi.mock('../../src/cli/ai-context.js', () => ({
 
 vi.mock('../../src/cli/skill-gen.js', () => ({
   generateSkillFiles: generateSkillFilesMock,
+}));
+
+vi.mock('../../src/cli/cli-message.js', () => ({
+  cliError: cliErrorMock,
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
@@ -62,6 +71,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills/generated',
     });
+    cliErrorMock.mockReset();
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
   });
@@ -102,6 +112,27 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     const opts = runFullAnalysisMock.mock.calls[0][1];
     expect(opts.noStats).toBe(true);
     expect(opts.skipAgentsMd).toBe(true);
+  });
+
+  it('passes --repair-fts through to runFullAnalysis', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.repairFts).toBe(true);
+  });
+
+  it('rejects combining --repair-fts with --force', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(cliErrorMock).toHaveBeenCalledWith(
+      expect.stringMatching(/cannot combine `--repair-fts` with `--force`/i),
+    );
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
   it('passes stats:false as noStats to generateAIContextFiles on the --skills regeneration path (#1477)', async () => {
