@@ -61,11 +61,13 @@ function resolveGitnexusBin(): string | null {
       .filter(Boolean);
 
     if (isWin) {
-      // On Windows, `where` returns multiple entries (e.g. the POSIX shell
-      // script AND the .cmd/.bat wrapper). Prefer the wrapper because
-      // child_process.spawn() cannot execute a shell script directly.
+      // On Windows, npm global installs can surface multiple launchers for the
+      // same package (e.g. a POSIX shell shim plus .cmd/.bat wrappers). Claude
+      // and the other MCP hosts need a directly spawnable command path, so only
+      // accept the Windows wrapper. If it is missing, fall back to the slower
+      // npx entry instead of persisting a non-spawnable shim path.
       const cmdLine = lines.find((l) => /\.(cmd|bat)$/i.test(l));
-      return cmdLine || lines[0] || null;
+      return cmdLine || null;
     }
 
     return lines[0] || null;

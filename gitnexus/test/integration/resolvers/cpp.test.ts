@@ -1836,6 +1836,64 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
   });
 });
 
+// C++ overload resolution: pointer/nullptr/ellipsis conversion ranks (#1637)
+describe('C++ overload resolution — pointer/nullptr/ellipsis ranks (#1637)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-pointer-null-ellipsis'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    const nullptrCall = calls.find((c) => c.source === 'runNullptr' && c.target === 'f');
+    const pointerCall = calls.find((c) => c.source === 'runPointer' && c.target === 'f');
+    const boolCall = calls.find((c) => c.source === 'runBoolConversion' && c.target === 'f');
+
+    expect(
+      result.graph.getNode(nullptrCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(
+      result.graph.getNode(pointerCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(result.graph.getNode(boolCall?.rel.targetId ?? '')?.properties.parameterTypes).toEqual([
+      'bool',
+    ]);
+  });
+
+  it('g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+
+    expect(gCalls.length).toBe(1);
+    const tgt = result.graph.getNode(gCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes).toEqual(['int', 'int']);
+  });
+
+  it("h(1, 'a') resolves to h(int, double), not h(int, ...)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+
+    expect(hCalls.length).toBe(1);
+    const tgt = result.graph.getNode(hCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes).toEqual(['int', 'double']);
+  });
+
+  it('k(1, 2, 3) keeps the ellipsis overload viable when it is the only match', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const kCalls = calls.filter((c) => c.source === 'run' && c.target === 'k');
+
+    expect(kCalls.length).toBe(1);
+    const tgt = result.graph.getNode(kCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterCount).toBeUndefined();
+    expect(tgt?.properties.parameterTypes).toEqual(['int']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
@@ -3154,6 +3212,59 @@ describe('C++ SFINAE filter — C++20 requires-clause shape', () => {
     const targetIds = new Set(calls.map((c) => c.rel.targetId));
     expect(targetIds.size).toBe(2);
   });
+});
+
+describe('C++ SFINAE filter — Tier-A type_traits predicates', () => {
+  async function runFixture(name: string): Promise<PipelineResult> {
+    return runPipelineFromRepo(path.join(FIXTURES, name), () => {});
+  }
+
+  function callsFromRunToPick(result: PipelineResult) {
+    return getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+  }
+
+  it('is_pointer_v and is_class_v disambiguate pointer vs class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-pointer');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_reference_v keeps reference-shaped arguments distinct from values', async () => {
+    const result = await runFixture('cpp-sfinae-is-reference');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_class_v rejects primitive arguments while keeping class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-class');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_enum_v distinguishes known enum declarations from primitives', async () => {
+    const result = await runFixture('cpp-sfinae-is-enum');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_const_v and is_volatile_v disambiguate cv-qualified locals', async () => {
+    const result = await runFixture('cpp-sfinae-is-const-volatile');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_void_v does not misclassify void pointers as void values', async () => {
+    const result = await runFixture('cpp-sfinae-is-void');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(1);
+  }, 60000);
 });
 
 describe('C++ SFINAE filter — unknown predicate keeps both candidates (monotonicity contract)', () => {
