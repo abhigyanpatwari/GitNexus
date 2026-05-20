@@ -2485,6 +2485,36 @@ function decodeIncomingMessage(raw: unknown): WorkerIncomingMessage {
   if (raw instanceof Uint8Array) {
     return decodeMessage(raw).payload as WorkerIncomingMessage;
   }
+  // U19: hybrid envelope+contents shape. Pool dispatch hoists file
+  // contents OUT of the JSON envelope and into a `contents: Uint8Array[]`
+  // companion whose ArrayBuffers were transferred zero-copy. The
+  // envelope (also a Uint8Array, structured-cloned not transferred)
+  // carries `{type:'sub-batch', files:[{path, byteLength}]}` — metadata
+  // only. Reassemble by zipping the metadata files with the contents
+  // array positionally, decoding UTF-8 → string at this point (one
+  // toString per file, executed on the worker thread in parallel with
+  // ongoing main-thread work).
+  if (
+    raw !== null &&
+    typeof raw === 'object' &&
+    (raw as { envelope?: unknown }).envelope instanceof Uint8Array &&
+    Array.isArray((raw as { contents?: unknown }).contents)
+  ) {
+    const envelope = (raw as { envelope: Uint8Array }).envelope;
+    const contents = (raw as { contents: Uint8Array[] }).contents;
+    const decoded = decodeMessage(envelope).payload as {
+      type: string;
+      files: Array<{ path: string; byteLength: number }>;
+    };
+    if (decoded.type === 'sub-batch' && Array.isArray(decoded.files)) {
+      const decoder = new TextDecoder('utf-8');
+      const files: ParseWorkerInput[] = decoded.files.map((meta, i) => ({
+        path: meta.path,
+        content: decoder.decode(contents[i]),
+      }));
+      return { type: 'sub-batch', files };
+    }
+  }
   return raw as WorkerIncomingMessage;
 }
 

@@ -40,7 +40,7 @@ const hasDistWorker = fs.existsSync(DIST_WORKER);
 //      WORKER_READY_TIMEOUT_MS and fail with "Replacement worker startup
 //      failed and no slots remain".
 //
-//   2. (U17) A transparent decode wrapper around `parentPort.on('message', ...)`
+//   2. (U17/U19) A transparent decode wrapper around `parentPort.on('message', ...)`
 //      so the 9 ad-hoc test worker scripts don't need rewriting now that
 //      the pool sends Buffer-encoded `sub-batch` / `flush` dispatches.
 //      Test workers continue to receive POJO objects in their existing
@@ -51,14 +51,44 @@ const hasDistWorker = fs.existsSync(DIST_WORKER);
 //      dist/protocol.js without knowing its absolute path. The pool is
 //      tolerant of POJO incoming, so outgoing `parentPort.postMessage`
 //      calls in the test scripts stay as POJO (unchanged).
+//
+//      U19 adds a second incoming shape: the hybrid
+//      `{envelope: Uint8Array, contents: Uint8Array[]}` produced by
+//      `buildDispatchMessage` when file contents are transferred
+//      zero-copy. The wrapper detects this shape, decodes the envelope
+//      header to get the file metadata, and zips the metadata with the
+//      transferred Uint8Arrays — decoding each content back to a UTF-8
+//      string so test workers see the legacy POJO layout
+//      `{type:'sub-batch', files:[{path, content: string}]}`.
 const READY_PREAMBLE = `
 const { parentPort: __pp } = require('node:worker_threads');
-const __decodeFrame = (raw) => {
+const __decodeProtocolBuf = (raw) => {
   // structured clone strips the Buffer prototype; raw arrives as Uint8Array.
-  if (!(raw instanceof Uint8Array)) return raw;
   const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const length = buf.readUInt32LE(1);
   return JSON.parse(buf.subarray(5, 5 + length).toString('utf8'));
+};
+const __decoder = new TextDecoder('utf-8');
+const __decodeFrame = (raw) => {
+  if (raw instanceof Uint8Array) return __decodeProtocolBuf(raw);
+  if (
+    raw && typeof raw === 'object' &&
+    raw.envelope instanceof Uint8Array &&
+    Array.isArray(raw.contents)
+  ) {
+    const env = __decodeProtocolBuf(raw.envelope);
+    if (env && env.type === 'sub-batch' && Array.isArray(env.files)) {
+      return {
+        type: 'sub-batch',
+        files: env.files.map((m, i) => ({
+          path: m.path,
+          content: __decoder.decode(raw.contents[i]),
+        })),
+      };
+    }
+    return env;
+  }
+  return raw;
 };
 const __origOn = __pp.on.bind(__pp);
 __pp.on = (event, handler) => {

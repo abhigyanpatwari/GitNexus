@@ -27,6 +27,72 @@ function decodeIncomingWorkerMessage(raw: unknown): WorkerOutgoingMessage {
   }
   return raw as WorkerOutgoingMessage;
 }
+
+/**
+ * U19: zero-copy dispatch builder.
+ *
+ * For the parse-worker shape `{path: string, content: string}[]`, hoists
+ * file contents OUT of the JSON envelope into separate Uint8Arrays and
+ * returns a `transferList` of their ArrayBuffers so `worker.postMessage`
+ * transfers ownership zero-copy. The envelope itself carries only
+ * lightweight metadata (path + byteLength per file), so the JSON
+ * round-trip cost no longer scales with total file-content size.
+ *
+ * For non-parse shapes (test scaffolding sending arbitrary items), falls
+ * back to the legacy `encodeMessage` path with the full payload inside
+ * the JSON envelope — no transfer, no shape assumptions.
+ *
+ * Ownership notes:
+ *  - Each content `Uint8Array` is produced via `TextEncoder.encode`,
+ *    which allocates its own ArrayBuffer. This is intentional: Node's
+ *    `Buffer.from(str, 'utf8')` and `Buffer.alloc(size)` may carve out
+ *    of the shared `Buffer.poolSize` pool, and transferring a pool-
+ *    backed ArrayBuffer would detach every other Buffer that happens
+ *    to share the same pool slab. TextEncoder bypasses the pool.
+ *  - The envelope (`encodeMessage` output) is NOT transferred. It MAY
+ *    be pool-backed; structured-cloning it is cheap (envelope is
+ *    ~30-80 bytes per file, dominated by path strings, no content),
+ *    and avoiding transfer here means we can't accidentally detach an
+ *    unrelated Buffer that shares the pool.
+ */
+export function buildDispatchMessage<T>(items: readonly T[]): {
+  message: Uint8Array | { envelope: Uint8Array; contents: Uint8Array[] };
+  transferList?: ArrayBuffer[];
+} {
+  const isParseWorkerShape =
+    items.length > 0 &&
+    items.every(
+      (it) =>
+        it != null &&
+        typeof it === 'object' &&
+        typeof (it as { path?: unknown }).path === 'string' &&
+        typeof (it as { content?: unknown }).content === 'string',
+    );
+
+  if (!isParseWorkerShape) {
+    return {
+      message: encodeMessage(MessageTag.DispatchJob, { type: 'sub-batch', files: items }),
+    };
+  }
+
+  const encoder = new TextEncoder();
+  const filesMeta: Array<{ path: string; byteLength: number }> = [];
+  const contents: Uint8Array[] = [];
+  for (const item of items as unknown as Array<{ path: string; content: string }>) {
+    const u8 = encoder.encode(item.content);
+    filesMeta.push({ path: item.path, byteLength: u8.byteLength });
+    contents.push(u8);
+  }
+  const envelope = encodeMessage(MessageTag.DispatchJob, {
+    type: 'sub-batch',
+    files: filesMeta,
+  });
+  const transferList: ArrayBuffer[] = contents.map((c) => c.buffer as ArrayBuffer);
+  return {
+    message: { envelope, contents },
+    transferList,
+  };
+}
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into bounded jobs, each job
@@ -1269,9 +1335,12 @@ export const createWorkerPool = (
           cleanup();
           return;
         }
-        worker.postMessage(
-          encodeMessage(MessageTag.DispatchJob, { type: 'sub-batch', files: job.items }),
-        );
+        const { message, transferList } = buildDispatchMessage(job.items);
+        if (transferList) {
+          worker.postMessage(message, transferList);
+        } else {
+          worker.postMessage(message);
+        }
       };
 
       for (const slotIndex of activeSlots) runWorker(slotIndex);

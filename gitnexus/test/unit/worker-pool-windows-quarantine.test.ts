@@ -28,6 +28,35 @@ import os from 'node:os';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import { decodeMessage } from '../../src/core/ingestion/workers/protocol.js';
 
+function decodeDispatchedMessage(rawMsg: unknown): unknown {
+  if (rawMsg instanceof Uint8Array) return decodeMessage(rawMsg).payload;
+  if (
+    rawMsg !== null &&
+    typeof rawMsg === 'object' &&
+    (rawMsg as { envelope?: unknown }).envelope instanceof Uint8Array &&
+    Array.isArray((rawMsg as { contents?: unknown }).contents)
+  ) {
+    const env = (rawMsg as { envelope: Uint8Array }).envelope;
+    const contents = (rawMsg as { contents: Uint8Array[] }).contents;
+    const decoded = decodeMessage(env).payload as {
+      type: string;
+      files: Array<{ path: string; byteLength: number }>;
+    };
+    if (decoded.type === 'sub-batch') {
+      const decoder = new TextDecoder('utf-8');
+      return {
+        type: 'sub-batch',
+        files: decoded.files.map((m, i) => ({
+          path: m.path,
+          content: decoder.decode(contents[i]),
+        })),
+      };
+    }
+    return decoded;
+  }
+  return rawMsg;
+}
+
 /**
  * Minimal FakeWorker for this test: emit `starting-file` for the script's
  * configured path, then either exit (death → quarantine the in-flight
@@ -51,7 +80,7 @@ class FakeWorker extends EventEmitter {
   }
   postMessage(rawMsg: unknown): void {
     // U17: decode Buffer-encoded dispatches; pool is now strict-encoded.
-    const msg = rawMsg instanceof Uint8Array ? decodeMessage(rawMsg).payload : rawMsg;
+    const msg = decodeDispatchedMessage(rawMsg);
     if (typeof msg !== 'object' || msg === null) return;
     const m = msg as { type?: string };
     if (m.type !== 'sub-batch') return;

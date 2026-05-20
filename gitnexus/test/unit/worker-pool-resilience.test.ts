@@ -13,6 +13,45 @@ import {
 import { decodeMessage } from '../../src/core/ingestion/workers/protocol.js';
 
 /**
+ * Decode whatever shape the pool sent — supports both:
+ *   - U17 single-frame: a Uint8Array protocol frame (payload inside JSON)
+ *   - U19 hybrid: `{envelope: Uint8Array, contents: Uint8Array[]}` where
+ *     file contents were hoisted out of JSON into a transferList. Test
+ *     action logic only inspects `msg.files[*].path`, so contents are
+ *     decoded back to strings for shape parity with the legacy POJO.
+ */
+function decodeDispatchedMessage(rawMsg: unknown): unknown {
+  if (rawMsg instanceof Uint8Array) {
+    return decodeMessage(rawMsg).payload;
+  }
+  if (
+    rawMsg !== null &&
+    typeof rawMsg === 'object' &&
+    (rawMsg as { envelope?: unknown }).envelope instanceof Uint8Array &&
+    Array.isArray((rawMsg as { contents?: unknown }).contents)
+  ) {
+    const env = (rawMsg as { envelope: Uint8Array }).envelope;
+    const contents = (rawMsg as { contents: Uint8Array[] }).contents;
+    const decoded = decodeMessage(env).payload as {
+      type: string;
+      files: Array<{ path: string; byteLength: number }>;
+    };
+    if (decoded.type === 'sub-batch' && Array.isArray(decoded.files)) {
+      const decoder = new TextDecoder('utf-8');
+      return {
+        type: 'sub-batch',
+        files: decoded.files.map((m, i) => ({
+          path: m.path,
+          content: decoder.decode(contents[i]),
+        })),
+      };
+    }
+    return decoded;
+  }
+  return rawMsg;
+}
+
+/**
  * Minimal `node:worker_threads` Worker double for unit-testing the pool's
  * resilience layers (auto-respawn, circuit breaker, quarantine, retry
  * budget). Tests script behaviour via `nextActions`: each action runs on
@@ -53,7 +92,7 @@ class FakeWorker extends EventEmitter {
     // `seenMessages` so test-side introspection assertions (which
     // expect `msg.type` / `msg.files`) keep working after the wire
     // format flipped to Buffer.
-    const msg = Buffer.isBuffer(rawMsg) ? decodeMessage(rawMsg).payload : rawMsg;
+    const msg = decodeDispatchedMessage(rawMsg);
     this.seenMessages.push(msg);
     if (typeof msg !== 'object' || msg === null) return;
     const m = msg as { type?: string; files?: { path: string }[] };
