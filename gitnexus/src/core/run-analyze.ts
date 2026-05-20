@@ -25,7 +25,7 @@ import {
   deleteAllCommunitiesAndProcesses,
   queryImporters,
 } from './lbug/lbug-adapter.js';
-import { createSearchFTSIndexes } from './search/fts-indexes.js';
+import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
 import {
   getStoragePaths,
   saveMeta,
@@ -71,6 +71,10 @@ export interface AnalyzeOptions {
    * bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
+  /** Repair only search indexes without re-running full parsing/indexing. */
+  repairFTS?: boolean;
+  /** Emit per-index FTS create logs. */
+  verbose?: boolean;
   embeddings?: boolean;
   /**
    * Override the auto-skip node-count cap for embedding generation.
@@ -126,6 +130,8 @@ export interface AnalyzeResult {
   alreadyUpToDate?: boolean;
   /** The raw pipeline result — only populated when needed by callers (e.g. skill generation). */
   pipelineResult?: any;
+  /** True when analyze only repaired FTS indexes and skipped pipeline re-analysis. */
+  ftsRepairedOnly?: boolean;
 }
 
 // Re-export the pure flag-derivation helper so external callers (and tests)
@@ -189,6 +195,48 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
+
+  // ── FTS-only repair path ────────────────────────────────────────────
+  if (options.repairFTS) {
+    if (!existingMeta) {
+      throw new Error(
+        'Cannot repair FTS indexes because no existing index metadata was found. Run `gitnexus analyze --force` first.',
+      );
+    }
+    try {
+      await initLbug(lbugPath);
+      progress('fts', 85, 'Repairing search indexes...');
+      await createSearchFTSIndexes({
+        onIndexStart: options.verbose
+          ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+          : undefined,
+        onIndexReady: options.verbose
+          ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+          : undefined,
+      });
+      const missing = await verifySearchFTSIndexes(executeQuery);
+      if (missing.length > 0) {
+        throw new Error(
+          `FTS repair failed — missing indexes after rebuild: ${missing.join(', ')}. ` +
+            'Try `gitnexus analyze --force` to rebuild the full index.',
+        );
+      }
+      await ensureGitNexusIgnored(repoPath);
+      progress('fts', 90, 'Search indexes ready');
+      progress('done', 100, 'Done');
+      return {
+        repoName:
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath)),
+        repoPath,
+        stats: existingMeta.stats ?? {},
+        ftsRepairedOnly: true,
+      };
+    } finally {
+      await closeLbug().catch(() => {});
+    }
+  }
 
   // ── Crash recovery: dirty flag forces full rebuild ────────────────
   // If the previous incremental run set incrementalInProgress and didn't
@@ -583,7 +631,20 @@ export async function runFullAnalysis(
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     progress('fts', 85, 'Creating search indexes...');
-    await createSearchFTSIndexes();
+    await createSearchFTSIndexes({
+      onIndexStart: options.verbose
+        ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+        : undefined,
+      onIndexReady: options.verbose
+        ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+        : undefined,
+    });
+    const missingFtsIndexes = await verifySearchFTSIndexes(executeQuery);
+    if (missingFtsIndexes.length > 0) {
+      throw new Error(
+        `FTS verification failed — missing indexes after analyze: ${missingFtsIndexes.join(', ')}.`,
+      );
+    }
     progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────

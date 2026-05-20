@@ -1651,7 +1651,9 @@ export const createFTSIndex = async (
   if (ensuredFTSIndexes.has(key)) return;
 
   if (!(await loadFTSExtension())) {
-    return;
+    throw new Error(
+      `FTS extension unavailable — cannot create FTS index ${tableName}.${indexName}.`,
+    );
   }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');

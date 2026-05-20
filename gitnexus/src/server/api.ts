@@ -1233,7 +1233,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
         response.warning =
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.';
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
       }
       res.json(response);
     } catch (err: any) {
