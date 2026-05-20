@@ -931,6 +931,42 @@ export const processParsing = async (
             files.length,
             `${quarantinedInChunk.length} worker-quarantined file(s) skipped`,
           );
+
+          // U20.U1: Sequential gap-fill. The worker pool's Layer 3
+          // quarantine filtered these files out of dispatch, so the
+          // worker results above are missing their symbols/imports/
+          // calls/heritage. Without this reparse, the graph for THIS
+          // run is silently incomplete — exactly the silent-corruption
+          // class the Codex adversarial review of PR #1693 flagged.
+          //
+          // Running `processParsingSequential` on JUST the quarantined
+          // files mirrors the WorkerPoolDispatchError catch-block
+          // shape below (line 961). Worker-extracted data for the
+          // surviving files flows through `data` to the caller's
+          // deferred-extraction merge; sequential output for the
+          // quarantined files writes directly to the graph here.
+          //
+          // The chunk-loop caller's cache write at parse-impl.ts:500-
+          // 507 will NOT cache this chunk because U20.U2's guard
+          // detects the same quarantine intersection — so next run
+          // gets a cache miss and a fresh pool gives the file
+          // another chance.
+          logger.warn(
+            {
+              reparsedPaths: quarantinedInChunk.map((f) => f.path),
+              count: quarantinedInChunk.length,
+            },
+            `Running sequential reparse for ${quarantinedInChunk.length} worker-quarantined ` +
+              `file(s) to keep this run's graph complete.`,
+          );
+          await processParsingSequential(
+            graph,
+            quarantinedInChunk,
+            symbolTable,
+            astCache,
+            scopeTreeCache,
+            reportProgress,
+          );
         }
       }
       return data;
