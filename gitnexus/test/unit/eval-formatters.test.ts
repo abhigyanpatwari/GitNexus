@@ -19,8 +19,8 @@ import {
 // ─── validateHost ────────────────────────────────────────────────────
 
 describe('validateHost', () => {
-  it('normalizes "localhost" to "127.0.0.1"', () => {
-    expect(validateHost('localhost')).toBe('127.0.0.1');
+  it('passes "localhost" through unchanged', () => {
+    expect(validateHost('localhost')).toBe('localhost');
   });
 
   it('accepts valid IPv4 addresses', () => {
