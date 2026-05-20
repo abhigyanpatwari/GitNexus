@@ -479,7 +479,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         `\nGitNexus eval-server failed to start:\n` +
           `  Address ${host} is not available on this machine.\n\n` +
           (isIPv6Host
-            ? `  IPv6 address ${host} is not reachable — IPv6 may be disabled on this system or container.\n` +
+            ? `  Address ${host} resolved but is not reachable — IPv6 may be disabled, or the loopback interface may be unavailable.\n` +
               `  Docker containers and many CI environments disable IPv6 by default.\n\n`
             : `  The --host value must be an IP assigned to a local network interface.\n` +
               `  Run \`ip addr\` (Linux) or \`ipconfig\` (Windows) to list available addresses.\n\n`) +
@@ -514,8 +514,16 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     // actually bound to, not the input host string. This matters when "localhost"
     // is passed: the OS may resolve it to ::1 on some systems.
     const addr = server.address();
-    const boundPort = typeof addr === 'object' && addr !== null ? addr.port : port;
-    const boundAddress = typeof addr === 'object' && addr !== null ? addr.address : host;
+    // server.listen callback only fires after a successful TCP bind, so
+    // server.address() is guaranteed to return an AddressInfo object here.
+    if (typeof addr !== 'object' || addr === null) {
+      cliError(
+        `\nGitNexus eval-server: unexpected server.address() value after bind: ${JSON.stringify(addr)}\n`,
+      );
+      process.exit(1);
+    }
+    const boundPort = addr.port;
+    const boundAddress = addr.address;
     const displayHost = boundAddress.includes(':') ? `[${boundAddress}]` : boundAddress;
     const bannerLines = [
       `GitNexus eval-server: listening on http://${displayHost}:${boundPort}`,
