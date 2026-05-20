@@ -87,11 +87,24 @@ import { logger } from '../../logger.js';
  * gives a useful invalidation floor (~1/N chunks on a multi-MB repo)
  * while keeping worker dispatch overhead under 5% on cold runs.
  */
-const CHUNK_BYTE_BUDGET = (() => {
+/**
+ * Built-in chunk byte budget when neither `PipelineOptions.chunkByteBudget`
+ * nor `GITNEXUS_CHUNK_BYTE_BUDGET` is set. Tuned to give a useful
+ * cache-invalidation floor (~1/N chunks on a multi-MB repo) while keeping
+ * worker dispatch overhead under 5% on cold runs. Resolution happens at
+ * call time inside `runChunkedParseAndResolve` (U14 from PR #1693 review)
+ * — previously this was a module-load IIFE, which froze the env value at
+ * import time and meant per-call option threading silently no-op'd.
+ */
+const DEFAULT_CHUNK_BYTE_BUDGET = 2 * 1024 * 1024;
+
+function resolveChunkByteBudget(options?: PipelineOptions): number {
+  const opt = options?.chunkByteBudget;
+  if (typeof opt === 'number' && Number.isFinite(opt) && opt > 0) return opt;
   const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
   if (Number.isFinite(env) && env > 0) return env;
-  return 2 * 1024 * 1024;
-})();
+  return DEFAULT_CHUNK_BYTE_BUDGET;
+}
 
 // ── Main parse + resolve function ──────────────────────────────────────────
 
@@ -188,12 +201,19 @@ export async function runChunkedParseAndResolve(
     });
   }
 
-  // Build byte-budget chunks
+  // Build byte-budget chunks. The budget is resolved per-call (U14): options
+  // first, then env, then the built-in default. Pre-U14 this was a
+  // module-load IIFE constant, which froze the env value at import time
+  // and made `PipelineOptions.chunkByteBudget` silently no-op on warm test
+  // runs. Resolving in the function body restores per-call configurability
+  // and matches the pattern used by resolveAutoPoolSize and the U1
+  // parseChunkConcurrency resolver.
+  const chunkByteBudget = resolveChunkByteBudget(options);
   const chunks: string[][] = [];
   let currentChunk: string[] = [];
   let currentBytes = 0;
   for (const file of parseableScanned) {
-    if (currentChunk.length > 0 && currentBytes + file.size > CHUNK_BYTE_BUDGET) {
+    if (currentChunk.length > 0 && currentBytes + file.size > chunkByteBudget) {
       chunks.push(currentChunk);
       currentChunk = [];
       currentBytes = 0;
@@ -208,7 +228,7 @@ export async function runChunkedParseAndResolve(
   if (isDev) {
     const totalMB = parseableScanned.reduce((s, f) => s + f.size, 0) / (1024 * 1024);
     logger.info(
-      `📂 Scan: ${totalFiles} paths, ${totalParseable} parseable (${totalMB.toFixed(0)}MB), ${numChunks} chunks @ ${CHUNK_BYTE_BUDGET / (1024 * 1024)}MB budget`,
+      `📂 Scan: ${totalFiles} paths, ${totalParseable} parseable (${totalMB.toFixed(0)}MB), ${numChunks} chunks @ ${chunkByteBudget / (1024 * 1024)}MB budget`,
     );
   }
 

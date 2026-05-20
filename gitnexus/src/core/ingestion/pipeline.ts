@@ -95,6 +95,19 @@ export interface PipelineOptions {
    * env var when undefined; defaults to 2 when neither is set.
    */
   parseChunkConcurrency?: number;
+  /**
+   * Byte budget per parse chunk (in bytes). When set, parse-impl uses
+   * this instead of the `GITNEXUS_CHUNK_BYTE_BUDGET` env var or the
+   * built-in 2 MB default. Smaller values produce more chunks (finer
+   * cache-hit granularity, more worker dispatches); larger values
+   * batch more files per dispatch.
+   *
+   * Threading the value through options instead of the env var lets
+   * tests vary the chunk layout per-call without `vi.resetModules` and
+   * lets long-running hosts (eval-server, MCP daemon) size per-call
+   * without leaking `process.env` state across invocations.
+   */
+  chunkByteBudget?: number;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
