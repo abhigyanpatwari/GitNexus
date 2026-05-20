@@ -522,7 +522,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
-        repairFTS: options?.repairFts,
+        repairFts: options?.repairFts,
         embeddings: embeddingsEnabled,
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,

@@ -72,7 +72,7 @@ export interface AnalyzeOptions {
    */
   force?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
-  repairFTS?: boolean;
+  repairFts?: boolean;
   /** Emit per-index FTS create logs. */
   verbose?: boolean;
   embeddings?: boolean;
@@ -197,10 +197,11 @@ export async function runFullAnalysis(
   const existingMeta = await loadMeta(storagePath);
 
   // ── FTS-only repair path ────────────────────────────────────────────
-  if (options.repairFTS) {
+  if (options.repairFts) {
     if (!existingMeta) {
       throw new Error(
-        'Cannot repair FTS indexes because no existing index metadata was found. Run `gitnexus analyze --force` first.',
+        'Cannot repair FTS indexes because this repository has not been analyzed yet. ' +
+          'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
       );
     }
     try {
@@ -217,8 +218,9 @@ export async function runFullAnalysis(
       const missing = await verifySearchFTSIndexes(executeQuery);
       if (missing.length > 0) {
         throw new Error(
-          `FTS repair failed — missing indexes after rebuild: ${missing.join(', ')}. ` +
-            'Try `gitnexus analyze --force` to rebuild the full index.',
+          `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}. ` +
+            'Run `gitnexus analyze --force` to perform a full graph+FTS rebuild; ' +
+            'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
         );
       }
       await ensureGitNexusIgnored(repoPath);
@@ -639,10 +641,11 @@ export async function runFullAnalysis(
         ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
         : undefined,
     });
-    const missingFtsIndexes = await verifySearchFTSIndexes(executeQuery);
-    if (missingFtsIndexes.length > 0) {
+    const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
+    if (missingIndexNames.length > 0) {
       throw new Error(
-        `FTS verification failed — missing indexes after analyze: ${missingFtsIndexes.join(', ')}.`,
+        `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
+          'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
       );
     }
     progress('fts', 90, 'Search indexes ready');

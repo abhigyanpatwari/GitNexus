@@ -1652,7 +1652,8 @@ export const createFTSIndex = async (
 
   if (!(await loadFTSExtension())) {
     throw new Error(
-      `FTS extension unavailable — cannot create FTS index ${tableName}.${indexName}.`,
+      `FTS extension unavailable - cannot create FTS index ${tableName}.${indexName}. ` +
+        'Run `gitnexus doctor` and ensure the LadybugDB FTS extension is installed and loadable on this machine.',
     );
   }
 

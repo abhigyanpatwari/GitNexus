@@ -19,10 +19,19 @@ export async function createSearchFTSIndexes(
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
 ): Promise<string[]> {
+  const safeIdentifier = (value: string): string => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+      throw new Error(`Invalid FTS identifier: ${value}`);
+    }
+    return value;
+  };
+
   const missing: string[] = [];
   for (const { table, indexName } of FTS_INDEXES) {
+    const safeTable = safeIdentifier(table);
+    const safeIndex = safeIdentifier(indexName);
     const probe = `
-      CALL QUERY_FTS_INDEX('${table}', '${indexName}', '__gitnexus_fts_probe__', conjunctive := false)
+      CALL QUERY_FTS_INDEX('${safeTable}', '${safeIndex}', '__gitnexus_fts_probe__', conjunctive := false)
       RETURN score
       LIMIT 1
     `;
