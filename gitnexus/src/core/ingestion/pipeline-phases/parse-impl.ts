@@ -338,6 +338,34 @@ export async function runChunkedParseAndResolve(
   let chunkCacheMisses = 0;
 
   try {
+    // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
+    // chunk file contents up to `parseChunkConcurrency` chunks ahead of the
+    // dispatch cursor so file I/O overlaps with worker compute. Worker
+    // dispatch itself stays serial because `WorkerPool.dispatch` is not
+    // reentrant (concurrent calls would race on the shared per-slot
+    // busy/in-flight state). With concurrency=1 behavior is identical to
+    // the pure-serial loop. F4: deferred-state aggregation still happens
+    // in chunkIdx order (the for-loop below iterates sequentially), so
+    // cross-chunk processors see deterministic input regardless of
+    // file-read completion order. Honors options.parseChunkConcurrency
+    // (threaded from the CLI), then GITNEXUS_PARSE_CHUNK_CONCURRENCY env
+    // (default 2 — matches the help text the CLI advertises).
+    const parseChunkConcurrency = ((): number => {
+      const opt = options?.parseChunkConcurrency;
+      if (typeof opt === 'number' && Number.isInteger(opt) && opt >= 1) return opt;
+      const env = Number(process.env.GITNEXUS_PARSE_CHUNK_CONCURRENCY);
+      if (Number.isInteger(env) && env >= 1) return env;
+      return 2;
+    })();
+    const chunkContentPromises = new Array<Promise<Map<string, string>> | undefined>(numChunks);
+    const startChunkPrefetch = (i: number): void => {
+      if (i >= numChunks || chunkContentPromises[i] !== undefined) return;
+      chunkContentPromises[i] = readFileContents(repoPath, chunks[i]);
+    };
+    for (let i = 0; i < Math.min(parseChunkConcurrency, numChunks); i++) {
+      startChunkPrefetch(i);
+    }
+
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkPaths = chunks[chunkIdx];
       // Start wall-clock for the per-chunk throughput log emitted at end
@@ -350,7 +378,9 @@ export async function runChunkedParseAndResolve(
       const verboseThroughputLog = isDev || isVerboseIngestionEnabled();
       const chunkStartMs: number | null = verboseThroughputLog ? Date.now() : null;
 
-      const chunkContents = await readFileContents(repoPath, chunkPaths);
+      const chunkContents = await chunkContentPromises[chunkIdx]!;
+      chunkContentPromises[chunkIdx] = undefined; // release the in-memory copy
+      startChunkPrefetch(chunkIdx + parseChunkConcurrency);
       const chunkFiles = chunkPaths
         .filter((p) => chunkContents.has(p))
         .map((p) => ({ path: p, content: chunkContents.get(p)! }));

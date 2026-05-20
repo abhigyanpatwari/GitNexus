@@ -81,6 +81,20 @@ export interface PipelineOptions {
    * `process.env` state across analyze invocations.
    */
   workerPoolSize?: number;
+  /**
+   * Number of chunks whose file contents may be read into memory in
+   * parallel while the worker pool is busy dispatching the current
+   * chunk. Pre-fetching overlaps disk I/O for chunk N+1..N+K with the
+   * worker compute on chunk N — modest but real wall-clock win on
+   * repos large enough to chunk. Worker dispatch itself remains serial
+   * because `WorkerPool.dispatch` is not reentrant (concurrent calls
+   * would race on the shared per-slot busy/in-flight state).
+   *
+   * `1` matches today's pure-serial behavior; `2` is the documented
+   * default (`GITNEXUS_PARSE_CHUNK_CONCURRENCY`). Falls back to the
+   * env var when undefined; defaults to 2 when neither is set.
+   */
+  parseChunkConcurrency?: number;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
