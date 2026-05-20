@@ -56,6 +56,16 @@ export interface PipelineOptions {
     minBytes?: number;
   };
   /**
+   * @internal Test-only override for the worker script URL the pool
+   * spawns. When unset, parse-impl resolves `parse-worker.js` from the
+   * adjacent `workers/` directory (or the compiled `dist/` fallback
+   * under vitest). Integration tests use this to inject a custom
+   * worker script that deterministically triggers worker-pool
+   * resilience paths (e.g., crash-on-poison-file) — same precedent as
+   * `workerThresholdsForTest`. Do not use from production call sites.
+   */
+  workerUrlForTest?: URL;
+  /**
    * Incremental-indexing parse cache. When provided:
    *   - The parse phase looks up each chunk's content hash in
    *     `parseCache.entries`. On hit, it replays the cached

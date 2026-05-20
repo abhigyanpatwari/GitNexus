@@ -267,11 +267,18 @@ export async function runChunkedParseAndResolve(
     (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
   ) {
     try {
-      let workerUrl = new URL('../workers/parse-worker.js', import.meta.url);
+      // U20.U3 test-only injection: integration tests pass a custom
+      // worker script URL via `workerUrlForTest` (mirrors the
+      // `workerThresholdsForTest` precedent) so they can drive the
+      // chunk-loop with deterministically-misbehaving workers without
+      // mocking the module import graph. When unset, the normal src/
+      // → dist/ resolution runs.
+      let workerUrl =
+        options?.workerUrlForTest ?? new URL('../workers/parse-worker.js', import.meta.url);
       // When running under vitest, import.meta.url points to src/ where no .js exists.
       // Fall back to the compiled dist/ worker so the pool can spawn real worker threads.
       const thisDir = fileURLToPath(new URL('.', import.meta.url));
-      if (!fs.existsSync(fileURLToPath(workerUrl))) {
+      if (!options?.workerUrlForTest && !fs.existsSync(fileURLToPath(workerUrl))) {
         const distWorker = path.resolve(
           thisDir,
           '..',
