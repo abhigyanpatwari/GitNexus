@@ -70,6 +70,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isDev } from '../utils/env.js';
+import { isVerboseIngestionEnabled } from '../utils/verbose.js';
 import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
 
@@ -178,7 +179,10 @@ export async function runChunkedParseAndResolve(
   if (totalParseable === 0) {
     onProgress({
       phase: 'parsing',
-      percent: 82,
+      // Skip directly to the end of the parse-phase progress band (M2 from PR
+      // #1693 review). Parse 20-70%, deferred 70-95%; nothing in either runs
+      // when there's no parseable file, so jump to 95.
+      percent: 95,
       message: 'No parseable files found — skipping parsing phase',
       stats: { filesProcessed: 0, totalFiles: 0, nodesCreated: graph.nodeCount },
     });
@@ -208,12 +212,18 @@ export async function runChunkedParseAndResolve(
     );
   }
 
-  onProgress({
-    phase: 'parsing',
-    percent: 20,
-    message: `Parsing ${totalParseable} files in ${numChunks} chunk${numChunks !== 1 ? 's' : ''}...`,
-    stats: { filesProcessed: 0, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
-  });
+  // Skip the "Parsing N files..." announcement when there's nothing to parse
+  // — the early-return branch above already emitted percent 95 ("skipping
+  // parsing phase"), and emitting percent 20 here would regress the
+  // progress stream non-monotonically (M2 from PR #1693 review).
+  if (totalParseable > 0) {
+    onProgress({
+      phase: 'parsing',
+      percent: 20,
+      message: `Parsing ${totalParseable} files in ${numChunks} chunk${numChunks !== 1 ? 's' : ''}...`,
+      stats: { filesProcessed: 0, totalFiles: totalParseable, nodesCreated: graph.nodeCount },
+    });
+  }
 
   // Don't spawn workers for tiny repos — overhead exceeds benefit.
   // Test suites may lower the thresholds via `options.workerThresholdsForTest`
@@ -330,10 +340,15 @@ export async function runChunkedParseAndResolve(
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkPaths = chunks[chunkIdx];
-      // Start wall-clock for the U3 throughput log emitted at end of
-      // this iteration. Only computed when isDev — the timestamp is
-      // cheap but the log line only fires under verbose ingestion.
-      const chunkChunkStartMs: number | null = isDev ? Date.now() : null;
+      // Start wall-clock for the per-chunk throughput log emitted at end
+      // of this iteration. Computed when either NODE_ENV=development OR
+      // the operator passed `--verbose` (GITNEXUS_VERBOSE) — the previous
+      // `isDev`-only gate meant operators running `gitnexus analyze
+      // --verbose` in production never saw the log (M3 from PR #1693
+      // review). Timestamp is cheap; the log line only fires under the
+      // same combined gate below.
+      const verboseThroughputLog = isDev || isVerboseIngestionEnabled();
+      const chunkStartMs: number | null = verboseThroughputLog ? Date.now() : null;
 
       const chunkContents = await readFileContents(repoPath, chunkPaths);
       const chunkFiles = chunkPaths
@@ -372,7 +387,11 @@ export async function runChunkedParseAndResolve(
         const cachedFiles = chunkFiles.length;
         onProgress({
           phase: 'parsing',
-          percent: Math.round(20 + ((filesParsedSoFar + cachedFiles) / totalParseable) * 62),
+          // Parse phase covers 20-70 (50 points). Deferred extraction below
+          // takes 70-95 so the UI advances through the (potentially long)
+          // resolution stages instead of holding at 82 (M2 from PR #1693
+          // review).
+          percent: Math.round(20 + ((filesParsedSoFar + cachedFiles) / totalParseable) * 50),
           message: `Parsing chunk ${chunkIdx + 1}/${numChunks} (cache)...`,
           stats: {
             filesProcessed: filesParsedSoFar + cachedFiles,
@@ -393,7 +412,8 @@ export async function runChunkedParseAndResolve(
           scopeTreeCache,
           (current, _total, filePath) => {
             const globalCurrent = filesParsedSoFar + current;
-            const parsingProgress = 20 + (globalCurrent / totalParseable) * 62;
+            // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
+            const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
             onProgress({
               phase: 'parsing',
               percent: Math.round(parsingProgress),
@@ -496,8 +516,8 @@ export async function runChunkedParseAndResolve(
       // under verbose ingestion mode so operators can verify CPU
       // utilization moved + tune `--workers` / batch sizes without
       // guessing. Cheap snapshot — just reads pool closure state.
-      if (isDev && chunkChunkStartMs !== null) {
-        const elapsedMs = Date.now() - chunkChunkStartMs;
+      if (verboseThroughputLog && chunkStartMs !== null) {
+        const elapsedMs = Date.now() - chunkStartMs;
         const filesPerSec = elapsedMs > 0 ? (chunkFiles.length * 1000) / elapsedMs : 0;
         const stats = workerPool?.getStats?.();
         const poolFrag = stats
@@ -526,6 +546,16 @@ export async function runChunkedParseAndResolve(
     //   5. processRoutesFromExtracted on all chunks' routes
     // Same logic as the prior per-chunk passes, just batched — resolution
     // sees the full repo graph instead of just current-and-earlier chunks.
+    // Deferred extraction band (M2 from PR #1693 review): the 4 stages below
+    // each get their own 5-10 point slice of the 70-95 range so percent
+    // advances monotonically through the (potentially long) resolution work
+    // instead of holding flat at 82. Stages that are skipped (zero-length
+    // input) leave their band as a no-op jump — the next stage still starts
+    // at its own band, preserving monotonicity.
+    //   imports:  70 -> 75 (5)
+    //   heritage: 75 -> 80 (5)
+    //   routes:   80 -> 85 (5)
+    //   calls:    85 -> 95 (10)
     if (deferredWorkerImports.length > 0) {
       await processImportsFromExtracted(
         graph,
@@ -533,9 +563,10 @@ export async function runChunkedParseAndResolve(
         deferredWorkerImports,
         ctx,
         (current, total) => {
+          const ratio = total > 0 ? current / total : 1;
           onProgress({
             phase: 'parsing',
-            percent: 82,
+            percent: 70 + Math.round(ratio * 5),
             message: 'Resolving imports (all chunks)...',
             detail: `${current}/${total} files`,
             stats: {
@@ -553,6 +584,19 @@ export async function runChunkedParseAndResolve(
       synthesizeWildcardImportBindings(graph, ctx);
       hasSynthesized = true;
     }
+    // L5 from PR #1693 review: populate `exportedTypeMap` from the in-progress
+    // graph BEFORE `seedCrossFileReceiverTypes` runs. Previously the seeding
+    // branch below was reached with `exportedTypeMap.size === 0` in the
+    // worker path (the map was only built at the post-parse block far below,
+    // AFTER the seeding branch), so the seed dead-coded itself silently and
+    // call resolution never got the cross-file receiver-type enrichment.
+    // The post-parse builder still runs as a defensive fallback on the
+    // sequential path; its `size === 0` guard means we don't pay the cost
+    // twice on the worker path.
+    if (exportedTypeMap.size === 0 && graph.nodeCount > 0) {
+      const graphExports = buildExportedTypeMapFromGraph(graph, ctx.model.symbols);
+      for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
+    }
     if (exportedTypeMap.size > 0 && ctx.namedImportMap.size > 0 && deferredWorkerCalls.length > 0) {
       const { enrichedCount } = seedCrossFileReceiverTypes(
         deferredWorkerCalls,
@@ -565,9 +609,10 @@ export async function runChunkedParseAndResolve(
     }
     if (deferredWorkerHeritage.length > 0) {
       await processHeritageFromExtracted(graph, deferredWorkerHeritage, ctx, (current, total) => {
+        const ratio = total > 0 ? current / total : 1;
         onProgress({
           phase: 'parsing',
-          percent: 82,
+          percent: 75 + Math.round(ratio * 5),
           message: 'Resolving heritage (all chunks)...',
           detail: `${current}/${total} records`,
           stats: {
@@ -580,9 +625,10 @@ export async function runChunkedParseAndResolve(
     }
     if (allExtractedRoutes.length > 0) {
       await processRoutesFromExtracted(graph, allExtractedRoutes, ctx, (current, total) => {
+        const ratio = total > 0 ? current / total : 1;
         onProgress({
           phase: 'parsing',
-          percent: 82,
+          percent: 80 + Math.round(ratio * 5),
           message: 'Resolving routes (all chunks)...',
           detail: `${current}/${total} routes`,
           stats: {
@@ -605,9 +651,13 @@ export async function runChunkedParseAndResolve(
         deferredWorkerCalls,
         ctx,
         (current, total) => {
+          const ratio = total > 0 ? current / total : 1;
           onProgress({
             phase: 'parsing',
-            percent: 82,
+            // Calls is the longest deferred stage on real repos — give it the
+            // 10-point tail 85-95 so the progress bar visibly advances during
+            // call resolution instead of holding at 82 (M2).
+            percent: 85 + Math.round(ratio * 10),
             message: 'Resolving calls (all chunks)...',
             detail: `${current}/${total} files`,
             stats: {
