@@ -3,12 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
-const MISSING_INDEX = 'File.file_fts';
+const MOCK_MISSING_FTS_INDEX = 'File.file_fts';
+const PLACEHOLDER_GRAPH_STORE_CONTENT = 'fixture';
 
 const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
   // Repair mode gates on existence before `initLbug` takes over open/validate.
   // A placeholder file is enough to exercise this preflight branch.
-  await fs.writeFile(lbugPath, 'fixture');
+  await fs.writeFile(lbugPath, PLACEHOLDER_GRAPH_STORE_CONTENT);
 };
 
 describe('runFullAnalysis FTS repair and verification failure paths', () => {
@@ -83,7 +84,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => undefined),
-      verifySearchFTSIndexes: vi.fn(async () => [MISSING_INDEX]),
+      verifySearchFTSIndexes: vi.fn(async () => [MOCK_MISSING_FTS_INDEX]),
     }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-verify-fail-');
