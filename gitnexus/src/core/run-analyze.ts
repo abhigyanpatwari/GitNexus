@@ -205,6 +205,14 @@ export async function runFullAnalysis(
       );
     }
     try {
+      await fs.access(lbugPath);
+    } catch {
+      throw new Error(
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
+          'Run `gitnexus analyze` (full) to rebuild from scratch.',
+      );
+    }
+    try {
       await initLbug(lbugPath);
       progress('fts', 85, 'Repairing search indexes...');
       await createSearchFTSIndexes({
