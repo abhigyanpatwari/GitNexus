@@ -5,65 +5,43 @@ import { fileURLToPath } from 'node:url';
 
 import { logger } from '../../logger.js';
 import { createQuarantine } from './quarantine.js';
-import { encodeMessage, decodeMessage, MessageTag } from './protocol.js';
 
 /**
- * Decode an incoming worker message. Production `parse-worker.ts` (post-U17)
- * always sends Buffer-encoded frames via `encodeMessage`. Test scaffolding
- * (FakeWorkers in worker-pool-resilience.test.ts and siblings) still emits
- * raw POJO messages — the pool tolerates both so the existing in-process
- * mock workers don't need rewriting. If a future commit wants to strictly
- * require encoded frames (rejecting POJO), this helper is the single point
- * to harden.
+ * Worker IPC uses Node's native `worker.postMessage(value, transferList)`
+ * directly. The structured-clone algorithm V8 runs internally on every
+ * `postMessage` preserves Map / Set / Date / RegExp / BigInt /
+ * TypedArray / undefined values / circular refs out of the box —
+ * no explicit serializer needed. File contents move zero-copy via
+ * `transferList` for their ArrayBuffers; everything else is cloned
+ * tree-walk style by the same algorithm a wrapper serializer would
+ * call anyway. The previous `protocol.ts` framing layer was a redundant
+ * V8.serialize → Buffer → postMessage(struct-clone-Buffer) double-walk;
+ * removing it cut one full structured-clone pass per message.
+ *
+ * Sub-batch dispatch payload shape:
+ *   `{ type: 'sub-batch', files: Array<{ path: string; content: Uint8Array }> }`
+ *
+ * The file `content` is a `Uint8Array` (not a string) so its
+ * underlying `ArrayBuffer` can be transferred zero-copy via
+ * `transferList`. The worker calls `new TextDecoder('utf-8').decode`
+ * lazily at the tree-sitter call site.
+ *
+ * `Uint8Array` instances are allocated via `TextEncoder.encode`, which
+ * produces a dedicated `ArrayBuffer` per call. Node's `Buffer.from(str,
+ * 'utf8')` and `Buffer.alloc` may carve from the shared `Buffer.poolSize`
+ * slab, and transferring one pool-backed `ArrayBuffer` detaches every
+ * other Buffer sharing the slab — silent data corruption. TextEncoder
+ * bypasses the pool, so transferring its outputs is safe.
  */
-function decodeIncomingWorkerMessage(raw: unknown): WorkerOutgoingMessage {
-  // `instanceof Uint8Array` (not `Buffer.isBuffer`): Node's worker_threads
-  // postMessage structured-clones the payload, which strips the Buffer
-  // prototype, so a frame sent as `Buffer` arrives here as a plain
-  // Uint8Array. Buffer extends Uint8Array so this check covers both,
-  // and `decodeMessage` adopts a Uint8Array view zero-copy.
-  if (raw instanceof Uint8Array) {
-    return decodeMessage(raw).payload as WorkerOutgoingMessage;
-  }
-  return raw as WorkerOutgoingMessage;
-}
 
-/**
- * U19: zero-copy dispatch builder.
- *
- * For the parse-worker shape `{path: string, content: string}[]`, hoists
- * file contents OUT of the JSON envelope into separate Uint8Arrays and
- * returns a `transferList` of their ArrayBuffers so `worker.postMessage`
- * transfers ownership zero-copy. The envelope itself carries only
- * lightweight metadata (path + byteLength per file), so the JSON
- * round-trip cost no longer scales with total file-content size.
- *
- * For non-parse shapes (test scaffolding sending arbitrary items), falls
- * back to the legacy `encodeMessage` path with the full payload inside
- * the JSON envelope — no transfer, no shape assumptions.
- *
- * Ownership notes:
- *  - Each content `Uint8Array` is produced via `TextEncoder.encode`,
- *    which allocates its own ArrayBuffer. This is intentional: Node's
- *    `Buffer.from(str, 'utf8')` and `Buffer.alloc(size)` may carve out
- *    of the shared `Buffer.poolSize` pool, and transferring a pool-
- *    backed ArrayBuffer would detach every other Buffer that happens
- *    to share the same pool slab. TextEncoder bypasses the pool.
- *  - The envelope (`encodeMessage` output) is NOT transferred. It MAY
- *    be pool-backed; structured-cloning it is cheap (envelope is
- *    ~30-80 bytes per file, dominated by path strings, no content),
- *    and avoiding transfer here means we can't accidentally detach an
- *    unrelated Buffer that shares the pool.
- */
 type ParseWorkerItem = { path: string; content: string };
 
 /**
  * Type guard: every element of `items` has the parse-worker shape
  * (`{path: string, content: string}`). Used to narrow the generic input
- * inside `buildDispatchMessage` without an `as unknown as Array<...>`
- * double-cast, so a future rename of `ParseWorkerInput.content` would
- * fail to compile inside the narrowed branch instead of silently
- * mismatching at runtime.
+ * inside `buildDispatchMessage` so a future rename of
+ * `ParseWorkerInput.content` would fail to compile inside the narrowed
+ * branch instead of silently mismatching at runtime.
  */
 function isParseWorkerItemArray<T>(
   items: readonly T[],
@@ -78,40 +56,42 @@ function isParseWorkerItemArray<T>(
 }
 
 /**
- * @internal Exported only so the unit test suite
- * (`test/unit/worker-pool-transferlist.test.ts`) can pin the return-
- * shape and transferList contract directly. Not part of the public
- * package API; the return-type union and shape-detection heuristic may
- * change without a semver signal.
+ * Build the sub-batch dispatch payload + transferList.
+ *
+ * For the parse-worker shape `{path, content: string}[]`, encodes each
+ * file's content as a `Uint8Array` via `TextEncoder` so the underlying
+ * `ArrayBuffer` can be transferred zero-copy. For any other input
+ * shape, the items array is passed through verbatim (no transfer).
+ *
+ * @internal Exported for the unit test suite
+ * (`test/unit/worker-pool-transferlist.test.ts`) so the
+ * Uint8Array-per-content allocation contract can be pinned without
+ * spinning up a real worker_threads.
  */
 export function buildDispatchMessage<T>(items: readonly T[]): {
-  message: Uint8Array | { envelope: Uint8Array; contents: Uint8Array[] };
+  message:
+    | { type: 'sub-batch'; files: Array<{ path: string; content: Uint8Array }> }
+    | {
+        type: 'sub-batch';
+        files: readonly T[];
+      };
   transferList?: ArrayBuffer[];
 } {
   if (!isParseWorkerItemArray(items)) {
-    return {
-      message: encodeMessage(MessageTag.DispatchJob, { type: 'sub-batch', files: items }),
-    };
+    return { message: { type: 'sub-batch', files: items } };
   }
 
   // After the type guard, `items` is narrowed to `readonly ParseWorkerItem[]`.
-  // No cast needed — `item.path` and `item.content` are statically typed
-  // as strings inside this branch.
   const encoder = new TextEncoder();
-  const filesMeta: Array<{ path: string; byteLength: number }> = [];
-  const contents: Uint8Array[] = [];
+  const files: Array<{ path: string; content: Uint8Array }> = [];
+  const transferList: ArrayBuffer[] = [];
   for (const item of items) {
     const u8 = encoder.encode(item.content);
-    filesMeta.push({ path: item.path, byteLength: u8.byteLength });
-    contents.push(u8);
+    files.push({ path: item.path, content: u8 });
+    transferList.push(u8.buffer as ArrayBuffer);
   }
-  const envelope = encodeMessage(MessageTag.DispatchJob, {
-    type: 'sub-batch',
-    files: filesMeta,
-  });
-  const transferList: ArrayBuffer[] = contents.map((c) => c.buffer as ArrayBuffer);
   return {
-    message: { envelope, contents },
+    message: { type: 'sub-batch', files },
     transferList,
   };
 }
@@ -452,20 +432,11 @@ function waitForWorkerReady(worker: Worker): Promise<void> {
       worker.removeListener('exit', onExit);
       worker.removeListener('messageerror', onMessageError);
     };
-    const onMessage = (raw: unknown) => {
-      // U17: production parse-worker.ts emits the ready handshake as a
-      // Buffer-encoded frame; FakeWorkers in the test suite still emit
-      // POJO. Tolerate both. ProtocolDecodeError on a malformed frame is
-      // swallowed locally — the wait keeps listening, and the eventual
+    const onMessage = (msg: unknown) => {
+      // Native postMessage delivers POJO directly via Node's structured
+      // clone. The ready handshake is `{type:'ready'}`; any other early
+      // message during the startup window is ignored — the eventual
       // timeout / exit / error handlers catch a genuinely-broken worker.
-      let msg: unknown = raw;
-      if (raw instanceof Uint8Array) {
-        try {
-          msg = decodeMessage(raw).payload;
-        } catch {
-          return;
-        }
-      }
       if (typeof msg === 'object' && msg !== null && (msg as { type?: unknown }).type === 'ready') {
         cleanup();
         resolve();
@@ -1327,35 +1298,17 @@ export const createWorkerPool = (
         const handler = (raw: unknown) => {
           if (slotGenerations[workerIndex] !== slotGen) return;
           if (settled || stopped) return;
-          // U17: production parse-worker.ts emits Buffer-encoded messages;
-          // FakeWorkers in the test suite still emit POJOs. Tolerate both
-          // via `decodeIncomingWorkerMessage`. A protocol-decode failure
-          // (malformed frame) is caught by THIS try/catch — distinct
-          // from `messageerror`, which fires for V8 structured-clone
-          // deserialization failures before the message body would
-          // reach this handler. Both paths route through
-          // `recoverAndResume` but the error class differs.
-          let msg: WorkerOutgoingMessage;
-          try {
-            msg = decodeIncomingWorkerMessage(raw);
-          } catch (err) {
-            settled = true;
-            cleanup();
-            void recoverAndResume(
-              `Worker ${workerIndex} protocol decode error: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-              resolveExcludePaths(),
-            );
-            return;
-          }
-          // Defensive guard for malformed-but-decode-successful payloads
-          // (e.g., a `null` body, which the protocol allows per
-          // `encodeMessage` docs but the dispatch handler must not
-          // dereference). Without this guard, `null.type` throws a
-          // TypeError out of the EventEmitter listener → uncaughtException
-          // on the main thread, crashing the entire analyze run instead
-          // of routing through the existing recovery layer.
+          // Native postMessage delivers POJO directly via Node's
+          // structured clone. V8 deserialization failures (malformed
+          // frame, non-cloneable value) surface as a `messageerror`
+          // event handled below — they never reach this handler. The
+          // only thing we need to guard for here is a worker that
+          // sends a message without a `type` discriminant (a bug in
+          // the worker, not a wire-format issue): without the guard
+          // `null.type` would throw a TypeError out of the
+          // EventEmitter listener → uncaughtException on the main
+          // thread.
+          const msg = raw as WorkerOutgoingMessage;
           if (msg === null || typeof msg !== 'object' || typeof msg.type !== 'string') {
             settled = true;
             cleanup();
@@ -1381,7 +1334,7 @@ export const createWorkerPool = (
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();
-            worker.postMessage(encodeMessage(MessageTag.DispatchJob, { type: 'flush' }));
+            worker.postMessage({ type: 'flush' });
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();

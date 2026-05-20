@@ -26,33 +26,23 @@ import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
-import { decodeMessage } from '../../src/core/ingestion/workers/protocol.js';
-
+const __sharedDecoder = new TextDecoder('utf-8');
 function decodeDispatchedMessage(rawMsg: unknown): unknown {
-  if (rawMsg instanceof Uint8Array) return decodeMessage(rawMsg).payload;
   if (
     rawMsg !== null &&
     typeof rawMsg === 'object' &&
-    (rawMsg as { envelope?: unknown }).envelope instanceof Uint8Array &&
-    Array.isArray((rawMsg as { contents?: unknown }).contents)
+    (rawMsg as { type?: unknown }).type === 'sub-batch' &&
+    Array.isArray((rawMsg as { files?: unknown }).files)
   ) {
-    const env = (rawMsg as { envelope: Uint8Array }).envelope;
-    const contents = (rawMsg as { contents: Uint8Array[] }).contents;
-    const decoded = decodeMessage(env).payload as {
-      type: string;
-      files: Array<{ path: string; byteLength: number }>;
+    const files = (rawMsg as { files: Array<{ path: string; content: Uint8Array | string }> })
+      .files;
+    return {
+      type: 'sub-batch',
+      files: files.map((f) => ({
+        path: f.path,
+        content: typeof f.content === 'string' ? f.content : __sharedDecoder.decode(f.content),
+      })),
     };
-    if (decoded.type === 'sub-batch') {
-      const decoder = new TextDecoder('utf-8');
-      return {
-        type: 'sub-batch',
-        files: decoded.files.map((m, i) => ({
-          path: m.path,
-          content: decoder.decode(contents[i]),
-        })),
-      };
-    }
-    return decoded;
   }
   return rawMsg;
 }

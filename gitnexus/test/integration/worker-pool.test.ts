@@ -32,7 +32,7 @@ const hasDistWorker = fs.existsSync(DIST_WORKER);
 
 // Prepend two things to every ad-hoc test worker source:
 //
-//   1. The M4 ready handshake so the pool's `waitForWorkerReady` resolves
+//   1. The ready handshake so the pool's `waitForWorkerReady` resolves
 //      immediately for replacement spawns. Production `parse-worker.ts`
 //      emits the same handshake at top-of-script before installing its
 //      message handler. Without it, every test that triggers a
@@ -40,57 +40,30 @@ const hasDistWorker = fs.existsSync(DIST_WORKER);
 //      WORKER_READY_TIMEOUT_MS and fail with "Replacement worker startup
 //      failed and no slots remain".
 //
-//   2. (U17/U19) A transparent decode wrapper around `parentPort.on('message', ...)`
-//      so the 9 ad-hoc test worker scripts don't need rewriting now that
-//      the pool sends Buffer-encoded `sub-batch` / `flush` dispatches.
-//      Test workers continue to receive POJO objects in their existing
-//      `msg.type === 'sub-batch'` checks. The inline mini-decoder mirrors
-//      protocol.ts's wire layout (1-byte tag + 4-byte LE uint32 length +
-//      UTF-8 JSON body) — duplicated here because ad-hoc test workers
-//      `require` Node builtins only; they can't import the compiled
-//      dist/protocol.js without knowing its absolute path. The pool is
-//      tolerant of POJO incoming, so outgoing `parentPort.postMessage`
-//      calls in the test scripts stay as POJO (unchanged).
-//
-//      U19 adds a second incoming shape: the hybrid
-//      `{envelope: Uint8Array, contents: Uint8Array[]}` produced by
-//      `buildDispatchMessage` when file contents are transferred
-//      zero-copy. The wrapper detects this shape, decodes the envelope
-//      header to get the file metadata, and zips the metadata with the
-//      transferred Uint8Arrays — decoding each content back to a UTF-8
-//      string so test workers see the legacy POJO layout
-//      `{type:'sub-batch', files:[{path, content: string}]}`.
+//   2. A `parentPort.on('message', ...)` wrapper that converts the
+//      sub-batch `files[i].content` field from `Uint8Array`
+//      (transferred zero-copy by the pool) back to `string` for the
+//      ad-hoc test worker scripts. Production `parse-worker.ts` does
+//      this lazily at the tree-sitter call site; test scripts assume
+//      `msg.files[i].content` is already a string. Without this
+//      conversion, the test scripts would need to decode each content
+//      Uint8Array themselves.
 const READY_PREAMBLE = `
 const { parentPort: __pp } = require('node:worker_threads');
-const { deserialize: __v8Deserialize } = require('node:v8');
-const __decodeProtocolBuf = (raw) => {
-  // structured clone strips the Buffer prototype; raw arrives as Uint8Array.
-  const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-  const length = buf.readUInt32LE(1);
-  // Body is V8-serialized (matches protocol.ts). Pre-PR-fix this was
-  // JSON.parse, which silently destroyed Maps/Sets/Dates/etc. in
-  // payloads.
-  return __v8Deserialize(buf.subarray(5, 5 + length));
-};
 const __decoder = new TextDecoder('utf-8');
 const __decodeFrame = (raw) => {
-  if (raw instanceof Uint8Array) return __decodeProtocolBuf(raw);
   if (
     raw && typeof raw === 'object' &&
-    raw.envelope instanceof Uint8Array &&
-    Array.isArray(raw.contents)
+    raw.type === 'sub-batch' &&
+    Array.isArray(raw.files)
   ) {
-    const env = __decodeProtocolBuf(raw.envelope);
-    if (env && env.type === 'sub-batch' && Array.isArray(env.files)) {
-      return {
-        type: 'sub-batch',
-        files: env.files.map((m, i) => ({
-          path: m.path,
-          content: __decoder.decode(raw.contents[i]),
-        })),
-      };
-    }
-    return env;
+    return {
+      type: 'sub-batch',
+      files: raw.files.map((f) => ({
+        path: f.path,
+        content: typeof f.content === 'string' ? f.content : __decoder.decode(f.content),
+      })),
+    };
   }
   return raw;
 };

@@ -1,6 +1,5 @@
 import { parentPort } from 'node:worker_threads';
 import Parser from 'tree-sitter';
-import { encodeMessage, decodeMessage, MessageTag } from './protocol.js';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
@@ -1391,7 +1390,7 @@ const processFileGroup = (
   } catch (err) {
     const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
     if (parentPort) {
-      parentPort.postMessage(encodeMessage(MessageTag.Warning, { type: 'warning', message }));
+      parentPort.postMessage({ type: 'warning', message });
     } else {
       logger.warn(message);
     }
@@ -1408,9 +1407,7 @@ const processFileGroup = (
     // here would defeat). The pool gracefully ignores this when running an
     // older worker build that doesn't emit it.
     if (parentPort) {
-      parentPort.postMessage(
-        encodeMessage(MessageTag.StartingFile, { type: 'starting-file', path: file.path }),
-      );
+      parentPort.postMessage({ type: 'starting-file', path: file.path });
     }
 
     // Vue SFC preprocessing: extract <script> block content
@@ -1471,7 +1468,7 @@ const processFileGroup = (
       file.path,
       (message) => {
         if (parentPort) {
-          parentPort.postMessage(encodeMessage(MessageTag.Warning, { type: 'warning', message }));
+          parentPort.postMessage({ type: 'warning', message });
         } else {
           logger.warn(message);
         }
@@ -2462,129 +2459,74 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
 // dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
 // any subsequent `ready` message as a benign no-op.
 //
-// Post-U17: every postMessage call uses `encodeMessage` from protocol.ts
-// so the bytes on the wire carry an explicit tag + length header. The pool
-// tolerates both encoded Buffer messages and raw POJO (for backward compat
-// with FakeWorkers in the test suite), but production parse-worker.ts is
-// strict — every outgoing message is encoded.
-parentPort!.postMessage(encodeMessage(MessageTag.Ready, { type: 'ready' }));
+// Native postMessage carries the ready handshake — Node's structured
+// clone delivers `{type:'ready'}` to the pool's waitForWorkerReady
+// listener directly. The pool drops the slot if this isn't seen within
+// `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
+// init (imports, native binding loads, type-env setup) completes is the
+// load-bearing signal that this worker is ready for dispatch.
+parentPort!.postMessage({ type: 'ready' });
 
-// Module-scope `TextDecoder` for the U19 hybrid-envelope path. Hoisted
-// out of `decodeIncomingMessage` so we don't allocate a new ICU-backed
-// decoder per sub-batch — `TextDecoder.decode()` is stateless across
-// calls and safe to share.
-const sharedHybridDecoder = new TextDecoder('utf-8');
+// Module-scope `TextDecoder` for sub-batch content. The pool sends each
+// file's content as a `Uint8Array` (zero-copy ArrayBuffer transfer); we
+// decode to string lazily here, once per file, before handing to
+// tree-sitter. Hoisted to module scope so we don't allocate a new
+// ICU-backed decoder per sub-batch — `TextDecoder.decode()` is
+// stateless across calls and safe to share.
+const sharedContentDecoder = new TextDecoder('utf-8');
 
-// Decode a single incoming message. The pool always sends Buffer-encoded
-// frames post-U17, but the parameter type is `unknown` because Node's
-// worker_threads typings declare `on('message', (value: any) => void)`.
-//
-// `instanceof Uint8Array` (not `Buffer.isBuffer`) is load-bearing: Node's
-// worker_threads `postMessage` structured-clones the payload, which
-// strips the Buffer prototype — a frame sent as a Buffer arrives here
-// as a plain Uint8Array, where `Buffer.isBuffer` returns false.
-// `decodeMessage` already adopts a Uint8Array view zero-copy.
-//
-// Falling back to the raw value for non-Uint8Array inputs preserves the
-// legacy POJO path some tests might still exercise.
-function decodeIncomingMessage(raw: unknown): WorkerIncomingMessage {
-  if (raw instanceof Uint8Array) {
-    return decodeMessage(raw).payload as WorkerIncomingMessage;
-  }
-  // U19: hybrid envelope+contents shape. Pool dispatch hoists file
-  // contents OUT of the JSON envelope and into a `contents: Uint8Array[]`
-  // companion whose ArrayBuffers were transferred zero-copy. The
-  // envelope (also a Uint8Array, structured-cloned not transferred)
-  // carries `{type:'sub-batch', files:[{path, byteLength}]}` — metadata
-  // only. Reassemble by zipping the metadata files with the contents
-  // array positionally, decoding UTF-8 → string at this point (one
-  // toString per file, executed on the worker thread in parallel with
-  // ongoing main-thread work).
-  if (
-    raw !== null &&
-    typeof raw === 'object' &&
-    (raw as { envelope?: unknown }).envelope instanceof Uint8Array &&
-    Array.isArray((raw as { contents?: unknown }).contents)
-  ) {
-    const envelope = (raw as { envelope: Uint8Array }).envelope;
-    const contents = (raw as { contents: Uint8Array[] }).contents;
-    const decodedPayload = decodeMessage(envelope).payload;
-    // The protocol allows `null` payloads (per `encodeMessage` docs).
-    // Reject them here rather than letting `.type` access throw a
-    // TypeError that escapes uncaught — the outer try/catch routes the
-    // thrown Error back to the pool as a worker `error` reply, which
-    // goes through `recoverAndResume` instead of producing silently-
-    // empty graph data.
-    if (
-      decodedPayload === null ||
-      typeof decodedPayload !== 'object' ||
-      typeof (decodedPayload as { type?: unknown }).type !== 'string'
-    ) {
-      throw new Error('hybrid envelope decode produced a non-object or non-typed payload');
-    }
-    const decoded = decodedPayload as {
-      type: string;
-      files: Array<{ path: string; byteLength: number }>;
-    };
-    if (decoded.type === 'sub-batch' && Array.isArray(decoded.files)) {
-      // Length-equality assertion. Without it, `TextDecoder.decode(undefined)`
-      // silently returns `""` and produces zero-content graph nodes — a
-      // silent data-loss failure mode. Throwing routes through the
-      // outer try/catch -> worker `error` reply -> `recoverAndResume`,
-      // making the contract violation observable instead of masking it.
-      if (decoded.files.length !== contents.length) {
-        throw new Error(
-          `hybrid envelope contract violation: files.length=${decoded.files.length} ` +
-            `but contents.length=${contents.length}`,
-        );
-      }
-      const decoder = sharedHybridDecoder;
-      const files: ParseWorkerInput[] = decoded.files.map((meta, i) => ({
-        path: meta.path,
-        content: decoder.decode(contents[i]),
-      }));
-      return { type: 'sub-batch', files };
-    }
-  }
-  return raw as WorkerIncomingMessage;
+/**
+ * Convert the pool's sub-batch `files` array (content as `Uint8Array`,
+ * transferred zero-copy) into the `ParseWorkerInput[]` shape
+ * `processBatch` expects (content as `string`). This is the one place
+ * the UTF-8 decode happens — runs on the worker thread in parallel with
+ * continued main-thread work.
+ */
+function decodeSubBatchFiles(
+  files: Array<{ path: string; content: Uint8Array | string }>,
+): ParseWorkerInput[] {
+  return files.map((f) => ({
+    path: f.path,
+    // Test scaffolding (the writeReadyWorker preamble that wraps
+    // parentPort.on) may already convert content to string before
+    // calling here; tolerate both shapes so the same worker code
+    // exercises real and synthetic dispatches.
+    content: typeof f.content === 'string' ? f.content : sharedContentDecoder.decode(f.content),
+  }));
 }
 
-parentPort!.on('message', (raw: unknown) => {
+parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
-    const msg = decodeIncomingMessage(raw);
     // Legacy single-message mode (backward compat): array of files
     if (Array.isArray(msg)) {
       const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage(
-          encodeMessage(MessageTag.Progress, { type: 'progress', filesProcessed }),
-        );
+        parentPort!.postMessage({ type: 'progress', filesProcessed });
       });
-      parentPort!.postMessage(encodeMessage(MessageTag.Result, { type: 'result', data: result }));
+      parentPort!.postMessage({ type: 'result', data: result });
       return;
     }
 
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const result = processBatch(msg.files, (filesProcessed) => {
-        parentPort!.postMessage(
-          encodeMessage(MessageTag.Progress, {
-            type: 'progress',
-            filesProcessed: cumulativeProcessed + filesProcessed,
-          }),
-        );
+      const files = decodeSubBatchFiles(
+        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+      );
+      const result = processBatch(files, (filesProcessed) => {
+        parentPort!.postMessage({
+          type: 'progress',
+          filesProcessed: cumulativeProcessed + filesProcessed,
+        });
       });
       cumulativeProcessed += result.fileCount;
       mergeResult(accumulated, result);
       // Signal ready for next sub-batch
-      parentPort!.postMessage(encodeMessage(MessageTag.SubBatchDone, { type: 'sub-batch-done' }));
+      parentPort!.postMessage({ type: 'sub-batch-done' });
       return;
     }
 
     // Flush: send accumulated results
     if (msg.type === 'flush') {
-      parentPort!.postMessage(
-        encodeMessage(MessageTag.Result, { type: 'result', data: accumulated }),
-      );
+      parentPort!.postMessage({ type: 'result', data: accumulated });
       // Reset for potential reuse
       accumulated = {
         nodes: [],
@@ -2610,6 +2552,6 @@ parentPort!.on('message', (raw: unknown) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    parentPort!.postMessage(encodeMessage(MessageTag.Error, { type: 'error', error: message }));
+    parentPort!.postMessage({ type: 'error', error: message });
   }
 });
