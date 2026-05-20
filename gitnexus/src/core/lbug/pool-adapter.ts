@@ -16,6 +16,8 @@
  */
 
 import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
 import {
@@ -23,6 +25,42 @@ import {
   isWalCorruptionError,
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
+
+/**
+ * Probe whether a Windows FTS extension binary is locally installed under
+ * ~/.lbdb/extension/<any-version>/win_amd64/fts/. Returns true on the first
+ * version dir whose libfts.lbug_extension exists on disk; false if the
+ * extension root is missing or contains no FTS binary.
+ *
+ * Gates the Windows skip-FTS-load guard below so we only skip the load
+ * when no extension binary is present. When at least one binary exists,
+ * loadFTSExtension is called with policy: 'load-only' — LadybugDB resolves
+ * LOAD EXTENSION fts to its version-specific path internally, and the
+ * ExtensionManager's tryLoad try/catch handles version-mismatch errors
+ * cleanly without ever attempting dlopen of a stale binary. The install
+ * path that the #1199/#1217 SIGSEGV documented is never exercised at
+ * query time.
+ *
+ * Exported so unit tests can exercise the probe directly against a
+ * temp-dir plus spied `os.homedir()` — see lbug-pool-win-fts-probe.test.ts.
+ */
+export async function hasLocalWinFtsExtension(): Promise<boolean> {
+  try {
+    const extRoot = path.join(os.homedir(), '.lbdb', 'extension');
+    const versions = await fs.readdir(extRoot);
+    for (const v of versions) {
+      try {
+        await fs.stat(path.join(extRoot, v, 'win_amd64', 'fts', 'libfts.lbug_extension'));
+        return true;
+      } catch {
+        /* missing for this version, keep looking */
+      }
+    }
+  } catch {
+    /* no .lbdb/extension dir */
+  }
+  return false;
+}
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -423,14 +461,24 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // install; analyze owns extension installation. If LOAD fails, search
   // features degrade gracefully and the user-facing query path proceeds.
   if (!shared.ftsLoaded) {
-    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows when
-    // the FTS extension binary is not installed locally (@ladybugdb/core native
-    // bug — the extension loader hits an unhandled error path that signals SIGSEGV
-    // rather than throwing a JS exception, so try/catch cannot protect here).
-    // Skip the load on Windows; bm25-index.js catches the resulting Kuzu catalog
-    // errors and returns empty BM25 results gracefully. Graph queries are unaffected.
+    // Windows guard: LOAD EXTENSION fts crashes with SIGSEGV on Windows during
+    // *install* — the @ladybugdb/core out-of-process installer hits an unhandled
+    // error path that signals SIGSEGV instead of throwing (see #1199, #1217).
+    // The previous unconditional skip was over-broad: it also disabled FTS on
+    // hosts where the binary was already on disk and only needed LOAD, leaving
+    // BM25 silently degraded with no error path (see #1690).
+    //
+    // Probe ~/.lbdb/extension/*/win_amd64/fts/ first. If any binary is on disk
+    // we run loadFTSExtension(..., 'load-only'); the install path is never
+    // exercised, and LadybugDB's version-specific resolution + ExtensionManager
+    // try/catch handle stale/zero-byte siblings cleanly (verified empirically
+    // on Win10 + Node 22.19 + gitnexus 1.6.5 + @ladybugdb/core 0.16.1). With
+    // no binary at all, we fall back to the upstream skip so install-time
+    // SIGSEGV continues to be avoided.
     if (process.platform === 'win32') {
-      shared.ftsLoaded = true;
+      shared.ftsLoaded = (await hasLocalWinFtsExtension())
+        ? await loadFTSExtension(available[0], { policy: 'load-only' })
+        : true;
     } else {
       shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
     }
@@ -497,10 +545,12 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database.
   // policy: 'load-only' — same contract as initLbug above; the read pool
   // must not block on a network install during query execution.
-  // Windows guard: same SIGSEGV risk as doInitLbug above — skip on Windows.
+  // Windows guard: same probe-then-load policy as doInitLbug above.
   if (!shared.ftsLoaded) {
     if (process.platform === 'win32') {
-      shared.ftsLoaded = true;
+      shared.ftsLoaded = (await hasLocalWinFtsExtension())
+        ? await loadFTSExtension(available[0], { policy: 'load-only' })
+        : true;
     } else {
       shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
     }
