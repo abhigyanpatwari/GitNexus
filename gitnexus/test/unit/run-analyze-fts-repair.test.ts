@@ -184,6 +184,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
+        // Full-analyze path only needs `forEachNode` before the FTS verify guard.
         graph: { forEachNode: () => undefined },
       })),
     }));
