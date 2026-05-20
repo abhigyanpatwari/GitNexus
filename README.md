@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 > _Like DeepWiki, but deeper._ DeepWiki helps you _understand_ code. GitNexus lets you _analyze_ it — because a knowledge graph tracks every relationship, not just descriptions.
 
-**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
+**TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Antigravity, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
 ---
 
@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 |             | **CLI + MCP**                                                         | **Web UI**                                                           |
 | ----------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | **What**    | Index repos locally, connect AI agents via MCP                        | Visual graph explorer + AI chat in browser                           |
-| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
+| **For**     | Daily development with Cursor, Claude Code, Antigravity, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
 | **Scale**   | Full repos, any size                                                  | Limited by browser memory (~5k files), or unlimited via backend mode |
 | **Install** | `npm install -g gitnexus`                                             | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app)      |
 | **Storage** | LadybugDB native (fast, persistent)                                   | LadybugDB WASM (in-memory, per session)                              |
@@ -114,13 +114,14 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor          | MCP | Skills | Hooks (auto-augment)                                                                    | Support      |
-| --------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
-| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
-| **Cursor**      | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
-| **Codex**       | Yes | Yes    | —                                                                                       | MCP + Skills |
-| **Windsurf**    | Yes | —      | —                                                                                       | MCP          |
-| **OpenCode**    | Yes | Yes    | —                                                                                       | MCP + Skills |
+| Editor               | MCP | Skills | Hooks (auto-augment)                                                                    | Support      |
+| -------------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
+| **Claude Code**      | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
+| **Cursor**           | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
+| **Antigravity** (Google) | Yes | Yes | Yes (PreToolUse + PostToolUse, [JSON Hooks](https://antigravity.google/docs/features))   | **Full**     |
+| **Codex**            | Yes | Yes    | —                                                                                       | MCP + Skills |
+| **Windsurf**         | Yes | —      | —                                                                                       | MCP          |
+| **OpenCode**         | Yes | Yes    | —                                                                                       | MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
 
@@ -167,6 +168,21 @@ codex mcp add gitnexus -- npx -y gitnexus@latest mcp
   }
 }
 ```
+
+**Antigravity** (Google) — `~/.gemini/antigravity/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+> `gitnexus setup` also writes JSON Hooks to `~/.gemini/config/hooks.json` and installs skills to `~/.gemini/antigravity/skills/`.
 
 **OpenCode** (`~/.config/opencode/config.json`):
 
