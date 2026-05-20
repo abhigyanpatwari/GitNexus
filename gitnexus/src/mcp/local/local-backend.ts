@@ -1066,7 +1066,7 @@ export class LocalBackend {
       timing,
       ...(!ftsUsed && {
         warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       }),
     };
   }

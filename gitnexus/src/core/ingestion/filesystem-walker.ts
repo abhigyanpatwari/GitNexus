@@ -74,12 +74,31 @@ export const walkRepositoryPaths = async (
 
   if (skippedLarge > 0) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
+    const isOverrideUnset = !process.env.GITNEXUS_MAX_FILE_SIZE;
     const suffix = isDefault ? ', likely generated/vendored' : '';
     logger.warn(`  Skipped ${skippedLarge} large files (>${maxFileSizeBytes / 1024}KB${suffix})`);
-    if (isVerboseIngestionEnabled()) {
-      for (const p of skippedLargePaths) {
-        logger.warn(`  - ${p}`);
-      }
+
+    // Always show at least the first few paths so users can diagnose why
+    // edges are missing from a specific file (issue #1659). The full list is
+    // gated behind GITNEXUS_VERBOSE=1 to avoid flooding output on repos with
+    // many generated/vendored blobs. Sort before slicing so the preview is
+    // stable across runs (fs.stat callbacks race within each batch).
+    skippedLargePaths.sort();
+    const SKIPPED_PREVIEW_CAP = 5;
+    const showAll = isVerboseIngestionEnabled() || skippedLargePaths.length <= SKIPPED_PREVIEW_CAP;
+    const preview = showAll ? skippedLargePaths : skippedLargePaths.slice(0, SKIPPED_PREVIEW_CAP);
+    for (const p of preview) {
+      logger.warn(`  - ${p}`);
+    }
+    if (!showAll) {
+      const remaining = skippedLargePaths.length - SKIPPED_PREVIEW_CAP;
+      logger.warn(`  ...and ${remaining} more (set GITNEXUS_VERBOSE=1 to list them all)`);
+    }
+    // Only hint about the env var when the user has not set it at all. An
+    // explicit GITNEXUS_MAX_FILE_SIZE=512 happens to resolve to the same
+    // bytes as the default but the operator clearly already knows the knob.
+    if (isDefault && isOverrideUnset) {
+      logger.warn(`  Set GITNEXUS_MAX_FILE_SIZE=<KB> to include files above the default cap.`);
     }
   }
 

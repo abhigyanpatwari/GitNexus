@@ -196,6 +196,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    // Pointer/nullptr/ellipsis conversion ranks (#1637) need C++ type-class
+    // sidecars plus conversion-rank scoring. The legacy DAG has neither.
+    'f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)',
+    'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
+    "h(1, 'a') resolves to h(int, double), not h(int, ...)",
+    'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse

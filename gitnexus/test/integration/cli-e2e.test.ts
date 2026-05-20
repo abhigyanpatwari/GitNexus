@@ -1408,5 +1408,102 @@ describe('CLI end-to-end', () => {
         }, 30000);
       });
     }, 35000);
+
+    it('emits READY signal with bound IP (not literal "localhost") when --host localhost is used', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            'localhost',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', async (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          const readyLine = stdoutBuffer
+            .split('\n')
+            .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:'));
+          if (!readyLine || settled) return;
+
+          // The signal must contain a real bound IP, not the literal input string
+          if (readyLine.includes(':localhost:')) {
+            settle(() =>
+              reject(
+                new Error(
+                  `READY signal contained literal "localhost" instead of a bound IP:\n${readyLine}`,
+                ),
+              ),
+            );
+            return;
+          }
+
+          // Parse host and port: everything after the prefix up to the last colon
+          const withoutPrefix = readyLine.slice('GITNEXUS_EVAL_SERVER_READY:'.length);
+          const lastColon = withoutPrefix.lastIndexOf(':');
+          const signalHost = withoutPrefix.slice(0, lastColon); // "127.0.0.1" or "[::1]"
+          const boundPort = withoutPrefix.slice(lastColon + 1).trim();
+          if (!boundPort || isNaN(Number(boundPort))) {
+            settle(() => reject(new Error(`Could not parse port from READY signal: ${readyLine}`)));
+            return;
+          }
+
+          // Probe /health at the bound address to confirm the server is reachable
+          try {
+            const res = await fetch(`http://${signalHost}:${boundPort}/health`);
+            if (res.status === 200) {
+              settle(resolve);
+            } else {
+              settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+            }
+          } catch (err) {
+            settle(() =>
+              reject(
+                new Error(
+                  `eval-server bound to localhost but /health unreachable at ${signalHost}:${boundPort}: ${err}`,
+                ),
+              ),
+            );
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes('unknown option') || text.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${text}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() =>
+            reject(new Error('eval-server --host localhost did not emit READY signal within 30s')),
+          );
+        }, 30000);
+      });
+    }, 35000);
   });
 });
