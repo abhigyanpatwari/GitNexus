@@ -8,10 +8,26 @@ describe('--skip-git CLI flag', () => {
   const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
   const ftsUnavailableNeedle = 'FTS extension unavailable - cannot create FTS index';
 
+  interface ExecSyncLikeError {
+    message?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+  }
+
   const isFtsUnavailableError = (err: unknown): boolean => {
-    const e = err as { message?: string; stdout?: string; stderr?: string };
-    const text = `${e?.message ?? ''}\n${e?.stdout ?? ''}\n${e?.stderr ?? ''}`;
+    if (!err || typeof err !== 'object') return false;
+    const e = err as ExecSyncLikeError;
+    const text = `${String(e.message ?? '')}\n${String(e.stdout ?? '')}\n${String(e.stderr ?? '')}`;
     return text.includes(ftsUnavailableNeedle);
+  };
+
+  const shouldSkipForFtsUnavailable = (err: unknown, testName: string): boolean => {
+    if (!isFtsUnavailableError(err)) return false;
+
+    console.warn(
+      `[skip-git-cli.test] Skipping "${testName}" because FTS extension is unavailable.`,
+    );
+    return true;
   };
 
   it('Commander maps --skip-git to options.skipGit (not --no-git inversion)', () => {
@@ -58,7 +74,10 @@ describe('--skip-git CLI flag', () => {
           },
         );
       } catch (err: unknown) {
-        if (isFtsUnavailableError(err)) return;
+        if (
+          shouldSkipForFtsUnavailable(err, 'warns when --index-only overrides --skills (PR 1485)')
+        )
+          return;
         throw err;
       }
       expect(output).toContain('--index-only overrides --skills');
@@ -113,7 +132,13 @@ describe('--skip-git CLI flag', () => {
           env,
         });
       } catch (err: unknown) {
-        if (isFtsUnavailableError(err)) return;
+        if (
+          shouldSkipForFtsUnavailable(
+            err,
+            'still respects .gitnexusignore when run with --skip-git',
+          )
+        )
+          return;
         throw err;
       }
 
@@ -249,7 +274,13 @@ describe('--skip-git CLI flag', () => {
             env: testEnv(),
           });
         } catch (err: unknown) {
-          if (isFtsUnavailableError(err)) return;
+          if (
+            shouldSkipForFtsUnavailable(
+              err,
+              'from subdir inside parent git repo, indexes subdir not parent',
+            )
+          )
+            return;
           throw err;
         }
         // Should mention COOLIO not the parent dir name
@@ -288,7 +319,13 @@ describe('--skip-git CLI flag', () => {
             env: testEnv(),
           });
         } catch (err: unknown) {
-          if (isFtsUnavailableError(err)) return;
+          if (
+            shouldSkipForFtsUnavailable(
+              err,
+              'keeps parent git status clean for --skip-git subdir analyze (#1233)',
+            )
+          )
+            return;
           throw err;
         }
 
@@ -317,7 +354,10 @@ describe('--skip-git CLI flag', () => {
             env: testEnv(),
           });
         } catch (err: unknown) {
-          if (isFtsUnavailableError(err)) return;
+          if (
+            shouldSkipForFtsUnavailable(err, 'explicit input path with --skip-git indexes subdir')
+          )
+            return;
           throw err;
         }
         expect(output).toContain('COOLIO');
