@@ -214,8 +214,9 @@ export async function runFullAnalysis(
       );
     }
     if (!lbugStat.isFile()) {
+      const foundType = lbugStat.isDirectory() ? 'a directory' : 'not a regular file';
       throw new Error(
-        `Cannot repair FTS indexes: graph store at ${lbugPath} is invalid (expected a file). ` +
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is ${foundType} (expected a file). ` +
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }

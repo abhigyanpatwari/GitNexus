@@ -93,7 +93,12 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
             onProgress: () => {},
           },
         ),
-      ).rejects.toThrow(`graph store at ${lbugPath} is invalid (expected a file)`);
+      ).rejects.toThrow(
+        new RegExp(
+          `graph store at ${escapeForRegex(lbugPath)} is a directory \\(expected a file\\)`,
+          'i',
+        ),
+      );
     } finally {
       await tmpRepo.cleanup();
     }
