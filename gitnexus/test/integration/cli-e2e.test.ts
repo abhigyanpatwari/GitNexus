@@ -16,6 +16,7 @@ import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { createRequire } from 'module';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
@@ -75,10 +76,10 @@ afterAll(() => {
   // Entire tmp copy goes away — no selective cleanup needed. The shared
   // `test/fixtures/mini-repo/` source was never touched.
   if (tmpParent) {
-    fs.rmSync(tmpParent, { recursive: true, force: true });
+    cleanupTempDirSync(tmpParent);
   }
   if (suiteGitnexusHome) {
-    fs.rmSync(suiteGitnexusHome, { recursive: true, force: true });
+    cleanupTempDirSync(suiteGitnexusHome);
   }
 });
 
@@ -268,8 +269,8 @@ describe('CLI end-to-end', () => {
         `registry has no entry for ${repo}; entries: ${JSON.stringify(entries.map((e) => e.path))}`,
       ).toBe(true);
     } finally {
-      fs.rmSync(gnHome, { recursive: true, force: true });
-      fs.rmSync(repoParent, { recursive: true, force: true });
+      cleanupTempDirSync(gnHome);
+      cleanupTempDirSync(repoParent);
     }
   }, 60_000);
 
@@ -310,8 +311,8 @@ describe('CLI end-to-end', () => {
       expect(`${second.stdout}${second.stderr}`).toMatch(/registry entry/i);
       expect(second.status).toBe(1);
     } finally {
-      fs.rmSync(gnHome, { recursive: true, force: true });
-      fs.rmSync(repoParent, { recursive: true, force: true });
+      cleanupTempDirSync(gnHome);
+      cleanupTempDirSync(repoParent);
     }
   }, 60_000);
 
@@ -457,12 +458,12 @@ describe('CLI end-to-end', () => {
           const afterStep4 = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
           expect(afterStep4).toHaveLength(2);
         } finally {
-          fs.rmSync(parentC, { recursive: true, force: true });
+          cleanupTempDirSync(parentC);
         }
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
-        fs.rmSync(parentB, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
+        cleanupTempDirSync(parentB);
       }
     }, 360000); // 6-min outer budget (4 × ~60s analyze calls + fixture setup)
   });
@@ -571,8 +572,8 @@ describe('CLI end-to-end', () => {
         expect(r4.status).toBe(0);
         expect(`${r4.stdout}${r4.stderr}`).toMatch(/Nothing to remove/i);
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
       }
     }, 180000); // 3-min outer budget (1 × ~60s analyze + 3 × fast remove calls)
 
@@ -675,9 +676,9 @@ describe('CLI end-to-end', () => {
         // And it's NOT the one we just removed.
         expect(finalEntries[0].path).not.toBe(repoAEntry.path);
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
-        fs.rmSync(parentB, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
+        cleanupTempDirSync(parentB);
       }
     }, 240000); // 4-min outer budget (2 × ~60s analyze + 2 × fast remove)
 
@@ -759,8 +760,8 @@ describe('CLI end-to-end', () => {
         expect(afterRegistry).toHaveLength(1);
         expect(afterRegistry[0].storagePath).toBe(repo); // still poisoned (we did that)
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parent, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parent);
       }
     }, 120000); // 2-min budget (1 × ~60s analyze + 1 × fast remove-refused)
   });
@@ -864,9 +865,9 @@ describe('CLI end-to-end', () => {
         expect(afterRegistry).toHaveLength(1);
         expect(afterRegistry[0].name).toBe('bad-alias');
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentBad, { recursive: true, force: true });
-        fs.rmSync(parentGood, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentBad);
+        cleanupTempDirSync(parentGood);
       }
     }, 240000); // 4-min budget (2 × ~60s analyze + 1 × fast clean --all)
   });
@@ -954,7 +955,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(0);
         expect(result.stdout).toMatch(/Repository not indexed/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -968,7 +969,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(0);
         expect(result.stdout).toMatch(/Not a git repository/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -984,7 +985,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/not.*git repository/i);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
   });
@@ -1014,7 +1015,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/not.*git repository/i);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -1051,7 +1052,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/No GitNexus index found/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -1217,7 +1218,7 @@ describe('CLI end-to-end', () => {
 
         child.stdout.on('data', (chunk: Buffer) => {
           stdoutBuffer += chunk.toString();
-          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
             foundOnStdout = true;
             child.kill('SIGTERM');
           }
@@ -1252,6 +1253,256 @@ describe('CLI end-to-end', () => {
             reject(err);
           }
         });
+      });
+    }, 35000);
+  });
+
+  // ─── eval-server --host flag tests ───────────────────────────────────
+  // Verifies --host is wired to the actual bind address, not just accepted.
+  // Original flag registration test by Val Vladescu (PR #1602).
+
+  describe('eval-server --host flag', () => {
+    it('emits READY signal containing the bound host 127.0.0.1', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            '127.0.0.1',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let stderrBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+            if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
+              settle(resolve);
+            } else {
+              settle(() =>
+                reject(
+                  new Error(
+                    `READY signal did not contain expected host 127.0.0.1:\n${stdoutBuffer}`,
+                  ),
+                ),
+              );
+            }
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderrBuffer += chunk.toString();
+          if (stderrBuffer.includes('unknown option') || stderrBuffer.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${stderrBuffer}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() => reject(new Error('eval-server did not emit READY signal within 30s')));
+        }, 30000);
+      });
+    }, 35000);
+
+    it('binds to 0.0.0.0 and serves /health on 127.0.0.1 (cross-container use case)', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            '0.0.0.0',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', async (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          const readyLine = stdoutBuffer
+            .split('\n')
+            .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:0.0.0.0:'));
+          if (!readyLine || settled) return;
+
+          // Parse the actual OS-assigned port from the READY signal
+          const boundPort = readyLine.split(':').pop()?.trim();
+          if (!boundPort || isNaN(Number(boundPort))) {
+            settle(() => reject(new Error(`Could not parse port from READY signal: ${readyLine}`)));
+            return;
+          }
+
+          // A server bound to 0.0.0.0 must be reachable on 127.0.0.1 from the same host
+          try {
+            const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
+            if (res.status === 200) {
+              settle(resolve);
+            } else {
+              settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+            }
+          } catch (err) {
+            settle(() =>
+              reject(
+                new Error(
+                  `eval-server bound to 0.0.0.0 but /health unreachable on 127.0.0.1:${boundPort}: ${err}`,
+                ),
+              ),
+            );
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes('unknown option') || text.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${text}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() =>
+            reject(new Error('eval-server --host 0.0.0.0 did not emit READY signal within 30s')),
+          );
+        }, 30000);
+      });
+    }, 35000);
+
+    it('emits READY signal with bound IP (not literal "localhost") when --host localhost is used', () => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            tsxImportUrl,
+            cliEntry,
+            'eval-server',
+            '--port',
+            '0',
+            '--host',
+            'localhost',
+            '--idle-timeout',
+            '3',
+          ],
+          {
+            cwd: MINI_REPO,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: cliEnv(),
+          },
+        );
+
+        let stdoutBuffer = '';
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill('SIGTERM');
+          fn();
+        };
+
+        child.stdout.on('data', async (chunk: Buffer) => {
+          stdoutBuffer += chunk.toString();
+          const readyLine = stdoutBuffer
+            .split('\n')
+            .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:'));
+          if (!readyLine || settled) return;
+
+          // The signal must contain a real bound IP, not the literal input string
+          if (readyLine.includes(':localhost:')) {
+            settle(() =>
+              reject(
+                new Error(
+                  `READY signal contained literal "localhost" instead of a bound IP:\n${readyLine}`,
+                ),
+              ),
+            );
+            return;
+          }
+
+          // Parse host and port: everything after the prefix up to the last colon
+          const withoutPrefix = readyLine.slice('GITNEXUS_EVAL_SERVER_READY:'.length);
+          const lastColon = withoutPrefix.lastIndexOf(':');
+          const signalHost = withoutPrefix.slice(0, lastColon); // "127.0.0.1" or "[::1]"
+          const boundPort = withoutPrefix.slice(lastColon + 1).trim();
+          if (!boundPort || isNaN(Number(boundPort))) {
+            settle(() => reject(new Error(`Could not parse port from READY signal: ${readyLine}`)));
+            return;
+          }
+
+          // Probe /health at the bound address to confirm the server is reachable
+          try {
+            const res = await fetch(`http://${signalHost}:${boundPort}/health`);
+            if (res.status === 200) {
+              settle(resolve);
+            } else {
+              settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+            }
+          } catch (err) {
+            settle(() =>
+              reject(
+                new Error(
+                  `eval-server bound to localhost but /health unreachable at ${signalHost}:${boundPort}: ${err}`,
+                ),
+              ),
+            );
+          }
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes('unknown option') || text.includes('error: unknown')) {
+            settle(() => reject(new Error(`eval-server rejected --host flag:\n${text}`)));
+          }
+        });
+
+        const timer = setTimeout(() => {
+          settle(() =>
+            reject(new Error('eval-server --host localhost did not emit READY signal within 30s')),
+          );
+        }, 30000);
       });
     }, 35000);
   });

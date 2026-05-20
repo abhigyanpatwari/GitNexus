@@ -913,6 +913,9 @@ function pass5CollectReferences(
     const explicitReceiver = extractExplicitReceiver(match);
     const arity = extractArity(match);
     const argumentTypes = extractArgumentTypes(match);
+    const argumentTypeClasses = parseJsonParameterTypeClassesCapture(
+      match['@reference.parameter-type-classes'],
+    );
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -923,6 +926,7 @@ function pass5CollectReferences(
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
+      ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
     };
     referenceSites.push(site);
   }
@@ -1040,9 +1044,11 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.receiver',
   '@reference.arity',
   '@reference.parameter-types',
+  '@reference.parameter-type-classes',
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.parameter-type-classes',
   '@declaration.template-constraints',
 ]);
 

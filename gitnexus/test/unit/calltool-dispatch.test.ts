@@ -203,7 +203,7 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('query', { query: 'ProcessActivity' });
 
     expect(result).toHaveProperty('warning');
-    expect((result as any).warning).toMatch(/gitnexus analyze --force/);
+    expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
   });
 
   it('does not include warning when ftsAvailable is true with zero results', async () => {
