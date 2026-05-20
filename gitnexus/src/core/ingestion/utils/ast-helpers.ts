@@ -411,6 +411,60 @@ export const findEnclosingClassInfo = (
   return null;
 };
 
+/** Object literal binding info for TS/JS shorthand methods. */
+export interface ObjectLiteralBindingInfo {
+  ownerId: string;
+  ownerName: string;
+}
+
+/**
+ * Find the file-scope variable that owns an object literal method definition.
+ *
+ * Covers TypeScript/JavaScript shorthand object methods such as:
+ *
+ *   export const service = { async load() {} };
+ *
+ * tree-sitter represents `load` as a `method_definition` inside an `object`,
+ * not inside a class container. Without this fallback, ingestion emits a
+ * top-level `Method` node but no edge from the exported `service` value to
+ * that method, so impact queries cannot discover `service.load`.
+ */
+export const findObjectLiteralBindingInfo = (
+  node: SyntaxNode,
+  filePath: string,
+): ObjectLiteralBindingInfo | null => {
+  let current: SyntaxNode | null = node;
+  let sawObjectLiteral = false;
+
+  while (current) {
+    if (current.type === 'object') sawObjectLiteral = true;
+
+    if (sawObjectLiteral && current.type === 'variable_declarator') {
+      const nameNode = current.childForFieldName?.('name');
+      if (!nameNode || nameNode.type !== 'identifier') return null;
+
+      const declaration = current.parent;
+      const ownerLabel = declaration?.type === 'variable_declaration' ? 'Variable' : 'Const';
+      return {
+        ownerId: generateId(ownerLabel, `${filePath}:${nameNode.text}`),
+        ownerName: nameNode.text,
+      };
+    }
+
+    // Stop at a function/class boundary before finding an owning object literal.
+    if (
+      current !== node &&
+      (FUNCTION_NODE_TYPES.has(current.type) || CLASS_CONTAINER_TYPES.has(current.type))
+    ) {
+      return null;
+    }
+
+    current = current.parent;
+  }
+
+  return null;
+};
+
 /** Convenience wrapper: returns just the class ID string (backward compat). */
 export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   return findEnclosingClassInfo(node, filePath)?.classId ?? null;
