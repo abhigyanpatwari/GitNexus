@@ -37,7 +37,7 @@ import {
 } from './utils/template-arguments.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import { WorkerPool, WorkerPoolDispatchError } from './workers/worker-pool.js';
+import { WorkerPool } from './workers/worker-pool.js';
 import { logger } from '../logger.js';
 import type {
   ParseWorkerResult,
@@ -882,128 +882,75 @@ export const processParsing = async (
         `[scope-resolution prof] worker pool engaged for ${files.length} files — cross-phase tree cache will be empty; scope-resolution re-parses.`,
       );
     }
-    try {
-      const data = await processParsingWithWorkers(
-        graph,
-        files,
-        symbolTable,
-        astCache,
-        workerPool,
-        reportProgress,
-        outRawResults,
-      );
-      // Session-scoped quarantine (worker-pool resilience Layer 3): surface
-      // any files this pool has decided are unsafe for workers so the
-      // operator can see what was skipped. The pool already filtered them
-      // out of dispatch; we only need to log + progress-report. Quarantine
-      // is session-scoped per pool instance — a fresh `createWorkerPool`
-      // call clears it.
-      //
-      // Dedup: log full path list only for entries newly quarantined since
-      // the previous dispatch on the same pool. The per-chunk progress
-      // message still surfaces the count for UX continuity, but the
-      // structured `quarantinedFiles` payload is only emitted when there
-      // is new signal — prevents O(quarantine × chunks) log spam.
-      const quarantineSnapshot = workerPool.getQuarantinedPaths?.() ?? [];
-      const quarantineSet = new Set(quarantineSnapshot);
-      if (quarantineSet.size > 0) {
-        const quarantinedInChunk = files.filter((file) => quarantineSet.has(file.path));
-        if (quarantinedInChunk.length > 0) {
-          const seenForPool = loggedQuarantineByPool.get(workerPool) ?? new Set<string>();
-          const newlyQuarantined = quarantinedInChunk
-            .map((file) => file.path)
-            .filter((p) => !seenForPool.has(p));
-          for (const p of newlyQuarantined) seenForPool.add(p);
-          loggedQuarantineByPool.set(workerPool, seenForPool);
-          if (newlyQuarantined.length > 0) {
-            logger.warn(
-              {
-                newlyQuarantined,
-                cumulativeQuarantine: quarantineSet.size,
-                chunkSkipped: quarantinedInChunk.length,
-              },
-              `Worker quarantine: ${newlyQuarantined.length} new file(s) skipped this chunk ` +
-                `(${quarantinedInChunk.length} skipped total, ${quarantineSet.size} cumulative).`,
-            );
-          }
-          reportProgress?.(
-            lastProgress,
-            files.length,
-            `${quarantinedInChunk.length} worker-quarantined file(s) skipped`,
-          );
-
-          // U20.U1: Sequential gap-fill. The worker pool's Layer 3
-          // quarantine filtered these files out of dispatch, so the
-          // worker results above are missing their symbols/imports/
-          // calls/heritage. Without this reparse, the graph for THIS
-          // run is silently incomplete — exactly the silent-corruption
-          // class the Codex adversarial review of PR #1693 flagged.
-          //
-          // Running `processParsingSequential` on JUST the quarantined
-          // files mirrors the WorkerPoolDispatchError catch-block
-          // shape below (line 961). Worker-extracted data for the
-          // surviving files flows through `data` to the caller's
-          // deferred-extraction merge; sequential output for the
-          // quarantined files writes directly to the graph here.
-          //
-          // The chunk-loop caller's cache write at parse-impl.ts:500-
-          // 507 will NOT cache this chunk because U20.U2's guard
-          // detects the same quarantine intersection — so next run
-          // gets a cache miss and a fresh pool gives the file
-          // another chance.
+    // U20 design pivot: the worker pool's resilience layers
+    // (respawn budget, circuit breaker, quarantine, slot-attribution,
+    // cumulative timeout) are the SOLE contract for handling worker
+    // failures. There is no sequential-parser fallback for either
+    // partial quarantine or full pool failure — the operator must see
+    // a clear hard signal when workers can't recover, instead of a
+    // silently-degraded graph from a possibly-crashing main-thread
+    // sequential parser. A failing tree-sitter native binding that
+    // quarantined a worker would, under the previous design, re-trigger
+    // the same SIGSEGV on the main thread; we avoid that risk entirely.
+    //
+    // - Partial quarantine: the file is missing from this run's graph;
+    //   the per-chunk warn log below surfaces it; U2's chunk-cache
+    //   write-guard in parse-impl.ts keeps the chunk uncached so the
+    //   next analyze gets a cache miss and a fresh pool retries.
+    // - Full pool failure: `WorkerPoolDispatchError` propagates from
+    //   `processParsingWithWorkers` up through this function. The
+    //   analyze run errors out instead of falling back to sequential.
+    const data = await processParsingWithWorkers(
+      graph,
+      files,
+      symbolTable,
+      astCache,
+      workerPool,
+      reportProgress,
+      outRawResults,
+    );
+    // Session-scoped quarantine (worker-pool resilience Layer 3): surface
+    // any files this pool has decided are unsafe for workers so the
+    // operator can see what was skipped. The pool already filtered them
+    // out of dispatch; we only need to log + progress-report. Quarantine
+    // is session-scoped per pool instance — a fresh `createWorkerPool`
+    // call clears it.
+    //
+    // Dedup: log full path list only for entries newly quarantined since
+    // the previous dispatch on the same pool. The per-chunk progress
+    // message still surfaces the count for UX continuity, but the
+    // structured `quarantinedFiles` payload is only emitted when there
+    // is new signal — prevents O(quarantine × chunks) log spam.
+    const quarantineSnapshot = workerPool.getQuarantinedPaths?.() ?? [];
+    const quarantineSet = new Set(quarantineSnapshot);
+    if (quarantineSet.size > 0) {
+      const quarantinedInChunk = files.filter((file) => quarantineSet.has(file.path));
+      if (quarantinedInChunk.length > 0) {
+        const seenForPool = loggedQuarantineByPool.get(workerPool) ?? new Set<string>();
+        const newlyQuarantined = quarantinedInChunk
+          .map((file) => file.path)
+          .filter((p) => !seenForPool.has(p));
+        for (const p of newlyQuarantined) seenForPool.add(p);
+        loggedQuarantineByPool.set(workerPool, seenForPool);
+        if (newlyQuarantined.length > 0) {
           logger.warn(
             {
-              reparsedPaths: quarantinedInChunk.map((f) => f.path),
-              count: quarantinedInChunk.length,
+              newlyQuarantined,
+              cumulativeQuarantine: quarantineSet.size,
+              chunkSkipped: quarantinedInChunk.length,
             },
-            `Running sequential reparse for ${quarantinedInChunk.length} worker-quarantined ` +
-              `file(s) to keep this run's graph complete.`,
-          );
-          await processParsingSequential(
-            graph,
-            quarantinedInChunk,
-            symbolTable,
-            astCache,
-            scopeTreeCache,
-            reportProgress,
+            `Worker quarantine: ${newlyQuarantined.length} new file(s) skipped this chunk ` +
+              `(${quarantinedInChunk.length} skipped total, ${quarantineSet.size} cumulative).`,
           );
         }
-      }
-      return data;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      let fallbackFiles = files;
-      if (err instanceof WorkerPoolDispatchError && err.fallbackExcludePaths.length > 0) {
-        const excluded = new Set(err.fallbackExcludePaths);
-        fallbackFiles = files.filter((file) => !excluded.has(file.path));
-        logger.warn(
-          {
-            skippedPaths: err.fallbackExcludePaths,
-          },
-          'Skipping worker-excluded files in sequential fallback:',
-        );
         reportProgress?.(
           lastProgress,
           files.length,
-          `Skipping ${files.length - fallbackFiles.length} worker-excluded file(s) in sequential fallback`,
+          `${quarantinedInChunk.length} worker-quarantined file(s) skipped`,
         );
       }
-      logger.warn({ message }, 'Worker pool parsing stopped; continuing with sequential parser:');
-      reportProgress?.(
-        lastProgress,
-        files.length,
-        `Sequential fallback after worker issue: ${message}`,
-      );
-      await processParsingSequential(
-        graph,
-        fallbackFiles,
-        symbolTable,
-        astCache,
-        scopeTreeCache,
-        reportProgress,
-      );
-      return null;
     }
+    return data;
   }
 
   // Fallback: sequential parsing (no pre-extracted data)

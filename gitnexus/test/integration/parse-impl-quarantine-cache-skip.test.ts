@@ -1,5 +1,5 @@
 /**
- * U20.U3 — Integration regression test for chunk-cache corruption on
+ * U20 — Integration regression test for chunk-cache corruption on
  * worker quarantine.
  *
  * Pins the fix for the Codex adversarial review finding on PR #1693
@@ -27,20 +27,27 @@
  *      nodes give the merge step deterministic content to add to the
  *      graph).
  *
- * Assertions:
- *   - U1 (sequential gap-fill): the graph contains a `Function` node
- *     named `poison` after the run. The custom worker never emits
- *     anything for `poison.ts` (it crashes on it), so the only path
- *     for that symbol to land in the graph is `processParsing`'s
- *     sequential reparse of the quarantined-in-chunk file — which
- *     uses the real tree-sitter parser against the actual
- *     `export function poison() {}` source.
+ * U20 design pivot — no sequential fallback. The U1 sequential
+ * reparse for quarantined chunk files was removed: relying on the
+ * worker pool's resilience layers (respawn budget, circuit breaker,
+ * quarantine, slot-attribution, cumulative timeout) as the SOLE
+ * contract avoids re-triggering tree-sitter native crashes on the
+ * main thread and gives operators a clear hard signal when workers
+ * exhaust. Quarantined files are missing from this run's graph;
+ * they're surfaced in the per-chunk warn log; U2's cache-skip keeps
+ * the chunk uncached so the next analyze with a fresh pool retries.
+ *
+ * Assertions exercised here:
+ *   - Worker-path runs and produces results for surviving files
+ *     (good_a, good_c) via the synthesized worker output.
+ *   - The quarantined file (poison.ts) is NOT in the graph — no
+ *     sequential reparse fired.
  *   - U2 (cache-write suppression): `parseCache.entries` does NOT
  *     contain the chunk hash after the run. `parseCache.usedKeys`
  *     DOES contain it (chunk was processed; the cache write was
  *     specifically skipped). A cross-run scenario verifies that a
  *     subsequent dispatch with a fresh pool re-attempts the chunk
- *     (cache miss).
+ *     (cache miss) and the cache stays empty for that chunk.
  *
  * Why integration over unit:
  *   - The fix lives at the boundary between processParsing
@@ -56,10 +63,7 @@
  *     reused inline here (the READY_PREAMBLE + test-worker script
  *     composition).
  *
- * Wall-clock budget: well under 5 s under normal CI conditions. The
- * test bounds Worker startup at the pool's WORKER_READY_TIMEOUT_MS
- * (5 s) and dispatch at subBatchIdleTimeoutMs default (30 s) — both
- * generous given the worker never blocks the test on real work.
+ * Wall-clock budget: well under 5 s under normal CI conditions.
  */
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
@@ -183,7 +187,7 @@ const FIXTURE_FILES = {
   'src/good_c.ts': 'export function good_c() { return 3; }\n',
 };
 
-describe('U20.U3: parse-impl quarantine + chunk-cache integration (PR #1693 Codex finding)', () => {
+describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex finding)', () => {
   let tempDir: string;
   let repoDir: string;
   let workerPath: string;
@@ -212,7 +216,7 @@ describe('U20.U3: parse-impl quarantine + chunk-cache integration (PR #1693 Code
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('runs sequential reparse for poison.ts AND suppresses cache write for the chunk', async () => {
+  it('worker quarantine leaves poison.ts out of the graph AND suppresses chunk-cache write', async () => {
     const filePaths = Object.keys(FIXTURE_FILES);
     const scanned = filePaths.map((rel) => ({
       path: rel,
@@ -260,21 +264,23 @@ describe('U20.U3: parse-impl quarantine + chunk-cache integration (PR #1693 Code
       },
     );
 
-    // U1 assertion: poison.ts's symbols are in the graph despite the
-    // worker never emitting anything for that file. The only path for
-    // a Function node named `poison` to land here is processParsing's
-    // sequential reparse of the quarantined-in-chunk file (using the
-    // real tree-sitter parser against the actual source).
     const nodes = Array.from(graph.nodes.values());
-    const poisonNode = nodes.find(
-      (n) => n.label === 'Function' && (n.properties as { name?: string }).name === 'poison',
-    );
-    expect(poisonNode).toBeDefined();
 
-    // The other two files' symbols came from the custom worker's
-    // synthesized output via the normal worker-path merge. Pin them
-    // too so a regression that drops worker results entirely doesn't
-    // silently pass this test.
+    // Quarantine contract: poison.ts is genuinely missing from the
+    // graph for this run. The custom worker crashed on it; no
+    // sequential reparse rescued it; the operator sees the per-chunk
+    // quarantine warn log. A future analyze with a fresh pool gets
+    // another chance via U2's cache-skip below.
+    expect(
+      nodes.some(
+        (n) => n.label === 'Function' && (n.properties as { name?: string }).name === 'poison',
+      ),
+    ).toBe(false);
+
+    // Surviving files' symbols come from the custom worker's
+    // synthesized output via the normal worker-path merge. Pinning
+    // them here catches a regression that would drop worker results
+    // entirely when quarantine fires.
     expect(
       nodes.some(
         (n) => n.label === 'Function' && (n.properties as { name?: string }).name === 'good_a',
@@ -369,17 +375,24 @@ describe('U20.U3: parse-impl quarantine + chunk-cache integration (PR #1693 Code
         },
       );
 
-      // Cache stayed empty (still no entry for this chunk hash).
+      // Cache stayed empty (still no entry for this chunk hash) — the
+      // load-bearing cross-run protection.
       expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
       expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
-      // Graph is still complete — sequential gap-fill ran again on
-      // poison.ts in the second pass.
+      // Worker path ran again; surviving files in the graph; poison
+      // still absent per the U20 contract (workers are the sole
+      // resilience layer, no sequential reparse).
       const nodes2 = Array.from(graph2.nodes.values());
+      expect(
+        nodes2.some(
+          (n) => n.label === 'Function' && (n.properties as { name?: string }).name === 'good_a',
+        ),
+      ).toBe(true);
       expect(
         nodes2.some(
           (n) => n.label === 'Function' && (n.properties as { name?: string }).name === 'poison',
         ),
-      ).toBe(true);
+      ).toBe(false);
     }
   });
 });
