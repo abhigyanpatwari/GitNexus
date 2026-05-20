@@ -497,12 +497,44 @@ export async function runChunkedParseAndResolve(
         // Persist the raw results for this chunk hash. Sequential path
         // doesn't populate rawResults (it writes directly to graph), so
         // small repos without worker pool simply don't cache. That's fine.
+        //
+        // U20.U2: refuse the write when any chunk file is in the
+        // worker pool's cumulative quarantine snapshot. The chunkHash
+        // is computed from EVERY file in the chunk, but the pool's
+        // Layer 3 quarantine filters quarantined files out of dispatch
+        // — so `rawResults` is narrower than the chunkHash key implies.
+        // Caching it would silently replay incomplete results on the
+        // next run with unchanged content (the corruption class Codex's
+        // adversarial review of PR #1693 flagged).
+        //
+        // Skipping the write means the next analyze gets a cache miss
+        // for this chunk and re-dispatches against a fresh worker pool
+        // (quarantine is session-scoped — `createQuarantine` is called
+        // per-pool at worker-pool.ts), giving the quarantined file
+        // another chance. If quarantine fires again, U20.U1's
+        // sequential gap-fill still produces a complete graph for this
+        // run; the cache just stays empty for this chunk until a fully-
+        // clean dispatch lands.
         if (parseCache && chunkHash && rawResults.length > 0) {
-          parseCache.entries.set(chunkHash, rawResults);
-          if (isDev) {
-            logger.info(
-              `📦 parse-cache MISS+store: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash.slice(0, 8)})`,
-            );
+          const quarantineSnapshot = workerPool?.getQuarantinedPaths?.() ?? [];
+          const quarantineSet = new Set(quarantineSnapshot);
+          const chunkHadQuarantine = chunkFiles.some((f) => quarantineSet.has(f.path));
+          if (chunkHadQuarantine) {
+            if (isDev) {
+              const quarantinedInChunk = chunkFiles.filter((f) => quarantineSet.has(f.path)).length;
+              logger.info(
+                `📦 parse-cache SKIP: chunk ${chunkIdx + 1}/${numChunks} ` +
+                  `had ${quarantinedInChunk} worker-quarantined file(s); ` +
+                  `next run will rediscover (${chunkHash.slice(0, 8)})`,
+              );
+            }
+          } else {
+            parseCache.entries.set(chunkHash, rawResults);
+            if (isDev) {
+              logger.info(
+                `📦 parse-cache MISS+store: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash.slice(0, 8)})`,
+              );
+            }
           }
         }
       }
