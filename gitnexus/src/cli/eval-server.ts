@@ -472,7 +472,9 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         { code: err.code, port, host },
       );
     } else if (err.code === 'EADDRNOTAVAIL') {
-      const isIPv6Host = isIPv6(host);
+      // "localhost" may resolve to ::1 on IPv6-only systems; treat it as
+      // potentially IPv6 so the user gets the right diagnostic hint.
+      const isIPv6Host = isIPv6(host) || host === 'localhost';
       cliError(
         `\nGitNexus eval-server failed to start:\n` +
           `  Address ${host} is not available on this machine.\n\n` +
@@ -542,8 +544,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
-      const readyHost = boundAddress.includes(':') ? `[${boundAddress}]` : boundAddress;
-      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${readyHost}:${boundPort}\n`);
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${displayHost}:${boundPort}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
