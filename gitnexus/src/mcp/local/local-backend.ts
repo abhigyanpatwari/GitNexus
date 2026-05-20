@@ -248,6 +248,29 @@ function tryRealpath(p: string): string {
  */
 export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
   try {
+    // Verify repoPath is a git root before comparing against its canonical
+    // root. If getGitRoot returns a different path, repoPath is an arbitrary
+    // subdirectory — skip both the linked-worktree guard and auto-detection
+    // and fall through to the repoPath fallback.
+    const repoGitRoot = getGitRoot(repoPath);
+    const repoCanonical =
+      repoGitRoot && tryRealpath(repoGitRoot) === tryRealpath(repoPath)
+        ? getCanonicalRepoRoot(repoPath)
+        : null;
+
+    // Early exit: if repoPath is a linked worktree (differs from its canonical
+    // main-checkout root), return it unchanged. Do NOT override it with the
+    // server's launch directory — that would silently replace the explicitly-
+    // resolved worktree index with the main checkout.
+    //
+    // getCanonicalRepoRoot returns the main-checkout path for both the checkout
+    // and all linked worktrees:
+    //   repoPath === canonical → main checkout (auto-detect may fire below)
+    //   repoPath !== canonical → linked worktree (return as-is)
+    if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
+      return repoPath;
+    }
+
     const launchGitRoot = getGitRoot(launchCwd);
     if (launchGitRoot) {
       // Normalise via realpathSync before comparing so macOS /var → /private/var
@@ -256,8 +279,12 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
       const realRepo = tryRealpath(repoPath);
       if (realLaunch !== realRepo) {
         const launchCanonical = getCanonicalRepoRoot(launchCwd);
-        const repoCanonical = getCanonicalRepoRoot(repoPath);
-        if (launchCanonical && repoCanonical && launchCanonical === repoCanonical) {
+        // Use tryRealpath on both canonical values for cross-platform safety.
+        if (
+          launchCanonical &&
+          repoCanonical &&
+          tryRealpath(launchCanonical) === tryRealpath(repoCanonical)
+        ) {
           return launchGitRoot;
         }
       }
