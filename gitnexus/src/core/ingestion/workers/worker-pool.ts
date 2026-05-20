@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { logger } from '../../logger.js';
+import { createQuarantine } from './quarantine.js';
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into bounded jobs, each job
@@ -468,7 +469,12 @@ export const createWorkerPool = (
   const workers: (Worker | undefined)[] = new Array(size);
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
-  const quarantined: Set<string> = new Set();
+  // Layer 3 (quarantine): tracked via the dedicated `quarantine.ts`
+  // module so the resilience layer is addressable as a unit (named
+  // interface, isolated tests) rather than an inline Set tangled into
+  // 1100+ LOC of pool plumbing. Public worker-pool API is unchanged —
+  // `getQuarantinedPaths()` still returns the same defensive copy.
+  const quarantine = createQuarantine();
   // Per-slot consecutive-failure counter (F6): replaces the prior pool-wide
   // scalar so a chronically-failing slot trips the breaker on its own
   // failure streak instead of being masked by another slot's successes.
@@ -517,7 +523,7 @@ export const createWorkerPool = (
     const dispatchableItems: TInput[] = [];
     for (const item of items) {
       const path = itemPath(item);
-      if (path !== undefined && quarantined.has(path)) continue;
+      if (path !== undefined && quarantine.has(path)) continue;
       dispatchableItems.push(item);
     }
     if (dispatchableItems.length === 0) return Promise.resolve([]);
@@ -658,7 +664,7 @@ export const createWorkerPool = (
           }
           const firstPath = itemPath(job.items[0]);
           if (firstPath !== undefined) {
-            quarantined.add(firstPath);
+            quarantine.add(firstPath);
             logger.warn(
               { startIndex: job.startIndex, firstPath, deaths },
               `Conceptual job ${job.startIndex} died ${deaths} times unattributably; ` +
@@ -707,7 +713,7 @@ export const createWorkerPool = (
         if (stopped) return;
         consecutiveFailuresPerSlot[workerIndex]++;
         for (const p of excludePaths) {
-          if (p) quarantined.add(p);
+          if (p) quarantine.add(p);
         }
         if (consecutiveFailuresPerSlot[workerIndex] >= poolOptions.consecutiveFailureThreshold) {
           tripBreaker(
@@ -715,7 +721,7 @@ export const createWorkerPool = (
               `${reason}. Pool circuit breaker tripped: slot ${workerIndex} hit ` +
                 `${consecutiveFailuresPerSlot[workerIndex]} consecutive failures ` +
                 `(threshold: ${poolOptions.consecutiveFailureThreshold}).`,
-              Array.from(quarantined),
+              quarantine.snapshot(),
             ),
           );
           return;
@@ -739,7 +745,7 @@ export const createWorkerPool = (
             tripBreaker(
               new WorkerPoolDispatchError(
                 `${reason}. All ${size} worker slot(s) exhausted their respawn budget.`,
-                Array.from(quarantined),
+                quarantine.snapshot(),
               ),
             );
             return;
@@ -762,7 +768,7 @@ export const createWorkerPool = (
             tripBreaker(
               new WorkerPoolDispatchError(
                 `${reason}. Replacement worker startup failed and no slots remain.`,
-                Array.from(quarantined),
+                quarantine.snapshot(),
               ),
             );
           }
@@ -909,10 +915,10 @@ export const createWorkerPool = (
         // queued jobs are fully quarantined back-to-back).
         let job: WorkerJob<TInput> | undefined;
         while ((job = jobs.shift()) !== undefined) {
-          if (quarantined.size === 0) break;
+          if (quarantine.size === 0) break;
           const dispatchable = job.items.filter((item) => {
             const p = itemPath(item);
-            return p === undefined || !quarantined.has(p);
+            return p === undefined || !quarantine.has(p);
           });
           if (dispatchable.length === 0) continue;
           if (dispatchable.length !== job.items.length) {
@@ -1064,7 +1070,7 @@ export const createWorkerPool = (
                   tripBreaker(
                     new WorkerPoolDispatchError(
                       `Worker pool exhausted all slots during idle-timeout retry.`,
-                      Array.from(quarantined),
+                      quarantine.snapshot(),
                     ),
                   );
                   return;
@@ -1120,7 +1126,7 @@ export const createWorkerPool = (
               tripBreaker(
                 new WorkerPoolDispatchError(
                   `Worker ${workerIndex} protocol error: result before flush`,
-                  Array.from(quarantined),
+                  quarantine.snapshot(),
                 ),
               );
               return;
@@ -1225,12 +1231,12 @@ export const createWorkerPool = (
     dispatch,
     terminate,
     size,
-    getQuarantinedPaths: () => Array.from(quarantined),
+    getQuarantinedPaths: () => quarantine.snapshot(),
     getStats: () => ({
       size,
       activeSlots: activeSlots.size,
       droppedSlots: size - activeSlots.size,
-      quarantined: quarantined.size,
+      quarantined: quarantine.size,
       poolBroken,
       slotGenerations: slotGenerations.slice(),
     }),
