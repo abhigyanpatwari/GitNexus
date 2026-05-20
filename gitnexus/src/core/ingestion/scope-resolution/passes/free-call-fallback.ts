@@ -17,7 +17,13 @@
  * generalization plan.
  */
 
-import type { ParsedFile, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParameterTypeClass,
+  ParsedFile,
+  Reference,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -132,6 +138,7 @@ export function emitFreeCallFallback(
                 site.arity,
                 site.argumentTypes,
                 {
+                  argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: options.conversionRankFn,
                   constraintCompatibility: options.constraintCompatibility,
                 },
@@ -196,6 +203,7 @@ export function emitFreeCallFallback(
               fnDef = ordinary[0];
             } else {
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
+                argumentTypeClasses: site.argumentTypeClasses,
                 conversionRankFn: options.conversionRankFn,
                 constraintCompatibility: options.constraintCompatibility,
               });
@@ -231,6 +239,7 @@ export function emitFreeCallFallback(
             push(adl);
 
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
+              argumentTypeClasses: site.argumentTypeClasses,
               conversionRankFn: options.conversionRankFn,
               constraintCompatibility: options.constraintCompatibility,
             });
@@ -274,6 +283,7 @@ export function emitFreeCallFallback(
                 })
             : undefined,
           site.argumentTypes,
+          site.argumentTypeClasses,
           options.conversionRankFn,
         );
       }
@@ -339,6 +349,7 @@ function pickUniqueGlobalCallable(
   callArity?: number,
   isCallerVisible?: (candidate: SymbolDefinition) => boolean,
   callArgTypes?: readonly string[],
+  callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
@@ -377,6 +388,7 @@ function pickUniqueGlobalCallable(
   // disambiguate (e.g., `f(int)` vs `f(double)` called with `f(2.5)`).
   if (scopeDefs.length > 1) {
     const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
     });
     if (narrowed.length === 1) return narrowed[0];
@@ -417,6 +429,7 @@ function pickUniqueGlobalCallable(
   // Same argument-type + conversion-rank narrowing for the model pool.
   if (defs.length > 1) {
     const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
     });
     if (narrowed.length === 1) return narrowed[0];
@@ -490,6 +503,7 @@ export function pickImplicitThisOverload(
     readonly name: string;
     readonly arity?: number;
     readonly argumentTypes?: readonly string[];
+    readonly argumentTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
   },
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
@@ -526,6 +540,7 @@ export function pickImplicitThisOverload(
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });

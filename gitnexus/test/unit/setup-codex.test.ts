@@ -15,8 +15,13 @@ const execFileMock = vi.fn((...args: any[]) => {
   }
 });
 
+const execFileSyncMock = vi.fn(() => {
+  throw new Error('not found');
+});
+
 vi.mock('child_process', () => ({
   execFile: execFileMock,
+  execFileSync: execFileSyncMock,
 }));
 
 describe('setupCommand codex execution', () => {
@@ -62,6 +67,21 @@ describe('setupCommand codex execution', () => {
   });
 
   it('invokes codex mcp add with shell enabled on Windows', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand();
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'codex',
+      ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+      { shell: true },
+      expect.any(Function),
+    );
+  });
+
+  it('uses Windows npx fallback arguments when where returns only a non-wrapper shim', async () => {
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
+
     const { setupCommand } = await import('../../src/cli/setup.js');
 
     await setupCommand();

@@ -166,6 +166,7 @@ function ensureHeap(): boolean {
 
 export interface AnalyzeOptions {
   force?: boolean;
+  repairFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
    *   - `undefined` when the flag is omitted
@@ -341,6 +342,15 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
+  }
+
+  if (options?.repairFts && options?.force) {
+    cliError(
+      '  Cannot combine `--repair-fts` with `--force`. ' +
+        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+    );
+    process.exitCode = 1;
+    return;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -521,9 +531,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
+        repairFts: options?.repairFts,
         embeddings: embeddingsEnabled,
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
+        verbose: options?.verbose,
         skipGit: options?.skipGit,
         skipAgentsMd,
         skipSkills,
@@ -565,6 +577,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.log('  Already up to date\n');
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
+      return;
+    }
+
+    if (result.ftsRepairedOnly) {
+      clearInterval(elapsedTimer);
+      process.removeListener('SIGINT', sigintHandler);
+      console.log = origLog;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
+      console.warn = origWarn;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
+      console.error = origError;
+      bar.stop();
+      console.log('  FTS indexes repaired successfully\n');
       return;
     }
 

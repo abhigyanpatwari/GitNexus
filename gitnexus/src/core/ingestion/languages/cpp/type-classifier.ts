@@ -7,11 +7,10 @@
  * the call-site inference in `captures.ts`) to one of the categories
  * the `<type_traits>` predicate registry uses for SFINAE filtering.
  *
- * Intentionally coarse: cv / pointer / reference qualifiers are stripped
- * upstream by `normalizeCppParamType`. Tier-A predicates
- * (`is_integral_v`, `is_floating_point_v`, `is_arithmetic_v`, `is_same_v`)
- * are insensitive to those modifiers per ISO `<type_traits>` semantics
- * ("including any cv-qualified variants").
+ * `argumentTypes` remain normalized for overload narrowing, while
+ * constraint predicates that need cv/ref/pointer shape read the parallel
+ * `argumentTypeClasses` sidecar. Unknown shapes must stay unknown rather
+ * than being guessed as incompatible.
  */
 
 export type TypeClass =
@@ -21,7 +20,11 @@ export type TypeClass =
   | 'char'
   | 'string'
   | 'null'
+  | 'void'
+  | 'enum'
   | 'class'
+  | 'pointer'
+  | 'reference'
   | 'unknown';
 
 /**
@@ -29,13 +32,17 @@ export type TypeClass =
  * inference table in `captures.ts:inferCppLiteralType` plus the std::
  * normalization in `arity-metadata.ts:normalizeCppParamType`.
  *
- * Caller note: token must already be normalized (no `const`, no `&` / `*`,
- * no `std::` prefix). Tokens passed via `ConstraintContext.argumentTypes`
- * coming from `inferCppCallArgTypes` satisfy this.
+ * Caller note: token should be normalized for overload matching. Enum
+ * tokens produced by the C++ adapter use the internal `enum:<Name>`
+ * prefix so `is_enum_v` does not have to guess that every user token is
+ * class-like.
  */
 export function classifyType(token: string): TypeClass {
   if (token.length === 0) return 'unknown';
+  if (token.startsWith('enum:')) return 'enum';
   switch (token) {
+    case 'void':
+      return 'void';
     case 'int':
       return 'integral';
     case 'double':
