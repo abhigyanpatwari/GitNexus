@@ -205,6 +205,7 @@ gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus analyze --workers <n>        # Parse worker pool size (default: cores-1, capped at 16; 0 = sequential)
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
