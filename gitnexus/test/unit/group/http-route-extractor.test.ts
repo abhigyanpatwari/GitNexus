@@ -237,6 +237,30 @@ export default router;
       ).toBeDefined();
     });
 
+    it('dedupes source-only providers by contract id', async () => {
+      const dir = path.join(tmpDir, 'source-only-same-contract-id');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-a.ts'),
+        `
+router.get('/api/health', healthA);
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-b.ts'),
+        `
+router.get('/api/health', healthB);
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.contractId === 'http::GET::/api/health');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].role).toBe('provider');
+      expect(providers[0].meta.extractionStrategy).toBe('source_scan');
+    });
+
     it('extracts Go Gin and Echo route registrations', async () => {
       const dir = path.join(tmpDir, 'go-frameworks');
       fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });

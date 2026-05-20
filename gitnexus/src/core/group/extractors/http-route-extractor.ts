@@ -196,6 +196,8 @@ export class HttpRouteExtractor implements ContractExtractor {
 
     const graphProviders =
       dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
+    // Source scan always runs to capture routes in languages/files not covered
+    // by graph edges; the glob and per-file parse results are cached above.
     const providers = this.mergeGraphAndSourceContracts(
       graphProviders,
       this.extractProvidersSourceScan(await getScannedFiles(), getDetections),
