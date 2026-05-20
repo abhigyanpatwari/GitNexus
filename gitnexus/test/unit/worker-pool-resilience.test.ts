@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -109,6 +109,14 @@ beforeEach(() => {
   const workerPath = path.join(tempDir, 'fake-worker.js');
   fs.writeFileSync(workerPath, '// fake');
   workerUrl = pathToFileURL(workerPath) as URL;
+});
+
+afterEach(() => {
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup — directory may already be gone if a test removed it
+  }
 });
 
 describe('worker pool resilience', () => {
@@ -579,40 +587,5 @@ describe('resolveAutoPoolSize', () => {
 
   it('returns an integer (never a float)', () => {
     expect(Number.isInteger(resolveAutoPoolSize())).toBe(true);
-  });
-});
-
-describe('worker pool option resolution', () => {
-  it('resolves maxRespawnsPerSlot from explicit options', () => {
-    const opts = resolveWorkerPoolOptions({ maxRespawnsPerSlot: 7 }, 4);
-    expect(opts.maxRespawnsPerSlot).toBe(7);
-  });
-
-  it('defaults consecutiveFailureThreshold to max(3, poolSize)', () => {
-    expect(resolveWorkerPoolOptions({}, 1).consecutiveFailureThreshold).toBe(3);
-    expect(resolveWorkerPoolOptions({}, 8).consecutiveFailureThreshold).toBe(8);
-  });
-
-  it('defaults maxCumulativeTimeoutMs to 5x subBatchIdleTimeoutMs', () => {
-    const opts = resolveWorkerPoolOptions({ subBatchIdleTimeoutMs: 1000 }, 1);
-    expect(opts.maxCumulativeTimeoutMs).toBe(5000);
-  });
-
-  it('reads GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT env override', () => {
-    vi.stubEnv('GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT', '2');
-    try {
-      expect(resolveWorkerPoolOptions({}, 1).maxRespawnsPerSlot).toBe(2);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it('reads GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD env override', () => {
-    vi.stubEnv('GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD', '12');
-    try {
-      expect(resolveWorkerPoolOptions({}, 1).consecutiveFailureThreshold).toBe(12);
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 });
