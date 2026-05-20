@@ -44,10 +44,12 @@ export interface EvalServerOptions {
 
 /**
  * Validate the --host value. Accepts IPv4, IPv6, or "localhost".
- * Returns the normalised host string, or null if invalid.
+ * Returns the host string unchanged, or null if invalid.
+ * "localhost" is passed through so the OS resolves it to the correct loopback
+ * address (127.0.0.1 or ::1) at bind time rather than forcing IPv4.
  */
 export function validateHost(raw: string): string | null {
-  if (raw === 'localhost') return '127.0.0.1';
+  if (raw === 'localhost') return raw;
   if (isIPv4(raw) || isIPv6(raw)) return raw;
   return null;
 }
@@ -506,10 +508,13 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     // Plain-text banner for the human watching stderr; structured record
     // for log aggregation (split into two so the user sees a real banner
     // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
-    // Use server.address().port so --port 0 (OS-assigned) emits the real port.
+    // Use server.address() so the banner and READY signal reflect what the OS
+    // actually bound to, not the input host string. This matters when "localhost"
+    // is passed: the OS may resolve it to ::1 on some systems.
     const addr = server.address();
     const boundPort = typeof addr === 'object' && addr !== null ? addr.port : port;
-    const displayHost = host.includes(':') ? `[${host}]` : host;
+    const boundAddress = typeof addr === 'object' && addr !== null ? addr.address : host;
+    const displayHost = boundAddress.includes(':') ? `[${boundAddress}]` : boundAddress;
     const bannerLines = [
       `GitNexus eval-server: listening on http://${displayHost}:${boundPort}`,
       `  POST /tool/query    — search execution flows`,
@@ -537,7 +542,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
-      const readyHost = host.includes(':') ? `[${host}]` : host;
+      const readyHost = boundAddress.includes(':') ? `[${boundAddress}]` : boundAddress;
       writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${readyHost}:${boundPort}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
