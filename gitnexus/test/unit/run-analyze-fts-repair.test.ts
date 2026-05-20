@@ -12,6 +12,8 @@ const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
   await fs.writeFile(lbugPath, PLACEHOLDER_GRAPH_STORE_CONTENT);
 };
 
+const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 describe('runFullAnalysis FTS repair and verification failure paths', () => {
   afterEach(() => {
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
@@ -62,7 +64,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
             onProgress: () => {},
           },
         ),
-      ).rejects.toThrow(/graph store at .+ is missing/i);
+      ).rejects.toThrow(new RegExp(`graph store at ${escapeForRegex(lbugPath)} is missing`, 'i'));
     } finally {
       await tmpRepo.cleanup();
     }
