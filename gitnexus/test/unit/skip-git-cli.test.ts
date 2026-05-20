@@ -178,7 +178,7 @@ describe('--skip-git CLI flag', () => {
     function testEnv() {
       return {
         ...process.env,
-        HOME: parentDir,
+        HOME: gitnexusHome,
         GITNEXUS_HOME: gitnexusHome,
       };
     }
