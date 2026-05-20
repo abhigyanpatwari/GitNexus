@@ -27,6 +27,7 @@ import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   emitJavaScopeCaptures,
   interpretJavaImport,
@@ -38,6 +39,48 @@ import {
   javaArityCompatibility,
   resolveJavaImportTarget,
 } from './java/index.js';
+
+const orderJavaSameNameTypeCandidates = ({
+  callSiteFilePath,
+  candidates,
+}: {
+  readonly typeName: string;
+  readonly callSiteFilePath: string;
+  readonly candidates: readonly SymbolDefinition[];
+}): readonly SymbolDefinition[] | null => {
+  if (!callSiteFilePath.endsWith('.java')) return null;
+  if (candidates.length <= 1) return null;
+  const callerDir = splitDirectorySegments(callSiteFilePath);
+
+  const scored = candidates.map((candidate, index) => ({
+    candidate,
+    index,
+    score: sharedPrefixLength(callerDir, splitDirectorySegments(candidate.filePath)),
+  }));
+  const bestScore = Math.max(...scored.map((entry) => entry.score));
+  // When all candidates tie, we have no structural signal to prefer one path.
+  // Returning null keeps downstream ambiguity handling conservative.
+  if (scored.every((entry) => entry.score === bestScore)) return null;
+
+  const ordered = [...scored]
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.candidate);
+  return ordered;
+};
+
+const splitDirectorySegments = (filePath: string): string[] => {
+  const normalized = filePath.replace(/\\/g, '/');
+  // Remove empty segments from leading/trailing/multiple slashes, then drop filename.
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.slice(0, -1);
+};
+
+const sharedPrefixLength = (left: readonly string[], right: readonly string[]): number => {
+  const max = Math.min(left.length, right.length);
+  let idx = 0;
+  while (idx < max && left[idx] === right[idx]) idx += 1;
+  return idx;
+};
 
 export const javaProvider = defineLanguage({
   id: SupportedLanguages.Java,
@@ -87,4 +130,5 @@ export const javaProvider = defineLanguage({
   receiverBinding: javaReceiverBinding,
   arityCompatibility: javaArityCompatibility,
   resolveImportTarget: resolveJavaImportTarget,
+  orderSameNameTypeCandidates: orderJavaSameNameTypeCandidates,
 });
