@@ -6,7 +6,7 @@ import fs from 'fs';
 
 describe('--skip-git CLI flag', () => {
   const cliPath = path.resolve(__dirname, '../../dist/cli/index.js');
-  const ftsUnavailableNeedle = 'FTS extension unavailable - cannot create FTS index';
+  const ftsUnavailableMessage = 'FTS extension unavailable - cannot create FTS index';
 
   interface ExecSyncLikeError {
     message?: string;
@@ -18,9 +18,9 @@ describe('--skip-git CLI flag', () => {
     if (!err || typeof err !== 'object') return false;
     const e = err as ExecSyncLikeError;
     return (
-      e.message?.includes(ftsUnavailableNeedle) === true ||
-      e.stdout?.toString().includes(ftsUnavailableNeedle) === true ||
-      e.stderr?.toString().includes(ftsUnavailableNeedle) === true
+      e.message?.includes(ftsUnavailableMessage) ||
+      e.stdout?.toString().includes(ftsUnavailableMessage) ||
+      e.stderr?.toString().includes(ftsUnavailableMessage)
     );
   };
 
