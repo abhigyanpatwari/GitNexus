@@ -66,6 +66,13 @@ export interface WorkerPoolStats {
   /** Whether the circuit breaker has tripped (no further dispatches
    *  will be accepted by this pool instance). */
   readonly poolBroken: boolean;
+  /** Per-slot generation counter (U12). Increments by 1 on every
+   *  successful worker replacement for that slot. Operators / tests
+   *  observe this to confirm a death-then-respawn actually happened
+   *  vs. the same worker being recycled in place. Initial value is 0
+   *  for every slot at pool creation; dropped slots keep their last
+   *  generation (they don't decrement). */
+  readonly slotGenerations: readonly number[];
 }
 
 export interface WorkerPoolOptions {
@@ -467,6 +474,16 @@ export const createWorkerPool = (
   // failure streak instead of being masked by another slot's successes.
   // Reset to 0 on that slot's next successful job.
   const consecutiveFailuresPerSlot: number[] = new Array(size).fill(0);
+  // Per-slot generation counter (U12). Incremented on every successful
+  // worker replacement (see replaceWorker below). Handlers in the
+  // dispatch loop capture the slot's generation at attach time and
+  // short-circuit when they fire on a stale generation. Defensive layer
+  // on top of the existing `settled` flag + listener removal — protects
+  // against any future refactor that loosens cleanup() ordering or
+  // re-attaches handlers without resetting the per-job state. Exposed
+  // via getStats so operators (and tests) can verify a slot was
+  // actually replaced and not just the same worker recycled.
+  const slotGenerations: number[] = new Array(size).fill(0);
   let poolBroken = false;
   let poolFailure: Error | undefined;
 
@@ -570,6 +587,12 @@ export const createWorkerPool = (
           return false;
         }
         workers[workerIndex] = replacement;
+        // U12: bump the slot generation atomically with the worker swap so
+        // any late event from the OLD worker that somehow slipped past
+        // cleanup() carries a stale generation and short-circuits in the
+        // handler guard below. Increment AFTER `workers[workerIndex]` is
+        // updated so observers (getStats) see the new pair consistently.
+        slotGenerations[workerIndex]++;
         return true;
       };
 
@@ -1055,7 +1078,16 @@ export const createWorkerPool = (
           }, job.timeoutMs);
         };
 
+        // U12: capture the slot's generation at handler-attach time so any
+        // late event from a previous worker on this slot (which would carry
+        // an older generation) short-circuits below. Defensive — cleanup()
+        // already removes listeners synchronously when a death is observed,
+        // so under the current control flow no listener should fire on a
+        // stale generation. The guard catches future-refactor mistakes.
+        const slotGen = slotGenerations[workerIndex];
+
         const handler = (msg: WorkerOutgoingMessage) => {
+          if (slotGenerations[workerIndex] !== slotGen) return;
           if (settled || stopped) return;
           if (msg.type === 'starting-file') {
             inFlightPath = msg.path;
@@ -1119,6 +1151,7 @@ export const createWorkerPool = (
         };
 
         const errorHandler = (err: Error) => {
+          if (slotGenerations[workerIndex] !== slotGen) return;
           if (!settled) {
             settled = true;
             cleanup();
@@ -1130,6 +1163,7 @@ export const createWorkerPool = (
         };
 
         const exitHandler = (code: number) => {
+          if (slotGenerations[workerIndex] !== slotGen) return;
           if (!settled) {
             settled = true;
             cleanup();
@@ -1154,6 +1188,7 @@ export const createWorkerPool = (
         // and let the per-slot respawn budget and circuit breaker decide
         // whether to keep this slot in rotation.
         const messageErrorHandler = (err: Error) => {
+          if (slotGenerations[workerIndex] !== slotGen) return;
           if (!settled) {
             settled = true;
             cleanup();
@@ -1197,6 +1232,7 @@ export const createWorkerPool = (
       droppedSlots: size - activeSlots.size,
       quarantined: quarantined.size,
       poolBroken,
+      slotGenerations: slotGenerations.slice(),
     }),
   };
 };
