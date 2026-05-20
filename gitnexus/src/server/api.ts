@@ -718,7 +718,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // on OPTIONS requests and expects the allow header in the response.
   // Note: the actual Allow-Private-Network header is already set by the global
   // middleware above, so we just need to call next() here.
-  app.options('*', (_req, res, next) => {
+  // Express 5 + path-to-regexp 8 rejects the bare '*' string pattern; use a
+  // RegExp literal which bypasses path-to-regexp entirely.
+  app.options(/.*/, (_req, res, next) => {
     next();
   });
 
@@ -1434,14 +1436,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
+      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd).
+      // NOTE: `path.normalize(p) !== path.resolve(p)` is NOT a traversal check —
+      // both forms collapse `..` segments and `'/repos/../etc' === '/etc'` for both.
+      // We must reject `..` at the segment level BEFORE normalization.
       if (repoLocalPath) {
         if (!path.isAbsolute(repoLocalPath)) {
           res.status(400).json({ error: '"path" must be an absolute path' });
           return;
         }
-        if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must not contain traversal sequences' });
+        const segments = repoLocalPath.split('/').filter(Boolean);
+        if (segments.includes('..') || segments.includes('.')) {
+          res.status(400).json({ error: '"path" must not contain traversal sequences (.. or .)' });
+          return;
+        }
+        // Also ensure path.normalize collapses to the same form (catches edge
+        // cases like double slashes that survive segment filtering).
+        if (path.normalize(repoLocalPath) !== repoLocalPath) {
+          res.status(400).json({ error: '"path" must be in canonical form' });
           return;
         }
       }
