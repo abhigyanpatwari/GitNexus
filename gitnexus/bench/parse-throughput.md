@@ -1,13 +1,20 @@
-# Parse-throughput benchmark
+# Parse-throughput benchmark (scaffold)
+
+> **Status: methodology + harness scaffold, no measurement data yet.**
+> The Latest measurement table below contains `_TBD_` placeholders.
+> This file ships intentionally without numbers — populating it
+> requires a dedicated bench-pass against the U6 fixture (and ideally
+> a real-world TS-root-scale repo) on consistent hardware, which is
+> tracked as future work rather than gated on PR #1693's merge.
+> Until the table is populated, the load-bearing perf-regression
+> protection lives in `gitnexus/test/integration/parse-impl-large-fixture.test.ts`
+> (U6, 30 s wall-clock budget via `Promise.race`).
 
 Tracks `runChunkedParseAndResolve` wall-clock + peak heap on a synthetic
 fixture so PR #1693's "analyze no longer hangs on TS-root-shaped loads"
-claim is measurable, not just asserted by smoke tests.
-
-**Regenerate this file before merging any PR that touches the ingestion
-pipeline.** A drifted benchmark snapshot is worse than no benchmark — it
-misleads readers about current performance. The harness recipe below is
-deliberately small enough to re-run in a few minutes.
+claim is measurable, not just asserted by smoke tests. The harness
+recipe below is deliberately small enough to re-run in a few minutes
+when the bench-pass is undertaken.
 
 ---
 
@@ -89,21 +96,26 @@ node --inspect=0 \
 
 ## Latest measurement
 
-> **Status:** scaffold — fill in before merging the PR #1693 follow-up.
-> See [Methodology](#methodology) for what to capture. The U6 test was
-> observed completing the synthetic fixture in **~6 seconds** under
-> sequential fallback on the development machine, well under the 30 s
-> wall-clock budget. That number is a smoke-baseline only; the worker-
-> pool path numbers below need a real run.
+> _No measurement data has been collected yet — this file is the
+> methodology + harness scaffold. The single recorded data point is the
+> U6 wall-clock smoke baseline below; the worker-pool rows are
+> placeholders for future bench-pass output._
 
-| Path                                      | files/s | wall-clock           | peak heap | chunks | quarantined |
-| ----------------------------------------- | ------- | -------------------- | --------- | ------ | ----------- |
-| Sequential fallback (`skipWorkers: true`) | _TBD_   | ~6 s _(U6 baseline)_ | _TBD_     | 17     | 0           |
-| Worker pool, `--workers 4`, concurrency 2 | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
-| Worker pool, `--workers 1`, concurrency 1 | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
+The U6 integration test (`gitnexus/test/integration/parse-impl-large-fixture.test.ts`)
+was observed completing the synthetic fixture in **~6 seconds** under
+the sequential path (`skipWorkers: true`) on the development machine,
+well under the 30 s `Promise.race` wall-clock budget. That number is a
+smoke baseline only — recorded here for reference, not as a regression
+target.
+
+| Path                                       | files/s | wall-clock           | peak heap | chunks | quarantined |
+| ------------------------------------------ | ------- | -------------------- | --------- | ------ | ----------- |
+| Sequential (`skipWorkers: true`, U6 smoke) | _TBD_   | ~6 s _(observation)_ | _TBD_     | 17     | 0           |
+| Worker pool, `--workers 4`, concurrency 2  | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
+| Worker pool, `--workers 1`, concurrency 1  | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
 
 **Hardware:** _TBD — record OS, CPU, RAM, Node version, gitnexus SHA at
-the time of measurement._
+the time of the bench-pass that populates the table above._
 
 ---
 

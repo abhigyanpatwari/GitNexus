@@ -232,12 +232,26 @@ export interface WorkerPoolOptions {
 }
 
 export class WorkerPoolDispatchError extends Error {
-  readonly fallbackExcludePaths: readonly string[];
+  /**
+   * Snapshot of the pool's session-scoped quarantine at the moment the
+   * dispatch error was raised. Surfaced for operator diagnostics: when
+   * the circuit breaker trips, this lists the files the pool had
+   * already decided were unsafe before the trip. Read-only at the
+   * caller boundary; no in-pool consumer rewires it post-construction.
+   *
+   * Previously named `fallbackExcludePaths` because the (since-
+   * removed) sequential-parser fallback in `processParsing` consumed
+   * it to filter the fallback file list. After U20's design pivot
+   * (worker pool's resilience layers are the sole failure contract;
+   * no sequential rescue), the field is informational only. The
+   * rename clarifies semantics without changing wire behavior.
+   */
+  readonly quarantinedPaths: readonly string[];
 
-  constructor(message: string, fallbackExcludePaths: readonly string[] = []) {
+  constructor(message: string, quarantinedPaths: readonly string[] = []) {
     super(message);
     this.name = 'WorkerPoolDispatchError';
-    this.fallbackExcludePaths = fallbackExcludePaths;
+    this.quarantinedPaths = quarantinedPaths;
   }
 }
 
@@ -825,8 +839,9 @@ export const createWorkerPool = (
       // (same `startIndex`), quarantine `items[0]` as a best-guess
       // culprit so the next attempt isn't condemned to the same death.
       // This bounds the unattributable-crash death loop and ensures the
-      // pool's final `fallbackExcludePaths` carries SOME signal for
-      // sequential fallback instead of silently re-hitting the bad file.
+      // pool's final `quarantinedPaths` snapshot carries SOME signal
+      // for downstream diagnostics instead of silently re-hitting the
+      // bad file.
       const requeueRemainder = (job: WorkerJob<TInput>, excluded: readonly string[]) => {
         let effectiveExcluded = excluded;
         if (excluded.length === 0) {
@@ -1225,6 +1240,40 @@ export const createWorkerPool = (
                 try {
                   respawnCount[workerIndex]++;
                   consecutiveFailuresPerSlot[workerIndex]++;
+                  // Complete the per-slot breaker contract on the
+                  // timeout-retry path. Without this check, chronic
+                  // pure-timeout deaths accumulated `consecutive-
+                  // FailuresPerSlot` increments that never tripped the
+                  // breaker — only the `respawnCount > maxRespawnsPerSlot`
+                  // slot-drop path was active. Now timeouts trip the
+                  // breaker on the same threshold as crashes, which is
+                  // what the increment was meant to enable.
+                  if (
+                    consecutiveFailuresPerSlot[workerIndex] >=
+                    poolOptions.consecutiveFailureThreshold
+                  ) {
+                    logger.warn(
+                      {
+                        workerIndex,
+                        consecutiveFailures: consecutiveFailuresPerSlot[workerIndex],
+                        threshold: poolOptions.consecutiveFailureThreshold,
+                      },
+                      `Worker ${workerIndex} hit consecutive-failure threshold on idle-timeout retry; tripping circuit breaker.`,
+                    );
+                    const dead = workers[workerIndex];
+                    await dead?.terminate().catch(() => undefined);
+                    workers[workerIndex] = undefined;
+                    activeSlots.delete(workerIndex);
+                    tripBreaker(
+                      new WorkerPoolDispatchError(
+                        `Worker pool tripped circuit breaker: slot ${workerIndex} hit ` +
+                          `${consecutiveFailuresPerSlot[workerIndex]} consecutive failures ` +
+                          `(threshold: ${poolOptions.consecutiveFailureThreshold}).`,
+                        quarantine.snapshot(),
+                      ),
+                    );
+                    return;
+                  }
                   if (respawnCount[workerIndex] > poolOptions.maxRespawnsPerSlot) {
                     logger.warn(
                       {

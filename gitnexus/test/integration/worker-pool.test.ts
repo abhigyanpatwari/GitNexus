@@ -1091,7 +1091,7 @@ describe('worker pool integration', () => {
       // quarantine before the breaker trips. Pinning the exact set is
       // stronger than `length > 0` and surfaces a regression where
       // only one path makes it through.
-      expect([...dispatchErr.fallbackExcludePaths].sort()).toEqual(['one.ts', 'two.ts']);
+      expect([...dispatchErr.quarantinedPaths].sort()).toEqual(['one.ts', 'two.ts']);
       expect(/circuit breaker tripped/i.test(dispatchErr.message)).toBe(true);
 
       // Subsequent dispatch rejects up front with the same error class.

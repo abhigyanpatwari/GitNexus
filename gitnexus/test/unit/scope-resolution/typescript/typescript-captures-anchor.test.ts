@@ -25,11 +25,6 @@ function countMatches(src: string, predicate: (tags: string[]) => boolean): numb
   return matches.filter((m) => predicate(Object.keys(m))).length;
 }
 
-function findMatch(src: string, predicate: (tags: string[]) => boolean) {
-  const matches = emitTsScopeCaptures(src, 'test.ts');
-  return matches.find((m) => predicate(Object.keys(m)));
-}
-
 function countMatchesTsx(src: string, predicate: (tags: string[]) => boolean): number {
   // TSX-specific query path: file extension drives query selection inside
   // emitTsScopeCaptures. Without `.tsx` the JSX call-anchored variants

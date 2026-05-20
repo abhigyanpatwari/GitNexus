@@ -62,7 +62,7 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     ).toBe(false);
   });
 
-  it('propagates WorkerPoolDispatchError with fallbackExcludePaths intact', async () => {
+  it('propagates WorkerPoolDispatchError with quarantinedPaths intact', async () => {
     const graph = createKnowledgeGraph();
     const workerPool: WorkerPool = {
       size: 1,
@@ -90,7 +90,7 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
 
     await expect(rejection).rejects.toBeInstanceOf(WorkerPoolDispatchError);
     const err = await rejection.catch((e) => e as WorkerPoolDispatchError);
-    expect(err.fallbackExcludePaths).toEqual(['src/poison.ts']);
+    expect(err.quarantinedPaths).toEqual(['src/poison.ts']);
 
     // No sequential fallback ran for either file. The caller (analyze
     // entry point) is responsible for surfacing this as a hard
