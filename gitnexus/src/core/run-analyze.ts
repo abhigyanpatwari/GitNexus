@@ -206,7 +206,7 @@ export async function runFullAnalysis(
     }
     let lbugStat;
     try {
-      lbugStat = await fs.stat(lbugPath);
+      lbugStat = await fs.lstat(lbugPath);
     } catch {
       throw new Error(
         `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
@@ -214,7 +214,19 @@ export async function runFullAnalysis(
       );
     }
     if (!lbugStat.isFile()) {
-      const foundType = lbugStat.isDirectory() ? 'a directory' : 'not a regular file';
+      const foundType = lbugStat.isDirectory()
+        ? 'a directory'
+        : lbugStat.isSymbolicLink()
+          ? 'a symbolic link'
+          : lbugStat.isSocket()
+            ? 'a socket'
+            : lbugStat.isBlockDevice()
+              ? 'a block device'
+              : lbugStat.isCharacterDevice()
+                ? 'a character device'
+                : lbugStat.isFIFO()
+                  ? 'a FIFO'
+                  : 'not a regular file';
       throw new Error(
         `Cannot repair FTS indexes: graph store at ${lbugPath} is ${foundType} (expected a file). ` +
           'Run `gitnexus analyze` (full) to rebuild from scratch.',

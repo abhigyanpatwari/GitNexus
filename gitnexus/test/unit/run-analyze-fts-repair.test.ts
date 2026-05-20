@@ -64,7 +64,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
             onProgress: () => {},
           },
         ),
-      ).rejects.toThrow(new RegExp(`graph store at ${escapeForRegex(lbugPath)} is missing`, 'i'));
+      ).rejects.toThrow(new RegExp(`graph store at ${escapeForRegex(lbugPath)} is missing`));
     } finally {
       await tmpRepo.cleanup();
     }
@@ -96,7 +96,6 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       ).rejects.toThrow(
         new RegExp(
           `graph store at ${escapeForRegex(lbugPath)} is a directory \\(expected a file\\)`,
-          'i',
         ),
       );
     } finally {
