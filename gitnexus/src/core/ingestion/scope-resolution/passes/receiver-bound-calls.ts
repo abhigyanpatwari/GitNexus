@@ -346,6 +346,7 @@ export function emitReceiverBoundCalls(
                 site.arity,
                 site.argumentTypes,
                 {
+                  argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: provider.conversionRankFn,
                   constraintCompatibility: provider.constraintCompatibility,
                 },
@@ -732,6 +733,7 @@ function pickOverload(
   if (overloads.length === 1) return overloads[0];
 
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
     constraintCompatibility: provider.constraintCompatibility,
   });
