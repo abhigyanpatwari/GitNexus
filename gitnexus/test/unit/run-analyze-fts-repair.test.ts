@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
-const createRepairPathStoreFixture = async (lbugPath: string): Promise<void> => {
+const MISSING_INDEX = 'File.file_fts';
+
+const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
   // Repair mode gates on existence before `initLbug` takes over open/validate.
   // A placeholder file is enough to exercise this preflight branch.
   await fs.writeFile(lbugPath, 'fixture');
@@ -81,7 +83,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => undefined),
-      verifySearchFTSIndexes: vi.fn(async () => ['File.file_fts']),
+      verifySearchFTSIndexes: vi.fn(async () => [MISSING_INDEX]),
     }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-verify-fail-');
@@ -94,7 +96,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         indexedAt: new Date().toISOString(),
         stats: {},
       });
-      await createRepairPathStoreFixture(lbugPath);
+      await createPlaceholderGraphStore(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -128,9 +130,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => {
-        throw new Error(
-          'FTS extension unavailable - cannot create FTS index File.file_fts. Run `gitnexus doctor`.',
-        );
+        throw new Error('FTS extension unavailable');
       }),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
@@ -145,7 +145,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         indexedAt: new Date().toISOString(),
         stats: {},
       });
-      await createRepairPathStoreFixture(lbugPath);
+      await createPlaceholderGraphStore(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
