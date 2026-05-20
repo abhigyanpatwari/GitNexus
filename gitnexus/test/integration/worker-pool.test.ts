@@ -30,10 +30,22 @@ const DIST_WORKER = path.resolve(
 );
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
+// Prepend the M4 ready handshake to every ad-hoc test worker source so the
+// pool's `waitForWorkerReady` resolves immediately for replacement spawns.
+// Production `parse-worker.ts` emits the same handshake at top-of-script
+// before installing its message handler. Without it, every test that triggers
+// a replacement (worker crash + recover) would hit the 5s WORKER_READY_TIMEOUT_MS
+// and fail with "Replacement worker startup failed and no slots remain".
+const READY_PREAMBLE = `require('node:worker_threads').parentPort.postMessage({ type: 'ready' });\n`;
+
+function writeReadyWorker(workerPath: string, source: string): void {
+  fs.writeFileSync(workerPath, READY_PREAMBLE + source);
+}
+
 function writeTempWorker(prefix: string, source: string): { tempDir: string; workerPath: string } {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const workerPath = path.join(tempDir, 'worker.js');
-  fs.writeFileSync(workerPath, source);
+  writeReadyWorker(workerPath, source);
   return { tempDir, workerPath };
 }
 
@@ -281,7 +293,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-retry-'));
     const markerPath = path.join(tempDir, 'first-attempt.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -327,7 +339,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-replace-fail-'));
     const markerPath = path.join(tempDir, 'first-attempt.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -381,7 +393,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-split-'));
     const markerPath = path.join(tempDir, 'stalled-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -479,7 +491,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-race-'));
     const markerPath = path.join(tempDir, 'stalled-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -552,7 +564,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-sole-active-'));
     const markerPath = path.join(tempDir, 'stalled-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -701,7 +713,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-respawn-'));
     const markerPath = path.join(tempDir, 'crashed-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -812,7 +824,7 @@ describe('worker pool integration', () => {
     const seenPath = path.join(tempDir, 'sub-batches.json');
     const markerPath = path.join(tempDir, 'crashed-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -887,7 +899,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-slot-drop-'));
     const counterPath = path.join(tempDir, 'crash-count.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');
@@ -1002,7 +1014,7 @@ describe('worker pool integration', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-error-event-'));
     const markerPath = path.join(tempDir, 'thrown-once.txt');
     const workerPath = path.join(tempDir, 'worker.js');
-    fs.writeFileSync(
+    writeReadyWorker(
       workerPath,
       `
       const fs = require('node:fs');

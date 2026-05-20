@@ -2445,6 +2445,16 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.fileCount += src.fileCount;
 };
 
+// Signal the pool that worker-side initialization (parser imports, language
+// grammars, type-env setup, all helper modules) is complete and the message
+// handler below is about to be attached. The pool's `waitForWorkerReady`
+// resolves on this handshake — without it, a worker that crashes during
+// top-of-script init slips past pool startup (Node's `online` event fires
+// before the script body runs) and the pool only notices via the first
+// dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
+// any subsequent `ready` message as a benign no-op.
+parentPort!.postMessage({ type: 'ready' });
+
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
     // Legacy single-message mode (backward compat): array of files

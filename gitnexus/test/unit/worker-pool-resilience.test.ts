@@ -33,8 +33,14 @@ class FakeWorker extends EventEmitter {
     super();
     workerInstances.push(this);
     // Real Worker fires 'online' asynchronously after the runtime is ready;
-    // replicate so `waitForWorkerOnline` resolves.
-    queueMicrotask(() => this.emit('online'));
+    // replicate so any code still listening on `online` is satisfied. The
+    // pool's `waitForWorkerReady` (post-M4) waits for a `{type:'ready'}`
+    // message instead — emit that too so replacement-worker tests don't
+    // hit the WORKER_READY_TIMEOUT_MS budget (5s).
+    queueMicrotask(() => {
+      this.emit('online');
+      this.emit('message', { type: 'ready' });
+    });
   }
 
   postMessage(msg: unknown): void {

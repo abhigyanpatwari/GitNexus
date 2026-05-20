@@ -128,7 +128,18 @@ type WorkerOutgoingMessage =
    * worker processing defeats). Optional — older worker builds may not
    * emit it; pool falls back to the heuristic when absent.
    */
-  | { type: 'starting-file'; path: string };
+  | { type: 'starting-file'; path: string }
+  /**
+   * Top-of-script ready handshake. Emitted by `parse-worker.ts` AFTER all
+   * imports + grammar bindings + type-env setup complete, BEFORE the
+   * message handler is attached. The pool's `waitForWorkerReady` resolves
+   * on this message — replaces the prior `online`-event-based readiness
+   * trust, which fired before the script body ran and let init crashes
+   * slip past pool startup. Once consumed by `waitForWorkerReady`, any
+   * subsequent `ready` message on the dispatch loop is a no-op (the
+   * worker only emits it once).
+   */
+  | { type: 'ready' };
 
 interface WorkerJob<TInput> {
   startIndex: number;
@@ -164,6 +175,17 @@ const DEFAULT_TIMEOUT_BACKOFF_FACTOR = 2;
 const DEFAULT_MAX_RESPAWNS_PER_SLOT = 3;
 const DEFAULT_MAX_CUMULATIVE_TIMEOUT_FACTOR = 5;
 const DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR = 3;
+/**
+ * Bounded wait for a replacement worker to emit the `{type:'ready'}`
+ * handshake from `parse-worker.ts`. Trusting Node's `online` event alone
+ * lets a worker that crashes during top-of-script init slip past pool
+ * startup — the pool only notices on the first dispatch's idle timeout
+ * (default 30s). 5 seconds is a generous budget for parser + grammar
+ * imports; if the worker hasn't reported ready by then, it's almost
+ * certainly stuck or crashed and the pool should surface the failure
+ * fast rather than wait out the dispatch idle timeout.
+ */
+const WORKER_READY_TIMEOUT_MS = 5_000;
 /**
  * Default upper bound on auto-resolved pool size. Past 16 workers the
  * dominant cost shifts from worker-side parsing to main-thread merge /
@@ -252,20 +274,48 @@ export function resolveWorkerPoolOptions(
 export function resolveAutoPoolSize(): number {
   const envOverride = nonNegativeInteger(process.env.GITNEXUS_WORKER_POOL_SIZE);
   if (envOverride !== undefined) return envOverride;
-  const cores = os.cpus().length;
+  // Prefer os.availableParallelism (Node 18.14+) so cgroup CPU limits
+  // (containers, taskset-restricted runtimes, CI runners with explicit
+  // CPU quotas) are honored — os.cpus().length returns the host count,
+  // which over-sizes the pool on constrained shapes and can reintroduce
+  // the very "main-thread saturated by oversubscription" symptom the
+  // pool cap exists to prevent. Falls back to os.cpus().length on
+  // older Node versions. Mirrors `capabilities.ts:85`
+  // (`defaultEmbeddingThreads`).
+  const cores =
+    typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
   return Math.min(DEFAULT_POOL_SIZE_CAP, Math.max(1, cores - 1));
 }
 
-function waitForWorkerOnline(worker: Worker): Promise<void> {
+/**
+ * Wait for a freshly-spawned replacement worker to emit the
+ * `{type:'ready'}` handshake from `parse-worker.ts` before treating its
+ * slot as dispatch-ready. Trusting Node's `online` event alone (which
+ * fires when the worker thread starts, BEFORE the worker script's
+ * top-of-script body runs) let a worker that crashes during init
+ * (parser/grammar import failure, missing native binding) slip past
+ * pool startup. The pool then only noticed the dead replacement on the
+ * first dispatch's idle timeout (default 30s) — a long stall masking
+ * an actual crash. This handshake bounds the wait at
+ * {@link WORKER_READY_TIMEOUT_MS} and surfaces init failures as
+ * `error` / `exit` / `messageerror` events directly. `messageerror` is
+ * wired the same way: a V8 deserialization failure during startup is
+ * treated as worker death and rejects the readiness promise.
+ */
+function waitForWorkerReady(worker: Worker): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
-      worker.removeListener('online', onOnline);
+      clearTimeout(timer);
+      worker.removeListener('message', onMessage);
       worker.removeListener('error', onError);
       worker.removeListener('exit', onExit);
+      worker.removeListener('messageerror', onMessageError);
     };
-    const onOnline = () => {
-      cleanup();
-      resolve();
+    const onMessage = (msg: unknown) => {
+      if (typeof msg === 'object' && msg !== null && (msg as { type?: unknown }).type === 'ready') {
+        cleanup();
+        resolve();
+      }
     };
     const onError = (err: Error) => {
       cleanup();
@@ -273,11 +323,29 @@ function waitForWorkerOnline(worker: Worker): Promise<void> {
     };
     const onExit = (code: number) => {
       cleanup();
-      reject(new Error(`Replacement worker exited with code ${code} before coming online`));
+      reject(new Error(`Replacement worker exited with code ${code} before reporting ready`));
     };
-    worker.once('online', onOnline);
+    const onMessageError = (err: Error) => {
+      cleanup();
+      reject(
+        new Error(`Replacement worker emitted messageerror before reporting ready: ${err.message}`),
+      );
+    };
+    // `timer` is declared after `cleanup` so the cleanup closure can reference
+    // it. The const is reached before any handler attaches below, so no TDZ
+    // access can fire from the listeners.
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          `Replacement worker did not report ready within ${WORKER_READY_TIMEOUT_MS}ms — likely crashed during top-of-script init`,
+        ),
+      );
+    }, WORKER_READY_TIMEOUT_MS);
+    worker.on('message', onMessage);
     worker.once('error', onError);
     worker.once('exit', onExit);
+    worker.once('messageerror', onMessageError);
   });
 }
 
@@ -488,7 +556,7 @@ export const createWorkerPool = (
         if (stopped) return false;
         const replacement = spawnWorker(workerUrl);
         try {
-          await waitForWorkerOnline(replacement);
+          await waitForWorkerReady(replacement);
         } catch (err) {
           await replacement.terminate().catch(() => undefined);
           logger.warn(
@@ -879,6 +947,7 @@ export const createWorkerPool = (
           worker.removeListener('message', handler);
           worker.removeListener('error', errorHandler);
           worker.removeListener('exit', exitHandler);
+          worker.removeListener('messageerror', messageErrorHandler);
         };
 
         const finishJob = () => {
@@ -1035,6 +1104,12 @@ export const createWorkerPool = (
             consecutiveFailuresPerSlot[workerIndex] = 0;
             reportProgress();
             finishJob();
+          } else if (msg.type === 'ready') {
+            // No-op: the ready handshake is consumed by `waitForWorkerReady`
+            // before dispatch handlers are attached. A stray `ready` here
+            // (e.g., a future worker build re-emitting after an internal
+            // recovery) is benign — ignore so the exhaustiveness check
+            // below keeps catching genuinely-unknown variants.
           } else {
             // F7: exhaustiveness check — drift-catcher when a future
             // WorkerOutgoingMessage variant is added without a handler.
@@ -1068,9 +1143,31 @@ export const createWorkerPool = (
           }
         };
 
+        // `messageerror` fires when V8 fails to deserialize a postMessage
+        // payload (e.g., the worker tries to send a non-cloneable value
+        // back, or structured-clone hits an unsupported shape). The worker
+        // stays ALIVE but the message is lost — without this handler the
+        // pool would sit on the dropped message until the idle timeout
+        // expires. Treat it as worker death so the resilience layers fire:
+        // requeue the remainder via `recoverAndResume`, attribute the
+        // in-flight file from the `starting-file` signal (if observed),
+        // and let the per-slot respawn budget and circuit breaker decide
+        // whether to keep this slot in rotation.
+        const messageErrorHandler = (err: Error) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            void recoverAndResume(
+              `Worker ${workerIndex} messageerror (postMessage deserialization failure): ${err.message}`,
+              resolveExcludePaths(),
+            );
+          }
+        };
+
         worker.on('message', handler);
         worker.once('error', errorHandler);
         worker.once('exit', exitHandler);
+        worker.once('messageerror', messageErrorHandler);
         resetIdleTimer();
         if (stopped) {
           cleanup();
