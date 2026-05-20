@@ -68,6 +68,19 @@ export interface PipelineOptions {
    * See `gitnexus/src/storage/parse-cache.ts`.
    */
   parseCache?: import('../../storage/parse-cache.js').ParseCache;
+  /**
+   * Worker pool size override, threaded from the CLI `--workers` flag
+   * via `AnalyzeOptions`. When set, parse-impl passes this directly to
+   * `createWorkerPool` so the pool sizing bypasses the env-var fallback
+   * in `resolveAutoPoolSize`. The env-var channel
+   * (`GITNEXUS_WORKER_POOL_SIZE`) remains as a back-compat fallback when
+   * this field is undefined. Setting `workerPoolSize: 0` disables the
+   * pool entirely (sequential fallback) — equivalent to `skipWorkers`
+   * but expressed in the same units as `--workers <N>` so long-running
+   * hosts (eval-server, MCP daemon) can size per-call without leaking
+   * `process.env` state across analyze invocations.
+   */
+  workerPoolSize?: number;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

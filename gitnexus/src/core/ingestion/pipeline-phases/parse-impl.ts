@@ -250,7 +250,7 @@ export async function runChunkedParseAndResolve(
           workerUrl = pathToFileURL(distWorker);
         }
       }
-      workerPool = createWorkerPool(workerUrl);
+      workerPool = createWorkerPool(workerUrl, options?.workerPoolSize);
     } catch (err) {
       logger.warn(
         { err: (err as Error).message },

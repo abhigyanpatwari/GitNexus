@@ -164,6 +164,41 @@ function ensureHeap(): boolean {
   return true;
 }
 
+/**
+ * GITNEXUS_* env vars that `analyzeCommand` writes for backward-compatible
+ * downstream consumption. Snapshotted at function entry and restored in the
+ * finally block so that programmatic callers (tests, long-running hosts)
+ * don't see leaked state across invocations. `GITNEXUS_WORKER_POOL_SIZE` is
+ * NOT in this list: that knob is threaded through `runFullAnalysis` options
+ * (see `workerPoolSize` plumbing) so the CLI never has to mutate `process.env`
+ * for it in the first place.
+ */
+const ANALYZE_CLI_ENV_KEYS = [
+  'GITNEXUS_VERBOSE',
+  'GITNEXUS_MAX_FILE_SIZE',
+  'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+  'GITNEXUS_EMBEDDING_THREADS',
+  'GITNEXUS_EMBEDDING_BATCH_SIZE',
+  'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
+  'GITNEXUS_EMBEDDING_DEVICE',
+] as const;
+
+type AnalyzeEnvSnapshot = Record<(typeof ANALYZE_CLI_ENV_KEYS)[number], string | undefined>;
+
+const snapshotAnalyzeEnv = (): AnalyzeEnvSnapshot => {
+  const snap = {} as AnalyzeEnvSnapshot;
+  for (const k of ANALYZE_CLI_ENV_KEYS) snap[k] = process.env[k];
+  return snap;
+};
+
+const restoreAnalyzeEnv = (snap: AnalyzeEnvSnapshot): void => {
+  for (const k of ANALYZE_CLI_ENV_KEYS) {
+    const v = snap[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+};
+
 export interface AnalyzeOptions {
   force?: boolean;
   /**
@@ -260,6 +295,22 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
 
+  // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
+  // consumption, so they don't leak across `analyzeCommand` invocations in
+  // programmatic callers (tests, long-running hosts). `process.exit(0)` on
+  // the success path bypasses `finally` — intentional: when the process is
+  // exiting, restoration is moot. For early-return paths (validation
+  // errors) and the alreadyUpToDate fast path the finally restores the
+  // pre-call values.
+  const envSnap = snapshotAnalyzeEnv();
+  try {
+    await analyzeCommandImpl(inputPath, options);
+  } finally {
+    restoreAnalyzeEnv(envSnap);
+  }
+};
+
+const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions): Promise<void> => {
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -280,6 +331,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
   }
 
+  // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions
+  // → createWorkerPool, intentionally bypassing the GITNEXUS_WORKER_POOL_SIZE
+  // env channel so this CLI surface never mutates `process.env` for pool size.
+  // Tests can therefore re-invoke analyzeCommand with different --workers
+  // values back-to-back and observe the value they passed, not whatever the
+  // previous call leaked.
+  let workerPoolSize: number | undefined;
   if (options?.workers !== undefined) {
     const parsedWorkers = Number(options.workers);
     if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
@@ -290,7 +348,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       process.exitCode = 1;
       return;
     }
-    process.env.GITNEXUS_WORKER_POOL_SIZE = String(parsedWorkers);
+    workerPoolSize = parsedWorkers;
   }
 
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
@@ -554,6 +612,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
         allowDuplicateName: options?.allowDuplicateName,
+        // Worker pool size threaded from --workers, replacing the previous
+        // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
+        // env / auto-formula fallback inside the pipeline.
+        workerPoolSize,
       },
       {
         onProgress: (_phase, percent, message) => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
@@ -28,12 +28,25 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
 }));
 
 describe('analyzeCommand --workers validation', () => {
+  // Capture the host's NODE_OPTIONS once so afterEach can restore it cleanly,
+  // and the env-leak regression test below has a stable baseline. Without
+  // afterEach, beforeEach's `process.env.NODE_OPTIONS = ...` accumulated
+  // `--max-old-space-size=8192` tokens across runs (L4 from PR #1693 review).
+  const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+
   beforeEach(() => {
     vi.resetModules();
     runFullAnalysisMock.mockReset();
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
-    delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_NODE_OPTIONS === undefined) {
+      delete process.env.NODE_OPTIONS;
+    } else {
+      process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+    }
   });
 
   it.each(['abc', '-5', '1.5', 'Infinity', 'NaN'])(
@@ -58,7 +71,7 @@ describe('analyzeCommand --workers validation', () => {
     },
   );
 
-  it('sets GITNEXUS_WORKER_POOL_SIZE for valid positive values', async () => {
+  it('threads --workers through runFullAnalysis options as workerPoolSize', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     runFullAnalysisMock.mockResolvedValue({
       repoName: 'repo',
@@ -69,11 +82,14 @@ describe('analyzeCommand --workers validation', () => {
 
     await analyzeCommand(undefined, { workers: '12' });
 
-    expect(process.env.GITNEXUS_WORKER_POOL_SIZE).toBe('12');
-    expect(runFullAnalysisMock).toHaveBeenCalled();
+    expect(runFullAnalysisMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ workerPoolSize: 12 }),
+      expect.any(Object),
+    );
   });
 
-  it('accepts --workers 0 as a sequential-fallback signal', async () => {
+  it('threads --workers 0 as workerPoolSize: 0 (sequential-fallback signal)', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     runFullAnalysisMock.mockResolvedValue({
       repoName: 'repo',
@@ -84,8 +100,41 @@ describe('analyzeCommand --workers validation', () => {
 
     await analyzeCommand(undefined, { workers: '0' });
 
-    expect(process.env.GITNEXUS_WORKER_POOL_SIZE).toBe('0');
+    expect(runFullAnalysisMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ workerPoolSize: 0 }),
+      expect.any(Object),
+    );
     expect(process.exitCode).toBeUndefined();
-    expect(runFullAnalysisMock).toHaveBeenCalled();
+  });
+
+  it('does not mutate GITNEXUS_WORKER_POOL_SIZE in process.env', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    const before = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    await analyzeCommand(undefined, { workers: '7' });
+    expect(process.env.GITNEXUS_WORKER_POOL_SIZE).toBe(before);
+  });
+
+  it('restores snapshotted env vars after returning (no cross-invocation leak)', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    const originalVerbose = process.env.GITNEXUS_VERBOSE;
+    const originalMaxFileSize = process.env.GITNEXUS_MAX_FILE_SIZE;
+    await analyzeCommand(undefined, { verbose: true, maxFileSize: '1024' });
+    expect(process.env.GITNEXUS_VERBOSE).toBe(originalVerbose);
+    expect(process.env.GITNEXUS_MAX_FILE_SIZE).toBe(originalMaxFileSize);
   });
 });
