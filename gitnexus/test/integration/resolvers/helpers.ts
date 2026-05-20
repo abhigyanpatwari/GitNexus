@@ -34,6 +34,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  java: new Set([
+    // Duplicate-FQN same-module path-affinity ordering is implemented in the
+    // Java provider hook for the scope-resolution path. Legacy DAG parity runs
+    // still use legacy owner/type resolution behavior and can bind cross-module.
+    'resolves Module1App.run calls to module1 UserService, not module2',
+    'resolves Module2App.run calls to module2 UserService, not module1',
+  ]),
   php: new Set([
     // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
     // candidates that are definitively below required-parameter-count. The
