@@ -13,7 +13,7 @@
  */
 
 import type { NodeLabel } from '../../graph/types.js';
-import type { SymbolDefinition } from '../symbol-definition.js';
+import type { ParameterTypeClass, SymbolDefinition } from '../symbol-definition.js';
 import type { Callsite, DefId } from '../types.js';
 import type { DefIndex } from '../def-index.js';
 import type { QualifiedNameIndex } from '../qualified-name-index.js';
@@ -65,6 +65,13 @@ export interface ConstraintContext {
    * `narrowOverloadCandidates`' `argTypes` parameter.
    */
   readonly argumentTypes?: readonly string[];
+  /**
+   * Optional shape-preserving sidecar aligned with `argumentTypes`.
+   * Unknown or unsupported slots should be omitted by producers or
+   * marked with `indirection: 'unknown'`; consumers must preserve the
+   * monotonic fallback and return 'unknown' instead of guessing.
+   */
+  readonly argumentTypeClasses?: readonly ParameterTypeClass[];
 }
 
 // ─── Owner-scoped contributor (concrete shape for `RegistryContributor`) ────
@@ -93,6 +100,19 @@ export interface OwnerScopedContributor {
   byName(name: string): readonly SymbolDefinition[];
 }
 
+/**
+ * Required owner-keyed lookup hook for Step 2 receiver/MRO member walks.
+ * Production callers wire this to the SemanticModel's authoritative
+ * method/field/nested-type registries so each `(ownerDefId, memberName)`
+ * probe is O(1). Implementations MUST return `[]` on an indexed miss —
+ * Step 2 treats `[]` as authoritative and does not consult `defs` for a
+ * fallback scan.
+ */
+export type OwnedMembersByOwnerLookup = (
+  ownerDefId: DefId,
+  memberName: string,
+) => readonly SymbolDefinition[];
+
 // ─── Top-level context threaded through every lookup ───────────────────────
 
 export interface RegistryContext {
@@ -100,6 +120,7 @@ export interface RegistryContext {
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
+  readonly ownedMembersByOwner: OwnedMembersByOwnerLookup;
   /**
    * Method-dispatch index; required for method/field registries that
    * honor `useReceiverTypeBinding`. Omit for class-only lookups.

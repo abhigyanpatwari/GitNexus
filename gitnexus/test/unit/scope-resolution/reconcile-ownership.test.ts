@@ -111,6 +111,54 @@ describe('reconcileOwnership', () => {
     expect(model.fields.lookupFieldByOwner('def:User', 'tag')).toBe(attr);
   });
 
+  it('registers Const and Static owned members into FieldRegistry', () => {
+    const model = createSemanticModel();
+    const maxConst = mkProperty({
+      nodeId: 'def:User.MAX',
+      filePath: 'models.py',
+      name: 'MAX',
+      ownerId: 'def:User',
+      type: 'Const',
+    });
+    const counter = mkProperty({
+      nodeId: 'def:User.counter',
+      filePath: 'models.py',
+      name: 'counter',
+      ownerId: 'def:User',
+      type: 'Static',
+    });
+    const file = mkFile('models.py', [maxConst, counter]);
+
+    const stats = reconcileOwnership([file], model);
+
+    expect(stats.fieldsRegistered).toBe(2);
+    expect(model.fields.lookupAllByOwner('def:User', 'MAX')).toEqual([maxConst]);
+    expect(model.fields.lookupAllByOwner('def:User', 'counter')).toEqual([counter]);
+  });
+
+  it('keeps distinct field-kind defs that share (ownerId, simpleName)', () => {
+    const model = createSemanticModel();
+    const legacyProp = mkProperty({
+      nodeId: 'prop:User.name',
+      filePath: 'models.py',
+      name: 'name',
+      ownerId: 'def:User',
+      type: 'Property',
+    });
+    const reconciledVar = mkProperty({
+      nodeId: 'def:User.name',
+      filePath: 'models.py',
+      name: 'name',
+      ownerId: 'def:User',
+      type: 'Variable',
+    });
+    const file = mkFile('models.py', [legacyProp, reconciledVar]);
+
+    reconcileOwnership([file], model);
+
+    expect(model.fields.lookupAllByOwner('def:User', 'name')).toEqual([legacyProp, reconciledVar]);
+  });
+
   it('skips defs without ownerId (top-level functions)', () => {
     const model = createSemanticModel();
     const topLevel = mkMethod({
@@ -162,6 +210,61 @@ describe('reconcileOwnership', () => {
     expect(stats.methodsRegistered).toBe(0);
     expect(stats.skippedAlreadyPresent).toBe(1);
     expect(model.methods.lookupAllByOwner('def:User', 'save')).toHaveLength(1);
+  });
+
+  it('registers nested class-like types (Class/Enum/Interface) into TypeRegistry by owner', () => {
+    const model = createSemanticModel();
+    const inner: SymbolDefinition = {
+      nodeId: 'def:Outer.Inner',
+      filePath: 'm.ts',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+      ownerId: 'def:Outer',
+    };
+    const status: SymbolDefinition = {
+      nodeId: 'def:Outer.Status',
+      filePath: 'm.ts',
+      type: 'Enum',
+      qualifiedName: 'Outer.Status',
+      ownerId: 'def:Outer',
+    };
+    const visitor: SymbolDefinition = {
+      nodeId: 'def:Outer.Visitor',
+      filePath: 'm.ts',
+      type: 'Interface',
+      qualifiedName: 'Outer.Visitor',
+      ownerId: 'def:Outer',
+    };
+    const file = mkFile('m.ts', [inner, status, visitor]);
+
+    const stats = reconcileOwnership([file], model);
+
+    expect(stats.nestedTypesRegistered).toBe(3);
+    expect(stats.methodsRegistered).toBe(0);
+    expect(stats.fieldsRegistered).toBe(0);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Inner')).toEqual([inner]);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Status')).toEqual([status]);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Visitor')).toEqual([visitor]);
+  });
+
+  it('is idempotent for nested type registration', () => {
+    const model = createSemanticModel();
+    const inner: SymbolDefinition = {
+      nodeId: 'def:Outer.Inner',
+      filePath: 'm.ts',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+      ownerId: 'def:Outer',
+    };
+    const file = mkFile('m.ts', [inner]);
+
+    const first = reconcileOwnership([file], model);
+    const second = reconcileOwnership([file], model);
+
+    expect(first.nestedTypesRegistered).toBe(1);
+    expect(second.nestedTypesRegistered).toBe(0);
+    expect(second.skippedAlreadyPresent).toBe(1);
+    expect(model.types.lookupAllByOwner('def:Outer', 'Inner')).toHaveLength(1);
   });
 
   it('registers multiple overloads under the same (owner, name)', () => {

@@ -14,10 +14,9 @@ import {
   executeParameterized,
   closeLbug,
   isLbugReady,
-  isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
-export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -175,6 +174,9 @@ function logQueryError(context: string, err: unknown): void {
   logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
+const isReadOnlyDbError = (err: unknown): boolean =>
+  /read-only database/i.test(err instanceof Error ? err.message : String(err));
+
 /**
  * Per-query latency telemetry for production aggregation (#553).
  *
@@ -246,6 +248,29 @@ function tryRealpath(p: string): string {
  */
 export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
   try {
+    // Verify repoPath is a git root before comparing against its canonical
+    // root. If getGitRoot returns a different path, repoPath is an arbitrary
+    // subdirectory — skip both the linked-worktree guard and auto-detection
+    // and fall through to the repoPath fallback.
+    const repoGitRoot = getGitRoot(repoPath);
+    const repoCanonical =
+      repoGitRoot && tryRealpath(repoGitRoot) === tryRealpath(repoPath)
+        ? getCanonicalRepoRoot(repoPath)
+        : null;
+
+    // Early exit: if repoPath is a linked worktree (differs from its canonical
+    // main-checkout root), return it unchanged. Do NOT override it with the
+    // server's launch directory — that would silently replace the explicitly-
+    // resolved worktree index with the main checkout.
+    //
+    // getCanonicalRepoRoot returns the main-checkout path for both the checkout
+    // and all linked worktrees:
+    //   repoPath === canonical → main checkout (auto-detect may fire below)
+    //   repoPath !== canonical → linked worktree (return as-is)
+    if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
+      return repoPath;
+    }
+
     const launchGitRoot = getGitRoot(launchCwd);
     if (launchGitRoot) {
       // Normalise via realpathSync before comparing so macOS /var → /private/var
@@ -254,8 +279,12 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
       const realRepo = tryRealpath(repoPath);
       if (realLaunch !== realRepo) {
         const launchCanonical = getCanonicalRepoRoot(launchCwd);
-        const repoCanonical = getCanonicalRepoRoot(repoPath);
-        if (launchCanonical && repoCanonical && launchCanonical === repoCanonical) {
+        // Use tryRealpath on both canonical values for cross-platform safety.
+        if (
+          launchCanonical &&
+          repoCanonical &&
+          tryRealpath(launchCanonical) === tryRealpath(repoCanonical)
+        ) {
           return launchGitRoot;
         }
       }
@@ -1273,31 +1302,41 @@ export class LocalBackend {
     }
   }
 
-  async executeCypher(repoName: string, query: string): Promise<any> {
+  async executeCypher(
+    repoName: string,
+    query: string,
+    params: Record<string, unknown> = {},
+  ): Promise<any> {
     const repo = await this.resolveRepo(repoName);
-    return this.cypher(repo, { query });
+    return this.cypher(repo, { query, params });
   }
 
-  private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
+  private async cypher(
+    repo: RepoHandle,
+    request: { query: string; params?: Record<string, unknown> },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     if (!isLbugReady(repo.id)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
-
-    // Block write operations (defense-in-depth — DB is already read-only)
-    if (isWriteQuery(params.query)) {
+    if (request.params !== undefined && !isValidQueryParams(request.params)) {
       return {
-        error:
-          'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null).',
       };
     }
 
     try {
-      const result = await executeQuery(repo.id, params.query);
+      const result = await executeParameterized(repo.id, request.query, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
+      if (isReadOnlyDbError(err)) {
+        return {
+          error:
+            'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,

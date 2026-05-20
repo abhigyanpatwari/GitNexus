@@ -3156,6 +3156,59 @@ describe('C++ SFINAE filter — C++20 requires-clause shape', () => {
   });
 });
 
+describe('C++ SFINAE filter — Tier-A type_traits predicates', () => {
+  async function runFixture(name: string): Promise<PipelineResult> {
+    return runPipelineFromRepo(path.join(FIXTURES, name), () => {});
+  }
+
+  function callsFromRunToPick(result: PipelineResult) {
+    return getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+  }
+
+  it('is_pointer_v and is_class_v disambiguate pointer vs class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-pointer');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_reference_v keeps reference-shaped arguments distinct from values', async () => {
+    const result = await runFixture('cpp-sfinae-is-reference');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_class_v rejects primitive arguments while keeping class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-class');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_enum_v distinguishes known enum declarations from primitives', async () => {
+    const result = await runFixture('cpp-sfinae-is-enum');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_const_v and is_volatile_v disambiguate cv-qualified locals', async () => {
+    const result = await runFixture('cpp-sfinae-is-const-volatile');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_void_v does not misclassify void pointers as void values', async () => {
+    const result = await runFixture('cpp-sfinae-is-void');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(1);
+  }, 60000);
+});
+
 describe('C++ SFINAE filter — unknown predicate keeps both candidates (monotonicity contract)', () => {
   let result: PipelineResult;
 

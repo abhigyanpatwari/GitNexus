@@ -154,6 +154,7 @@ export const splitRelCsvByLabelPair = async (
 let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
+let currentDbReadOnly = false;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -448,12 +449,17 @@ export const initLbug = async (dbPath: string) => {
  * database is busy (e.g. `gitnexus analyze` holds the write lock).
  * Each retry waits DB_LOCK_RETRY_DELAY_MS * attempt milliseconds.
  */
-export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>): Promise<T> => {
+export const withLbugDb = async <T>(
+  dbPath: string,
+  operation: () => Promise<T>,
+  options: { readOnly?: boolean } = {},
+): Promise<T> => {
   let lastError: unknown;
+  const readOnly = options.readOnly === true;
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath);
+        await ensureLbugInitialized(dbPath, readOnly);
         return operation();
       });
     } catch (err) {
@@ -483,15 +489,15 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
-  if (conn && currentDbPath === dbPath) {
+const ensureLbugInitialized = async (dbPath: string, readOnly: boolean = false) => {
+  if (conn && currentDbPath === dbPath && currentDbReadOnly === readOnly) {
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, readOnly);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // Different database requested — close the old one first
   if (conn || db) {
     await safeClose();
@@ -575,9 +581,12 @@ const doInitLbug = async (dbPath: string) => {
     const parentDir = path.dirname(dbPath);
     await fs.mkdir(parentDir, { recursive: true });
 
-    const opened = await openLbugConnection(lbug, dbPath);
+    const opened = readOnly
+      ? await openLbugConnection(lbug, dbPath, { readOnly: true })
+      : await openLbugConnection(lbug, dbPath);
     db = opened.db;
     conn = opened.conn;
+    currentDbReadOnly = readOnly;
   } finally {
     await releaseInitLock();
   }
@@ -614,7 +623,7 @@ const doInitLbug = async (dbPath: string) => {
             `  Original error: ${msg.slice(0, 200)}`,
         );
       }
-      if (!msg.includes('already exists') && !isDbBusyError(err)) {
+      if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
     }
@@ -1058,12 +1067,7 @@ export const batchInsertNodesToLbug = async (
 };
 
 export const executeQuery = async (cypher: string): Promise<any[]> => {
-  if (!conn) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-
-  const queryResult = await conn.query(cypher);
-  return await readQueryRows(queryResult);
+  return await executePrepared(cypher, {});
 };
 
 export const streamQuery = async (
@@ -1726,19 +1730,15 @@ export const queryFTS = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  // Escape backslashes and single quotes to prevent Cypher injection
-  const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
-
   const cypher = `
-    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := ${conjunctive})
+    CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := ${conjunctive})
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
   `;
 
   try {
-    const queryResult = await conn.query(cypher);
-    const rows = await readQueryRows(queryResult);
+    const rows = await executePrepared(cypher, { query });
 
     return rows.map((row: any) => {
       const node = row.node || row[0] || {};
