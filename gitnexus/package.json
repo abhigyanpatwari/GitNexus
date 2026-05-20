@@ -60,7 +60,7 @@
     "cli-progress": "^3.12.0",
     "commander": "^14.0.3",
     "cors": "^2.8.5",
-    "express": "^4.19.2",
+    "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
     "glob": "^13.0.6",
     "graphology": "^0.26.0",
@@ -100,7 +100,7 @@
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
     "@types/uuid": "^11.0.0",

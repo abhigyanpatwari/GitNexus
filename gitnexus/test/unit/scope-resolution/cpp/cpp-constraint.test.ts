@@ -19,7 +19,7 @@ import {
   evaluateForTest,
   getRegistrySize,
 } from '../../../../src/core/ingestion/languages/cpp/constraint-filter.js';
-import type { ArityVerdict, SymbolDefinition } from 'gitnexus-shared';
+import type { ArityVerdict, ParameterTypeClass, SymbolDefinition } from 'gitnexus-shared';
 
 function templateConstraintsFor(src: string): CppConstraintPayload | undefined {
   const matches = emitCppScopeCaptures(src, 'test.cpp');
@@ -201,11 +201,26 @@ describe('evaluate — Kleene 3-valued truth table', () => {
 // ─── Section 3: Predicate registry ─────────────────────────────────────────
 
 describe('Tier-A predicate registry', () => {
-  it('registry size is exactly 4 (surface-guard against accidental adds)', () => {
-    expect(getRegistrySize()).toBe(4);
+  it('registry size is exactly 11 (surface-guard against accidental adds)', () => {
+    expect(getRegistrySize()).toBe(11);
   });
 
-  function verdict(name: string, args: string[], argumentTypes: readonly string[]): ArityVerdict {
+  const shape = (
+    base: string,
+    indirection: ParameterTypeClass['indirection'] = 'value',
+    cv: ParameterTypeClass['cv'] = 'none',
+    pointerDepth = indirection === 'pointer' ? 1 : 0,
+  ): ParameterTypeClass => ({ base, cv, indirection, pointerDepth });
+
+  function verdict(
+    name: string,
+    args: string[],
+    argumentTypes: readonly string[],
+    opts: {
+      readonly argumentTypeClasses?: readonly ParameterTypeClass[];
+      readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+    } = {},
+  ): ArityVerdict {
     const payload: CppConstraintPayload = {
       templateParams: args,
       paramArgIndex: Object.fromEntries(args.map((a, i) => [a, i])),
@@ -216,8 +231,16 @@ describe('Tier-A predicate registry', () => {
       filePath: 'x.cpp',
       type: 'Function',
       templateConstraints: payload,
+      ...(opts.parameterTypeClasses !== undefined
+        ? { parameterTypeClasses: opts.parameterTypeClasses }
+        : {}),
     };
-    return cppConstraintCompatibility({ arity: argumentTypes.length }, def, { argumentTypes });
+    return cppConstraintCompatibility({ arity: argumentTypes.length }, def, {
+      argumentTypes,
+      ...(opts.argumentTypeClasses !== undefined
+        ? { argumentTypeClasses: opts.argumentTypeClasses }
+        : {}),
+    });
   }
 
   it('is_integral_v matches int, rejects double, unknown for blank', () => {
@@ -255,6 +278,117 @@ describe('Tier-A predicate registry', () => {
     // (precise `TypeClass` enum — widening lives only in the registry).
     expect(verdict('is_same_v', ['A', 'B'], ['bool', 'int'])).toBe('incompatible');
     expect(verdict('is_same_v', ['A', 'B'], ['char', 'int'])).toBe('incompatible');
+  });
+
+  it('is_void_v matches void, rejects int, unknown for blank', () => {
+    expect(verdict('is_void_v', ['T'], ['void'])).toBe('compatible');
+    expect(verdict('is_void_v', ['T'], ['int'])).toBe('incompatible');
+    expect(verdict('is_void_v', ['T'], [''])).toBe('unknown');
+  });
+
+  it('is_enum_v matches known enum tokens, rejects class, unknown for blank', () => {
+    expect(
+      verdict('is_enum_v', ['T'], ['Color'], {
+        argumentTypeClasses: [shape('enum:Color')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('compatible');
+    expect(verdict('is_enum_v', ['T'], ['Widget'])).toBe('incompatible');
+    expect(verdict('is_enum_v', ['T'], [''])).toBe('unknown');
+  });
+
+  it('is_class_v matches class-like tokens, rejects primitives, unknown for blank', () => {
+    expect(verdict('is_class_v', ['T'], ['Widget'])).toBe('compatible');
+    expect(verdict('is_class_v', ['T'], ['int'])).toBe('incompatible');
+    expect(verdict('is_class_v', ['T'], [''])).toBe('unknown');
+  });
+
+  it('is_pointer_v uses the argument type-class sidecar conservatively', () => {
+    expect(
+      verdict('is_pointer_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'pointer')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('compatible');
+    expect(
+      verdict('is_pointer_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('incompatible');
+    expect(verdict('is_pointer_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_pointer_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'unknown', 'none')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
+  });
+
+  it('is_reference_v uses the argument type-class sidecar conservatively', () => {
+    expect(
+      verdict('is_reference_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'lvalue-ref')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('compatible');
+    expect(
+      verdict('is_reference_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('incompatible');
+    expect(verdict('is_reference_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_reference_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'unknown', 'none')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
+  });
+
+  it('is_const_v and is_volatile_v read top-level cv from the sidecar conservatively', () => {
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'value', 'const')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('compatible');
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('incompatible');
+    expect(verdict('is_const_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_volatile_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'value', 'volatile')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('compatible');
+    expect(verdict('is_volatile_v', ['T'], ['int'])).toBe('unknown');
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'pointer', 'const')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
+    expect(
+      verdict('is_const_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'value', 'unknown')],
+        parameterTypeClasses: [shape('T')],
+      }),
+    ).toBe('unknown');
+  });
+
+  it('shape-sensitive predicates stay unknown when T is not the whole parameter type', () => {
+    expect(
+      verdict('is_pointer_v', ['T'], ['int'], {
+        argumentTypeClasses: [shape('int', 'pointer')],
+        parameterTypeClasses: [shape('T', 'pointer')],
+      }),
+    ).toBe('unknown');
   });
 
   it('unregistered predicate yields unknown (monotonicity)', () => {
