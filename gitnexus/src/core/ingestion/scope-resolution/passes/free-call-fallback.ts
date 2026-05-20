@@ -17,7 +17,13 @@
  * generalization plan.
  */
 
-import type { ParsedFile, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParameterTypeClass,
+  ParsedFile,
+  Reference,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -277,6 +283,7 @@ export function emitFreeCallFallback(
                 })
             : undefined,
           site.argumentTypes,
+          site.argumentTypeClasses,
           options.conversionRankFn,
         );
       }
@@ -342,6 +349,7 @@ function pickUniqueGlobalCallable(
   callArity?: number,
   isCallerVisible?: (candidate: SymbolDefinition) => boolean,
   callArgTypes?: readonly string[],
+  callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
@@ -380,6 +388,7 @@ function pickUniqueGlobalCallable(
   // disambiguate (e.g., `f(int)` vs `f(double)` called with `f(2.5)`).
   if (scopeDefs.length > 1) {
     const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
     });
     if (narrowed.length === 1) return narrowed[0];
@@ -420,6 +429,7 @@ function pickUniqueGlobalCallable(
   // Same argument-type + conversion-rank narrowing for the model pool.
   if (defs.length > 1) {
     const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
     });
     if (narrowed.length === 1) return narrowed[0];
