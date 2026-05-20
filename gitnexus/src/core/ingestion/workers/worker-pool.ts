@@ -5,6 +5,28 @@ import { fileURLToPath } from 'node:url';
 
 import { logger } from '../../logger.js';
 import { createQuarantine } from './quarantine.js';
+import { encodeMessage, decodeMessage, MessageTag } from './protocol.js';
+
+/**
+ * Decode an incoming worker message. Production `parse-worker.ts` (post-U17)
+ * always sends Buffer-encoded frames via `encodeMessage`. Test scaffolding
+ * (FakeWorkers in worker-pool-resilience.test.ts and siblings) still emits
+ * raw POJO messages — the pool tolerates both so the existing in-process
+ * mock workers don't need rewriting. If a future commit wants to strictly
+ * require encoded frames (rejecting POJO), this helper is the single point
+ * to harden.
+ */
+function decodeIncomingWorkerMessage(raw: unknown): WorkerOutgoingMessage {
+  // `instanceof Uint8Array` (not `Buffer.isBuffer`): Node's worker_threads
+  // postMessage structured-clones the payload, which strips the Buffer
+  // prototype, so a frame sent as `Buffer` arrives here as a plain
+  // Uint8Array. Buffer extends Uint8Array so this check covers both,
+  // and `decodeMessage` adopts a Uint8Array view zero-copy.
+  if (raw instanceof Uint8Array) {
+    return decodeMessage(raw).payload as WorkerOutgoingMessage;
+  }
+  return raw as WorkerOutgoingMessage;
+}
 export interface WorkerPool {
   /**
    * Dispatch items across workers. Items are split into bounded jobs, each job
@@ -319,7 +341,20 @@ function waitForWorkerReady(worker: Worker): Promise<void> {
       worker.removeListener('exit', onExit);
       worker.removeListener('messageerror', onMessageError);
     };
-    const onMessage = (msg: unknown) => {
+    const onMessage = (raw: unknown) => {
+      // U17: production parse-worker.ts emits the ready handshake as a
+      // Buffer-encoded frame; FakeWorkers in the test suite still emit
+      // POJO. Tolerate both. ProtocolDecodeError on a malformed frame is
+      // swallowed locally — the wait keeps listening, and the eventual
+      // timeout / exit / error handlers catch a genuinely-broken worker.
+      let msg: unknown = raw;
+      if (raw instanceof Uint8Array) {
+        try {
+          msg = decodeMessage(raw).payload;
+        } catch {
+          return;
+        }
+      }
       if (typeof msg === 'object' && msg !== null && (msg as { type?: unknown }).type === 'ready') {
         cleanup();
         resolve();
@@ -1092,9 +1127,29 @@ export const createWorkerPool = (
         // stale generation. The guard catches future-refactor mistakes.
         const slotGen = slotGenerations[workerIndex];
 
-        const handler = (msg: WorkerOutgoingMessage) => {
+        const handler = (raw: unknown) => {
           if (slotGenerations[workerIndex] !== slotGen) return;
           if (settled || stopped) return;
+          // U17: production parse-worker.ts emits Buffer-encoded messages;
+          // FakeWorkers in the test suite still emit POJOs. Tolerate both
+          // via `decodeIncomingWorkerMessage`. A malformed frame from a
+          // real worker is treated as a worker-side bug — the protocol
+          // error escapes and is caught by the `messageerror` handler
+          // below, routing through the existing recovery layer.
+          let msg: WorkerOutgoingMessage;
+          try {
+            msg = decodeIncomingWorkerMessage(raw);
+          } catch (err) {
+            settled = true;
+            cleanup();
+            void recoverAndResume(
+              `Worker ${workerIndex} protocol decode error: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+              resolveExcludePaths(),
+            );
+            return;
+          }
           if (msg.type === 'starting-file') {
             inFlightPath = msg.path;
             resetIdleTimer();
@@ -1111,7 +1166,7 @@ export const createWorkerPool = (
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();
-            worker.postMessage({ type: 'flush' });
+            worker.postMessage(encodeMessage(MessageTag.DispatchJob, { type: 'flush' }));
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();
@@ -1214,7 +1269,9 @@ export const createWorkerPool = (
           cleanup();
           return;
         }
-        worker.postMessage({ type: 'sub-batch', files: job.items });
+        worker.postMessage(
+          encodeMessage(MessageTag.DispatchJob, { type: 'sub-batch', files: job.items }),
+        );
       };
 
       for (const slotIndex of activeSlots) runWorker(slotIndex);

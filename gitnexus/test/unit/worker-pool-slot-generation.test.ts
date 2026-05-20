@@ -27,6 +27,7 @@ import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import { decodeMessage } from '../../src/core/ingestion/workers/protocol.js';
 
 type FakeAction =
   | { kind: 'crash-after-starting'; startingPath: string; code: number }
@@ -42,7 +43,9 @@ class FakeWorker extends EventEmitter {
       this.emit('message', { type: 'ready' });
     });
   }
-  postMessage(msg: unknown): void {
+  postMessage(rawMsg: unknown): void {
+    // U17: decode Buffer-encoded dispatches; pool is now strict-encoded.
+    const msg = rawMsg instanceof Uint8Array ? decodeMessage(rawMsg).payload : rawMsg;
     if (typeof msg !== 'object' || msg === null) return;
     const m = msg as { type?: string };
     if (m.type !== 'sub-batch') return;

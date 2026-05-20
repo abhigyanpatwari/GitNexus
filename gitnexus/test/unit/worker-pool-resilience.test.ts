@@ -10,6 +10,7 @@ import {
   resolveWorkerPoolOptions,
   resolveAutoPoolSize,
 } from '../../src/core/ingestion/workers/worker-pool.js';
+import { decodeMessage } from '../../src/core/ingestion/workers/protocol.js';
 
 /**
  * Minimal `node:worker_threads` Worker double for unit-testing the pool's
@@ -43,7 +44,16 @@ class FakeWorker extends EventEmitter {
     });
   }
 
-  postMessage(msg: unknown): void {
+  postMessage(rawMsg: unknown): void {
+    // U17: production pool now sends Buffer-encoded dispatch frames.
+    // Decode them here so this in-process mock can keep its existing
+    // POJO-shaped action-scripting API — the action queue still sees
+    // `{type, files}` shapes regardless of whether the pool encoded
+    // the message on the way in. Store the DECODED payload in
+    // `seenMessages` so test-side introspection assertions (which
+    // expect `msg.type` / `msg.files`) keep working after the wire
+    // format flipped to Buffer.
+    const msg = Buffer.isBuffer(rawMsg) ? decodeMessage(rawMsg).payload : rawMsg;
     this.seenMessages.push(msg);
     if (typeof msg !== 'object' || msg === null) return;
     const m = msg as { type?: string; files?: { path: string }[] };

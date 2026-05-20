@@ -133,3 +133,44 @@ describe('worker IPC protocol — decode error paths (U16)', () => {
     }
   });
 });
+
+describe('worker IPC protocol — Uint8Array decode path (U17)', () => {
+  // Pins the U17 production fix: Node's worker_threads `postMessage`
+  // structured-clones the payload, which strips the Buffer prototype, so
+  // a frame sent as Buffer arrives on the receiver as a bare Uint8Array.
+  // `decodeMessage` must accept a Uint8Array view zero-copy. Without this
+  // path, every Buffer-encoded message sent through worker_threads would
+  // silently fail to decode and the worker would never reply to the
+  // dispatch — observed pre-fix as a 30s test timeout on every real
+  // dispatch through dist/parse-worker.js.
+  it('decodes a Uint8Array view (no Buffer prototype) identically to the Buffer original', () => {
+    const original = encodeMessage(MessageTag.Result, { fileCount: 5, paths: ['a.ts', 'b.ts'] });
+    // Strip the Buffer prototype while keeping the same backing memory —
+    // mirrors what structured clone does to a Buffer on the receive side.
+    const stripped = new Uint8Array(original.buffer, original.byteOffset, original.byteLength);
+    expect(Buffer.isBuffer(stripped)).toBe(false);
+    expect(stripped).toBeInstanceOf(Uint8Array);
+
+    const decoded = decodeMessage(stripped);
+    expect(decoded.tag).toBe(MessageTag.Result);
+    expect(decoded.payload).toEqual({ fileCount: 5, paths: ['a.ts', 'b.ts'] });
+  });
+
+  it('decodes a Uint8Array that views a slice of a larger ArrayBuffer (non-zero byteOffset)', () => {
+    // Pins the zero-copy adoption path. If `decodeMessage` were to call
+    // `Buffer.from(uint8)` (which copies and zeroes the offset) instead
+    // of `Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength)`, the
+    // header parse would still succeed on the copy, but the wider
+    // ArrayBuffer-with-offset case below also catches `Buffer.from(uint8)`
+    // semantics regressions on Node versions that materialize structured
+    // clones into shared ArrayBuffers with offsets.
+    const original = encodeMessage(MessageTag.Progress, { filesProcessed: 11 });
+    const padded = new Uint8Array(original.byteLength + 8);
+    padded.set(original, 4); // place the frame at offset 4 in a wider buffer
+    const view = new Uint8Array(padded.buffer, 4, original.byteLength);
+
+    const decoded = decodeMessage(view);
+    expect(decoded.tag).toBe(MessageTag.Progress);
+    expect(decoded.payload).toEqual({ filesProcessed: 11 });
+  });
+});

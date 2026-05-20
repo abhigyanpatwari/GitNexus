@@ -1,5 +1,6 @@
 import { parentPort } from 'node:worker_threads';
 import Parser from 'tree-sitter';
+import { encodeMessage, decodeMessage, MessageTag } from './protocol.js';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
@@ -1390,7 +1391,7 @@ const processFileGroup = (
   } catch (err) {
     const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
     if (parentPort) {
-      parentPort.postMessage({ type: 'warning', message });
+      parentPort.postMessage(encodeMessage(MessageTag.Warning, { type: 'warning', message }));
     } else {
       logger.warn(message);
     }
@@ -1406,7 +1407,11 @@ const processFileGroup = (
     // guessing from `items[lastProgress]` (which the language-grouped order
     // here would defeat). The pool gracefully ignores this when running an
     // older worker build that doesn't emit it.
-    if (parentPort) parentPort.postMessage({ type: 'starting-file', path: file.path });
+    if (parentPort) {
+      parentPort.postMessage(
+        encodeMessage(MessageTag.StartingFile, { type: 'starting-file', path: file.path }),
+      );
+    }
 
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
@@ -1465,8 +1470,11 @@ const processFileGroup = (
       parseContent,
       file.path,
       (message) => {
-        if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else logger.warn(message);
+        if (parentPort) {
+          parentPort.postMessage(encodeMessage(MessageTag.Warning, { type: 'warning', message }));
+        } else {
+          logger.warn(message);
+        }
       },
       tree,
     );
@@ -2453,37 +2461,69 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
 // before the script body runs) and the pool only notices via the first
 // dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
 // any subsequent `ready` message as a benign no-op.
-parentPort!.postMessage({ type: 'ready' });
+//
+// Post-U17: every postMessage call uses `encodeMessage` from protocol.ts
+// so the bytes on the wire carry an explicit tag + length header. The pool
+// tolerates both encoded Buffer messages and raw POJO (for backward compat
+// with FakeWorkers in the test suite), but production parse-worker.ts is
+// strict — every outgoing message is encoded.
+parentPort!.postMessage(encodeMessage(MessageTag.Ready, { type: 'ready' }));
 
-parentPort!.on('message', (msg: WorkerIncomingMessage) => {
+// Decode a single incoming message. The pool always sends Buffer-encoded
+// frames post-U17, but the parameter type is `unknown` because Node's
+// worker_threads typings declare `on('message', (value: any) => void)`.
+//
+// `instanceof Uint8Array` (not `Buffer.isBuffer`) is load-bearing: Node's
+// worker_threads `postMessage` structured-clones the payload, which
+// strips the Buffer prototype — a frame sent as a Buffer arrives here
+// as a plain Uint8Array, where `Buffer.isBuffer` returns false.
+// `decodeMessage` already adopts a Uint8Array view zero-copy.
+//
+// Falling back to the raw value for non-Uint8Array inputs preserves the
+// legacy POJO path some tests might still exercise.
+function decodeIncomingMessage(raw: unknown): WorkerIncomingMessage {
+  if (raw instanceof Uint8Array) {
+    return decodeMessage(raw).payload as WorkerIncomingMessage;
+  }
+  return raw as WorkerIncomingMessage;
+}
+
+parentPort!.on('message', (raw: unknown) => {
   try {
+    const msg = decodeIncomingMessage(raw);
     // Legacy single-message mode (backward compat): array of files
     if (Array.isArray(msg)) {
       const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
+        parentPort!.postMessage(
+          encodeMessage(MessageTag.Progress, { type: 'progress', filesProcessed }),
+        );
       });
-      parentPort!.postMessage({ type: 'result', data: result });
+      parentPort!.postMessage(encodeMessage(MessageTag.Result, { type: 'result', data: result }));
       return;
     }
 
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
       const result = processBatch(msg.files, (filesProcessed) => {
-        parentPort!.postMessage({
-          type: 'progress',
-          filesProcessed: cumulativeProcessed + filesProcessed,
-        });
+        parentPort!.postMessage(
+          encodeMessage(MessageTag.Progress, {
+            type: 'progress',
+            filesProcessed: cumulativeProcessed + filesProcessed,
+          }),
+        );
       });
       cumulativeProcessed += result.fileCount;
       mergeResult(accumulated, result);
       // Signal ready for next sub-batch
-      parentPort!.postMessage({ type: 'sub-batch-done' });
+      parentPort!.postMessage(encodeMessage(MessageTag.SubBatchDone, { type: 'sub-batch-done' }));
       return;
     }
 
     // Flush: send accumulated results
     if (msg.type === 'flush') {
-      parentPort!.postMessage({ type: 'result', data: accumulated });
+      parentPort!.postMessage(
+        encodeMessage(MessageTag.Result, { type: 'result', data: accumulated }),
+      );
       // Reset for potential reuse
       accumulated = {
         nodes: [],
@@ -2509,6 +2549,6 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    parentPort!.postMessage({ type: 'error', error: message });
+    parentPort!.postMessage(encodeMessage(MessageTag.Error, { type: 'error', error: message }));
   }
 });

@@ -113,10 +113,21 @@ export function encodeMessage(tag: MessageTagValue, payload: unknown): Buffer {
 }
 
 /**
- * Decode a single message from a Buffer. The buffer must start with a
- * complete protocol frame; trailing bytes beyond the declared length
- * are ignored (callers receiving a concatenated stream should slice at
- * `PROTOCOL_HEADER_BYTES + length` before decoding the next frame).
+ * Decode a single message from a Buffer (or any Uint8Array containing a
+ * frame). The buffer must start with a complete protocol frame; trailing
+ * bytes beyond the declared length are ignored (callers receiving a
+ * concatenated stream should slice at `PROTOCOL_HEADER_BYTES + length`
+ * before decoding the next frame).
+ *
+ * Accepts `Uint8Array` rather than only `Buffer` because Node's
+ * worker_threads `postMessage` uses structured clone, which strips the
+ * `Buffer` prototype: a `Buffer` sent over the wire arrives on the
+ * receiving thread as a plain `Uint8Array`. Buffer extends Uint8Array,
+ * so when the input is already a Buffer the readUInt / subarray fast
+ * paths still apply; when the input is a bare Uint8Array, we adopt its
+ * underlying memory via `Buffer.from(view.buffer, view.byteOffset,
+ * view.byteLength)` (a zero-copy view, not a clone) so the rest of the
+ * decode runs through the same code path.
  *
  * Throws {@link ProtocolDecodeError} for any of:
  *   - buffer shorter than the 5-byte header
@@ -124,10 +135,13 @@ export function encodeMessage(tag: MessageTagValue, payload: unknown): Buffer {
  *   - declared payload length exceeds available bytes
  *   - payload bytes are not valid UTF-8 JSON
  */
-export function decodeMessage(buf: Buffer): {
+export function decodeMessage(input: Uint8Array): {
   tag: MessageTagValue;
   payload: unknown;
 } {
+  const buf: Buffer = Buffer.isBuffer(input)
+    ? input
+    : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   if (buf.length < PROTOCOL_HEADER_BYTES) {
     throw new ProtocolDecodeError(
       `frame too small for header: got ${buf.length} bytes, need ${PROTOCOL_HEADER_BYTES}`,

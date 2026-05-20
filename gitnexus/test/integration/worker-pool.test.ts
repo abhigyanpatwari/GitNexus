@@ -30,13 +30,43 @@ const DIST_WORKER = path.resolve(
 );
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
-// Prepend the M4 ready handshake to every ad-hoc test worker source so the
-// pool's `waitForWorkerReady` resolves immediately for replacement spawns.
-// Production `parse-worker.ts` emits the same handshake at top-of-script
-// before installing its message handler. Without it, every test that triggers
-// a replacement (worker crash + recover) would hit the 5s WORKER_READY_TIMEOUT_MS
-// and fail with "Replacement worker startup failed and no slots remain".
-const READY_PREAMBLE = `require('node:worker_threads').parentPort.postMessage({ type: 'ready' });\n`;
+// Prepend two things to every ad-hoc test worker source:
+//
+//   1. The M4 ready handshake so the pool's `waitForWorkerReady` resolves
+//      immediately for replacement spawns. Production `parse-worker.ts`
+//      emits the same handshake at top-of-script before installing its
+//      message handler. Without it, every test that triggers a
+//      replacement (worker crash + recover) would hit the 5s
+//      WORKER_READY_TIMEOUT_MS and fail with "Replacement worker startup
+//      failed and no slots remain".
+//
+//   2. (U17) A transparent decode wrapper around `parentPort.on('message', ...)`
+//      so the 9 ad-hoc test worker scripts don't need rewriting now that
+//      the pool sends Buffer-encoded `sub-batch` / `flush` dispatches.
+//      Test workers continue to receive POJO objects in their existing
+//      `msg.type === 'sub-batch'` checks. The inline mini-decoder mirrors
+//      protocol.ts's wire layout (1-byte tag + 4-byte LE uint32 length +
+//      UTF-8 JSON body) — duplicated here because ad-hoc test workers
+//      `require` Node builtins only; they can't import the compiled
+//      dist/protocol.js without knowing its absolute path. The pool is
+//      tolerant of POJO incoming, so outgoing `parentPort.postMessage`
+//      calls in the test scripts stay as POJO (unchanged).
+const READY_PREAMBLE = `
+const { parentPort: __pp } = require('node:worker_threads');
+const __decodeFrame = (raw) => {
+  // structured clone strips the Buffer prototype; raw arrives as Uint8Array.
+  if (!(raw instanceof Uint8Array)) return raw;
+  const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  const length = buf.readUInt32LE(1);
+  return JSON.parse(buf.subarray(5, 5 + length).toString('utf8'));
+};
+const __origOn = __pp.on.bind(__pp);
+__pp.on = (event, handler) => {
+  if (event !== 'message') return __origOn(event, handler);
+  return __origOn(event, (raw) => handler(__decodeFrame(raw)));
+};
+__pp.postMessage({ type: 'ready' });
+`;
 
 function writeReadyWorker(workerPath: string, source: string): void {
   fs.writeFileSync(workerPath, READY_PREAMBLE + source);
@@ -892,27 +922,45 @@ describe('worker pool integration', () => {
   });
 
   it('drops a slot after maxRespawnsPerSlot and continues on the survivor', async () => {
-    // 2-worker pool, budget=1. Worker A crashes twice on its assigned
-    // chunk; slot A is dropped. Slot B handles the requeued remainder
-    // successfully. Validates the per-slot drop + wakeIdleSlots flow
-    // under real worker timing.
+    // 2-worker pool, budget=1. The worker that's assigned the chunk
+    // containing `a.ts` crashes on a.ts (quarantines a), respawns, gets
+    // the requeued remainder containing `b.ts`, crashes on b.ts
+    // (quarantines b). That slot's respawn budget is now exhausted, so
+    // the pool drops it. The OTHER slot — assigned the chunk with
+    // [c,d] — never sees the poison files and completes its work
+    // normally. Validates the per-slot drop + wakeIdleSlots flow under
+    // real worker timing.
+    //
+    // The path-based crash trigger replaces an earlier shared-counter-
+    // file design that was a write-write race between the two workers:
+    // pre-U17 timing happened to land on counter=2 by the end of
+    // round 1 (so round-2 workers saw counter==2 and didn't crash),
+    // but the post-U17 protocol-decoding latency shifted the window
+    // so round 2's first worker read counter=1 and crashed too,
+    // producing 3 quarantines instead of 2. Switching to a path-based
+    // trigger removes the inter-worker race entirely — the outcome
+    // depends only on which chunk contains the poison files, which is
+    // deterministic given the dispatch ordering of [a,b,c,d] with
+    // subBatchSize=2.
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resilience-slot-drop-'));
-    const counterPath = path.join(tempDir, 'crash-count.txt');
     const workerPath = path.join(tempDir, 'worker.js');
     writeReadyWorker(
       workerPath,
       `
-      const fs = require('node:fs');
       const { parentPort } = require('node:worker_threads');
-      const counterPath = ${JSON.stringify(counterPath)};
       let current = [];
       parentPort.on('message', (msg) => {
         if (msg && msg.type === 'sub-batch') {
           current = msg.files.map((f) => f.path);
-          const prior = fs.existsSync(counterPath) ? Number(fs.readFileSync(counterPath, 'utf-8')) : 0;
-          if (prior < 2) {
-            fs.writeFileSync(counterPath, String(prior + 1));
-            parentPort.postMessage({ type: 'starting-file', path: current[0] });
+          // Crash deterministically on the poison files. The pool
+          // filters quarantined paths from subsequent re-dispatches,
+          // so the first crash quarantines a.ts and the requeue then
+          // contains b.ts; the second crash quarantines b.ts and the
+          // slot's respawn budget is exhausted. Worker handling the
+          // [c,d] chunk never enters this branch.
+          const poison = current.find((p) => p === 'a.ts' || p === 'b.ts');
+          if (poison) {
+            parentPort.postMessage({ type: 'starting-file', path: poison });
             process.exit(134);
           }
           parentPort.postMessage({ type: 'progress', filesProcessed: current.length });
@@ -941,18 +989,12 @@ describe('worker pool integration', () => {
         { path: 'd.ts', content: '' },
       ]);
 
-      // Two crashes both attributed to their starting-file (a.ts, then
-      // whatever the requeued chunk's items[0] was — b.ts or c.ts
-      // depending on dispatch order). At minimum a.ts is quarantined.
-      const quarantine = pool.getQuarantinedPaths?.() ?? [];
-      expect(quarantine.length).toBe(2);
-      expect(quarantine).toContain('a.ts');
-      // All non-quarantined files eventually parsed.
+      // Deterministically: a.ts crashes round 1, b.ts crashes round 2.
+      const quarantine = (pool.getQuarantinedPaths?.() ?? []).sort();
+      expect(quarantine).toEqual(['a.ts', 'b.ts']);
+      // All non-quarantined files eventually parsed by the survivor slot.
       const allPaths = results.flatMap((r) => r.paths).sort();
-      const expectedAllowed = ['a.ts', 'b.ts', 'c.ts', 'd.ts'].filter(
-        (p) => !quarantine.includes(p),
-      );
-      expect(allPaths.sort()).toEqual(expectedAllowed.sort());
+      expect(allPaths).toEqual(['c.ts', 'd.ts']);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
