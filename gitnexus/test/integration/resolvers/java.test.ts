@@ -183,44 +183,60 @@ describe('Java same-module priority for duplicate FQNs', () => {
 
   it('resolves Module1App.run calls to module1 UserService, not module2', () => {
     const calls = getRelationships(result, 'CALLS');
-    expect(
-      calls.find(
-        (c) =>
-          c.source === 'run' &&
-          c.target === 'UserService' &&
-          c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
-          c.targetFilePath === 'module1/src/main/java/com/example/UserService.java',
-      ),
-    ).toBeDefined();
-    expect(
-      calls.find(
-        (c) =>
-          c.source === 'run' &&
-          c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
-          c.targetFilePath === 'module2/src/main/java/com/example/UserService.java',
-      ),
-    ).toBeUndefined();
+    const module1ToModule1 = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
+        c.targetFilePath === 'module1/src/main/java/com/example/UserService.java',
+    );
+    const module1ToModule2 = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
+        c.targetFilePath === 'module2/src/main/java/com/example/UserService.java',
+    );
+    const module1ToAnyUserService = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module1/src/main/java/com/example/Module1App.java' &&
+        /module[12]\/src\/main\/java\/com\/example\/UserService\.java/.test(c.targetFilePath),
+    );
+
+    expect(module1ToModule1.length).toBe(1);
+    expect(module1ToModule2.length).toBe(0);
+    expect(module1ToAnyUserService.length).toBe(1);
   });
 
   it('resolves Module2App.run calls to module2 UserService, not module1', () => {
     const calls = getRelationships(result, 'CALLS');
-    expect(
-      calls.find(
-        (c) =>
-          c.source === 'run' &&
-          c.target === 'UserService' &&
-          c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
-          c.targetFilePath === 'module2/src/main/java/com/example/UserService.java',
-      ),
-    ).toBeDefined();
-    expect(
-      calls.find(
-        (c) =>
-          c.source === 'run' &&
-          c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
-          c.targetFilePath === 'module1/src/main/java/com/example/UserService.java',
-      ),
-    ).toBeUndefined();
+    const module2ToModule2 = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
+        c.targetFilePath === 'module2/src/main/java/com/example/UserService.java',
+    );
+    const module2ToModule1 = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
+        c.targetFilePath === 'module1/src/main/java/com/example/UserService.java',
+    );
+    const module2ToAnyUserService = calls.filter(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'UserService' &&
+        c.sourceFilePath === 'module2/src/main/java/com/example/Module2App.java' &&
+        /module[12]\/src\/main\/java\/com\/example\/UserService\.java/.test(c.targetFilePath),
+    );
+
+    expect(module2ToModule2.length).toBe(1);
+    expect(module2ToModule1.length).toBe(0);
+    expect(module2ToAnyUserService.length).toBe(1);
   });
 });
 
