@@ -113,6 +113,15 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(opts.repairFts).toBe(true);
   });
 
+  it('rejects combining --repair-fts with --force', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, force: true });
+
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
   it('passes stats:false as noStats to generateAIContextFiles on the --skills regeneration path (#1477)', async () => {
     runFullAnalysisMock.mockResolvedValueOnce({
       repoName: 'repo',

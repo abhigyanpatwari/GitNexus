@@ -512,6 +512,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
+    if (options?.repairFts && options?.force) {
+      throw new Error(
+        'Cannot combine `--repair-fts` with `--force`. ' +
+          'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.',
+      );
+    }
     const skipAll = options?.indexOnly;
     const skipAgentsMd = skipAll || options?.skipAgentsMd;
     const skipSkills = skipAll || options?.skipSkills;
