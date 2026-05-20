@@ -629,6 +629,15 @@ export async function runChunkedParseAndResolve(
         repoPath,
         importCtx,
       );
+      // U15 (lightweight M1): processImportsFromExtracted is the sole
+      // consumer of `deferredWorkerImports`. Free the array now so the
+      // GC can reclaim the per-file ExtractedImport records before the
+      // heavier downstream stages run (heritage, routes, calls). Peak
+      // accumulator memory drops from O(repo) to O(repo - imports) for
+      // the remainder of the deferred phase. The future per-chunk
+      // streaming upgrade can rewrite this with the same correctness
+      // contract once profile data shows it's warranted.
+      deferredWorkerImports.length = 0;
     }
     if (anyChunkNeedsWildcardSynth) {
       synthesizeWildcardImportBindings(graph, ctx);
@@ -694,6 +703,13 @@ export async function runChunkedParseAndResolve(
       deferredWorkerHeritage.length > 0
         ? buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
         : undefined;
+    // U15 (lightweight M1): buildHeritageMap is the LAST consumer of the
+    // raw `deferredWorkerHeritage` records — processCallsFromExtracted
+    // below reads from the derived `fullWorkerHeritageMap` instead. Free
+    // the raw heritage array now so the GC can reclaim it before the
+    // (potentially long) call-resolution stage. processHeritageFromExtracted
+    // earlier was a read-only consumer (pushed to graph, didn't drain).
+    deferredWorkerHeritage.length = 0;
 
     if (deferredWorkerCalls.length > 0) {
       await processCallsFromExtracted(
@@ -732,6 +748,20 @@ export async function runChunkedParseAndResolve(
         bindingAccumulator,
       );
     }
+    // U15 (lightweight M1): all three arrays have had their last consumer
+    // by the time we reach this point — processCallsFromExtracted drained
+    // `deferredWorkerCalls` and read `deferredConstructorBindings`;
+    // processAssignmentsFromExtracted drained `deferredAssignments` and
+    // also read `deferredConstructorBindings`. Free them now so the
+    // function-scope references die before downstream graph-build /
+    // scope-resolution starts using its own working memory. Note: arrays
+    // returned in the function result object (allFetchCalls,
+    // allExtractedRoutes, allDecoratorRoutes, allToolDefs, allORMQueries,
+    // allParsedFiles) intentionally stay live — downstream consumers
+    // need them.
+    deferredWorkerCalls.length = 0;
+    deferredConstructorBindings.length = 0;
+    deferredAssignments.length = 0;
   } finally {
     await workerPool?.terminate();
   }
