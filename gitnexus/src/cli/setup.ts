@@ -467,6 +467,238 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   }
 }
 
+// ─── Antigravity (Google) ──────────────────────────────────────────
+//
+// Antigravity stores its MCP config under ~/.gemini/antigravity/ and its
+// JSON Hooks config under ~/.gemini/config/hooks.json. The hooks schema is
+// the same {matcher, hooks:[{type:"command",command}]} shape Antigravity
+// inherited from Gemini CLI, but grouped under a top-level `gitnexus` key
+// so multiple integrations can coexist without colliding on event arrays.
+//
+// Tool names differ from Claude Code: `grep_search` and `run_command`
+// (snake_case) replace `Grep`/`Glob`/`Bash`. PostToolUse stdout must be `{}`
+// — see the antigravity hook adapter for the contract.
+
+async function setupAntigravity(result: SetupResult): Promise<void> {
+  const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
+  if (!(await dirExists(antigravityDir))) {
+    result.skipped.push('Antigravity (not installed)');
+    return;
+  }
+
+  const mcpPath = path.join(antigravityDir, 'mcp_config.json');
+  try {
+    const ok = await mergeJsoncFile(mcpPath, ['mcpServers', 'gitnexus'], getMcpEntry());
+    if (ok) {
+      result.configured.push('Antigravity');
+    } else {
+      result.errors.push(
+        'Antigravity: mcp_config.json is corrupt — skipping to preserve existing content',
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Antigravity: ${err.message}`);
+  }
+}
+
+/**
+ * Install GitNexus skills to ~/.gemini/antigravity/skills/ (global scope,
+ * per https://codelabs.developers.google.com/getting-started-with-antigravity-skills).
+ * Each skill is laid out as {skillName}/SKILL.md just like the other editors.
+ */
+async function installAntigravitySkills(result: SetupResult): Promise<void> {
+  const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
+  if (!(await dirExists(antigravityDir))) return;
+
+  const skillsDir = path.join(antigravityDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(
+        `Antigravity skills (${installed.length} skills → ~/.gemini/antigravity/skills/)`,
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Antigravity skills: ${err.message}`);
+  }
+}
+
+/**
+ * Merge a top-level `<group>.<eventName>` array into ~/.gemini/config/hooks.json.
+ * Antigravity's hooks.json layout is a flat object keyed by integration name,
+ * not the Claude-style nested `{ hooks: { ... } }`, so we own a `gitnexus`
+ * group rather than appending to a shared array.
+ */
+async function mergeAntigravityHooksJsonc(
+  filePath: string,
+  group: string,
+  entries: Array<{ eventName: string; value: unknown }>,
+): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    raw = '';
+  }
+
+  if (raw.trim().length === 0) {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const groupValue: Record<string, unknown[]> = {};
+    for (const { eventName, value } of entries) {
+      groupValue[eventName] = [value];
+    }
+    const formattingOptions = { tabSize: 2, insertSpaces: true };
+    const edits = modify('{}', [group], groupValue, { formattingOptions });
+    await fs.writeFile(filePath, applyEdits('{}', edits), 'utf-8');
+    return true;
+  }
+
+  const parseErrors: ParseError[] = [];
+  const tree = parseTree(raw, parseErrors);
+  if (!tree || tree.type !== 'object' || parseErrors.length > 0) {
+    return false;
+  }
+
+  const formattingOptions = detectIndentation(raw);
+  let current = raw;
+
+  for (const { eventName, value } of entries) {
+    const currentTree = parseTree(current, []);
+    const groupNode = currentTree?.children?.find(
+      (c: any) => c.type === 'property' && c.children?.[0]?.value === group,
+    );
+    const eventNode = groupNode?.children?.[1]?.children?.find(
+      (c: any) => c.type === 'property' && c.children?.[0]?.value === eventName,
+    );
+
+    let insertIndex: number;
+    if (eventNode?.children?.[1] && Array.isArray(eventNode.children[1].children)) {
+      insertIndex = eventNode.children[1].children.length;
+    } else {
+      insertIndex = 0;
+    }
+
+    const edits = modify(current, [group, eventName, insertIndex], value, { formattingOptions });
+    current = applyEdits(current, edits);
+  }
+
+  await fs.writeFile(filePath, current, 'utf-8');
+  return true;
+}
+
+function antigravityHasGitnexusHook(parsed: any, eventName: string): boolean {
+  const entries = parsed?.gitnexus?.[eventName];
+  if (!Array.isArray(entries)) return false;
+  return entries.some(
+    (h: any) =>
+      Array.isArray(h.hooks) &&
+      h.hooks.some(
+        (hh: any) =>
+          typeof hh.command === 'string' && hh.command.includes('gitnexus-antigravity-hook'),
+      ),
+  );
+}
+
+/**
+ * Install the Antigravity hook adapter to ~/.gemini/config/hooks/gitnexus/
+ * and register PreToolUse + PostToolUse entries in ~/.gemini/config/hooks.json.
+ */
+async function installAntigravityHooks(result: SetupResult): Promise<void> {
+  const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
+  if (!(await dirExists(antigravityDir))) return;
+
+  const configDir = path.join(os.homedir(), '.gemini', 'config');
+  const hooksJsonPath = path.join(configDir, 'hooks.json');
+  const destHooksDir = path.join(configDir, 'hooks', 'gitnexus');
+
+  // The antigravity adapter shares its lock/probe helpers with the claude
+  // adapter — same DB, same concurrency rules — so we reuse those CJS files
+  // from gitnexus/hooks/claude/ rather than duplicating them.
+  const pluginAntigravityDir = path.join(__dirname, '..', '..', 'hooks', 'antigravity');
+  const pluginClaudeDir = path.join(__dirname, '..', '..', 'hooks', 'claude');
+
+  try {
+    await fs.mkdir(destHooksDir, { recursive: true });
+
+    // Adapter script: rewrite the dist path baked into the file so it resolves
+    // to the installed gitnexus CLI rather than the cwd-relative dev path.
+    const adapterSrc = path.join(pluginAntigravityDir, 'gitnexus-antigravity-hook.cjs');
+    const adapterDest = path.join(destHooksDir, 'gitnexus-antigravity-hook.cjs');
+    try {
+      let content = await fs.readFile(adapterSrc, 'utf-8');
+      const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
+      const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
+      const jsonCli = JSON.stringify(normalizedCli);
+      content = content.replace(
+        "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');",
+        `let cliPath = ${jsonCli};`,
+      );
+      await fs.writeFile(adapterDest, content, 'utf-8');
+    } catch {
+      // Adapter not found in source — skip
+    }
+
+    // Shared helpers (copied from hooks/claude/)
+    for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs']) {
+      try {
+        await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
+      } catch {
+        // Helper missing — adapter will fail gracefully at runtime
+      }
+    }
+
+    const hookPath = path.join(destHooksDir, 'gitnexus-antigravity-hook.cjs').replace(/\\/g, '/');
+    const escapedHookPath = hookPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const hookCmd = `node "${escapedHookPath}"`;
+
+    const parsed = await (async () => {
+      try {
+        const r = await fs.readFile(hooksJsonPath, 'utf-8');
+        return parseJsonc(r);
+      } catch {
+        return null;
+      }
+    })();
+
+    const hookEntries: Array<{ eventName: string; value: unknown }> = [];
+
+    if (!antigravityHasGitnexusHook(parsed, 'PreToolUse')) {
+      hookEntries.push({
+        eventName: 'PreToolUse',
+        value: {
+          matcher: 'grep_search|run_command',
+          hooks: [{ type: 'command', command: hookCmd, timeout: 10000 }],
+        },
+      });
+    }
+    if (!antigravityHasGitnexusHook(parsed, 'PostToolUse')) {
+      hookEntries.push({
+        eventName: 'PostToolUse',
+        value: {
+          matcher: 'run_command',
+          hooks: [{ type: 'command', command: hookCmd, timeout: 10000 }],
+        },
+      });
+    }
+
+    if (hookEntries.length === 0) {
+      result.configured.push('Antigravity hooks (already configured)');
+      return;
+    }
+
+    const ok = await mergeAntigravityHooksJsonc(hooksJsonPath, 'gitnexus', hookEntries);
+    if (ok) {
+      result.configured.push('Antigravity hooks (PreToolUse, PostToolUse)');
+    } else {
+      result.errors.push(
+        'Antigravity hooks: hooks.json is corrupt — skipping to preserve existing content',
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Antigravity hooks: ${err.message}`);
+  }
+}
+
 async function setupOpenCode(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) {
@@ -703,12 +935,15 @@ export const setupCommand = async () => {
   // Detect and configure each editor's MCP
   await setupCursor(result);
   await setupClaudeCode(result);
+  await setupAntigravity(result);
   await setupOpenCode(result);
   await setupCodex(result);
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
+  await installAntigravitySkills(result);
+  await installAntigravityHooks(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
   await installCodexSkills(result);
