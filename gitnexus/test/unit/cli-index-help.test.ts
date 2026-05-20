@@ -76,4 +76,11 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('understand-quickly');
     expect(result.stdout).toContain('UNDERSTAND_QUICKLY_TOKEN');
   });
+
+  it('analyze help includes the FTS repair option', () => {
+    const result = runHelp('analyze');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--repair-fts');
+  });
 });

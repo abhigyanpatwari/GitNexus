@@ -34,6 +34,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  java: new Set([
+    // Duplicate-FQN same-module path-affinity ordering is implemented in the
+    // Java provider hook for the scope-resolution path. Legacy DAG parity runs
+    // still use legacy owner/type resolution behavior and can bind cross-module.
+    'resolves Module1App.run calls to module1 UserService, not module2',
+    'resolves Module2App.run calls to module2 UserService, not module1',
+  ]),
   php: new Set([
     // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
     // candidates that are definitively below required-parameter-count. The
@@ -189,6 +196,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    // Pointer/nullptr/ellipsis conversion ranks (#1637) need C++ type-class
+    // sidecars plus conversion-rank scoring. The legacy DAG has neither.
+    'f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)',
+    'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
+    "h(1, 'a') resolves to h(int, double), not h(int, ...)",
+    'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse
@@ -200,6 +213,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'enable_if_t<is_integral_v<T>> overload binds only on integral call sites',
     'enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites',
     'requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)',
+    'is_pointer_v and is_class_v disambiguate pointer vs class arguments',
+    'is_reference_v keeps reference-shaped arguments distinct from values',
+    'is_class_v rejects primitive arguments while keeping class arguments',
+    'is_enum_v distinguishes known enum declarations from primitives',
+    'is_const_v and is_volatile_v disambiguate cv-qualified locals',
+    'is_void_v does not misclassify void pointers as void values',
     // The legacy DAG path has no inline-namespace same-name ambiguity
     // detection. When two inline children declare the same name, the
     // legacy path picks an arbitrary match. The scope-resolver returns
