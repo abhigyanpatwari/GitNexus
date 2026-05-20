@@ -86,10 +86,13 @@ import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-w
  */
 const READY_PREAMBLE = `
 const { parentPort: __pp } = require('node:worker_threads');
+const { deserialize: __v8Deserialize } = require('node:v8');
 const __decodeProtocolBuf = (raw) => {
   const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const length = buf.readUInt32LE(1);
-  return JSON.parse(buf.subarray(5, 5 + length).toString('utf8'));
+  // Body is V8-serialized — matches protocol.ts. Replaces the original
+  // JSON.parse path that silently destroyed Maps/Sets/Dates in payloads.
+  return __v8Deserialize(buf.subarray(5, 5 + length));
 };
 const __decoder = new TextDecoder('utf-8');
 const __decodeFrame = (raw) => {

@@ -62,11 +62,15 @@ const hasDistWorker = fs.existsSync(DIST_WORKER);
 //      `{type:'sub-batch', files:[{path, content: string}]}`.
 const READY_PREAMBLE = `
 const { parentPort: __pp } = require('node:worker_threads');
+const { deserialize: __v8Deserialize } = require('node:v8');
 const __decodeProtocolBuf = (raw) => {
   // structured clone strips the Buffer prototype; raw arrives as Uint8Array.
   const buf = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const length = buf.readUInt32LE(1);
-  return JSON.parse(buf.subarray(5, 5 + length).toString('utf8'));
+  // Body is V8-serialized (matches protocol.ts). Pre-PR-fix this was
+  // JSON.parse, which silently destroyed Maps/Sets/Dates/etc. in
+  // payloads.
+  return __v8Deserialize(buf.subarray(5, 5 + length));
 };
 const __decoder = new TextDecoder('utf-8');
 const __decodeFrame = (raw) => {
