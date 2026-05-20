@@ -151,7 +151,8 @@ Your AI agent gets these tools automatically:
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
 gitnexus analyze [path]          # Index a repository (or update stale index)
-gitnexus analyze --force         # Force full re-index
+gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
+gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
