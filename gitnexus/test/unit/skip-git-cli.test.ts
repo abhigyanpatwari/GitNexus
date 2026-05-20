@@ -9,16 +9,19 @@ describe('--skip-git CLI flag', () => {
   const ftsUnavailableNeedle = 'FTS extension unavailable - cannot create FTS index';
 
   interface ExecSyncLikeError {
-    message?: unknown;
-    stdout?: unknown;
-    stderr?: unknown;
+    message?: string;
+    stdout?: string | Buffer;
+    stderr?: string | Buffer;
   }
 
   const isFtsUnavailableError = (err: unknown): boolean => {
     if (!err || typeof err !== 'object') return false;
     const e = err as ExecSyncLikeError;
-    const text = `${String(e.message ?? '')}\n${String(e.stdout ?? '')}\n${String(e.stderr ?? '')}`;
-    return text.includes(ftsUnavailableNeedle);
+    return (
+      e.message?.includes(ftsUnavailableNeedle) === true ||
+      e.stdout?.toString().includes(ftsUnavailableNeedle) === true ||
+      e.stderr?.toString().includes(ftsUnavailableNeedle) === true
+    );
   };
 
   const shouldSkipForFtsUnavailable = (err: unknown, testName: string): boolean => {
