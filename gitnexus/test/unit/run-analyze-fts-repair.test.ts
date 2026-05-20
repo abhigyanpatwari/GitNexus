@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
-const MOCK_MISSING_FTS_INDEX = 'File.file_fts';
+const SIMULATED_MISSING_FTS_INDEX = 'File.file_fts';
 const PLACEHOLDER_GRAPH_STORE_CONTENT = 'fixture';
 
 const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
@@ -84,7 +84,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => undefined),
-      verifySearchFTSIndexes: vi.fn(async () => [MOCK_MISSING_FTS_INDEX]),
+      verifySearchFTSIndexes: vi.fn(async () => [SIMULATED_MISSING_FTS_INDEX]),
     }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-verify-fail-');
