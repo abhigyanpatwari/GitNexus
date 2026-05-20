@@ -13,6 +13,19 @@ public:
 
   void k(int a, ...);
 
+  void runNullptr() {
+    f(nullptr);
+  }
+
+  void runPointer() {
+    int* p = nullptr;
+    f(p);
+  }
+
+  void runBoolConversion() {
+    f(42);
+  }
+
   void run() {
     int* p = nullptr;
     f(nullptr);

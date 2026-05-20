@@ -51,6 +51,11 @@ describe('cppConversionRank pointer/nullptr/ellipsis ranks (#1637)', () => {
     expect(cppConversionRank('int', 'void', pointer('int'), pointer('void'))).toBe(2);
   });
 
+  it('keeps pointer exact matches shape-aware', () => {
+    expect(cppConversionRank('int', 'int', pointer('int'), pointer('int'))).toBe(0);
+    expect(cppConversionRank('int', 'int', value('int'), pointer('int'))).toBe(Infinity);
+  });
+
   it('ranks ellipsis as the worst viable conversion', () => {
     expect(cppConversionRank('int', '...', value('int'), ellipsis())).toBe(4);
   });

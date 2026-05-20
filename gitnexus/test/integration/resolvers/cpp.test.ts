@@ -1849,19 +1849,20 @@ describe('C++ overload resolution — pointer/nullptr/ellipsis ranks (#1637)', (
 
   it('f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
 
-    const pointerTargets = fCalls.filter((c) => {
-      const tgt = result.graph.getNode(c.rel.targetId);
-      return tgt?.properties.parameterTypes?.[0] === 'int';
-    });
-    const boolTargets = fCalls.filter((c) => {
-      const tgt = result.graph.getNode(c.rel.targetId);
-      return tgt?.properties.parameterTypes?.[0] === 'bool';
-    });
+    const nullptrCall = calls.find((c) => c.source === 'runNullptr' && c.target === 'f');
+    const pointerCall = calls.find((c) => c.source === 'runPointer' && c.target === 'f');
+    const boolCall = calls.find((c) => c.source === 'runBoolConversion' && c.target === 'f');
 
-    expect(pointerTargets.length).toBe(1);
-    expect(boolTargets.length).toBe(1);
+    expect(
+      result.graph.getNode(nullptrCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(
+      result.graph.getNode(pointerCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(result.graph.getNode(boolCall?.rel.targetId ?? '')?.properties.parameterTypes).toEqual([
+      'bool',
+    ]);
   });
 
   it('g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)', () => {
