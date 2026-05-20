@@ -62,7 +62,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
             onProgress: () => {},
           },
         ),
-      ).rejects.toThrow(`graph store at ${lbugPath} is missing`);
+      ).rejects.toThrow(/graph store at .+ is missing/i);
     } finally {
       await tmpRepo.cleanup();
     }
@@ -91,7 +91,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
             onProgress: () => {},
           },
         ),
-      ).rejects.toThrow(`graph store at ${lbugPath} is missing`);
+      ).rejects.toThrow(`graph store at ${lbugPath} is invalid (expected a file)`);
     } finally {
       await tmpRepo.cleanup();
     }

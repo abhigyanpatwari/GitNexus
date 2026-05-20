@@ -215,7 +215,7 @@ export async function runFullAnalysis(
     }
     if (!lbugStat.isFile()) {
       throw new Error(
-        `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is invalid (expected a file). ` +
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }
