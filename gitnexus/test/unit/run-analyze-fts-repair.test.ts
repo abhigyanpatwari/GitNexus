@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
+const createRepairPathStoreFixture = async (lbugPath: string): Promise<void> => {
+  // Repair mode gates on existence before `initLbug` takes over open/validate.
+  // A placeholder file is enough to exercise this preflight branch.
+  await fs.writeFile(lbugPath, 'fixture');
+};
+
 describe('runFullAnalysis FTS repair and verification failure paths', () => {
   afterEach(() => {
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
@@ -88,7 +94,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         indexedAt: new Date().toISOString(),
         stats: {},
       });
-      await fs.writeFile(lbugPath, '');
+      await createRepairPathStoreFixture(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -139,7 +145,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         indexedAt: new Date().toISOString(),
         stats: {},
       });
-      await fs.writeFile(lbugPath, '');
+      await createRepairPathStoreFixture(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
