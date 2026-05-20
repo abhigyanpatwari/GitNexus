@@ -68,6 +68,35 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('fails repair mode when graph store path is not a file', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-store-not-file-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
+      await fs.mkdir(lbugPath, { recursive: true });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { repairFts: true },
+          {
+            onProgress: () => {},
+          },
+        ),
+      ).rejects.toThrow(`graph store at ${lbugPath} is missing`);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('fails repair mode when FTS verify still reports missing indexes', async () => {
     const closeLbugMock = vi.fn(async () => undefined);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({

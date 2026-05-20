@@ -344,6 +344,15 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
   }
 
+  if (options?.repairFts && options?.force) {
+    cliError(
+      '  Cannot combine `--repair-fts` with `--force`. ' +
+        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   console.log('\n  GitNexus Analyzer\n');
 
   // `--index-only` is the stronger contract — it suppresses every form of file
@@ -509,12 +518,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }, 1000);
 
   const t0 = Date.now();
-  if (options?.repairFts && options?.force) {
-    throw new Error(
-      'Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.',
-    );
-  }
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {

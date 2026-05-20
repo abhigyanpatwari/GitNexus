@@ -204,9 +204,16 @@ export async function runFullAnalysis(
           'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
       );
     }
+    let lbugStat;
     try {
-      await fs.access(lbugPath);
+      lbugStat = await fs.stat(lbugPath);
     } catch {
+      throw new Error(
+        `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
+          'Run `gitnexus analyze` (full) to rebuild from scratch.',
+      );
+    }
+    if (!lbugStat.isFile()) {
       throw new Error(
         `Cannot repair FTS indexes: graph store at ${lbugPath} is missing. ` +
           'Run `gitnexus analyze` (full) to rebuild from scratch.',

@@ -116,9 +116,9 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
   it('rejects combining --repair-fts with --force', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-    await expect(analyzeCommand(undefined, { repairFts: true, force: true })).rejects.toThrow(
-      /cannot combine `--repair-fts` with `--force`/i,
-    );
+    await analyzeCommand(undefined, { repairFts: true, force: true });
+
+    expect(process.exitCode).toBe(1);
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
