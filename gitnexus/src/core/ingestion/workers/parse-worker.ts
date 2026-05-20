@@ -301,10 +301,7 @@ export interface ParseWorkerInput {
   content: string;
 }
 
-type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
-  | { type: 'flush' }
-  | ParseWorkerInput[];
+type WorkerIncomingMessage = { type: 'sub-batch'; files: ParseWorkerInput[] } | { type: 'flush' };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -2497,15 +2494,6 @@ function decodeSubBatchFiles(
 
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
-    // Legacy single-message mode (backward compat): array of files
-    if (Array.isArray(msg)) {
-      const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
-      });
-      parentPort!.postMessage({ type: 'result', data: result });
-      return;
-    }
-
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
       const files = decodeSubBatchFiles(
