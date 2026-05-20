@@ -189,6 +189,81 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
       rmSync(repoB, { recursive: true, force: true });
     }
   });
+
+  it('returns worktreeDir unchanged when repoPath IS a linked worktree and launchCwd is the main checkout', () => {
+    // Regression for: detect_changes returns no changes when the MCP server
+    // runs from the main checkout but the resolved repo index is a separately-
+    // indexed linked worktree (issue #1659 / dpearson2699 report).
+    //
+    // Before the fix, resolveWorktreeCwd would detect that launchCwd (main
+    // checkout) and repoPath (worktree) share the same canonical root and
+    // wrongly override repoPath with the main-checkout path, causing git diff
+    // to run from the wrong directory and return 0 changes.
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-idx-wt-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
+      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+      const worktreeDir = path.join(repoDir, 'wt-indexed');
+      execSync(`git worktree add -q -b indexed "${worktreeDir}"`, {
+        cwd: repoDir,
+        stdio: 'ignore',
+      });
+
+      // Simulate: repo registry entry points to the worktree (repoPath = worktreeDir)
+      // but the MCP server was launched from the main checkout (launchCwd = repoDir).
+      // resolveWorktreeCwd must NOT override the correct worktree path with repoDir.
+      const result = resolveWorktreeCwd(worktreeDir, repoDir);
+      expect(realpathSync.native(result)).toBe(realpathSync.native(worktreeDir));
+      expect(realpathSync.native(result)).not.toBe(realpathSync.native(repoDir));
+    } finally {
+      try {
+        execSync('git worktree remove -f wt-indexed', { cwd: repoDir, stdio: 'ignore' });
+      } catch {
+        // ignore
+      }
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns worktreeA unchanged when both repoPath and launchCwd are different linked worktrees of the same repo', () => {
+    // Covers: repoPath = wt-A (indexed), launchCwd = wt-B (server launched from another worktree).
+    // The guard fires on repoPath being a linked worktree regardless of what launchCwd is,
+    // so wt-A must be returned unchanged — not wt-B, not the main checkout.
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-two-wt-'));
+    try {
+      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
+      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
+      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+
+      const worktreeA = path.join(repoDir, 'wt-a');
+      const worktreeB = path.join(repoDir, 'wt-b');
+      execSync(`git worktree add -q -b branch-a "${worktreeA}"`, { cwd: repoDir, stdio: 'ignore' });
+      execSync(`git worktree add -q -b branch-b "${worktreeB}"`, { cwd: repoDir, stdio: 'ignore' });
+
+      // repoPath = wt-A (the indexed worktree), launchCwd = wt-B (where the server runs).
+      // resolveWorktreeCwd must return wt-A — the indexed path — unchanged.
+      const result = resolveWorktreeCwd(worktreeA, worktreeB);
+      expect(realpathSync.native(result)).toBe(realpathSync.native(worktreeA));
+      expect(realpathSync.native(result)).not.toBe(realpathSync.native(worktreeB));
+      expect(realpathSync.native(result)).not.toBe(realpathSync.native(repoDir));
+    } finally {
+      try {
+        execSync('git worktree remove -f wt-a', { cwd: repoDir, stdio: 'ignore' });
+        execSync('git worktree remove -f wt-b', { cwd: repoDir, stdio: 'ignore' });
+      } catch {
+        // ignore
+      }
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Guard logic via real path arithmetic ─────────────────────────────────────
