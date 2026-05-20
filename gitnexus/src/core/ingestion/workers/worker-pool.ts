@@ -38,6 +38,34 @@ export interface WorkerPool {
    * absence gracefully.
    */
   getQuarantinedPaths?(): readonly string[];
+
+  /**
+   * Throughput / health snapshot for operator observability. Surfaced at
+   * chunk boundaries by `parse-impl` when verbose ingestion is enabled
+   * so the operator can see whether workers are saturated, idle, or
+   * dropping. Optional for compatibility with external `WorkerPool`
+   * shapes that predate this method.
+   */
+  getStats?(): WorkerPoolStats;
+}
+
+/** Snapshot returned by {@link WorkerPool.getStats}. */
+export interface WorkerPoolStats {
+  /** Worker slots configured at pool creation time. */
+  readonly size: number;
+  /** Slots that are still in the active rotation (have not been dropped
+   *  for exceeding their respawn budget and have not been cleared by
+   *  the circuit breaker). */
+  readonly activeSlots: number;
+  /** Slots permanently removed from rotation this pool lifetime
+   *  (size - activeSlots). When the circuit breaker has tripped this
+   *  equals `size` because activeSlots is cleared. */
+  readonly droppedSlots: number;
+  /** Cumulative paths quarantined by failure attribution. */
+  readonly quarantined: number;
+  /** Whether the circuit breaker has tripped (no further dispatches
+   *  will be accepted by this pool instance). */
+  readonly poolBroken: boolean;
 }
 
 export interface WorkerPoolOptions {
@@ -1066,5 +1094,12 @@ export const createWorkerPool = (
     terminate,
     size,
     getQuarantinedPaths: () => Array.from(quarantined),
+    getStats: () => ({
+      size,
+      activeSlots: activeSlots.size,
+      droppedSlots: size - activeSlots.size,
+      quarantined: quarantined.size,
+      poolBroken,
+    }),
   };
 };

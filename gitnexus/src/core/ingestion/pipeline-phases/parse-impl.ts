@@ -330,6 +330,10 @@ export async function runChunkedParseAndResolve(
   try {
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       const chunkPaths = chunks[chunkIdx];
+      // Start wall-clock for the U3 throughput log emitted at end of
+      // this iteration. Only computed when isDev — the timestamp is
+      // cheap but the log line only fires under verbose ingestion.
+      const chunkChunkStartMs: number | null = isDev ? Date.now() : null;
 
       const chunkContents = await readFileContents(repoPath, chunkPaths);
       const chunkFiles = chunkPaths
@@ -487,6 +491,24 @@ export async function runChunkedParseAndResolve(
 
       filesParsedSoFar += chunkFiles.length;
       astCache.clear();
+
+      // Throughput observability (U3): emit a per-chunk metrics line
+      // under verbose ingestion mode so operators can verify CPU
+      // utilization moved + tune `--workers` / batch sizes without
+      // guessing. Cheap snapshot — just reads pool closure state.
+      if (isDev && chunkChunkStartMs !== null) {
+        const elapsedMs = Date.now() - chunkChunkStartMs;
+        const filesPerSec = elapsedMs > 0 ? (chunkFiles.length * 1000) / elapsedMs : 0;
+        const stats = workerPool?.getStats?.();
+        const poolFrag = stats
+          ? ` pool: ${stats.activeSlots}/${stats.size} active, ` +
+            `${stats.quarantined} quarantined${stats.poolBroken ? ', BROKEN' : ''}`
+          : ' (sequential)';
+        logger.info(
+          `📊 chunk ${chunkIdx + 1}/${numChunks}: ${chunkFiles.length} files in ${elapsedMs}ms ` +
+            `(${filesPerSec.toFixed(1)} files/s)${poolFrag}`,
+        );
+      }
     }
 
     if (isDev && parseCache && (chunkCacheHits > 0 || chunkCacheMisses > 0)) {

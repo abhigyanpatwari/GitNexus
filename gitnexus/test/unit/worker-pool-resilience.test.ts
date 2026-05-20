@@ -120,6 +120,48 @@ describe('worker pool resilience', () => {
     void pool.terminate();
   });
 
+  it('exposes a healthy stats snapshot on a fresh pool', () => {
+    const pool = createWorkerPool(workerUrl, 3, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+    });
+    expect(pool.getStats?.()).toEqual({
+      size: 3,
+      activeSlots: 3,
+      droppedSlots: 0,
+      quarantined: 0,
+      poolBroken: false,
+    });
+    void pool.terminate();
+  });
+
+  it('reports droppedSlots + quarantined after a recoverable death', async () => {
+    const pool = createWorkerPool(workerUrl, 2, {
+      workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
+      consecutiveFailureThreshold: 10,
+      maxRespawnsPerSlot: 0,
+    });
+    // Slot 0 dies on its only job; budget=0 means it gets dropped.
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
+    nextActions.push({
+      kind: 'parse-ok',
+      files: [{ path: 'src/ok.ts' }],
+      result: { fileCount: 1 },
+    });
+    await pool.dispatch<{ path: string; content: string }, unknown>([
+      { path: 'src/bad.ts', content: '' },
+      { path: 'src/ok.ts', content: '' },
+    ]);
+
+    expect(pool.getStats?.()).toEqual({
+      size: 2,
+      activeSlots: 1,
+      droppedSlots: 1,
+      quarantined: 1,
+      poolBroken: false,
+    });
+    await pool.terminate();
+  });
+
   it('quarantines the in-flight file on worker exit and respawns the slot', async () => {
     const pool = createWorkerPool(workerUrl, 1, {
       workerFactory: () => new FakeWorker() as unknown as import('node:worker_threads').Worker,
