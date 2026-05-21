@@ -109,30 +109,23 @@ describe('materialize-vendor-grammars.cjs', () => {
     }
   });
 
-  // POSIX-only: Windows file-permission semantics do not enforce write
+  // POSIX-only: Windows file-permission semantics do not enforce read
   // restriction via chmod the way POSIX does, so these fail-soft tests rely on
-  // chmod 0o555 (read+execute, no write) to deterministically force cpSync to
-  // throw. The behavior they verify is platform-agnostic; only the trigger is.
+  // chmod 0o000 on the vendor source to deterministically force cpSync to
+  // throw. We sabotage the *source* (not a path the script itself touches)
+  // because the script wipes any pre-existing partial dir at the top of its
+  // loop. The behavior verified is platform-agnostic; only the trigger is.
   const skipOnWin = process.platform === 'win32' ? it.skip : it;
 
   skipOnWin('fails soft: one grammar copy failure does not abort the others (#1728)', () => {
     const { tmp, cleanup } = makeFixture();
-    try {
-      // Pre-create the proto destination as a read-only directory so cpSync
-      // into its sibling .materialize-tmp path fails when it cannot write into
-      // node_modules/. We make node_modules/tree-sitter-proto.materialize-tmp
-      // a chmod 0o555 directory — cpSync will recurse into it and EACCES on
-      // the first file write.
-      fs.mkdirSync(path.join(tmp, 'node_modules'), { recursive: true });
-      const protoPartial = path.join(tmp, 'node_modules', 'tree-sitter-proto.materialize-tmp');
-      fs.mkdirSync(protoPartial);
-      fs.chmodSync(protoPartial, 0o555);
+    // Make the proto vendor source unreadable so cpSync(src, partial) throws.
+    // The other vendor dirs remain readable and must still materialize.
+    const protoSrc = path.join(tmp, 'vendor', 'tree-sitter-proto');
+    fs.chmodSync(protoSrc, 0o000);
 
-      try {
-        runMaterialize(tmp);
-      } finally {
-        fs.chmodSync(protoPartial, 0o755);
-      }
+    try {
+      runMaterialize(tmp);
 
       // dart and swift must still be materialized as real directories
       for (const name of ['tree-sitter-dart', 'tree-sitter-swift']) {
@@ -141,36 +134,49 @@ describe('materialize-vendor-grammars.cjs', () => {
         expect(stat.isDirectory()).toBe(true);
         expect(fs.existsSync(path.join(dest, 'package.json'))).toBe(true);
       }
+      // proto must NOT have been materialized — sabotage worked
+      expect(fs.existsSync(path.join(tmp, 'node_modules', 'tree-sitter-proto'))).toBe(false);
     } finally {
+      // Restore permission so cleanup can remove the fixture tree
+      try {
+        fs.chmodSync(protoSrc, 0o755);
+      } catch {
+        // If restore fails the cleanup below will surface a clearer error
+      }
       cleanup();
     }
   });
 
   skipOnWin('preserves an existing materialized grammar when partial copy fails (#1728)', () => {
-    // The torn-state guard: rmSync(dest) must not run before cpSync(src,
-    // partial) succeeds. If the partial copy fails, the previously-materialized
+    // The atomicity guard: when cpSync(src, partial) fails (or any subsequent
+    // step before rename(partial, dest) completes), the previously-materialized
     // dest directory must remain intact.
     const { tmp, cleanup } = makeFixture(['tree-sitter-dart']);
+    const dartSrc = path.join(tmp, 'vendor', 'tree-sitter-dart');
     try {
+      // First materialize cleanly so dart has a working dest.
       runMaterialize(tmp);
       const dartDest = path.join(tmp, 'node_modules', 'tree-sitter-dart');
       const sentinel = path.join(dartDest, '.survivor');
       fs.writeFileSync(sentinel, 'preserved');
 
-      // Force the next cpSync to throw by pre-creating partial as a read-only dir.
-      const partial = `${dartDest}.materialize-tmp`;
-      fs.mkdirSync(partial);
-      fs.chmodSync(partial, 0o555);
-
+      // Sabotage the vendor source so the next cpSync throws BEFORE
+      // rename(dest, backup) executes. dest must remain untouched.
+      fs.chmodSync(dartSrc, 0o000);
       try {
         runMaterialize(tmp);
       } finally {
-        fs.chmodSync(partial, 0o755);
+        fs.chmodSync(dartSrc, 0o755);
       }
 
       // Original dart materialization must survive — sentinel still present.
       expect(fs.existsSync(sentinel)).toBe(true);
     } finally {
+      try {
+        fs.chmodSync(dartSrc, 0o755);
+      } catch {
+        // Best effort — cleanup will surface clearer error if path is gone
+      }
       cleanup();
     }
   });
