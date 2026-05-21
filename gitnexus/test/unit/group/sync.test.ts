@@ -20,6 +20,7 @@ describe('syncGroup', () => {
     description: '',
     repos,
     links: [],
+    httpMappings: [],
     packages: {},
     detect: {
       http: true,
@@ -120,6 +121,84 @@ describe('syncGroup', () => {
     expect(result.crossLinks).toHaveLength(1);
     expect(result.crossLinks[0].from.service).toBe('services/gateway');
     expect(result.crossLinks[0].to.service).toBe('services/auth');
+  });
+
+  it('applies http mapping rules before exact matching', async () => {
+    const config = makeConfig({ frontend: 'frontend-repo', backend: 'backend-repo' });
+    config.httpMappings = [
+      {
+        from: 'frontend',
+        to: { repo: 'backend', service: 'services/order' },
+        methods: ['POST'],
+        match: '/api/titans/:service/:version/*rest',
+        when: { service: 'order', version: '1.0.0' },
+        rewrite: '/orders/*rest',
+      },
+    ];
+
+    const mockContracts: StoredContract[] = [
+      {
+        ...makeContract(
+          'http::POST::/api/titans/order/1.0.0/create',
+          'consumer',
+          'frontend',
+        ),
+        meta: { method: 'POST', path: '/api/titans/order/1.0.0/create' },
+      },
+      {
+        ...makeContract('http::POST::/orders/create', 'provider', 'backend'),
+        service: 'services/order',
+        meta: { method: 'POST', path: '/orders/create' },
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => mockContracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('manifest');
+    expect(result.crossLinks[0].contractId).toBe('http::POST::/orders/create');
+    expect(result.crossLinks[0].fromContractId).toBe(
+      'http::POST::/api/titans/order/1.0.0/create',
+    );
+    expect(result.crossLinks[0].toContractId).toBe('http::POST::/orders/create');
+    expect(result.crossLinks[0].to.service).toBe('services/order');
+    expect(result.unmatched).toHaveLength(0);
+  });
+
+  it('applies http mapping rules when the gateway path has no trailing segments', async () => {
+    const config = makeConfig({ frontend: 'frontend-repo', backend: 'backend-repo' });
+    config.httpMappings = [
+      {
+        from: 'frontend',
+        to: { repo: 'backend', service: 'libra-margin' },
+        match: '/api/titans/margin/:version{/*rest}',
+        rewrite: '/{*rest}',
+      },
+    ];
+
+    const mockContracts: StoredContract[] = [
+      {
+        ...makeContract('http::GET::/api/titans/margin/1.0.0', 'consumer', 'frontend'),
+        meta: { method: 'GET', path: '/api/titans/margin/1.0.0' },
+      },
+      {
+        ...makeContract('http::GET::/', 'provider', 'backend'),
+        service: 'libra-margin',
+        meta: { method: 'GET', path: '/' },
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => mockContracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].contractId).toBe('http::GET::');
+    expect(result.crossLinks[0].fromContractId).toBe('http::GET::/api/titans/margin/1.0.0');
   });
 
   function makeContract(id: string, role: 'provider' | 'consumer', repo: string): StoredContract {

@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadGroupConfig, parseGroupConfig } from '../../../src/core/group/config-parser.js';
+import {
+  loadGroupConfig,
+  parseGroupConfig,
+  serializeGroupConfig,
+} from '../../../src/core/group/config-parser.js';
 
 const VALID_YAML = `
 version: 1
@@ -32,6 +36,25 @@ matching:
   max_candidates_per_step: 3
 `;
 
+const HTTP_MAPPING_YAML = `
+version: 1
+name: company
+repos:
+  frontend: libra-client
+  backend: libra-server
+http_mappings:
+  - from: frontend
+    to:
+      repo: backend
+      service: order-service
+    methods: [GET, POST]
+    match: /api/titans/:service/:version/*rest
+    when:
+      service: order
+      version: 1.0.0
+    rewrite: /orders/*rest
+`;
+
 describe('parseGroupConfig', () => {
   it('parses valid group.yaml', () => {
     const config = parseGroupConfig(VALID_YAML);
@@ -57,6 +80,7 @@ repos:
     const config = parseGroupConfig(minimal);
     expect(config.description).toBe('');
     expect(config.links).toEqual([]);
+    expect(config.httpMappings).toEqual([]);
     expect(config.packages).toEqual({});
     expect(config.detect.http).toBe(true);
     expect(config.matching.bm25_threshold).toBe(0.7);
@@ -150,6 +174,37 @@ links:
     expect(config.links[0].contract).toBe('billing.v1.OrderService/PlaceOrder');
   });
 
+  it('parses http mapping rules', () => {
+    const config = parseGroupConfig(HTTP_MAPPING_YAML);
+    expect(config.httpMappings).toHaveLength(1);
+    expect(config.httpMappings[0].from).toBe('frontend');
+    expect(config.httpMappings[0].to.repo).toBe('backend');
+    expect(config.httpMappings[0].to.service).toBe('order-service');
+    expect(config.httpMappings[0].methods).toEqual(['GET', 'POST']);
+    expect(config.httpMappings[0].match).toBe('/api/titans/:service/:version/*rest');
+    expect(config.httpMappings[0].when).toEqual({
+      service: 'order',
+      version: '1.0.0',
+    });
+    expect(config.httpMappings[0].rewrite).toBe('/orders/*rest');
+  });
+
+  it('serializes http mappings using snake_case group.yaml keys', () => {
+    const config = parseGroupConfig(HTTP_MAPPING_YAML);
+    const serialized = serializeGroupConfig(config);
+
+    expect(serialized).toHaveProperty('http_mappings');
+    expect(serialized).not.toHaveProperty('httpMappings');
+    expect((serialized.http_mappings as unknown[])[0]).toEqual({
+      from: 'frontend',
+      to: { repo: 'backend', service: 'order-service' },
+      methods: ['GET', 'POST'],
+      match: '/api/titans/:service/:version/*rest',
+      rewrite: '/orders/*rest',
+      when: { service: 'order', version: '1.0.0' },
+    });
+  });
+
   it('throws on missing required fields', () => {
     expect(() => parseGroupConfig('version: 1')).toThrow(/name.*required/i);
     expect(() => parseGroupConfig('name: test')).toThrow(/version.*required/i);
@@ -213,5 +268,21 @@ links:
     role: provider
 `;
     expect(() => parseGroupConfig(yaml)).toThrow(/nonexistent/i);
+  });
+
+  it('throws when http mapping references non-existent repo path', () => {
+    const yaml = `
+version: 1
+name: test
+repos:
+  frontend: repo-a
+http_mappings:
+  - from: frontend
+    to:
+      repo: backend
+    match: /api/:service/*rest
+    rewrite: /svc/*rest
+`;
+    expect(() => parseGroupConfig(yaml)).toThrow(/backend/i);
   });
 });

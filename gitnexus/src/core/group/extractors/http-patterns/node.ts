@@ -18,6 +18,7 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *   - `fetch(url)` / `fetch(url, { method: 'POST' })` consumers
  *   - `axios.get(url)` / `axios.delete(url)` consumers
  *   - `axios({ method, url })` object-form consumers
+ *   - imported request-like clients such as `request(url)` / `request.post(url)`
  *   - jQuery `$.get(url)` / `$.post(url, ...)` shorthand consumers
  *   - jQuery `$.ajax({ url, method | type })` consumers
  *
@@ -148,6 +149,28 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// ─── Consumer: imported request-like client `request(url, opts?)` ────
+const REQUEST_CALL_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (identifier) @fn
+      arguments: (arguments . [(string) (template_string)] @path))
+  `,
+};
+
+// ─── Consumer: imported request-like client `request.get(url)` ───────
+const REQUEST_MEMBER_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (identifier) @client
+        property: (property_identifier) @http_method (#match? @http_method "^(get|post|put|delete|patch)$"))
+      arguments: (arguments . [(string) (template_string)] @path))
+  `,
+};
+
 interface NodePatternBundle {
   controller: CompiledPatterns<Record<string, never>>;
   methodDecorator: CompiledPatterns<Record<string, never>>;
@@ -158,6 +181,8 @@ interface NodePatternBundle {
   jqueryShorthand: CompiledPatterns<Record<string, never>>;
   jqueryAjax: CompiledPatterns<Record<string, never>>;
   axiosObject: CompiledPatterns<Record<string, never>>;
+  requestCall: CompiledPatterns<Record<string, never>>;
+  requestMember: CompiledPatterns<Record<string, never>>;
 }
 
 function compileBundle(language: unknown, name: string): NodePatternBundle {
@@ -177,6 +202,8 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
     jqueryShorthand: mk(JQUERY_SHORTHAND_SPEC, 'jquery-shorthand'),
     jqueryAjax: mk(JQUERY_AJAX_SPEC, 'jquery-ajax'),
     axiosObject: mk(AXIOS_OBJECT_SPEC, 'axios-object'),
+    requestCall: mk(REQUEST_CALL_SPEC, 'request-call'),
+    requestMember: mk(REQUEST_MEMBER_SPEC, 'request-member'),
   };
 }
 
@@ -229,6 +256,60 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
     if (lit !== null) return lit;
+  }
+  return null;
+}
+
+const REQUEST_LIKE_IMPORT_RE = /(request|http|api|client|service)/i;
+
+function collectRequestLikeBindings(tree: Parser.Tree): Set<string> {
+  const bindings = new Set<string>();
+  const root = tree.rootNode;
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const child = root.namedChild(i);
+    if (!child || child.type !== 'import_statement') continue;
+    const text = child.text;
+    const sourceMatch = text.match(/\bfrom\s+['"]([^'"]+)['"]/);
+    const source = sourceMatch?.[1] ?? '';
+    if (!REQUEST_LIKE_IMPORT_RE.test(source)) continue;
+
+    const defaultMatch = text.match(/^import\s+([A-Za-z_$][\w$]*)\s*(?:,|\s+from)/);
+    if (defaultMatch) bindings.add(defaultMatch[1]);
+
+    const namespaceMatch = text.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+    if (namespaceMatch) bindings.add(namespaceMatch[1]);
+
+    const namedMatch = text.match(/\{([^}]+)\}/);
+    if (namedMatch) {
+      for (const spec of namedMatch[1].split(',')) {
+        const trimmed = spec.trim();
+        if (!trimmed) continue;
+        const aliasMatch = trimmed.match(/\bas\s+([A-Za-z_$][\w$]*)$/);
+        bindings.add(aliasMatch?.[1] ?? trimmed.split(/\s+/)[0]);
+      }
+    }
+  }
+  return bindings;
+}
+
+function findEnclosingCall(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  while (cur) {
+    if (cur.type === 'call_expression') return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+function readRequestOptionsMethod(node: Parser.SyntaxNode): string | null {
+  const callNode = findEnclosingCall(node);
+  if (!callNode) return null;
+  const args = callNode.childForFieldName('arguments');
+  if (!args) return null;
+  for (let i = 0; i < args.namedChildCount; i++) {
+    const child = args.namedChild(i);
+    if (child?.type !== 'object') continue;
+    return readStringProp(child, ['method']);
   }
   return null;
 }
@@ -297,6 +378,7 @@ function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNod
 
 function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection[] {
   const out: HttpDetection[] = [];
+  const requestLikeBindings = collectRequestLikeBindings(tree);
 
   // NestJS: collect `@Controller('prefix')` class decorators, keyed by
   // the `class_declaration` they decorate.
@@ -474,6 +556,44 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       role: 'consumer',
       framework: 'axios',
       method,
+      path,
+      name: null,
+      confidence: 0.7,
+    });
+  }
+
+  // Consumer: request('/path', { method: 'POST' }) or request('/path').
+  for (const match of runCompiledPatterns(bundle.requestCall, tree)) {
+    const fnNode = match.captures.fn;
+    const pathNode = match.captures.path;
+    if (!fnNode || !pathNode || !requestLikeBindings.has(fnNode.text)) continue;
+    const path = unquoteLiteral(pathNode.text);
+    if (path === null) continue;
+    const method = readRequestOptionsMethod(pathNode)?.toUpperCase() ?? 'GET';
+    out.push({
+      role: 'consumer',
+      framework: 'request-like',
+      method,
+      path,
+      name: null,
+      confidence: 0.7,
+    });
+  }
+
+  // Consumer: request.get('/path') / request.post('/path').
+  for (const match of runCompiledPatterns(bundle.requestMember, tree)) {
+    const clientNode = match.captures.client;
+    const methodNode = match.captures.http_method;
+    const pathNode = match.captures.path;
+    if (!clientNode || !methodNode || !pathNode || !requestLikeBindings.has(clientNode.text)) {
+      continue;
+    }
+    const path = unquoteLiteral(pathNode.text);
+    if (path === null) continue;
+    out.push({
+      role: 'consumer',
+      framework: 'request-like',
+      method: methodNode.text.toUpperCase(),
       path,
       name: null,
       confidence: 0.7,

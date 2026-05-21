@@ -8,6 +8,7 @@ export interface GroupConfig {
   description: string;
   repos: Record<string, string>;
   links: GroupManifestLink[];
+  httpMappings: HttpMappingRule[];
   packages: Record<string, Record<string, string>>;
   detect: DetectConfig;
   matching: MatchingConfig;
@@ -19,6 +20,20 @@ export interface GroupManifestLink {
   type: ContractType;
   contract: string;
   role: ContractRole;
+}
+
+export interface HttpMappingTarget {
+  repo: string;
+  service?: string;
+}
+
+export interface HttpMappingRule {
+  from: string;
+  to: HttpMappingTarget;
+  methods?: string[];
+  match: string;
+  rewrite: string;
+  when?: Record<string, string>;
 }
 
 export interface DetectConfig {
@@ -87,6 +102,8 @@ export interface CrossLink {
   to: CrossLinkEndpoint;
   type: ContractType;
   contractId: string;
+  fromContractId?: string;
+  toContractId?: string;
   matchType: MatchType;
   confidence: number;
 }

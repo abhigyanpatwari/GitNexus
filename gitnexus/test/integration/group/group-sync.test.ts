@@ -76,4 +76,63 @@ describe('Group sync integration', () => {
     const healthUnmatched = result.unmatched.some((c) => c.contractId.includes('/api/health'));
     expect(healthUnmatched).toBe(true);
   });
+
+  it('applies http_mappings to gateway-style frontend paths', async () => {
+    const yamlContent = `version: 1
+name: mapped-group
+repos:
+  frontend: test-frontend
+  backend: test-backend
+http_mappings:
+  - from: frontend
+    to:
+      repo: backend
+      service: services/order
+    methods: [POST]
+    match: /api/titans/:service/:version/*rest
+    when:
+      service: order
+      version: 1.0.0
+    rewrite: /orders/*rest
+`;
+    const config = parseGroupConfig(yamlContent);
+
+    const mockContracts: StoredContract[] = [
+      {
+        contractId: 'http::POST::/api/titans/order/1.0.0/create',
+        type: 'http',
+        role: 'consumer',
+        symbolUid: 'uid-c1',
+        symbolRef: { filePath: 'src/api/orders.ts', name: 'createOrder' },
+        symbolName: 'createOrder',
+        confidence: 0.85,
+        meta: { method: 'POST', path: '/api/titans/order/1.0.0/create' },
+        repo: 'frontend',
+      },
+      {
+        contractId: 'http::POST::/orders/create',
+        type: 'http',
+        role: 'provider',
+        symbolUid: 'uid-p1',
+        symbolRef: { filePath: 'src/routes/orders.ts', name: 'create' },
+        symbolName: 'create',
+        confidence: 0.9,
+        meta: { method: 'POST', path: '/orders/create' },
+        repo: 'backend',
+        service: 'services/order',
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => mockContracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('manifest');
+    expect(result.crossLinks[0].contractId).toBe('http::POST::/orders/create');
+    expect(result.crossLinks[0].fromContractId).toBe(
+      'http::POST::/api/titans/order/1.0.0/create',
+    );
+  });
 });

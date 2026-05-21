@@ -17,6 +17,7 @@ describe('Group types', () => {
       description: 'All company microservices',
       repos: { 'hr/hiring/backend': 'hr-hiring-backend' },
       links: [],
+      httpMappings: [],
       packages: {},
       detect: {
         http: true,
@@ -85,6 +86,7 @@ describe('Group types', () => {
       description: 'All company microservices',
       repos: { orders: 'orders-repo' },
       links: [],
+      httpMappings: [],
       packages: {},
       detect: {
         http: true,
@@ -93,6 +95,8 @@ describe('Group types', () => {
         topics: true,
         shared_libs: true,
         embedding_fallback: true,
+        includes: false,
+        workspace_deps: false,
       },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };

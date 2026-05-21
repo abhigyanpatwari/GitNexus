@@ -1016,6 +1016,30 @@ export const deleteUser = (id: string) => axios.delete(\`/api/users/\${id}\`);
       ).toBeDefined();
     });
 
+    it('extracts imported request-like client calls', async () => {
+      const dir = path.join(tmpDir, 'request-like-fe');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `
+import request from '@/utils/request';
+
+export const getItems = () => request('/api/items');
+export const createItem = (data: unknown) => request('/api/items', { method: 'POST', data });
+export const deleteItem = (id: string) => request.delete(\`/api/items/\${id}\`);
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/items')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/items')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::DELETE::/api/items/{param}'),
+      ).toBeDefined();
+    });
+
     it('extracts jQuery $.get and $.post shorthand', async () => {
       const dir = path.join(tmpDir, 'jquery-shorthand');
       fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
