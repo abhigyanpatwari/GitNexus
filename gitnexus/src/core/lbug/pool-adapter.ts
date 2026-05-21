@@ -25,6 +25,12 @@ import {
   isWalCorruptionError,
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
+import {
+  isMissingShadowSidecarError,
+  preflightLbugSidecars,
+  quarantineWalForMissingShadow,
+  shadowSidecarRecoveryMessage,
+} from './sidecar-recovery.js';
 
 /**
  * Probe whether a Windows FTS extension binary is locally installed under
@@ -304,16 +310,115 @@ const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
+
+const isReadOnlyShadowReplayError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /replay shadow pages under read-only mode/i.test(msg);
+};
+
+const poolSidecarLogger = {
+  warn: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+  debug: (_message: string): void => {},
+  info: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+};
+
+async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
+  const conn = createConnection(db);
+  try {
+    const queryResult = await conn.query(SHADOW_REPLAY_PROBE_QUERY);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    await result.getAll();
+    result.close?.();
+  } finally {
+    await conn.close().catch(() => {});
+  }
+}
+
+async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> {
+  let db: lbug.Database | undefined;
+  try {
+    db = createLbugDatabase(lbug, dbPath, { throwOnWalReplayFailure: false });
+    await db.init();
+    await probeDatabaseForShadowReplay(db);
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      try {
+        await quarantineWalForMissingShadow(dbPath, {
+          logger: poolSidecarLogger,
+          level: 'warn',
+          reason: 'pool writable replay recovery',
+        });
+        return;
+      } catch {
+        throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+      }
+    }
+    throw err;
+  } finally {
+    if (db) await db.close().catch(() => {});
+  }
+}
 
 async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
   let db: lbug.Database | undefined;
   silenceStdout();
   try {
+    await preflightLbugSidecars(dbPath, {
+      mode: 'read-only',
+      logger: poolSidecarLogger,
+      allowQuarantine: true,
+    });
     db = createLbugDatabase(lbug, dbPath, {
       readOnly: true,
       throwOnWalReplayFailure: false,
     });
     await db.init();
+    try {
+      await probeDatabaseForShadowReplay(db);
+    } catch (err) {
+      if (isMissingShadowSidecarError(err)) {
+        await db.close().catch(() => {});
+        db = undefined;
+        try {
+          await quarantineWalForMissingShadow(dbPath, {
+            logger: poolSidecarLogger,
+            level: 'warn',
+            reason: 'pool read-only recovery',
+          });
+        } catch {
+          throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+        }
+        await preflightLbugSidecars(dbPath, {
+          mode: 'read-only',
+          logger: poolSidecarLogger,
+          allowQuarantine: true,
+        });
+        db = createLbugDatabase(lbug, dbPath, {
+          readOnly: true,
+          throwOnWalReplayFailure: false,
+        });
+        await db.init();
+        await probeDatabaseForShadowReplay(db);
+        return db;
+      }
+      if (!isReadOnlyShadowReplayError(err)) {
+        throw err;
+      }
+      await db.close().catch(() => {});
+      db = undefined;
+      await replayShadowPagesWithWritableOpen(dbPath);
+      db = createLbugDatabase(lbug, dbPath, {
+        readOnly: true,
+        throwOnWalReplayFailure: false,
+      });
+      await db.init();
+      await probeDatabaseForShadowReplay(db);
+    }
     return db;
   } catch (err) {
     if (db) await db.close().catch(() => {});
@@ -421,6 +526,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
                 `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
             );
           }
+        }
+
+        if (
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          isMissingShadowSidecarError(lastError)
+        ) {
+          throw lastError;
         }
 
         const isLockError =

@@ -17,6 +17,7 @@ import {
   registerWebUI,
   resolveWebDistDir,
   landingPageHtml,
+  PNA_PREFLIGHT_PATH_REGEX,
   SPA_FALLBACK_REGEX,
   staticCacheControlSetHeaders,
 } from '../../src/server/api.js';
@@ -322,5 +323,12 @@ describe('Real Express dispatch — API and asset isolation', () => {
     registerWebUI(app, null);
     const status = await makeRequest(app, 'GET', '/');
     expect(status).toBe(200);
+  });
+
+  it('registers the global OPTIONS preflight matcher without Express 5 wildcard errors', async () => {
+    const app = express();
+    expect(() => app.options(PNA_PREFLIGHT_PATH_REGEX, (_req, _res, next) => next())).not.toThrow();
+    const status = await makeRequest(app, 'OPTIONS', '/api/health');
+    expect(status).toBe(404);
   });
 });

@@ -6,7 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { stderrWriteMock } = vi.hoisted(() => ({
+const { connectionQueryMock, stderrWriteMock } = vi.hoisted(() => ({
+  connectionQueryMock: vi.fn(),
   stderrWriteMock: vi.fn(),
 }));
 
@@ -23,6 +24,7 @@ vi.mock('@ladybugdb/core', () => ({
     Database: vi.fn(),
     Connection: vi.fn(function (this: any) {
       this.close = vi.fn().mockResolvedValue(undefined);
+      this.query = connectionQueryMock;
     }),
   },
 }));
@@ -68,6 +70,11 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     (fs.rename as any).mockReset();
     mockInit.mockReset();
     mockClose.mockReset();
+    connectionQueryMock.mockReset();
+    connectionQueryMock.mockResolvedValue({
+      getAll: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+    });
     mockInit.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
     (fs.stat as any).mockResolvedValue({});
@@ -107,6 +114,79 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     );
     expect(stderrWriteMock).toHaveBeenCalledWith(
       expect.stringContaining('WAL quarantined for test-repo-init'),
+    );
+  });
+
+  it('replays shadow pages with a temporary writable open before pooling read-only DBs', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-shadow-replay/lbug';
+
+    const readOnlyDb1 = makeMockDb();
+    const writableDb = makeMockDb();
+    const readOnlyDb2 = makeMockDb();
+    connectionQueryMock
+      .mockRejectedValueOnce(
+        new Error(
+          "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.",
+        ),
+      )
+      .mockResolvedValue({
+        getAll: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      });
+    (createLbugDatabase as any)
+      .mockReturnValueOnce(readOnlyDb1)
+      .mockReturnValueOnce(writableDb)
+      .mockReturnValueOnce(readOnlyDb2);
+
+    await initLbug('test-repo-shadow-replay', dbPath);
+
+    expect(createLbugDatabase).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      dbPath,
+      expect.objectContaining({ readOnly: true, throwOnWalReplayFailure: false }),
+    );
+    expect(createLbugDatabase).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      dbPath,
+      expect.objectContaining({ throwOnWalReplayFailure: false }),
+    );
+    expect(createLbugDatabase).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      dbPath,
+      expect.objectContaining({ readOnly: true, throwOnWalReplayFailure: false }),
+    );
+    expect(readOnlyDb1.close).toHaveBeenCalled();
+    expect(writableDb.close).toHaveBeenCalled();
+    expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('quarantines WAL and reopens read-only when the Ladybug shadow sidecar is missing', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-shadow-missing/lbug';
+
+    const readOnlyDb1 = makeMockDb();
+    const readOnlyDb2 = makeMockDb();
+    connectionQueryMock
+      .mockRejectedValueOnce(
+        new Error(`IO exception: Cannot open file ${dbPath}.shadow: No such file or directory`),
+      )
+      .mockResolvedValue({
+        getAll: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      });
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1).mockReturnValueOnce(readOnlyDb2);
+
+    await initLbug('test-repo-shadow-missing', dbPath);
+
+    expect(createLbugDatabase).toHaveBeenCalledTimes(2);
+    expect(readOnlyDb1.close).toHaveBeenCalled();
+    expect(fs.rename).toHaveBeenCalledWith(
+      dbPath + '.wal',
+      expect.stringContaining('.wal.missing-shadow.'),
     );
   });
 

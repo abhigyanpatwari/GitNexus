@@ -130,6 +130,7 @@ export const isIgnorableGraphQueryError = (err: unknown): boolean => {
 };
 
 export const SPA_FALLBACK_REGEX = /^(?!\/api(?:\/|$))(?!.*\.\w{1,10}$).*/;
+export const PNA_PREFLIGHT_PATH_REGEX = /^\/.*$/;
 
 export const resolveWebDistDir = async (
   primaryDir: string,
@@ -718,7 +719,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // on OPTIONS requests and expects the allow header in the response.
   // Note: the actual Allow-Private-Network header is already set by the global
   // middleware above, so we just need to call next() here.
-  app.options('*', (_req, res, next) => {
+  app.options(PNA_PREFLIGHT_PATH_REGEX, (_req, res, next) => {
     next();
   });
 
