@@ -18,6 +18,42 @@ import {
 const it = createResolverParityIt('cpp');
 
 // ---------------------------------------------------------------------------
+// C++ overloaded operators (#1636)
+// ---------------------------------------------------------------------------
+
+describe('C++ overloaded operator call resolution (#1636)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overloaded-operators'), () => {});
+  }, 60000);
+
+  it('resolves member operator+ for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runMember' && c.target === 'operator+',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('resolves free operator<< for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runFree' && c.target === 'operator<<',
+    );
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not synthesize an operator edge for built-in int + int', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runBuiltin' && c.target.startsWith('operator'),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage: diamond inheritance + include-based imports
 // ---------------------------------------------------------------------------
 
