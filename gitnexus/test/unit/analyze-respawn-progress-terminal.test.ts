@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 interface CapturedTerminal {
   cursorTo(x?: number | null, y?: number | null): void;
+  lineWrapping(enabled: boolean): void;
   clearRight(): void;
   newline(): void;
+  write(s: string, rawWrite?: boolean): void;
   isTTY(): boolean;
 }
 
@@ -69,6 +71,7 @@ const setStreamIsTTY = (stream: NodeJS.WriteStream, value: boolean): (() => void
 describe('analyzeCommand respawn progress terminal bridge', () => {
   const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
   const ORIGINAL_RESPAWN_PROGRESS = process.env.GITNEXUS_RESPAWN_PROGRESS_TTY;
+  const ORIGINAL_COLUMNS = process.env.COLUMNS;
   let restoreStderrIsTTY: (() => void) | undefined;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
   let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
@@ -100,6 +103,8 @@ describe('analyzeCommand respawn progress terminal bridge', () => {
     else process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
     if (ORIGINAL_RESPAWN_PROGRESS === undefined) delete process.env.GITNEXUS_RESPAWN_PROGRESS_TTY;
     else process.env.GITNEXUS_RESPAWN_PROGRESS_TTY = ORIGINAL_RESPAWN_PROGRESS;
+    if (ORIGINAL_COLUMNS === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = ORIGINAL_COLUMNS;
   });
 
   it('uses an ANSI terminal shim instead of cli-progress non-TTY newline mode', async () => {
@@ -120,5 +125,23 @@ describe('analyzeCommand respawn progress terminal bridge', () => {
     expect(stderrWriteSpy).toHaveBeenCalledWith('\r');
     expect(stderrWriteSpy).toHaveBeenCalledWith('\x1B[0K');
     expect(stderrWriteSpy).toHaveBeenCalledWith('\n');
+  });
+
+  it('truncates wrapped progress writes without splitting ANSI escapes or surrogate pairs', async () => {
+    process.env.COLUMNS = '3';
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    const options = mocks.capturedBarOptions[0];
+    options.terminal.write('ab\x1B[31mcd');
+    expect(stderrWriteSpy).toHaveBeenLastCalledWith('ab\x1B[31mc');
+
+    process.env.COLUMNS = '4';
+    options.terminal.write('abc😀def');
+    expect(stderrWriteSpy).toHaveBeenLastCalledWith('abc');
+
+    options.terminal.write('abc😀def', true);
+    expect(stderrWriteSpy).toHaveBeenLastCalledWith('abc😀def');
   });
 });

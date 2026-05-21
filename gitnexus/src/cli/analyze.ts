@@ -104,6 +104,102 @@ const terminalColumns = (): number => {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 80;
 };
 
+const ANSI_ESCAPE_PATTERN =
+  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_][\s\S]*?\x1B\\|[78]|[@-Z\\-_])/y;
+
+interface IntlSegmenterLike {
+  segment(input: string): Iterable<{ segment: string }>;
+}
+
+type IntlWithOptionalSegmenter = typeof Intl & {
+  Segmenter?: new (
+    locales?: string | string[],
+    options?: { granularity?: 'grapheme' },
+  ) => IntlSegmenterLike;
+};
+
+const splitGraphemes = (text: string): string[] => {
+  const Segmenter = (Intl as IntlWithOptionalSegmenter).Segmenter;
+  if (Segmenter) {
+    return Array.from(
+      new Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      (s) => s.segment,
+    );
+  }
+  return Array.from(text);
+};
+
+const isZeroWidthCodePoint = (codePoint: number): boolean =>
+  codePoint === 0x200d ||
+  (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+  (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+  (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+  (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+  (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+  (codePoint >= 0xfe20 && codePoint <= 0xfe2f);
+
+const isWideCodePoint = (codePoint: number): boolean =>
+  codePoint >= 0x1100 &&
+  (codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd));
+
+const visibleColumns = (text: string): number => {
+  let columns = 0;
+  for (const char of Array.from(text)) {
+    const codePoint = char.codePointAt(0);
+    if (codePoint === undefined || isZeroWidthCodePoint(codePoint)) continue;
+    columns += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return columns;
+};
+
+const readAnsiEscapeAt = (text: string, index: number): string | undefined => {
+  ANSI_ESCAPE_PATTERN.lastIndex = index;
+  return ANSI_ESCAPE_PATTERN.exec(text)?.[0];
+};
+
+const truncateAnsiToColumns = (text: string, maxColumns: number): string => {
+  if (!Number.isFinite(maxColumns) || maxColumns <= 0) return '';
+
+  let output = '';
+  let columns = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    const escape = readAnsiEscapeAt(text, index);
+    if (escape) {
+      output += escape;
+      index += escape.length;
+      continue;
+    }
+
+    const nextEscapeIndex = text.indexOf('\x1B', index);
+    const plainEnd = nextEscapeIndex === -1 ? text.length : nextEscapeIndex;
+    const plainText = text.slice(index, plainEnd);
+
+    for (const segment of splitGraphemes(plainText)) {
+      const width = visibleColumns(segment);
+      if (width > 0 && columns + width > maxColumns) return output;
+      output += segment;
+      columns += width;
+    }
+
+    index = plainEnd;
+  }
+
+  return output;
+};
+
 const createAnsiPipeTerminal = (stream: NodeJS.WriteStream): CliProgressTerminal => {
   let linewrap = true;
   let dy = 0;
@@ -155,7 +251,7 @@ const createAnsiPipeTerminal = (stream: NodeJS.WriteStream): CliProgressTerminal
     },
     write: (s, rawWrite = false) => {
       const width = terminalColumns();
-      write(linewrap && rawWrite === false ? s.slice(0, width) : s);
+      write(linewrap && rawWrite === false ? truncateAnsiToColumns(s, width) : s);
     },
     isTTY: () => true,
     getWidth: terminalColumns,
