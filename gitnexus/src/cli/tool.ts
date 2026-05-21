@@ -17,7 +17,7 @@
 
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { cliError } from './cli-message.js';
+import { cliErrorKey } from './cli-message.js';
 
 let _backend: LocalBackend | null = null;
 
@@ -26,7 +26,7 @@ async function getBackend(): Promise<LocalBackend> {
   _backend = new LocalBackend();
   const ok = await _backend.init();
   if (!ok) {
-    cliError('GitNexus: No indexed repositories found. Run: gitnexus analyze');
+    cliErrorKey('tool.noIndexed');
     process.exit(1);
   }
   return _backend;
@@ -68,7 +68,7 @@ export async function queryCommand(
   },
 ): Promise<void> {
   if (!queryText?.trim()) {
-    cliError('Usage: gitnexus query <search_query>');
+    cliErrorKey('tool.usage.query');
     process.exit(1);
   }
 
@@ -94,7 +94,7 @@ export async function contextCommand(
   },
 ): Promise<void> {
   if (!name?.trim() && !options?.uid) {
-    cliError('Usage: gitnexus context <symbol_name> [--uid <uid>] [--file <path>]');
+    cliErrorKey('tool.usage.context');
     process.exit(1);
   }
 
@@ -119,7 +119,7 @@ export async function impactCommand(
   },
 ): Promise<void> {
   if (!target?.trim()) {
-    cliError('Usage: gitnexus impact <symbol_name> [--direction upstream|downstream]');
+    cliErrorKey('tool.usage.impact');
     process.exit(1);
   }
 
@@ -154,7 +154,7 @@ export async function cypherCommand(
   },
 ): Promise<void> {
   if (!query?.trim()) {
-    cliError('Usage: gitnexus cypher <cypher_query>');
+    cliErrorKey('tool.usage.cypher');
     process.exit(1);
   }
 

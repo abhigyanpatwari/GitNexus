@@ -39,6 +39,13 @@ import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
 
+export const AUTO_START_EMBEDDINGS_STORAGE_KEY = 'gitnexus.autoStartEmbeddings';
+
+export const shouldAutoStartEmbeddings = (): boolean => {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
+  return window.localStorage.getItem(AUTO_START_EMBEDDINGS_STORAGE_KEY) === 'true';
+};
+
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
 export type EmbeddingStatus = 'idle' | 'loading' | 'embedding' | 'indexing' | 'ready' | 'error';
@@ -526,6 +533,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         import.meta.env.VITE_PLAYWRIGHT_TEST) ||
       (typeof process !== 'undefined' && process.env.PLAYWRIGHT_TEST);
     if (isPlaywright) {
+      setEmbeddingStatus('idle');
+      return;
+    }
+    if (!shouldAutoStartEmbeddings()) {
       setEmbeddingStatus('idle');
       return;
     }
