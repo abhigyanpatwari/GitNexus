@@ -113,7 +113,11 @@ jobs:
           set -euo pipefail
           PREFIX="$RUNNER_TEMP/gitnexus-smoke"
           mkdir -p "$PREFIX"
-          TARBALL=$(ls gitnexus-*.tgz | head -n1)
+          TARBALL=$(find . -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          if [ -z "$TARBALL" ]; then
+            echo "ERROR: no gitnexus-*.tgz tarball found in $(pwd)" >&2
+            exit 1
+          fi
           echo "Installing $TARBALL into $PREFIX"
           npm install -g --prefix "$PREFIX" "./$TARBALL" --no-audit --no-fund
           echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
