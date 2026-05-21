@@ -91,7 +91,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
+      # persist-credentials: false — this job runs npm pack + npm install -g
+      # from a tarball and never pushes back; the token in .git/config would
+      # be at risk of leaking through any future artifact-upload step
+      # (zizmor artipacked audit). Disable upfront.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
