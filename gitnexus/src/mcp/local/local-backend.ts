@@ -297,6 +297,13 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   return repoPath;
 }
 
+/**
+ * Length of the base64url path hash appended to a colliding repo id.
+ * Exported so tests can pin the suffix shape without re-deriving the
+ * literal; see `repoId()` and the hashed-id resolution tier (#1658).
+ */
+export const REPO_ID_HASH_LENGTH = 6;
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -428,7 +435,10 @@ export class LocalBackend {
         // Lowercase the hash so it survives the `paramLower` lookup in
         // resolveRepoFromCache — base64url retains mixed case, but the id
         // tier compares against `repoParam.toLowerCase()` (#1658 follow-up).
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6).toLowerCase();
+        const hash = Buffer.from(repoPath)
+          .toString('base64url')
+          .slice(0, REPO_ID_HASH_LENGTH)
+          .toLowerCase();
         return `${base}-${hash}`;
       }
     }

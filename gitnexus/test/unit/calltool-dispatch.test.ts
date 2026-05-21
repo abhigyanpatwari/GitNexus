@@ -85,7 +85,7 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend, REPO_ID_HASH_LENGTH } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -155,6 +155,25 @@ function makeDuplicateNameFixture() {
         path: wtDir,
         storagePath: path.join(wtDir, '.gitnexus'),
       },
+    ],
+  };
+}
+
+function makeSharedPrefixFixture(nameA: string, nameB: string) {
+  const dirA = mkdtempSync(path.join(os.tmpdir(), `gnx-${nameA}-`));
+  const dirB = mkdtempSync(path.join(os.tmpdir(), `gnx-${nameB}-`));
+  duplicateFixtureDirs.push(dirA, dirB);
+  for (const dir of [dirA, dirB]) {
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+  }
+  return {
+    dirA,
+    dirB,
+    entries: [
+      { ...MOCK_REPO_ENTRY, name: nameA, path: dirA, storagePath: path.join(dirA, '.gitnexus') },
+      { ...MOCK_REPO_ENTRY, name: nameB, path: dirB, storagePath: path.join(dirB, '.gitnexus') },
     ],
   };
 }
@@ -944,28 +963,22 @@ describe('LocalBackend.resolveRepo', () => {
   it('resolves second duplicate-name repo by its stable hashed id (#1658)', async () => {
     const { wtDir, entries } = makeDuplicateNameFixture();
     (listRegisteredRepos as any).mockResolvedValue(entries);
-    // Mirrors the suffix scheme in LocalBackend.repoId: base64url(repoPath).slice(0,6)
-    // lowercased so it survives the paramLower lookup in resolveRepoFromCache.
-    // Couples this test to that formula on purpose — if repoId changes its suffix,
-    // this assertion should fail and force a re-review of the hashed-id resolution tier.
-    const wtId = `shared-${Buffer.from(wtDir).toString('base64url').slice(0, 6).toLowerCase()}`;
+    // Couples this test to repoId's suffix formula on purpose — if repoId changes
+    // its suffix, this assertion should fail and force a re-review of the hashed-id
+    // resolution tier. Mirrors LocalBackend.repoId: base64url(repoPath) sliced to
+    // REPO_ID_HASH_LENGTH and lowercased so it survives the paramLower lookup in
+    // resolveRepoFromCache.
+    const wtId = `shared-${Buffer.from(wtDir)
+      .toString('base64url')
+      .slice(0, REPO_ID_HASH_LENGTH)
+      .toLowerCase()}`;
     await backend.init();
     const resolved = await backend.resolveRepo(wtId);
     expect(resolved.repoPath).toBe(wtDir);
   });
 
   it('does not silently return first partial match for ambiguous prefix (#1658)', async () => {
-    const dirA = mkdtempSync(path.join(os.tmpdir(), 'gnx-project-a-'));
-    const dirB = mkdtempSync(path.join(os.tmpdir(), 'gnx-project-b-'));
-    duplicateFixtureDirs.push(dirA, dirB);
-    for (const dir of [dirA, dirB]) {
-      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
-      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
-    }
-    const entries = [
-      { ...MOCK_REPO_ENTRY, name: 'project-a', path: dirA, storagePath: path.join(dirA, '.gitnexus') },
-      { ...MOCK_REPO_ENTRY, name: 'project-b', path: dirB, storagePath: path.join(dirB, '.gitnexus') },
-    ];
+    const { dirA, entries } = makeSharedPrefixFixture('project-a', 'project-b');
     (listRegisteredRepos as any).mockResolvedValue(entries);
     (getGitRoot as any).mockReturnValue(null);
     await backend.init();
