@@ -325,9 +325,7 @@ const poolSidecarLogger = {
   },
 };
 
-type TryQuarantineResult =
-  | { kind: 'quarantined'; path: string }
-  | { kind: 'peer-handled' };
+type TryQuarantineResult = { kind: 'quarantined'; path: string } | { kind: 'peer-handled' };
 
 /**
  * Pool-local quarantine guard that tolerates the concurrent-peer race the

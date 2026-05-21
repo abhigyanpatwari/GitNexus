@@ -259,7 +259,10 @@ describe('LadybugDB sidecar recovery', () => {
         await triggerOrphanWalPreflight(dbPath, log);
       }
       expect(log.warn).toHaveBeenCalledTimes(2);
-      expect(log.warn).toHaveBeenNthCalledWith(1, expect.stringContaining('lbug.wal without lbug.shadow'));
+      expect(log.warn).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('lbug.wal without lbug.shadow'),
+      );
       expect(log.warn).toHaveBeenNthCalledWith(
         2,
         expect.stringContaining('(10th occurrence of this condition)'),

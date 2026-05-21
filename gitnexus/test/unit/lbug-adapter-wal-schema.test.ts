@@ -588,10 +588,7 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
     vi.unstubAllEnvs();
   });
 
-  const setupShadowMissingRecovery = (
-    dbPath: string,
-    walBytes: number | 'missing',
-  ) => {
+  const setupShadowMissingRecovery = (dbPath: string, walBytes: number | 'missing') => {
     const missingShadowError = new Error(
       `IO exception: Cannot open file ${dbPath}.shadow: No such file or directory`,
     );
@@ -645,10 +642,7 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
   it('writable recovery: refuses to quarantine a large WAL (4097 bytes) and throws shadow-recovery message', async () => {
     vi.resetModules();
     const dbPath = '/tmp/gitnexus-lbug-large-wal-writable/lbug';
-    const { fsMock, warnMock } = setupShadowMissingRecovery(
-      dbPath,
-      TINY_ORPHAN_WAL_BYTES_TEST + 1,
-    );
+    const { fsMock, warnMock } = setupShadowMissingRecovery(dbPath, TINY_ORPHAN_WAL_BYTES_TEST + 1);
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
@@ -665,10 +659,7 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
   it('read-only recovery: refuses to quarantine a large WAL (4097 bytes) and throws shadow-recovery message', async () => {
     vi.resetModules();
     const dbPath = '/tmp/gitnexus-lbug-large-wal-readonly/lbug';
-    const { fsMock, warnMock } = setupShadowMissingRecovery(
-      dbPath,
-      TINY_ORPHAN_WAL_BYTES_TEST + 1,
-    );
+    const { fsMock, warnMock } = setupShadowMissingRecovery(dbPath, TINY_ORPHAN_WAL_BYTES_TEST + 1);
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 

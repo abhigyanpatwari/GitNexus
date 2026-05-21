@@ -316,15 +316,11 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
 
     const readOnlyDb1 = makeMockDb();
     const readOnlyDb2 = makeMockDb();
-    connectionQueryMock
-      .mockRejectedValueOnce(shadowError(dbPath))
-      .mockResolvedValue({
-        getAll: vi.fn().mockResolvedValue([]),
-        close: vi.fn(),
-      });
-    (createLbugDatabase as any)
-      .mockReturnValueOnce(readOnlyDb1)
-      .mockReturnValueOnce(readOnlyDb2);
+    connectionQueryMock.mockRejectedValueOnce(shadowError(dbPath)).mockResolvedValue({
+      getAll: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+    });
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1).mockReturnValueOnce(readOnlyDb2);
 
     await initLbug('test-repo-pool-enoent', dbPath);
 
