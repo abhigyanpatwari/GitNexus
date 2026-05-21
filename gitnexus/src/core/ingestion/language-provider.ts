@@ -208,7 +208,20 @@ interface LanguageProviderConfig {
    *  Default: undefined (standard parent walk only). */
   readonly enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
-  ) => { funcName: string; label: NodeLabel } | null;
+  ) => { funcName: string; label: NodeLabel; definitionNode?: SyntaxNode } | null;
+
+  /** Additional provider-owned container predicate for languages whose class-like
+   *  constructs reuse generic AST node types. Example: Elixir `defmodule` is a
+   *  `call` node, but treating every `call` as a global container would break
+   *  Ruby/Python. Default: undefined (CLASS_CONTAINER_TYPES only). */
+  readonly isClassContainerNode?: (node: SyntaxNode) => boolean;
+
+  /** Provider-owned class info extraction for custom containers returned by
+   *  `isClassContainerNode`. Default: undefined (generic name/label extraction). */
+  readonly extractEnclosingClassInfo?: (
+    node: SyntaxNode,
+    filePath: string,
+  ) => { classId: string; className: string } | null;
 
   // ── Template constraint extraction (SFINAE / `requires`) ────────────
   /**

@@ -262,10 +262,18 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  isClassContainerNode?: (node: SyntaxNode) => boolean,
+  extractEnclosingClassInfo?: (node: SyntaxNode, filePath: string) => EnclosingClassInfo | null,
 ): EnclosingClassInfo | null => {
   const cached = classInfoCache.get(node);
   if (cached !== undefined) return cached;
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    isClassContainerNode,
+    extractEnclosingClassInfo,
+  );
   classInfoCache.set(node, result);
   return result;
 };
@@ -528,6 +536,8 @@ const processParsingSequential = async (
             nameNode || definitionNodeForRange,
             file.path,
             provider.resolveEnclosingOwner,
+            provider.isClassContainerNode,
+            provider.extractEnclosingClassInfo,
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;

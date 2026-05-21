@@ -161,6 +161,14 @@ const SOURCES: Record<string, GrammarSource> = {
       'Kotlin parsing disabled: `tree-sitter-kotlin` is an optionalDependency ' +
       'and is not installed (or its native binding failed to build).',
   },
+  [SupportedLanguages.Elixir]: {
+    load: () => _require('tree-sitter-elixir'),
+    optional: true,
+    severity: 'error',
+    unavailableNote:
+      'Elixir parsing disabled: `tree-sitter-elixir` could not be loaded. ' +
+      'Try `npm rebuild tree-sitter-elixir` or reinstalling, then re-run analyze.',
+  },
 };
 
 type LoadResult =

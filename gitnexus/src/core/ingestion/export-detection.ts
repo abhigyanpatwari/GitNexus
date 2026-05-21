@@ -246,3 +246,25 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+const ELIXIR_PRIVATE_KEYWORDS = new Set(['defp', 'defmacrop', 'defguardp']);
+const ELIXIR_PUBLIC_KEYWORDS = new Set(['def', 'defmacro', 'defguard', 'defdelegate']);
+
+/**
+ * Elixir: def = public, defp = private. Walk up to the enclosing def/defp call
+ * to determine visibility. defmodule/defprotocol/defimpl are always public.
+ */
+export const elixirExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (current.type === 'call') {
+      const target = current.childForFieldName?.('target');
+      if (target?.type === 'identifier') {
+        if (ELIXIR_PRIVATE_KEYWORDS.has(target.text)) return false;
+        if (ELIXIR_PUBLIC_KEYWORDS.has(target.text)) return true;
+      }
+    }
+    current = current.parent;
+  }
+  return true;
+};

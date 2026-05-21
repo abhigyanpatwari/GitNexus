@@ -4,6 +4,7 @@ import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { findEnclosingClassInfo } from '../../src/core/ingestion/utils/ast-helpers.js';
 import Parser from 'tree-sitter';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
@@ -663,6 +664,90 @@ describe('Tree-sitter multi-language parsing', () => {
         const defs = extractDefinitions(matches);
         expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
       }
+    });
+  });
+
+  describe('Elixir', () => {
+    const elixirQueries = () => getProvider(SupportedLanguages.Elixir).treeSitterQueries;
+
+    function loadElixirOrSkip() {
+      return loadLanguage(SupportedLanguages.Elixir).catch(() => null);
+    }
+
+    it('parses modules, functions, and protocols', async () => {
+      if (!(await loadElixirOrSkip())) return;
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const defs = extractDefinitions(matches);
+      const defTypes = defs.map((d) => d.type);
+      const defNames = defs.map((d) => d.name);
+
+      expect(defTypes).toContain('definition.class');
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.interface');
+
+      expect(defNames).toContain('MyApp.User');
+      expect(defNames).toContain('get');
+      expect(defNames).toContain('get_by_email');
+      expect(defNames).toContain('validate');
+      expect(defNames).toContain('create');
+      expect(defNames).toContain('MyApp.Serializable');
+    });
+
+    it('captures import/alias/use/require as @import', async () => {
+      if (!(await loadElixirOrSkip())) return;
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const importSources: string[] = [];
+      for (const match of matches) {
+        for (const c of match.captures) {
+          if (c.name === 'import.source') importSources.push(c.node.text);
+        }
+      }
+      expect(importSources).toEqual(['MyApp.Repo', 'Ecto.Query', 'Phoenix.LiveView', 'Logger']);
+    });
+
+    it('extracts real calls once and skips definitions/attributes', async () => {
+      if (!(await loadElixirOrSkip())) return;
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const provider = getProvider(SupportedLanguages.Elixir);
+      const callNames: string[] = [];
+      for (const match of matches) {
+        const captureMap: Record<string, any> = {};
+        for (const c of match.captures) {
+          captureMap[c.name] = c.node;
+        }
+        if (captureMap['call']) {
+          const extracted = provider.callExtractor?.extract(
+            captureMap['call'],
+            captureMap['call.name'],
+          );
+          if (extracted) callNames.push(extracted.calledName);
+        }
+      }
+
+      expect(callNames).toEqual(['get', 'from', 'one', 'changeset', 'insert']);
+    });
+
+    it('resolves defmodule as the enclosing owner for functions', async () => {
+      if (!(await loadElixirOrSkip())) return;
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const provider = getProvider(SupportedLanguages.Elixir);
+      let createNode: any;
+      for (const match of matches) {
+        const hasFunctionDef = match.captures.some((c: any) => c.name === 'definition.function');
+        const nameCapture = match.captures.find((c: any) => c.name === 'name');
+        if (hasFunctionDef && nameCapture?.node.text === 'create') {
+          createNode = nameCapture.node;
+        }
+      }
+
+      const owner = findEnclosingClassInfo(
+        createNode,
+        'lib/my_app/user.ex',
+        provider.resolveEnclosingOwner,
+        provider.isClassContainerNode,
+        provider.extractEnclosingClassInfo,
+      );
+      expect(owner?.className).toBe('MyApp.User');
     });
   });
 

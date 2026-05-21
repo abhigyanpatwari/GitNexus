@@ -135,6 +135,25 @@ describe('worker pool integration', () => {
     expect(names).toContain('validateInput');
   });
 
+  it.skipIf(!hasDistWorker)('parses an Elixir file through worker', async () => {
+    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+    pool = createWorkerPool(workerUrl, 1);
+
+    const fixtureFile = path.resolve(__dirname, '..', 'fixtures', 'sample-code', 'simple.ex');
+    const content = fs.readFileSync(fixtureFile, 'utf-8');
+
+    const results = await pool.dispatch<any, any>([{ path: 'lib/my_app/user.ex', content }]);
+
+    expect(results).toHaveLength(1);
+    const result = results[0];
+    expect(result.fileCount).toBe(1);
+    expect(result.skippedLanguages).toEqual({});
+
+    const names = result.nodes.map((n: any) => n.properties.name);
+    expect(names).toContain('MyApp.User');
+    expect(names).toContain('create');
+  });
+
   it.skipIf(!hasDistWorker)('parses multiple files across workers', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 2);

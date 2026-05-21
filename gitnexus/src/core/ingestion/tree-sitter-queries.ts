@@ -1504,6 +1504,96 @@ export const DART_QUERIES = `
       (type_identifier) @heritage.trait))) @heritage
 `;
 
+export const ELIXIR_QUERIES = `
+; ── Modules ──────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defmodule")
+  (arguments
+    (alias) @name)) @definition.class
+
+; ── Protocols ─────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defprotocol")
+  (arguments
+    (alias) @name)) @definition.interface
+
+; ── Public functions & macros ─────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+; ── Private functions & macros ────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+; ── Imports: import/use/require ───────────────────────────────────────────────
+(call
+  target: (identifier) @_kw (#eq? @_kw "import")
+  (arguments
+    (alias) @import.source)) @import
+
+(call
+  target: (identifier) @_kw (#eq? @_kw "use")
+  (arguments
+    (alias) @import.source)) @import
+
+(call
+  target: (identifier) @_kw (#eq? @_kw "require")
+  (arguments
+    (alias) @import.source)) @import
+
+; ── Aliases ───────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_kw (#eq? @_kw "alias")
+  (arguments
+    (alias) @import.source)) @import
+
+; ── Remote calls: Module.function() ──────────────────────────────────────────
+(call
+  target: (dot
+    left: (alias) @call.receiver
+    right: (identifier) @call.name)) @call
+
+; ── Local calls: function() — provider filters definitions/control-flow ───────
+(call
+  target: (identifier) @call.name) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1523,4 +1613,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Elixir]: ELIXIR_QUERIES,
 };

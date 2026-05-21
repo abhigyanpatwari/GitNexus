@@ -45,6 +45,11 @@ let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
+
+let Elixir: TreeSitterLanguage | null = null;
+try {
+  Elixir = _require('tree-sitter-elixir');
+} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   FUNCTION_NODE_TYPES,
@@ -326,6 +331,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Elixir ? { [SupportedLanguages.Elixir]: Elixir } : {}),
 };
 
 /**
@@ -577,6 +583,8 @@ const findEnclosingFunctionId = (
           current,
           filePath,
           provider.resolveEnclosingOwner,
+          provider.isClassContainerNode,
+          provider.extractEnclosingClassInfo,
         );
         const encLang = getLanguageFromFilename(filePath);
         const standaloneMethodInfo =
@@ -637,22 +645,24 @@ const findEnclosingFunctionId = (
       const customResult = provider.enclosingFunctionFinder(current);
       if (customResult) {
         let finalLabel: NodeLabel = customResult.label;
+        const sigNode = customResult.definitionNode ?? current.previousSibling ?? current;
         if (provider.labelOverride) {
-          const override = provider.labelOverride(current.previousSibling, finalLabel);
+          const override = provider.labelOverride(sigNode, finalLabel);
           if (override !== null) finalLabel = override;
         }
         // Qualify custom result with enclosing class
         const classInfo = cachedFindEnclosingClassInfo(
-          current.previousSibling ?? current,
+          sigNode,
           filePath,
           provider.resolveEnclosingOwner,
+          provider.isClassContainerNode,
+          provider.extractEnclosingClassInfo,
         );
         const qualifiedName = classInfo
           ? `${classInfo.className}.${customResult.funcName}`
           : customResult.funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // When same-arity collisions exist, also append ~type1,type2.
-        const sigNode = current.previousSibling ?? current;
         let arity2: number | undefined;
         let encTypeTag2 = '';
         if (finalLabel === 'Method' || finalLabel === 'Constructor') {
@@ -697,11 +707,19 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  isClassContainerNode?: (node: SyntaxNode) => boolean,
+  extractEnclosingClassInfo?: (node: SyntaxNode, filePath: string) => EnclosingClassInfo | null,
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    isClassContainerNode,
+    extractEnclosingClassInfo,
+  );
   classIdCache.set(node, result);
   return result;
 };
@@ -1820,6 +1838,8 @@ const processFileGroup = (
                   captureMap['call'],
                   file.path,
                   provider.resolveEnclosingOwner,
+                  provider.isClassContainerNode,
+                  provider.extractEnclosingClassInfo,
                 );
                 const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
@@ -2065,6 +2085,8 @@ const processFileGroup = (
             nameNode || definitionNode,
             file.path,
             provider.resolveEnclosingOwner,
+            provider.isClassContainerNode,
+            provider.extractEnclosingClassInfo,
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
