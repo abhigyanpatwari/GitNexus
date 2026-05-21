@@ -203,7 +203,11 @@ export class HttpRouteExtractor implements ContractExtractor {
 
     const getScanInput = async (
       rel: string,
-    ): Promise<{ plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null> => {
+    ): Promise<{
+      plugin: HttpLanguagePlugin;
+      input: HttpScanInput;
+      repoContext: unknown;
+    } | null> => {
       if (cachedInputs.has(rel)) return cachedInputs.get(rel) ?? null;
       const plugin = getPluginForFile(rel);
       if (!plugin) {

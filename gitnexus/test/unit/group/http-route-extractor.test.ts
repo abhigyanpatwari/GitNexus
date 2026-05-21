@@ -41,6 +41,8 @@ describe('HttpRouteExtractor', () => {
     });
   });
 
+  const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+
   describe('provider extraction — graph-first (Strategy A)', () => {
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');
