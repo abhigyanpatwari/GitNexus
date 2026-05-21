@@ -48,7 +48,7 @@ import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { createWorkerPool } from '../workers/worker-pool.js';
+import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
 import type { WorkerPool } from '../workers/worker-pool.js';
 import type {
   ExtractedAssignment,
@@ -252,20 +252,23 @@ export async function runChunkedParseAndResolve(
   const MIN_BYTES_FOR_WORKERS = options?.workerThresholdsForTest?.minBytes ?? 512 * 1024;
   const totalBytes = parseableScanned.reduce((s, f) => s + f.size, 0);
 
-  // Create worker pool once, reuse across chunks.
+  // Create worker pool lazily, reuse across cache-miss chunks.
   //
   // `workerPoolSize === 0` is a programmatic equivalent of `skipWorkers:
   // true` per the `PipelineOptions.workerPoolSize` contract. Short-
-  // circuiting here avoids constructing a useless pool that rejects
-  // every dispatch (with a `Worker pool parsing stopped` warn log per
-  // chunk) just to fall back to the sequential path via the error
-  // catch — the gate honors the docstring directly.
-  let workerPool: WorkerPool | undefined;
-  if (
+  // circuiting here avoids constructing a useless pool. The pool is
+  // intentionally NOT created before parse-cache lookup: a warm-cache
+  // all-hit run should replay cached worker output without loading
+  // parse-worker.js or any tree-sitter/N-API native bindings.
+  const shouldUseWorkers =
     !options?.skipWorkers &&
     options?.workerPoolSize !== 0 &&
-    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
-  ) {
+    (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS);
+  let workerPool: WorkerPool | undefined;
+  let workerPoolDisabled = false;
+  const getOrCreateWorkerPool = (): WorkerPool | undefined => {
+    if (!shouldUseWorkers || workerPoolDisabled) return undefined;
+    if (workerPool) return workerPool;
     try {
       // U20.U3 test-only injection: integration tests pass a custom
       // worker script URL via `workerUrlForTest` (mirrors the
@@ -296,13 +299,16 @@ export async function runChunkedParseAndResolve(
         }
       }
       workerPool = createWorkerPool(workerUrl, options?.workerPoolSize);
+      return workerPool;
     } catch (err) {
+      workerPoolDisabled = true;
       logger.warn(
         { err: (err as Error).message },
         'Worker pool creation failed, using sequential fallback:',
       );
+      return undefined;
     }
-  }
+  };
 
   let filesParsedSoFar = 0;
 
@@ -418,12 +424,18 @@ export async function runChunkedParseAndResolve(
       // never saw the log (M3 from PR #1693 review).
       const chunkStartMs: number | null = verboseThroughputLog ? Date.now() : null;
 
-      const chunkContents = await chunkContentPromises[chunkIdx]!;
+      const chunkContentPromise = chunkContentPromises[chunkIdx];
+      if (!chunkContentPromise) {
+        throw new Error(`Missing prefetched parse chunk ${chunkIdx + 1}/${numChunks}`);
+      }
+      const chunkContents = await chunkContentPromise;
       chunkContentPromises[chunkIdx] = undefined; // release the in-memory copy
       startChunkPrefetch(chunkIdx + parseChunkConcurrency);
-      const chunkFiles = chunkPaths
-        .filter((p) => chunkContents.has(p))
-        .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+      const chunkFiles: Array<{ path: string; content: string }> = [];
+      for (const p of chunkPaths) {
+        const content = chunkContents.get(p);
+        if (content !== undefined) chunkFiles.push({ path: p, content });
+      }
 
       // Compute the chunk's content-hash signature (if cache available).
       let chunkHash: string | null = null;
@@ -436,7 +448,7 @@ export async function runChunkedParseAndResolve(
       }
 
       let chunkWorkerData: WorkerExtractedData | null;
-      const cachedRaw = chunkHash ? parseCache!.entries.get(chunkHash) : undefined;
+      const cachedRaw = chunkHash && parseCache ? parseCache.entries.get(chunkHash) : undefined;
 
       // Track every chunk hash we touched so the orchestrator can
       // prune stale entries (chunks whose composition no longer
@@ -450,7 +462,7 @@ export async function runChunkedParseAndResolve(
         chunkWorkerData = mergeChunkResults(graph, symbolTable, cachedRaw);
         if (isDev) {
           logger.info(
-            `📦 parse-cache HIT: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash!.slice(0, 8)})`,
+            `📦 parse-cache HIT: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash?.slice(0, 8) ?? 'unknown'})`,
           );
         }
         // Progress update so UI advances even on a cache hit.
@@ -474,33 +486,61 @@ export async function runChunkedParseAndResolve(
         // them under the chunk hash for the next run.
         chunkCacheMisses++;
         const rawResults: ParseWorkerResult[] = [];
-        chunkWorkerData = await processParsing(
-          graph,
-          chunkFiles,
-          symbolTable,
-          astCache,
-          scopeTreeCache,
-          (current, _total, filePath) => {
-            const globalCurrent = filesParsedSoFar + current;
-            // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
-            const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
-            onProgress({
-              phase: 'parsing',
-              percent: Math.round(parsingProgress),
-              message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
-              detail: filePath,
-              stats: {
-                filesProcessed: globalCurrent,
-                totalFiles: totalParseable,
-                nodesCreated: graph.nodeCount,
-              },
-            });
-          },
-          workerPool,
-          // Capture raw results only when we have a cache to write to —
-          // otherwise we'd retain extra arrays for nothing.
-          parseCache && chunkHash ? rawResults : undefined,
-        );
+        const progressForChunk = (current: number, _total: number, filePath: string) => {
+          const globalCurrent = filesParsedSoFar + current;
+          // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
+          const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
+          onProgress({
+            phase: 'parsing',
+            percent: Math.round(parsingProgress),
+            message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
+            detail: filePath,
+            stats: {
+              filesProcessed: globalCurrent,
+              totalFiles: totalParseable,
+              nodesCreated: graph.nodeCount,
+            },
+          });
+        };
+        const activeWorkerPool = getOrCreateWorkerPool();
+        try {
+          chunkWorkerData = await processParsing(
+            graph,
+            chunkFiles,
+            symbolTable,
+            astCache,
+            scopeTreeCache,
+            progressForChunk,
+            activeWorkerPool,
+            // Capture raw results only when we have a cache to write to —
+            // otherwise we'd retain extra arrays for nothing.
+            parseCache && chunkHash && activeWorkerPool ? rawResults : undefined,
+          );
+        } catch (err) {
+          if (!(err instanceof WorkerPoolInitializationError)) throw err;
+          logger.warn(
+            {
+              err: err.message,
+              readinessFailures: err.readinessFailures,
+            },
+            'Worker pool initialization failed, using sequential fallback:',
+          );
+          rawResults.length = 0;
+          workerPoolDisabled = true;
+          const failedPool = workerPool;
+          workerPool = undefined;
+          await failedPool?.terminate().catch(() => undefined);
+          chunkWorkerData = await processParsing(
+            graph,
+            chunkFiles,
+            symbolTable,
+            astCache,
+            scopeTreeCache,
+            progressForChunk,
+            undefined,
+            undefined,
+          );
+        }
         // Persist the raw results for this chunk hash. Sequential path
         // doesn't populate rawResults (it writes directly to graph), so
         // small repos without worker pool simply don't cache. That's fine.
@@ -843,9 +883,11 @@ export async function runChunkedParseAndResolve(
     const cachedSequentialChunkFiles: Array<Array<{ path: string; content: string }>> = [];
     for (const chunkPaths of sequentialChunkPaths) {
       const chunkContents = await readFileContents(repoPath, chunkPaths);
-      const chunkFiles = chunkPaths
-        .filter((p) => chunkContents.has(p))
-        .map((p) => ({ path: p, content: chunkContents.get(p)! }));
+      const chunkFiles: Array<{ path: string; content: string }> = [];
+      for (const p of chunkPaths) {
+        const content = chunkContents.get(p);
+        if (content !== undefined) chunkFiles.push({ path: p, content });
+      }
       cachedSequentialChunkFiles.push(chunkFiles);
       astCache = createASTCache(chunkFiles.length);
       const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
