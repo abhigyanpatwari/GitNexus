@@ -21,6 +21,11 @@
  *      but not a namespace prefix → compound resolver
  *   7. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
+ *   8. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
+ *      whose `nodeId` is referenced as an `ownerId` in `model.methods`
+ *      (object-literal services). Last-resort fallback for lowercase
+ *      receivers with no class-like or type-binding match. Mirrors
+ *      the legacy DAG bridge in `call-processor.ts`.
  *
  * Reordering or merging cases changes resolution semantics.
  *
@@ -46,9 +51,10 @@ import {
   findExportedDef,
   findOwnedMember,
   findReceiverTypeBinding,
+  findValueBindingInScope,
   isClassLike,
 } from '../scope/walkers.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
+import { tryEmitEdge, tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
@@ -704,6 +710,61 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
+        }
+      }
+
+      // ── Case 5: value-receiver bridge (object-literal services) ──
+      // When prior cases couldn't resolve the receiver as a class or
+      // type binding, fall back to value-binding resolution. Covers:
+      //
+      //   export const fooService = { getUser(id) {...} };
+      //   import { fooService } from './service';
+      //   fooService.getUser(id);   // ← resolve here
+      //
+      // `fooService` is a `Const`/`Variable` (not class-like, no typeBinding
+      // for unannotated literals), so Cases 2-4 skip it. Scope-resolution
+      // defs for non-class values carry a synthetic id, so we translate to
+      // the canonical graph node ID via `resolveDefGraphId` before owner-
+      // indexed lookup — the parser writes the graph node ID as `ownerId`
+      // on the method symbol-table entry to match.
+      //
+      // Object-literal methods do not carry a `qualifiedName` (no class
+      // owner to seed it), so the picked def cannot round-trip through
+      // `tryEmitEdge` → `resolveDefGraphId`. We use
+      // `tryEmitEdgeWithExplicitTargetId` instead, passing `picked.nodeId`
+      // directly — same dedup-key shape, collapse-flag honoring, and
+      // caller resolution as `tryEmitEdge`.
+      const valueDef = findValueBindingInScope(site.inScope, receiverName, scopes);
+      if (valueDef !== undefined) {
+        const ownerGraphId =
+          resolveDefGraphId(valueDef.filePath, valueDef, nodeLookup) ?? valueDef.nodeId;
+        const picked = pickOverload(ownerGraphId, memberName, site, model, provider);
+        if (picked === OVERLOAD_AMBIGUOUS) {
+          handledSites.add(siteKey);
+          continue;
+        }
+        if (picked !== undefined) {
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : picked.filePath !== parsed.filePath
+                ? 'import-resolved'
+                : 'global';
+          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          const ok = tryEmitEdgeWithExplicitTargetId(
+            graph,
+            scopes,
+            nodeLookup,
+            site,
+            picked.nodeId,
+            reason,
+            seen,
+            confidence,
+            collapse,
+          );
+          if (ok) emitted++;
+          handledSites.add(siteKey);
+          continue;
         }
       }
     }

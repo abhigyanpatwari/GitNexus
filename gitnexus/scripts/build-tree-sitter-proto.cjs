@@ -4,7 +4,7 @@
  *
  * Why this script exists:
  *   tree-sitter-proto is vendored under gitnexus/vendor/tree-sitter-proto/
- *   and declared as a `file:` optionalDependency. Previously, the vendored
+ *   and copied into node_modules/ by materialize-vendor-grammars.cjs. Previously, the vendored
  *   package had its own `dependencies` and `install` script, which caused
  *   npm to create `vendor/tree-sitter-proto/node_modules/` and
  *   `vendor/tree-sitter-proto/build/` during install. Those directories
@@ -20,9 +20,8 @@
  *   gitnexus's own optionalDependencies, and moved native compilation here.
  *
  * What this does:
- *   Runs `npx node-gyp rebuild` inside `node_modules/tree-sitter-proto/`
- *   (which npm creates as a copy of vendor/tree-sitter-proto/ when
- *   resolving the file: dep). Build output lands in
+ *   Runs `npx node-gyp rebuild` inside `node_modules/tree-sitter-proto/`.
+ *   Build output lands in
  *   `node_modules/tree-sitter-proto/build/Release/tree_sitter_proto_binding.node`
  *   — under npm-managed territory, safe on upgrade.
  *

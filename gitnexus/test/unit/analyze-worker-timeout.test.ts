@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
@@ -28,12 +28,26 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
 }));
 
 describe('analyzeCommand worker timeout validation', () => {
+  // analyzeCommand now snapshot/restores GITNEXUS_* env vars, so the value
+  // observed *after* the call is the pre-call baseline — not what the CLI
+  // wrote. Tests that need to verify "the env was set for the downstream
+  // call" must capture it inside the runFullAnalysisMock implementation.
+  const ORIGINAL_TIMEOUT = process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
+  const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+
   beforeEach(() => {
     vi.resetModules();
     runFullAnalysisMock.mockReset();
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
-    delete process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_NODE_OPTIONS === undefined) {
+      delete process.env.NODE_OPTIONS;
+    } else {
+      process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+    }
   });
 
   it.each(['0', 'abc', '-5', 'Infinity'])(
@@ -56,18 +70,28 @@ describe('analyzeCommand worker timeout validation', () => {
     },
   );
 
-  it('sets the worker timeout environment variable for valid values', async () => {
+  it('sets the worker timeout env var during the runFullAnalysis call and restores it after', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    runFullAnalysisMock.mockResolvedValue({
-      repoName: 'repo',
-      repoPath: '/repo',
-      stats: {},
-      alreadyUpToDate: true,
+    let envAtCallTime: string | undefined;
+    runFullAnalysisMock.mockImplementation(async () => {
+      envAtCallTime = process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS;
+      return {
+        repoName: 'repo',
+        repoPath: '/repo',
+        stats: {},
+        alreadyUpToDate: true,
+      };
     });
 
     await analyzeCommand(undefined, { workerTimeout: '2' });
 
-    expect(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS).toBe('2000');
+    // Downstream sees the parsed milliseconds value during the call.
+    expect(envAtCallTime).toBe('2000');
     expect(runFullAnalysisMock).toHaveBeenCalled();
+    // After the call, the snapshot/restore wrapper has reset the env so a
+    // subsequent analyzeCommand invocation in the same host (or test
+    // process) doesn't inherit the previous call's worker timeout. This
+    // is the env-leak fix from PR #1693 review (B2).
+    expect(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS).toBe(ORIGINAL_TIMEOUT);
   });
 });

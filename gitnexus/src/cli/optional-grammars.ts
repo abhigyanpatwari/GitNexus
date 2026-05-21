@@ -1,15 +1,18 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart and tree-sitter-proto are optionalDependencies that
- * require a `node-gyp rebuild` at install time. The build can be skipped
- * via GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or it can
- * silently soft-fail when the C++ toolchain is missing.
+ * tree-sitter-dart, tree-sitter-proto, and tree-sitter-swift are vendored
+ * under vendor/ and materialized into node_modules/ at postinstall. Dart
+ * and Proto are built from source with node-gyp; Swift ships platform
+ * prebuilds activated via node-gyp-build. All three can be skipped via
+ * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
+ * soft-fail when the toolchain is missing (Dart/Proto) or no prebuild
+ * matches the host platform (Swift).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto support
- * is unavailable instead of silently getting a degraded index.
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift
+ * support is unavailable instead of silently getting a degraded index.
  */
 
 import { createRequire } from 'module';
@@ -29,6 +32,7 @@ interface OptionalGrammar {
 const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
   { name: 'tree-sitter-dart', pkg: 'tree-sitter-dart', extensions: ['.dart'] },
   { name: 'tree-sitter-proto', pkg: 'tree-sitter-proto', extensions: ['.proto'] },
+  { name: 'tree-sitter-swift', pkg: 'tree-sitter-swift', extensions: ['.swift'] },
 ];
 
 export interface MissingGrammar {
@@ -40,8 +44,8 @@ export interface MissingGrammar {
  * Returns the list of optional grammars whose native binding cannot be
  * loaded. Actually `require()`s the package — `require.resolve` would
  * locate the entry path even when the `.node` binding is absent (the
- * `file:` package directory is installed regardless of postinstall
- * outcome), giving false negatives for the exact users we want to warn:
+ * package directory exists without a working `.node` binding), giving false
+ * negatives for the exact users we want to warn:
  * those who installed with `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` or whose
  * native rebuild soft-failed for missing toolchain.
  *

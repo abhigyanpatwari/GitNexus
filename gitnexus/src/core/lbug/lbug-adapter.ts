@@ -27,6 +27,16 @@ import {
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
 } from './lbug-config.js';
+import {
+  finalizeLbugSidecarsAfterClose,
+  inspectLbugSidecars,
+  isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
+  preflightLbugSidecars,
+  quarantineWalForMissingShadow,
+  renameFailureMessage,
+  shadowSidecarRecoveryMessage,
+} from './sidecar-recovery.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
@@ -437,6 +447,180 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
   await drainQueryResult(queryResult);
 };
 
+const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
+
+/**
+ * Reject the quarantine path when the orphan WAL is too large to safely
+ * discard (>TINY_ORPHAN_WAL_BYTES). Mirrors the preflight policy at
+ * sidecar-recovery.ts:153-160 ("warn, do not quarantine"). Symmetric across
+ * read-only and writable recovery paths (PR #1747 review D2).
+ *
+ * Throws shadowSidecarRecoveryMessage immediately when the WAL is large,
+ * preserving the uncheckpointed pages for explicit operator recovery.
+ * Returns silently when the WAL is absent, tiny, or in any other state
+ * where the existing recovery path is safe to proceed.
+ */
+const refuseLargeWalQuarantine = async (
+  dbPath: string,
+  mode: 'read-only' | 'writable',
+  triggeringErr: unknown,
+): Promise<void> => {
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'orphan-wal') {
+    logger.warn(
+      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
+        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+};
+
+const reopenReadOnlyAfterMissingShadow = async (
+  dbPath: string,
+  err: unknown,
+): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'read-only', err);
+  try {
+    await quarantineWalForMissingShadow(dbPath, {
+      logger,
+      level: 'warn',
+      reason: 'read-only recovery',
+    });
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
+  }
+
+  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  try {
+    await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return reopened;
+  } catch (retryErr) {
+    await closeLbugConnection(reopened);
+    if (isMissingShadowSidecarError(retryErr) || isReadOnlyShadowReplayError(retryErr)) {
+      throw new Error(shadowSidecarRecoveryMessage(dbPath, retryErr));
+    }
+    throw retryErr;
+  }
+};
+
+const reopenWritableAfterMissingShadow = async (
+  dbPath: string,
+  err: unknown,
+): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'writable', err);
+  try {
+    await quarantineWalForMissingShadow(dbPath, {
+      logger,
+      level: 'warn',
+      reason: 'writable recovery',
+    });
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
+  }
+
+  return await openLbugConnection(lbug, dbPath);
+};
+
+const ensureReadOnlyConnectionUsable = async (
+  dbPath: string,
+  handle: LbugConnectionHandle,
+): Promise<LbugConnectionHandle> => {
+  try {
+    await queryAndDrain(handle.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return handle;
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      await closeLbugConnection(handle);
+      return await reopenReadOnlyAfterMissingShadow(dbPath, err);
+    }
+    if (!isReadOnlyShadowReplayError(err)) {
+      await closeLbugConnection(handle);
+      throw err;
+    }
+  }
+
+  await closeLbugConnection(handle);
+
+  const writable = await openLbugConnection(lbug, dbPath);
+  let missingShadowError: unknown;
+  try {
+    await queryAndDrain(writable.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      missingShadowError = err;
+    } else {
+      throw err;
+    }
+  } finally {
+    await closeLbugConnection(writable);
+  }
+  if (missingShadowError) {
+    return await reopenReadOnlyAfterMissingShadow(dbPath, missingShadowError);
+  }
+
+  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  try {
+    await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    return reopened;
+  } catch (err) {
+    await closeLbugConnection(reopened);
+    if (isMissingShadowSidecarError(err)) {
+      throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+    }
+    throw err;
+  }
+};
+
+const resetOpenConnectionState = (): void => {
+  currentDbPath = null;
+  ftsLoaded = false;
+  vectorExtensionLoaded = false;
+  ensuredFTSIndexes.clear();
+};
+
+const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null> => {
+  for (const schemaQuery of SCHEMA_QUERIES) {
+    try {
+      await queryAndDrain(conn, schemaQuery);
+    } catch (err) {
+      if (isMissingShadowSidecarError(err)) {
+        return err;
+      }
+
+      const msg = err instanceof Error ? err.message : String(err);
+      // Suppression list:
+      //   - "already exists": expected idempotent re-create on existing DBs
+      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
+      //     Windows when CREATE NODE TABLE runs against a path that was
+      //     just opened (the WAL handle from a fresh Database briefly
+      //     contests the table's first-write lock). The table is created
+      //     anyway and any genuine cross-process lock contention surfaces
+      //     on the next operation via withLbugDb's retry. Logging it here
+      //     would just be noise in CI.
+      //
+      // WAL corruption: the first DDL write after DB open triggers WAL
+      // replay — if the WAL file was left in a corrupt state by an
+      // interrupted previous run, the native engine throws here. Rather
+      // than logging a WARN and continuing in a broken state, close the
+      // DB cleanly and surface an actionable error so the caller (serve,
+      // MCP, analyze) can exit with a clear recovery message.
+      if (isWalCorruptionError(err)) {
+        await safeClose();
+        resetOpenConnectionState();
+        throw new Error(
+          `LadybugDB WAL corruption detected at ${dbPath}. ${WAL_RECOVERY_SUGGESTION}\n` +
+            `  Original error: ${msg.slice(0, 200)}`,
+        );
+      }
+      if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
+        logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+      }
+    }
+  }
+
+  return null;
+};
+
 export const initLbug = async (dbPath: string) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath));
 };
@@ -580,58 +764,46 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     // Ensure parent directory exists
     const parentDir = path.dirname(dbPath);
     await fs.mkdir(parentDir, { recursive: true });
+    await preflightLbugSidecars(dbPath, {
+      mode: readOnly ? 'read-only' : 'write',
+      logger,
+      allowQuarantine: true,
+    });
 
     const opened = readOnly
       ? await openLbugConnection(lbug, dbPath, { readOnly: true })
       : await openLbugConnection(lbug, dbPath);
-    db = opened.db;
-    conn = opened.conn;
+    const usable = readOnly ? await ensureReadOnlyConnectionUsable(dbPath, opened) : opened;
+    db = usable.db;
+    conn = usable.conn;
     currentDbReadOnly = readOnly;
   } finally {
     await releaseInitLock();
   }
 
-  for (const schemaQuery of SCHEMA_QUERIES) {
-    try {
-      await queryAndDrain(conn, schemaQuery);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Suppression list:
-      //   - "already exists": expected idempotent re-create on existing DBs
-      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
-      //     Windows when CREATE NODE TABLE runs against a path that was
-      //     just opened (the WAL handle from a fresh Database briefly
-      //     contests the table's first-write lock). The table is created
-      //     anyway and any genuine cross-process lock contention surfaces
-      //     on the next operation via withLbugDb's retry. Logging it here
-      //     would just be noise in CI.
-      //
-      // WAL corruption: the first DDL write after DB open triggers WAL
-      // replay — if the WAL file was left in a corrupt state by an
-      // interrupted previous run, the native engine throws here. Rather
-      // than logging a WARN and continuing in a broken state, close the
-      // DB cleanly and surface an actionable error so the caller (serve,
-      // MCP, analyze) can exit with a clear recovery message.
-      if (isWalCorruptionError(err)) {
+  if (!readOnly) {
+    const missingShadowError = await runSchemaCreationQueries(dbPath);
+    if (missingShadowError) {
+      await safeClose();
+      resetOpenConnectionState();
+      const reopened = await reopenWritableAfterMissingShadow(dbPath, missingShadowError);
+      db = reopened.db;
+      conn = reopened.conn;
+      currentDbReadOnly = false;
+
+      const retryMissingShadowError = await runSchemaCreationQueries(dbPath);
+      if (retryMissingShadowError) {
         await safeClose();
-        currentDbPath = null;
-        ftsLoaded = false;
-        vectorExtensionLoaded = false;
-        ensuredFTSIndexes.clear();
-        throw new Error(
-          `LadybugDB WAL corruption detected at ${dbPath}. ${WAL_RECOVERY_SUGGESTION}\n` +
-            `  Original error: ${msg.slice(0, 200)}`,
-        );
-      }
-      if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
-        logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+        resetOpenConnectionState();
+        throw new Error(shadowSidecarRecoveryMessage(dbPath, retryMissingShadowError));
       }
     }
   }
 
-  // FTS powers baseline search, so initialize it with the core DB. VECTOR is
-  // only required for semantic embeddings and is probed lazily there.
-  await loadFTSExtension();
+  // FTS powers baseline search, so initialize it with the core DB. Read-only
+  // serve/MCP paths must never run DDL or trigger network INSTALL; analyze owns
+  // schema/index creation and extension installation.
+  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : {});
 
   currentDbPath = dbPath;
   return { db, conn };
@@ -1348,8 +1520,10 @@ export const flushWAL = async (): Promise<void> => {
   try {
     const checkpointResult = await conn.query('CHECKPOINT');
     await drainQueryResult(checkpointResult);
-  } catch {
-    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  } catch (err) {
+    logger.debug(
+      `GitNexus: LadybugDB CHECKPOINT skipped/failed during WAL flush: ${summarizeError(err)}`,
+    );
   }
 };
 
@@ -1403,6 +1577,9 @@ export const safeClose = async (): Promise<void> => {
         '⚠️ LadybugDB file handle still locked after close (Windows). If this repeats, check antivirus/Defender exclusions for the GitNexus storage directory.',
       );
     }
+  }
+  if (closingDbPath) {
+    await finalizeLbugSidecarsAfterClose(closingDbPath, { logger });
   }
 };
 
