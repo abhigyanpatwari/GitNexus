@@ -983,9 +983,7 @@ describe('LocalBackend.resolveRepo', () => {
     (getGitRoot as any).mockReturnValue(null);
     await backend.init();
 
-    await expect(backend.resolveRepo('project')).rejects.toThrow(
-      /Repository "project" not found/,
-    );
+    await expect(backend.resolveRepo('project')).rejects.toThrow(/Repository "project" not found/);
 
     // Sanity: exact names still resolve unambiguously against the same fixture.
     const exact = await backend.resolveRepo('project-a');
