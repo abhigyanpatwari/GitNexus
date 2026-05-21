@@ -425,7 +425,10 @@ export class LocalBackend {
     for (const [id, handle] of this.repos) {
       if (id === base && handle.repoPath !== path.resolve(repoPath)) {
         // Collision — use path hash
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
+        // Lowercase the hash so it survives the `paramLower` lookup in
+        // resolveRepoFromCache — base64url retains mixed case, but the id
+        // tier compares against `repoParam.toLowerCase()` (#1658 follow-up).
+        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6).toLowerCase();
         return `${base}-${hash}`;
       }
     }
@@ -474,14 +477,10 @@ export class LocalBackend {
     if (!refreshedAfterAmbiguity) {
       await this.refreshRepos();
     }
-    try {
-      const retried = this.resolveRepoFromCache(repoParam);
-      if (retried) {
-        this.maybeWarnSiblingDrift(retried).catch(() => {});
-        return retried;
-      }
-    } catch (err) {
-      throw err;
+    const retried = this.resolveRepoFromCache(repoParam);
+    if (retried) {
+      this.maybeWarnSiblingDrift(retried).catch(() => {});
+      return retried;
     }
 
     // Still no match — throw with helpful message
@@ -559,7 +558,8 @@ export class LocalBackend {
       // Stable hashed id (e.g. "shared-abc123") from repoId() collision suffix
       if (this.repos.has(paramLower)) return this.repos.get(paramLower)!;
 
-      // Relative path (e.g. "child/repo") after name/id tiers
+      // Bare name resolved as a cwd-relative path (e.g. "myrepo" against process.cwd()),
+      // after name/id tiers. Path-like strings with separators were handled at the top.
       if (!looksLikePath) {
         const pathMatch = resolvePathMatch();
         if (pathMatch) return pathMatch;

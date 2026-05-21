@@ -941,6 +941,45 @@ describe('LocalBackend.resolveRepo', () => {
     ).rejects.toThrow(/Multiple registered repos match/);
   });
 
+  it('resolves second duplicate-name repo by its stable hashed id (#1658)', async () => {
+    const { wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    // Mirrors the suffix scheme in LocalBackend.repoId: base64url(repoPath).slice(0,6)
+    // lowercased so it survives the paramLower lookup in resolveRepoFromCache.
+    // Couples this test to that formula on purpose — if repoId changes its suffix,
+    // this assertion should fail and force a re-review of the hashed-id resolution tier.
+    const wtId = `shared-${Buffer.from(wtDir).toString('base64url').slice(0, 6).toLowerCase()}`;
+    await backend.init();
+    const resolved = await backend.resolveRepo(wtId);
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('does not silently return first partial match for ambiguous prefix (#1658)', async () => {
+    const dirA = mkdtempSync(path.join(os.tmpdir(), 'gnx-project-a-'));
+    const dirB = mkdtempSync(path.join(os.tmpdir(), 'gnx-project-b-'));
+    duplicateFixtureDirs.push(dirA, dirB);
+    for (const dir of [dirA, dirB]) {
+      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+    }
+    const entries = [
+      { ...MOCK_REPO_ENTRY, name: 'project-a', path: dirA, storagePath: path.join(dirA, '.gitnexus') },
+      { ...MOCK_REPO_ENTRY, name: 'project-b', path: dirB, storagePath: path.join(dirB, '.gitnexus') },
+    ];
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+
+    await expect(backend.resolveRepo('project')).rejects.toThrow(
+      /Repository "project" not found/,
+    );
+
+    // Sanity: exact names still resolve unambiguously against the same fixture.
+    const exact = await backend.resolveRepo('project-a');
+    expect(exact.name).toBe('project-a');
+    expect(exact.repoPath).toBe(dirA);
+  });
+
   it('resolves repo case-insensitively', async () => {
     setupSingleRepo();
     await backend.init();
