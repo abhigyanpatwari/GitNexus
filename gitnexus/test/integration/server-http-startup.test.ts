@@ -8,6 +8,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,6 +18,22 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const DIST_CLI = path.join(REPO_ROOT, 'dist', 'cli', 'index.js');
 
 const STARTUP_BUDGET_MS = process.env.CI ? 30_000 : 15_000;
+
+const allocateFreePort = (): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const probe = http.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const addr = probe.address();
+      if (typeof addr !== 'object' || !addr) {
+        probe.close();
+        reject(new Error('could not allocate ephemeral port'));
+        return;
+      }
+      const port = addr.port;
+      probe.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
 
 const probeHealth = (port: number): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -41,12 +58,11 @@ const probeHealth = (port: number): Promise<{ status: number; body: string }> =>
 // On Windows, spawned `serve` can print "running" before the listen socket is
 // reachable from the parent; unit tests in server-cors-stack.test.ts cover the
 // Express 5 registration path on all platforms.
-const describeServeStartup =
-  process.platform === 'win32' ? describe.skip : describe;
+const describeServeStartup = process.platform === 'win32' ? describe.skip : describe;
 
 describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
   let proc: ChildProcessWithoutNullStreams | undefined;
-  let port = 0;
+  let homeDir: string | undefined;
 
   afterEach(async () => {
     if (proc && !proc.killed) {
@@ -63,6 +79,11 @@ describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
       });
     }
     proc = undefined;
+
+    if (homeDir) {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      homeDir = undefined;
+    }
   });
 
   it('serve boots and GET /api/health returns ok', async () => {
@@ -70,15 +91,18 @@ describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
       throw new Error(`Missing ${DIST_CLI} — run npm run build before integration tests`);
     }
 
-    port = 47_000 + Math.floor(Math.random() * 1000);
-    const homeDir = path.join(REPO_ROOT, 'test', 'integration', '.tmp-serve-home');
-    fs.mkdirSync(homeDir, { recursive: true });
+    const port = await allocateFreePort();
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-serve-home-'));
 
-    proc = spawn(process.execPath, [DIST_CLI, 'serve', '--port', String(port), '--host', '127.0.0.1'], {
-      cwd: REPO_ROOT,
-      env: { ...process.env, GITNEXUS_HOME: homeDir, NODE_OPTIONS: '' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    proc = spawn(
+      process.execPath,
+      [DIST_CLI, 'serve', '--port', String(port), '--host', '127.0.0.1'],
+      {
+        cwd: REPO_ROOT,
+        env: { ...process.env, GITNEXUS_HOME: homeDir, NODE_OPTIONS: '' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
 
     let stdout = '';
     let stderr = '';

@@ -268,11 +268,9 @@ describe('production routes — rate-limit middleware wiring', () => {
   });
 
   it('sets PNA header middleware before cors (preflight must include Allow-Private-Network)', () => {
-    const pnaIdx = apiSource.indexOf('Access-Control-Allow-Private-Network');
-    const corsIdx = apiSource.indexOf("app.use(\n    cors(");
-    expect(pnaIdx).toBeGreaterThan(-1);
-    expect(corsIdx).toBeGreaterThan(-1);
-    expect(pnaIdx).toBeLessThan(corsIdx);
+    expect(apiSource).toMatch(
+      /Access-Control-Allow-Private-Network[\s\S]*?app\.use\(\s*\n?\s*cors\(/,
+    );
   });
 
   it('embed route flushes WAL via flushWAL, not inline executeQuery (#1376)', () => {
