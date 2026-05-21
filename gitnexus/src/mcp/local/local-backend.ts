@@ -31,6 +31,8 @@ import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  canonicalizePath,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
@@ -492,27 +494,65 @@ export class LocalBackend {
 
   /**
    * Try to resolve a repo from the in-memory cache. Returns null on miss.
+   * Throws {@link RegistryAmbiguousTargetError} when `repoParam` matches
+   * multiple handles by name and cwd cannot disambiguate (#1658).
    */
   private resolveRepoFromCache(repoParam?: string): RepoHandle | null {
     if (this.repos.size === 0) return null;
 
     if (repoParam) {
       const paramLower = repoParam.toLowerCase();
-      // Match by id
+      const looksLikePath =
+        path.isAbsolute(repoParam) || repoParam.includes(path.sep) || repoParam.includes('/');
+
+      const resolvePathMatch = (): RepoHandle | undefined => {
+        const canonicalTarget = canonicalizePath(repoParam);
+        return [...this.repos.values()].find((handle) => {
+          const stored = canonicalizePath(handle.repoPath);
+          return process.platform === 'win32'
+            ? stored.toLowerCase() === canonicalTarget.toLowerCase()
+            : stored === canonicalTarget;
+        });
+      };
+
+      // Path-like params first (absolute or contains separators) — aligns with
+      // resolveRegistryEntry (#829). Bare aliases such as ".tmp-repro-mini" must
+      // not be resolved via path.resolve(cwd) before duplicate-name handling.
+      if (looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
+      }
+
+      // Exact name before id — the first duplicate sibling keeps id === name
+      // (e.g. id "shared"), so a name lookup must not be captured by the id tier.
+      const nameMatches = [...this.repos.values()].filter(
+        (handle) => handle.name.toLowerCase() === paramLower,
+      );
+      if (nameMatches.length === 1) return nameMatches[0];
+      if (nameMatches.length > 1) {
+        const cwdPick = this.pickRepoHandleForCwd(nameMatches);
+        if (cwdPick) return cwdPick;
+        throw new RegistryAmbiguousTargetError(
+          repoParam,
+          nameMatches.map((h) => this.handleToRegistryEntry(h)),
+        );
+      }
+
+      // Stable hashed id (e.g. "shared-abc123") from repoId() collision suffix
       if (this.repos.has(paramLower)) return this.repos.get(paramLower)!;
-      // Match by name (case-insensitive)
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase() === paramLower) return handle;
+
+      // Relative path (e.g. "child/repo") after name/id tiers
+      if (!looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
       }
-      // Match by path (substring)
-      const resolved = path.resolve(repoParam);
-      for (const handle of this.repos.values()) {
-        if (handle.repoPath === resolved) return handle;
-      }
-      // Match by partial name
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase().includes(paramLower)) return handle;
-      }
+
+      // Partial name — only when unambiguous
+      const partialMatches = [...this.repos.values()].filter((handle) =>
+        handle.name.toLowerCase().includes(paramLower),
+      );
+      if (partialMatches.length === 1) return partialMatches[0];
+
       return null;
     }
 
@@ -521,6 +561,32 @@ export class LocalBackend {
     }
 
     return null; // Multiple repos, no param — ambiguous
+  }
+
+  /** Prefer the indexed repo whose path matches the git root of process.cwd(). */
+  private pickRepoHandleForCwd(candidates: RepoHandle[]): RepoHandle | null {
+    const cwdRoot = getGitRoot(process.cwd());
+    if (!cwdRoot) return null;
+    const canonicalCwd = canonicalizePath(cwdRoot);
+    const cwdMatches = candidates.filter((handle) => {
+      const stored = canonicalizePath(handle.repoPath);
+      return process.platform === 'win32'
+        ? stored.toLowerCase() === canonicalCwd.toLowerCase()
+        : stored === canonicalCwd;
+    });
+    return cwdMatches.length === 1 ? cwdMatches[0] : null;
+  }
+
+  private handleToRegistryEntry(handle: RepoHandle): RegistryEntry {
+    return {
+      name: handle.name,
+      path: handle.repoPath,
+      storagePath: handle.storagePath,
+      indexedAt: handle.indexedAt,
+      lastCommit: handle.lastCommit,
+      stats: handle.stats,
+      remoteUrl: handle.remoteUrl,
+    };
   }
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────

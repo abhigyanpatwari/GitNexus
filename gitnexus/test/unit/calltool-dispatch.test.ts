@@ -8,6 +8,9 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
@@ -37,11 +40,15 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
-  listRegisteredRepos: vi.fn().mockResolvedValue([]),
-  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
-  findSiblingClones: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    listRegisteredRepos: vi.fn().mockResolvedValue([]),
+    cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+    findSiblingClones: vi.fn().mockResolvedValue([]),
+  };
+});
 
 // `core/git-staleness` is also imported by `local-backend.ts` (for
 // `checkStaleness` and `checkCwdMatch`). Stub it out here so unit
@@ -51,6 +58,14 @@ vi.mock('../../src/core/git-staleness.js', () => ({
   checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
   checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
 }));
+
+vi.mock('../../src/storage/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/git.js')>();
+  return {
+    ...actual,
+    getGitRoot: vi.fn().mockReturnValue(null),
+  };
+});
 
 vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
@@ -72,6 +87,7 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
   initLbug,
@@ -110,6 +126,34 @@ function setupMultipleRepos() {
 
 function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
+}
+
+function makeDuplicateNameFixture() {
+  const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-wt-'));
+  for (const dir of [mainDir, wtDir]) {
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+  }
+  return {
+    mainDir,
+    wtDir,
+    entries: [
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'shared',
+        path: mainDir,
+        storagePath: path.join(mainDir, '.gitnexus'),
+      },
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'shared',
+        path: wtDir,
+        storagePath: path.join(wtDir, '.gitnexus'),
+      },
+    ],
+  };
 }
 
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
@@ -783,6 +827,7 @@ describe('LocalBackend.resolveRepo', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    (getGitRoot as any).mockReturnValue(null);
     backend = new LocalBackend();
   });
 
@@ -827,6 +872,44 @@ describe('LocalBackend.resolveRepo', () => {
     await expect(backend.callTool('query', { query: 'test', repo: 'nonexistent' })).rejects.toThrow(
       'not found',
     );
+  });
+
+  it('prefers duplicate-name repo matching process.cwd() git root (#1658)', async () => {
+    const { wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(wtDir);
+    await backend.init();
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('query', { query: 'test', repo: 'shared' });
+    const resolved = await backend.resolveRepo('shared');
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('throws RegistryAmbiguousTargetError when duplicate name cannot be disambiguated (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/Multiple registered repos match/);
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/absolute path/i);
+  });
+
+  it('resolves duplicate-name repos by absolute path before name (#1658)', async () => {
+    const { mainDir, wtDir, entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(mainDir);
+    await backend.init();
+    (executeParameterized as any).mockResolvedValue([]);
+    const resolved = await backend.resolveRepo(wtDir);
+    expect(resolved.repoPath).toBe(wtDir);
+  });
+
+  it('does not treat a bare duplicate alias as a relative path (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(backend.resolveRepo('shared')).rejects.toThrow(/Multiple registered repos match/);
   });
 
   it('resolves repo case-insensitively', async () => {
