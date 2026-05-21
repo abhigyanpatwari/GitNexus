@@ -212,6 +212,55 @@ export function findClassBindingInScope(
 }
 
 /**
+ * Look up a value-binding (non-class-like, non-callable) by name in
+ * the given scope's chain. Used by the value-receiver-owner bridge
+ * for object-literal services such as:
+ *
+ *   export const fooService = { getUser(id) {...} };
+ *
+ * where `fooService` is a `Const`/`Variable` whose `nodeId` is the
+ * `ownerId` of the member method but where neither `findClassBindingInScope`
+ * (rejects non-class-like) nor `findReceiverTypeBinding` (no typeBinding for
+ * an unannotated literal) finds it. Returns the first non-class-like,
+ * non-callable binding match.
+ *
+ * Mirrors `findClassBindingInScope` exactly; only the accepted def-type
+ * predicate differs.
+ */
+export function findValueBindingInScope(
+  startScope: ScopeId,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return undefined;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return undefined;
+
+    const isValueLike = (t: string): boolean =>
+      !isClassLike(t) && t !== 'Function' && t !== 'Method' && t !== 'Constructor';
+
+    const localBindings = scope.bindings.get(receiverName);
+    if (localBindings !== undefined) {
+      for (const b of localBindings) {
+        if (isValueLike(b.def.type)) return b.def;
+      }
+    }
+
+    const importedBindings = lookupBindingsAt(currentId, receiverName, scopes);
+    for (const b of importedBindings) {
+      if (isValueLike(b.def.type)) return b.def;
+    }
+
+    currentId = scope.parent;
+  }
+  return undefined;
+}
+
+/**
  * Look up a callable (Function/Method/Constructor) by name in the
  * given scope's chain. Uses the dual-source pattern (scope.bindings +
  * `lookupBindingsAt` for finalized + augmented) so cross-file

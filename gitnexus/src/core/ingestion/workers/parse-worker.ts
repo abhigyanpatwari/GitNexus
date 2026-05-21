@@ -2327,7 +2327,9 @@ const processFileGroup = (
         ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
           ? { templateArguments: classTemplateArguments }
           : {}),
-        ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+        ...((enclosingClassId ?? objectLiteralOwnerInfo?.ownerId)
+          ? { ownerId: (enclosingClassId ?? objectLiteralOwnerInfo?.ownerId) as string }
+          : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,

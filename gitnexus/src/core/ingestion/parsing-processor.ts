@@ -790,7 +790,7 @@ const processParsingSequential = async (
         returnType: methodProps.returnType as string | undefined,
         declaredType,
         templateArguments: classTemplateArguments,
-        ownerId: enclosingClassId ?? undefined,
+        ownerId: enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? undefined,
         qualifiedName: qualifiedTypeName,
       });
 
