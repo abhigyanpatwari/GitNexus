@@ -9,6 +9,7 @@
 import { useState, useRef, useEffect, useId } from 'react';
 import {
   Github,
+  Gitlab,
   FolderOpen,
   Loader2,
   Check,
@@ -26,13 +27,18 @@ import { AnalyzeProgress } from './AnalyzeProgress';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-type InputMode = 'github' | 'local';
+type InputMode = 'github' | 'gitlab' | 'local';
 
 const GITHUB_RE = /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i;
+const GITLAB_RE = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+(\/.*)?$/i;
 const IS_WINDOWS = navigator.userAgent.toLowerCase().includes('win');
 
 function isValidGithubUrl(value: string): boolean {
   return GITHUB_RE.test(value.trim());
+}
+
+function isValidGitlabUrl(value: string): boolean {
+  return GITLAB_RE.test(value.trim());
 }
 
 // ── Mode tabs ────────────────────────────────────────────────────────────────
@@ -52,6 +58,19 @@ function ModeTabs({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode
       >
         <Github className="h-3 w-3" />
         GitHub URL
+      </button>
+      <button
+        role="tab"
+        aria-selected={mode === 'gitlab'}
+        onClick={() => onChange('gitlab')}
+        className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+          mode === 'gitlab'
+            ? 'bg-accent text-white shadow-sm'
+            : 'text-text-muted hover:text-text-secondary'
+        } `}
+      >
+        <Gitlab className="h-3 w-3" />
+        GitLab URL
       </button>
       <button
         role="tab"
@@ -138,6 +157,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<InputMode>('github');
   const [githubUrl, setGithubUrl] = useState('');
+  const [gitlabUrl, setGitlabUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
   const [phase, setPhase] = useState<InternalPhase>('input');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -162,6 +182,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const handleModeChange = (m: InputMode) => {
     setMode(m);
     setGithubUrl('');
+    setGitlabUrl('');
     setLocalPath('');
     setValidationError(null);
   };
@@ -175,11 +196,17 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const canSubmit =
     mode === 'github'
       ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
-      : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
+      : mode === 'gitlab'
+        ? isValidGitlabUrl(gitlabUrl) && (phase === 'input' || phase === 'error')
+        : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
 
   const handleAnalyze = async () => {
     if (mode === 'github' && !isValidGithubUrl(githubUrl)) {
       setValidationError('Please enter a valid GitHub repository URL.');
+      return;
+    }
+    if (mode === 'gitlab' && !isValidGitlabUrl(gitlabUrl)) {
+      setValidationError('Please enter a valid GitLab repository URL.');
       return;
     }
     if (mode === 'local' && localPath.trim().length < 2) {
@@ -191,12 +218,22 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setPhase('starting');
 
     try {
-      const request = mode === 'github' ? { url: githubUrl.trim() } : { path: localPath.trim() };
+      const request =
+        mode === 'github'
+          ? { url: githubUrl.trim() }
+          : mode === 'gitlab'
+            ? { url: gitlabUrl.trim() }
+            : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
       jobIdRef.current = jobId;
       setPhase('analyzing');
 
-      const nameSource = mode === 'github' ? githubUrl.trim() : localPath.trim();
+      const nameSource =
+        mode === 'github'
+          ? githubUrl.trim()
+          : mode === 'gitlab'
+            ? gitlabUrl.trim()
+            : localPath.trim();
       const controller = streamAnalyzeProgress(
         jobId,
         (p) => setProgress(p),
@@ -294,6 +331,61 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* GitLab URL input */}
+      {showInput && mode === 'gitlab' && (
+        <div className="space-y-2">
+          <label
+            htmlFor={inputId}
+            className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+          >
+            GitLab Repository URL
+          </label>
+          <div
+            className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
+              validationError && phase === 'error'
+                ? 'border-red-500/50'
+                : isValidGitlabUrl(gitlabUrl)
+                  ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
+                  : 'border-border-default focus-within:border-accent/40'
+            } `}
+          >
+            <Gitlab className="h-4 w-4 shrink-0 text-text-muted" />
+            <input
+              id={inputId}
+              type="url"
+              value={gitlabUrl}
+              onChange={(e) => {
+                setGitlabUrl(e.target.value);
+                if (validationError) setValidationError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit && !isLoading) {
+                  e.preventDefault();
+                  handleAnalyze();
+                }
+              }}
+              disabled={isLoading}
+              placeholder="https://gitlab.com/owner/repo"
+              autoComplete="url"
+              spellCheck={false}
+              className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+            />
+            {gitlabUrl.length > 10 && (
+              <div className="shrink-0">
+                {isValidGitlabUrl(gitlabUrl) ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="h-3.5 w-3.5 text-text-muted" />
+                )}
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-text-muted">
+            Supports GitLab.com and self-hosted GitLab instances.
+          </p>
         </div>
       )}
 
