@@ -87,6 +87,33 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'argCount > required (2>1) on candidate with default param emits NO edge post-fix',
     'variadic candidate, argCount < required (1<2) emits NO edge',
   ]),
+  typescript: new Set([
+    // Issue #1358 sub-cases: class-instance singleton (`export const foo = new Foo()`)
+    // and factory-pattern singleton (`export const foo = makeFoo()`) cross-file
+    // CALLS resolution. The scope-resolution path resolves these via
+    // `@type-binding.constructor` capture (TS query) +
+    // `propagateImportedReturnTypes` mirror + receiver-bound Case 4 simple
+    // typeBinding lookup. The legacy DAG's typeEnv does not propagate
+    // `new Foo()` constructor inference across module boundaries — verified
+    // by `scope-parity / typescript parity` CI job failure. Node-existence
+    // and HAS_METHOD edge assertions pass under legacy DAG (parser-level
+    // emission is intact); only the cross-file CALLS edge resolution
+    // requires the scope-resolution chain. Scope-resolver-only correctness
+    // wins; backporting requires constructor-typeBinding cross-file
+    // propagation in the legacy DAG.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+  ]),
+  javascript: new Set([
+    // Mirrors the TypeScript class-instance and factory-pattern singleton
+    // resolution gates above. JavaScript fails on the same 2 CALLS-edge
+    // resolution tests under `REGISTRY_PRIMARY_JAVASCRIPT=0` for the same
+    // reason — no cross-file constructor-typeBinding propagation in the
+    // legacy DAG path. Verified by `scope-parity / javascript parity` CI
+    // job failure on the bare singleton tests before this exclusion landed.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+  ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
     // resolver's deterministic sort. The legacy resolver returns the
