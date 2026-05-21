@@ -31,7 +31,23 @@ for (const name of VENDORED_GRAMMARS) {
     continue;
   }
 
-  fs.mkdirSync(path.join(ROOT, 'node_modules'), { recursive: true });
-  fs.rmSync(dest, { recursive: true, force: true });
-  fs.cpSync(src, dest, { recursive: true, verbatim: true });
+  // Copy to a sibling tmp dir first, then atomically swap into place. Keeps a
+  // previously-materialized grammar intact when cpSync throws mid-copy (e.g.
+  // Windows EPERM on a locked file — the exact #1728 case this script targets).
+  const partial = `${dest}.materialize-tmp`;
+  try {
+    fs.mkdirSync(path.join(ROOT, 'node_modules'), { recursive: true });
+    fs.rmSync(partial, { recursive: true, force: true });
+    fs.cpSync(src, partial, { recursive: true, verbatim: true });
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.renameSync(partial, dest);
+  } catch (err) {
+    // Fail-soft: a single locked/inaccessible file (common on Windows) must not
+    // abort the whole gitnexus install. Matches build-tree-sitter-*.cjs pattern.
+    fs.rmSync(partial, { recursive: true, force: true });
+    console.warn(`[gitnexus] Could not materialize vendor/${name}: ${err.message}`);
+    console.warn(
+      `[gitnexus] ${name} parsing will be unavailable. Other functionality is unaffected.`,
+    );
+  }
 }
