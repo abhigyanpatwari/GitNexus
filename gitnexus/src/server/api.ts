@@ -714,6 +714,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
+  // No explicit OPTIONS route is registered. The Chromium Private Network
+  // Access header is set by the global middleware above (pre-cors), and
+  // `cors()` itself handles OPTIONS preflights for every path. Registering a
+  // wildcard OPTIONS catchall here would throw under Express 5's stricter
+  // path parser (the source of the original startup crash this branch fixed).
+
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
