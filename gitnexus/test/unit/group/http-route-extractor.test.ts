@@ -542,10 +542,16 @@ import httpx as hx
 from httpx import AsyncClient
 from httpx import AsyncClient as HttpxAsyncClient
 
+# Dotted-package look-alikes — must NOT be detected as httpx.
+import my_pkg.httpx as evil_mod
+from my_pkg.httpx import AsyncClient as evil_async
+
 module_client = httpx.AsyncClient(base_url="https://svc.local")
 module_alias_client = hx.AsyncClient(base_url="https://svc.local")
 module_direct_client = AsyncClient(base_url="https://svc.local")
 module_renamed_client = HttpxAsyncClient(base_url="https://svc.local")
+evil_mod_client = evil_mod.AsyncClient(base_url="https://svc.local")
+evil_direct_client = evil_async(base_url="https://svc.local")
 
 class TopicClient:
     def __init__(self):
@@ -587,10 +593,27 @@ def module_scope_shadow_collision():
     client = acquire_cache_client()
     return client.get("/ignored-module-same-name")
 
+def shadow_direct_alias():
+    AsyncClient = lambda: FakeClient()
+    client = AsyncClient()
+    return client.get("/shadow-direct-fp")
+
+def shadow_module_alias():
+    hx = FakeMod()
+    client = hx.AsyncClient()
+    return client.get("/shadow-module-fp")
+
+async def shadow_direct_context():
+    AsyncClient = lambda: FakeClient()
+    async with AsyncClient() as client:
+        return await client.get("/shadow-direct-context-fp")
+
 module_client.get("/module-topic")
 module_alias_client.get("/module-alias-topic")
 module_direct_client.get("/module-direct-topic")
 module_renamed_client.get("/module-renamed-topic")
+evil_mod_client.get("/evil-module-dotted-fp")
+evil_direct_client.get("/evil-direct-dotted-fp")
 `,
       );
 
@@ -626,6 +649,23 @@ module_renamed_client.get("/module-renamed-topic")
       ).toBeUndefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/ignored-module-same-name'),
+      ).toBeUndefined();
+      // Finding 1: dotted-package look-alikes (`my_pkg.httpx`) must not be detected.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/evil-module-dotted-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/evil-direct-dotted-fp'),
+      ).toBeUndefined();
+      // Finding 2: locally rebound imported aliases must not be detected.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-direct-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-module-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-direct-context-fp'),
       ).toBeUndefined();
     });
 
