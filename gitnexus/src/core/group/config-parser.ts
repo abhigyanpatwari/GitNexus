@@ -136,9 +136,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     }
     const target = mapping.to as Record<string, unknown>;
     if (!target.repo || !repoPaths.has(target.repo as string)) {
-      throw new Error(
-        `http_mappings[${i}].to.repo "${target.repo}" does not match any repo path`,
-      );
+      throw new Error(`http_mappings[${i}].to.repo "${target.repo}" does not match any repo path`);
     }
     if (mapping.match === undefined || String(mapping.match).trim() === '') {
       throw new Error(`http_mappings[${i}].match is required`);
@@ -152,7 +150,9 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
       if (!Array.isArray(mapping.methods)) {
         throw new Error(`http_mappings[${i}].methods must be an array when provided`);
       }
-      methods = mapping.methods.map((method) => String(method).trim().toUpperCase()).filter(Boolean);
+      methods = mapping.methods
+        .map((method) => String(method).trim().toUpperCase())
+        .filter(Boolean);
       if (methods.length === 0) {
         throw new Error(`http_mappings[${i}].methods must not be empty`);
       }
@@ -160,7 +160,11 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
 
     let when: Record<string, string> | undefined;
     if (mapping.when !== undefined) {
-      if (typeof mapping.when !== 'object' || Array.isArray(mapping.when) || mapping.when === null) {
+      if (
+        typeof mapping.when !== 'object' ||
+        Array.isArray(mapping.when) ||
+        mapping.when === null
+      ) {
         throw new Error(`http_mappings[${i}].when must be an object when provided`);
       }
       when = Object.fromEntries(
@@ -176,7 +180,9 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
       to: {
         repo: target.repo as string,
         service:
-          target.service === undefined || target.service === null ? undefined : String(target.service),
+          target.service === undefined || target.service === null
+            ? undefined
+            : String(target.service),
       },
       methods,
       match: String(mapping.match),

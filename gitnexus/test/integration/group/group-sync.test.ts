@@ -131,8 +131,6 @@ http_mappings:
     expect(result.crossLinks).toHaveLength(1);
     expect(result.crossLinks[0].matchType).toBe('manifest');
     expect(result.crossLinks[0].contractId).toBe('http::POST::/orders/create');
-    expect(result.crossLinks[0].fromContractId).toBe(
-      'http::POST::/api/titans/order/1.0.0/create',
-    );
+    expect(result.crossLinks[0].fromContractId).toBe('http::POST::/api/titans/order/1.0.0/create');
   });
 });

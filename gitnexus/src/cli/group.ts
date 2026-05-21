@@ -29,9 +29,8 @@ export function registerGroupCommands(program: Command): void {
     )
     .action(async (groupName: string, groupPath: string, registryName: string) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
-      const { loadGroupConfig, serializeGroupConfig } = await import(
-        '../core/group/config-parser.js'
-      );
+      const { loadGroupConfig, serializeGroupConfig } =
+        await import('../core/group/config-parser.js');
       const path = await import('node:path');
       const fs = await import('node:fs/promises');
       const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
@@ -52,9 +51,8 @@ export function registerGroupCommands(program: Command): void {
     .description('Remove a repo from a group')
     .action(async (groupName: string, repoPath: string) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
-      const { loadGroupConfig, serializeGroupConfig } = await import(
-        '../core/group/config-parser.js'
-      );
+      const { loadGroupConfig, serializeGroupConfig } =
+        await import('../core/group/config-parser.js');
       const path = await import('node:path');
       const fs = await import('node:fs/promises');
       const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);

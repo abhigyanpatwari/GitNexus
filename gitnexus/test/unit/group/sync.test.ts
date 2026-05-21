@@ -138,11 +138,7 @@ describe('syncGroup', () => {
 
     const mockContracts: StoredContract[] = [
       {
-        ...makeContract(
-          'http::POST::/api/titans/order/1.0.0/create',
-          'consumer',
-          'frontend',
-        ),
+        ...makeContract('http::POST::/api/titans/order/1.0.0/create', 'consumer', 'frontend'),
         meta: { method: 'POST', path: '/api/titans/order/1.0.0/create' },
       },
       {
@@ -160,9 +156,7 @@ describe('syncGroup', () => {
     expect(result.crossLinks).toHaveLength(1);
     expect(result.crossLinks[0].matchType).toBe('manifest');
     expect(result.crossLinks[0].contractId).toBe('http::POST::/orders/create');
-    expect(result.crossLinks[0].fromContractId).toBe(
-      'http::POST::/api/titans/order/1.0.0/create',
-    );
+    expect(result.crossLinks[0].fromContractId).toBe('http::POST::/api/titans/order/1.0.0/create');
     expect(result.crossLinks[0].toContractId).toBe('http::POST::/orders/create');
     expect(result.crossLinks[0].to.service).toBe('services/order');
     expect(result.unmatched).toHaveLength(0);

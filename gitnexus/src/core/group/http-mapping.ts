@@ -74,7 +74,9 @@ export function applyHttpMappings(
   }
 
   const compiledRules = compileRules(rules);
-  const providers = contracts.filter((contract) => contract.role === 'provider' && contract.type === 'http');
+  const providers = contracts.filter(
+    (contract) => contract.role === 'provider' && contract.type === 'http',
+  );
   const providerIndex = new Map<string, StoredContract[]>();
   for (const provider of providers) {
     const key = providerIndexKey(provider.contractId);
