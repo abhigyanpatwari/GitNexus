@@ -14,6 +14,7 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -531,6 +532,10 @@ const processParsingSequential = async (
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const objectLiteralOwnerInfo =
+        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          : null;
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
@@ -785,7 +790,7 @@ const processParsingSequential = async (
         returnType: methodProps.returnType as string | undefined,
         declaredType,
         templateArguments: classTemplateArguments,
-        ownerId: enclosingClassId ?? undefined,
+        ownerId: enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? undefined,
         qualifiedName: qualifiedTypeName,
       });
 
@@ -805,15 +810,18 @@ const processParsingSequential = async (
       graph.addRelationship(relationship);
 
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      if (enclosingClassId) {
+      const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
+      if (ownerIdForMemberEdge) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         graph.addRelationship({
-          id: generateId(memberEdgeType, `${enclosingClassId}->${nodeId}`),
-          sourceId: enclosingClassId,
+          id: generateId(memberEdgeType, `${ownerIdForMemberEdge}->${nodeId}`),
+          sourceId: ownerIdForMemberEdge,
           targetId: nodeId,
           type: memberEdgeType,
           confidence: 1.0,
-          reason: '',
+          reason: objectLiteralOwnerInfo
+            ? 'object literal method belongs to exported object binding'
+            : '',
         });
       }
     });

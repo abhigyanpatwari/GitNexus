@@ -143,3 +143,47 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     expect(progressDetails).toContain('1 worker-quarantined file(s) skipped');
   });
 });
+
+describe('TypeScript object literal method exports', () => {
+  it('links exported object literal shorthand methods back to the exported object', async () => {
+    const graph = createKnowledgeGraph();
+
+    await processParsing(
+      graph,
+      [
+        {
+          path: 'src/foo.ts',
+          content: `export const fooService = {
+  async getUser(id: string) {
+    return findUser(id);
+  },
+  saveUser(user: User) {
+    return persist(user);
+  },
+};
+`,
+        },
+      ],
+      createSymbolTable(),
+      createASTCache(),
+      createASTCache(),
+    );
+
+    const service = graph.nodes.find(
+      (node) => node.label === 'Const' && node.properties.name === 'fooService',
+    );
+    expect(service, 'exported object literal should be captured as a Const').toBeDefined();
+
+    const methodNames = new Set(
+      graph.nodes.filter((node) => node.label === 'Method').map((node) => node.properties.name),
+    );
+    expect(methodNames).toEqual(new Set(['getUser', 'saveUser']));
+
+    const linkedMethodNames = graph.relationships
+      .filter((rel) => rel.type === 'HAS_METHOD' && rel.sourceId === service!.id)
+      .map((rel) => graph.getNode(rel.targetId)?.properties.name)
+      .sort();
+
+    expect(linkedMethodNames).toEqual(['getUser', 'saveUser']);
+  });
+});

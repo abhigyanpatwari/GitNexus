@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+/**
+ * Build tree-sitter-dart native binding in node_modules/ after materialize-vendor-grammars.cjs.
+ * Vendored source lives in vendor/ only; see #836 and #1728.
+ */
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');

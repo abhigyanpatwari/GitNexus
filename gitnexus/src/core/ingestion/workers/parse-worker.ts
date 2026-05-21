@@ -50,6 +50,7 @@ import {
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findObjectLiteralBindingInfo,
   type EnclosingClassInfo,
   getLabelFromCaptures,
   findDescendant,
@@ -2068,6 +2069,10 @@ const processFileGroup = (
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const objectLiteralOwnerInfo =
+        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          : null;
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       const qualifiedName = enclosingClassInfo
@@ -2306,6 +2311,7 @@ const processFileGroup = (
       });
 
       // enclosingClassId already computed above (before nodeId generation)
+      const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
       result.symbols.push({
         filePath: file.path,
@@ -2322,7 +2328,7 @@ const processFileGroup = (
         ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
           ? { templateArguments: classTemplateArguments }
           : {}),
-        ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+        ...(ownerId !== undefined ? { ownerId } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
@@ -2355,15 +2361,17 @@ const processFileGroup = (
       });
 
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      if (enclosingClassId) {
+      if (ownerId !== undefined) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         result.relationships.push({
-          id: generateId(memberEdgeType, `${enclosingClassId}->${nodeId}`),
-          sourceId: enclosingClassId,
+          id: generateId(memberEdgeType, `${ownerId}->${nodeId}`),
+          sourceId: ownerId,
           targetId: nodeId,
           type: memberEdgeType,
           confidence: 1.0,
-          reason: '',
+          reason: objectLiteralOwnerInfo
+            ? 'object literal method belongs to exported object binding'
+            : '',
         });
       }
     }
