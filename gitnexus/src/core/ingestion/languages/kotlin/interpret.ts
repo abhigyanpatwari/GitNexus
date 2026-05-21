@@ -42,7 +42,6 @@ export function interpretKotlinTypeBinding(captures: CaptureMatch): ParsedTypeBi
   else if (captures['@type-binding.parameter'] !== undefined) source = 'parameter-annotation';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
   else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
-  else if (captures['@type-binding.extension-receiver'] !== undefined) source = 'self';
 
   return {
     boundName: nameCap.text,

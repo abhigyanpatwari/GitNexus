@@ -42,15 +42,6 @@ const KOTLIN_SCOPE_QUERY = `
 ;; Imports
 (import_header) @import.statement
 
-;; Type bindings — extension receiver: fun String.slug(...)
-(function_declaration
-  (user_type) @type-binding.type
-  (simple_identifier) @type-binding.name) @type-binding.extension-receiver
-
-(function_declaration
-  (nullable_type) @type-binding.type
-  (simple_identifier) @type-binding.name) @type-binding.extension-receiver
-
 ;; Type bindings — parameters
 (parameter
   (simple_identifier) @type-binding.name

@@ -38,7 +38,6 @@ import {
   kotlinImportOwningScope,
   kotlinMergeBindings,
   kotlinReceiverBinding,
-  resolveKotlinImportTarget,
 } from './kotlin/index.js';
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
@@ -187,5 +186,4 @@ export const kotlinProvider = defineLanguage({
   mergeBindings: (_scope, bindings) => kotlinMergeBindings(bindings),
   receiverBinding: kotlinReceiverBinding,
   arityCompatibility: kotlinArityCompatibility,
-  resolveImportTarget: resolveKotlinImportTarget,
 });

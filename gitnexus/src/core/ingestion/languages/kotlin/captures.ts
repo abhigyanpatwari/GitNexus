@@ -411,9 +411,12 @@ function shouldEmitReadMember(navNode: SyntaxNode): boolean {
 
 function callArguments(callNode: SyntaxNode): SyntaxNode[] {
   const suffix = callNode.namedChildren.find((child) => child.type === 'call_suffix');
+  if (suffix === undefined) return [];
+
   const valueArgs = suffix?.namedChildren.find((child) => child.type === 'value_arguments');
-  if (valueArgs === undefined) return [];
-  return valueArgs.namedChildren.filter((child) => child.type === 'value_argument');
+  const args = valueArgs?.namedChildren.filter((child) => child.type === 'value_argument') ?? [];
+  const trailingLambdas = suffix.namedChildren.filter((child) => child.type === 'annotated_lambda');
+  return [...args, ...trailingLambdas];
 }
 
 function inferArgType(argNode: SyntaxNode): string {
@@ -453,7 +456,7 @@ function extensionFreeCallFallback(
   const callNode = findNodeAtRange(rootNode, member.range, 'call_expression');
   if (callNode === null) return null;
   const receiverNode = findNodeAtRange(rootNode, receiver.range);
-  if (receiverNode === null || receiverNode.type === 'simple_identifier') return null;
+  if (receiverNode === null || !isLiteralReceiver(receiverNode)) return null;
 
   const out: Record<string, Capture> = {
     '@reference.call.free': syntheticCapture('@reference.call.free', callNode, callNode.text),
@@ -465,4 +468,17 @@ function extensionFreeCallFallback(
     out['@reference.parameter-types'] = grouped['@reference.parameter-types'];
   }
   return out;
+}
+
+function isLiteralReceiver(node: SyntaxNode): boolean {
+  return [
+    'integer_literal',
+    'long_literal',
+    'real_literal',
+    'string_literal',
+    'line_string_literal',
+    'multi_line_string_literal',
+    'character_literal',
+    'boolean_literal',
+  ].includes(node.type);
 }
