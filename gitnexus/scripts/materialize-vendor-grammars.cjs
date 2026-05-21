@@ -31,16 +31,35 @@ for (const name of VENDORED_GRAMMARS) {
     continue;
   }
 
-  // Copy to a sibling tmp dir first, then atomically swap into place. Keeps a
-  // previously-materialized grammar intact when cpSync throws mid-copy (e.g.
-  // Windows EPERM on a locked file — the exact #1728 case this script targets).
+  // Sequence: copy src → partial; rename dest → backup; rename partial → dest;
+  // remove backup. If any step fails, restore from backup so a previously-
+  // materialized grammar is never lost. Targets the #1728 EPERM scenario plus
+  // narrower failure modes (Windows AV scanner racing on rename, EBUSY mid-swap).
   const partial = `${dest}.materialize-tmp`;
+  const backup = `${dest}.materialize-bak`;
   try {
     fs.mkdirSync(path.join(ROOT, 'node_modules'), { recursive: true });
     fs.rmSync(partial, { recursive: true, force: true });
+    fs.rmSync(backup, { recursive: true, force: true });
     fs.cpSync(src, partial, { recursive: true, verbatim: true });
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.renameSync(partial, dest);
+    if (fs.existsSync(dest)) {
+      fs.renameSync(dest, backup);
+    }
+    try {
+      fs.renameSync(partial, dest);
+    } catch (renameErr) {
+      // Best-effort rollback: restore the previous dest from backup.
+      if (fs.existsSync(backup)) {
+        try {
+          fs.renameSync(backup, dest);
+        } catch {
+          // If rollback also fails, the prior backup directory still exists on
+          // disk — the catch block below surfaces both errors via the warning.
+        }
+      }
+      throw renameErr;
+    }
+    fs.rmSync(backup, { recursive: true, force: true });
   } catch (err) {
     // Fail-soft: a single locked/inaccessible file (common on Windows) must not
     // abort the whole gitnexus install. Matches build-tree-sitter-*.cjs pattern.
