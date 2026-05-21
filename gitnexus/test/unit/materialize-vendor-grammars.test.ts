@@ -109,15 +109,18 @@ describe('materialize-vendor-grammars.cjs', () => {
     }
   });
 
-  // POSIX-only: Windows file-permission semantics do not enforce read
-  // restriction via chmod the way POSIX does, so these fail-soft tests rely on
-  // chmod 0o000 on the vendor source to deterministically force cpSync to
-  // throw. We sabotage the *source* (not a path the script itself touches)
-  // because the script wipes any pre-existing partial dir at the top of its
-  // loop. The behavior verified is platform-agnostic; only the trigger is.
-  const skipOnWin = process.platform === 'win32' ? it.skip : it;
+  // Linux-only: these tests use `chmod 0o000` on the vendor source to force
+  // cpSync to throw EACCES.
+  //   - Windows: chmod does not enforce read restriction the way POSIX does.
+  //   - macOS Node 22: when cpSync hits an unreadable directory it surfaces a
+  //     libc++ filesystem_error that aborts the process via SIGABRT before
+  //     Node's JS try/catch can handle it (nodejs/node#51399). The production
+  //     script's fail-soft works on Linux where EACCES propagates as a normal
+  //     JS exception. The behavior verified is platform-agnostic; only the
+  //     trigger is reliably catchable on Linux.
+  const linuxOnly = process.platform === 'linux' ? it : it.skip;
 
-  skipOnWin('fails soft: one grammar copy failure does not abort the others (#1728)', () => {
+  linuxOnly('fails soft: one grammar copy failure does not abort the others (#1728)', () => {
     const { tmp, cleanup } = makeFixture();
     // Make the proto vendor source unreadable so cpSync(src, partial) throws.
     // The other vendor dirs remain readable and must still materialize.
@@ -147,7 +150,7 @@ describe('materialize-vendor-grammars.cjs', () => {
     }
   });
 
-  skipOnWin('preserves an existing materialized grammar when partial copy fails (#1728)', () => {
+  linuxOnly('preserves an existing materialized grammar when partial copy fails (#1728)', () => {
     // The atomicity guard: when cpSync(src, partial) fails (or any subsequent
     // step before rename(partial, dest) completes), the previously-materialized
     // dest directory must remain intact.
