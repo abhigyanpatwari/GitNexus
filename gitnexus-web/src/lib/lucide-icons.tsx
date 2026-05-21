@@ -123,6 +123,67 @@ export {
  * defaults to `currentColor`, so Tailwind `text-*` utilities work the same as
  * with any other icon in this module.
  */
+/**
+ * GitLab tanuki mark — SVG path data from simple-icons (CC0-1.0).
+ *
+ * GitLab's logo (the tanuki/fox-head) is a registered trademark of GitLab Inc.
+ * We use it here only to indicate GitLab source-repo integration.
+ *
+ * API-compatible with `lucide-react` icons (`LucideProps`).
+ */
+export const Gitlab = forwardRef<SVGSVGElement, LucideProps>(function Gitlab(
+  {
+    size = 24,
+    color = 'currentColor',
+    className,
+    strokeWidth: _strokeWidth,
+    absoluteStrokeWidth: _absoluteStrokeWidth,
+    ...rest
+  },
+  ref,
+) {
+  const numericSize = typeof size === 'string' ? Number.parseFloat(size) : size;
+  const useSmallVariant = Number.isFinite(numericSize) && (numericSize as number) <= 16;
+
+  if (useSmallVariant) {
+    return (
+      <svg
+        ref={ref}
+        xmlns="http://www.w3.org/2000/svg"
+        width={size}
+        height={size}
+        viewBox="0 0 16 16"
+        fill={color}
+        className={className}
+        {...rest}
+      >
+        <path d="M8 15.282l1.855-5.717H6.145L8 15.282z" />
+        <path d="M8 15.282L6.145 9.565H2.333L8 15.282z" />
+        <path d="M2.333 9.565l-.944-2.942c-.09-.267.067-.553.333-.553h3.153L2.333 9.565z" />
+        <path d="M4.875 6.07L6.145 9.565H2.333l2.542-3.495z" />
+        <path d="M13.667 9.565l.944-2.942c.09-.267-.067-.553-.333-.553h-3.153l2.542 3.495z" />
+        <path d="M11.125 6.07L9.855 9.565h3.812l-2.542-3.495z" />
+        <path d="M8 15.282l1.855-5.717H6.145L8 15.282z" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={color}
+      className={className}
+      {...rest}
+    >
+      <path d="m23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z" />
+    </svg>
+  );
+});
+
 export const Github = forwardRef<SVGSVGElement, LucideProps>(function Github(
   {
     size = 24,
