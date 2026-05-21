@@ -301,10 +301,7 @@ export interface ParseWorkerInput {
   content: string;
 }
 
-type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
-  | { type: 'flush' }
-  | ParseWorkerInput[];
+type WorkerIncomingMessage = { type: 'sub-batch'; files: ParseWorkerInput[] } | { type: 'flush' };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -1401,6 +1398,15 @@ const processFileGroup = (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
+    // Authoritative in-flight signal for the pool: lets `WorkerPool` exclude
+    // exactly this file if the worker dies during parse/extract, instead of
+    // guessing from `items[lastProgress]` (which the language-grouped order
+    // here would defeat). The pool gracefully ignores this when running an
+    // older worker build that doesn't emit it.
+    if (parentPort) {
+      parentPort.postMessage({ type: 'starting-file', path: file.path });
+    }
+
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
     let lineOffset = 0;
@@ -1458,8 +1464,11 @@ const processFileGroup = (
       parseContent,
       file.path,
       (message) => {
-        if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else logger.warn(message);
+        if (parentPort) {
+          parentPort.postMessage({ type: 'warning', message });
+        } else {
+          logger.warn(message);
+        }
       },
       tree,
     );
@@ -2438,20 +2447,59 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.fileCount += src.fileCount;
 };
 
+// Signal the pool that worker-side initialization (parser imports, language
+// grammars, type-env setup, all helper modules) is complete and the message
+// handler below is about to be attached. The pool's `waitForWorkerReady`
+// resolves on this handshake — without it, a worker that crashes during
+// top-of-script init slips past pool startup (Node's `online` event fires
+// before the script body runs) and the pool only notices via the first
+// dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
+// any subsequent `ready` message as a benign no-op.
+//
+// Native postMessage carries the ready handshake — Node's structured
+// clone delivers `{type:'ready'}` to the pool's waitForWorkerReady
+// listener directly. The pool drops the slot if this isn't seen within
+// `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
+// init (imports, native binding loads, type-env setup) completes is the
+// load-bearing signal that this worker is ready for dispatch.
+parentPort!.postMessage({ type: 'ready' });
+
+// Module-scope `TextDecoder` for sub-batch content. The pool sends each
+// file's content as a `Uint8Array` (zero-copy ArrayBuffer transfer); we
+// decode to string lazily here, once per file, before handing to
+// tree-sitter. Hoisted to module scope so we don't allocate a new
+// ICU-backed decoder per sub-batch — `TextDecoder.decode()` is
+// stateless across calls and safe to share.
+const sharedContentDecoder = new TextDecoder('utf-8');
+
+/**
+ * Convert the pool's sub-batch `files` array (content as `Uint8Array`,
+ * transferred zero-copy) into the `ParseWorkerInput[]` shape
+ * `processBatch` expects (content as `string`). This is the one place
+ * the UTF-8 decode happens — runs on the worker thread in parallel with
+ * continued main-thread work.
+ */
+function decodeSubBatchFiles(
+  files: Array<{ path: string; content: Uint8Array | string }>,
+): ParseWorkerInput[] {
+  return files.map((f) => ({
+    path: f.path,
+    // Test scaffolding (the writeReadyWorker preamble that wraps
+    // parentPort.on) may already convert content to string before
+    // calling here; tolerate both shapes so the same worker code
+    // exercises real and synthetic dispatches.
+    content: typeof f.content === 'string' ? f.content : sharedContentDecoder.decode(f.content),
+  }));
+}
+
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
   try {
-    // Legacy single-message mode (backward compat): array of files
-    if (Array.isArray(msg)) {
-      const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
-      });
-      parentPort!.postMessage({ type: 'result', data: result });
-      return;
-    }
-
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const result = processBatch(msg.files, (filesProcessed) => {
+      const files = decodeSubBatchFiles(
+        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+      );
+      const result = processBatch(files, (filesProcessed) => {
         parentPort!.postMessage({
           type: 'progress',
           filesProcessed: cumulativeProcessed + filesProcessed,
