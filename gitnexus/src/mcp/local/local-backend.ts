@@ -444,7 +444,19 @@ export class LocalBackend {
    * while the MCP server was running.
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
-    const result = this.resolveRepoFromCache(repoParam);
+    let refreshedAfterAmbiguity = false;
+    let result: RepoHandle | null;
+    try {
+      result = this.resolveRepoFromCache(repoParam);
+    } catch (err) {
+      if (!(err instanceof RegistryAmbiguousTargetError)) throw err;
+      // Stale in-memory duplicate siblings can linger after unregister; refresh
+      // once before re-throwing so a resolved registry can disambiguate (#1658).
+      await this.refreshRepos();
+      refreshedAfterAmbiguity = true;
+      result = this.resolveRepoFromCache(repoParam);
+    }
+
     if (result) {
       // Issue: silent graph drift across sibling clones.
       // If the caller's cwd lives in a *different* on-disk clone of
@@ -458,12 +470,18 @@ export class LocalBackend {
       return result;
     }
 
-    // Miss — refresh registry and try once more
-    await this.refreshRepos();
-    const retried = this.resolveRepoFromCache(repoParam);
-    if (retried) {
-      this.maybeWarnSiblingDrift(retried).catch(() => {});
-      return retried;
+    // Miss — refresh registry and try once more (skip if already refreshed above)
+    if (!refreshedAfterAmbiguity) {
+      await this.refreshRepos();
+    }
+    try {
+      const retried = this.resolveRepoFromCache(repoParam);
+      if (retried) {
+        this.maybeWarnSiblingDrift(retried).catch(() => {});
+        return retried;
+      }
+    } catch (err) {
+      throw err;
     }
 
     // Still no match — throw with helpful message
@@ -563,7 +581,14 @@ export class LocalBackend {
     return null; // Multiple repos, no param — ambiguous
   }
 
-  /** Prefer the indexed repo whose path matches the git root of process.cwd(). */
+  /**
+   * Prefer the indexed repo whose path matches the git root of process.cwd().
+   *
+   * In MCP stdio server mode, `process.cwd()` is the server's launch directory,
+   * not the agent client's cwd. If the server was started from an unrelated
+   * directory, `getGitRoot` returns null and duplicate-name resolution throws
+   * {@link RegistryAmbiguousTargetError} — callers should pass an absolute path.
+   */
   private pickRepoHandleForCwd(candidates: RepoHandle[]): RepoHandle | null {
     const cwdRoot = getGitRoot(process.cwd());
     if (!cwdRoot) return null;

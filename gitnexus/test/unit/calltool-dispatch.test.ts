@@ -8,7 +8,7 @@
  * the dispatch and error handling logic in isolation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -128,9 +128,12 @@ function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
 }
 
+const duplicateFixtureDirs: string[] = [];
+
 function makeDuplicateNameFixture() {
   const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
   const wtDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-wt-'));
+  duplicateFixtureDirs.push(mainDir, wtDir);
   for (const dir of [mainDir, wtDir]) {
     const storagePath = path.join(dir, '.gitnexus');
     mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
@@ -831,6 +834,12 @@ describe('LocalBackend.resolveRepo', () => {
     backend = new LocalBackend();
   });
 
+  afterEach(() => {
+    for (const dir of duplicateFixtureDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolves single repo without param', async () => {
     setupSingleRepo();
     await backend.init();
@@ -910,6 +919,28 @@ describe('LocalBackend.resolveRepo', () => {
     (getGitRoot as any).mockReturnValue(null);
     await backend.init();
     await expect(backend.resolveRepo('shared')).rejects.toThrow(/Multiple registered repos match/);
+  });
+
+  it('refreshes registry after ambiguity when duplicates are removed (#1658)', async () => {
+    const { mainDir, entries } = makeDuplicateNameFixture();
+    const singleEntry = [entries[0]];
+    (listRegisteredRepos as any)
+      .mockResolvedValueOnce(entries)
+      .mockResolvedValueOnce(singleEntry);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    const resolved = await backend.resolveRepo('shared');
+    expect(resolved.repoPath).toBe(mainDir);
+  });
+
+  it('detect_changes surfaces RegistryAmbiguousTargetError on duplicate repo name (#1658)', async () => {
+    const { entries } = makeDuplicateNameFixture();
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    (getGitRoot as any).mockReturnValue(null);
+    await backend.init();
+    await expect(
+      backend.callTool('detect_changes', { scope: 'unstaged', repo: 'shared' }),
+    ).rejects.toThrow(/Multiple registered repos match/);
   });
 
   it('resolves repo case-insensitively', async () => {
