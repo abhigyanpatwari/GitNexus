@@ -1,11 +1,12 @@
 /**
  * JavaScript: self/this resolution, parent resolution, super resolution
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,13 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Shadow vitest's `it` with the parity-gated runner so tests listed in
+// `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.javascript` (helpers.ts) skip
+// under `REGISTRY_PRIMARY_JAVASCRIPT=0` (legacy DAG mode) and run normally
+// under the default registry-primary path. The scope-parity CI gate
+// requires this for the issue #1358 singleton describes below.
+const it = createResolverParityIt('javascript');
 
 // ---------------------------------------------------------------------------
 // skipGraphPhases: verify pipeline works correctly when graph phases are skipped

@@ -1,12 +1,13 @@
 /**
  * TypeScript: heritage resolution + ambiguous symbol disambiguation
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,6 +15,13 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Shadow vitest's `it` with the parity-gated runner so tests listed in
+// `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.typescript` (helpers.ts) skip
+// under `REGISTRY_PRIMARY_TYPESCRIPT=0` (legacy DAG mode) and run normally
+// under the default registry-primary path. The scope-parity CI gate
+// requires this for the issue #1358 singleton describes below.
+const it = createResolverParityIt('typescript');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
