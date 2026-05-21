@@ -225,13 +225,32 @@ function trackedClientScopeKey(clientNode: Parser.SyntaxNode): string {
 }
 
 function callScopeKeys(clientNode: Parser.SyntaxNode): string[] {
-  const keys = new Set<string>();
-  const preferClass = clientNode.text.includes('.');
-  const nearestScope = getScopeKey(clientNode.parent, preferClass);
+  return [getScopeKey(clientNode.parent, clientNode.text.includes('.'))];
+}
 
-  keys.add(nearestScope);
-
-  return [...keys];
+// Returns the scope key that a rebind of an imported alias would shadow under
+// Python LEGB rules, or `null` when the rebind does not shadow anything that
+// could produce a false-positive consumer detection.
+//   - Rebind inside a function/method → that function's scope.
+//   - Rebind at module top level → 'module' (shadows the whole file).
+//   - Rebind in a class body without an enclosing function → null. Python
+//     class attributes do not shadow bare-name lookups inside methods (methods
+//     see the module binding, not the class attribute), so we must not poison
+//     them.
+function shadowScopeKey(node: Parser.SyntaxNode | null): string | null {
+  let current = node;
+  let passedThroughClass = false;
+  while (current) {
+    if (current.type === 'function_definition') {
+      // Reuse getScopeKey's key format so the two helpers cannot drift apart.
+      return getScopeKey(current);
+    }
+    if (current.type === 'class_definition') {
+      passedThroughClass = true;
+    }
+    current = current.parent;
+  }
+  return passedThroughClass ? null : 'module';
 }
 
 function collectHttpxImportAliases(tree: Parser.Tree): {
@@ -261,18 +280,29 @@ function collectHttpxImportAliases(tree: Parser.Tree): {
 }
 
 // Tracks local rebindings (`AsyncClient = ...`, `hx = ...`) that shadow an
-// imported alias inside a function or class scope. We treat the whole enclosing
-// scope as poisoned for that alias.
-const ALIAS_REBIND_PATTERNS = compilePatterns({
-  name: 'python-httpx-alias-rebind',
+// imported alias. We treat the whole enclosing scope (module, class, or
+// function) as shadowed for that alias name, so subsequent constructions in
+// that scope are not falsely detected as httpx consumers. Covers bare-identifier
+// targets and the common tuple / list destructuring shapes.
+const ALIAS_SHADOW_PATTERNS = compilePatterns({
+  name: 'python-httpx-alias-shadow',
   language: Python,
   patterns: [
     {
       meta: {},
-      query: `
-        (assignment
-          left: (identifier) @name)
-      `,
+      query: `(assignment left: (identifier) @name)`,
+    },
+    {
+      meta: {},
+      query: `(assignment left: (pattern_list (identifier) @name))`,
+    },
+    {
+      meta: {},
+      query: `(assignment left: (tuple_pattern (identifier) @name))`,
+    },
+    {
+      meta: {},
+      query: `(assignment left: (list_pattern (identifier) @name))`,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
@@ -284,11 +314,11 @@ function collectAliasShadowScopes(
   const shadowed = new Map<string, Set<string>>();
   if (aliases.size === 0) return shadowed;
 
-  for (const match of runCompiledPatterns(ALIAS_REBIND_PATTERNS, tree)) {
+  for (const match of runCompiledPatterns(ALIAS_SHADOW_PATTERNS, tree)) {
     const nameNode = match.captures.name;
     if (!nameNode || !aliases.has(nameNode.text)) continue;
-    const scopeKey = getScopeKey(nameNode.parent);
-    if (scopeKey === 'module') continue;
+    const scopeKey = shadowScopeKey(nameNode.parent);
+    if (scopeKey === null) continue;
     const set = shadowed.get(nameNode.text) ?? new Set<string>();
     set.add(scopeKey);
     shadowed.set(nameNode.text, set);
@@ -306,23 +336,26 @@ function isAliasShadowed(
   if (!scopes || scopes.size === 0) return false;
   let current: Parser.SyntaxNode | null = node.parent;
   while (current) {
-    if (current.type === 'function_definition' || current.type === 'class_definition') {
-      const key =
-        current.type === 'class_definition'
-          ? `class:${current.startIndex}:${current.endIndex}`
-          : `function:${current.startIndex}:${current.endIndex}`;
-      if (scopes.has(key)) return true;
+    if (current.type === 'function_definition') {
+      // Reuse getScopeKey's key format so the two helpers cannot drift apart.
+      if (scopes.has(getScopeKey(current))) return true;
     }
     current = current.parent;
   }
-  return false;
+  // A module-level rebind shadows the alias for the entire file.
+  return scopes.has('module');
 }
 
 function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
   const clients = new Map<string, Set<string>>();
   const { moduleAliases, asyncClientAliases } = collectHttpxImportAliases(tree);
-  const shadowedModule = collectAliasShadowScopes(tree, moduleAliases);
-  const shadowedAsyncClient = collectAliasShadowScopes(tree, asyncClientAliases);
+  // Module aliases (`hx`) and AsyncClient aliases (`AsyncClient`,
+  // `HttpxAsyncClient`) share disjoint name spaces, so one shadow map keyed by
+  // alias name serves both lookups and we only walk the tree for rebinds once.
+  const shadowed = collectAliasShadowScopes(
+    tree,
+    new Set([...moduleAliases, ...asyncClientAliases]),
+  );
 
   const addClient = (clientNode: Parser.SyntaxNode | undefined) => {
     if (!clientNode) return;
@@ -338,14 +371,14 @@ function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
     const classNode = match.captures.client_class;
     if (!moduleNode || !classNode) continue;
     if (!moduleAliases.has(moduleNode.text) || classNode.text !== 'AsyncClient') continue;
-    if (isAliasShadowed(shadowedModule, moduleNode.text, moduleNode)) continue;
+    if (isAliasShadowed(shadowed, moduleNode.text, moduleNode)) continue;
     addClient(match.captures.client);
   }
 
   for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_DIRECT_ASSIGN_PATTERNS, tree)) {
     const classNode = match.captures.client_class;
     if (!classNode || !asyncClientAliases.has(classNode.text)) continue;
-    if (isAliasShadowed(shadowedAsyncClient, classNode.text, classNode)) continue;
+    if (isAliasShadowed(shadowed, classNode.text, classNode)) continue;
     addClient(match.captures.client);
   }
 
@@ -354,14 +387,14 @@ function collectHttpxAsyncClients(tree: Parser.Tree): Map<string, Set<string>> {
     const classNode = match.captures.client_class;
     if (!moduleNode || !classNode) continue;
     if (!moduleAliases.has(moduleNode.text) || classNode.text !== 'AsyncClient') continue;
-    if (isAliasShadowed(shadowedModule, moduleNode.text, moduleNode)) continue;
+    if (isAliasShadowed(shadowed, moduleNode.text, moduleNode)) continue;
     addClient(match.captures.client);
   }
 
   for (const match of runCompiledPatterns(HTTPX_ASYNC_CLIENT_DIRECT_WITH_ALIAS_PATTERNS, tree)) {
     const classNode = match.captures.client_class;
     if (!classNode || !asyncClientAliases.has(classNode.text)) continue;
-    if (isAliasShadowed(shadowedAsyncClient, classNode.text, classNode)) continue;
+    if (isAliasShadowed(shadowed, classNode.text, classNode)) continue;
     addClient(match.captures.client);
   }
 
