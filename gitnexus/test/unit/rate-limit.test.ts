@@ -262,6 +262,19 @@ describe('production routes — rate-limit middleware wiring', () => {
     );
   });
 
+  it('does not register Express-4-only app.options("*") (Express 5 path-to-regexp)', () => {
+    expect(apiSource).not.toMatch(/app\.options\(\s*'\*'/);
+    expect(apiSource).not.toMatch(/app\.options\(\s*'\/\*'/);
+  });
+
+  it('sets PNA header middleware before cors (preflight must include Allow-Private-Network)', () => {
+    const pnaIdx = apiSource.indexOf('Access-Control-Allow-Private-Network');
+    const corsIdx = apiSource.indexOf("app.use(\n    cors(");
+    expect(pnaIdx).toBeGreaterThan(-1);
+    expect(corsIdx).toBeGreaterThan(-1);
+    expect(pnaIdx).toBeLessThan(corsIdx);
+  });
+
   it('embed route flushes WAL via flushWAL, not inline executeQuery (#1376)', () => {
     // The embed handler must call the consolidated helper, not hand-roll
     // its own try/catch around executeQuery('CHECKPOINT').
