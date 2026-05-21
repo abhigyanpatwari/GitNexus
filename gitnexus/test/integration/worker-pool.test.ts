@@ -394,7 +394,7 @@ describe('worker pool integration', () => {
       const { parentPort } = require('node:worker_threads');
       const markerPath = ${JSON.stringify(markerPath)};
       if (fs.existsSync(markerPath)) {
-        throw new Error('simulated startup crash');
+        process.exit(1);
       }
       parentPort.on('message', (msg) => {
         if (msg && msg.type === 'sub-batch') {
