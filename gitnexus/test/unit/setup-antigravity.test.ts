@@ -51,6 +51,14 @@ describe('setupAntigravity', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let platformDescriptor: PropertyDescriptor | undefined;
+
+  const setPlatform = (value: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', {
+      value,
+      configurable: true,
+    });
+  };
 
   beforeEach(async () => {
     vi.resetModules();
@@ -66,11 +74,21 @@ describe('setupAntigravity', () => {
     // setup branches skip and don't pollute assertions.
     await fs.mkdir(path.join(tempHome, '.gemini', 'antigravity'), { recursive: true });
 
+    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    // Default to a non-win32 platform so the MCP entry shape is deterministic
+    // across CI runners. Tests that need win32 behavior override this.
+    setPlatform('darwin');
+
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+
+    if (platformDescriptor) {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
     await fs.rm(tempHome, { recursive: true, force: true });
@@ -89,6 +107,24 @@ describe('setupAntigravity', () => {
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
       args: ['-y', NPX_REF, 'mcp'],
+    });
+  });
+
+  it('writes win32 MCP entry with cmd wrapper', async () => {
+    setPlatform('win32');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(
+      path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json'),
+      'utf-8',
+    );
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
 
