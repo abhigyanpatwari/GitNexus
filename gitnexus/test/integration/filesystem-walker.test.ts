@@ -438,6 +438,28 @@ describe('filesystem-walker', () => {
         .filter((r) => String(r.msg ?? '').includes('GITNEXUS_MAX_FILE_SIZE=<KB>'));
       expect(hint.length).toBe(0);
     });
+
+    it('routes large-file notices through console.warn while analyze progress is active', async () => {
+      const originalProgressActive = process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
+        await walkRepositoryPaths(sizeDir);
+        const messages = warnSpy.mock.calls.map(([msg]) => String(msg));
+        expect(messages.some((m) => m.includes('Skipped 1 large files'))).toBe(true);
+        expect(messages.some((m) => m.includes(BIG_FILE))).toBe(true);
+        expect(cap.records().filter((r) => String(r.msg ?? '').includes('Skipped '))).toHaveLength(
+          0,
+        );
+      } finally {
+        warnSpy.mockRestore();
+        if (originalProgressActive === undefined) {
+          delete process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
+        } else {
+          process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = originalProgressActive;
+        }
+      }
+    });
   });
 
   describe('large file skip preview cap (#1659)', () => {

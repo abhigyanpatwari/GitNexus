@@ -75,3 +75,105 @@ jobs:
           build: 'true'
       - run: npx vitest run
         working-directory: gitnexus
+
+  # End-to-end smoke test for the #1728 packaging fix: pack the published
+  # tarball, install it globally into a temp prefix, and assert no junction
+  # creation (the EPERM root cause) plus working CLI plus vendor cleanliness
+  # (#836). Runs on windows-latest because that is the platform the fix
+  # targets; the in-repo `npm ci` job above only exercises the dev-tree path
+  # and skips the tarball reify step where the historical EPERM occurred.
+  packaged-install-smoke:
+    name: packaged install smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      # persist-credentials: false — this job runs npm pack + npm install -g
+      # from a tarball and never pushes back; the token in .git/config would
+      # be at risk of leaking through any future artifact-upload step
+      # (zizmor artipacked audit). Disable upfront.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Pack gitnexus tarball
+        shell: bash
+        run: npm pack
+        working-directory: gitnexus
+
+      - name: Install gitnexus tarball into isolated prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/gitnexus-smoke"
+          mkdir -p "$PREFIX"
+          TARBALL=$(find . -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          if [ -z "$TARBALL" ]; then
+            echo "ERROR: no gitnexus-*.tgz tarball found in $(pwd)" >&2
+            exit 1
+          fi
+          echo "Installing $TARBALL into $PREFIX"
+          npm install -g --prefix "$PREFIX" "./$TARBALL" --no-audit --no-fund
+          echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
+        working-directory: gitnexus
+
+      - name: Assert no junctions or vendor build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Locate the installed gitnexus package across npm prefix layouts
+          # (lib/node_modules on POSIX, node_modules on Windows).
+          for candidate in "$PREFIX/lib/node_modules/gitnexus" "$PREFIX/node_modules/gitnexus"; do
+            if [ -d "$candidate" ]; then
+              INSTALLED="$candidate"
+              break
+            fi
+          done
+          if [ -z "${INSTALLED:-}" ]; then
+            echo "ERROR: installed gitnexus package not found under $PREFIX" >&2
+            ls -la "$PREFIX" || true
+            exit 1
+          fi
+          echo "Installed package at: $INSTALLED"
+
+          # #836 invariant: no node_modules/ or build/ under any vendor/*.
+          BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)
+          if [ -n "$BAD" ]; then
+            echo "ERROR: vendor tree contains forbidden build artifacts (#836):" >&2
+            echo "$BAD" >&2
+            exit 1
+          fi
+
+          # #1728 invariant: materialized grammar dirs are real directories,
+          # not junctions/symlinks (which is what the EPERM regression created).
+          for name in tree-sitter-dart tree-sitter-proto tree-sitter-swift; do
+            entry="$INSTALLED/node_modules/$name"
+            if [ ! -e "$entry" ]; then
+              echo "WARN: $name not materialized (toolchain/prebuild may be unavailable on $RUNNER_OS)"
+              continue
+            fi
+            if [ -L "$entry" ]; then
+              echo "ERROR: $entry is a symlink/junction — #1728 regression" >&2
+              exit 1
+            fi
+            if [ ! -d "$entry" ]; then
+              echo "ERROR: $entry is not a directory" >&2
+              exit 1
+            fi
+          done
+
+      - name: Assert gitnexus --version works
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$PREFIX/gitnexus.cmd" --version
+          else
+            "$PREFIX/bin/gitnexus" --version
+          fi

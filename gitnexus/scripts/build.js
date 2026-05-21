@@ -18,6 +18,22 @@ const ROOT = path.resolve(__dirname, '..');
 const SHARED_ROOT = path.resolve(ROOT, '..', 'gitnexus-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
+const DEFAULT_BUILD_TIMEOUT_MS = 300_000;
+
+function getBuildTimeoutMs() {
+  const raw = process.env.GITNEXUS_BUILD_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_BUILD_TIMEOUT_MS;
+
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+  console.warn(
+    `[build] ignoring invalid GITNEXUS_BUILD_TIMEOUT_MS=${JSON.stringify(raw)}; using ${DEFAULT_BUILD_TIMEOUT_MS}ms`,
+  );
+  return DEFAULT_BUILD_TIMEOUT_MS;
+}
+
+const BUILD_TIMEOUT_MS = getBuildTimeoutMs();
 
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
@@ -25,11 +41,11 @@ const tscCmd =
   process.platform === 'win32'
     ? path.join('node_modules', '.bin', 'tsc.cmd')
     : path.join('node_modules', '.bin', 'tsc');
-execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: 120_000 });
+execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
-execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: 120_000 });
+execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');
@@ -82,9 +98,9 @@ if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
   console.log('[build] building gitnexus-web…');
   if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
     console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 120_000 });
+    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
   }
-  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: 120_000 });
+  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 
   // Copy dist → gitnexus/web/ (shipped in the npm package)
   fs.rmSync(WEB_DEST, { recursive: true, force: true });

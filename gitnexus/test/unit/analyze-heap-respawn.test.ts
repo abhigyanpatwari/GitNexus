@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 
-const execFileSyncMock = vi.fn();
+const spawnMock = vi.fn();
 const getHeapStatisticsMock = vi.fn();
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
-  return { ...actual, execFileSync: execFileSyncMock };
+  return { ...actual, spawn: spawnMock };
 });
 
 vi.mock('v8', () => ({
@@ -18,33 +19,99 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
 }));
 
+const mockSpawnExit = ({
+  status = 0,
+  signal = null,
+  stdout = '',
+  stderr = '',
+}: {
+  status?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+} = {}) => {
+  spawnMock.mockImplementationOnce(() => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      if (stdout) child.stdout.emit('data', stdout);
+      if (stderr) child.stderr.emit('data', stderr);
+      child.emit('close', status, signal);
+    });
+    return child;
+  });
+};
+
+const setStreamIsTTY = (stream: NodeJS.WriteStream, value: boolean): (() => void) => {
+  const descriptor = Object.getOwnPropertyDescriptor(stream, 'isTTY');
+  Object.defineProperty(stream, 'isTTY', { configurable: true, value });
+  return () => {
+    if (descriptor) Object.defineProperty(stream, 'isTTY', descriptor);
+    else delete (stream as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
+  };
+};
+
 describe('analyzeCommand heap respawn', () => {
   let initialNodeOptions: string | undefined;
+  let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
+  let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
+  let restoreStdoutIsTTY: (() => void) | undefined;
+  let restoreStderrIsTTY: (() => void) | undefined;
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
     vi.resetModules();
-    execFileSyncMock.mockReset();
+    spawnMock.mockReset();
     getHeapStatisticsMock.mockReset();
     process.exitCode = undefined;
+    stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrWriteSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   });
 
   afterEach(() => {
+    restoreStdoutIsTTY?.();
+    restoreStderrIsTTY?.();
+    restoreStdoutIsTTY = undefined;
+    restoreStderrIsTTY = undefined;
+    stdoutWriteSpy.mockRestore();
+    stderrWriteSpy.mockRestore();
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = initialNodeOptions;
   });
 
-  it('re-execs analyze with 16GB heap when no max-old-space-size is present', async () => {
+  it('re-execs analyze with 16GB heap and bridges progress redraw when parent is a TTY', async () => {
     delete process.env.NODE_OPTIONS;
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, true);
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
 
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, {});
 
-    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
-    const [, args, opts] = execFileSyncMock.mock.calls[0];
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, args, opts] = spawnMock.mock.calls[0];
     expect(args).toContain('--max-old-space-size=16384');
     expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=16384');
+    expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
+  });
+
+  it('does not force ANSI progress when the parent output is not a TTY', async () => {
+    delete process.env.NODE_OPTIONS;
+    restoreStdoutIsTTY = setStreamIsTTY(process.stdout, false);
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, false);
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [, , opts] = spawnMock.mock.calls[0];
+    expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBeUndefined();
   });
 
   it('does not re-exec when NODE_OPTIONS already defines max-old-space-size', async () => {
@@ -54,18 +121,13 @@ describe('analyzeCommand heap respawn', () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand('/__gitnexus_nonexistent__', {});
 
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('prints heap guidance when respawned analyze exits with likely OOM', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
-    execFileSyncMock.mockImplementationOnce(() => {
-      const err = new Error('child failed') as Error & { status?: number; signal?: string };
-      err.status = undefined;
-      err.signal = 'SIGABRT';
-      throw err;
-    });
+    mockSpawnExit({ status: null, signal: 'SIGABRT' });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
@@ -89,18 +151,12 @@ describe('analyzeCommand heap respawn', () => {
   it('prints heap guidance when child stderr contains heap OOM signature', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
-    execFileSyncMock.mockImplementationOnce(() => {
-      const err = new Error('Command failed') as Error & {
-        status?: number;
-        signal?: string;
-        stderr?: Buffer;
-      };
-      err.status = 1;
-      err.signal = undefined;
-      err.stderr = Buffer.from(
+    mockSpawnExit({
+      status: 1,
+      signal: null,
+      stderr: Buffer.from(
         'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory',
-      );
-      throw err;
+      ),
     });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -118,16 +174,10 @@ describe('analyzeCommand heap respawn', () => {
   it('prints heap guidance when child stdout contains heap OOM signature', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
-    execFileSyncMock.mockImplementationOnce(() => {
-      const err = new Error('Command failed') as Error & {
-        status?: number;
-        signal?: string;
-        stdout?: string;
-      };
-      err.status = 1;
-      err.signal = undefined;
-      err.stdout = 'FATAL ERROR: JavaScript heap out of memory';
-      throw err;
+    mockSpawnExit({
+      status: 1,
+      signal: null,
+      stdout: 'FATAL ERROR: JavaScript heap out of memory',
     });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -145,19 +195,7 @@ describe('analyzeCommand heap respawn', () => {
   it('prints heap guidance when child exits 134 without output', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
-    execFileSyncMock.mockImplementationOnce(() => {
-      const err = new Error('Command failed') as Error & {
-        status?: number;
-        signal?: string;
-        stderr?: string;
-        stdout?: string;
-      };
-      err.status = 134;
-      err.signal = undefined;
-      err.stderr = '';
-      err.stdout = '';
-      throw err;
-    });
+    mockSpawnExit({ status: 134, signal: null, stderr: '', stdout: '' });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
@@ -174,16 +212,10 @@ describe('analyzeCommand heap respawn', () => {
   it('does not print heap guidance for non-OOM child failures with output', async () => {
     delete process.env.NODE_OPTIONS;
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
-    execFileSyncMock.mockImplementationOnce(() => {
-      const err = new Error('Command failed') as Error & {
-        status?: number;
-        signal?: string;
-        stderr?: Buffer;
-      };
-      err.status = 2;
-      err.signal = undefined;
-      err.stderr = Buffer.from('parser failed: invalid token');
-      throw err;
+    mockSpawnExit({
+      status: 2,
+      signal: null,
+      stderr: Buffer.from('parser failed: invalid token'),
     });
 
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -195,6 +227,32 @@ describe('analyzeCommand heap respawn', () => {
     expect(cap.records().some((r) => r.msg.includes('Analysis likely ran out of memory.'))).toBe(
       false,
     );
+    cap.restore();
+  });
+
+  it('does not print heap guidance when a SIGABRT child emitted a native N-API crash', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit({
+      status: 134,
+      signal: null,
+      stderr: Buffer.from('libc++abi: terminating due to uncaught exception of type Napi::Error'),
+    });
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(134);
+    expect(cap.records().some((r) => r.msg.includes('Analysis likely ran out of memory.'))).toBe(
+      false,
+    );
+    expect(cap.records().some((r) => r.msg.includes('Analysis aborted in a native worker'))).toBe(
+      true,
+    );
+    expect(cap.records().some((r) => r.recoveryHint === 'native-worker-abort')).toBe(true);
+    expect(stderrWriteSpy).toHaveBeenCalled();
     cap.restore();
   });
 });

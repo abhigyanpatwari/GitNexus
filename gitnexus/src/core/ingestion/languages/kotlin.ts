@@ -29,6 +29,16 @@ import { kotlinMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { kotlinVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitKotlinScopeCaptures,
+  interpretKotlinImport,
+  interpretKotlinTypeBinding,
+  kotlinArityCompatibility,
+  kotlinBindingScopeFor,
+  kotlinImportOwningScope,
+  kotlinMergeBindings,
+  kotlinReceiverBinding,
+} from './kotlin/index.js';
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
@@ -166,4 +176,14 @@ export const kotlinProvider = defineLanguage({
     if (isKotlinClassMethod(functionNode)) return 'Method';
     return defaultLabel;
   },
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──
+  emitScopeCaptures: emitKotlinScopeCaptures,
+  interpretImport: interpretKotlinImport,
+  interpretTypeBinding: interpretKotlinTypeBinding,
+  bindingScopeFor: kotlinBindingScopeFor,
+  importOwningScope: kotlinImportOwningScope,
+  mergeBindings: (_scope, bindings) => kotlinMergeBindings(bindings),
+  receiverBinding: kotlinReceiverBinding,
+  arityCompatibility: kotlinArityCompatibility,
 });
