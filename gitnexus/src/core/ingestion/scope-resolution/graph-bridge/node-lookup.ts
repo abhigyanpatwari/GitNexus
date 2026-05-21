@@ -159,6 +159,12 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
     // ACCESSES edge to User's `name` Variable/Property node).
     label === 'Variable' ||
-    label === 'Property'
+    label === 'Property' ||
+    // Const is linkable so the value-receiver-owner bridge in
+    // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
+    // `Variable` def for `export const fooService = {...}` to the canonical
+    // `Const:filePath:name` graph node id, against which object-literal
+    // method symbols register their `ownerId` (PR #1718 / issue #1358).
+    label === 'Const'
   );
 }
