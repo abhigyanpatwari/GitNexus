@@ -165,28 +165,9 @@ export function findClassBindingInScope(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return undefined;
+  const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
+  if (local !== undefined) return local;
 
-    const localBindings = scope.bindings.get(receiverName);
-    if (localBindings !== undefined) {
-      for (const b of localBindings) {
-        if (isClassLike(b.def.type)) return b.def;
-      }
-    }
-
-    const importedBindings = lookupBindingsAt(currentId, receiverName, scopes);
-    for (const b of importedBindings) {
-      if (isClassLike(b.def.type)) return b.def;
-    }
-
-    currentId = scope.parent;
-  }
   // Fallback for languages (Go) where namespace-style imports don't
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
   // when the scope-chain walk found nothing; single-match wins.
@@ -212,17 +193,31 @@ export function findClassBindingInScope(
 }
 
 /**
- * Look up a value-binding (non-class-like, non-callable) by name in
+ * Predicate for value-receiver bridge: the labels for which
+ * `reconcileOwnership` registers methods/fields under the def's
+ * `nodeId` as the `ownerId`. Explicit allowlist so future NodeLabel
+ * additions (Module, Namespace, TypeAlias, EnumMember, etc.) do NOT
+ * silently widen the bridge — adding a new ownerable label requires
+ * touching both this predicate and `reconcileOwnership`.
+ *
+ * See: `scope-resolution/pipeline/reconcile-ownership.ts` Property /
+ * Variable / Const / Static registration block.
+ */
+export function isOwnableValueLabel(t: string): boolean {
+  return t === 'Const' || t === 'Variable' || t === 'Property' || t === 'Static';
+}
+
+/**
+ * Look up a value-binding (Const/Variable/Property/Static) by name in
  * the given scope's chain. Used by the value-receiver-owner bridge
  * for object-literal services such as:
  *
  *   export const fooService = { getUser(id) {...} };
  *
  * where `fooService` is a `Const`/`Variable` whose `nodeId` is the
- * `ownerId` of the member method but where neither `findClassBindingInScope`
- * (rejects non-class-like) nor `findReceiverTypeBinding` (no typeBinding for
- * an unannotated literal) finds it. Returns the first non-class-like,
- * non-callable binding match.
+ * `ownerId` of the member method. Neither `findClassBindingInScope`
+ * (rejects non-class-like) nor `findReceiverTypeBinding` (no typeBinding
+ * for an unannotated literal) finds it.
  *
  * Mirrors `findClassBindingInScope` exactly; only the accepted def-type
  * predicate differs.
@@ -232,6 +227,27 @@ export function findValueBindingInScope(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
 ): SymbolDefinition | undefined {
+  return walkScopeChain(startScope, receiverName, scopes, (def) => isOwnableValueLabel(def.type));
+}
+
+/**
+ * Generic scope-chain walker. Walks from `startScope` toward the root,
+ * consulting both the local `scope.bindings` channel and the dual-source
+ * `lookupBindingsAt` view (finalized + augmented). At each scope, local
+ * bindings are exhausted BEFORE imported/augmented bindings — preserves
+ * JavaScript-style lexical scoping where a local `const x` shadows an
+ * imported `x` of the same name.
+ *
+ * Returns the first binding `def` matching `predicate`. Cycles in the
+ * scope graph terminate the walk (defensive — should not occur in
+ * well-formed inputs).
+ */
+function walkScopeChain(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  predicate: (def: SymbolDefinition) => boolean,
+): SymbolDefinition | undefined {
   let currentId: ScopeId | null = startScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
@@ -240,19 +256,18 @@ export function findValueBindingInScope(
     const scope = scopes.scopeTree.getScope(currentId);
     if (scope === undefined) return undefined;
 
-    const isValueLike = (t: string): boolean =>
-      !isClassLike(t) && t !== 'Function' && t !== 'Method' && t !== 'Constructor';
-
-    const localBindings = scope.bindings.get(receiverName);
+    // Local first: a `const x` in this scope shadows any imported `x`.
+    const localBindings = scope.bindings.get(name);
     if (localBindings !== undefined) {
       for (const b of localBindings) {
-        if (isValueLike(b.def.type)) return b.def;
+        if (predicate(b.def)) return b.def;
       }
     }
 
-    const importedBindings = lookupBindingsAt(currentId, receiverName, scopes);
+    // Then imported/augmented bindings — only consulted when no local match.
+    const importedBindings = lookupBindingsAt(currentId, name, scopes);
     for (const b of importedBindings) {
-      if (isValueLike(b.def.type)) return b.def;
+      if (predicate(b.def)) return b.def;
     }
 
     currentId = scope.parent;

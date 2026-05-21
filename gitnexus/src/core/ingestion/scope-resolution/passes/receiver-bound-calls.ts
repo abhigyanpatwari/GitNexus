@@ -54,9 +54,9 @@ import {
   findValueBindingInScope,
   isClassLike,
 } from '../scope/walkers.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
+import { tryEmitEdge, tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
-import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
@@ -730,9 +730,10 @@ export function emitReceiverBoundCalls(
       //
       // Object-literal methods do not carry a `qualifiedName` (no class
       // owner to seed it), so the picked def cannot round-trip through
-      // `tryEmitEdge` → `resolveDefGraphId`. We emit directly using
-      // `picked.nodeId` (already the canonical graph node id, written by
-      // the legacy parse phase).
+      // `tryEmitEdge` → `resolveDefGraphId`. We use
+      // `tryEmitEdgeWithExplicitTargetId` instead, passing `picked.nodeId`
+      // directly — same dedup-key shape, collapse-flag honoring, and
+      // caller resolution as `tryEmitEdge`.
       const valueDef = findValueBindingInScope(site.inScope, receiverName, scopes);
       if (valueDef !== undefined) {
         const ownerGraphId =
@@ -743,31 +744,27 @@ export function emitReceiverBoundCalls(
           continue;
         }
         if (picked !== undefined) {
-          const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
-          if (callerGraphId !== undefined) {
-            const reason =
-              site.kind === 'write' || site.kind === 'read'
-                ? site.kind
-                : picked.filePath !== parsed.filePath
-                  ? 'import-resolved'
-                  : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
-            const dedupKey = `CALLS:${callerGraphId}->${picked.nodeId}:${site.atRange.startLine}:${site.atRange.startCol}`;
-            if (!seen.has(dedupKey)) {
-              seen.add(dedupKey);
-              graph.addRelationship({
-                id: `rel:${dedupKey}`,
-                sourceId: callerGraphId,
-                targetId: picked.nodeId,
-                type: 'CALLS',
-                confidence,
-                reason,
-              });
-              emitted++;
-            }
-            handledSites.add(siteKey);
-            continue;
-          }
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : picked.filePath !== parsed.filePath
+                ? 'import-resolved'
+                : 'global';
+          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          const ok = tryEmitEdgeWithExplicitTargetId(
+            graph,
+            scopes,
+            nodeLookup,
+            site,
+            picked.nodeId,
+            reason,
+            seen,
+            confidence,
+            collapse,
+          );
+          if (ok) emitted++;
+          handledSites.add(siteKey);
+          continue;
         }
       }
     }

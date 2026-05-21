@@ -50,6 +50,19 @@ const DIST_WORKER = path.resolve(
 );
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
+// CI tripwire: worker-parity test (Test B below) silently skips when
+// `dist/parse-worker.js` is missing. That's fine locally — devs may not
+// have run `npm run build` — but on CI a missing dist would mean U3
+// (worker-path ownerId emission) is unverified. Fail hard so a missing
+// dist surfaces as a red build, not a green test with a silent skip.
+// Locally, run `npm run build` before this suite to exercise worker mode.
+if (!hasDistWorker && process.env.CI) {
+  throw new Error(
+    'dist/parse-worker.js missing on CI — worker-parity test would silently skip. ' +
+      'Ensure the build runs before this suite.',
+  );
+}
+
 /** Materialise a tiny fixture repo on disk. Returns the absolute repo root. */
 function writeFixture(files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gnx-objlit-'));
@@ -124,10 +137,26 @@ describe('object-literal owner resolution — sequential pipeline (PR #1718)', (
     expect(fooServiceNode!.id).toBe(expectedNodeId);
   });
 
-  it('emits a CALLS edge from caller to getUser (issue #1358 fix)', () => {
+  it('emits a CALLS edge from caller to getUser with the expected target/confidence/reason (issue #1358 fix)', () => {
     const calls = getRelationships(result, 'CALLS');
-    const callerToGetUser = calls.filter((e) => e.source === 'caller' && e.target === 'getUser');
-    expect(callerToGetUser.length).toBe(1);
+    const callerToGetUser = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetId: e.rel.targetId,
+        confidence: e.rel.confidence,
+        reason: e.rel.reason,
+      }));
+
+    // The Method node id encodes arity disambiguation (#1 = one-arity overload).
+    // Pin the canonical id so a regression that targets a phantom node fails.
+    const expectedTargetId = generateId('Method', 'src/service.ts:getUser#1');
+    expect(callerToGetUser).toEqual([
+      {
+        targetId: expectedTargetId,
+        confidence: 0.85,
+        reason: 'import-resolved',
+      },
+    ]);
   });
 });
 

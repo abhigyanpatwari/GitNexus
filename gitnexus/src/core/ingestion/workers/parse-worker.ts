@@ -2311,6 +2311,7 @@ const processFileGroup = (
       });
 
       // enclosingClassId already computed above (before nodeId generation)
+      const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
       result.symbols.push({
         filePath: file.path,
@@ -2327,9 +2328,7 @@ const processFileGroup = (
         ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
           ? { templateArguments: classTemplateArguments }
           : {}),
-        ...((enclosingClassId ?? objectLiteralOwnerInfo?.ownerId)
-          ? { ownerId: (enclosingClassId ?? objectLiteralOwnerInfo?.ownerId) as string }
-          : {}),
+        ...(ownerId !== undefined ? { ownerId } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
@@ -2362,12 +2361,11 @@ const processFileGroup = (
       });
 
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
-      if (ownerIdForMemberEdge) {
+      if (ownerId !== undefined) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         result.relationships.push({
-          id: generateId(memberEdgeType, `${ownerIdForMemberEdge}->${nodeId}`),
-          sourceId: ownerIdForMemberEdge,
+          id: generateId(memberEdgeType, `${ownerId}->${nodeId}`),
+          sourceId: ownerId,
           targetId: nodeId,
           type: memberEdgeType,
           confidence: 1.0,
