@@ -52,6 +52,10 @@ import {
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
+  collectRequestLikeImportBindings,
+  getRequestLikeMemberCallUrl,
+} from './request-like-clients.js';
+import {
   CLASS_CONTAINER_TYPES,
   FUNCTION_NODE_TYPES,
   findEnclosingClassInfo,
@@ -3535,6 +3539,8 @@ export const extractFetchCallsFromFiles = async (
       continue;
     }
 
+    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
+
     for (const match of matches) {
       const captureMap: Record<string, any> = {};
       match.captures.forEach((c) => (captureMap[c.name] = c.node));
@@ -3552,7 +3558,14 @@ export const extractFetchCallsFromFiles = async (
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
         const HTTP_CLIENT_ONLY = new Set(['head', 'options', 'request', 'ajax']);
-        if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
+        const requestLikeUrl = getRequestLikeMemberCallUrl(captureMap, requestLikeBindings);
+        if (requestLikeUrl) {
+          result.push({
+            filePath: file.path,
+            fetchURL: requestLikeUrl,
+            lineNumber: captureMap['http_client'].startPosition.row,
+          });
+        } else if (method && HTTP_CLIENT_ONLY.has(method) && url.startsWith('/')) {
           result.push({
             filePath: file.path,
             fetchURL: url,

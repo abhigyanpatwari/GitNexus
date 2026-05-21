@@ -316,7 +316,7 @@ describe('CLI end-to-end', () => {
   // subprocess timeout and the `if (result.status === null) return;`
   // tolerance never activates.
   it('analyze command runs pipeline on mini-repo', () => {
-    const result = runCli('analyze', MINI_REPO, 30000);
+    const result = runCli('analyze', MINI_REPO, 60000);
 
     // Accept timeout as valid on slow CI
     if (result.status === null) return;

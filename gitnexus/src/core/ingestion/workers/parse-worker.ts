@@ -91,6 +91,10 @@ import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import {
+  collectRequestLikeImportBindings,
+  getRequestLikeMemberCallUrl,
+} from '../request-like-clients.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -1092,6 +1096,7 @@ const processFileGroup = (
     }
 
     const provider = getProvider(language);
+    const requestLikeBindings = collectRequestLikeImportBindings(file.content);
 
     // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
     // resolution pipeline. No-op (returns undefined) for every language
@@ -1299,7 +1304,14 @@ const processFileGroup = (
       if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
-        if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+        const requestLikeUrl = getRequestLikeMemberCallUrl(captureMap, requestLikeBindings);
+        if (requestLikeUrl) {
+          result.fetchCalls.push({
+            filePath: file.path,
+            fetchURL: requestLikeUrl,
+            lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
+          });
+        } else if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
