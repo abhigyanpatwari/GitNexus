@@ -28,6 +28,7 @@ import {
 import {
   isMissingFsError,
   isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
   renameFailureMessage,
@@ -313,11 +314,6 @@ const WAITER_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
-
-const isReadOnlyShadowReplayError = (err: unknown): boolean => {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /replay shadow pages under read-only mode/i.test(msg);
-};
 
 const poolSidecarLogger = {
   warn: (message: string): void => {

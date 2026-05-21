@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
   finalizeLbugSidecarsAfterClose,
   inspectLbugSidecars,
   isPermissionRenameError,
+  isReadOnlyShadowReplayError,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
   renameFailureMessage,
@@ -181,6 +183,47 @@ describe('LadybugDB sidecar recovery', () => {
     });
   });
 
+  describe('Centralized isReadOnlyShadowReplayError (PR #1747 review, F4 dedup)', () => {
+    it('matches LadybugDB read-only shadow-replay error', () => {
+      const err = new Error(
+        "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.",
+      );
+      expect(isReadOnlyShadowReplayError(err)).toBe(true);
+    });
+
+    it('false-positive guard: rejects unrelated errors', () => {
+      expect(isReadOnlyShadowReplayError(new Error('something else entirely'))).toBe(false);
+      expect(isReadOnlyShadowReplayError(new Error('replay shadow pages'))).toBe(false); // missing "under read-only mode"
+    });
+
+    it('structural: lbug-adapter.ts no longer defines isReadOnlyShadowReplayError locally', () => {
+      const source = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
+        'utf-8',
+      );
+      // The original regex literal should appear nowhere in lbug-adapter.ts
+      // (it now lives in sidecar-recovery.ts only).
+      expect(source).not.toMatch(/replay shadow pages under read-only mode/);
+    });
+
+    it('structural: pool-adapter.ts no longer defines isReadOnlyShadowReplayError locally', () => {
+      const source = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'pool-adapter.ts'),
+        'utf-8',
+      );
+      expect(source).not.toMatch(/replay shadow pages under read-only mode/);
+    });
+
+    it('structural: sidecar-recovery.ts carries exactly two LADYBUGDB-CONTRACT markers (one per shadow predicate)', () => {
+      const source = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'sidecar-recovery.ts'),
+        'utf-8',
+      );
+      const markers = source.match(/\/\/ LADYBUGDB-CONTRACT:/g) ?? [];
+      expect(markers.length).toBe(2);
+    });
+  });
+
   it('lists only missing-shadow WAL quarantine files for cleanup', async () => {
     await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
     await fs.writeFile(`${dbPath}.wal.missing-shadow.2-b`, '');
@@ -191,5 +234,91 @@ describe('LadybugDB sidecar recovery', () => {
       `${dbPath}.wal.missing-shadow.1-a`,
       `${dbPath}.wal.missing-shadow.2-b`,
     ]);
+  });
+
+  describe('Counter-based warnOnce milestones (PR #1747 review, F6)', () => {
+    // Use the public observable surface: drive `warnOnce` indirectly via
+    // `preflightLbugSidecars` (which calls warnOnce for orphan-WAL) and count
+    // logger.warn vs logger.debug invocations across many cycles. This avoids
+    // coupling tests to `warnOnce`'s private signature.
+
+    const triggerOrphanWalPreflight = async (path: string, log: ReturnType<typeof logger>) => {
+      // Each call must restage a >TINY_ORPHAN_WAL_BYTES WAL because preflight
+      // does not consume large WALs (it returns 'orphan-wal' and warns).
+      await fs.writeFile(`${path}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await preflightLbugSidecars(path, {
+        mode: 'read-only',
+        logger: log,
+        allowQuarantine: true,
+      });
+    };
+
+    it('first occurrence warns; occurrences 2-9 debug; 10th warns with "10th occurrence" suffix', async () => {
+      const log = logger();
+      for (let i = 1; i <= 10; i++) {
+        await triggerOrphanWalPreflight(dbPath, log);
+      }
+      expect(log.warn).toHaveBeenCalledTimes(2);
+      expect(log.warn).toHaveBeenNthCalledWith(1, expect.stringContaining('lbug.wal without lbug.shadow'));
+      expect(log.warn).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('(10th occurrence of this condition)'),
+      );
+      expect(log.debug).toHaveBeenCalledTimes(8);
+    });
+
+    it('100th occurrence warns with "100th occurrence" suffix', async () => {
+      const log = logger();
+      for (let i = 1; i <= 100; i++) {
+        await triggerOrphanWalPreflight(dbPath, log);
+      }
+      // Milestones at 1, 10, 100 → 3 warns total.
+      expect(log.warn).toHaveBeenCalledTimes(3);
+      expect(log.warn).toHaveBeenNthCalledWith(
+        3,
+        expect.stringContaining('(100th occurrence of this condition)'),
+      );
+    });
+
+    it('different keys do not share counters (different dbPaths warn independently)', async () => {
+      const log = logger();
+      const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-sidecar-recovery-B-'));
+      const dbPathB = path.join(dirB, 'lbug');
+      await fs.writeFile(dbPathB, 'db');
+
+      try {
+        await triggerOrphanWalPreflight(dbPath, log);
+        await triggerOrphanWalPreflight(dbPathB, log);
+
+        // Each path fires its first-occurrence warn independently.
+        expect(log.warn).toHaveBeenCalledTimes(2);
+        expect(log.debug).toHaveBeenCalledTimes(0);
+      } finally {
+        await fs.rm(dirB, { recursive: true, force: true });
+      }
+    });
+
+    it('_resetSidecarRecoveryWarningsForTest zeroes the counter so the next call fires warn again', async () => {
+      const log = logger();
+      await triggerOrphanWalPreflight(dbPath, log);
+      await triggerOrphanWalPreflight(dbPath, log);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.debug).toHaveBeenCalledTimes(1);
+
+      _resetSidecarRecoveryWarningsForTest();
+
+      await triggerOrphanWalPreflight(dbPath, log);
+      // Post-reset, counter is back to 1 — fires warn (not debug).
+      expect(log.warn).toHaveBeenCalledTimes(2);
+      expect(log.debug).toHaveBeenCalledTimes(1);
+    });
+
+    it('first-occurrence warn message does NOT include the occurrence-count suffix', async () => {
+      const log = logger();
+      await triggerOrphanWalPreflight(dbPath, log);
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      const firstWarnMessage = (log.warn as any).mock.calls[0][0] as string;
+      expect(firstWarnMessage).not.toContain('occurrence of this condition');
+    });
   });
 });

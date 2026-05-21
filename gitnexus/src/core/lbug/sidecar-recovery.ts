@@ -16,7 +16,39 @@ export interface SidecarRecoveryLogger {
 
 export const TINY_ORPHAN_WAL_BYTES = 4 * 1024;
 
-const warnedKeys = new Set<string>();
+/**
+ * Counter-based warn anti-spam (PR #1747 review, Finding 6).
+ *
+ * The previous design (`warnedKeys: Set<string>`) warned exactly once per key
+ * per process and silently downgraded all subsequent occurrences to debug. In
+ * a long-lived `gitnexus serve` process touching the same dbPath repeatedly,
+ * a persistent condition produced one warn at the first occurrence and then
+ * 99+ silent debug lines — invisible to operators reading warn-level logs.
+ *
+ * The counter-based design warns on logarithmic milestones so persistence
+ * stays visible. Geometric spacing keeps total warn count bounded at O(log N)
+ * for a condition that fires N times.
+ */
+const warnedKeyCounts = new Map<string, number>();
+
+const WARN_MILESTONES = [1, 10, 100, 1000, 10000] as const;
+
+const ordinal = (n: number): string => {
+  switch (n) {
+    case 1:
+      return '1st';
+    case 10:
+      return '10th';
+    case 100:
+      return '100th';
+    case 1000:
+      return '1000th';
+    case 10000:
+      return '10000th';
+    default:
+      return `${n}th`;
+  }
+};
 
 export const isMissingFsError = (err: unknown): boolean =>
   (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
@@ -52,18 +84,44 @@ const logInfo = (logger: SidecarRecoveryLogger, message: string): void => {
   else logDebug(logger, message);
 };
 
+/**
+ * Log at warn-level on logarithmic milestone occurrences (1st, 10th, 100th,
+ * 1000th, 10000th); debug-level otherwise. Past the first occurrence the warn
+ * message is suffixed with the occurrence count so operators can see the
+ * condition's persistence at a glance.
+ *
+ * The signature and key convention (`${dbPath}:suffix`) are unchanged from the
+ * previous warn-once implementation — call sites need no edits.
+ */
 const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): void => {
-  if (warnedKeys.has(key)) {
+  const next = (warnedKeyCounts.get(key) ?? 0) + 1;
+  warnedKeyCounts.set(key, next);
+  const isMilestone = (WARN_MILESTONES as readonly number[]).includes(next);
+  if (!isMilestone) {
     logDebug(logger, message);
     return;
   }
-  warnedKeys.add(key);
-  logger.warn(message);
+  if (next === 1) {
+    logger.warn(message);
+    return;
+  }
+  logger.warn(`${message} (${ordinal(next)} occurrence of this condition)`);
 };
 
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.16.1 native error text.
+// When bumping LadybugDB, re-validate this regex against the new error format
+// — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /Cannot open file .*\.shadow: No such file or directory/i.test(msg);
+};
+
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.16.1 native error text.
+// When bumping LadybugDB, re-validate this regex against the new error format
+// — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
+export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /replay shadow pages under read-only mode/i.test(msg);
 };
 
 export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): string => {
@@ -291,5 +349,5 @@ export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise
 }
 
 export const _resetSidecarRecoveryWarningsForTest = (): void => {
-  warnedKeys.clear();
+  warnedKeyCounts.clear();
 };

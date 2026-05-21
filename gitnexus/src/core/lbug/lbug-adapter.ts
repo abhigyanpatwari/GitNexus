@@ -31,6 +31,7 @@ import {
   finalizeLbugSidecarsAfterClose,
   inspectLbugSidecars,
   isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
   renameFailureMessage,
@@ -447,11 +448,6 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
 };
 
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
-
-const isReadOnlyShadowReplayError = (err: unknown): boolean => {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /replay shadow pages under read-only mode/i.test(msg);
-};
 
 /**
  * Reject the quarantine path when the orphan WAL is too large to safely
