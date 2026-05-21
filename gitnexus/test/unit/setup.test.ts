@@ -282,9 +282,9 @@ describe('setupClaudeCode', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('falls back to first line on Windows when no .cmd/.bat wrapper found', async () => {
+  it('falls back to npx on Windows when no .cmd/.bat wrapper is found', async () => {
     setPlatform('win32');
-    // Edge case: where returns only the POSIX script (no .cmd wrapper)
+    // Edge case: where returns only a non-spawnable shim (no .cmd wrapper)
     execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
@@ -294,8 +294,24 @@ describe('setupClaudeCode', () => {
     const config = JSON.parse(raw);
 
     expect(config.mcpServers.gitnexus).toEqual({
-      command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus',
-      args: ['mcp'],
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
+
+  it('falls back to npx on Windows when where returns only a .ps1 path', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
 });

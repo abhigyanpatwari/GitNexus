@@ -92,6 +92,77 @@ public class UserController {
       expect(getRoute!.confidence).toBe(0.9);
       expect(getRoute!.symbolUid).not.toBe('file-uid-ctrl');
     });
+
+    it('supplements graph providers with source-scan providers from other files', async () => {
+      const dir = path.join(tmpDir, 'graph-source-provider-union');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+@RestController
+@RequestMapping("/api/v2")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) {
+          return [
+            {
+              fileId: 'file-uid-ctrl',
+              filePath: 'src/controller/UserController.java',
+              routePath: '/api/v2/users',
+              routeId: 'route-uid-users',
+              responseKeys: null,
+              routeSource: 'decorator-GetMapping',
+            },
+          ];
+        }
+        if (query.includes('FETCHES')) return [];
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'uid-ctrl-list',
+              name: 'list',
+              filePath: 'src/controller/UserController.java',
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const graphRouteMatches = providers.filter(
+        (c) => c.contractId === 'http::GET::/api/v2/users',
+      );
+      expect(graphRouteMatches).toHaveLength(1);
+      expect(graphRouteMatches[0].symbolUid).toBe('uid-ctrl-list');
+      expect(graphRouteMatches[0].meta.extractionStrategy).toBe('graph_assisted');
+
+      const sourceRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(sourceRoute).toBeDefined();
+      expect(sourceRoute?.symbolName).toBe('healthHandler');
+      expect(sourceRoute?.meta.extractionStrategy).toBe('source_scan');
+    });
   });
 
   describe('provider extraction — source-scan fallback (Strategy B)', () => {
@@ -164,6 +235,30 @@ export default router;
       expect(
         providers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
       ).toBeDefined();
+    });
+
+    it('dedupes source-only providers by contract id', async () => {
+      const dir = path.join(tmpDir, 'source-only-same-contract-id');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-a.ts'),
+        `
+router.get('/api/health', healthA);
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-b.ts'),
+        `
+router.get('/api/health', healthB);
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.contractId === 'http::GET::/api/health');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].role).toBe('provider');
+      expect(providers[0].meta.extractionStrategy).toBe('source_scan');
     });
 
     it('extracts Go Gin and Echo route registrations', async () => {
@@ -739,6 +834,59 @@ async def create_user(user: UserCreate):
       expect(consumers.length).toBeGreaterThanOrEqual(1);
       expect(consumers[0].confidence).toBe(0.9);
       expect(consumers[0].symbolName).toBe('fetchUsers');
+    });
+
+    it('supplements graph consumers with source-scan consumers from other files', async () => {
+      const dir = path.join(tmpDir, 'graph-source-consumer-union');
+      fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/api/graph.ts'), 'export const api = {};');
+      fs.writeFileSync(
+        path.join(dir, 'src/api/health.ts'),
+        `
+export async function fetchHealth() {
+  const res = await fetch('/api/health');
+  return res.json();
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) return [];
+        if (query.includes('FETCHES')) {
+          return [
+            {
+              fileId: 'file-uid-api',
+              filePath: 'src/api/graph.ts',
+              routePath: '/api/users',
+              routeId: 'route-uid-users',
+              fetchReason: 'fetch-url-match',
+            },
+          ];
+        }
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'uid-fn-fetch',
+              name: 'fetchUsers',
+              filePath: 'src/api/graph.ts',
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const graphConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(graphConsumer).toBeDefined();
+      expect(graphConsumer?.symbolUid).toBe('uid-fn-fetch');
+      expect(graphConsumer?.meta.extractionStrategy).toBe('graph_assisted');
+
+      const sourceConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(sourceConsumer).toBeDefined();
+      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan');
     });
   });
 

@@ -40,6 +40,31 @@ describe('BM25 search', () => {
         ['Interface', 'interface_fts', ['name', 'content']],
       ]);
     });
+
+    it('verifies all configured FTS indexes are queryable', async () => {
+      const executeQuery = vi.fn().mockResolvedValue([]);
+      const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      const missing = await verifySearchFTSIndexes(executeQuery);
+
+      expect(missing).toEqual([]);
+      expect(executeQuery).toHaveBeenCalledTimes(5);
+    });
+
+    it('reports missing indexes when an FTS probe fails', async () => {
+      const executeQuery = vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(new Error('index does not exist'))
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      const missing = await verifySearchFTSIndexes(executeQuery);
+
+      expect(missing).toEqual(['Function.function_fts']);
+    });
   });
 
   describe('searchFTSFromLbug', () => {

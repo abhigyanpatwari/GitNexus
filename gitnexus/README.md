@@ -151,7 +151,8 @@ Your AI agent gets these tools automatically:
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
 gitnexus analyze [path]          # Index a repository (or update stale index)
-gitnexus analyze --force         # Force full re-index
+gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
+gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -357,6 +358,16 @@ npx gitnexus analyze
 ```
 
 For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget. The default is **8388608 bytes (8 MB)**.
+
+### Worker pool resilience tuning
+
+Three env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
+
+| Variable                                          | Default                   | Effect                                                                                                                            |
+| ------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`            | `3`                       | Max replacement spawns per slot before the slot is dropped from the active rotation.                                              |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`        | `5 × subBatchTimeoutMs`   | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                              |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD`    | `max(3, poolSize)`        | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.            |
 
 ## Privacy
 
