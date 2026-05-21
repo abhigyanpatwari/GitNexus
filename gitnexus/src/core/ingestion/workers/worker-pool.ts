@@ -235,6 +235,20 @@ export class WorkerPoolDispatchError extends Error {
   }
 }
 
+export class WorkerPoolInitializationError extends WorkerPoolDispatchError {
+  readonly readinessFailures: readonly string[];
+
+  constructor(
+    message: string,
+    quarantinedPaths: readonly string[] = [],
+    readinessFailures: readonly string[] = [],
+  ) {
+    super(message, quarantinedPaths);
+    this.name = 'WorkerPoolInitializationError';
+    this.readinessFailures = readinessFailures;
+  }
+}
+
 /** Message shapes sent back by worker threads. */
 type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
@@ -592,6 +606,7 @@ export const createWorkerPool = (
   // 1100+ LOC of pool plumbing. Public worker-pool API is unchanged —
   // `getQuarantinedPaths()` still returns the same defensive copy.
   const quarantine = createQuarantine();
+  const initialReadinessFailures: string[] = [];
   // Per-slot consecutive-failure counter (F6): replaces the prior pool-wide
   // scalar so a chronically-failing slot trips the breaker on its own
   // failure streak instead of being masked by another slot's successes.
@@ -636,6 +651,7 @@ export const createWorkerPool = (
       try {
         await waitForWorkerReady(w);
       } catch (err) {
+        initialReadinessFailures.push(err instanceof Error ? err.message : String(err));
         logger.warn(
           {
             workerIndex: i,
@@ -673,7 +689,15 @@ export const createWorkerPool = (
     }
     if (items.length === 0) return [];
     if (activeSlots.size === 0) {
-      throw new WorkerPoolDispatchError('Worker pool has no active workers', []);
+      const detail =
+        initialReadinessFailures.length > 0
+          ? ` after initial ready handshake: ${initialReadinessFailures.join('; ')}`
+          : '';
+      throw new WorkerPoolInitializationError(
+        `Worker pool has no active workers${detail}`,
+        [],
+        initialReadinessFailures,
+      );
     }
 
     // Layer 3: filter out quarantined paths so a known-bad file never reaches
