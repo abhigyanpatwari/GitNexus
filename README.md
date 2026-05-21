@@ -1,4 +1,5 @@
 # GitNexus
+
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
@@ -30,14 +31,9 @@
 
 Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
 
-
-
-
 https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
-
-
-> *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
+> _Like DeepWiki, but deeper._ DeepWiki helps you _understand_ code. GitNexus lets you _analyze_ it — because a knowledge graph tracks every relationship, not just descriptions.
 
 **TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
@@ -47,18 +43,17 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 [![Star History Chart](https://api.star-history.com/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://www.star-history.com/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
 
-
 ## Two Ways to Use GitNexus
 
-|                   | **CLI + MCP**                                            | **Web UI**                                             |
-| ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
-| **What**    | Index repos locally, connect AI agents via MCP                 | Visual graph explorer + AI chat in browser                   |
-| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                   |
-| **Scale**   | Full repos, any size                                           | Limited by browser memory (~5k files), or unlimited via backend mode |
-| **Install** | `npm install -g gitnexus`                                    | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app) |
-| **Storage** | LadybugDB native (fast, persistent)                               | LadybugDB WASM (in-memory, per session)                         |
-| **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
-| **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
+|             | **CLI + MCP**                                                         | **Web UI**                                                           |
+| ----------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **What**    | Index repos locally, connect AI agents via MCP                        | Visual graph explorer + AI chat in browser                           |
+| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
+| **Scale**   | Full repos, any size                                                  | Limited by browser memory (~5k files), or unlimited via backend mode |
+| **Install** | `npm install -g gitnexus`                                             | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app)      |
+| **Storage** | LadybugDB native (fast, persistent)                                   | LadybugDB WASM (in-memory, per session)                              |
+| **Parsing** | Tree-sitter native bindings                                           | Tree-sitter WASM                                                     |
+| **Privacy** | Everything local, no network                                          | Everything in-browser, no server                                     |
 
 > **Bridge mode:** `gitnexus serve` connects the two — the web UI auto-detects the local server and can browse all your CLI-indexed repos without re-uploading or re-indexing.
 
@@ -69,6 +64,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 GitNexus is available as an **enterprise offering** - either as a fully managed **SaaS** or a **self-hosted** deployment. Also available for **commercial use** of the OSS version with proper licensing.
 
 Enterprise includes:
+
 - **PR Review** - automated blast radius analysis on pull requests
 - **Auto-updating Code Wiki** - always up-to-date documentation (Code Wiki is also available in OSS)
 - **Auto-reindexing** - knowledge graph stays fresh automatically
@@ -77,6 +73,7 @@ Enterprise includes:
 - **Priority feature/language support** - request new languages or features
 
 **Upcoming:**
+
 - Auto regression forensics
 - End-to-end test generation
 
@@ -117,13 +114,13 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor                | MCP | Skills | Hooks (auto-augment) | Support        |
-| --------------------- | --- | ------ | -------------------- | -------------- |
-| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
-| **Cursor**      | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full** |
-| **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
-| **Windsurf**    | Yes | —     | —                   | MCP            |
-| **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
+| Editor          | MCP | Skills | Hooks (auto-augment)                                                                    | Support      |
+| --------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
+| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
+| **Cursor**      | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
+| **Codex**       | Yes | Yes    | —                                                                                       | MCP + Skills |
+| **Windsurf**    | Yes | —      | —                                                                                       | MCP          |
+| **OpenCode**    | Yes | Yes    | —                                                                                       | MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
 
@@ -131,10 +128,10 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 Built by the community — not officially maintained, but worth checking out.
 
-| Project | Author | Description |
-|---------|--------|-------------|
-| [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus) | [@tintinweb](https://github.com/tintinweb) | GitNexus plugin for [pi](https://pi.dev) — `pi install npm:pi-gitnexus` |
-| [gitnexus-stable-ops](https://github.com/ShunsukeHayashi/gitnexus-stable-ops) | [@ShunsukeHayashi](https://github.com/ShunsukeHayashi) | Stable ops & deployment workflows (Miyabi ecosystem) |
+| Project                                                                       | Author                                                 | Description                                                             |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus)                       | [@tintinweb](https://github.com/tintinweb)             | GitNexus plugin for [pi](https://pi.dev) — `pi install npm:pi-gitnexus` |
+| [gitnexus-stable-ops](https://github.com/ShunsukeHayashi/gitnexus-stable-ops) | [@ShunsukeHayashi](https://github.com/ShunsukeHayashi) | Stable ops & deployment workflows (Miyabi ecosystem)                    |
 
 > Have a project built on GitNexus? Open a PR to add it here!
 
@@ -206,6 +203,7 @@ gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus analyze --workers <n>        # Parse worker pool size (default: cores-1, capped at 16; 0 = sequential)
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -230,6 +228,25 @@ gitnexus group status <name>     # Check staleness of repos in a group
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `gitnexus analyze --worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
 
+#### Environment variables
+
+Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max-file-size`, `--verbose`). Use the env-var form when you'd otherwise repeat the same flag every run, or when invoking GitNexus from a long-running host (MCP server, eval-server, CI shell) that already manages its own environment. CLI flags take precedence over env vars; env vars take precedence over built-in defaults.
+
+| Variable                               | Default                   | Effect                                                                                                                                                     | Tune when…                                                                                                                                  |
+| -------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_WORKER_POOL_SIZE`            | `cores - 1`, capped at 16 | Parse worker pool size. `0` disables the pool (sequential fallback). Equivalent to `--workers <n>`.                                                        | Constrained containers (cgroup CPU limits), CI runners with explicit quotas, or debugging a worker-only crash via `0`.                      |
+| `GITNEXUS_PARSE_CHUNK_CONCURRENCY`     | `2`                       | Number of chunks whose file contents may be read into memory in parallel while the pool dispatches the current chunk. Worker dispatch itself stays serial. | Repos large enough to chunk (multi-MB total source) where disk I/O is a measurable fraction of analyze wall-clock.                          |
+| `GITNEXUS_VERBOSE`                     | unset                     | When `1`, enables verbose ingestion logs (skipped-file warnings, per-chunk throughput, parse-cache stats). Equivalent to `--verbose`.                      | Debugging an analyze that "completed" but seems to have missed files; tuning `--workers` / chunk concurrency against observable throughput. |
+| `GITNEXUS_MAX_FILE_SIZE`               | `512` (KB)                | Walker skip threshold in KB. Hard cap is `32768` (tree-sitter buffer ceiling). Equivalent to `--max-file-size <kb>`.                                       | Indexing repos with intentionally-large source files (generated parsers, vendored bundles) that should still be parsed.                     |
+| `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS` | `30000`                   | Worker idle timeout in milliseconds before retry/fallback. Equivalent to `--worker-timeout <seconds>` × 1000.                                              | Slow-parsing files (large minified JS, deeply-nested TS types) that legitimately need more than 30s.                                        |
+| `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`  | `8388608` (8 MB)          | Per-job byte budget the pool will send to a worker in one `postMessage`.                                                                                   | Very large individual files; mostly diagnostic — bumping past 8 MB risks structured-clone memory pressure.                                  |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`        | `3`                       | Max replacement spawns per worker slot before the slot is dropped from the active rotation. Bounds respawn loops on a chronically-crashing slot.           | Hosts where a flaky worker should retry more (raise) or fail-fast (lower) before the slot is dropped.                                       |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`    | `5 × subBatchTimeoutMs`   | Total retry wall-time budget per job before quarantining. Combined with `timeoutBackoffFactor`, prevents exponentially-growing retries from stalling for hours. | Slow files that legitimately need long total retry windows; lower to fail-fast on stalls.                                                    |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD`| `max(3, poolSize)`        | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, every subsequent dispatch rejects until a fresh pool is created.       | Hosts where a SIGSEGV-prone native grammar should trip the breaker sooner; CI runners that should fail loudly.                              |
+| `GITNEXUS_CHUNK_BYTE_BUDGET`           | `2097152` (2 MB)          | Chunk boundary used for cache-key composition and dispatch. Smaller = finer-grained cache hits but more dispatch overhead.                                 | Tuning incremental-analyze cache behavior on monorepos.                                                                                     |
+| `GITNEXUS_NO_GITIGNORE`                | unset                     | When set, skips `.gitignore` parsing. `.gitnexusignore` is still honored.                                                                                  | Indexing a repo whose `.gitignore` excludes files you actually want indexed (e.g., generated code committed for cross-repo lookup).         |
+| `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`      | unset                     | When `=1` strictly, skips native builds for `tree-sitter-dart` / `tree-sitter-proto` at install time.                                                      | Installing on a host without a C++ toolchain; you're willing to skip Dart/Proto parsing.                                                    |
+
 #### Publishing to understand-quickly (opt-in)
 
 [`looptech-ai/understand-quickly`](https://github.com/looptech-ai/understand-quickly) is a public registry of code-knowledge graphs that lists `gitnexus@1` as a first-class format. After registering your repo once (`npx @understand-quickly/cli add` or the [wizard](https://looptech-ai.github.io/understand-quickly/add.html)), `gitnexus publish` fires a single `repository_dispatch` event so the registry resyncs your entry on demand instead of waiting for the nightly job.
@@ -240,27 +257,27 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 
 **16 tools** exposed via MCP (11 per-repo + 5 group):
 
-| Tool               | What It Does                                                      | `repo` Param |
-| ------------------ | ----------------------------------------------------------------- | -------------- |
-| `list_repos`     | Discover all indexed repositories                                 | —             |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)             | Optional       |
-| `context`        | 360-degree symbol view — categorized refs, process participation | Optional       |
-| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
-| `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
-| `cypher`         | Raw Cypher graph queries                                          | Optional       |
-| `group_list`     | List configured repository groups                                 | —             |
-| `group_sync`     | Extract contracts and match across repos/services                 | —             |
-| `group_contracts`| Inspect extracted contracts and cross-links                       | —             |
-| `group_query`    | Search execution flows across all repos in a group                | —             |
-| `group_status`   | Check staleness of repos in a group                               | —             |
+| Tool              | What It Does                                                     | `repo` Param |
+| ----------------- | ---------------------------------------------------------------- | ------------ |
+| `list_repos`      | Discover all indexed repositories                                | —            |
+| `query`           | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
+| `context`         | 360-degree symbol view — categorized refs, process participation | Optional     |
+| `impact`          | Blast radius analysis with depth grouping and confidence         | Optional     |
+| `detect_changes`  | Git-diff impact — maps changed lines to affected processes       | Optional     |
+| `rename`          | Multi-file coordinated rename with graph + text search           | Optional     |
+| `cypher`          | Raw Cypher graph queries                                         | Optional     |
+| `group_list`      | List configured repository groups                                | —            |
+| `group_sync`      | Extract contracts and match across repos/services                | —            |
+| `group_contracts` | Inspect extracted contracts and cross-links                      | —            |
+| `group_query`     | Search execution flows across all repos in a group               | —            |
+| `group_status`    | Check staleness of repos in a group                              | —            |
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
 
 **Resources** for instant context:
 
-| Resource                                  | Purpose                                              |
-| ----------------------------------------- | ---------------------------------------------------- |
+| Resource                                | Purpose                                              |
+| --------------------------------------- | ---------------------------------------------------- |
 | `gitnexus://repos`                      | List all indexed repositories (read this first)      |
 | `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
 | `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
@@ -271,9 +288,9 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 
 **2 MCP prompts** for guided workflows:
 
-| Prompt            | What It Does                                                              |
-| ----------------- | ------------------------------------------------------------------------- |
-| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level       |
+| Prompt          | What It Does                                                              |
+| --------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 **4 agent skills** installed to `.claude/skills/` automatically:
@@ -360,10 +377,10 @@ npx gitnexus@latest serve
 
 The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`. Each image is published to both **GitHub Container Registry** (GHCR) and **Docker Hub** — same build, same digest, same Cosign signature — so pick whichever registry you prefer:
 
-| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror                           |
-| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
-| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`                  |
-| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest`              |
+| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror              |
+| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ |
+| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`     |
+| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest` |
 
 > **Heads-up — image rename.** Earlier releases published the web UI under
 > `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
@@ -579,22 +596,22 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 ### Supported Languages
 
-| Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
-|----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
-| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Java | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Kotlin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| PHP | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | — | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
-| Swift | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | — | — | ✓ | — | ✓ | ✓ | — | ✓ | ✓ |
-| C++ | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Dart | ✓ | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
+| ---------- | ------- | -------------- | ------- | -------- | ---------------- | --------------------- | ------ | ---------- | ------------ |
+| TypeScript | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| JavaScript | ✓       | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | ✓          | ✓            |
+| Python     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Java       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Kotlin     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C#         | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Go         | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| PHP        | ✓       | ✓              | ✓       | —        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Ruby       | ✓       | —              | ✓       | ✓        | —                | ✓                     | —      | ✓          | ✓            |
+| Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -739,16 +756,16 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ## Tech Stack
 
-| Layer                     | CLI                                   | Web                                     |
-| ------------------------- | ------------------------------------- | --------------------------------------- |
+| Layer               | CLI                                   | Web                                     |
+| ------------------- | ------------------------------------- | --------------------------------------- |
 | **Runtime**         | Node.js (native)                      | Browser (WASM)                          |
 | **Parsing**         | Tree-sitter native bindings           | Tree-sitter WASM                        |
-| **Database**        | LadybugDB native                         | LadybugDB WASM                             |
+| **Database**        | LadybugDB native                      | LadybugDB WASM                          |
 | **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
 | **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
 | **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
-| **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
-| **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
+| **Visualization**   | —                                     | Sigma.js + Graphology (WebGL)           |
+| **Frontend**        | —                                     | React 18, TypeScript, Vite, Tailwind v4 |
 | **Clustering**      | Graphology                            | Graphology                              |
 | **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
 
@@ -764,12 +781,12 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ### Recently Completed
 
-- [X] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
-- [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
-- [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
-- [X] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
-- [X] Community Detection, Process Detection, Confidence Scoring
-- [X] Hybrid Search, Vector Index
+- [x] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
+- [x] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
+- [x] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
+- [x] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
+- [x] Community Detection, Process Detection, Confidence Scoring
+- [x] Hybrid Search, Vector Index
 
 ---
 
