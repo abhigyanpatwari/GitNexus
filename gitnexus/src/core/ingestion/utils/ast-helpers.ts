@@ -411,6 +411,123 @@ export const findEnclosingClassInfo = (
   return null;
 };
 
+/** Object literal binding info for TS/JS shorthand methods. */
+export interface ObjectLiteralBindingInfo {
+  ownerId: string;
+}
+
+/**
+ * Block-statement AST types that disqualify an object-literal binding from
+ * carrying a HAS_METHOD edge. A `const` declared inside one of these is block-
+ * scoped and cannot be imported, so attributing methods to it would create
+ * false-positive cross-file edges.
+ */
+const BLOCK_SCOPE_BOUNDARY_TYPES = new Set([
+  'statement_block',
+  'if_statement',
+  'else_clause',
+  'for_statement',
+  'for_in_statement',
+  'for_of_statement',
+  'while_statement',
+  'do_statement',
+  'try_statement',
+  'catch_clause',
+  'finally_clause',
+  'switch_statement',
+  'switch_case',
+  'switch_default',
+  'with_statement',
+]);
+
+/**
+ * Find the file-scope variable that owns an object literal method definition.
+ *
+ * Covers TypeScript/JavaScript shorthand object methods such as:
+ *
+ *   export const service = { async load() {} };
+ *
+ * tree-sitter represents `load` as a `method_definition` inside an `object`,
+ * not inside a class container. Without this fallback, ingestion emits a
+ * top-level `Method` node but no edge from the exported `service` value to
+ * that method, so impact queries cannot discover `service.load`.
+ *
+ * Two-phase walk:
+ *   Phase A walks up from `node` tracking how many `object` ancestors we
+ *     cross. The first `variable_declarator` reached with `objectDepth >= 1`
+ *     is the candidate owner — unless `objectDepth > 1` (the method belongs
+ *     to a nested object literal; we return null rather than misattribute
+ *     to the outer binding). Hitting a function/class container before the
+ *     declarator returns null (catches IIFE-wrapped literals).
+ *   Phase B walks the declarator's own ancestors. Any function or class
+ *     ancestor before reaching `program`/`export_statement` returns null
+ *     (catches `const` declared inside a function body). Any block-statement
+ *     ancestor also returns null (catches block-scoped declarations inside
+ *     top-level `if`/`for`/`try`/etc., which cannot be imported).
+ */
+export const findObjectLiteralBindingInfo = (
+  node: SyntaxNode,
+  filePath: string,
+): ObjectLiteralBindingInfo | null => {
+  // ── Phase A: walk up from node, count `object` ancestors, find declarator
+  let current: SyntaxNode | null = node;
+  let objectDepth = 0;
+  let declarator: SyntaxNode | null = null;
+
+  while (current) {
+    if (current.type === 'object') {
+      objectDepth += 1;
+    }
+
+    if (current.type === 'variable_declarator' && objectDepth >= 1) {
+      if (objectDepth > 1) {
+        // Method belongs to a nested object literal; safe under-approximation.
+        return null;
+      }
+      declarator = current;
+      break;
+    }
+
+    if (
+      current !== node &&
+      (FUNCTION_NODE_TYPES.has(current.type) || CLASS_CONTAINER_TYPES.has(current.type))
+    ) {
+      // Function/class container encountered before owning declarator
+      // (e.g. IIFE-wrapped object literal). Bail out.
+      return null;
+    }
+
+    current = current.parent;
+  }
+
+  if (!declarator) return null;
+
+  // ── Phase B: declarator must live at file scope (program / export_statement)
+  // with no function, class, or block-statement ancestor in between.
+  let anc: SyntaxNode | null = declarator.parent;
+  while (anc) {
+    if (anc.type === 'program' || anc.type === 'export_statement') {
+      break;
+    }
+    if (FUNCTION_NODE_TYPES.has(anc.type) || CLASS_CONTAINER_TYPES.has(anc.type)) {
+      return null;
+    }
+    if (BLOCK_SCOPE_BOUNDARY_TYPES.has(anc.type)) {
+      return null;
+    }
+    anc = anc.parent;
+  }
+
+  const nameNode = declarator.childForFieldName?.('name');
+  if (!nameNode || nameNode.type !== 'identifier') return null;
+
+  const declaration = declarator.parent;
+  const ownerLabel = declaration?.type === 'variable_declaration' ? 'Variable' : 'Const';
+  return {
+    ownerId: generateId(ownerLabel, `${filePath}:${nameNode.text}`),
+  };
+};
+
 /** Convenience wrapper: returns just the class ID string (backward compat). */
 export const findEnclosingClassId = (node: SyntaxNode, filePath: string): string | null => {
   return findEnclosingClassInfo(node, filePath)?.classId ?? null;
