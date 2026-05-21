@@ -924,9 +924,7 @@ describe('LocalBackend.resolveRepo', () => {
   it('refreshes registry after ambiguity when duplicates are removed (#1658)', async () => {
     const { mainDir, entries } = makeDuplicateNameFixture();
     const singleEntry = [entries[0]];
-    (listRegisteredRepos as any)
-      .mockResolvedValueOnce(entries)
-      .mockResolvedValueOnce(singleEntry);
+    (listRegisteredRepos as any).mockResolvedValueOnce(entries).mockResolvedValueOnce(singleEntry);
     (getGitRoot as any).mockReturnValue(null);
     await backend.init();
     const resolved = await backend.resolveRepo('shared');
