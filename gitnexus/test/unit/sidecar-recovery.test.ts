@@ -6,8 +6,11 @@ import {
   _resetSidecarRecoveryWarningsForTest,
   finalizeLbugSidecarsAfterClose,
   inspectLbugSidecars,
+  isPermissionRenameError,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
+  renameFailureMessage,
+  shadowSidecarRecoveryMessage,
   TINY_ORPHAN_WAL_BYTES,
 } from '../../src/core/lbug/sidecar-recovery.js';
 
@@ -107,6 +110,75 @@ describe('LadybugDB sidecar recovery', () => {
 
     expect(state.kind).toBe('tiny-orphan-wal');
     await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+  });
+
+  describe('renameFailureMessage classifier (PR #1747 review)', () => {
+    const fsErr = (code: string, message = `simulated ${code}`): NodeJS.ErrnoException => {
+      const e = new Error(message) as NodeJS.ErrnoException;
+      e.code = code;
+      return e;
+    };
+
+    it('classifies EACCES as a permission/file-lock error (not "rebuild")', () => {
+      const out = renameFailureMessage('/tmp/lbug', fsErr('EACCES', 'permission denied'));
+      expect(out).toContain('/tmp/lbug.wal');
+      expect(out).toContain('EACCES');
+      expect(out).toContain('permission');
+      expect(out).not.toContain('Rebuild the index');
+    });
+
+    it('classifies EPERM as a permission/file-lock error', () => {
+      const out = renameFailureMessage('/tmp/lbug', fsErr('EPERM'));
+      expect(out).toContain('EPERM');
+      expect(out).not.toContain('Rebuild the index');
+    });
+
+    it('classifies EBUSY as a permission/file-lock error (common on Windows under AV)', () => {
+      const out = renameFailureMessage('/tmp/lbug', fsErr('EBUSY'));
+      expect(out).toContain('EBUSY');
+      expect(out).not.toContain('Rebuild the index');
+    });
+
+    it('falls through to shadowSidecarRecoveryMessage for the LadybugDB missing-shadow error', () => {
+      const shadowErr = new Error('Cannot open file /tmp/lbug.shadow: No such file or directory');
+      expect(renameFailureMessage('/tmp/lbug', shadowErr)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', shadowErr),
+      );
+    });
+
+    it('falls through to shadowSidecarRecoveryMessage for ENOSPC (residual; flagged in plan)', () => {
+      const err = fsErr('ENOSPC');
+      expect(renameFailureMessage('/tmp/lbug', err)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', err),
+      );
+    });
+
+    it('falls through to shadowSidecarRecoveryMessage for EROFS and EIO (residual; flagged in plan)', () => {
+      const eRofs = fsErr('EROFS');
+      const eIo = fsErr('EIO');
+      expect(renameFailureMessage('/tmp/lbug', eRofs)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', eRofs),
+      );
+      expect(renameFailureMessage('/tmp/lbug', eIo)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', eIo),
+      );
+    });
+
+    it('falls through to shadowSidecarRecoveryMessage for a generic Error without a code', () => {
+      const generic = new Error('something else broke');
+      expect(renameFailureMessage('/tmp/lbug', generic)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', generic),
+      );
+    });
+
+    it('isPermissionRenameError returns true only for EACCES/EPERM/EBUSY', () => {
+      expect(isPermissionRenameError(fsErr('EACCES'))).toBe(true);
+      expect(isPermissionRenameError(fsErr('EPERM'))).toBe(true);
+      expect(isPermissionRenameError(fsErr('EBUSY'))).toBe(true);
+      expect(isPermissionRenameError(fsErr('ENOENT'))).toBe(false);
+      expect(isPermissionRenameError(fsErr('ENOSPC'))).toBe(false);
+      expect(isPermissionRenameError(new Error('shadow missing'))).toBe(false);
+    });
   });
 
   it('lists only missing-shadow WAL quarantine files for cleanup', async () => {

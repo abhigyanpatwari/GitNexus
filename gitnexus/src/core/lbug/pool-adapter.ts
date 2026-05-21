@@ -26,10 +26,12 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
 import {
+  isMissingFsError,
   isMissingShadowSidecarError,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
-  shadowSidecarRecoveryMessage,
+  renameFailureMessage,
+  statIfExists,
 } from './sidecar-recovery.js';
 
 /**
@@ -327,6 +329,58 @@ const poolSidecarLogger = {
   },
 };
 
+type TryQuarantineResult =
+  | { kind: 'quarantined'; path: string }
+  | { kind: 'peer-handled' };
+
+/**
+ * Pool-local quarantine guard that tolerates the concurrent-peer race the
+ * direct adapter does NOT face (the direct adapter holds `acquireInitLock`,
+ * a cross-process file lock, around its quarantine calls — so any ENOENT
+ * there is a real bug, not a benign race).
+ *
+ * On ENOENT from `fs.rename`, re-inspects via `statIfExists` to confirm the
+ * WAL really is gone. If gone, returns `{ kind: 'peer-handled' }`. If the
+ * WAL is somehow still present after the ENOENT (filesystem race we don't
+ * fully model), re-throws as a classified error rather than silently
+ * returning success — preserves the lock-invariant principle at the pool
+ * sites too.
+ *
+ * On any non-ENOENT failure, classifies through `renameFailureMessage`:
+ * EACCES/EPERM/EBUSY → permission-specific message; everything else
+ * (including the LadybugDB missing-shadow error if it ever propagates here)
+ * → `shadowSidecarRecoveryMessage`.
+ *
+ * See plan: docs/plans/2026-05-21-001-fix-pr-1747-quarantine-enoent-and-large-wal-plan.md (U2)
+ */
+async function tryQuarantineForMissingShadow(
+  dbPath: string,
+  opts: { reason: string },
+): Promise<TryQuarantineResult> {
+  try {
+    const quarantinePath = await quarantineWalForMissingShadow(dbPath, {
+      logger: poolSidecarLogger,
+      level: 'warn',
+      reason: opts.reason,
+    });
+    return { kind: 'quarantined', path: quarantinePath };
+  } catch (err) {
+    if (isMissingFsError(err)) {
+      const walStat = await statIfExists(`${dbPath}.wal`);
+      if (walStat === null) {
+        return { kind: 'peer-handled' };
+      }
+      // Defensive: ENOENT during rename but WAL still present afterwards.
+      // Don't silently swallow — surface a classified error. ENOENT falls
+      // through to shadowSidecarRecoveryMessage in renameFailureMessage.
+      throw new Error(renameFailureMessage(dbPath, err));
+    }
+    // Classify the rename failure itself — EACCES/EPERM/EBUSY get the
+    // permission-specific message; everything else falls through.
+    throw new Error(renameFailureMessage(dbPath, err));
+  }
+}
+
 async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
   const conn = createConnection(db);
   try {
@@ -347,16 +401,10 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
     await probeDatabaseForShadowReplay(db);
   } catch (err) {
     if (isMissingShadowSidecarError(err)) {
-      try {
-        await quarantineWalForMissingShadow(dbPath, {
-          logger: poolSidecarLogger,
-          level: 'warn',
-          reason: 'pool writable replay recovery',
-        });
-        return;
-      } catch {
-        throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
-      }
+      await tryQuarantineForMissingShadow(dbPath, {
+        reason: 'pool writable replay recovery',
+      });
+      return;
     }
     throw err;
   } finally {
@@ -384,15 +432,9 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
       if (isMissingShadowSidecarError(err)) {
         await db.close().catch(() => {});
         db = undefined;
-        try {
-          await quarantineWalForMissingShadow(dbPath, {
-            logger: poolSidecarLogger,
-            level: 'warn',
-            reason: 'pool read-only recovery',
-          });
-        } catch {
-          throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
-        }
+        await tryQuarantineForMissingShadow(dbPath, {
+          reason: 'pool read-only recovery',
+        });
         await preflightLbugSidecars(dbPath, {
           mode: 'read-only',
           logger: poolSidecarLogger,
@@ -530,13 +572,15 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
 
         if (
           lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          lastError.message.startsWith('GitNexus could not move the LadybugDB WAL sidecar') ||
           isMissingShadowSidecarError(lastError)
         ) {
           throw lastError;
         }
 
         const isLockError =
-          lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
+          lastError.message.includes('Could not set lock') ||
+          /\block(\b|ed|ing)/i.test(lastError.message);
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
       }

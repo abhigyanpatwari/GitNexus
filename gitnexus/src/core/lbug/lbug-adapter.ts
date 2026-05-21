@@ -29,9 +29,11 @@ import {
 } from './lbug-config.js';
 import {
   finalizeLbugSidecarsAfterClose,
+  inspectLbugSidecars,
   isMissingShadowSidecarError,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
+  renameFailureMessage,
   shadowSidecarRecoveryMessage,
 } from './sidecar-recovery.js';
 import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
@@ -451,18 +453,45 @@ const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   return /replay shadow pages under read-only mode/i.test(msg);
 };
 
+/**
+ * Reject the quarantine path when the orphan WAL is too large to safely
+ * discard (>TINY_ORPHAN_WAL_BYTES). Mirrors the preflight policy at
+ * sidecar-recovery.ts:153-160 ("warn, do not quarantine"). Symmetric across
+ * read-only and writable recovery paths (PR #1747 review D2).
+ *
+ * Throws shadowSidecarRecoveryMessage immediately when the WAL is large,
+ * preserving the uncheckpointed pages for explicit operator recovery.
+ * Returns silently when the WAL is absent, tiny, or in any other state
+ * where the existing recovery path is safe to proceed.
+ */
+const refuseLargeWalQuarantine = async (
+  dbPath: string,
+  mode: 'read-only' | 'writable',
+  triggeringErr: unknown,
+): Promise<void> => {
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'orphan-wal') {
+    logger.warn(
+      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
+        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+};
+
 const reopenReadOnlyAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
 ): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'read-only', err);
   try {
     await quarantineWalForMissingShadow(dbPath, {
       logger,
       level: 'warn',
       reason: 'read-only recovery',
     });
-  } catch {
-    throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
   }
 
   const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
@@ -482,14 +511,15 @@ const reopenWritableAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
 ): Promise<LbugConnectionHandle> => {
+  await refuseLargeWalQuarantine(dbPath, 'writable', err);
   try {
     await quarantineWalForMissingShadow(dbPath, {
       logger,
       level: 'warn',
       reason: 'writable recovery',
     });
-  } catch {
-    throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+  } catch (renameErr) {
+    throw new Error(renameFailureMessage(dbPath, renameErr));
   }
 
   return await openLbugConnection(lbug, dbPath);

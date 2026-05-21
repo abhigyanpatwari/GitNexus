@@ -18,13 +18,15 @@ export const TINY_ORPHAN_WAL_BYTES = 4 * 1024;
 
 const warnedKeys = new Set<string>();
 
-const missing = (err: unknown): boolean =>
+export const isMissingFsError = (err: unknown): boolean =>
   (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+
+const missing = isMissingFsError;
 
 const sidecarPreflightDisabled = (): boolean =>
   /^(1|true|yes|on)$/i.test(process.env.GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT ?? '');
 
-const statIfExists = async (filePath: string): Promise<{ size: number } | null> => {
+export const statIfExists = async (filePath: string): Promise<{ size: number } | null> => {
   try {
     const statFn = (fs as typeof fs & { stat?: typeof fs.stat }).stat;
     if (typeof statFn === 'function') {
@@ -71,6 +73,45 @@ export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): stri
     'Rebuild the index with `gitnexus analyze --force <repo-path> --index-only` and restart `gitnexus serve`.' +
     `\n  Original error: ${msg.slice(0, 200)}`
   );
+};
+
+const PERMISSION_RENAME_CODES = new Set(['EACCES', 'EPERM', 'EBUSY']);
+
+export const isPermissionRenameError = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && PERMISSION_RENAME_CODES.has(code);
+};
+
+/**
+ * Classify a failure surfaced by quarantine rename into an actionable user-facing
+ * message.
+ *
+ * - EACCES / EPERM / EBUSY → permission-specific message pointing at filesystem
+ *   ACLs, AV exclusions, and file-locks. Importantly does NOT instruct the user
+ *   to rebuild the index — the underlying problem is environmental, not data
+ *   integrity, and re-running after fixing the lock/permission will succeed.
+ * - Everything else (including the LadybugDB "Cannot open file *.shadow"
+ *   missing-shadow error, ENOSPC, EROFS, EIO, and any other thrown Error) →
+ *   falls back to `shadowSidecarRecoveryMessage`, preserving today's behavior.
+ *
+ * Use at caller catches around `quarantineWalForMissingShadow` and any other
+ * path where an `fs.rename`-class failure may surface to operators.
+ */
+export const renameFailureMessage = (dbPath: string, err: unknown): string => {
+  if (isPermissionRenameError(err)) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const msg = err instanceof Error ? err.message : String(err);
+    return (
+      `GitNexus could not move the LadybugDB WAL sidecar at ${dbPath}.wal because of a ` +
+      `filesystem permission or file-lock error (${code}). ` +
+      'Check filesystem ACLs, antivirus exclusions for the index directory, and ' +
+      'whether another process holds an open handle on the file. ' +
+      'The index does not need to be rebuilt — re-running the failing command after ' +
+      'resolving the lock or permission should succeed.' +
+      `\n  Original error: ${msg.slice(0, 200)}`
+    );
+  }
+  return shadowSidecarRecoveryMessage(dbPath, err);
 };
 
 export async function inspectLbugSidecars(dbPath: string): Promise<LbugSidecarState> {
