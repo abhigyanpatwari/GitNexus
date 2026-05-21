@@ -114,6 +114,14 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Worker pool size override, threaded from the CLI `--workers` flag.
+   * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
+   * sizes the pool without `analyzeCommand` mutating `process.env`.
+   * `0` disables the pool (sequential fallback); positive integer sets
+   * the count; `undefined` defers to the env / auto-formula fallback.
+   */
+  workerPoolSize?: number;
 }
 
 export interface AnalyzeResult {
@@ -444,7 +452,7 @@ export async function runFullAnalysis(
         : p.message || phaseLabel;
       progress(p.phase, scaled, message);
     },
-    { parseCache },
+    { parseCache, workerPoolSize: options.workerPoolSize },
   );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────

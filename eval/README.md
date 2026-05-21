@@ -211,6 +211,8 @@ environment:
 
 Defaults are `port: 4848` and `host: 127.0.0.1` (loopback only). Use `0.0.0.0` only when the agent container needs to reach the eval-server from a separate network namespace. The health probe and tool scripts connect via the configured bind host (defaulting to `127.0.0.1`), which is reachable for both loopback and all-interface binds.
 
+`"localhost"` is also a valid `eval_server_host` value. The OS resolves it at bind time — typically `127.0.0.1` on dual-stack or IPv4-only systems, and `::1` on IPv6-only systems. The exact result depends on your `/etc/hosts` and `gai.conf`. The READY signal will reflect the actual bound address (e.g. `GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848` or `GITNEXUS_EVAL_SERVER_READY:[::1]:4848`), not the literal string `localhost`. Use this when you want the server to bind to whichever loopback address the OS prefers rather than forcing IPv4.
+
 **Running eval-server directly in Docker / Docker Compose:**
 
 ```bash
