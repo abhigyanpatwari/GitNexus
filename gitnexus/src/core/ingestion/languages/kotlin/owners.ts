@@ -2,26 +2,18 @@ import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import { isCompanionScope } from './companion-scopes.js';
 
-/** Property name carrying the "this method can only be dispatched
- *  through the class name" marker for companion-promoted Kotlin
- *  methods. Set by `populateCompanionMembersOnEnclosingClass`;
- *  consumed by `isKotlinStaticOnly` (the `ScopeResolver.isStaticOnly`
- *  hook). The marker is an in-memory side-channel kept off the shared
- *  `SymbolDefinition` interface — adding a Kotlin-specific field to
- *  the shared type would contaminate every other language's type. The
- *  property is enumerable (plain bracket-assignment), which is fine
- *  in practice because `SymbolDefinition` objects are not serialized
- *  for MCP responses, graph nodes, or cross-thread messages — the
- *  marker only flows from `populateKotlinOwners` to
- *  `receiver-bound-calls.ts` Case 4 inside the same pipeline run. */
-const KOTLIN_STATIC_MARKER = '__kotlinCompanionStatic';
-
-interface KotlinStaticMarked {
-  readonly [KOTLIN_STATIC_MARKER]?: boolean;
-}
+/** Module-level identity-based marker for companion-promoted Kotlin
+ *  method defs (the "this member can only be dispatched through the
+ *  class name" set). Parallels the C language `static-linkage.ts`
+ *  side-channel pattern but uses a WeakSet because the mark is
+ *  per-def (no per-name keying needed). Eliminates the cast-and-
+ *  mutate pattern the previous marker implementation required,
+ *  removes any serialization-survival risk surface, and keeps the
+ *  Kotlin-specific metadata off the shared `SymbolDefinition` type. */
+const KOTLIN_STATIC_DEFS = new WeakSet<SymbolDefinition>();
 
 export function isKotlinStaticOnly(def: SymbolDefinition): boolean {
-  return (def as KotlinStaticMarked)[KOTLIN_STATIC_MARKER] === true;
+  return KOTLIN_STATIC_DEFS.has(def);
 }
 
 export function populateKotlinOwners(parsed: ParsedFile): void {
@@ -100,7 +92,7 @@ function populateCompanionMembersOnEnclosingClass(parsed: ParsedFile): void {
       // without this marker, `fooInstance.companionMethod()` would
       // ALSO resolve to it via Case 4, which is incorrect (and a
       // compile error in real Kotlin).
-      (def as { [KOTLIN_STATIC_MARKER]?: boolean })[KOTLIN_STATIC_MARKER] = true;
+      KOTLIN_STATIC_DEFS.add(def);
       qualify(def, enclosing);
     }
   }
