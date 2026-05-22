@@ -3,9 +3,12 @@ import {
   deferredCallFileSlowMs,
   deferredCallLogEveryN,
   endTimer,
+  getDeferredProfileDroppedCount,
   isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
   profileElapsedMs,
   profileNow,
+  resetDeferredProfileDroppedCount,
   startTimer,
 } from '../../src/core/ingestion/utils/deferred-resolution-profile.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -15,6 +18,8 @@ describe('deferred-resolution-profile', () => {
     delete process.env.GITNEXUS_PROFILE_DEFERRED;
     delete process.env.GITNEXUS_PROFILE_DEFERRED_SLOW_MS;
     delete process.env.GITNEXUS_VERBOSE;
+    resetDeferredProfileDroppedCount();
+    vi.restoreAllMocks();
   });
 
   it('is off by default', () => {
@@ -37,6 +42,72 @@ describe('deferred-resolution-profile', () => {
   it('reads slow-file threshold from env', () => {
     process.env.GITNEXUS_PROFILE_DEFERRED_SLOW_MS = '250';
     expect(deferredCallFileSlowMs()).toBe(250);
+  });
+
+  describe('logDeferredProfile dropped-line counter (U4)', () => {
+    // Background: `logger` (gitnexus/src/core/logger.ts) is a Proxy with a lazy
+    // `get` trap and no `set` trap, so vi.spyOn on `logger.info` fails with
+    // "property is not defined on the object" — the inner pino method isn't a
+    // stable own-property to wrap. These tests exercise the helper API and the
+    // happy path; the catch arm is pinned by source-shape assertions below.
+
+    it('counter is zero at module entry (after reset in afterEach)', () => {
+      expect(getDeferredProfileDroppedCount()).toBe(0);
+    });
+
+    it('does not increment when logger.info succeeds', () => {
+      const cap = _captureLogger();
+      try {
+        logDeferredProfile('normal message');
+        expect(getDeferredProfileDroppedCount()).toBe(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('multiple successful calls keep the counter at zero', () => {
+      const cap = _captureLogger();
+      try {
+        logDeferredProfile('m1');
+        logDeferredProfile('m2');
+        logDeferredProfile('m3');
+        expect(getDeferredProfileDroppedCount()).toBe(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('resetDeferredProfileDroppedCount returns the counter to zero', () => {
+      // Drive the counter via a stub since we can't spy on the Proxy.
+      // Mutate the counter through the public API: simulate a dropped line
+      // by calling logDeferredProfile inside a forced-throw context.
+      // Without a way to force logger.info to throw, the most we can test
+      // here is that reset() is idempotent on an already-zero counter and
+      // that the getter reads what reset wrote.
+      resetDeferredProfileDroppedCount();
+      expect(getDeferredProfileDroppedCount()).toBe(0);
+      resetDeferredProfileDroppedCount();
+      expect(getDeferredProfileDroppedCount()).toBe(0);
+    });
+
+    it('source defines a try/catch around the logger.info call', () => {
+      // Pin the catch arm via source shape — see logger Proxy note above.
+      const fs = require('node:fs') as typeof import('node:fs');
+      const path = require('node:path') as typeof import('node:path');
+      const url = require('node:url') as typeof import('node:url');
+      const here = path.dirname(url.fileURLToPath(import.meta.url));
+      const sourcePath = path.resolve(
+        here,
+        '../../src/core/ingestion/utils/deferred-resolution-profile.ts',
+      );
+      const source = fs.readFileSync(sourcePath, 'utf-8');
+
+      expect(
+        /export const logDeferredProfile[\s\S]*?try \{\s*logger\.info\(`\[deferred-profile\] \$\{message\}`\);\s*\} catch[\s\S]*?droppedLogLines\+\+/.test(
+          source,
+        ),
+      ).toBe(true);
+    });
   });
 
   describe('endTimer (U3 formatter exception safety)', () => {

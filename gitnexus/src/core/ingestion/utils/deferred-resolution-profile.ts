@@ -47,8 +47,40 @@ export const profileNow = (): bigint => process.hrtime.bigint();
 export const profileElapsedMs = (start: bigint): number =>
   Number(process.hrtime.bigint() - start) / 1e6;
 
+// Module-private counter for `[deferred-profile]` log lines the underlying
+// logger refused to accept. Pino's SonicBoom transport is sync:false today,
+// so steady-state `logger.info(string)` calls don't throw — but first-use
+// construction paths (pino-pretty resolve, level validation) and any future
+// transport reconfiguration could. The wrap below catches and counts so a
+// failing logger cannot abort the deferred band, and the count surfaces in
+// the deferred-band done-summary (see processCallsFromExtracted) so the
+// failure is visible rather than silently swallowed (DoD §2.8).
+let droppedLogLines = 0;
+
+/**
+ * Number of `logDeferredProfile` calls whose underlying `logger.info` threw.
+ * Surfaced in the deferred-band done-summary when greater than zero.
+ */
+export const getDeferredProfileDroppedCount = (): number => droppedLogLines;
+
+/**
+ * Reset the dropped-line counter. Call from test `afterEach` to keep the
+ * module-private state from leaking across tests. Also used inside
+ * `processCallsFromExtracted` at function entry so each analyze run gets
+ * a fresh count rather than accumulating across the process lifetime.
+ */
+export const resetDeferredProfileDroppedCount = (): void => {
+  droppedLogLines = 0;
+};
+
 export const logDeferredProfile = (message: string): void => {
-  logger.info(`[deferred-profile] ${message}`);
+  try {
+    logger.info(`[deferred-profile] ${message}`);
+  } catch {
+    // Do not call the failing logger from the handler — that would risk
+    // an infinite loop if the failure mode is steady-state. Just count.
+    droppedLogLines++;
+  }
 };
 
 /**

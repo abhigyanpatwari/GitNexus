@@ -42,9 +42,11 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   deferredCallFileSlowMs,
   deferredCallLogEveryN,
+  getDeferredProfileDroppedCount,
   isDeferredResolutionProfileEnabled,
   logDeferredProfile,
   profileElapsedMs,
+  resetDeferredProfileDroppedCount,
   startTimer,
 } from './utils/deferred-resolution-profile.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
@@ -2928,6 +2930,13 @@ export const processCallsFromExtracted = async (
   const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
   let skippedRegistryPrimaryFiles = 0;
 
+  // Fresh dropped-log counter per analyze run — the module-private counter
+  // in deferred-resolution-profile.ts is process-lived, so without a reset
+  // here it would accumulate across consecutive analyze invocations in the
+  // same Node process (e.g., the MCP server, eval harness, integration
+  // tests).
+  if (profileCalls) resetDeferredProfileDroppedCount();
+
   // One-pass pre-count of the eventual non-skipped total so the live progress
   // denominator stays stable as the loop iterates. Otherwise `${totalFiles -
   // skippedRegistryPrimaryFiles}` drifts upward — files iterated before later
@@ -3140,6 +3149,10 @@ export const processCallsFromExtracted = async (
     logDeferredProfile(
       `processCallsFromExtracted done: ${totalFiles} files, ${extractedCalls.length} call sites, skipped registry-primary files=${skippedRegistryPrimaryFiles}`,
     );
+    const droppedCount = getDeferredProfileDroppedCount();
+    if (droppedCount > 0) {
+      logDeferredProfile(`note: ${droppedCount} profile log lines dropped (logger errors)`);
+    }
   }
 
   onProgress?.(totalFiles, totalFiles);
