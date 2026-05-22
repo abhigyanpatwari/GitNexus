@@ -312,7 +312,16 @@ function inferKotlinIterableElementType(
     const callee = iterable.namedChildren.find((child) => child.type === 'simple_identifier');
     if (callee === undefined) return null;
     const raw = returnTypes.get(callee.text);
-    return raw === undefined ? null : kotlinContainerElementType(raw, 'values');
+    if (raw !== undefined) return kotlinContainerElementType(raw, 'values');
+    // Cross-file fallback (#1759): the callee's return type is unknown
+    // locally because the function lives in another file. Emit the
+    // callee name itself as the binding's rawName; `propagateImported
+    // ReturnTypes` will chain-follow `loopvar → callee → <ElementType>`
+    // once the imported module's `callee → ElementType` mirror lands at
+    // module scope. If `callee` isn't actually an imported callable
+    // (e.g. a local lambda or unrelated symbol), chain-follow fails
+    // safely and no edge is emitted.
+    return callee.text;
   }
 
   return null;
