@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import type lbug from '@ladybugdb/core';
+import { logger } from '../logger.js';
 
 /**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
@@ -45,6 +46,44 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
+export const parseWalCheckpointThreshold = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < -1) return undefined;
+  return parsed;
+};
+
+/**
+ * Default GitNexus WAL auto-checkpoint threshold in bytes (64 MiB).
+ *
+ * Larger than Ladybug's stock ~16 MiB to reduce checkpoint rename/remove
+ * churn under heavy analyze write load — the original race that motivated
+ * issue #1741 triggered at the stock threshold. README examples in
+ * `README.md` and `gitnexus/README.md` and the recovery hint in
+ * `analyze.ts` MUST stay in sync with this value.
+ */
+const DEFAULT_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
+
+const resolveCheckpointThreshold = (): number => {
+  const raw = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+  if (raw === undefined) return DEFAULT_WAL_CHECKPOINT_THRESHOLD;
+  const parsed = parseWalCheckpointThreshold(raw);
+  if (parsed !== undefined) return parsed;
+  // Non-empty but unparseable input: warn the operator and fall back. Mirrors
+  // the CLI's `--wal-checkpoint-threshold` validation (which hard-errors)
+  // but the env-var path stays soft to preserve "set once in your shell"
+  // ergonomics across mixed-version invocations.
+  if (raw.trim().length > 0) {
+    logger.warn(
+      { rawValue: raw, fallback: DEFAULT_WAL_CHECKPOINT_THRESHOLD },
+      `Ignoring invalid GITNEXUS_WAL_CHECKPOINT_THRESHOLD=${raw}; expected integer >= -1; falling back to default (${DEFAULT_WAL_CHECKPOINT_THRESHOLD}).`,
+    );
+  }
+  return DEFAULT_WAL_CHECKPOINT_THRESHOLD;
+};
+
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 
@@ -56,6 +95,50 @@ export function isWalCorruptionError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return WAL_CORRUPTION_RE.test(msg);
 }
+
+// ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
+//
+// Matched against LadybugDB v0.16.1 (see `gitnexus/package.json`
+// @ladybugdb/core). Strict regexes encode local_file_system.cpp wording
+// verified at that version. Two-tier strategy: strict matchers first so we
+// only fire on real checkpoint-rotation shapes; a permissive fallback
+// catches future Ladybug message drift so the recovery hint keeps surfacing
+// even if upstream wording changes.
+//
+// From Ladybug native LocalFileSystem exceptions (`local_file_system.cpp`),
+// surfaced in Node as:
+// "Runtime exception: IO exception: Error renaming file ..."
+// "Runtime exception: IO exception: Error removing directory or file ..."
+// We only match checkpoint-rotation shapes:
+//   - "<db>.wal -> <db>.wal.checkpoint" rename failures
+//   - "<db>.wal.checkpoint" remove failures
+// Example matches:
+//   "Runtime exception: IO exception: Error renaming file /x/lbug.wal to /x/lbug.wal.checkpoint. ErrorMessage: Permission denied"
+//   "Runtime exception: IO exception: Error removing directory or file /x/lbug.wal.checkpoint.  Error Message: Permission denied"
+// Matching is case-insensitive to remain robust across wrappers/platforms.
+const LBUG_CHECKPOINT_RENAME_RE =
+  /^runtime exception: io exception:\s*error renaming file\s+.+?\.wal\s+to\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
+const LBUG_CHECKPOINT_REMOVE_RE =
+  /^runtime exception: io exception:\s*error removing directory or file\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
+/**
+ * Permissive fallback: any IO-exception-shaped message that mentions a
+ * `.wal.checkpoint` path. Catches future Ladybug message drift (different
+ * verb, additional preamble, locale variation) so the recovery hint keeps
+ * surfacing even if the strict regexes go stale.
+ */
+const LBUG_CHECKPOINT_PERMISSIVE_RE = /io exception.*\.wal\.checkpoint/i;
+
+/**
+ * True when `err` looks like a Ladybug WAL-checkpoint rotation/remove IO
+ * failure. Tries strict matchers first (renames + removes), then falls
+ * back to the permissive matcher.
+ */
+export const isLbugCheckpointIoError = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (LBUG_CHECKPOINT_RENAME_RE.test(msg) || LBUG_CHECKPOINT_REMOVE_RE.test(msg)) return true;
+  return LBUG_CHECKPOINT_PERMISSIVE_RE.test(msg);
+};
 
 type LbugModule = typeof lbug;
 
@@ -103,8 +186,8 @@ export function createLbugDatabase(
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
-    true, // autoCheckpoint
-    -1, // checkpointThreshold
+    true, // autoCheckpoint (always on)
+    resolveCheckpointThreshold(), // checkpointThreshold (default 64 MiB; override with GITNEXUS_WAL_CHECKPOINT_THRESHOLD; -1 keeps Ladybug stock ~16 MiB)
     options.throwOnWalReplayFailure ?? true,
     true, // enableChecksums
   ) as lbug.Database;
