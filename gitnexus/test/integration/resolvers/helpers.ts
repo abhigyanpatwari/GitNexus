@@ -142,6 +142,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // resolver-only correctness win (PR #1520 review follow-up plan U2 /
     // Claude review Finding 5); backporting to legacy is out of scope.
     'emits zero CALLS edges when process(int)/process(long) collide after normalization',
+    'records a structured suppression reason for normalization ambiguity',
     // The legacy DAG path resolves `using namespace a; using namespace b; foo()`
     // by walking the workspace registry by simple name and binding to
     // the first match — same shape as the integer-width collision, just
@@ -252,6 +253,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // 'ambiguous' and suppresses edge emission. Scope-resolver-only
     // correctness win (#1564); backporting to legacy is out of scope.
     'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
+    'records a structured suppression reason for inline namespace ambiguity',
     // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
     // `foo(double)` in v2. The scope-resolver conservatively suppresses
     // because `resolveQualifiedReceiverMember` lacks call-site argument
@@ -351,6 +353,10 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
     }
   }
   return edges;
+}
+
+export function getResolutionOutcomes(result: PipelineResult) {
+  return result.resolutionOutcomes ?? [];
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {

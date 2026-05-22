@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -1819,6 +1820,18 @@ describe('C++ ambiguous integer-width overloads', () => {
     // GitNexus does not have. The resolver must suppress entirely.
     expect(processCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for normalization ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'process' &&
+        o.reason === 'overload-ambiguous-normalization',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2983,6 +2996,14 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
     // ISO C++ leaves this ambiguous — both inline namespace children declare
     // the same name. The resolver must suppress rather than pick arbitrarily.
     expect(fooCalls.length).toBe(0);
+  });
+
+  it('records a structured suppression reason for inline namespace ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) => o.kind === 'suppressed' && o.name === 'foo' && o.reason === 'inline-ns-ambiguous',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
   });
 });
 

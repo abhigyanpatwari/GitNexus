@@ -30,6 +30,10 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type {
+  ResolutionOutcomeRecorder,
+  ResolutionSuppressionReason,
+} from '../resolution-outcome.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   findAllCallableBindingsInScope,
@@ -79,6 +83,7 @@ export function emitFreeCallFallback(
      *  fail at the call site. Three-valued; `'unknown'` keeps the
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
   } = {},
 ): number {
   let emitted = 0;
@@ -152,9 +157,15 @@ export function emitFreeCallFallback(
                 // Cross-file candidates are shadowing; keep first-match.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  handledSites.add(
-                    `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-                  );
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity),
+                    candidates: narrowed,
+                  });
+                  handledSites.add(siteKey(parsed.filePath, site));
                   continue;
                 }
               }
@@ -187,6 +198,16 @@ export function emitFreeCallFallback(
               );
 
           const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+          if (adlSuppressed && ordinary.length === 0) {
+            recordSuppressedOutcome(options.recordResolutionOutcome, {
+              phase: 'free-call-fallback',
+              filePath: parsed.filePath,
+              name: site.name,
+              range: site.atRange,
+              reason: 'adl-non-callable-block',
+              candidates: ordinary,
+            });
+          }
           if (adl === undefined || adl.length === 0) {
             // No ADL contribution. Default behavior: `ordinary[0]` —
             // scope-chain walk preserves local-shadows-import precedence.
@@ -219,6 +240,14 @@ export function emitFreeCallFallback(
                 // first-match (shadowing semantics).
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity),
+                    candidates: narrowed,
+                  });
                   handledSites.add(siteKey);
                   continue;
                 }
@@ -249,6 +278,14 @@ export function emitFreeCallFallback(
               handledSites.add(siteKey);
               continue;
             } else if (narrowed.length > 1) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: suppressionReasonForOverload(narrowed, site.arity),
+                candidates: narrowed,
+              });
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
                 handledSites.add(siteKey);
                 continue;
@@ -313,6 +350,49 @@ export function emitFreeCallFallback(
     }
   }
   return emitted;
+}
+
+function siteKey(
+  filePath: string,
+  site: { readonly atRange: { readonly startLine: number; readonly startCol: number } },
+): string {
+  return `${filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+}
+
+function suppressionReasonForOverload(
+  candidates: readonly SymbolDefinition[],
+  arity: number | undefined,
+): ResolutionSuppressionReason {
+  return isOverloadAmbiguousAfterNormalization(candidates, arity)
+    ? 'overload-ambiguous-normalization'
+    : 'conversion-rank-tied';
+}
+
+function recordSuppressedOutcome(
+  record: ResolutionOutcomeRecorder | undefined,
+  input: {
+    readonly phase: string;
+    readonly filePath: string;
+    readonly name: string;
+    readonly range: {
+      readonly startLine: number;
+      readonly startCol: number;
+      readonly endLine: number;
+      readonly endCol: number;
+    };
+    readonly reason: ResolutionSuppressionReason;
+    readonly candidates: readonly SymbolDefinition[];
+  },
+): void {
+  record?.({
+    kind: 'suppressed',
+    phase: input.phase,
+    filePath: input.filePath,
+    name: input.name,
+    range: input.range,
+    reason: input.reason,
+    candidateIds: input.candidates.map((d) => d.nodeId),
+  });
 }
 
 /**
