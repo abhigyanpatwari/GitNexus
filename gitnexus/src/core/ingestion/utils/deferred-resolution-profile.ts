@@ -31,7 +31,9 @@ export const deferredCallLogEveryN = (): number => (isVerboseIngestionEnabled() 
 export const deferredCallFileSlowMs = (): number => {
   const raw = process.env.GITNEXUS_PROFILE_DEFERRED_SLOW_MS;
   if (raw) {
-    const n = Number.parseInt(raw, 10);
+    // Use Number() not parseInt: parseInt('1e9', 10) === 1 (prefix-parses, drops the exponent),
+    // which would turn a user-intended "effectively disabled" threshold into a 1 ms log storm.
+    const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return n;
   }
   return isVerboseIngestionEnabled() ? 3_000 : 5_000;
@@ -44,4 +46,23 @@ export const profileElapsedMs = (start: bigint): number =>
 
 export const logDeferredProfile = (message: string): void => {
   logger.info(`[deferred-profile] ${message}`);
+};
+
+/**
+ * Capture a monotonic timestamp when profiling is enabled; otherwise return null.
+ * Pair with `endTimer` so the type system narrows correctly — using `null` instead
+ * of a `0n` sentinel makes "profiling disabled" structurally distinct from
+ * "zero elapsed time" and lets TypeScript catch missing guards.
+ */
+export const startTimer = (enabled: boolean): bigint | null =>
+  enabled ? process.hrtime.bigint() : null;
+
+/**
+ * Emit a `[deferred-profile]` log line for a captured timer. No-op when the
+ * timer is `null` (profiling was disabled at capture time). The formatter
+ * receives elapsed ms so the call sites stay readable.
+ */
+export const endTimer = (start: bigint | null, format: (elapsedMs: number) => string): void => {
+  if (start === null) return;
+  logDeferredProfile(format(profileElapsedMs(start)));
 };

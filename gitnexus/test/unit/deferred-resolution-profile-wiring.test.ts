@@ -91,6 +91,25 @@ describe('deferred-resolution-profile wiring', () => {
     ).toBe(true);
   });
 
+  it('processCallsFromExtracted logs the first non-skipped file as 1/1 even when a registry-primary file sorts first', async () => {
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    ctx.model.symbols.add('src/index.ts', 'helper', 'Function:src/index.ts:helper', 'Function');
+
+    // Python sorts before TypeScript in byFile insertion order. Before the
+    // fix for #4 the first per-file log was keyed on filesProcessed===1, which
+    // was consumed by the Python skip and never emitted for the TS file.
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/early.py', calledName: 'run', sourceId: 'Function:src/early.py:main' },
+      { filePath: 'src/index.ts', calledName: 'helper', sourceId: 'Function:src/index.ts:main' },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    expect(deferredMsgs().some((m) => m.includes('calls 1/1 file=src/index.ts'))).toBe(true);
+    expect(deferredMsgs().some((m) => m.includes('skipped registry-primary files=1'))).toBe(true);
+  });
+
   it('processCallsFromExtracted does not log per-file progress for registry-primary skips', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();

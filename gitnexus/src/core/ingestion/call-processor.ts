@@ -45,7 +45,7 @@ import {
   isDeferredResolutionProfileEnabled,
   logDeferredProfile,
   profileElapsedMs,
-  profileNow,
+  startTimer,
 } from './utils/deferred-resolution-profile.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
@@ -2917,14 +2917,19 @@ export const processCallsFromExtracted = async (
   }
   const totalFiles = byFile.size;
   let filesProcessed = 0;
+  // Counts only files that survived the registry-primary skip — what the user
+  // is actually waiting on. Keyed by this counter, the first per-file progress
+  // log fires on the first *resolved* file rather than file #1 of byFile,
+  // which would silently land inside the skip block on mixed Python+JVM repos
+  // where the skipped language sorts first.
+  let resolvedFiles = 0;
   const profileCalls = isDeferredResolutionProfileEnabled();
-  const slowFileMs = deferredCallFileSlowMs();
+  const slowFileMs = profileCalls ? deferredCallFileSlowMs() : 0;
   const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
   let skippedRegistryPrimaryFiles = 0;
 
   for (const [filePath, calls] of byFile) {
     filesProcessed++;
-    const tFile = profileCalls ? profileNow() : 0n;
     if (filesProcessed % 100 === 0) {
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
@@ -2938,9 +2943,12 @@ export const processCallsFromExtracted = async (
       continue;
     }
 
-    if (profileCalls && (filesProcessed === 1 || filesProcessed % logEveryN === 0)) {
+    resolvedFiles++;
+    const tFile = startTimer(profileCalls);
+
+    if (profileCalls && (resolvedFiles === 1 || resolvedFiles % logEveryN === 0)) {
       logDeferredProfile(
-        `calls ${filesProcessed}/${totalFiles} file=${filePath} sites=${calls.length}`,
+        `calls ${resolvedFiles}/${totalFiles - skippedRegistryPrimaryFiles} file=${filePath} sites=${calls.length}`,
       );
     }
 
@@ -3102,7 +3110,7 @@ export const processCallsFromExtracted = async (
 
     ctx.clearCache();
 
-    if (profileCalls && tFile !== 0n) {
+    if (tFile !== null) {
       const elapsed = profileElapsedMs(tFile);
       if (elapsed >= slowFileMs) {
         logDeferredProfile(

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deferredCallFileSlowMs,
   deferredCallLogEveryN,
@@ -36,10 +36,20 @@ describe('deferred-resolution-profile', () => {
     expect(deferredCallFileSlowMs()).toBe(250);
   });
 
-  it('profileElapsedMs returns non-negative ms', () => {
-    const start = profileNow();
-    const ms = profileElapsedMs(start);
-    expect(ms).toBeGreaterThanOrEqual(0);
-    expect(ms).toBeLessThan(1000);
+  it('profileElapsedMs converts hrtime deltas to ms with exact arithmetic', () => {
+    const spy = vi.spyOn(process.hrtime, 'bigint');
+    try {
+      spy.mockReturnValueOnce(1_000_000_000n);
+      const start = profileNow();
+      spy.mockReturnValueOnce(1_002_500_000n);
+      expect(profileElapsedMs(start)).toBe(2.5);
+
+      spy.mockReturnValueOnce(5_000_000_000n);
+      const startZero = profileNow();
+      spy.mockReturnValueOnce(5_000_000_000n);
+      expect(profileElapsedMs(startZero)).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
