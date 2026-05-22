@@ -12,6 +12,13 @@ export function kotlinBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
+  // Smart-cast narrowed bindings (issue #1758) must stay at the innermost
+  // (Block) scope. Their anchor coincides with the Block's range for
+  // unbraced arm bodies (`is User -> obj.save()`), which would otherwise
+  // trigger scope-extractor auto-hoist into the enclosing function scope
+  // and erase the arm-local narrowing.
+  if (decl['@type-binding.narrowed'] !== undefined) return innermost.id;
+
   if (decl['@type-binding.return'] === undefined) return null;
 
   let current: Scope | undefined = innermost;
