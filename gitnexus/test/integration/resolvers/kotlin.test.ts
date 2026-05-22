@@ -2400,3 +2400,85 @@ describe('Kotlin named companion + nested-class companions (#1756 / U4)', () => 
     expect(buildCalls[0].targetFilePath).toBe('App.kt');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1756 / U6 remediation: cross-file companion factory dispatch.
+//
+// `Logger.create(...)` — a companion-object factory call via the class name —
+// must resolve to the companion's `create` even when `Logger` is imported
+// from a different file. The probe in U6 (2026-05-22) established that
+// Case 2 (class-name receiver) dispatch traverses module boundaries
+// correctly: `Logger.create()` in `app/Main.kt` resolves to
+// `Logger.create` in `logging/Logger.kt` via the import-resolved
+// receiver chain.
+//
+// What does NOT cross module boundaries today is the chain-typebinding:
+// `val l = Logger.create(...)` followed by `l.log(...)` only resolves
+// when `Logger` is defined in the same file as the call site. Two
+// reasons:
+//   1. `collectKotlinClassMembers` in `captures.ts` runs per-file, so
+//      the Tier-2 lookup that drives chain-typebinding return-type
+//      inference (`inferKotlinNavigationCallReturnType` →
+//      `classMembers.methods.get("Logger")?.get("create")`) returns
+//      undefined when `Logger` is imported. The local typeBinding
+//      `l → ?` is never emitted in the importer scope.
+//   2. The chain-follow mirror in `propagateImportedReturnTypes` (#1759)
+//      treats dot-form rawNames like `Logger.create` as terminal, so it
+//      cannot bridge `l → Logger.create → Logger` cross-file either.
+//
+// Closing this gap requires either a workspace-level Kotlin class-member
+// index (paralleling the `scanJavaImports` / `scanPythonImports`
+// patterns) or refactoring `followChainPostFinalize` to look up dot-form
+// bindings against a cross-file return-type map. Both are substantial
+// enough that the U6 plan's "fix looks substantial" branch fires —
+// neither qualifies as the additive `imported-return-types.ts`
+// extension the U6 approach (a) allows. Deferred to a follow-up issue
+// tracking cross-file companion factory chain binding alongside the
+// broader cross-file Tier-2 class-member lookup work.
+//
+// The instance-receiver crossover (`l.create()` on an instance receiver
+// emits no CALLS edge) is U3's surface and is asserted in the U2 / U3
+// same-file fixtures (`kotlin-companion-mro-shadow`,
+// `kotlin-companion-other-cases`); this fixture intentionally does not
+// duplicate that assertion to avoid coupling U6 to U3's static-only-
+// filter extension to Cases 0 / 3b / 5.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Logger class with companion create() and instance log()', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Logger');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('log');
+  });
+
+  // Happy path: `Logger.create("app")` resolves via class-name receiver
+  // (Case 2) across module boundaries — the import-resolved receiver
+  // chain reaches the companion's `create` in `logging/Logger.kt`.
+  it('useCrossFileFactory: Logger.create() resolves to companion create on Logger.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCall = calls.find(
+      (c) => c.source === 'useCrossFileFactory' && c.target === 'create',
+    );
+    expect(createCall).toBeDefined();
+    expect(createCall!.targetFilePath).toBe('logging/Logger.kt');
+  });
+
+  // NOTE: a follow-up assertion `l.log()` resolving cross-file via the
+  // chain-typebinding `val l = Logger.create(...)` would belong here.
+  // The U6 probe (2026-05-22) confirmed that the existing pipeline does
+  // NOT propagate `l → Logger` across module boundaries — see the comment
+  // block above for the failure modes and deferral rationale. The class-
+  // name dispatch assertion above is the additive coverage U6 lands; the
+  // chain-typebinding cross-file path is tracked as a follow-up issue
+  // alongside the broader cross-file Tier-2 lookup work.
+});
