@@ -2928,6 +2928,22 @@ export const processCallsFromExtracted = async (
   const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
   let skippedRegistryPrimaryFiles = 0;
 
+  // One-pass pre-count of the eventual non-skipped total so the live progress
+  // denominator stays stable as the loop iterates. Otherwise `${totalFiles -
+  // skippedRegistryPrimaryFiles}` drifts upward — files iterated before later
+  // registry-primary skips have been seen carry an inflated denominator, and
+  // the ratio only self-corrects after every file has been classified. Pre-
+  // count runs only on the enabled path so the disabled path stays free of
+  // the extra Map iteration. Defaults to 0 on the disabled path; the live log
+  // gate is also disabled there, so the value is never read.
+  let resolvedTotal = 0;
+  if (profileCalls) {
+    for (const filePath of byFile.keys()) {
+      const lang = getLanguageFromFilename(filePath);
+      if (!lang || !isRegistryPrimary(lang)) resolvedTotal++;
+    }
+  }
+
   for (const [filePath, calls] of byFile) {
     filesProcessed++;
     if (filesProcessed % 100 === 0) {
@@ -2948,7 +2964,7 @@ export const processCallsFromExtracted = async (
 
     if (profileCalls && (resolvedFiles === 1 || resolvedFiles % logEveryN === 0)) {
       logDeferredProfile(
-        `calls ${resolvedFiles}/${totalFiles - skippedRegistryPrimaryFiles} file=${filePath} sites=${calls.length}`,
+        `calls ${resolvedFiles}/${resolvedTotal} file=${filePath} sites=${calls.length}`,
       );
     }
 

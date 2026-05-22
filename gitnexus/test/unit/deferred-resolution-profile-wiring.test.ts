@@ -110,6 +110,39 @@ describe('deferred-resolution-profile wiring', () => {
     expect(deferredMsgs().some((m) => m.includes('skipped registry-primary files=1'))).toBe(true);
   });
 
+  it('processCallsFromExtracted denominator stays stable across mixed-language interleaving (A1 pre-pass)', async () => {
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    ctx.model.symbols.add('src/a.ts', 'a', 'Function:src/a.ts:a', 'Function');
+    ctx.model.symbols.add('src/b.ts', 'b', 'Function:src/b.ts:b', 'Function');
+    ctx.model.symbols.add('src/c.ts', 'c', 'Function:src/c.ts:c', 'Function');
+    ctx.model.symbols.add('src/d.ts', 'd', 'Function:src/d.ts:d', 'Function');
+
+    // Alternating TS / PY order: byFile = [ts, py, ts, py, ts, py, ts, py].
+    // Before the U1 pre-pass, the first per-file log carried denominator 8
+    // (totalFiles - 0 skips) and self-corrected only after every skip was
+    // observed. With the pre-pass, the denominator is 4 from the first
+    // emission onward — every entry uses the same resolvedTotal.
+    const calls: ExtractedCall[] = [
+      { filePath: 'src/a.ts', calledName: 'a', sourceId: 'Function:src/a.ts:f' },
+      { filePath: 'src/p1.py', calledName: 'a', sourceId: 'Function:src/p1.py:f' },
+      { filePath: 'src/b.ts', calledName: 'b', sourceId: 'Function:src/b.ts:f' },
+      { filePath: 'src/p2.py', calledName: 'b', sourceId: 'Function:src/p2.py:f' },
+      { filePath: 'src/c.ts', calledName: 'c', sourceId: 'Function:src/c.ts:f' },
+      { filePath: 'src/p3.py', calledName: 'c', sourceId: 'Function:src/p3.py:f' },
+      { filePath: 'src/d.ts', calledName: 'd', sourceId: 'Function:src/d.ts:f' },
+      { filePath: 'src/p4.py', calledName: 'd', sourceId: 'Function:src/p4.py:f' },
+    ];
+
+    await processCallsFromExtracted(graph, calls, ctx);
+
+    // Every per-file emission carries `/4` (the eventual resolved-file
+    // total), not the in-flight `totalFiles - skippedSoFar`.
+    expect(deferredMsgs().some((m) => m.includes('calls 1/4 file=src/a.ts'))).toBe(true);
+    expect(deferredMsgs().some((m) => /calls \d+\/[^4]/.test(m))).toBe(false);
+    expect(deferredMsgs().some((m) => m.includes('skipped registry-primary files=4'))).toBe(true);
+  });
+
   it('processCallsFromExtracted does not log per-file progress for registry-primary skips', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();
