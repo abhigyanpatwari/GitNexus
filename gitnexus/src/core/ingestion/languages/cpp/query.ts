@@ -156,10 +156,26 @@ const CPP_SCOPE_QUERY = `
     (function_declarator
       declarator: (field_identifier) @declaration.name))) @declaration.method
 
-(function_definition
-  declarator: (reference_declarator
-    (function_declarator
-      declarator: (operator_name) @declaration.name))) @declaration.function
+;; Inline operator method with reference return: Point& operator+=(Point) { ... }
+(field_declaration_list
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (operator_name) @declaration.name))) @declaration.method)
+
+;; Free operator definition with reference return: std::ostream& operator<<(...) { ... }
+(translation_unit
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (operator_name) @declaration.name))) @declaration.function)
+
+(namespace_definition
+  body: (declaration_list
+    (function_definition
+      declarator: (reference_declarator
+        (function_declarator
+          declarator: (operator_name) @declaration.name))) @declaration.function))
 
 ;; ─── Declarations — function prototype (forward declaration) ────────
 (declaration
@@ -512,8 +528,10 @@ const CPP_SCOPE_QUERY = `
 
 ;; Conservative operator-call support (#1636): model a + b as a
 ;; member-style operator+ lookup, and lhs << rhs as a free
-;; operator<< lookup. Built-in operators remain unresolved
-;; because no user-defined operator target exists.
+;; operator<< lookup. Free operator+(T,T), member operator<<, and
+;; complex operand expressions remain false negatives for now.
+;; Built-in operators remain unresolved because no user-defined
+;; operator target exists.
 (binary_expression
   left: (_) @reference.receiver
   operator: "+" @reference.operator

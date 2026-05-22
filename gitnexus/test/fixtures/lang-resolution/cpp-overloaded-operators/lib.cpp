@@ -19,3 +19,8 @@ void runFree(Point p) {
 void runBuiltin() {
   int x = 1 + 2;
 }
+
+void runBuiltinVariables(int a, int b) {
+  int x = a + b;
+  int y = a << b;
+}

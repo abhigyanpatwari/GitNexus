@@ -182,6 +182,14 @@ export function emitCppScopeCaptures(
       grouped['@reference.call.free'] ??
       grouped['@reference.call.member'] ??
       grouped['@reference.call.qualified'];
+    const operatorAnchor = grouped['@reference.operator'];
+    if (operatorAnchor !== undefined) {
+      const operatorNode =
+        callAnchor !== undefined
+          ? findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression')
+          : null;
+      if (operatorNode !== null && isPrimitiveOnlyBinaryOperator(operatorNode)) continue;
+    }
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode =
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
@@ -201,7 +209,6 @@ export function emitCppScopeCaptures(
       }
     }
 
-    const operatorAnchor = grouped['@reference.operator'];
     if (operatorAnchor !== undefined && grouped['@reference.name'] === undefined) {
       grouped['@reference.name'] = syntheticCapture(
         '@reference.name',
@@ -770,6 +777,26 @@ function binaryOperatorOperands(node: SyntaxNode, includeLeftOperand: boolean): 
   if (includeLeftOperand && left !== null) operands.push(left);
   if (right !== null) operands.push(right);
   return operands;
+}
+
+function isPrimitiveOnlyBinaryOperator(node: SyntaxNode): boolean {
+  const operands = binaryOperatorOperands(node, true);
+  return operands.length > 0 && operands.every((operand) => isBuiltinOperatorType(operand));
+}
+
+function isBuiltinOperatorType(node: SyntaxNode): boolean {
+  const type = inferCppExpressionType(node);
+  return (
+    type === 'bool' ||
+    type === 'char' ||
+    type === 'double' ||
+    type === 'float' ||
+    type === 'int' ||
+    type === 'long' ||
+    type === 'short' ||
+    type === 'signed' ||
+    type === 'unsigned'
+  );
 }
 
 function inferCppExpressionType(node: SyntaxNode): string {
