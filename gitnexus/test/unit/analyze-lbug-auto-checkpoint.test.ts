@@ -27,9 +27,9 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
   getMaxFileSizeBannerMessage: vi.fn(() => null),
 }));
 
-describe('analyzeCommand --lbug-auto-checkpoint parsing', () => {
+describe('analyzeCommand --lbug-checkpoint-threshold parsing', () => {
   const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
-  const ORIGINAL_AUTO_CHECKPOINT = process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT;
+  const ORIGINAL_THRESHOLD = process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
 
   beforeEach(() => {
     vi.resetModules();
@@ -44,45 +44,44 @@ describe('analyzeCommand --lbug-auto-checkpoint parsing', () => {
     } else {
       process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
     }
-    if (ORIGINAL_AUTO_CHECKPOINT === undefined) {
-      delete process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT;
+    if (ORIGINAL_THRESHOLD === undefined) {
+      delete process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
     } else {
-      process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT = ORIGINAL_AUTO_CHECKPOINT;
+      process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD = ORIGINAL_THRESHOLD;
     }
   });
 
-  it.each(['maybe', '2', '', 'enabled'])(
-    'rejects invalid --lbug-auto-checkpoint value %s before analysis starts',
-    async (lbugAutoCheckpoint) => {
+  it.each(['maybe', '-2', '1.5', ''])(
+    'rejects invalid --lbug-checkpoint-threshold value %s before analysis starts',
+    async (lbugCheckpointThreshold) => {
       const { _captureLogger } = await import('../../src/core/logger.js');
       const cap = _captureLogger();
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(undefined, { lbugAutoCheckpoint });
+      await analyzeCommand(undefined, { lbugCheckpointThreshold });
 
       expect(process.exitCode).toBe(1);
       expect(runFullAnalysisMock).not.toHaveBeenCalled();
       expect(
         cap
           .records()
-          .some((r) => r.msg === '  --lbug-auto-checkpoint must be either "on" or "off".\n'),
+          .some((r) => r.msg === '  --lbug-checkpoint-threshold must be an integer >= -1.\n'),
       ).toBe(true);
       cap.restore();
     },
   );
 
   it.each([
-    ['on', 'true'],
-    ['off', 'false'],
-    ['1', 'true'],
-    ['0', 'false'],
+    ['-1', '-1'],
+    ['0', '0'],
+    ['1024', '1024'],
   ])(
-    'sets GITNEXUS_LBUG_AUTO_CHECKPOINT=%s to %s during runFullAnalysis and restores afterwards',
+    'sets GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=%s during runFullAnalysis and restores afterwards',
     async (cliValue, expectedEnv) => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
       let envAtCallTime: string | undefined;
       runFullAnalysisMock.mockImplementation(async () => {
-        envAtCallTime = process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT;
+        envAtCallTime = process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
         return {
           repoName: 'repo',
           repoPath: '/repo',
@@ -91,10 +90,10 @@ describe('analyzeCommand --lbug-auto-checkpoint parsing', () => {
         };
       });
 
-      await analyzeCommand(undefined, { lbugAutoCheckpoint: cliValue });
+      await analyzeCommand(undefined, { lbugCheckpointThreshold: cliValue });
 
       expect(envAtCallTime).toBe(expectedEnv);
-      expect(process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT).toBe(ORIGINAL_AUTO_CHECKPOINT);
+      expect(process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD).toBe(ORIGINAL_THRESHOLD);
     },
   );
 });

@@ -35,7 +35,7 @@ describe('isWalCorruptionError', () => {
 });
 
 describe('createLbugDatabase WAL replay option', () => {
-  it('disables auto-checkpoint by default', () => {
+  it('enables auto-checkpoint by default and uses default threshold', () => {
     const Database = vi.fn(function (this: any) {});
     const lbugModule = { Database } as any;
 
@@ -47,7 +47,7 @@ describe('createLbugDatabase WAL replay option', () => {
       false,
       false,
       expect.any(Number),
-      false,
+      true,
       -1,
       true,
       true,
@@ -55,16 +55,14 @@ describe('createLbugDatabase WAL replay option', () => {
   });
 
   it.each([
-    ['1', true],
-    ['on', true],
-    ['true', true],
-    ['0', false],
-    ['off', false],
-    ['false', false],
-    ['invalid', false],
-  ])('respects GITNEXUS_LBUG_AUTO_CHECKPOINT=%s', (raw, expectedAutoCheckpoint) => {
+    ['0', 0],
+    ['1024', 1024],
+    ['-1', -1],
+    ['invalid', -1],
+    ['', -1],
+  ])('respects GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=%s', (raw, expectedCheckpointThreshold) => {
     try {
-      vi.stubEnv('GITNEXUS_LBUG_AUTO_CHECKPOINT', raw);
+      vi.stubEnv('GITNEXUS_LBUG_CHECKPOINT_THRESHOLD', raw);
       const Database = vi.fn(function (this: any) {});
       const lbugModule = { Database } as any;
 
@@ -76,8 +74,8 @@ describe('createLbugDatabase WAL replay option', () => {
         false,
         false,
         expect.any(Number),
-        expectedAutoCheckpoint,
-        -1,
+        true,
+        expectedCheckpointThreshold,
         true,
         true,
       );
@@ -101,7 +99,7 @@ describe('createLbugDatabase WAL replay option', () => {
       false,
       true,
       expect.any(Number),
-      false,
+      true,
       -1,
       false,
       true,

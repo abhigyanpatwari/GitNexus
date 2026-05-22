@@ -45,21 +45,19 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
-export const LBUG_AUTO_CHECKPOINT_ON_VALUES = ['1', 'true', 'yes', 'on'] as const;
-export const LBUG_AUTO_CHECKPOINT_OFF_VALUES = ['0', 'false', 'no', 'off'] as const;
-const LBUG_AUTO_CHECKPOINT_ON_SET = new Set<string>(LBUG_AUTO_CHECKPOINT_ON_VALUES);
-const LBUG_AUTO_CHECKPOINT_OFF_SET = new Set<string>(LBUG_AUTO_CHECKPOINT_OFF_VALUES);
-
-export const parseLbugAutoCheckpoint = (raw: string | undefined): boolean | undefined => {
-  if (!raw) return undefined;
-  const normalized = raw.trim().toLowerCase();
-  if (LBUG_AUTO_CHECKPOINT_ON_SET.has(normalized)) return true;
-  if (LBUG_AUTO_CHECKPOINT_OFF_SET.has(normalized)) return false;
-  return undefined;
+export const parseLbugCheckpointThreshold = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < -1) return undefined;
+  return parsed;
 };
 
-const resolveAutoCheckpoint = (): boolean =>
-  parseLbugAutoCheckpoint(process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT) ?? false;
+const resolveCheckpointThreshold = (): number =>
+  parseLbugCheckpointThreshold(process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD) ?? -1;
+
+const resolveAutoCheckpoint = (): boolean => true;
 
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
@@ -120,8 +118,8 @@ export function createLbugDatabase(
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
-    autoCheckpoint, // autoCheckpoint (default false; override with GITNEXUS_LBUG_AUTO_CHECKPOINT)
-    -1, // checkpointThreshold
+    autoCheckpoint, // autoCheckpoint (always on)
+    resolveCheckpointThreshold(), // checkpointThreshold (default -1 ~ 16MB; override with GITNEXUS_LBUG_CHECKPOINT_THRESHOLD)
     options.throwOnWalReplayFailure ?? true,
     true, // enableChecksums
   ) as lbug.Database;

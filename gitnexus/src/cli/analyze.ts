@@ -15,7 +15,7 @@ import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 import {
   isWalCorruptionError,
-  parseLbugAutoCheckpoint,
+  parseLbugCheckpointThreshold,
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
@@ -479,7 +479,7 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_VERBOSE',
   'GITNEXUS_MAX_FILE_SIZE',
   'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
-  'GITNEXUS_LBUG_AUTO_CHECKPOINT',
+  'GITNEXUS_LBUG_CHECKPOINT_THRESHOLD',
   'GITNEXUS_EMBEDDING_THREADS',
   'GITNEXUS_EMBEDDING_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
@@ -565,8 +565,8 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
-  /** Control LadybugDB WAL auto-checkpointing during analyze (on/off). */
-  lbugAutoCheckpoint?: string;
+  /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
+  lbugCheckpointThreshold?: string;
   /** Parse worker pool size; 0 disables workers (sequential fallback). */
   workers?: string;
   embeddingThreads?: string;
@@ -638,14 +638,14 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     );
   }
 
-  if (options?.lbugAutoCheckpoint !== undefined) {
-    const parsed = parseLbugAutoCheckpoint(options.lbugAutoCheckpoint);
+  if (options?.lbugCheckpointThreshold !== undefined) {
+    const parsed = parseLbugCheckpointThreshold(options.lbugCheckpointThreshold);
     if (parsed === undefined) {
-      cliError('  --lbug-auto-checkpoint must be either "on" or "off".\n');
+      cliError('  --lbug-checkpoint-threshold must be an integer >= -1.\n');
       process.exitCode = 1;
       return;
     }
-    process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT = parsed ? 'true' : 'false';
+    process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD = String(parsed);
   }
 
   // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions
