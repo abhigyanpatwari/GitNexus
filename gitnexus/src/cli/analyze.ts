@@ -426,15 +426,27 @@ const forceLbugCheckpointIoFailureForTestIfEnabled = (): void => {
   );
 };
 
+// 64MB keeps auto-checkpoint enabled but triggers less frequently than Ladybug's
+// default 16MB threshold. In GitNexus, threshold `-1` means "use Ladybug default"
+// (currently 16MB), so suggesting 64MB reduces rename/remove churn on large runs.
+const RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
+
+// From Ladybug native LocalFileSystem exceptions (`local_file_system.cpp`),
+// surfaced in Node as:
+// "Runtime exception: IO exception: Error renaming file ..."
+// "Runtime exception: IO exception: Error removing directory or file ..."
+// Matching below is case-insensitive (`msg.toLowerCase()`).
+const lbugCheckpointIoErrorPrefix = 'runtime exception: io exception';
+const lbugCheckpointIoErrorPatterns = ['error renaming file', 'error removing directory or file'];
+
 const isLbugCheckpointIoFailure = (err: unknown): boolean => {
   if (!err) return false;
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
-  const isWalCheckpointPath = lower.includes('.wal') || lower.includes('.wal.checkpoint');
-  if (!isWalCheckpointPath) return false;
+  if (!lower.includes('.wal')) return false;
   return (
-    lower.includes('runtime exception: io exception') &&
-    (lower.includes('error renaming file') || lower.includes('error removing directory or file'))
+    lower.includes(lbugCheckpointIoErrorPrefix) &&
+    lbugCheckpointIoErrorPatterns.some((pattern) => lower.includes(pattern))
   );
 };
 
@@ -1171,8 +1183,8 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
         `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
           `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
           `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
-          `    gitnexus analyze --lbug-checkpoint-threshold 67108864\n` +
-          `    (or set GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=67108864)\n`,
+          `    gitnexus analyze --lbug-checkpoint-threshold ${RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD}\n` +
+          `    (or set GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=${RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD})\n`,
         { recoveryHint: 'lbug-checkpoint-threshold' },
       );
       process.exitCode = 1;
