@@ -201,6 +201,7 @@ async function upsertGitNexusSection(
   content: string,
   projectName: string,
   stats: RepoStats,
+  noStats?: boolean,
 ): Promise<'created' | 'updated' | 'appended' | 'preserved'> {
   const exists = await fileExists(filePath);
 
@@ -246,14 +247,23 @@ async function upsertGitNexusSection(
       //       like `({target: "symbolName", direction: "upstream"})`
       //       when noStats is set
       // Passing projectName + stats explicitly makes the contract obvious.
-      // noStats controls template generation, not keep-section stat updates — the user opted into a stats line by keeping it.
+      // --no-stats wins in the keep path too (#1706): a lean block committed
+      // to git would otherwise churn the volatile counts on every analyze,
+      // producing no-value merge conflicts between branches. Under noStats we
+      // drop the parenthetical but still refresh the project name so renames
+      // propagate.
       const newStatsInner = `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`;
-      const statsLine = `Indexed as **${projectName}** (${newStatsInner})`;
+      const statsLine = noStats
+        ? `Indexed as **${projectName}**`
+        : `Indexed as **${projectName}** (${newStatsInner})`;
 
       // Match either canonical phrasing at line start (`^` with `m` flag) so we
       // cannot replace prose embedded mid-paragraph. Deliberately no `$`: text
-      // after the closing `)` on the same line (e.g. ". MCP tools.") stays intact.
-      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\* \([^)]+\)/m;
+      // after the line on the same line (e.g. ". MCP tools.") stays intact.
+      // The parenthetical is optional so a count-free line left by a prior
+      // --no-stats run still matches — letting the name refresh, and letting
+      // counts return if --no-stats is later dropped.
+      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
 
       if (statsPattern.test(existingSection)) {
         const updatedSection = existingSection.replace(statsPattern, statsLine);
@@ -389,12 +399,24 @@ export async function generateAIContextFiles(
   if (!options?.skipAgentsMd) {
     // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
     const agentsPath = path.join(repoPath, 'AGENTS.md');
-    const agentsResult = await upsertGitNexusSection(agentsPath, content, projectName, stats);
+    const agentsResult = await upsertGitNexusSection(
+      agentsPath,
+      content,
+      projectName,
+      stats,
+      options?.noStats,
+    );
     createdFiles.push(`AGENTS.md (${agentsResult})`);
 
     // Create CLAUDE.md (for Claude Code)
     const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(claudePath, content, projectName, stats);
+    const claudeResult = await upsertGitNexusSection(
+      claudePath,
+      content,
+      projectName,
+      stats,
+      options?.noStats,
+    );
     createdFiles.push(`CLAUDE.md (${claudeResult})`);
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
