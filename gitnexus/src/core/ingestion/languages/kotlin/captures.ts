@@ -35,6 +35,7 @@ export function emitKotlinScopeCaptures(
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
+  out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
@@ -184,6 +185,104 @@ function synthesizeKotlinLoopBindings(
     }
   }
   return out;
+}
+
+/**
+ * Synthesize narrowed type-bindings for Kotlin smart-cast forms — issue #1758.
+ *
+ * For each `when (x) { is T -> body }` and `if (x is T) body`, emits a
+ * `@type-binding.annotation` capture binding `x → T` anchored on the body
+ * node. The capture lands in the matching `@scope.block` scope (see query.ts
+ * smart-cast scopes), shadowing the outer parameter binding for calls inside
+ * the body without leaking across sibling arms or to `else`.
+ *
+ * Only narrows when:
+ *   - the `when` subject is a `simple_identifier` (not a call or field chain);
+ *   - the `when_entry` condition is exactly one `type_test` (skips `!is`,
+ *     compound conditions, range/`in`/value patterns);
+ *   - the `if_expression` condition is a `check_expression` of the form
+ *     `<simple_identifier> is <user_type>` and the then-branch is a
+ *     `control_structure_body`.
+ *
+ * `else` arms and non-narrowing conditions emit nothing — the fall-through to
+ * the outer scope's declared type is the correct semantic.
+ */
+function synthesizeKotlinSmartCastBindings(rootNode: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+
+  for (const whenNode of descendantsOfType(rootNode, 'when_expression')) {
+    const subjectName = extractWhenSubjectIdentifier(whenNode);
+    if (subjectName === null) continue;
+
+    for (const entry of whenNode.namedChildren) {
+      if (entry.type !== 'when_entry') continue;
+      const narrowedType = extractIsTestTargetType(entry);
+      if (narrowedType === null) continue;
+      const body = entry.namedChildren.find((child) => child.type === 'control_structure_body');
+      if (body === undefined) continue;
+      out.push(buildNarrowedTypeBindingCapture(subjectName.node, body, narrowedType));
+    }
+  }
+
+  for (const ifNode of descendantsOfType(rootNode, 'if_expression')) {
+    const check = ifNode.namedChildren.find((child) => child.type === 'check_expression');
+    if (check === undefined) continue;
+    const subject = check.namedChildren.find((child) => child.type === 'simple_identifier');
+    const typeNode = check.namedChildren.find((child) => isKotlinTypeNode(child));
+    if (subject === undefined || typeNode === undefined) continue;
+    // The first control_structure_body sibling is the then-branch; else
+    // branches (when present) appear as the second control_structure_body
+    // and are intentionally not narrowed.
+    const body = ifNode.namedChildren.find((child) => child.type === 'control_structure_body');
+    if (body === undefined) continue;
+    out.push(buildNarrowedTypeBindingCapture(subject, body, typeNode));
+  }
+
+  return out;
+}
+
+function extractWhenSubjectIdentifier(whenNode: SyntaxNode): { node: SyntaxNode } | null {
+  const subject = whenNode.namedChildren.find((child) => child.type === 'when_subject');
+  if (subject === undefined) return null;
+  const ident = subject.namedChildren.find((child) => child.type === 'simple_identifier');
+  return ident === undefined ? null : { node: ident };
+}
+
+function extractIsTestTargetType(whenEntry: SyntaxNode): SyntaxNode | null {
+  const condition = whenEntry.namedChildren.find((child) => child.type === 'when_condition');
+  if (condition === undefined) return null;
+  // Exactly one when_condition child must be a positive type_test.
+  // Compound conditions (multiple `when_condition` siblings joined with
+  // commas in some grammars) or negated `!is` are not safe to narrow.
+  if (condition.namedChildCount !== 1) return null;
+  const test = condition.namedChild(0);
+  if (test === null || test.type !== 'type_test') return null;
+  // `!is` produces a different node (`negated_type_test` in some grammars,
+  // or an extra `!` child in others) — defend by checking text prefix.
+  if (test.text.trim().startsWith('!')) return null;
+  return test.namedChildren.find((child) => isKotlinTypeNode(child)) ?? null;
+}
+
+function buildNarrowedTypeBindingCapture(
+  subject: SyntaxNode,
+  bodyAnchor: SyntaxNode,
+  typeNode: SyntaxNode,
+): CaptureMatch {
+  return {
+    '@type-binding.annotation': nodeToCapture('@type-binding.annotation', bodyAnchor),
+    '@type-binding.name': syntheticCapture('@type-binding.name', subject, subject.text),
+    '@type-binding.type': syntheticCapture(
+      '@type-binding.type',
+      typeNode,
+      normalizeKotlinType(typeNode.text),
+    ),
+    // Marker consumed by `kotlinBindingScopeFor` in simple-hooks.ts to
+    // override the scope-extractor's auto-hoist. Unbraced arm bodies
+    // (`is User -> obj.save()`) make the body anchor coincide with the
+    // Block scope's range; without this marker the binding would hoist
+    // to the enclosing function scope and lose its arm-local narrowing.
+    '@type-binding.narrowed': syntheticCapture('@type-binding.narrowed', bodyAnchor, '1'),
+  };
 }
 
 function synthesizeKotlinLocalAssignmentBindings(
