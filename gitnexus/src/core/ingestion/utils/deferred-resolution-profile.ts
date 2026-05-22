@@ -25,8 +25,7 @@ export const isDeferredResolutionProfileEnabled = (): boolean =>
   isVerboseIngestionEnabled() || truthyEnv(process.env.GITNEXUS_PROFILE_DEFERRED);
 
 /** Log a call-resolution progress line every N files (finer when verbose). */
-export const deferredCallLogEveryN = (): number =>
-  isVerboseIngestionEnabled() ? 10 : 100;
+export const deferredCallLogEveryN = (): number => (isVerboseIngestionEnabled() ? 10 : 100);
 
 /** Per-file call-resolution log threshold (ms). Lower default when verbose. */
 export const deferredCallFileSlowMs = (): number => {

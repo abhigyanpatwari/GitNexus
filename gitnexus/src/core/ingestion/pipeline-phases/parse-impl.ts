@@ -877,7 +877,9 @@ export async function runChunkedParseAndResolve(
         bindingAccumulator,
       );
       if (tCalls !== 0n) {
-        logDeferredProfile(`processCallsFromExtracted: ${profileElapsedMs(tCalls).toFixed(0)}ms total`);
+        logDeferredProfile(
+          `processCallsFromExtracted: ${profileElapsedMs(tCalls).toFixed(0)}ms total`,
+        );
       }
     }
 
