@@ -11,6 +11,24 @@
 export const isDev = process.env.NODE_ENV === 'development';
 
 /**
+ * Parse a narrow-form truthy env-var value. Accepts `'1'`, `'true'`, `'yes'`
+ * (case-insensitive, whitespace-trimmed). Anything else — including
+ * `undefined`, empty string, `'0'`, `'false'`, `'no'`, or unknown tokens —
+ * returns `false`.
+ *
+ * This is the shared helper for narrow-form truthy parsing across the
+ * ingestion module. `logger.ts` uses a broader negative-list form
+ * (`isTruthyEnv`) that intentionally accepts anything except a small set of
+ * falsy tokens — that lives separately because it follows pino-debug
+ * conventions and serves a different purpose.
+ */
+export const parseTruthyEnv = (raw: string | undefined): boolean => {
+  if (raw === undefined) return false;
+  const value = raw.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+};
+
+/**
  * Whether scope-resolution dev validators (e.g. `validateBindingsImmutability`)
  * should run AND emit warnings. Off by default in CLI runs to avoid silent
  * O(n) scans on large repos; on in `NODE_ENV=development` or when explicitly

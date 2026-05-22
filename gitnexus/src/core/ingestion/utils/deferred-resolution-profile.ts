@@ -12,17 +12,12 @@
  */
 
 import { logger } from '../../logger.js';
+import { parseTruthyEnv } from './env.js';
 import { isVerboseIngestionEnabled } from './verbose.js';
-
-const truthyEnv = (raw: string | undefined): boolean => {
-  if (!raw) return false;
-  const v = raw.trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes';
-};
 
 /** True when deferred-stage timing / progress logs should emit. */
 export const isDeferredResolutionProfileEnabled = (): boolean =>
-  isVerboseIngestionEnabled() || truthyEnv(process.env.GITNEXUS_PROFILE_DEFERRED);
+  isVerboseIngestionEnabled() || parseTruthyEnv(process.env.GITNEXUS_PROFILE_DEFERRED);
 
 /** Log a call-resolution progress line every N files (finer when verbose). */
 export const deferredCallLogEveryN = (): number => (isVerboseIngestionEnabled() ? 10 : 100);
