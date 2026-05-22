@@ -50,6 +50,7 @@
   "repoAnalyzer": {
     "inputType": "输入类型",
     "githubUrl": "GitHub URL",
+    "gitlabUrl": "GitLab URL",
     "localFolder": "本地文件夹",
     "starting": "正在启动分析...",
     "analyzeRepository": "分析仓库",
@@ -57,6 +58,8 @@
     "loadingGraph": "正在加载图数据...",
     "defaultRepoName": "仓库",
     "githubRepositoryUrl": "GitHub 仓库 URL",
+    "gitlabRepositoryUrl": "GitLab 仓库 URL",
+    "gitlabSupported": "支持 GitLab.com 和自托管 GitLab 实例。",
     "localFolderPath": "本地文件夹路径",
     "browseForFolder": "浏览文件夹",
     "hideBackground": "隐藏（分析继续在后台进行）"

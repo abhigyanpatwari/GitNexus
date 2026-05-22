@@ -19,6 +19,11 @@
     "expand": "Expand",
     "collapse": "Collapse"
   },
+  "chat": {
+    "viewNodeInCodePanel": "View {{inner}} in Code panel",
+    "openInCodePanel": "Open in Code panel • {{inner}}",
+    "waitForVectorIndex": "Wait a moment, vector index is being created."
+  },
   "counts": {
     "files_one": "{{count}} file",
     "files_other": "{{count}} files",
@@ -47,7 +52,12 @@
     "starting": "Starting...",
     "executing": "Executing...",
     "truncated": "... (truncated)",
-    "ready": "Ready"
+    "ready": "Ready",
+    "switchingRepository": "Switching repository...",
+    "loadingRepository": "Loading {{repo}}",
+    "validating": "Validating",
+    "failedSwitchRepository": "Failed to switch repository",
+    "unknownError": "Unknown error"
   },
   "analyzePhases": {
     "queued": "Queued",

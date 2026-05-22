@@ -90,6 +90,8 @@
     "edgeTypesDesc": "Toggle visibility of relationship types",
     "focusDepth": "Focus Depth",
     "focusDepthDesc": "Show nodes within N hops of selection",
+    "hops_one": "{{count}} hop",
+    "hops_other": "{{count}} hops",
     "colorLegend": "Color Legend"
   },
   "codePanel": {

@@ -495,10 +495,10 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             <div className="flex flex-wrap gap-1.5">
               {[
                 { value: null, label: t('graph:fileTree.all') },
-                { value: 1, label: '1 hop' },
-                { value: 2, label: '2 hops' },
-                { value: 3, label: '3 hops' },
-                { value: 5, label: '5 hops' },
+                { value: 1, label: t('graph:fileTree.hops', { count: 1 }) },
+                { value: 2, label: t('graph:fileTree.hops', { count: 2 }) },
+                { value: 3, label: t('graph:fileTree.hops', { count: 3 }) },
+                { value: 5, label: t('graph:fileTree.hops', { count: 5 }) },
               ].map(({ value, label }) => (
                 <button
                   key={label}

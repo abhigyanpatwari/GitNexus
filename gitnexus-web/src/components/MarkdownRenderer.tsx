@@ -127,7 +127,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               href={hrefStr}
               onClick={(e) => handleLinkClick(e, hrefStr)}
               className={`${baseParams} ${colorParams}`}
-              title={isNodeRef ? `View ${inner} in Code panel` : `Open in Code panel • ${inner}`}
+              title={t(isNodeRef ? 'chat.viewNodeInCodePanel' : 'chat.openInCodePanel', {
+                inner,
+              })}
               {...props}
             >
               <span className="text-inherit">{children}</span>
@@ -184,7 +186,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       },
       pre: ({ children }: any) => <>{children}</>,
     }),
-    [handleLinkClick],
+    [handleLinkClick, t],
   );
 
   return (

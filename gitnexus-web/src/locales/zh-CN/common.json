@@ -19,6 +19,11 @@
     "expand": "展开",
     "collapse": "折叠"
   },
+  "chat": {
+    "viewNodeInCodePanel": "在代码面板中查看 {{inner}}",
+    "openInCodePanel": "在代码面板中打开 • {{inner}}",
+    "waitForVectorIndex": "请稍候，正在创建向量索引。"
+  },
   "counts": {
     "files_one": "{{count}} 个文件",
     "files_other": "{{count}} 个文件",
@@ -47,7 +52,12 @@
     "starting": "正在启动...",
     "executing": "正在执行...",
     "truncated": "...（已截断）",
-    "ready": "就绪"
+    "ready": "就绪",
+    "switchingRepository": "正在切换仓库...",
+    "loadingRepository": "正在加载 {{repo}}",
+    "validating": "正在验证",
+    "failedSwitchRepository": "切换仓库失败",
+    "unknownError": "未知错误"
   },
   "analyzePhases": {
     "queued": "已排队",

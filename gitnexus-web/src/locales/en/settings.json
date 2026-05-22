@@ -27,26 +27,34 @@
       "description": "Use OpenAI models for chat and code reasoning.",
       "apiKeyPlaceholder": "Enter your OpenAI API key",
       "helperText": "Get your API key from",
-      "helperLinkLabel": "OpenAI Platform"
+      "helperLinkLabel": "OpenAI Platform",
+      "modelPlaceholder": "e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo",
+      "baseUrlPlaceholder": "https://api.openai.com/v1 (default)",
+      "baseUrlHint": "Leave empty to use the default OpenAI API. Set a custom URL for proxies or compatible APIs."
     },
     "gemini": {
       "description": "Use Google Gemini models.",
       "apiKeyPlaceholder": "Enter your Google AI API key",
       "helperText": "Get your API key from",
-      "helperLinkLabel": "Google AI Studio"
+      "helperLinkLabel": "Google AI Studio",
+      "modelPlaceholder": "e.g., gemini-2.0-flash, gemini-1.5-pro"
     },
     "anthropic": {
       "description": "Use Anthropic Claude models.",
       "apiKeyPlaceholder": "Enter your Anthropic API key",
       "helperText": "Get your API key from",
-      "helperLinkLabel": "Anthropic Console"
+      "helperLinkLabel": "Anthropic Console",
+      "modelPlaceholder": "e.g., claude-sonnet-4-20250514, claude-3-opus"
     },
     "azure": {
-      "apiKeyPlaceholder": "Enter your Azure OpenAI API key"
+      "apiKeyPlaceholder": "Enter your Azure OpenAI API key",
+      "deploymentNamePlaceholder": "e.g., gpt-4o-deployment"
     },
     "ollama": {
       "quickStart": "📋 Quick Start:",
-      "installFrom": "Install Ollama from"
+      "installFrom": "Install Ollama from",
+      "thenRun": ", then run:",
+      "modelPlaceholder": "e.g., llama3.2, mistral, codellama"
     },
     "openrouter": {
       "apiKeyPlaceholder": "Enter your OpenRouter API key",
@@ -57,6 +65,7 @@
       "apiKeyPlaceholder": "Enter your MiniMax API key",
       "helperText": "Get your API key from",
       "helperLinkLabel": "MiniMax Platform",
+      "modelPlaceholder": "e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed",
       "helperModel": "Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)"
     },
     "glm": {

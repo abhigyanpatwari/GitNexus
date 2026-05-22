@@ -90,6 +90,8 @@
     "edgeTypesDesc": "切换关系类型的可见性",
     "focusDepth": "聚焦深度",
     "focusDepthDesc": "显示所选节点 N 跳内的节点",
+    "hops_one": "{{count}} 跳",
+    "hops_other": "{{count}} 跳",
     "colorLegend": "颜色图例"
   },
   "codePanel": {

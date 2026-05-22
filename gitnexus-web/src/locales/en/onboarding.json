@@ -50,6 +50,7 @@
   "repoAnalyzer": {
     "inputType": "Input type",
     "githubUrl": "GitHub URL",
+    "gitlabUrl": "GitLab URL",
     "localFolder": "Local Folder",
     "starting": "Starting analysis...",
     "analyzeRepository": "Analyze Repository",
@@ -57,6 +58,8 @@
     "loadingGraph": "Loading graph...",
     "defaultRepoName": "repository",
     "githubRepositoryUrl": "GitHub Repository URL",
+    "gitlabRepositoryUrl": "GitLab Repository URL",
+    "gitlabSupported": "Supports GitLab.com and self-hosted GitLab instances.",
     "localFolderPath": "Local Folder Path",
     "browseForFolder": "Browse for folder",
     "hideBackground": "Hide (analysis continues in background)"

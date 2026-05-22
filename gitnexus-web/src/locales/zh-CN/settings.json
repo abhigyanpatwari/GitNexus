@@ -27,26 +27,34 @@
       "description": "使用 OpenAI 模型进行聊天和代码推理。",
       "apiKeyPlaceholder": "输入 OpenAI API Key",
       "helperText": "从这里获取 API Key：",
-      "helperLinkLabel": "OpenAI Platform"
+      "helperLinkLabel": "OpenAI Platform",
+      "modelPlaceholder": "例如：gpt-4o、gpt-4-turbo、gpt-3.5-turbo",
+      "baseUrlPlaceholder": "https://api.openai.com/v1（默认）",
+      "baseUrlHint": "留空则使用默认 OpenAI API。可为代理或兼容 API 设置自定义 URL。"
     },
     "gemini": {
       "description": "使用 Google Gemini 模型。",
       "apiKeyPlaceholder": "输入 Google AI API Key",
       "helperText": "从这里获取 API Key：",
-      "helperLinkLabel": "Google AI Studio"
+      "helperLinkLabel": "Google AI Studio",
+      "modelPlaceholder": "例如：gemini-2.0-flash、gemini-1.5-pro"
     },
     "anthropic": {
       "description": "使用 Anthropic Claude 模型。",
       "apiKeyPlaceholder": "输入 Anthropic API Key",
       "helperText": "从这里获取 API Key：",
-      "helperLinkLabel": "Anthropic Console"
+      "helperLinkLabel": "Anthropic Console",
+      "modelPlaceholder": "例如：claude-sonnet-4-20250514、claude-3-opus"
     },
     "azure": {
-      "apiKeyPlaceholder": "输入 Azure OpenAI API Key"
+      "apiKeyPlaceholder": "输入 Azure OpenAI API Key",
+      "deploymentNamePlaceholder": "例如：gpt-4o-deployment"
     },
     "ollama": {
       "quickStart": "📋 快速开始：",
-      "installFrom": "从这里安装 Ollama："
+      "installFrom": "从这里安装 Ollama：",
+      "thenRun": "，然后运行：",
+      "modelPlaceholder": "例如：llama3.2、mistral、codellama"
     },
     "openrouter": {
       "apiKeyPlaceholder": "输入 OpenRouter API Key",
@@ -57,6 +65,7 @@
       "apiKeyPlaceholder": "输入 MiniMax API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "MiniMax Platform",
+      "modelPlaceholder": "例如：MiniMax-M2.5、MiniMax-M2.5-highspeed",
       "helperModel": "可用：MiniMax-M2.5（默认）、MiniMax-M2.5-highspeed（更快）"
     },
     "glm": {

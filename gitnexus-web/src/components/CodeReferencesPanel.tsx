@@ -303,7 +303,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         <div className="my-1 h-px w-6 bg-border-subtle" />
         {showSelectedViewer && (
           <div className="rotate-90 text-[9px] font-medium tracking-wide whitespace-nowrap text-amber-400">
-            SELECTED
+            {t('graph:codePanel.selected')}
           </div>
         )}
         {showCitations && (

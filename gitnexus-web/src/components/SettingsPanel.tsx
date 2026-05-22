@@ -465,7 +465,7 @@ export const SettingsPanel = ({
               }}
               model={{
                 value: settings.openai?.model ?? 'gpt-5.2-chat',
-                placeholder: 'e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo',
+                placeholder: t('settings:providers.openai.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
@@ -488,12 +488,11 @@ export const SettingsPanel = ({
                       openai: { ...prev.openai!, baseUrl: e.target.value },
                     }))
                   }
-                  placeholder="https://api.openai.com/v1 (default)"
+                  placeholder={t('settings:providers.openai.baseUrlPlaceholder')}
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
                 <p className="text-xs text-text-muted">
-                  Leave empty to use the default OpenAI API. Set a custom URL for proxies or
-                  compatible APIs.
+                  {t('settings:providers.openai.baseUrlHint')}
                 </p>
               </div>
             </ProviderConfigCard>
@@ -519,7 +518,7 @@ export const SettingsPanel = ({
               }}
               model={{
                 value: settings.gemini?.model ?? 'gemini-2.0-flash',
-                placeholder: 'e.g., gemini-2.0-flash, gemini-1.5-pro',
+                placeholder: t('settings:providers.gemini.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
@@ -549,7 +548,7 @@ export const SettingsPanel = ({
               }}
               model={{
                 value: settings.anthropic?.model ?? 'claude-sonnet-4-20250514',
-                placeholder: 'e.g., claude-sonnet-4-20250514, claude-3-opus',
+                placeholder: t('settings:providers.anthropic.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
@@ -626,7 +625,7 @@ export const SettingsPanel = ({
                       azureOpenAI: { ...prev.azureOpenAI!, deploymentName: e.target.value },
                     }))
                   }
-                  placeholder="e.g., gpt-4o-deployment"
+                  placeholder={t('settings:providers.azure.deploymentNamePlaceholder')}
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
               </div>
@@ -699,7 +698,7 @@ export const SettingsPanel = ({
                   >
                     ollama.ai
                   </a>
-                  , then run:
+                  {t('settings:providers.ollama.thenRun')}
                 </p>
                 <code className="mt-2 block rounded-lg bg-black/30 px-3 py-2 font-mono text-sm text-amber-200">
                   ollama serve
@@ -765,7 +764,7 @@ export const SettingsPanel = ({
                       ollama: { ...prev.ollama!, model: e.target.value },
                     }))
                   }
-                  placeholder="e.g., llama3.2, mistral, codellama"
+                  placeholder={t('settings:providers.ollama.modelPlaceholder')}
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
                 <p className="text-xs text-text-muted">
@@ -846,7 +845,7 @@ export const SettingsPanel = ({
               }}
               model={{
                 value: settings.minimax?.model ?? 'MiniMax-M2.5',
-                placeholder: 'e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed',
+                placeholder: t('settings:providers.minimax.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,

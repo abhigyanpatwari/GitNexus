@@ -35,6 +35,7 @@ import {
   type JobProgress,
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
+import i18n from '../i18n';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
@@ -660,7 +661,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          content: 'Wait a moment, vector index is being created.',
+          content: i18n.t('common:chat.waitForVectorIndex'),
           timestamp: Date.now(),
         };
         setChatMessages((prev) => [...prev, assistantMessage]);
@@ -1043,8 +1044,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setProgress({
         phase: 'extracting',
         percent: 0,
-        message: 'Switching repository...',
-        detail: `Loading ${repoName}`,
+        message: i18n.t('common:progress.switchingRepository'),
+        detail: i18n.t('common:progress.loadingRepository', { repo: repoName }),
       });
       setViewMode('loading');
       setIsAgentReady(false);
@@ -1072,8 +1073,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               setProgress({
                 phase: 'extracting',
                 percent: 5,
-                message: 'Switching repository...',
-                detail: 'Validating',
+                message: i18n.t('common:progress.switchingRepository'),
+                detail: i18n.t('common:progress.validating'),
               });
             } else if (phase === 'downloading') {
               const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
@@ -1081,15 +1082,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               setProgress({
                 phase: 'extracting',
                 percent: pct,
-                message: 'Downloading graph...',
-                detail: `${mb} MB downloaded`,
+                message: i18n.t('common:progress.downloadingGraph'),
+                detail: i18n.t('common:progress.downloadedMb', { mb }),
               });
             } else if (phase === 'extracting') {
               setProgress({
                 phase: 'extracting',
                 percent: 97,
-                message: 'Processing...',
-                detail: 'Extracting file contents',
+                message: i18n.t('common:progress.processing'),
+                detail: i18n.t('common:progress.extractingFileContents'),
               });
             }
           },
@@ -1121,8 +1122,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setProgress({
           phase: 'error',
           percent: 0,
-          message: 'Failed to switch repository',
-          detail: err instanceof Error ? err.message : 'Unknown error',
+          message: i18n.t('common:progress.failedSwitchRepository'),
+          detail: err instanceof Error ? err.message : i18n.t('common:progress.unknownError'),
         });
         setIsAgentReady(false);
         agentRef.current = null;

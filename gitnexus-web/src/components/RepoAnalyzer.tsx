@@ -77,7 +77,7 @@ function ModeTabs({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode
         } `}
       >
         <Gitlab className="h-3 w-3" />
-        GitLab URL
+        {t('repoAnalyzer.gitlabUrl')}
       </button>
       <button
         role="tab"
@@ -354,7 +354,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             htmlFor={inputId}
             className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
           >
-            GitLab Repository URL
+            {t('onboarding:repoAnalyzer.gitlabRepositoryUrl')}
           </label>
           <div
             className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
@@ -396,9 +396,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               </div>
             )}
           </div>
-          <p className="text-xs text-text-muted">
-            Supports GitLab.com and self-hosted GitLab instances.
-          </p>
+          <p className="text-xs text-text-muted">{t('onboarding:repoAnalyzer.gitlabSupported')}</p>
         </div>
       )}
 
