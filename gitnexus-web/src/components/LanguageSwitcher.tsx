@@ -22,6 +22,7 @@ export const LanguageSwitcher = () => {
       <Globe className="h-4 w-4" aria-hidden="true" />
       <span className="sr-only">{t('language')}</span>
       <select
+        data-testid="language-switcher"
         value={currentLanguageMetadata.code}
         aria-label={t('selectLanguage')}
         onChange={(event) => handleChange(event.target.value as SupportedLanguage)}

@@ -17,9 +17,4 @@ for (const [path, translations] of Object.entries(localeModules)) {
   namespaces.add(namespace);
 }
 
-if (resources['zh-CN']) {
-  resources['zh-cn'] = resources['zh-CN'];
-  resources.zh = resources['zh-CN'];
-}
-
 export const namespaceList = Array.from(namespaces).sort();

@@ -57,7 +57,6 @@ const AppContent = () => {
     async (result: ConnectResult): Promise<void> => {
       // Use the canonical repo name from the server response so all subsequent
       // backend calls (queries, search, grep, readFile) scope to this repo.
-      const repoName = result.repoInfo.name;
       const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
       // Normalize both Windows (\) and Unix (/) path separators before splitting
       const projectName =
@@ -107,6 +106,11 @@ const AppContent = () => {
 
   // Auto-connect when ?server or ?project query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   useEffect(() => {
     if (autoConnectRan.current) return;
     const params = new URLSearchParams(window.location.search);
@@ -119,8 +123,8 @@ const AppContent = () => {
     setProgress({
       phase: 'extracting',
       percent: 0,
-      message: t('common:progress.connecting'),
-      detail: t('common:progress.validatingServer'),
+      message: tRef.current('common:progress.connecting'),
+      detail: tRef.current('common:progress.validatingServer'),
     });
     setViewMode('loading');
 
@@ -135,8 +139,8 @@ const AppContent = () => {
             setProgress({
               phase: 'extracting',
               percent: 5,
-              message: t('common:progress.connecting'),
-              detail: t('common:progress.validatingServer'),
+              message: tRef.current('common:progress.connecting'),
+              detail: tRef.current('common:progress.validatingServer'),
             });
           } else if (phase === 'downloading') {
             const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
@@ -144,15 +148,15 @@ const AppContent = () => {
             setProgress({
               phase: 'extracting',
               percent: pct,
-              message: t('common:progress.downloadingGraph'),
-              detail: t('common:progress.downloadedMb', { mb }),
+              message: tRef.current('common:progress.downloadingGraph'),
+              detail: tRef.current('common:progress.downloadedMb', { mb }),
             });
           } else if (phase === 'extracting') {
             setProgress({
               phase: 'extracting',
               percent: 97,
-              message: t('common:progress.processing'),
-              detail: t('common:progress.extractingFileContents'),
+              message: tRef.current('common:progress.processing'),
+              detail: tRef.current('common:progress.extractingFileContents'),
             });
           }
         },
@@ -176,15 +180,15 @@ const AppContent = () => {
         setProgress({
           phase: 'error',
           percent: 0,
-          message: t('errors:connectFailed'),
-          detail: formatBackendError(err, t),
+          message: tRef.current('errors:connectFailed'),
+          detail: formatBackendError(err, tRef.current),
         });
         setTimeout(() => {
           setViewMode('onboarding');
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
       });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos, t]);
+  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
