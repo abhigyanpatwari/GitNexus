@@ -27,10 +27,21 @@ import type { ScopeId } from 'gitnexus-shared';
  * scope metadata that does not belong on the shared `Scope` /
  * `SymbolDefinition` types.
  *
- * NOTE: module-level state, single-process-single-repo use only. For
- * server-mode or multi-repo-in-one-process use cases, call
- * `clearCompanionScopes()` between resolution passes to avoid stale
- * companion-scope ids from a previous invocation.
+ * NOTE: module-level state. Production ingestion paths (CLI `analyze`,
+ * one-shot MCP indexing) do NOT currently call `clearCompanionScopes()`
+ * between passes; correctness is bounded because every `ScopeId` embeds
+ * its `filePath`, so a stale entry from `/repo-a/Main.kt` cannot
+ * accidentally match a lookup against `/repo-b/Main.kt`. Cross-run
+ * collisions within the same `filePath` would require a re-ingested
+ * file to place a non-companion scope at the exact byte-range of a
+ * prior companion — vanishingly unlikely in practice.
+ *
+ * The remaining concern is unbounded memory growth in long-lived
+ * server-mode processes that re-index the same workspace many times.
+ * `clearCompanionScopes()` is exported so server-mode embedders (and
+ * the unit-test teardown in `test/unit/kotlin-static-marker.test.ts`)
+ * can drop the table between passes; wiring the call into the pipeline
+ * lifecycle is a known follow-up for server-mode hardening.
  */
 const companionScopesByFile = new Map<string, Set<ScopeId>>();
 
