@@ -431,6 +431,9 @@ const RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 // We only match checkpoint-rotation shapes:
 //   - "<db>.wal -> <db>.wal.checkpoint" rename failures
 //   - "<db>.wal.checkpoint" remove failures
+// Example matches:
+//   "Runtime exception: IO exception: Error renaming file /x/lbug.wal to /x/lbug.wal.checkpoint. ErrorMessage: Permission denied"
+//   "Runtime exception: IO exception: Error removing directory or file /x/lbug.wal.checkpoint.  Error Message: Permission denied"
 // Matching is case-insensitive to remain robust across wrappers/platforms.
 const LBUG_CHECKPOINT_RENAME_RE =
   /^runtime exception: io exception:\s*error renaming file\s+.+?\.wal\s+to\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
