@@ -64,8 +64,25 @@ export const startTimer = (enabled: boolean): bigint | null =>
  * Emit a `[deferred-profile]` log line for a captured timer. No-op when the
  * timer is `null` (profiling was disabled at capture time). The formatter
  * receives elapsed ms so the call sites stay readable.
+ *
+ * The format callback runs inside a try/catch so a throwing formatter
+ * (custom toString, JSON.stringify on a circular object) cannot abort the
+ * deferred resolution band — observability code must never escalate to a
+ * load-bearing failure. On catch we emit a single `formatter error: …`
+ * line via logDeferredProfile and return; the caller's stage continues
+ * as if profiling had no-op'd for this timer. DoD §2.8 ("no silent
+ * catches that swallow diagnostics") is satisfied by surfacing the
+ * failure message rather than dropping it.
  */
 export const endTimer = (start: bigint | null, format: (elapsedMs: number) => string): void => {
   if (start === null) return;
-  logDeferredProfile(format(profileElapsedMs(start)));
+  const elapsedMs = profileElapsedMs(start);
+  let message: string;
+  try {
+    message = format(elapsedMs);
+  } catch (err) {
+    logDeferredProfile(`formatter error: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  logDeferredProfile(message);
 };
