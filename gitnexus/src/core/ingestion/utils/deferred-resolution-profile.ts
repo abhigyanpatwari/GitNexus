@@ -15,12 +15,20 @@ import { logger } from '../../logger.js';
 import { parseTruthyEnv } from './env.js';
 import { isVerboseIngestionEnabled } from './verbose.js';
 
+// Module-private tuning constants for the gates below. Not exported — these
+// are internal knobs, not part of the module's API surface.
+const LOG_EVERY_N_VERBOSE = 10;
+const LOG_EVERY_N_PROFILE = 100;
+const DEFAULT_SLOW_MS_VERBOSE = 3_000;
+const DEFAULT_SLOW_MS = 5_000;
+
 /** True when deferred-stage timing / progress logs should emit. */
 export const isDeferredResolutionProfileEnabled = (): boolean =>
   isVerboseIngestionEnabled() || parseTruthyEnv(process.env.GITNEXUS_PROFILE_DEFERRED);
 
 /** Log a call-resolution progress line every N files (finer when verbose). */
-export const deferredCallLogEveryN = (): number => (isVerboseIngestionEnabled() ? 10 : 100);
+export const deferredCallLogEveryN = (): number =>
+  isVerboseIngestionEnabled() ? LOG_EVERY_N_VERBOSE : LOG_EVERY_N_PROFILE;
 
 /** Per-file call-resolution log threshold (ms). Lower default when verbose. */
 export const deferredCallFileSlowMs = (): number => {
@@ -31,7 +39,7 @@ export const deferredCallFileSlowMs = (): number => {
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return isVerboseIngestionEnabled() ? 3_000 : 5_000;
+  return isVerboseIngestionEnabled() ? DEFAULT_SLOW_MS_VERBOSE : DEFAULT_SLOW_MS;
 };
 
 export const profileNow = (): bigint => process.hrtime.bigint();
