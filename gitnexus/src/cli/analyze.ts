@@ -14,8 +14,9 @@ import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 import {
+  isLbugCheckpointIoError,
   isWalCorruptionError,
-  parseLbugCheckpointThreshold,
+  parseWalCheckpointThreshold,
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
@@ -419,32 +420,14 @@ const forceHeapOOMForTestIfEnabled = (): void => {
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
 
-// 64MB keeps auto-checkpoint enabled but triggers less frequently than Ladybug's
-// default 16MB threshold. In GitNexus, threshold `-1` means "use Ladybug default"
-// (currently 16MB), so suggesting 64MB reduces rename/remove churn on large runs.
-const RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
-
-// From Ladybug native LocalFileSystem exceptions (`local_file_system.cpp`),
-// surfaced in Node as:
-// "Runtime exception: IO exception: Error renaming file ..."
-// "Runtime exception: IO exception: Error removing directory or file ..."
-// We only match checkpoint-rotation shapes:
-//   - "<db>.wal -> <db>.wal.checkpoint" rename failures
-//   - "<db>.wal.checkpoint" remove failures
-// Example matches:
-//   "Runtime exception: IO exception: Error renaming file /x/lbug.wal to /x/lbug.wal.checkpoint. ErrorMessage: Permission denied"
-//   "Runtime exception: IO exception: Error removing directory or file /x/lbug.wal.checkpoint.  Error Message: Permission denied"
-// Matching is case-insensitive to remain robust across wrappers/platforms.
-const LBUG_CHECKPOINT_RENAME_RE =
-  /^runtime exception: io exception:\s*error renaming file\s+.+?\.wal\s+to\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
-const LBUG_CHECKPOINT_REMOVE_RE =
-  /^runtime exception: io exception:\s*error removing directory or file\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
-
-const isLbugCheckpointIoFailure = (err: unknown): boolean => {
-  if (!err) return false;
-  const msg = err instanceof Error ? err.message : String(err);
-  return LBUG_CHECKPOINT_RENAME_RE.test(msg) || LBUG_CHECKPOINT_REMOVE_RE.test(msg);
-};
+// 64 MiB keeps auto-checkpoint enabled but triggers less frequently than
+// Ladybug's stock ~16 MiB threshold, reducing rename/remove churn on large
+// runs. Also matches the GitNexus default in `lbug-config.ts`.
+//
+// IMPORTANT: keep README examples (`README.md`, `gitnexus/README.md`) and
+// the `DEFAULT_WAL_CHECKPOINT_THRESHOLD` constant in
+// `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
+const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
 /** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
 async function ensureHeap(): Promise<boolean> {
@@ -506,7 +489,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_VERBOSE',
   'GITNEXUS_MAX_FILE_SIZE',
   'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
-  'GITNEXUS_LBUG_CHECKPOINT_THRESHOLD',
+  'GITNEXUS_WAL_CHECKPOINT_THRESHOLD',
+  'GITNEXUS_WAL_MANUAL_CHECKPOINT',
   'GITNEXUS_EMBEDDING_THREADS',
   'GITNEXUS_EMBEDDING_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
@@ -593,7 +577,7 @@ export interface AnalyzeOptions {
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
   /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
-  lbugCheckpointThreshold?: string;
+  walCheckpointThreshold?: string;
   /** Parse worker pool size; 0 disables workers (sequential fallback). */
   workers?: string;
   embeddingThreads?: string;
@@ -665,14 +649,14 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     );
   }
 
-  if (options?.lbugCheckpointThreshold !== undefined) {
-    const parsed = parseLbugCheckpointThreshold(options.lbugCheckpointThreshold);
+  if (options?.walCheckpointThreshold !== undefined) {
+    const parsed = parseWalCheckpointThreshold(options.walCheckpointThreshold);
     if (parsed === undefined) {
-      cliError('  --lbug-checkpoint-threshold must be an integer >= -1.\n');
+      cliError('  --wal-checkpoint-threshold must be an integer >= -1.\n');
       process.exitCode = 1;
       return;
     }
-    process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD = String(parsed);
+    process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(parsed);
   }
 
   // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions
@@ -1172,14 +1156,15 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       return;
     }
 
-    if (isLbugCheckpointIoFailure(err)) {
+    if (isLbugCheckpointIoError(err)) {
       cliError(
         `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
           `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
           `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
-          `    gitnexus analyze --lbug-checkpoint-threshold ${RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD}\n` +
-          `    (or set GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=${RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD})\n`,
-        { recoveryHint: 'lbug-checkpoint-threshold' },
+          `    gitnexus analyze --wal-checkpoint-threshold ${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD}\n` +
+          `    (or set GITNEXUS_WAL_CHECKPOINT_THRESHOLD=${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD})\n` +
+          `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
+        { recoveryHint: 'wal-checkpoint-threshold' },
       );
       process.exitCode = 1;
       return;

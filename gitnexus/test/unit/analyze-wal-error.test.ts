@@ -135,7 +135,7 @@ describe('analyzeCommand WAL corruption error handling', () => {
     cap.restore();
   });
 
-  it('recommends --lbug-checkpoint-threshold on Ladybug checkpoint I/O failures', async () => {
+  it('recommends --wal-checkpoint-threshold on Ladybug checkpoint I/O failures', async () => {
     runFullAnalysisMock.mockRejectedValue(
       new Error(
         'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to /repo/.gitnexus/lbug.wal.checkpoint. ErrorMessage: Permission denied',
@@ -154,7 +154,7 @@ describe('analyzeCommand WAL corruption error handling', () => {
       records.some(
         (r) =>
           typeof r.msg === 'string' &&
-          r.msg.includes('gitnexus analyze --lbug-checkpoint-threshold'),
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
       ),
     ).toBe(true);
 
@@ -180,7 +180,7 @@ describe('analyzeCommand WAL corruption error handling', () => {
       records.some(
         (r) =>
           typeof r.msg === 'string' &&
-          r.msg.includes('gitnexus analyze --lbug-checkpoint-threshold'),
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
       ),
     ).toBe(true);
 
@@ -206,7 +206,7 @@ describe('analyzeCommand WAL corruption error handling', () => {
       records.some(
         (r) =>
           typeof r.msg === 'string' &&
-          r.msg.includes('gitnexus analyze --lbug-checkpoint-threshold'),
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
       ),
     ).toBe(false);
 

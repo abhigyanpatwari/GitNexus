@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createLbugDatabase, isWalCorruptionError } from '../../src/core/lbug/lbug-config.js';
+import {
+  createLbugDatabase,
+  isLbugCheckpointIoError,
+  isWalCorruptionError,
+} from '../../src/core/lbug/lbug-config.js';
+import { _captureLogger } from '../../src/core/logger.js';
+
+const DEFAULT_THRESHOLD = 64 * 1024 * 1024;
 
 describe('isWalCorruptionError', () => {
   it.each([
@@ -35,7 +42,7 @@ describe('isWalCorruptionError', () => {
 });
 
 describe('createLbugDatabase WAL replay option', () => {
-  it('enables auto-checkpoint by default and uses default threshold', () => {
+  it('enables auto-checkpoint by default and uses default threshold (64 MiB)', () => {
     const Database = vi.fn(function (this: any) {});
     const lbugModule = { Database } as any;
 
@@ -48,7 +55,7 @@ describe('createLbugDatabase WAL replay option', () => {
       false,
       expect.any(Number),
       true,
-      -1,
+      DEFAULT_THRESHOLD,
       true,
       true,
     );
@@ -58,11 +65,11 @@ describe('createLbugDatabase WAL replay option', () => {
     ['0', 0],
     ['1024', 1024],
     ['-1', -1],
-    ['invalid', -1],
-    ['', -1],
-  ])('respects GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=%s', (raw, expectedCheckpointThreshold) => {
+    ['invalid', DEFAULT_THRESHOLD],
+    ['', DEFAULT_THRESHOLD],
+  ])('respects GITNEXUS_WAL_CHECKPOINT_THRESHOLD=%s', (raw, expectedCheckpointThreshold) => {
     try {
-      vi.stubEnv('GITNEXUS_LBUG_CHECKPOINT_THRESHOLD', raw);
+      vi.stubEnv('GITNEXUS_WAL_CHECKPOINT_THRESHOLD', raw);
       const Database = vi.fn(function (this: any) {});
       const lbugModule = { Database } as any;
 
@@ -84,6 +91,52 @@ describe('createLbugDatabase WAL replay option', () => {
     }
   });
 
+  it('warns and falls back to default when GITNEXUS_WAL_CHECKPOINT_THRESHOLD is invalid', () => {
+    const cap = _captureLogger();
+    try {
+      vi.stubEnv('GITNEXUS_WAL_CHECKPOINT_THRESHOLD', 'invalid');
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-invalid');
+
+      const warn = cap
+        .records()
+        .find(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_WAL_CHECKPOINT_THRESHOLD'),
+        );
+      expect(warn).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+      cap.restore();
+    }
+  });
+
+  it('does NOT warn when GITNEXUS_WAL_CHECKPOINT_THRESHOLD is empty (treated as unset)', () => {
+    const cap = _captureLogger();
+    try {
+      vi.stubEnv('GITNEXUS_WAL_CHECKPOINT_THRESHOLD', '');
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-empty');
+
+      const warn = cap
+        .records()
+        .find(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_WAL_CHECKPOINT_THRESHOLD'),
+        );
+      expect(warn).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      cap.restore();
+    }
+  });
+
   it('passes throwOnWalReplayFailure and checksum constructor args explicitly', () => {
     const Database = vi.fn(function (this: any) {});
     const lbugModule = { Database } as any;
@@ -100,9 +153,43 @@ describe('createLbugDatabase WAL replay option', () => {
       true,
       expect.any(Number),
       true,
-      -1,
+      DEFAULT_THRESHOLD,
       false,
       true,
     );
+  });
+});
+
+// ─── Finding 8: strict + permissive checkpoint IO matchers ─────────────────
+describe('isLbugCheckpointIoError', () => {
+  it.each([
+    [
+      'native rename failure (v0.16.x exact)',
+      'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to /repo/.gitnexus/lbug.wal.checkpoint. ErrorMessage: Permission denied',
+    ],
+    [
+      'native remove failure (v0.16.x exact)',
+      'Runtime exception: IO exception: Error removing directory or file /repo/.gitnexus/lbug.wal.checkpoint.  Error Message: Permission denied',
+    ],
+  ])('matches strict %s', (_label, msg) => {
+    expect(isLbugCheckpointIoError(msg)).toBe(true);
+    expect(isLbugCheckpointIoError(new Error(msg))).toBe(true);
+  });
+
+  it('matches permissive fallback for hypothetical message drift', () => {
+    // Permissive matcher accepts any IO-exception-shaped message mentioning .wal.checkpoint.
+    const drift =
+      'Some new wrapper preamble :: IO exception when finalizing /repo/.gitnexus/lbug.wal.checkpoint';
+    expect(isLbugCheckpointIoError(drift)).toBe(true);
+  });
+
+  it('does NOT match unrelated IO errors', () => {
+    expect(
+      isLbugCheckpointIoError(
+        'Runtime exception: IO exception: Error renaming file /repo/data.tmp to /repo/data.tmp.bak',
+      ),
+    ).toBe(false);
+    expect(isLbugCheckpointIoError('Some other error')).toBe(false);
+    expect(isLbugCheckpointIoError(undefined)).toBe(false);
   });
 });

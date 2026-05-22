@@ -27,9 +27,9 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
   getMaxFileSizeBannerMessage: vi.fn(() => null),
 }));
 
-describe('analyzeCommand --lbug-checkpoint-threshold parsing', () => {
+describe('analyzeCommand --wal-checkpoint-threshold parsing', () => {
   const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
-  const ORIGINAL_THRESHOLD = process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
+  const ORIGINAL_THRESHOLD = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
 
   beforeEach(() => {
     vi.resetModules();
@@ -45,27 +45,27 @@ describe('analyzeCommand --lbug-checkpoint-threshold parsing', () => {
       process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
     }
     if (ORIGINAL_THRESHOLD === undefined) {
-      delete process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
+      delete process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
     } else {
-      process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD = ORIGINAL_THRESHOLD;
+      process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = ORIGINAL_THRESHOLD;
     }
   });
 
   it.each(['maybe', '-2', '1.5', ''])(
-    'rejects invalid --lbug-checkpoint-threshold value %s before analysis starts',
-    async (lbugCheckpointThreshold) => {
+    'rejects invalid --wal-checkpoint-threshold value %s before analysis starts',
+    async (walCheckpointThreshold) => {
       const { _captureLogger } = await import('../../src/core/logger.js');
       const cap = _captureLogger();
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(undefined, { lbugCheckpointThreshold });
+      await analyzeCommand(undefined, { walCheckpointThreshold });
 
       expect(process.exitCode).toBe(1);
       expect(runFullAnalysisMock).not.toHaveBeenCalled();
       expect(
         cap
           .records()
-          .some((r) => r.msg === '  --lbug-checkpoint-threshold must be an integer >= -1.\n'),
+          .some((r) => r.msg === '  --wal-checkpoint-threshold must be an integer >= -1.\n'),
       ).toBe(true);
       cap.restore();
     },
@@ -76,12 +76,12 @@ describe('analyzeCommand --lbug-checkpoint-threshold parsing', () => {
     ['0', '0'],
     ['1024', '1024'],
   ])(
-    'sets GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=%s during runFullAnalysis and restores afterwards',
+    'sets GITNEXUS_WAL_CHECKPOINT_THRESHOLD=%s during runFullAnalysis and restores afterwards',
     async (cliValue, expectedEnv) => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
       let envAtCallTime: string | undefined;
       runFullAnalysisMock.mockImplementation(async () => {
-        envAtCallTime = process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD;
+        envAtCallTime = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
         return {
           repoName: 'repo',
           repoPath: '/repo',
@@ -90,10 +90,10 @@ describe('analyzeCommand --lbug-checkpoint-threshold parsing', () => {
         };
       });
 
-      await analyzeCommand(undefined, { lbugCheckpointThreshold: cliValue });
+      await analyzeCommand(undefined, { walCheckpointThreshold: cliValue });
 
       expect(envAtCallTime).toBe(expectedEnv);
-      expect(process.env.GITNEXUS_LBUG_CHECKPOINT_THRESHOLD).toBe(ORIGINAL_THRESHOLD);
+      expect(process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD).toBe(ORIGINAL_THRESHOLD);
     },
   );
 });
