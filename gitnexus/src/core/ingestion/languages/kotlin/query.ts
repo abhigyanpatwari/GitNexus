@@ -9,6 +9,19 @@ const KOTLIN_SCOPE_QUERY = `
 (companion_object) @scope.class
 (function_declaration) @scope.function
 
+;; Smart-cast narrowing scopes (RFC #909 Ring 3, issue #1758).
+;; Each is-test arm body and each if-then body becomes its own Block
+;; scope so synthesized narrowed type-bindings (see captures.ts
+;; synthesizeKotlinSmartCastBindings) shadow the outer parameter
+;; binding for calls inside the body — without leaking across arms.
+(when_entry
+  (when_condition (type_test))
+  (control_structure_body) @scope.block)
+
+(if_expression
+  (check_expression)
+  (control_structure_body) @scope.block)
+
 ;; Declarations — types
 (class_declaration
   "interface"

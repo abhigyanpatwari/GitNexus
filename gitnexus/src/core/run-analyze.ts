@@ -27,6 +27,10 @@ import {
 } from './lbug/lbug-adapter.js';
 import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
 import {
+  startWalCheckpointDriver,
+  type WalCheckpointDriver,
+} from './lbug/wal-checkpoint-driver.js';
+import {
   getStoragePaths,
   saveMeta,
   loadMeta,
@@ -521,6 +525,16 @@ export async function runFullAnalysis(
   }
 
   await initLbug(lbugPath);
+
+  // Manual WAL checkpoint driver (#1741): periodically drain the WAL
+  // from JS so the un-retriable native auto-checkpoint almost never
+  // has work left to do. Failures of the manual CHECKPOINT are absorbed
+  // by the driver's bounded retry; the final un-recoverable error still
+  // surfaces via the surrounding write that follows the failed flush.
+  // Opt-out via `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` (the driver itself
+  // returns a no-op handle when disabled). Analyze-only: MCP and serve
+  // paths continue to rely on the close-time CHECKPOINT in `safeClose`.
+  const walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -961,6 +975,9 @@ export async function runFullAnalysis(
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
+    // Stop the manual checkpoint driver before closeLbug so its
+    // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
+    await walCheckpointDriver.stop();
     await closeLbug();
 
     progress('done', 100, 'Done');
@@ -972,7 +989,13 @@ export async function runFullAnalysis(
       pipelineResult,
     };
   } catch (err) {
-    // Ensure LadybugDB is closed even on error
+    // Ensure LadybugDB is closed even on error. Stop the driver first
+    // so its retry loop cannot extend an already-failing analyze.
+    try {
+      await walCheckpointDriver.stop();
+    } catch {
+      /* swallow — surface path is the rethrow below */
+    }
     try {
       await closeLbug();
     } catch {

@@ -72,6 +72,11 @@ program
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   )
   .option(
+    '--wal-checkpoint-threshold <bytes>',
+    'LadybugDB WAL auto-checkpoint threshold in bytes during analyze ' +
+      '(integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
   )
@@ -85,6 +90,7 @@ program
       '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
+      '  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
       '  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n' +
       '  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n' +
@@ -93,6 +99,7 @@ program
       '  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n' +
       '  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n' +
       '  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n' +
+      '\nFlags override the corresponding env vars when both are provided.\n' +
       '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )

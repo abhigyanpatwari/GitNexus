@@ -39,6 +39,16 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
+import {
+  deferredCallFileSlowMs,
+  deferredCallLogEveryN,
+  getDeferredProfileDroppedCount,
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+  profileElapsedMs,
+  resetDeferredProfileDroppedCount,
+  startTimer,
+} from './utils/deferred-resolution-profile.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
@@ -2909,6 +2919,39 @@ export const processCallsFromExtracted = async (
   }
   const totalFiles = byFile.size;
   let filesProcessed = 0;
+  // Counts only files that survived the registry-primary skip — what the user
+  // is actually waiting on. Keyed by this counter, the first per-file progress
+  // log fires on the first *resolved* file rather than file #1 of byFile,
+  // which would silently land inside the skip block on mixed Python+JVM repos
+  // where the skipped language sorts first.
+  let resolvedFiles = 0;
+  const profileCalls = isDeferredResolutionProfileEnabled();
+  const slowFileMs = profileCalls ? deferredCallFileSlowMs() : 0;
+  const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
+  let skippedRegistryPrimaryFiles = 0;
+
+  // Fresh dropped-log counter per analyze run — the module-private counter
+  // in deferred-resolution-profile.ts is process-lived, so without a reset
+  // here it would accumulate across consecutive analyze invocations in the
+  // same Node process (e.g., the MCP server, eval harness, integration
+  // tests).
+  if (profileCalls) resetDeferredProfileDroppedCount();
+
+  // One-pass pre-count of the eventual non-skipped total so the live progress
+  // denominator stays stable as the loop iterates. Otherwise `${totalFiles -
+  // skippedRegistryPrimaryFiles}` drifts upward — files iterated before later
+  // registry-primary skips have been seen carry an inflated denominator, and
+  // the ratio only self-corrects after every file has been classified. Pre-
+  // count runs only on the enabled path so the disabled path stays free of
+  // the extra Map iteration. Defaults to 0 on the disabled path; the live log
+  // gate is also disabled there, so the value is never read.
+  let resolvedTotal = 0;
+  if (profileCalls) {
+    for (const filePath of byFile.keys()) {
+      const lang = getLanguageFromFilename(filePath);
+      if (!lang || !isRegistryPrimary(lang)) resolvedTotal++;
+    }
+  }
 
   for (const [filePath, calls] of byFile) {
     filesProcessed++;
@@ -2920,7 +2963,19 @@ export const processCallsFromExtracted = async (
     // Registry-primary gate: skip Python (etc.) entirely when the
     // scope-based phase owns CALLS for this language.
     const fileLanguage = getLanguageFromFilename(filePath);
-    if (fileLanguage && isRegistryPrimary(fileLanguage)) continue;
+    if (fileLanguage && isRegistryPrimary(fileLanguage)) {
+      skippedRegistryPrimaryFiles++;
+      continue;
+    }
+
+    resolvedFiles++;
+    const tFile = startTimer(profileCalls);
+
+    if (profileCalls && (resolvedFiles === 1 || resolvedFiles % logEveryN === 0)) {
+      logDeferredProfile(
+        `calls ${resolvedFiles}/${resolvedTotal} file=${filePath} sites=${calls.length}`,
+      );
+    }
 
     ctx.enableCache(filePath);
     const widenCache: WidenCache = new Map();
@@ -3079,6 +3134,25 @@ export const processCallsFromExtracted = async (
     }
 
     ctx.clearCache();
+
+    if (tFile !== null) {
+      const elapsed = profileElapsedMs(tFile);
+      if (elapsed >= slowFileMs) {
+        logDeferredProfile(
+          `slow file ${elapsed.toFixed(0)}ms path=${filePath} calls=${calls.length} lang=${fileLanguage ?? 'unknown'}`,
+        );
+      }
+    }
+  }
+
+  if (profileCalls) {
+    logDeferredProfile(
+      `processCallsFromExtracted done: ${totalFiles} files, ${extractedCalls.length} call sites, skipped registry-primary files=${skippedRegistryPrimaryFiles}`,
+    );
+    const droppedCount = getDeferredProfileDroppedCount();
+    if (droppedCount > 0) {
+      logDeferredProfile(`note: ${droppedCount} profile log lines dropped (logger errors)`);
+    }
   }
 
   onProgress?.(totalFiles, totalFiles);

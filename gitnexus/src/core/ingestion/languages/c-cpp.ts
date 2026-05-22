@@ -231,6 +231,7 @@ const cCppExtractFunctionName = (
           c?.type === 'qualified_identifier' ||
           c?.type === 'identifier' ||
           c?.type === 'field_identifier' ||
+          c?.type === 'operator_name' ||
           c?.type === 'parenthesized_declarator'
         ) {
           innerDeclarator = c;
@@ -244,7 +245,7 @@ const cCppExtractFunctionName = (
       if (!nameNode) {
         for (let i = 0; i < innerDeclarator.childCount; i++) {
           const c = innerDeclarator.child(i);
-          if (c?.type === 'identifier') {
+          if (c?.type === 'identifier' || c?.type === 'operator_name') {
             nameNode = c;
             break;
           }
@@ -256,7 +257,8 @@ const cCppExtractFunctionName = (
       }
     } else if (
       innerDeclarator?.type === 'identifier' ||
-      innerDeclarator?.type === 'field_identifier'
+      innerDeclarator?.type === 'field_identifier' ||
+      innerDeclarator?.type === 'operator_name'
     ) {
       // field_identifier is used for method names inside C++ class bodies
       funcName = innerDeclarator.text;
@@ -275,7 +277,7 @@ const cCppExtractFunctionName = (
         if (!nameNode) {
           for (let i = 0; i < nestedId.childCount; i++) {
             const c = nestedId.child(i);
-            if (c?.type === 'identifier') {
+            if (c?.type === 'identifier' || c?.type === 'operator_name') {
               nameNode = c;
               break;
             }

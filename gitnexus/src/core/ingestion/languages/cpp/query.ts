@@ -98,6 +98,12 @@ const CPP_SCOPE_QUERY = `
     declarator: (qualified_identifier
       name: (identifier) @declaration.name))) @declaration.method
 
+;; Out-of-class operator method: Point::operator+(...)
+(function_definition
+  declarator: (function_declarator
+    declarator: (qualified_identifier
+      name: (operator_name) @declaration.name))) @declaration.method
+
 ;; ─── Declarations — out-of-class method with pointer return ─────────
 (function_definition
   declarator: (pointer_declarator
@@ -130,6 +136,11 @@ const CPP_SCOPE_QUERY = `
   declarator: (function_declarator
     declarator: (field_identifier) @declaration.name)) @declaration.method
 
+;; Inline operator method in class body: Point operator+(Point) const { ... }
+(function_definition
+  declarator: (function_declarator
+    declarator: (operator_name) @declaration.name)) @declaration.method
+
 ;; ─── Declarations — inline method with pointer return (field_identifier) ──
 ;; Covers: User* lookup(int id) { ... } inside a class body
 ;; AST: function_definition > pointer_declarator > function_declarator > field_identifier
@@ -145,16 +156,48 @@ const CPP_SCOPE_QUERY = `
     (function_declarator
       declarator: (field_identifier) @declaration.name))) @declaration.method
 
+;; Inline operator method with reference return: Point& operator+=(Point) { ... }
+(field_declaration_list
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (operator_name) @declaration.name))) @declaration.method)
+
+;; Free operator definition with reference return: std::ostream& operator<<(...) { ... }
+(translation_unit
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (operator_name) @declaration.name))) @declaration.function)
+
+(namespace_definition
+  body: (declaration_list
+    (function_definition
+      declarator: (reference_declarator
+        (function_declarator
+          declarator: (operator_name) @declaration.name))) @declaration.function))
+
 ;; ─── Declarations — function prototype (forward declaration) ────────
 (declaration
   declarator: (function_declarator
     declarator: (identifier) @declaration.name)) @declaration.function
+
+;; Free operator prototype: std::ostream& operator<<(std::ostream&, T)
+(declaration
+  declarator: (function_declarator
+    declarator: (operator_name) @declaration.name)) @declaration.function
 
 ;; ─── Declarations — function prototype with pointer return ──────────
 (declaration
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (identifier) @declaration.name))) @declaration.function
+
+;; Free operator prototype with reference return.
+(declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (operator_name) @declaration.name))) @declaration.function
 
 ;; ─── Declarations — typedef ─────────────────────────────────────────
 (type_definition
@@ -171,6 +214,11 @@ const CPP_SCOPE_QUERY = `
   declarator: (function_declarator
     declarator: (field_identifier) @declaration.name)) @declaration.method
 
+;; Operator method prototype in class body: Point operator+(Point) const;
+(field_declaration
+  declarator: (function_declarator
+    declarator: (operator_name) @declaration.name)) @declaration.method
+
 ;; Method prototype with pointer return: User* lookup(int id);
 (field_declaration
   declarator: (pointer_declarator
@@ -182,6 +230,11 @@ const CPP_SCOPE_QUERY = `
   declarator: (reference_declarator
     (function_declarator
       declarator: (field_identifier) @declaration.name))) @declaration.method
+
+(field_declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (operator_name) @declaration.name))) @declaration.method
 
 ;; ─── Declarations — fields ──────────────────────────────────────────
 (field_declaration
@@ -472,6 +525,22 @@ const CPP_SCOPE_QUERY = `
   function: (field_expression
     argument: (_) @reference.receiver
     field: (field_identifier) @reference.name)) @reference.call.member
+
+;; Conservative operator-call support (#1636): model a + b as a
+;; member-style operator+ lookup, and lhs << rhs as a free
+;; operator<< lookup. Free operator+(T,T), member operator<<, and
+;; complex operand expressions remain false negatives for now.
+;; Built-in operators remain unresolved because no user-defined
+;; operator target exists.
+(binary_expression
+  left: (_) @reference.receiver
+  operator: "+" @reference.operator
+  right: (_)) @reference.call.member
+
+(binary_expression
+  left: (_)
+  operator: "<<" @reference.operator
+  right: (_)) @reference.call.free
 
 ;; ─── References — template calls (func<T>()) ────────────────────────
 (call_expression
