@@ -419,6 +419,25 @@ const forceHeapOOMForTestIfEnabled = (): void => {
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
 
+const forceLbugCheckpointIoFailureForTestIfEnabled = (): void => {
+  if (process.env.GITNEXUS_TEST_FORCE_LBUG_CHECKPOINT_IO_FAILURE !== '1') return;
+  throw new Error(
+    'Runtime exception: IO exception: Error renaming file /tmp/lbug.wal to /tmp/lbug.wal.checkpoint. ErrorMessage: Permission denied',
+  );
+};
+
+const isLbugCheckpointIoFailure = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  const isWalCheckpointPath = lower.includes('.wal') || lower.includes('.wal.checkpoint');
+  if (!isWalCheckpointPath) return false;
+  return (
+    lower.includes('runtime exception: io exception') &&
+    (lower.includes('error renaming file') || lower.includes('error removing directory or file'))
+  );
+};
+
 /** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
 async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
@@ -917,6 +936,8 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
+    forceLbugCheckpointIoFailureForTestIfEnabled();
+
     const skipAll = options?.indexOnly;
     const skipAgentsMd = skipAll || options?.skipAgentsMd;
     const skipSkills = skipAll || options?.skipSkills;
@@ -1140,6 +1161,19 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `  This usually happens when a previous analysis was interrupted mid-write.\n` +
           `  ${WAL_RECOVERY_SUGGESTION}\n`,
         { recoveryHint: 'wal-corruption' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (isLbugCheckpointIoFailure(err)) {
+      cliError(
+        `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
+          `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
+          `    gitnexus analyze --lbug-checkpoint-threshold 67108864\n` +
+          `    (or set GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=67108864)\n`,
+        { recoveryHint: 'lbug-checkpoint-threshold' },
       );
       process.exitCode = 1;
       return;
