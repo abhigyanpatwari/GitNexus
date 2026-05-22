@@ -20,14 +20,26 @@ import {
  * Kotlin is intentionally registered but not yet listed in
  * `MIGRATED_LANGUAGES`, matching the Java migration pattern from #1482:
  * the resolver can run in shadow/forced mode, while production default
- * stays on the legacy DAG until registry-primary parity reaches the
- * RFC threshold. Forced mode currently passes 154/175 fixtures (88%),
- * including core import, receiver, companion, default-param, vararg,
- * constructor, local assignment-chain, and collection-iteration fixtures.
- * Remaining gaps are advanced TypeEnv behaviors such as smart casts,
- * cross-file iterable return propagation, method-chain fixpoint cases,
- * overload target-id selection, virtual dispatch, and interface default
- * method dispatch.
+ * stays on the legacy DAG until the RFC flip criteria in #1746 are met.
+ *
+ * **Forced-mode parity (`REGISTRY_PRIMARY_KOTLIN=1`):** 175/175 fixtures
+ * after the migration sub-issues #1758–#1763 closed. Covers core
+ * import, receiver, companion, default-param, vararg, constructor,
+ * local assignment-chain, collection-iteration, smart casts
+ * (`when (x) { is T -> … }` and `if (x is T)` — #1758), cross-file
+ * iterable return propagation (#1759), single-level method-chain
+ * fixpoint receiver types (#1760), parameter-type-narrowed overload
+ * target-id selection (#1761), virtual dispatch via constructor RHS
+ * (`val x: Animal = Dog()` — #1762), and interface default-method
+ * dispatch via implements-split MRO (#1763).
+ *
+ * **Remaining pre-flip blockers (#1746):** #1755 (forced-mode preview
+ * CI workflow — obviated once Kotlin lands in `MIGRATED_LANGUAGES`
+ * because the existing scope-parity matrix auto-discovers it), #1756
+ * (companion vs instance member dispatch), and #1757 (lambda scopes
+ * and lambda-parameter bindings). The flip PR adds
+ * `SupportedLanguages.Kotlin` to `MIGRATED_LANGUAGES` after the named
+ * blockers close.
  */
 export const kotlinScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Kotlin,
