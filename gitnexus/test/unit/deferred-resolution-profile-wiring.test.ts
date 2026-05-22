@@ -57,9 +57,45 @@ describe('deferred-resolution-profile wiring', () => {
         (m) =>
           m.includes('buildHeritageMap:') &&
           m.includes('child×parent lookup product >1') &&
-          m.includes('max product'),
+          m.includes('max product') &&
+          m.includes('0 unresolved child lookups') &&
+          m.includes('0 unresolved parent lookups'),
       ),
     ).toBe(true);
+  });
+
+  it('buildHeritageMap counts unresolved parent lookups (U7, JVM pathological case)', () => {
+    const ctx = createResolutionContext();
+    // Many same-named children all resolved.
+    ctx.model.symbols.add('src/a.java', 'Foo', 'class:a:Foo', 'Class');
+    ctx.model.symbols.add('src/b.java', 'Foo', 'class:b:Foo', 'Class');
+    // Parent (e.g., external library) is NOT in the symbol index — lookup
+    // returns []. The legacy counter would silently drop this record from
+    // the metric. With U7, it shows up as an unresolved-parent lookup.
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/a.java', className: 'Foo', parentName: 'ExternalBase', kind: 'extends' },
+    ];
+
+    buildHeritageMap(heritage, ctx);
+
+    expect(deferredMsgs().some((m) => m.includes('1 unresolved parent lookups'))).toBe(true);
+    expect(deferredMsgs().some((m) => m.includes('0 unresolved child lookups'))).toBe(true);
+  });
+
+  it('buildHeritageMap counts unresolved child lookups (U7, inverse case)', () => {
+    const ctx = createResolutionContext();
+    // Parent resolved, child name not in symbol index.
+    ctx.model.symbols.add('src/c.java', 'Bar', 'class:c:Bar', 'Class');
+
+    const heritage: ExtractedHeritage[] = [
+      { filePath: 'src/x.java', className: 'UnknownChild', parentName: 'Bar', kind: 'extends' },
+    ];
+
+    buildHeritageMap(heritage, ctx);
+
+    expect(deferredMsgs().some((m) => m.includes('1 unresolved child lookups'))).toBe(true);
+    expect(deferredMsgs().some((m) => m.includes('0 unresolved parent lookups'))).toBe(true);
   });
 
   it('processCallsFromExtracted emits done summary with skipped registry-primary count', async () => {
