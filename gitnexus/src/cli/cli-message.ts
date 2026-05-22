@@ -29,6 +29,38 @@
  */
 import { logger } from '../core/logger.js';
 
+/**
+ * String-literal union of all `recoveryHint` tags emitted by the CLI.
+ *
+ * Centralized so a new recovery branch added in `analyze.ts` cannot land
+ * without updating this union — TypeScript will reject the unknown literal
+ * passed via `cliError({ recoveryHint: '...' })`. To add a new hint:
+ *   1. Add the tag string to this union.
+ *   2. Pass it as the `recoveryHint` field at the relevant `cliError`
+ *      call site.
+ *
+ * Consumers can import this type to narrow log-record `recoveryHint`
+ * fields without restating the literal list.
+ */
+export type RecoveryHint =
+  | 'wal-corruption'
+  | 'wal-checkpoint-threshold'
+  | 'heap-oom-respawn'
+  | 'native-worker-abort'
+  | 'hf-endpoint-unreachable'
+  | 'large-repo'
+  | 'npm-resolution'
+  | 'module-not-found';
+
+/**
+ * Common shape for the optional structured-field bag passed to
+ * `cliError`/`cliWarn`/`cliInfo`. Typed so the `recoveryHint` slot is
+ * checked against the {@link RecoveryHint} union.
+ */
+export interface CliMessageFields extends Record<string, unknown> {
+  recoveryHint?: RecoveryHint;
+}
+
 function writeStderr(msg: string): void {
   // Direct write — bypassing `console.*` so it cannot be intercepted by
   // progress-bar redirection (see `cli/analyze.ts:barLog`) or other
@@ -41,7 +73,7 @@ function writeStderr(msg: string): void {
  * User-facing informational message. Use for banners, listening URLs,
  * and any message the user expects to read in plain text.
  */
-export function cliInfo(msg: string, fields?: Record<string, unknown>): void {
+export function cliInfo(msg: string, fields?: CliMessageFields): void {
   writeStderr(msg);
   logger.info(fields ?? {}, msg);
 }
@@ -50,7 +82,7 @@ export function cliInfo(msg: string, fields?: Record<string, unknown>): void {
  * User-facing warning. Operator-actionable but non-fatal — `cliWarn`
  * indicates the command can still proceed in some form.
  */
-export function cliWarn(msg: string, fields?: Record<string, unknown>): void {
+export function cliWarn(msg: string, fields?: CliMessageFields): void {
   writeStderr(msg);
   logger.warn(fields ?? {}, msg);
 }
@@ -59,7 +91,7 @@ export function cliWarn(msg: string, fields?: Record<string, unknown>): void {
  * User-facing error. Indicates the command cannot proceed; usually
  * paired with a non-zero exit code at the call site.
  */
-export function cliError(msg: string, fields?: Record<string, unknown>): void {
+export function cliError(msg: string, fields?: CliMessageFields): void {
   writeStderr(msg);
   logger.error(fields ?? {}, msg);
 }

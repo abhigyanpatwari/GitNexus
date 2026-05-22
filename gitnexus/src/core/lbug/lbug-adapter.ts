@@ -1528,6 +1528,27 @@ export const flushWAL = async (): Promise<void> => {
 };
 
 /**
+ * Issue a manual `CHECKPOINT` against the current connection and surface
+ * any engine error to the caller. Unlike {@link flushWAL}, this variant
+ * does NOT swallow Ladybug rename/remove IO failures — the manual
+ * checkpoint driver (`wal-checkpoint-driver.ts`) relies on the rejection
+ * to drive its bounded retry loop. Returns `false` when no connection is
+ * open (the caller treats this as a no-op success — there is no WAL to
+ * flush). Returns `true` after a successful CHECKPOINT + drain.
+ *
+ * The split from `flushWAL` is deliberate: every other CHECKPOINT site
+ * (server flush, safeClose) is best-effort and prefers a silent skip;
+ * the manual driver, by contrast, must observe failures to decide
+ * whether to retry.
+ */
+export const tryFlushWAL = async (): Promise<boolean> => {
+  if (!conn) return false;
+  const checkpointResult = await conn.query('CHECKPOINT');
+  await drainQueryResult(checkpointResult);
+  return true;
+};
+
+/**
  * Flush the WAL and close the connection and database handles.
  *
  * Consolidates the CHECKPOINT + close pattern into a single function so
