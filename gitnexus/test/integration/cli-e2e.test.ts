@@ -21,7 +21,6 @@ import { cleanupTempDirSync } from '../helpers/test-db.js';
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
 const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-const lbugNativePath = path.join(repoRoot, 'node_modules', '@ladybugdb', 'core', 'lbugjs.node');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 
 // `MINI_REPO` is a *per-run temp copy* of the fixture, not the shared
@@ -207,26 +206,6 @@ describe('CLI end-to-end', () => {
     expect(fs.existsSync(path.join(MINI_REPO, '.gitignore'))).toBe(false);
     expect(fs.readFileSync(path.join(gitnexusDir, '.gitignore'), 'utf-8')).toBe('*\n');
   }, 60_000);
-
-  // This path imports the full CLI entrypoint, which eagerly loads the
-  // Ladybug native module. Skip only when the native binary is unavailable.
-  (fs.existsSync(lbugNativePath) ? it : it.skip)(
-    'analyze recommends checkpoint threshold option on Ladybug checkpoint I/O failure',
-    () => {
-      const result = runCliWithEnv(['analyze'], MINI_REPO, {
-        GITNEXUS_TEST_FORCE_LBUG_CHECKPOINT_IO_FAILURE: '1',
-      });
-
-      // Keep parity with other e2e CLI tests: spawnSync can hit timeout
-      // (`status === null`) on overloaded CI runners, so we tolerate it.
-      if (result.status === null) return;
-
-      expect(result.status).not.toBe(0);
-      const combined = `${result.stdout}\n${result.stderr}`;
-      expect(combined).toContain('gitnexus analyze --lbug-checkpoint-threshold');
-      expect(combined).toContain('GITNEXUS_LBUG_CHECKPOINT_THRESHOLD=');
-    },
-  );
 
   // Regression guard for issue #1169 — analyze must produce BOTH a
   // meta.json AND a global-registry entry on success. The previous

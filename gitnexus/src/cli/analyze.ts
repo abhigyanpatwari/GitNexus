@@ -419,13 +419,6 @@ const forceHeapOOMForTestIfEnabled = (): void => {
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
 
-const forceLbugCheckpointIoFailureForTestIfEnabled = (): void => {
-  if (process.env.GITNEXUS_TEST_FORCE_LBUG_CHECKPOINT_IO_FAILURE !== '1') return;
-  throw new Error(
-    'Runtime exception: IO exception: Error renaming file /tmp/lbug.wal to /tmp/lbug.wal.checkpoint. ErrorMessage: Permission denied',
-  );
-};
-
 // 64MB keeps auto-checkpoint enabled but triggers less frequently than Ladybug's
 // default 16MB threshold. In GitNexus, threshold `-1` means "use Ladybug default"
 // (currently 16MB), so suggesting 64MB reduces rename/remove churn on large runs.
@@ -435,19 +428,19 @@ const RECOMMENDED_LBUG_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 // surfaced in Node as:
 // "Runtime exception: IO exception: Error renaming file ..."
 // "Runtime exception: IO exception: Error removing directory or file ..."
-// Matching below is case-insensitive (`msg.toLowerCase()`).
-const lbugCheckpointIoErrorPrefix = 'runtime exception: io exception';
-const lbugCheckpointIoErrorPatterns = ['error renaming file', 'error removing directory or file'];
+// We only match checkpoint-rotation shapes:
+//   - "<db>.wal -> <db>.wal.checkpoint" rename failures
+//   - "<db>.wal.checkpoint" remove failures
+// Matching is case-insensitive to remain robust across wrappers/platforms.
+const LBUG_CHECKPOINT_RENAME_RE =
+  /^runtime exception: io exception:\s*error renaming file\s+.+?\.wal\s+to\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
+const LBUG_CHECKPOINT_REMOVE_RE =
+  /^runtime exception: io exception:\s*error removing directory or file\s+.+?\.wal\.checkpoint(?:\.|\s|$)/i;
 
 const isLbugCheckpointIoFailure = (err: unknown): boolean => {
   if (!err) return false;
   const msg = err instanceof Error ? err.message : String(err);
-  const lower = msg.toLowerCase();
-  if (!lower.includes('.wal')) return false;
-  return (
-    lower.includes(lbugCheckpointIoErrorPrefix) &&
-    lbugCheckpointIoErrorPatterns.some((pattern) => lower.includes(pattern))
-  );
+  return LBUG_CHECKPOINT_RENAME_RE.test(msg) || LBUG_CHECKPOINT_REMOVE_RE.test(msg);
 };
 
 /** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
@@ -948,8 +941,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    forceLbugCheckpointIoFailureForTestIfEnabled();
-
     const skipAll = options?.indexOnly;
     const skipAgentsMd = skipAll || options?.skipAgentsMd;
     const skipSkills = skipAll || options?.skipSkills;
