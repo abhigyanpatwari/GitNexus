@@ -2130,6 +2130,29 @@ describe('Kotlin companion vs instance member dispatch (#1756)', () => {
     const crossover = calls.find((c) => c.source === 'crossover' && c.target === 'create');
     expect(crossover).toBeUndefined();
   });
+
+  // #1756 / U7 edge-type completeness: in addition to the CALLS absence
+  // asserted above, the crossover() function must NOT leak any non-CALLS
+  // edge from `crossover` to the companion-promoted `create`. Without
+  // these assertions a hypothetical future regression that wired the
+  // crossover through a `USES` (type-reference) or `ACCESSES` (property-
+  // read) edge would silently pass the CALLS-only check while still
+  // misrepresenting the dispatch to users / consumers of the graph.
+  // Both `USES` and `ACCESSES` are valid `RelationshipType` values in
+  // `gitnexus-shared/src/graph/types.ts`.
+  it('crossover() emits NO USES edges to create (edge-type completeness)', () => {
+    const usesEdges = getRelationships(result, 'USES').filter(
+      (c) => c.source === 'crossover' && c.target === 'create',
+    );
+    expect(usesEdges.length).toBe(0);
+  });
+
+  it('crossover() emits NO ACCESSES edges to create (edge-type completeness)', () => {
+    const accessesEdges = getRelationships(result, 'ACCESSES').filter(
+      (c) => c.source === 'crossover' && c.target === 'create',
+    );
+    expect(accessesEdges.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
