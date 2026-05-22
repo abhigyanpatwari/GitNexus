@@ -191,10 +191,11 @@ function synthesizeKotlinLocalAssignmentBindings(
   returnTypes: ReadonlyMap<string, string>,
 ): CaptureMatch[] {
   const out: CaptureMatch[] = [];
+  const classMembers = collectKotlinClassMembers(rootNode);
   for (const fnNode of descendantsOfType(rootNode, 'function_declaration')) {
     const localTypes = new Map<string, string>();
     for (const prop of descendantsOfType(fnNode, 'property_declaration')) {
-      const inferred = inferKotlinPropertyType(prop, localTypes, returnTypes);
+      const inferred = inferKotlinPropertyType(prop, localTypes, returnTypes, classMembers);
       if (inferred === null) continue;
       localTypes.set(inferred.name.text, inferred.rawType);
       if (inferred.synthetic) {
@@ -215,6 +216,77 @@ function synthesizeKotlinLocalAssignmentBindings(
     }
   }
   return out;
+}
+
+interface KotlinClassMembers {
+  /** className → fieldName → raw type text */
+  readonly fields: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /** className → methodName → raw return type text */
+  readonly methods: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}
+
+/**
+ * Per-file class-member index — primary-constructor `val`/`var` params,
+ * body property declarations, and method return types. Used by
+ * `inferKotlinPropertyType` to walk single-level field and method chains
+ * like `val addr = user.address` and `val city = addr.getCity()` (#1760).
+ *
+ * Indexes by simple class name only. Multi-class collisions inside a
+ * single file will pick whichever class was visited last for that name
+ * — acceptable because Kotlin forbids same-name top-level classes in
+ * one file and per-file resolution is the design boundary here.
+ */
+function collectKotlinClassMembers(rootNode: SyntaxNode): KotlinClassMembers {
+  const fields = new Map<string, Map<string, string>>();
+  const methods = new Map<string, Map<string, string>>();
+  for (const cls of descendantsOfType(rootNode, 'class_declaration')) {
+    const className = cls.namedChildren.find((child) => child.type === 'type_identifier')?.text;
+    if (className === undefined) continue;
+    const fmap = fields.get(className) ?? new Map<string, string>();
+    const mmap = methods.get(className) ?? new Map<string, string>();
+
+    const primary = cls.namedChildren.find((child) => child.type === 'primary_constructor');
+    if (primary !== undefined) {
+      for (const param of primary.namedChildren) {
+        if (param.type !== 'class_parameter') continue;
+        // Constructor params are class fields ONLY when prefixed with
+        // `val`/`var` (binding_pattern_kind). Plain `fn(x: Int)`-style
+        // params remain locals to the constructor.
+        if (param.namedChildren.find((c) => c.type === 'binding_pattern_kind') === undefined) {
+          continue;
+        }
+        const fname = param.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+        const ftype = param.namedChildren.find((c) => isKotlinTypeNode(c))?.text;
+        if (fname !== undefined && ftype !== undefined) fmap.set(fname, ftype);
+      }
+    }
+
+    const body = cls.namedChildren.find((child) => child.type === 'class_body');
+    if (body !== undefined) {
+      for (const member of body.namedChildren) {
+        if (member.type === 'property_declaration') {
+          const v = member.namedChildren.find((c) => c.type === 'variable_declaration');
+          const fname = v?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+          const ftype = v?.namedChildren.find((c) => isKotlinTypeNode(c))?.text;
+          if (fname !== undefined && ftype !== undefined) fmap.set(fname, ftype);
+        } else if (member.type === 'function_declaration') {
+          const mname = member.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+          const paramsIdx = member.namedChildren.findIndex(
+            (c) => c.type === 'function_value_parameters',
+          );
+          const rtype =
+            paramsIdx < 0
+              ? undefined
+              : member.namedChildren.slice(paramsIdx + 1).find((c) => isKotlinTypeNode(c))?.text;
+          if (mname !== undefined && rtype !== undefined) mmap.set(mname, rtype);
+        }
+      }
+    }
+
+    fields.set(className, fmap);
+    methods.set(className, mmap);
+  }
+  return { fields, methods };
 }
 
 function collectKotlinLocalTypeTexts(
@@ -258,6 +330,7 @@ function inferKotlinPropertyType(
   prop: SyntaxNode,
   localTypes: ReadonlyMap<string, string>,
   returnTypes: ReadonlyMap<string, string>,
+  classMembers?: KotlinClassMembers,
 ): { name: SyntaxNode; rawType: string; source: SyntaxNode; synthetic: boolean } | null {
   const variable = prop.namedChildren.find((child) => child.type === 'variable_declaration');
   const name = variable?.namedChildren.find((child) => child.type === 'simple_identifier');
@@ -276,16 +349,72 @@ function inferKotlinPropertyType(
     return rawType === undefined ? null : { name, rawType, source: value, synthetic: true };
   }
 
+  if (value?.type === 'navigation_expression') {
+    // `val addr = user.address` — receiver type → field on that class (#1760).
+    const chained = inferKotlinNavigationFieldType(value, localTypes, classMembers);
+    if (chained === null) return null;
+    return { name, rawType: chained, source: value, synthetic: true };
+  }
+
   if (value?.type === 'call_expression') {
-    const callee = value.namedChildren.find((child) => child.type === 'simple_identifier');
+    const callee = value.namedChildren.find(
+      (child) => child.type === 'simple_identifier' || child.type === 'navigation_expression',
+    );
     if (callee === undefined) return null;
-    const rawType =
-      returnTypes.get(callee.text) ?? (isUppercaseName(callee.text) ? callee.text : null);
-    if (rawType === null) return null;
-    return { name, rawType, source: callee, synthetic: true };
+    if (callee.type === 'simple_identifier') {
+      const rawType =
+        returnTypes.get(callee.text) ?? (isUppercaseName(callee.text) ? callee.text : null);
+      if (rawType === null) return null;
+      return { name, rawType, source: callee, synthetic: true };
+    }
+    // `val city = addr.getCity()` — receiver type → method return on that class (#1760).
+    const chained = inferKotlinNavigationCallReturnType(callee, localTypes, classMembers);
+    if (chained === null) return null;
+    return { name, rawType: chained, source: callee, synthetic: true };
   }
 
   return null;
+}
+
+/** Resolve `receiver.field` → field's declared type, where `receiver`
+ *  is a simple identifier whose type is in `localTypes` and `field`
+ *  is declared on that type in `classMembers.fields`. Returns null
+ *  when any link in the chain is unknown — safe over-conservative. */
+function inferKotlinNavigationFieldType(
+  nav: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers | undefined,
+): string | null {
+  if (classMembers === undefined) return null;
+  const receiver = nav.namedChild(0);
+  if (receiver === null || receiver.type !== 'simple_identifier') return null;
+  const member = nav.namedChildren
+    .find((c) => c.type === 'navigation_suffix')
+    ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  if (member === undefined) return null;
+  const recvType = localTypes.get(receiver.text);
+  if (recvType === undefined) return null;
+  return classMembers.fields.get(normalizeKotlinType(recvType))?.get(member) ?? null;
+}
+
+/** Resolve `receiver.method()` → method's declared return type, where
+ *  `receiver` is a simple identifier whose type is in `localTypes` and
+ *  `method` is declared on that type in `classMembers.methods`. */
+function inferKotlinNavigationCallReturnType(
+  navCallee: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers | undefined,
+): string | null {
+  if (classMembers === undefined) return null;
+  const receiver = navCallee.namedChild(0);
+  if (receiver === null || receiver.type !== 'simple_identifier') return null;
+  const methodName = navCallee.namedChildren
+    .find((c) => c.type === 'navigation_suffix')
+    ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  if (methodName === undefined) return null;
+  const recvType = localTypes.get(receiver.text);
+  if (recvType === undefined) return null;
+  return classMembers.methods.get(normalizeKotlinType(recvType))?.get(methodName) ?? null;
 }
 
 function inferKotlinIterableElementType(
