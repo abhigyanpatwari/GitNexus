@@ -669,22 +669,29 @@ export async function runFullAnalysis(
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     progress('fts', 85, 'Creating search indexes...');
-    await createSearchFTSIndexes({
-      onIndexStart: options.verbose
-        ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
-        : undefined,
-      onIndexReady: options.verbose
-        ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
-        : undefined,
-    });
-    const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
-    if (missingIndexNames.length > 0) {
-      throw new Error(
-        `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
-          'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
-      );
+    try {
+      await createSearchFTSIndexes({
+        onIndexStart: options.verbose
+          ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
+          : undefined,
+        onIndexReady: options.verbose
+          ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
+          : undefined,
+      });
+      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
+      if (missingIndexNames.length > 0) {
+        log(
+          `⚠️ FTS verification warning - missing indexes: ${missingIndexNames.join(', ')}. ` +
+            'BM25 keyword search will be degraded. Upgrade macOS or run on a compatible platform to enable FTS.',
+        );
+      } else {
+        progress('fts', 90, 'Search indexes ready');
+      }
+    } catch (ftsErr: unknown) {
+      const ftsMsg = ftsErr instanceof Error ? ftsErr.message : String(ftsErr);
+      log(`⚠️ FTS creation skipped (non-fatal): ${ftsMsg}`);
+      progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
-    progress('fts', 90, 'Search indexes ready');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
