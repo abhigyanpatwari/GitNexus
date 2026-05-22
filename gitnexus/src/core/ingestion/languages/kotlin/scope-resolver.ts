@@ -13,6 +13,7 @@ import {
   resolveKotlinImportTarget,
   type KotlinResolveContext,
 } from './index.js';
+import { clearCompanionScopes } from './companion-scopes.js';
 import { isKotlinStaticOnly } from './owners.js';
 
 /**
@@ -56,6 +57,20 @@ export const kotlinScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Kotlin,
   languageProvider: kotlinProvider,
   importEdgeReason: 'kotlin-scope: import',
+
+  loadResolutionConfig: () => {
+    // Drop the module-level `companionScopesByFile` table from any
+    // prior workspace pass before this run populates it via
+    // `emitKotlinScopeCaptures`. Mirrors the C resolver's
+    // `clearStaticNames()` call in `loadResolutionConfig` — the
+    // orchestrator awaits this hook exactly once per workspace pass
+    // (see `pipeline/phase.ts`), making it the right lifecycle seam
+    // for clearing per-language side-channel state. Returns
+    // `undefined` because Kotlin has no external resolution config
+    // to load.
+    clearCompanionScopes();
+    return undefined;
+  },
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
     const ws: KotlinResolveContext = { fromFile, allFilePaths };

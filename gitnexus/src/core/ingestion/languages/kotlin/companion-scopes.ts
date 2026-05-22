@@ -27,21 +27,16 @@ import type { ScopeId } from 'gitnexus-shared';
  * scope metadata that does not belong on the shared `Scope` /
  * `SymbolDefinition` types.
  *
- * NOTE: module-level state. Production ingestion paths (CLI `analyze`,
- * one-shot MCP indexing) do NOT currently call `clearCompanionScopes()`
- * between passes; correctness is bounded because every `ScopeId` embeds
- * its `filePath`, so a stale entry from `/repo-a/Main.kt` cannot
- * accidentally match a lookup against `/repo-b/Main.kt`. Cross-run
- * collisions within the same `filePath` would require a re-ingested
- * file to place a non-companion scope at the exact byte-range of a
- * prior companion — vanishingly unlikely in practice.
- *
- * The remaining concern is unbounded memory growth in long-lived
- * server-mode processes that re-index the same workspace many times.
- * `clearCompanionScopes()` is exported so server-mode embedders (and
- * the unit-test teardown in `test/unit/kotlin-static-marker.test.ts`)
- * can drop the table between passes; wiring the call into the pipeline
- * lifecycle is a known follow-up for server-mode hardening.
+ * NOTE: module-level state. `clearCompanionScopes()` is called once per
+ * workspace pass from `kotlinScopeResolver.loadResolutionConfig`, which
+ * the scope-resolution orchestrator awaits before extracting any
+ * `ParsedFile`s for this language (see `pipeline/phase.ts` and the
+ * mirror pattern in `c/scope-resolver.ts` — `clearStaticNames()`). This
+ * keeps server-mode and multi-repo-in-one-process callers safe from
+ * unbounded memory growth and from stale companion-scope ids from a
+ * previous workspace's files. Tests that exercise the captures /
+ * owners modules directly may still need to call `clearCompanionScopes`
+ * themselves (see `test/unit/kotlin-static-marker.test.ts`).
  */
 const companionScopesByFile = new Map<string, Set<ScopeId>>();
 

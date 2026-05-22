@@ -27,6 +27,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ParsedFile, Range, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import {
   clearCompanionScopes,
+  isCompanionScope,
   markCompanionScope,
 } from '../../src/core/ingestion/languages/kotlin/companion-scopes.js';
 import {
@@ -259,5 +260,20 @@ describe('isKotlinStaticOnly (WeakSet-backed marker)', () => {
     });
 
     expect(isKotlinStaticOnly(unrelated)).toBe(false);
+  });
+});
+
+describe('kotlinScopeResolver.loadResolutionConfig lifecycle', () => {
+  it('clears stale companionScopesByFile entries from a prior workspace pass', async () => {
+    const staleFile = 'stale-prior-pass.kt';
+    const staleScopeId = `scope:${staleFile}#1:0-2:0:Class` as ScopeId;
+    markCompanionScope(staleFile, staleScopeId);
+    expect(isCompanionScope(staleFile, staleScopeId)).toBe(true);
+
+    const { kotlinScopeResolver } =
+      await import('../../src/core/ingestion/languages/kotlin/scope-resolver.js');
+    kotlinScopeResolver.loadResolutionConfig!('/any/repo/path');
+
+    expect(isCompanionScope(staleFile, staleScopeId)).toBe(false);
   });
 });
