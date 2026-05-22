@@ -1048,6 +1048,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.type',
   '@reference.name',
   '@reference.receiver',
+  '@reference.operator',
   '@reference.arity',
   '@reference.parameter-types',
   '@reference.parameter-type-classes',
