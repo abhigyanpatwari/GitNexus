@@ -182,15 +182,39 @@ export function emitCppScopeCaptures(
       grouped['@reference.call.free'] ??
       grouped['@reference.call.member'] ??
       grouped['@reference.call.qualified'];
+    const operatorAnchor = grouped['@reference.operator'];
+    if (operatorAnchor !== undefined) {
+      const operatorNode =
+        callAnchor !== undefined
+          ? findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression')
+          : null;
+      if (operatorNode !== null && isPrimitiveOnlyBinaryOperator(operatorNode)) continue;
+    }
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression');
-      if (callNode !== null) {
+      const callNode =
+        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
+        findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression');
+      if (callNode?.type === 'call_expression') {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,
           String(computeCppCallArity(callNode)),
         );
+      } else if (callNode?.type === 'binary_expression') {
+        grouped['@reference.arity'] = syntheticCapture(
+          '@reference.arity',
+          callNode,
+          grouped['@reference.call.member'] !== undefined ? '1' : '2',
+        );
       }
+    }
+
+    if (operatorAnchor !== undefined && grouped['@reference.name'] === undefined) {
+      grouped['@reference.name'] = syntheticCapture(
+        '@reference.name',
+        findNodeAtRange(tree.rootNode, operatorAnchor.range, operatorAnchor.text) ?? tree.rootNode,
+        `operator${operatorAnchor.text}`,
+      );
     }
 
     // ── Enrich constructor calls (new Foo()) with arity ─────────────
@@ -211,9 +235,13 @@ export function emitCppScopeCaptures(
     if (anyCallAnchor !== undefined && grouped['@reference.parameter-types'] === undefined) {
       const cNode =
         findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'new_expression');
+        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'new_expression') ??
+        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'binary_expression');
       if (cNode !== null) {
-        const argTypes = inferCppCallArgTypes(cNode);
+        const argTypes =
+          cNode.type === 'binary_expression'
+            ? inferCppBinaryOperatorArgTypes(cNode, grouped['@reference.call.free'] !== undefined)
+            : inferCppCallArgTypes(cNode);
         if (argTypes !== undefined && argTypes.length > 0) {
           grouped['@reference.parameter-types'] = syntheticCapture(
             '@reference.parameter-types',
@@ -221,7 +249,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(argTypes),
           );
         }
-        const argTypeClasses = inferCppCallArgTypeClasses(cNode);
+        const argTypeClasses =
+          cNode.type === 'binary_expression'
+            ? inferCppBinaryOperatorArgTypeClasses(
+                cNode,
+                grouped['@reference.call.free'] !== undefined,
+              )
+            : inferCppCallArgTypeClasses(cNode);
         if (argTypeClasses !== undefined && argTypeClasses.length > 0) {
           grouped['@reference.parameter-type-classes'] = syntheticCapture(
             '@reference.parameter-type-classes',
@@ -714,6 +748,69 @@ function inferCppCallArgTypeClasses(node: SyntaxNode): ParameterTypeClass[] | un
     }
   }
   return classes.length > 0 ? classes : undefined;
+}
+
+function inferCppBinaryOperatorArgTypes(
+  node: SyntaxNode,
+  includeLeftOperand: boolean,
+): string[] | undefined {
+  const operands = binaryOperatorOperands(node, includeLeftOperand);
+  if (operands.length === 0) return undefined;
+  const types = operands.map(inferCppExpressionType);
+  return types.length > 0 ? types : undefined;
+}
+
+function inferCppBinaryOperatorArgTypeClasses(
+  node: SyntaxNode,
+  includeLeftOperand: boolean,
+): ParameterTypeClass[] | undefined {
+  const operands = binaryOperatorOperands(node, includeLeftOperand);
+  if (operands.length === 0) return undefined;
+  const classes = operands.map(inferCppExpressionTypeClass);
+  return classes.length > 0 ? classes : undefined;
+}
+
+function binaryOperatorOperands(node: SyntaxNode, includeLeftOperand: boolean): SyntaxNode[] {
+  const operands: SyntaxNode[] = [];
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (includeLeftOperand && left !== null) operands.push(left);
+  if (right !== null) operands.push(right);
+  return operands;
+}
+
+function isPrimitiveOnlyBinaryOperator(node: SyntaxNode): boolean {
+  const operands = binaryOperatorOperands(node, true);
+  return operands.length > 0 && operands.every((operand) => isBuiltinOperatorType(operand));
+}
+
+function isBuiltinOperatorType(node: SyntaxNode): boolean {
+  const type = inferCppExpressionType(node);
+  return (
+    type === 'bool' ||
+    type === 'char' ||
+    type === 'double' ||
+    type === 'float' ||
+    type === 'int' ||
+    type === 'long' ||
+    type === 'short' ||
+    type === 'signed' ||
+    type === 'unsigned'
+  );
+}
+
+function inferCppExpressionType(node: SyntaxNode): string {
+  const litType = inferCppLiteralType(node);
+  if (litType !== '') return litType;
+  if (node.type === 'identifier') return lookupDeclaredTypeForIdentifier(node);
+  return '';
+}
+
+function inferCppExpressionTypeClass(node: SyntaxNode): ParameterTypeClass {
+  const litType = inferCppLiteralType(node);
+  if (litType !== '') return valueTypeClass(litType);
+  if (node.type === 'identifier') return lookupDeclaredTypeClassForIdentifier(node);
+  return unknownTypeClass('unknown');
 }
 
 function valueTypeClass(base: string): ParameterTypeClass {
