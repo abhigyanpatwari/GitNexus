@@ -13,7 +13,11 @@ import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
+import {
+  isWalCorruptionError,
+  parseLbugAutoCheckpoint,
+  WAL_RECOVERY_SUGGESTION,
+} from '../core/lbug/lbug-config.js';
 import {
   getStoragePaths,
   getGlobalRegistryPath,
@@ -635,16 +639,13 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   }
 
   if (options?.lbugAutoCheckpoint !== undefined) {
-    const normalized = options.lbugAutoCheckpoint.trim().toLowerCase();
-    if (!['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'].includes(normalized)) {
+    const parsed = parseLbugAutoCheckpoint(options.lbugAutoCheckpoint);
+    if (parsed === undefined) {
       cliError('  --lbug-auto-checkpoint must be either "on" or "off".\n');
       process.exitCode = 1;
       return;
     }
-    process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT =
-      normalized === 'on' || normalized === 'true' || normalized === '1' || normalized === 'yes'
-        ? 'true'
-        : 'false';
+    process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT = parsed ? 'true' : 'false';
   }
 
   // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions

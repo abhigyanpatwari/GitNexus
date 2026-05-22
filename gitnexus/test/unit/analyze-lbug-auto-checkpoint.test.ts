@@ -77,7 +77,7 @@ describe('analyzeCommand --lbug-auto-checkpoint parsing', () => {
     ['1', 'true'],
     ['0', 'false'],
   ])(
-    'sets GITNEXUS_LBUG_AUTO_CHECKPOINT=%s as %s during runFullAnalysis and restores afterwards',
+    'sets GITNEXUS_LBUG_AUTO_CHECKPOINT=%s to %s during runFullAnalysis and restores afterwards',
     async (cliValue, expectedEnv) => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
       let envAtCallTime: string | undefined;

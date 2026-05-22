@@ -45,14 +45,21 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
-const resolveAutoCheckpoint = (): boolean => {
-  const raw = process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT;
-  if (!raw) return false;
+export const LBUG_AUTO_CHECKPOINT_ON_VALUES = ['1', 'true', 'yes', 'on'] as const;
+export const LBUG_AUTO_CHECKPOINT_OFF_VALUES = ['0', 'false', 'no', 'off'] as const;
+const LBUG_AUTO_CHECKPOINT_ON_SET = new Set<string>(LBUG_AUTO_CHECKPOINT_ON_VALUES);
+const LBUG_AUTO_CHECKPOINT_OFF_SET = new Set<string>(LBUG_AUTO_CHECKPOINT_OFF_VALUES);
+
+export const parseLbugAutoCheckpoint = (raw: string | undefined): boolean | undefined => {
+  if (!raw) return undefined;
   const normalized = raw.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  return false;
+  if (LBUG_AUTO_CHECKPOINT_ON_SET.has(normalized)) return true;
+  if (LBUG_AUTO_CHECKPOINT_OFF_SET.has(normalized)) return false;
+  return undefined;
 };
+
+const resolveAutoCheckpoint = (): boolean =>
+  parseLbugAutoCheckpoint(process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT) ?? false;
 
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
