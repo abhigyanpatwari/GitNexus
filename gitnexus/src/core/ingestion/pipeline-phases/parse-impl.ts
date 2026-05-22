@@ -776,13 +776,15 @@ export async function runChunkedParseAndResolve(
         exportedTypeMap,
       );
       if (enrichedCount > 0) {
-        // Preserve the original dev-mode log line (emoji marker / phrasing) so
-        // existing log scrapers keyed on "🔗 E1" still match; additionally
-        // surface it under the [deferred-profile] prefix for operators who
-        // enabled GITNEXUS_PROFILE_DEFERRED without running in dev mode.
+        // Two independent gates, not else-if: when both isDev AND
+        // deferredProfile are active, BOTH lines fire — log scrapers keyed
+        // on the original "🔗 E1" emoji marker keep matching, AND operators
+        // grepping the [deferred-profile] prefix see no gap between the
+        // wildcard-synth and heritage timings.
         if (isDev) {
           logger.info(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (all chunks)`);
-        } else if (deferredProfile) {
+        }
+        if (deferredProfile) {
           logDeferredProfile(`E1: seeded ${enrichedCount} cross-file receiver types (all chunks)`);
         }
       }
