@@ -45,6 +45,15 @@ export const LBUG_MAX_DB_SIZE: number = (() => {
   return 16 * 1024 * 1024 * 1024;
 })();
 
+const resolveAutoCheckpoint = (): boolean => {
+  const raw = process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return false;
+};
+
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 
@@ -96,6 +105,7 @@ export function createLbugDatabase(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): lbug.Database {
+  const autoCheckpoint = resolveAutoCheckpoint();
   // .d.ts declares fewer args than the native constructor accepts.
   return new (lbugModule.Database as any)(
     databasePath,
@@ -103,7 +113,7 @@ export function createLbugDatabase(
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
-    true, // autoCheckpoint
+    autoCheckpoint, // autoCheckpoint (default false; override with GITNEXUS_LBUG_AUTO_CHECKPOINT)
     -1, // checkpointThreshold
     options.throwOnWalReplayFailure ?? true,
     true, // enableChecksums

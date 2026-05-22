@@ -35,6 +35,57 @@ describe('isWalCorruptionError', () => {
 });
 
 describe('createLbugDatabase WAL replay option', () => {
+  it('disables auto-checkpoint by default', () => {
+    const Database = vi.fn(function (this: any) {});
+    const lbugModule = { Database } as any;
+
+    createLbugDatabase(lbugModule, '/tmp/lbug-default');
+
+    expect(Database).toHaveBeenCalledWith(
+      '/tmp/lbug-default',
+      0,
+      false,
+      false,
+      expect.any(Number),
+      false,
+      -1,
+      true,
+      true,
+    );
+  });
+
+  it.each([
+    ['1', true],
+    ['on', true],
+    ['true', true],
+    ['0', false],
+    ['off', false],
+    ['false', false],
+    ['invalid', false],
+  ])('respects GITNEXUS_LBUG_AUTO_CHECKPOINT=%s', (raw, expectedAutoCheckpoint) => {
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_AUTO_CHECKPOINT', raw);
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-env');
+
+      expect(Database).toHaveBeenCalledWith(
+        '/tmp/lbug-env',
+        0,
+        false,
+        false,
+        expect.any(Number),
+        expectedAutoCheckpoint,
+        -1,
+        true,
+        true,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('passes throwOnWalReplayFailure and checksum constructor args explicitly', () => {
     const Database = vi.fn(function (this: any) {});
     const lbugModule = { Database } as any;
@@ -50,7 +101,7 @@ describe('createLbugDatabase WAL replay option', () => {
       false,
       true,
       expect.any(Number),
-      true,
+      false,
       -1,
       false,
       true,

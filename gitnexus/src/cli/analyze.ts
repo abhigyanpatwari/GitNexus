@@ -475,6 +475,7 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_VERBOSE',
   'GITNEXUS_MAX_FILE_SIZE',
   'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+  'GITNEXUS_LBUG_AUTO_CHECKPOINT',
   'GITNEXUS_EMBEDDING_THREADS',
   'GITNEXUS_EMBEDDING_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
@@ -560,6 +561,8 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
+  /** Control LadybugDB WAL auto-checkpointing during analyze (on/off). */
+  lbugAutoCheckpoint?: string;
   /** Parse worker pool size; 0 disables workers (sequential fallback). */
   workers?: string;
   embeddingThreads?: string;
@@ -629,6 +632,19 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
       Math.round(workerTimeoutSeconds * 1000),
     );
+  }
+
+  if (options?.lbugAutoCheckpoint !== undefined) {
+    const normalized = options.lbugAutoCheckpoint.trim().toLowerCase();
+    if (!['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'].includes(normalized)) {
+      cliError('  --lbug-auto-checkpoint must be either "on" or "off".\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_LBUG_AUTO_CHECKPOINT =
+      normalized === 'on' || normalized === 'true' || normalized === '1' || normalized === 'yes'
+        ? 'true'
+        : 'false';
   }
 
   // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions

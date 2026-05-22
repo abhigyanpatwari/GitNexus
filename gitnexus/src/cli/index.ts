@@ -72,6 +72,10 @@ program
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   )
   .option(
+    '--lbug-auto-checkpoint <mode>',
+    'LadybugDB WAL auto-checkpoint during analyze: on or off (default: off).',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size. Default: cores-1 capped at 16. Pass 0 to disable workers (sequential).',
   )
@@ -85,6 +89,7 @@ program
       '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
       '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
+      '  GITNEXUS_LBUG_AUTO_CHECKPOINT=0|1  LadybugDB WAL auto-checkpoint toggle (default 0/off).\n' +
       '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
       '  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n' +
       '  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n' +
