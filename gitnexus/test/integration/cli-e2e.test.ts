@@ -165,7 +165,7 @@ function makeMiniRepoCopy(basename: string, prefix: string): string {
 }
 
 function isEvalServerBindRestriction(stderr: string): boolean {
-  return /listen EPERM|EACCES|EADDRNOTAVAIL|operation not permitted|permission denied/i.test(
+  return /listen (EPERM|EACCES|EADDRNOTAVAIL)|operation not permitted|permission denied/i.test(
     stderr,
   );
 }
