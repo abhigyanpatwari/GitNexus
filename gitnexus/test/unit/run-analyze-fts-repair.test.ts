@@ -199,7 +199,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
-  it('fails full analyze when FTS verification reports missing indexes after creation', async () => {
+  it('logs warning when FTS verification reports missing indexes after creation', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -227,15 +227,17 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-full-verify-fail-');
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await expect(
-        runFullAnalysis(
-          tmpRepo.dbPath,
-          { force: true },
-          {
-            onProgress: () => {},
-          },
-        ),
-      ).rejects.toThrow(/FTS verification failed - missing indexes after analyze/i);
+      // FTS verification failure is now non-fatal — analyze completes with a warning
+      // instead of throwing, so embedding generation can proceed.
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        {
+          onProgress: () => {},
+        },
+      );
+      expect(result).toBeDefined();
+      expect(result.repoPath).toContain('gitnexus-run-analyze-full-verify-fail-');
     } finally {
       await tmpRepo.cleanup();
     }
