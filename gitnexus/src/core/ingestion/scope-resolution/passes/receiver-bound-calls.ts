@@ -304,9 +304,28 @@ export function emitReceiverBoundCalls(
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): same shape as Case 4's
+          // chain walk (skip-and-walk-on) but without overload
+          // narrowing — Case 0 uses `findOwnedMember` directly. When
+          // an owner's resolved candidate is static-only (Kotlin
+          // companion-promoted), continue to the next ancestor in
+          // the MRO chain so a legitimate instance member can bind.
+          // If the entire chain is static-only, no edge is emitted —
+          // unlike Case 4, Case 0 does NOT mark the site handled in
+          // that situation because compound receivers (`a.b.c()`)
+          // are not pre-emitted by `emitReferencesViaLookup` (the
+          // reference index has no compound-receiver entry for
+          // shapes like `Logger.create("a")`), so there's no wrong
+          // target to suppress.
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              // Skip static-only candidate; walk to next ancestor.
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -335,6 +354,17 @@ export function emitReceiverBoundCalls(
       // C++ `this->member()` (and same-shape receivers in other OO
       // languages) should resolve against the enclosing class + MRO
       // even when there is no explicit `this` typeBinding in scope.
+      //
+      // **Static-only filter dependency (#1756 / U3):** this case does
+      // NOT currently consult `provider.isStaticOnly`. Today it fires
+      // only for C++ (the sole `resolveThisViaEnclosingClass === true`
+      // language), which has no static-only semantics. Kotlin — the
+      // current `isStaticOnly` consumer — leaves `resolveThisVia
+      // EnclosingClass` unset, so Case 0.5 is dead code for Kotlin
+      // crossover suppression and U3 leaves it untouched. If any
+      // future language enables BOTH `resolveThisViaEnclosingClass`
+      // AND `isStaticOnly`, the chain-walk below MUST adopt the
+      // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
@@ -601,9 +631,22 @@ export function emitReceiverBoundCalls(
         if (ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): mirrors Case 0's chain
+          // walk — `findOwnedMember` without overload narrowing. When
+          // a static-only candidate is found at an ancestor, walk on
+          // so a legitimate instance member can bind. If the entire
+          // chain is static-only, no edge is emitted (Case 3b is fed
+          // by chain-typebinding receivers, not pre-emitted by
+          // `emitReferencesViaLookup` for compound shapes, so no
+          // handled-site marker is needed for chain-only-static).
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -791,6 +834,19 @@ export function emitReceiverBoundCalls(
           continue;
         }
         if (picked !== undefined) {
+          // Static-only filter (#1756 / U3): unlike Case 4 there's no
+          // MRO chain to walk here — Case 5 dispatches on a single
+          // owner via `pickOverload`. When the picked candidate is
+          // static-only (Kotlin companion-promoted), suppress the
+          // edge entirely and mark the site handled so
+          // `emitReferencesViaLookup` doesn't re-emit a wrong target
+          // from the pre-resolved reference index. Matches the after-
+          // chain handled-marker semantic used by Case 4's
+          // all-filtered fall-through.
+          if (provider.isStaticOnly?.(picked) === true) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const reason =
             site.kind === 'write' || site.kind === 'read'
               ? site.kind

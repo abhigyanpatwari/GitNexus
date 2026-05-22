@@ -2482,3 +2482,140 @@ describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => 
   // chain-typebinding cross-file path is tracked as a follow-up issue
   // alongside the broader cross-file Tier-2 lookup work.
 });
+
+// ---------------------------------------------------------------------------
+// #1756 / U3 remediation: extend the `isStaticOnly` filter to receiver-bound
+// dispatch cases beyond Case 4. Pre-U3, the filter only fired on Case 4
+// (simple typeBinding receiver). Three other instance-dispatch cases also
+// emit `CALLS` edges and could leak the companion-vs-instance crossover:
+//   - Case 0 (compound receiver): receiver like `Logger.create("a")` whose
+//     `findOwnedMember(Logger, "create")` returns the static-only
+//     companion-promoted `create`.
+//   - Case 3b (chain-typebinding): receiver inferred via a chain whose
+//     resolved owner has a static-only candidate.
+//   - Case 5 (value-receiver bridge): `findValueBindingInScope` +
+//     `pickOverload` on a single owner.
+//
+// Note: Case 0.5 (`this`-receiver) is NOT covered because Kotlin's scope-
+// resolver does not enable `resolveThisViaEnclosingClass`. The dependency
+// is documented inline in `receiver-bound-calls.ts` so any language that
+// enables it must also wire the filter at that case.
+//
+// The legitimate edges (Case 2 class-name receiver `Logger.create("a")`,
+// Case 4 simple typeBinding `r.getAll()`) must continue to emit.
+//
+// **Empirical case-coverage observations** (probe at commit pre-U3, test
+// run 2026-05-22): in **registry-primary** mode, the existing pipeline
+// already emits zero crossover edges for the fixture shapes below even
+// without U3's filter wired at Cases 0 / 3b / 5. In **legacy DAG** mode
+// (REGISTRY_PRIMARY_KOTLIN=0), the same shapes leak crossover edges for
+// the `useChainTypeBindingCrossover` and `useValueReceiverCrossover`
+// scenarios — confirming that *some* suppression mechanism in the
+// registry-primary path is already catching them (most likely U2's
+// Case-4 filter for `l.create("nope")`, since `val l = ...` produces a
+// typeBinding routing through Case 4; the compound and chain shapes
+// are suppressed by the receiver resolver not binding to the static-
+// only def in the first place).
+//
+// Per the remediation plan's "be honest about which paths are actually
+// exercised by tests vs which are added defensively" guidance, the
+// per-case filters at Cases 0 / 3b / 5 are landing as **defensive
+// wire-ups** — they ensure the contract symmetry the JSDoc now claims
+// (filter applies to every instance-dispatch case) holds for future
+// fixture shapes that DO trigger these paths with a static-only
+// candidate. The crossover tests are registered as expected failures
+// in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin` because the
+// legacy DAG genuinely diverges on these shapes; the registry-primary
+// path's suppression is a real scope-resolver-only correctness win.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin isStaticOnly across other receiver cases (#1756 / U3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-other-cases'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Logger / Service / Repo and their companion + instance methods', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Logger');
+    expect(classes).toContain('Service');
+    expect(classes).toContain('Repo');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('build');
+    expect(methods).toContain('log');
+    expect(methods).toContain('perform');
+    expect(methods).toContain('getAll');
+  });
+
+  // Happy path + Case 0 crossover suppression (combined): the legitimate
+  // `Logger.create("a")` (Case 2 class-name receiver) emits exactly 1
+  // CALLS edge to `create`. The OUTER `.create("b")` on the compound
+  // receiver `Logger.create("a")` would route through Case 0 — per the
+  // empirical observation above, the existing pipeline already does NOT
+  // emit a crossover edge for this shape, so the post-U3 count stays
+  // at 1 (same as pre-U3). The U3 Case-0 filter is defensive: if a
+  // future fixture's compound-receiver shape DOES enter Case 0 with a
+  // static-only candidate, the filter would suppress.
+  it('useCompoundCrossover: Logger.create("a") emits exactly 1 CALLS edge to create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCalls = calls.filter(
+      (c) => c.source === 'useCompoundCrossover' && c.target === 'create',
+    );
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Happy path (Case 4 simple typeBinding, baseline): `r.getAll()` in
+  // `useChainTypeBindingCrossover` resolves through `findReceiverType
+  // Binding` for `r: Repo` and `findOwnedMember(Repo, "getAll")`. The
+  // instance dispatch on `Repo` is legitimate — that edge MUST emit.
+  it('useChainTypeBindingCrossover: r.getAll() emits exactly 1 CALLS edge to getAll', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getAllCalls = calls.filter(
+      (c) => c.source === 'useChainTypeBindingCrossover' && c.target === 'getAll',
+    );
+    expect(getAllCalls.length).toBe(1);
+    expect(getAllCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Crossover (Case 3b chain-typebinding): the chained `.build()` on
+  // `services.first()` would route through Case 3b's chain-typebinding
+  // walk if the chain resolves to `Service`. Per the empirical
+  // observation above, the existing pipeline already does NOT emit a
+  // crossover edge for this shape — `services.first()` returns
+  // `Service?` from `List<Service>.first()` and the chain-typebinding
+  // walk doesn't terminate at the Service class for this expression
+  // tree. The U3 Case-3b filter is defensive: if a future shape DOES
+  // bind the chain to Service and reach `findOwnedMember(Service,
+  // "build")`, the filter would suppress.
+  it('useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const buildCalls = calls.filter(
+      (c) => c.source === 'useChainTypeBindingCrossover' && c.target === 'build',
+    );
+    expect(buildCalls.length).toBe(0);
+  });
+
+  // Crossover (value-receiver-style): `l.create("nope")` is invalid
+  // Kotlin (companion methods are not legal instance-dispatch
+  // candidates). Kotlin's resolver typically routes `l` through Case 4
+  // because `val l = makeLoggerForCrossover()` produces a typeBinding
+  // for Logger via call-result return-type inference — so the
+  // crossover suppression actually fires through Case 4 (U2's filter).
+  // The U3 Case-5 filter wire-up is defensive: it preserves contract
+  // symmetry for any future value-binding shape that bypasses Case 4
+  // (e.g., object-literal-style receivers that fall through to the
+  // value-binding bridge instead).
+  it('useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCalls = calls.filter(
+      (c) => c.source === 'useValueReceiverCrossover' && c.target === 'create',
+    );
+    expect(createCalls.length).toBe(0);
+  });
+});

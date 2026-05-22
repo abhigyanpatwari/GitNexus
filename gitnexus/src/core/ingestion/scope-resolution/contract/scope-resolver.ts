@@ -593,9 +593,11 @@ export interface ScopeResolver {
    * calling `instance.member()` would be a compile error or a
    * type-system violation, even if a member of that name exists on
    * the receiver's class. When provided, the receiver-bound calls
-   * pass filters out such members at Case 4 (instance-receiver
-   * dispatch) so the resolver does not emit a misleading `CALLS`
-   * edge for a call site the language itself would reject.
+   * pass filters out such members at every instance-receiver dispatch
+   * case (Case 0 compound receiver, Case 3b chain-typebinding, Case 4
+   * simple typeBinding, Case 5 value-receiver bridge) so the resolver
+   * does not emit a misleading `CALLS` edge for a call site the
+   * language itself would reject.
    *
    * **Reserved for the "instance receiver is invalid" semantic only.**
    * Hooks for languages where static / class-level members are still
@@ -610,16 +612,16 @@ export interface ScopeResolver {
    * through the class name (`Foo.staticMethod()`) is a legitimate
    * dispatch.
    *
+   * Case 0.5 (implicit `this` receiver) currently fires only for
+   * languages with `resolveThisViaEnclosingClass === true` (C++ at
+   * time of writing), none of which expose static-only semantics. A
+   * future language that enables BOTH `resolveThisViaEnclosingClass`
+   * AND `isStaticOnly` must wire the filter into Case 0.5's chain
+   * walk too — see the inline note in `receiver-bound-calls.ts`.
+   *
    * Languages without static-only semantics leave this undefined and
    * the legacy unfiltered behavior applies (every owned member of the
    * receiver class is a dispatch candidate).
-   *
-   * **Coverage caveat:** the filter is wired today only at Case 4
-   * (simple typeBinding receiver). Other instance-dispatch paths —
-   * Case 0 (compound receiver), Case 0.5 (implicit `this`), Case 3b
-   * (chain-typebinding), Case 5 (value-receiver bridge) — do not
-   * consult the hook yet. Tracking issue for extension is on the
-   * Kotlin migration parent tracker.
    */
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 

@@ -182,6 +182,23 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // class as the bare `crossover()` test; backporting is out of
     // scope per the migration policy.
     'useNamedCrossover: o.create() emits NO CALLS edge to create',
+    // #1756 / U3 (remediation plan 2026-05-22-002) other-receiver
+    // crossover: the registry-primary path applies the `isStaticOnly`
+    // filter across Cases 0 (compound receiver), 3b (chain-typebinding),
+    // and 5 (value-receiver bridge) of `receiver-bound-calls.ts`. For
+    // the U3 fixture `kotlin-companion-other-cases/App.kt`, the
+    // chain-typebinding crossover (`services.first().build()` on a
+    // chain whose receiver type resolves through the legacy DAG's
+    // unfiltered lookup) and the value-receiver crossover
+    // (`l.create("nope")` where the legacy DAG binds `l` directly
+    // via its receiver-resolution path) both emit false `CALLS`
+    // edges to the companion-promoted static-only members. The
+    // legacy DAG has no `isStaticOnly`-equivalent hook, so these
+    // edges leak. Same scope-resolver-only correctness class as the
+    // bare `crossover()` test and the U2 MRO-shadow tests above;
+    // backporting is out of scope per the migration policy.
+    'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
+    'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
   ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
