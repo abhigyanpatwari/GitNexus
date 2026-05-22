@@ -39,6 +39,14 @@ import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { isRegistryPrimary } from './registry-primary-flag.js';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
+import {
+  deferredCallFileSlowMs,
+  deferredCallLogEveryN,
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+  profileElapsedMs,
+  profileNow,
+} from './utils/deferred-resolution-profile.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import {
@@ -2909,18 +2917,31 @@ export const processCallsFromExtracted = async (
   }
   const totalFiles = byFile.size;
   let filesProcessed = 0;
+  const profileCalls = isDeferredResolutionProfileEnabled();
+  const slowFileMs = deferredCallFileSlowMs();
+  const logEveryN = profileCalls ? deferredCallLogEveryN() : 0;
+  let skippedRegistryPrimaryFiles = 0;
 
   for (const [filePath, calls] of byFile) {
     filesProcessed++;
+    const tFile = profileCalls ? profileNow() : 0n;
     if (filesProcessed % 100 === 0) {
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
+    }
+    if (profileCalls && (filesProcessed === 1 || filesProcessed % logEveryN === 0)) {
+      logDeferredProfile(
+        `calls ${filesProcessed}/${totalFiles} file=${filePath} sites=${calls.length}`,
+      );
     }
 
     // Registry-primary gate: skip Python (etc.) entirely when the
     // scope-based phase owns CALLS for this language.
     const fileLanguage = getLanguageFromFilename(filePath);
-    if (fileLanguage && isRegistryPrimary(fileLanguage)) continue;
+    if (fileLanguage && isRegistryPrimary(fileLanguage)) {
+      skippedRegistryPrimaryFiles++;
+      continue;
+    }
 
     ctx.enableCache(filePath);
     const widenCache: WidenCache = new Map();
@@ -3079,6 +3100,21 @@ export const processCallsFromExtracted = async (
     }
 
     ctx.clearCache();
+
+    if (profileCalls && tFile !== 0n) {
+      const elapsed = profileElapsedMs(tFile);
+      if (elapsed >= slowFileMs) {
+        logDeferredProfile(
+          `slow file ${elapsed.toFixed(0)}ms path=${filePath} calls=${calls.length} lang=${fileLanguage ?? 'unknown'}`,
+        );
+      }
+    }
+  }
+
+  if (profileCalls) {
+    logDeferredProfile(
+      `processCallsFromExtracted done: ${totalFiles} files, ${extractedCalls.length} call sites, skipped registry-primary files=${skippedRegistryPrimaryFiles}`,
+    );
   }
 
   onProgress?.(totalFiles, totalFiles);

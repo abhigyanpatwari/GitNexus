@@ -15,6 +15,10 @@
 
 import type { ResolutionContext } from './resolution-context.js';
 import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-shared';
+import {
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+} from '../utils/deferred-resolution-profile.js';
 
 // ---------------------------------------------------------------------------
 // ExtractedHeritage — the shape produced by the parse worker / heritage
@@ -176,10 +180,20 @@ export const buildHeritageMap = (
   // interfaceName → Set<filePath>  (implementor lookup for interface dispatch)
   const implementorFiles = new Map<string, Set<string>>();
 
+  const profileHeritage = isDeferredResolutionProfileEnabled();
+  let maxNameCartesian = 0;
+  let ambiguousHeritageRecords = 0;
+
   for (const h of heritage) {
     // ── Parent lookup (nodeId-based) ────────────────────────────────
     const childDefs = ctx.model.types.lookupClassByName(h.className);
     const parentDefs = ctx.model.types.lookupClassByName(h.parentName);
+
+    if (profileHeritage && childDefs.length > 0 && parentDefs.length > 0) {
+      const product = childDefs.length * parentDefs.length;
+      if (product > 1) ambiguousHeritageRecords++;
+      if (product > maxNameCartesian) maxNameCartesian = product;
+    }
 
     if (childDefs.length > 0 && parentDefs.length > 0) {
       for (const child of childDefs) {
@@ -367,6 +381,14 @@ export const buildHeritageMap = (
   const getImplementorFiles = (interfaceName: string): ReadonlySet<string> => {
     return implementorFiles.get(interfaceName) ?? EMPTY_SET;
   };
+
+  if (profileHeritage) {
+    logDeferredProfile(
+      `buildHeritageMap: ${heritage.length} heritage records, ` +
+        `${ambiguousHeritageRecords} with child×parent lookup product >1, ` +
+        `max product ${maxNameCartesian}, ${implementorFiles.size} interface implementor keys`,
+    );
+  }
 
   return {
     getParents,

@@ -71,6 +71,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isDev } from '../utils/env.js';
 import { isVerboseIngestionEnabled } from '../utils/verbose.js';
+import {
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+  profileElapsedMs,
+  profileNow,
+} from '../utils/deferred-resolution-profile.js';
 import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-synthesis.js';
 import { extractORMQueriesInline } from './orm-extraction.js';
 
@@ -698,7 +704,15 @@ export async function runChunkedParseAndResolve(
     //   heritage: 75 -> 80 (5)
     //   routes:   80 -> 85 (5)
     //   calls:    85 -> 95 (10)
+    const deferredProfile = isDeferredResolutionProfileEnabled();
+    if (deferredProfile) {
+      logDeferredProfile(
+        `deferred band start: imports=${deferredWorkerImports.length} heritage=${deferredWorkerHeritage.length} ` +
+          `calls=${deferredWorkerCalls.length} routes=${allExtractedRoutes.length}`,
+      );
+    }
     if (deferredWorkerImports.length > 0) {
+      const tImports = deferredProfile ? profileNow() : 0n;
       await processImportsFromExtracted(
         graph,
         allPathObjects,
@@ -721,6 +735,11 @@ export async function runChunkedParseAndResolve(
         repoPath,
         importCtx,
       );
+      if (tImports !== 0n) {
+        logDeferredProfile(
+          `processImportsFromExtracted: ${profileElapsedMs(tImports).toFixed(0)}ms (${deferredWorkerImports.length} import batches before drain)`,
+        );
+      }
       // U15 (lightweight M1): processImportsFromExtracted is the sole
       // consumer of `deferredWorkerImports`. Free the array now so the
       // GC can reclaim the per-file ExtractedImport records before the
@@ -732,8 +751,14 @@ export async function runChunkedParseAndResolve(
       deferredWorkerImports.length = 0;
     }
     if (anyChunkNeedsWildcardSynth) {
+      const tWildcard = deferredProfile ? profileNow() : 0n;
       synthesizeWildcardImportBindings(graph, ctx);
       hasSynthesized = true;
+      if (tWildcard !== 0n) {
+        logDeferredProfile(
+          `synthesizeWildcardImportBindings: ${profileElapsedMs(tWildcard).toFixed(0)}ms`,
+        );
+      }
     }
     // L5 from PR #1693 review: populate `exportedTypeMap` from the in-progress
     // graph BEFORE `seedCrossFileReceiverTypes` runs. Previously the seeding
@@ -754,11 +779,12 @@ export async function runChunkedParseAndResolve(
         ctx.namedImportMap,
         exportedTypeMap,
       );
-      if (isDev && enrichedCount > 0) {
-        logger.info(`🔗 E1: Seeded ${enrichedCount} cross-file receiver types (all chunks)`);
+      if (enrichedCount > 0 && (isDev || deferredProfile)) {
+        logDeferredProfile(`E1: seeded ${enrichedCount} cross-file receiver types (all chunks)`);
       }
     }
     if (deferredWorkerHeritage.length > 0) {
+      const tHeritage = deferredProfile ? profileNow() : 0n;
       await processHeritageFromExtracted(graph, deferredWorkerHeritage, ctx, (current, total) => {
         const ratio = total > 0 ? current / total : 1;
         onProgress({
@@ -773,8 +799,14 @@ export async function runChunkedParseAndResolve(
           },
         });
       });
+      if (tHeritage !== 0n) {
+        logDeferredProfile(
+          `processHeritageFromExtracted: ${profileElapsedMs(tHeritage).toFixed(0)}ms (${deferredWorkerHeritage.length} records)`,
+        );
+      }
     }
     if (allExtractedRoutes.length > 0) {
+      const tRoutes = deferredProfile ? profileNow() : 0n;
       await processRoutesFromExtracted(graph, allExtractedRoutes, ctx, (current, total) => {
         const ratio = total > 0 ? current / total : 1;
         onProgress({
@@ -789,12 +821,21 @@ export async function runChunkedParseAndResolve(
           },
         });
       });
+      if (tRoutes !== 0n) {
+        logDeferredProfile(
+          `processRoutesFromExtracted: ${profileElapsedMs(tRoutes).toFixed(0)}ms (${allExtractedRoutes.length} routes)`,
+        );
+      }
     }
 
+    const tBuildHeritage = deferredProfile ? profileNow() : 0n;
     const fullWorkerHeritageMap =
       deferredWorkerHeritage.length > 0
         ? buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
         : undefined;
+    if (tBuildHeritage !== 0n) {
+      logDeferredProfile(`buildHeritageMap wall: ${profileElapsedMs(tBuildHeritage).toFixed(0)}ms`);
+    }
     // U15 (lightweight M1): buildHeritageMap is the LAST consumer of the
     // raw `deferredWorkerHeritage` records — processCallsFromExtracted
     // below reads from the derived `fullWorkerHeritageMap` instead. Free
@@ -804,6 +845,12 @@ export async function runChunkedParseAndResolve(
     deferredWorkerHeritage.length = 0;
 
     if (deferredWorkerCalls.length > 0) {
+      if (deferredProfile) {
+        logDeferredProfile(
+          `processCallsFromExtracted: starting (${deferredWorkerCalls.length} call sites, heritageMap=${fullWorkerHeritageMap !== undefined})`,
+        );
+      }
+      const tCalls = deferredProfile ? profileNow() : 0n;
       await processCallsFromExtracted(
         graph,
         deferredWorkerCalls,
@@ -829,6 +876,9 @@ export async function runChunkedParseAndResolve(
         fullWorkerHeritageMap,
         bindingAccumulator,
       );
+      if (tCalls !== 0n) {
+        logDeferredProfile(`processCallsFromExtracted: ${profileElapsedMs(tCalls).toFixed(0)}ms total`);
+      }
     }
 
     if (deferredAssignments.length > 0) {
