@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { Command, Option } from 'commander';
+import { afterEach, describe, expect, it } from 'vitest';
+import { localizeCliHelp } from '../../src/cli/help-i18n.js';
+import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
@@ -23,7 +26,20 @@ function runRootHelp(env: NodeJS.ProcessEnv = {}) {
   });
 }
 
+function metadataHelp(language: SupportedCliLanguage) {
+  setCliLanguage(language);
+  const command = new Command('probe');
+  command.addOption(new Option('--mode <mode>', 'Mode').choices(['fast', 'safe']));
+  command.addOption(new Option('--limit <n>', 'Limit').default('5'));
+  command.addOption(new Option('--level [name]', 'Level').preset('auto'));
+  command.addOption(new Option('--token <token>', 'Token').env('GITNEXUS_TOKEN'));
+  localizeCliHelp(command);
+  return command.helpInformation();
+}
+
 describe('CLI help surface', () => {
+  afterEach(() => setCliLanguage(null));
+
   it('root help localizes commander headings, options, and command descriptions', () => {
     const result = runRootHelp({ GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
 
@@ -132,5 +148,20 @@ describe('CLI help surface', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--repair-fts');
+  });
+
+  it('localizes commander-generated option metadata labels', () => {
+    const english = metadataHelp('en');
+    const chinese = metadataHelp('zh-CN');
+
+    expect(english).toContain('choices: "fast", "safe"');
+    expect(english).toContain('default: "5"');
+    expect(english).toContain('preset: "auto"');
+    expect(english).toContain('env: GITNEXUS_TOKEN');
+
+    expect(chinese).toContain('可选值: "fast", "safe"');
+    expect(chinese).toContain('默认: "5"');
+    expect(chinese).toContain('预设: "auto"');
+    expect(chinese).toContain('环境变量: GITNEXUS_TOKEN');
   });
 });

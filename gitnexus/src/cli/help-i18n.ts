@@ -1,5 +1,5 @@
 import type { Command, Option } from 'commander';
-import { getCliLanguage, t, type CliMessageKey } from './i18n/index.js';
+import { t, type CliMessageKey } from './i18n/index.js';
 
 const TITLE_KEYS = {
   'Usage:': 'help.title.usage',
@@ -145,7 +145,7 @@ function localizeOptionDescription(option: Option): string {
   const extraInfo = [];
 
   if (option.argChoices) {
-    const label = getCliLanguage() === 'zh-CN' ? '可选值' : 'choices';
+    const label = t('help.optionMeta.choices');
     extraInfo.push(
       `${label}: ${option.argChoices.map((choice) => JSON.stringify(choice)).join(', ')}`,
     );
@@ -157,7 +157,7 @@ function localizeOptionDescription(option: Option): string {
       option.optional ||
       (option.isBoolean() && typeof option.defaultValue === 'boolean');
     if (showDefault) {
-      const label = getCliLanguage() === 'zh-CN' ? '默认' : 'default';
+      const label = t('help.optionMeta.default');
       extraInfo.push(
         `${label}: ${option.defaultValueDescription || JSON.stringify(option.defaultValue)}`,
       );
@@ -165,12 +165,12 @@ function localizeOptionDescription(option: Option): string {
   }
 
   if (option.presetArg !== undefined && option.optional) {
-    const label = getCliLanguage() === 'zh-CN' ? '预设' : 'preset';
+    const label = t('help.optionMeta.preset');
     extraInfo.push(`${label}: ${JSON.stringify(option.presetArg)}`);
   }
 
   if (option.envVar !== undefined) {
-    const label = getCliLanguage() === 'zh-CN' ? '环境变量' : 'env';
+    const label = t('help.optionMeta.env');
     extraInfo.push(`${label}: ${option.envVar}`);
   }
 

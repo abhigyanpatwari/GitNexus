@@ -1,6 +1,8 @@
 import { beforeEach } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 
+const I18N_LANGUAGE_STORAGE_KEY = 'gitnexus.lng';
+
 function ensureStorage(name: 'localStorage' | 'sessionStorage') {
   const current = globalThis[name];
   if (
@@ -29,9 +31,11 @@ function ensureStorage(name: 'localStorage' | 'sessionStorage') {
 
 ensureStorage('localStorage');
 ensureStorage('sessionStorage');
+localStorage.removeItem(I18N_LANGUAGE_STORAGE_KEY);
 
 // Reset storage between tests
 beforeEach(() => {
   sessionStorage.removeItem('gitnexus-llm-settings');
   localStorage.removeItem('gitnexus-llm-settings'); // legacy key (migration)
+  localStorage.removeItem(I18N_LANGUAGE_STORAGE_KEY);
 });
