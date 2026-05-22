@@ -56,14 +56,6 @@ const JITTER_MAX_MS = 50;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const jitteredDelay = (attempt: number): number => {
-  const base = BASE_DELAYS_MS[Math.min(attempt - 1, BASE_DELAYS_MS.length - 1)] ?? 500;
-  // Math.random is intentionally non-cryptographic: this is only used
-  // for retry timing dispersion; an attacker observing the jitter has
-  // no security-relevant signal.
-  return base + Math.floor(Math.random() * JITTER_MAX_MS);
-};
-
 /**
  * Run a single CHECKPOINT with bounded retry on
  * `isLbugCheckpointIoError`. Returns the number of attempts actually
@@ -109,8 +101,9 @@ export const runCheckpointWithRetry = async (
         throw err;
       }
       if (attempt === CHECKPOINT_RETRY_ATTEMPTS) break;
-      const base =
-        BASE_DELAYS_MS[Math.min(attempt - 1, BASE_DELAYS_MS.length - 1)] ?? 500;
+      const base = BASE_DELAYS_MS[Math.min(attempt - 1, BASE_DELAYS_MS.length - 1)] ?? 500;
+      // randomImpl defaults to Math.random — non-cryptographic by design; jitter only avoids
+      // synchronized retries between concurrent analyzers.
       const delayMs = base + Math.floor(randomImpl() * JITTER_MAX_MS);
       logger.debug(
         { attempt, totalAttempts: CHECKPOINT_RETRY_ATTEMPTS, delayMs },

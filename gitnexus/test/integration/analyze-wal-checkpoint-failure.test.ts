@@ -79,59 +79,55 @@ afterAll(() => {
 });
 
 describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () => {
-  it(
-    'surfaces the --wal-checkpoint-threshold recovery hint when the rename target is blocked',
-    () => {
-      // Plant a non-empty directory at the path Ladybug's auto-checkpoint
-      // will try to rename `<db>.wal` over. `fs.rename` cannot overwrite a
-      // non-empty directory, and the adapter's orphan-sidecar cleanup uses
-      // `fs.unlink` (which fails on directories) — so the blocker persists
-      // through `doInitLbug` and trips the very first auto-checkpoint that
-      // a `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1` setting forces.
-      const storageDir = path.join(repoPath, '.gitnexus');
-      fs.mkdirSync(storageDir, { recursive: true });
-      const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
-      fs.mkdirSync(blockerDir, { recursive: true });
-      fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
+  it('surfaces the --wal-checkpoint-threshold recovery hint when the rename target is blocked', () => {
+    // Plant a non-empty directory at the path Ladybug's auto-checkpoint
+    // will try to rename `<db>.wal` over. `fs.rename` cannot overwrite a
+    // non-empty directory, and the adapter's orphan-sidecar cleanup uses
+    // `fs.unlink` (which fails on directories) — so the blocker persists
+    // through `doInitLbug` and trips the very first auto-checkpoint that
+    // a `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1` setting forces.
+    const storageDir = path.join(repoPath, '.gitnexus');
+    fs.mkdirSync(storageDir, { recursive: true });
+    const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
+    fs.mkdirSync(blockerDir, { recursive: true });
+    fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
 
-      const result = spawnSync(
-        process.execPath,
-        ['--import', tsxImportUrl, cliEntry, 'analyze', '--skip-skills'],
-        {
-          cwd: repoPath,
-          encoding: 'utf8',
-          // Generous timeout: the test does real CSV/COPY work before the
-          // first failing checkpoint, and CI runners are slow.
-          timeout: process.env.CI ? 120_000 : 60_000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            GITNEXUS_HOME: suiteGitnexusHome,
-            // Skip ensureHeap re-exec (which drops the tsx loader).
-            NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            // Tiny threshold forces auto-checkpoint on every write so the
-            // first write into the WAL trips the planted rename blocker.
-            GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
-            CI: '1',
-          },
+    const result = spawnSync(
+      process.execPath,
+      ['--import', tsxImportUrl, cliEntry, 'analyze', '--skip-skills'],
+      {
+        cwd: repoPath,
+        encoding: 'utf8',
+        // Generous timeout: the test does real CSV/COPY work before the
+        // first failing checkpoint, and CI runners are slow.
+        timeout: process.env.CI ? 120_000 : 60_000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          GITNEXUS_HOME: suiteGitnexusHome,
+          // Skip ensureHeap re-exec (which drops the tsx loader).
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+          // Tiny threshold forces auto-checkpoint on every write so the
+          // first write into the WAL trips the planted rename blocker.
+          GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
+          CI: '1',
         },
-      );
+      },
+    );
 
-      const combined = `${result.stderr}\n${result.stdout}`;
+    const combined = `${result.stderr}\n${result.stdout}`;
 
-      // The CLI must exit non-zero. status === null means the timeout fired
-      // without a clean exit — also a failure for this assertion.
-      expect(result.status === null ? 'timeout' : result.status).not.toBe(0);
+    // The CLI must exit non-zero. status === null means the timeout fired
+    // without a clean exit — also a failure for this assertion.
+    expect(result.status === null ? 'timeout' : result.status).not.toBe(0);
 
-      // Recovery hint must reference the CLI flag and the recommended
-      // 64 MiB threshold (67_108_864 bytes). Both come from the
-      // RECOMMENDED_WAL_CHECKPOINT_THRESHOLD constant in analyze.ts; keep
-      // those values in sync with this assertion if the constant changes.
-      expect(combined).toContain('gitnexus analyze --wal-checkpoint-threshold');
-      expect(combined).toContain('67108864');
-      // The env-var route should be advertised alongside the flag.
-      expect(combined).toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
-    },
-    180_000,
-  );
+    // Recovery hint must reference the CLI flag and the recommended
+    // 64 MiB threshold (67_108_864 bytes). Both come from the
+    // RECOMMENDED_WAL_CHECKPOINT_THRESHOLD constant in analyze.ts; keep
+    // those values in sync with this assertion if the constant changes.
+    expect(combined).toContain('gitnexus analyze --wal-checkpoint-threshold');
+    expect(combined).toContain('67108864');
+    // The env-var route should be advertised alongside the flag.
+    expect(combined).toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
+  }, 180_000);
 });

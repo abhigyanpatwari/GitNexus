@@ -65,9 +65,9 @@ describe('runCheckpointWithRetry — retry policy', () => {
     const sleepFn = vi.fn().mockResolvedValue(undefined);
     const randomFn = vi.fn().mockReturnValue(0);
 
-    await expect(
-      runCheckpointWithRetry({ checkpointFn, sleepFn, randomFn }),
-    ).rejects.toBe(persistent);
+    await expect(runCheckpointWithRetry({ checkpointFn, sleepFn, randomFn })).rejects.toBe(
+      persistent,
+    );
 
     expect(checkpointFn).toHaveBeenCalledTimes(3);
     // Two backoffs (50 ms, 200 ms) but no sleep after the final attempt.
@@ -81,9 +81,7 @@ describe('runCheckpointWithRetry — retry policy', () => {
     const checkpointFn = vi.fn().mockRejectedValue(corruption);
     const sleepFn = vi.fn().mockResolvedValue(undefined);
 
-    await expect(
-      runCheckpointWithRetry({ checkpointFn, sleepFn }),
-    ).rejects.toBe(corruption);
+    await expect(runCheckpointWithRetry({ checkpointFn, sleepFn })).rejects.toBe(corruption);
 
     expect(checkpointFn).toHaveBeenCalledTimes(1);
     expect(sleepFn).toHaveBeenCalledTimes(0);
@@ -129,13 +127,10 @@ describe('isManualCheckpointEnabled — env var parsing', () => {
     },
   );
 
-  it.each(['1', 'true', 'on', 'yes', ''])(
-    'returns true for non-opt-out value %s',
-    (value) => {
-      process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = value;
-      expect(isManualCheckpointEnabled()).toBe(true);
-    },
-  );
+  it.each(['1', 'true', 'on', 'yes', ''])('returns true for non-opt-out value %s', (value) => {
+    process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = value;
+    expect(isManualCheckpointEnabled()).toBe(true);
+  });
 });
 
 describe('startWalCheckpointDriver — lifecycle', () => {
