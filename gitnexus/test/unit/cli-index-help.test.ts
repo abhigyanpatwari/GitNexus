@@ -7,14 +7,64 @@ const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
 const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 
-function runHelp(command: string) {
+function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, command, '--help'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+function runRootHelp(env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
   });
 }
 
 describe('CLI help surface', () => {
+  it('root help localizes commander headings, options, and command descriptions', () => {
+    const result = runRootHelp({ GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('用法： gitnexus [options] [command]');
+    expect(result.stdout).toContain('GitNexus 本地 CLI 和 MCP 服务器');
+    expect(result.stdout).toContain('选项：');
+    expect(result.stdout).toContain('-V, --version                            输出版本号');
+    expect(result.stdout).toContain('-h, --help                               显示命令帮助');
+    expect(result.stdout).toContain('命令：');
+    expect(result.stdout).toContain('setup');
+    expect(result.stdout).toContain('一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP');
+    expect(result.stdout).toContain('detect-changes|detect_changes [options]');
+    expect(result.stdout).toContain('将 git diff hunk 映射到已索引符号和受影响执行流程');
+    expect(result.stdout).not.toContain('GitNexus local CLI and MCP server');
+    expect(result.stdout).not.toContain('display help for command');
+  });
+
+  it('command help localizes option descriptions and help suffix text', () => {
+    const result = runHelp('query', { GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('用法： gitnexus query [options] <search_query>');
+    expect(result.stdout).toContain('搜索知识图谱中与概念相关的执行流程');
+    expect(result.stdout).toContain('-r, --repo <name>     目标仓库（仅有一个已索引仓库时可省略）');
+    expect(result.stdout).toContain('-l, --limit <n>       最多返回的流程数（默认：5）');
+    expect(result.stdout).toContain('-h, --help            显示命令帮助');
+    expect(result.stdout).not.toContain('Target repository (omit if only one indexed)');
+  });
+
+  it('analyze help localizes custom environment variable help text', () => {
+    const result = runHelp('analyze', { GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('环境变量：');
+    expect(result.stdout).toContain('当参数和对应环境变量同时提供时，参数优先。');
+    expect(result.stdout).toContain('提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。');
+    expect(result.stdout).not.toContain('Environment variables:');
+    expect(result.stdout).not.toContain('Flags override the corresponding env vars');
+  });
+
   it('query help keeps advanced search options without importing analyze deps', () => {
     const result = runHelp('query');
 
