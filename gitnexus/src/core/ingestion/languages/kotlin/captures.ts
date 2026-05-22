@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -35,6 +35,7 @@ export function emitKotlinScopeCaptures(
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
+  out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
@@ -70,6 +71,30 @@ export function emitKotlinScopeCaptures(
       const anchor = grouped['@reference.read.member']!;
       const navNode = findNodeAtRange(tree.rootNode, anchor.range, 'navigation_expression');
       if (navNode === null || !shouldEmitReadMember(navNode)) continue;
+    }
+
+    // Virtual dispatch via constructor type (#1762). When a property
+    // declaration carries BOTH an explicit type annotation AND a
+    // constructor-style call value (e.g. `val animal: Animal = Dog()`),
+    // suppress the annotation capture so the constructor-inferred
+    // binding wins. This matches Kotlin's virtual dispatch semantics:
+    // `animal.speak()` should resolve to the overriding `Dog.speak`
+    // (the dynamic type), not `Animal.speak` (the static annotation).
+    //
+    // The annotation source has higher precedence than constructor-
+    // inferred in the generic scope-extractor (see
+    // `typeBindingStrength` in scope-extractor.ts), so the only way to
+    // make the constructor type prevail is to drop the annotation at
+    // emission time.
+    if (
+      grouped['@type-binding.annotation'] !== undefined &&
+      grouped['@type-binding.name'] !== undefined &&
+      grouped['@type-binding.type'] !== undefined
+    ) {
+      const annotation = grouped['@type-binding.annotation']!;
+      if (propertyDeclHasConstructorValue(tree.rootNode, annotation.range)) {
+        continue;
+      }
     }
 
     if (grouped['@scope.function'] !== undefined) {
@@ -186,15 +211,114 @@ function synthesizeKotlinLoopBindings(
   return out;
 }
 
+/**
+ * Synthesize narrowed type-bindings for Kotlin smart-cast forms — issue #1758.
+ *
+ * For each `when (x) { is T -> body }` and `if (x is T) body`, emits a
+ * `@type-binding.annotation` capture binding `x → T` anchored on the body
+ * node. The capture lands in the matching `@scope.block` scope (see query.ts
+ * smart-cast scopes), shadowing the outer parameter binding for calls inside
+ * the body without leaking across sibling arms or to `else`.
+ *
+ * Only narrows when:
+ *   - the `when` subject is a `simple_identifier` (not a call or field chain);
+ *   - the `when_entry` condition is exactly one `type_test` (skips `!is`,
+ *     compound conditions, range/`in`/value patterns);
+ *   - the `if_expression` condition is a `check_expression` of the form
+ *     `<simple_identifier> is <user_type>` and the then-branch is a
+ *     `control_structure_body`.
+ *
+ * `else` arms and non-narrowing conditions emit nothing — the fall-through to
+ * the outer scope's declared type is the correct semantic.
+ */
+function synthesizeKotlinSmartCastBindings(rootNode: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+
+  for (const whenNode of descendantsOfType(rootNode, 'when_expression')) {
+    const subjectName = extractWhenSubjectIdentifier(whenNode);
+    if (subjectName === null) continue;
+
+    for (const entry of whenNode.namedChildren) {
+      if (entry.type !== 'when_entry') continue;
+      const narrowedType = extractIsTestTargetType(entry);
+      if (narrowedType === null) continue;
+      const body = entry.namedChildren.find((child) => child.type === 'control_structure_body');
+      if (body === undefined) continue;
+      out.push(buildNarrowedTypeBindingCapture(subjectName.node, body, narrowedType));
+    }
+  }
+
+  for (const ifNode of descendantsOfType(rootNode, 'if_expression')) {
+    const check = ifNode.namedChildren.find((child) => child.type === 'check_expression');
+    if (check === undefined) continue;
+    const subject = check.namedChildren.find((child) => child.type === 'simple_identifier');
+    const typeNode = check.namedChildren.find((child) => isKotlinTypeNode(child));
+    if (subject === undefined || typeNode === undefined) continue;
+    // The first control_structure_body sibling is the then-branch; else
+    // branches (when present) appear as the second control_structure_body
+    // and are intentionally not narrowed.
+    const body = ifNode.namedChildren.find((child) => child.type === 'control_structure_body');
+    if (body === undefined) continue;
+    out.push(buildNarrowedTypeBindingCapture(subject, body, typeNode));
+  }
+
+  return out;
+}
+
+function extractWhenSubjectIdentifier(whenNode: SyntaxNode): { node: SyntaxNode } | null {
+  const subject = whenNode.namedChildren.find((child) => child.type === 'when_subject');
+  if (subject === undefined) return null;
+  const ident = subject.namedChildren.find((child) => child.type === 'simple_identifier');
+  return ident === undefined ? null : { node: ident };
+}
+
+function extractIsTestTargetType(whenEntry: SyntaxNode): SyntaxNode | null {
+  const condition = whenEntry.namedChildren.find((child) => child.type === 'when_condition');
+  if (condition === undefined) return null;
+  // Exactly one when_condition child must be a positive type_test.
+  // Compound conditions (multiple `when_condition` siblings joined with
+  // commas in some grammars) or negated `!is` are not safe to narrow.
+  if (condition.namedChildCount !== 1) return null;
+  const test = condition.namedChild(0);
+  if (test === null || test.type !== 'type_test') return null;
+  // `!is` produces a different node (`negated_type_test` in some grammars,
+  // or an extra `!` child in others) — defend by checking text prefix.
+  if (test.text.trim().startsWith('!')) return null;
+  return test.namedChildren.find((child) => isKotlinTypeNode(child)) ?? null;
+}
+
+function buildNarrowedTypeBindingCapture(
+  subject: SyntaxNode,
+  bodyAnchor: SyntaxNode,
+  typeNode: SyntaxNode,
+): CaptureMatch {
+  return {
+    '@type-binding.annotation': nodeToCapture('@type-binding.annotation', bodyAnchor),
+    '@type-binding.name': syntheticCapture('@type-binding.name', subject, subject.text),
+    '@type-binding.type': syntheticCapture(
+      '@type-binding.type',
+      typeNode,
+      normalizeKotlinType(typeNode.text),
+    ),
+    // Marker consumed by `kotlinBindingScopeFor` in simple-hooks.ts to
+    // override the scope-extractor's auto-hoist. Unbraced arm bodies
+    // (`is User -> obj.save()`) make the body anchor coincide with the
+    // Block scope's range; without this marker the binding would hoist
+    // to the enclosing function scope and lose its arm-local narrowing.
+    '@type-binding.narrowed': syntheticCapture('@type-binding.narrowed', bodyAnchor, '1'),
+  };
+}
+
 function synthesizeKotlinLocalAssignmentBindings(
   rootNode: SyntaxNode,
   returnTypes: ReadonlyMap<string, string>,
 ): CaptureMatch[] {
   const out: CaptureMatch[] = [];
+  const classMembers = collectKotlinClassMembers(rootNode);
   for (const fnNode of descendantsOfType(rootNode, 'function_declaration')) {
     const localTypes = new Map<string, string>();
     for (const prop of descendantsOfType(fnNode, 'property_declaration')) {
-      const inferred = inferKotlinPropertyType(prop, localTypes, returnTypes);
+      const inferred = inferKotlinPropertyType(prop, localTypes, returnTypes, classMembers);
       if (inferred === null) continue;
       localTypes.set(inferred.name.text, inferred.rawType);
       if (inferred.synthetic) {
@@ -215,6 +339,77 @@ function synthesizeKotlinLocalAssignmentBindings(
     }
   }
   return out;
+}
+
+interface KotlinClassMembers {
+  /** className → fieldName → raw type text */
+  readonly fields: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /** className → methodName → raw return type text */
+  readonly methods: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}
+
+/**
+ * Per-file class-member index — primary-constructor `val`/`var` params,
+ * body property declarations, and method return types. Used by
+ * `inferKotlinPropertyType` to walk single-level field and method chains
+ * like `val addr = user.address` and `val city = addr.getCity()` (#1760).
+ *
+ * Indexes by simple class name only. Multi-class collisions inside a
+ * single file will pick whichever class was visited last for that name
+ * — acceptable because Kotlin forbids same-name top-level classes in
+ * one file and per-file resolution is the design boundary here.
+ */
+function collectKotlinClassMembers(rootNode: SyntaxNode): KotlinClassMembers {
+  const fields = new Map<string, Map<string, string>>();
+  const methods = new Map<string, Map<string, string>>();
+  for (const cls of descendantsOfType(rootNode, 'class_declaration')) {
+    const className = cls.namedChildren.find((child) => child.type === 'type_identifier')?.text;
+    if (className === undefined) continue;
+    const fmap = fields.get(className) ?? new Map<string, string>();
+    const mmap = methods.get(className) ?? new Map<string, string>();
+
+    const primary = cls.namedChildren.find((child) => child.type === 'primary_constructor');
+    if (primary !== undefined) {
+      for (const param of primary.namedChildren) {
+        if (param.type !== 'class_parameter') continue;
+        // Constructor params are class fields ONLY when prefixed with
+        // `val`/`var` (binding_pattern_kind). Plain `fn(x: Int)`-style
+        // params remain locals to the constructor.
+        if (param.namedChildren.find((c) => c.type === 'binding_pattern_kind') === undefined) {
+          continue;
+        }
+        const fname = param.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+        const ftype = param.namedChildren.find((c) => isKotlinTypeNode(c))?.text;
+        if (fname !== undefined && ftype !== undefined) fmap.set(fname, ftype);
+      }
+    }
+
+    const body = cls.namedChildren.find((child) => child.type === 'class_body');
+    if (body !== undefined) {
+      for (const member of body.namedChildren) {
+        if (member.type === 'property_declaration') {
+          const v = member.namedChildren.find((c) => c.type === 'variable_declaration');
+          const fname = v?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+          const ftype = v?.namedChildren.find((c) => isKotlinTypeNode(c))?.text;
+          if (fname !== undefined && ftype !== undefined) fmap.set(fname, ftype);
+        } else if (member.type === 'function_declaration') {
+          const mname = member.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+          const paramsIdx = member.namedChildren.findIndex(
+            (c) => c.type === 'function_value_parameters',
+          );
+          const rtype =
+            paramsIdx < 0
+              ? undefined
+              : member.namedChildren.slice(paramsIdx + 1).find((c) => isKotlinTypeNode(c))?.text;
+          if (mname !== undefined && rtype !== undefined) mmap.set(mname, rtype);
+        }
+      }
+    }
+
+    fields.set(className, fmap);
+    methods.set(className, mmap);
+  }
+  return { fields, methods };
 }
 
 function collectKotlinLocalTypeTexts(
@@ -258,6 +453,7 @@ function inferKotlinPropertyType(
   prop: SyntaxNode,
   localTypes: ReadonlyMap<string, string>,
   returnTypes: ReadonlyMap<string, string>,
+  classMembers?: KotlinClassMembers,
 ): { name: SyntaxNode; rawType: string; source: SyntaxNode; synthetic: boolean } | null {
   const variable = prop.namedChildren.find((child) => child.type === 'variable_declaration');
   const name = variable?.namedChildren.find((child) => child.type === 'simple_identifier');
@@ -276,16 +472,72 @@ function inferKotlinPropertyType(
     return rawType === undefined ? null : { name, rawType, source: value, synthetic: true };
   }
 
+  if (value?.type === 'navigation_expression') {
+    // `val addr = user.address` — receiver type → field on that class (#1760).
+    const chained = inferKotlinNavigationFieldType(value, localTypes, classMembers);
+    if (chained === null) return null;
+    return { name, rawType: chained, source: value, synthetic: true };
+  }
+
   if (value?.type === 'call_expression') {
-    const callee = value.namedChildren.find((child) => child.type === 'simple_identifier');
+    const callee = value.namedChildren.find(
+      (child) => child.type === 'simple_identifier' || child.type === 'navigation_expression',
+    );
     if (callee === undefined) return null;
-    const rawType =
-      returnTypes.get(callee.text) ?? (isUppercaseName(callee.text) ? callee.text : null);
-    if (rawType === null) return null;
-    return { name, rawType, source: callee, synthetic: true };
+    if (callee.type === 'simple_identifier') {
+      const rawType =
+        returnTypes.get(callee.text) ?? (isUppercaseName(callee.text) ? callee.text : null);
+      if (rawType === null) return null;
+      return { name, rawType, source: callee, synthetic: true };
+    }
+    // `val city = addr.getCity()` — receiver type → method return on that class (#1760).
+    const chained = inferKotlinNavigationCallReturnType(callee, localTypes, classMembers);
+    if (chained === null) return null;
+    return { name, rawType: chained, source: callee, synthetic: true };
   }
 
   return null;
+}
+
+/** Resolve `receiver.field` → field's declared type, where `receiver`
+ *  is a simple identifier whose type is in `localTypes` and `field`
+ *  is declared on that type in `classMembers.fields`. Returns null
+ *  when any link in the chain is unknown — safe over-conservative. */
+function inferKotlinNavigationFieldType(
+  nav: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers | undefined,
+): string | null {
+  if (classMembers === undefined) return null;
+  const receiver = nav.namedChild(0);
+  if (receiver === null || receiver.type !== 'simple_identifier') return null;
+  const member = nav.namedChildren
+    .find((c) => c.type === 'navigation_suffix')
+    ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  if (member === undefined) return null;
+  const recvType = localTypes.get(receiver.text);
+  if (recvType === undefined) return null;
+  return classMembers.fields.get(normalizeKotlinType(recvType))?.get(member) ?? null;
+}
+
+/** Resolve `receiver.method()` → method's declared return type, where
+ *  `receiver` is a simple identifier whose type is in `localTypes` and
+ *  `method` is declared on that type in `classMembers.methods`. */
+function inferKotlinNavigationCallReturnType(
+  navCallee: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers | undefined,
+): string | null {
+  if (classMembers === undefined) return null;
+  const receiver = navCallee.namedChild(0);
+  if (receiver === null || receiver.type !== 'simple_identifier') return null;
+  const methodName = navCallee.namedChildren
+    .find((c) => c.type === 'navigation_suffix')
+    ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  if (methodName === undefined) return null;
+  const recvType = localTypes.get(receiver.text);
+  if (recvType === undefined) return null;
+  return classMembers.methods.get(normalizeKotlinType(recvType))?.get(methodName) ?? null;
 }
 
 function inferKotlinIterableElementType(
@@ -312,7 +564,16 @@ function inferKotlinIterableElementType(
     const callee = iterable.namedChildren.find((child) => child.type === 'simple_identifier');
     if (callee === undefined) return null;
     const raw = returnTypes.get(callee.text);
-    return raw === undefined ? null : kotlinContainerElementType(raw, 'values');
+    if (raw !== undefined) return kotlinContainerElementType(raw, 'values');
+    // Cross-file fallback (#1759): the callee's return type is unknown
+    // locally because the function lives in another file. Emit the
+    // callee name itself as the binding's rawName; `propagateImported
+    // ReturnTypes` will chain-follow `loopvar → callee → <ElementType>`
+    // once the imported module's `callee → ElementType` mirror lands at
+    // module scope. If `callee` isn't actually an imported callable
+    // (e.g. a local lambda or unrelated symbol), chain-follow fails
+    // safely and no edge is emitted.
+    return callee.text;
   }
 
   return null;
@@ -407,6 +668,21 @@ function shouldEmitReadMember(navNode: SyntaxNode): boolean {
   if (parent.type === 'call_expression') return false;
   if (parent.type === 'directly_assignable_expression') return false;
   return true;
+}
+
+/** True when the property_declaration anchored at `range` has a
+ *  `call_expression` value sibling (i.e. `val x: T = Foo()`). Used to
+ *  suppress the explicit-annotation type-binding capture so the
+ *  constructor-inferred binding wins (#1762). */
+function propertyDeclHasConstructorValue(rootNode: SyntaxNode, range: Range): boolean {
+  const propNode = findNodeAtRange(rootNode, range, 'property_declaration');
+  if (propNode === null) return false;
+  const variable = propNode.namedChildren.find((c) => c.type === 'variable_declaration');
+  if (variable === undefined) return false;
+  const value = propNode.namedChildren.find(
+    (c) => c.id !== variable.id && c.type !== 'binding_pattern_kind',
+  );
+  return value?.type === 'call_expression';
 }
 
 function callArguments(callNode: SyntaxNode): SyntaxNode[] {
