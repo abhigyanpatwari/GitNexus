@@ -375,4 +375,22 @@ describe('createChatModel', () => {
       },
     ]);
   });
+
+  it('rejects overlapping DeepSeek requests before reusing active messages', async () => {
+    const model = createChatModel({
+      provider: 'deepseek',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash',
+      temperature: 0.1,
+    } as any) as any;
+
+    model.completions.activeMessages = buildLangChainMessages([{ role: 'user', content: 'busy' }]);
+
+    await expect(
+      model.completions._generate(
+        buildLangChainMessages([{ role: 'user', content: 'Check the weather' }]),
+        { stream: false },
+      ),
+    ).rejects.toThrow('DeepSeekChatOpenAICompletions does not support overlapping requests');
+  });
 });

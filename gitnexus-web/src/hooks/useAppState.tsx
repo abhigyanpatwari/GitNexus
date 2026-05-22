@@ -628,6 +628,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
+      if (isChatLoading) return;
+
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
       // Also clear previous tool-driven AI highlights (highlight_in_graph)
@@ -1030,6 +1032,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
+      isChatLoading,
     ],
   );
 

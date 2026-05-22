@@ -27,12 +27,19 @@ export class DeepSeekChatOpenAICompletions<
 > extends ChatOpenAICompletions<CallOptions> {
   private activeMessages: BaseMessage[] | null = null;
 
+  private setActiveMessages(messages: BaseMessage[]): void {
+    if (this.activeMessages !== null) {
+      throw new Error('DeepSeekChatOpenAICompletions does not support overlapping requests');
+    }
+    this.activeMessages = messages;
+  }
+
   override async _generate(
     messages: BaseMessage[],
     options: this['ParsedCallOptions'],
     runManager?: CallbackManagerForLLMRun,
   ): Promise<ChatResult> {
-    this.activeMessages = messages;
+    this.setActiveMessages(messages);
     try {
       return await super._generate(messages, options, runManager);
     } finally {
@@ -45,7 +52,7 @@ export class DeepSeekChatOpenAICompletions<
     options: this['ParsedCallOptions'],
     runManager?: CallbackManagerForLLMRun,
   ): AsyncGenerator<ChatGenerationChunk> {
-    this.activeMessages = messages;
+    this.setActiveMessages(messages);
     try {
       yield* super._streamResponseChunks(messages, options, runManager);
     } finally {
@@ -84,6 +91,9 @@ export class DeepSeekChatOpenAI<
   override withConfig(
     config: Partial<CallOptions>,
   ): Runnable<BaseLanguageModelInput, AIMessageChunk, CallOptions> {
+    // Mirror ChatOpenAI.withConfig() for this LangChain version, but keep the
+    // DeepSeek subclass. Calling super.withConfig() would drop our custom
+    // completions serializer by returning a plain ChatOpenAI instance.
     const newModel = new DeepSeekChatOpenAI<CallOptions>(this.deepSeekFields);
     newModel.defaultOptions = {
       ...this.defaultOptions,
