@@ -4,6 +4,29 @@ import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/s
 export function populateKotlinOwners(parsed: ParsedFile): void {
   populateClassOwnedMembers(parsed);
   populateCompanionMembersOnEnclosingClass(parsed);
+  upgradeClassOwnedFunctionsToMethods(parsed);
+}
+
+/**
+ * Align scope-resolution `def.type` with the graph's node-label
+ * conventions: a `Function` def that lives inside a class body becomes
+ * a `Method`. The Kotlin extractor labels every `function_declaration`
+ * as `Function`, but the graph parsing-processor emits a `Method`
+ * graph-node label for class members. Without this realignment,
+ * `resolveDefGraphId`'s parameter-typed key lookup (gated on
+ * `def.type === 'Method'`) falls through to the simple-name fallback
+ * for class methods, collapsing same-name same-arity overloads onto
+ * the first-registered node (#1761).
+ *
+ * Only Method-bearing types are touched. Methods have a class owner
+ * (set by `populateClassOwnedMembers`) and a class-qualified name.
+ */
+function upgradeClassOwnedFunctionsToMethods(parsed: ParsedFile): void {
+  for (const def of parsed.localDefs) {
+    if (def.type !== 'Function') continue;
+    if (def.ownerId === undefined) continue;
+    (def as { type: SymbolDefinition['type'] }).type = 'Method';
+  }
 }
 
 function populateCompanionMembersOnEnclosingClass(parsed: ParsedFile): void {
