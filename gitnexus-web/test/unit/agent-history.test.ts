@@ -284,4 +284,95 @@ describe('createChatModel', () => {
     );
     expect(capturedRequest.messages[2].tool_call_id).toBe('call_weather');
   });
+
+  it('preserves reasoning_content through the streaming path used by DeepSeek tool calls', async () => {
+    const model = createChatModel({
+      provider: 'deepseek',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash',
+      temperature: 0.1,
+    } as any) as any;
+    model.completions.streaming = true;
+
+    async function* mockStream() {
+      yield {
+        id: 'chatcmpl-1',
+        model: 'deepseek-v4-flash',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              reasoning_content: 'Need the weather tool.',
+            },
+          },
+        ],
+      };
+      yield {
+        id: 'chatcmpl-1',
+        model: 'deepseek-v4-flash',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_weather',
+                  type: 'function',
+                  function: {
+                    name: 'get_weather',
+                    arguments: '{"location":"Hangzhou"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      };
+    }
+
+    model.completions.client = {
+      chat: {
+        completions: {
+          create: async () => mockStream(),
+        },
+      },
+    };
+
+    let streamedMessage: any;
+    for await (const chunk of model.completions._streamResponseChunks(
+      buildLangChainMessages([{ role: 'user', content: 'Check the weather' }]),
+      {},
+    )) {
+      streamedMessage = streamedMessage ? streamedMessage.concat(chunk.message) : chunk.message;
+    }
+
+    expect(streamedMessage.additional_kwargs.reasoning_content).toBe('Need the weather tool.');
+    expect(streamedMessage.tool_calls).toEqual([
+      {
+        id: 'call_weather',
+        name: 'get_weather',
+        args: { location: 'Hangzhou' },
+        type: 'tool_call',
+      },
+    ]);
+
+    expect(serializeAgentHistoryMessages([streamedMessage], 0)).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        reasoningContent: 'Need the weather tool.',
+        toolCalls: [
+          {
+            id: 'call_weather',
+            name: 'get_weather',
+            args: { location: 'Hangzhou' },
+            type: 'tool_call',
+          },
+        ],
+      },
+    ]);
+  });
 });

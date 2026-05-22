@@ -2,7 +2,7 @@
  * LLM Provider Types
  *
  * Type definitions for multi-provider LLM support.
- * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, and GLM5.
+ * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, GLM, and DeepSeek.
  */
 
 /**
@@ -113,7 +113,7 @@ export interface GLMConfig extends BaseProviderConfig {
 export interface DeepSeekConfig extends BaseProviderConfig {
   provider: 'deepseek';
   apiKey: string;
-  model: string; // e.g., 'deepseek-chat', 'deepseek-reasoner'
+  model: string; // e.g., 'deepseek-v4-flash', 'deepseek-v4-pro'
 }
 
 /**
