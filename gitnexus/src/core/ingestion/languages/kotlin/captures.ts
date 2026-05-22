@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -70,6 +70,30 @@ export function emitKotlinScopeCaptures(
       const anchor = grouped['@reference.read.member']!;
       const navNode = findNodeAtRange(tree.rootNode, anchor.range, 'navigation_expression');
       if (navNode === null || !shouldEmitReadMember(navNode)) continue;
+    }
+
+    // Virtual dispatch via constructor type (#1762). When a property
+    // declaration carries BOTH an explicit type annotation AND a
+    // constructor-style call value (e.g. `val animal: Animal = Dog()`),
+    // suppress the annotation capture so the constructor-inferred
+    // binding wins. This matches Kotlin's virtual dispatch semantics:
+    // `animal.speak()` should resolve to the overriding `Dog.speak`
+    // (the dynamic type), not `Animal.speak` (the static annotation).
+    //
+    // The annotation source has higher precedence than constructor-
+    // inferred in the generic scope-extractor (see
+    // `typeBindingStrength` in scope-extractor.ts), so the only way to
+    // make the constructor type prevail is to drop the annotation at
+    // emission time.
+    if (
+      grouped['@type-binding.annotation'] !== undefined &&
+      grouped['@type-binding.name'] !== undefined &&
+      grouped['@type-binding.type'] !== undefined
+    ) {
+      const annotation = grouped['@type-binding.annotation']!;
+      if (propertyDeclHasConstructorValue(tree.rootNode, annotation.range)) {
+        continue;
+      }
     }
 
     if (grouped['@scope.function'] !== undefined) {
@@ -407,6 +431,21 @@ function shouldEmitReadMember(navNode: SyntaxNode): boolean {
   if (parent.type === 'call_expression') return false;
   if (parent.type === 'directly_assignable_expression') return false;
   return true;
+}
+
+/** True when the property_declaration anchored at `range` has a
+ *  `call_expression` value sibling (i.e. `val x: T = Foo()`). Used to
+ *  suppress the explicit-annotation type-binding capture so the
+ *  constructor-inferred binding wins (#1762). */
+function propertyDeclHasConstructorValue(rootNode: SyntaxNode, range: Range): boolean {
+  const propNode = findNodeAtRange(rootNode, range, 'property_declaration');
+  if (propNode === null) return false;
+  const variable = propNode.namedChildren.find((c) => c.type === 'variable_declaration');
+  if (variable === undefined) return false;
+  const value = propNode.namedChildren.find(
+    (c) => c.id !== variable.id && c.type !== 'binding_pattern_kind',
+  );
+  return value?.type === 'call_expression';
 }
 
 function callArguments(callNode: SyntaxNode): SyntaxNode[] {
