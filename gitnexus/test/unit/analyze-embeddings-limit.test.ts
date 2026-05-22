@@ -104,4 +104,31 @@ describe('analyzeCommand --embeddings [limit] parsing', () => {
     expect(opts.embeddings).toBe(false);
     expect(opts.embeddingsNodeLimit).toBeUndefined();
   });
+
+  it('does not force process exit after a successful embedding analysis', async () => {
+    runFullAnalysisMock.mockResolvedValueOnce({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: { nodes: 1, edges: 0, communities: 0, processes: 0 },
+      alreadyUpToDate: false,
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      throw new Error(`unexpected process.exit(${String(code)})`);
+    }) as never);
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
+  it('classifies successful analyze shutdown by embedding mode', async () => {
+    const { shouldForceExitAfterAnalyzeSuccess } = await import('../../src/cli/analyze.js');
+
+    expect(shouldForceExitAfterAnalyzeSuccess(undefined)).toBe(true);
+    expect(shouldForceExitAfterAnalyzeSuccess({})).toBe(true);
+    expect(shouldForceExitAfterAnalyzeSuccess({ embeddings: true })).toBe(false);
+    expect(shouldForceExitAfterAnalyzeSuccess({ embeddings: '0' })).toBe(false);
+  });
 });

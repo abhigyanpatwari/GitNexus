@@ -5,7 +5,7 @@
  *
  * Delegates core analysis to the shared runFullAnalysis orchestrator.
  * This CLI wrapper handles: heap management, progress bar, SIGINT,
- * skill generation (--skills), summary output, and process.exit().
+ * skill generation (--skills), summary output, and shutdown behavior.
  */
 
 import path from 'path';
@@ -606,6 +606,20 @@ export const shouldGenerateCommunitySkillFiles = (
   pipelineResult: unknown,
 ): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
 
+/**
+ * Force-exit only on successful non-embedding analyzes.
+ *
+ * The forced exit works around native LadybugDB handles that can otherwise keep
+ * short-lived CLI invocations alive. Local embedding runs initialize ONNX
+ * Runtime through transformers.js, and on macOS arm64 / Node 20 that native
+ * stack can abort during `process.exit(0)` with
+ * `std::__1::system_error: mutex lock failed`. Let embedding-enabled runs
+ * unwind naturally after runFullAnalysis has closed LadybugDB.
+ */
+export const shouldForceExitAfterAnalyzeSuccess = (
+  options: Pick<AnalyzeOptions, 'embeddings'> | undefined,
+): boolean => !options?.embeddings;
+
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (await ensureHeap()) return;
   forceHeapOOMForTestIfEnabled();
@@ -617,10 +631,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
   // consumption, so they don't leak across `analyzeCommand` invocations in
-  // programmatic callers (tests, long-running hosts). `process.exit(0)` on
-  // the success path bypasses `finally` — intentional: when the process is
-  // exiting, restoration is moot. For early-return paths (validation
-  // errors) and the alreadyUpToDate fast path the finally restores the
+  // programmatic callers (tests, long-running hosts). A forced process exit on
+  // the non-embedding success path bypasses `finally` because the process is
+  // terminating. Natural-return paths, including embedding success, restore the
   // pre-call values.
   const envSnap = snapshotAnalyzeEnv();
   try {
@@ -1251,8 +1264,11 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     return;
   }
 
-  // LadybugDB's native module holds open handles that prevent Node from exiting.
-  // ONNX Runtime also registers native atexit hooks that segfault on some
-  // platforms (#38, #40). Force-exit to ensure clean termination.
-  process.exit(0);
+  if (shouldForceExitAfterAnalyzeSuccess(options)) {
+    // LadybugDB's native module can hold open handles that prevent Node from
+    // exiting after short-lived non-embedding analyzes. Embedding-enabled runs
+    // deliberately return naturally; forcing process.exit(0) after ONNX Runtime
+    // initialization can abort on macOS arm64 / Node 20 (#151).
+    process.exit(0);
+  }
 };
