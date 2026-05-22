@@ -626,21 +626,28 @@ Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
     }
   });
 
-  it('noStats + keep marker: stats line update is NOT corrupted by Always-Do tuple text (#1508 review F3)', async () => {
-    // Regression guard: with the old fallback regex `\(([^)]+)\)`, when
-    // noStats=true suppressed the canonical stats line from generated
-    // content, the fallback matched the FIRST parenthesized text in the
-    // template, which was `({target: "symbolName", direction: "upstream"})`
-    // from the Always Do bullet — silently writing that as the stats line.
+  it('noStats + keep marker: stats line drops the volatile counts (#1706)', async () => {
+    // #1706: --no-stats must win in the keep-marker path too. A lean block
+    // committed to git would otherwise churn the parenthetical counts on
+    // every analyze, producing no-value merge conflicts between branches.
+    // The parenthetical is stripped; the project name still refreshes.
+    //
+    // Also a regression guard (#1508 review F3): the rewritten stats line
+    // MUST NOT pick up the `({target: "symbolName", direction: "upstream"})`
+    // tuple from the Always Do bullet.
+    //
+    // Asserted for BOTH AGENTS.md and CLAUDE.md: generateAIContextFiles
+    // updates them through separate upsertGitNexusSection call sites, so the
+    // parity check guards against a future asymmetry between the two.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-nostats-'));
     try {
-      const claudePath = path.join(dir, 'CLAUDE.md');
       const seed = `<!-- gitnexus:start -->
 <!-- gitnexus:keep -->
 Indexed as **NoStatsTest** (1 symbols, 1 relationships, 1 execution flows). Custom.
 <!-- gitnexus:end -->
 `;
-      await fs.writeFile(claudePath, seed, 'utf-8');
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
 
       const stats = { nodes: 42, edges: 84, processes: 3 };
       await generateAIContextFiles(
@@ -649,16 +656,84 @@ Indexed as **NoStatsTest** (1 symbols, 1 relationships, 1 execution flows). Cust
         'NoStatsTest',
         stats,
         undefined,
-        { noStats: true },
+        {
+          noStats: true,
+        },
       );
 
+      for (const f of ['CLAUDE.md', 'AGENTS.md']) {
+        const result = await fs.readFile(path.join(dir, f), 'utf-8');
+        // Stats line MUST NOT have been corrupted with the Always-Do tuple text
+        expect(result, f).not.toMatch(/\(\{target:/);
+        expect(result, f).not.toMatch(/direction:\s*"upstream"/);
+        // The volatile counts MUST be gone — no parenthetical, no leaked numbers.
+        expect(result, f).not.toContain('42 symbols');
+        expect(result, f).not.toMatch(/\(\d+\s+symbols,/);
+        // The count-free stats line is still present and the name refreshed.
+        expect(result, f).toContain('Indexed as **NoStatsTest**');
+        // Custom prose still preserved
+        expect(result, f).toContain('Custom.');
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('noStats + keep marker: project name still refreshes when counts are stripped (#1706)', async () => {
+    // Stripping the parenthetical must not freeze the whole line: a repo
+    // rename should still propagate into the keep-section stats line, even
+    // when the existing line has no parenthetical to match against.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-nostats-rename-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Seed already in the count-free shape a prior --no-stats run produces.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **OldName**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 7, edges: 8, processes: 9 };
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'NewName', stats, undefined, {
+        noStats: true,
+      });
+
       const result = await fs.readFile(claudePath, 'utf-8');
-      // Stats line MUST NOT have been corrupted with the Always-Do tuple text
-      expect(result).not.toMatch(/\(\{target:/);
-      expect(result).not.toMatch(/direction:\s*"upstream"/);
-      // Stats line should reflect a sensible numeric update (passed stats)
-      expect(result).toContain('42 symbols');
-      // Custom prose still preserved
+      expect(result).toContain('Indexed as **NewName**');
+      expect(result).not.toContain('OldName');
+      expect(result).not.toMatch(/\(\d+\s+symbols,/);
+      expect(result).toContain('Custom.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('noStats + keep marker: counts return when --no-stats is dropped after a count-free run (#1706)', async () => {
+    // --no-stats must not be sticky: once a prior run has left the
+    // keep-section line count-free, a later run WITHOUT --no-stats must
+    // restore the parenthetical. The optional parenthetical in statsPattern
+    // is what keeps the count-free line re-matchable.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-counts-return-'));
+    try {
+      const claudePath = path.join(dir, 'CLAUDE.md');
+      // Seed already in the count-free shape a prior --no-stats run produces.
+      const seed = `<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **FreezeTest**. Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(claudePath, seed, 'utf-8');
+
+      const stats = { nodes: 11, edges: 22, processes: 3 };
+      // No noStats option — the counts must come back.
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'FreezeTest', stats);
+
+      const result = await fs.readFile(claudePath, 'utf-8');
+      expect(result).toContain(
+        'Indexed as **FreezeTest** (11 symbols, 22 relationships, 3 execution flows)',
+      );
+      // Suffix prose after the stats line is preserved.
       expect(result).toContain('Custom.');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
