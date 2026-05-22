@@ -2929,11 +2929,6 @@ export const processCallsFromExtracted = async (
       onProgress?.(filesProcessed, totalFiles);
       await yieldToEventLoop();
     }
-    if (profileCalls && (filesProcessed === 1 || filesProcessed % logEveryN === 0)) {
-      logDeferredProfile(
-        `calls ${filesProcessed}/${totalFiles} file=${filePath} sites=${calls.length}`,
-      );
-    }
 
     // Registry-primary gate: skip Python (etc.) entirely when the
     // scope-based phase owns CALLS for this language.
@@ -2941,6 +2936,12 @@ export const processCallsFromExtracted = async (
     if (fileLanguage && isRegistryPrimary(fileLanguage)) {
       skippedRegistryPrimaryFiles++;
       continue;
+    }
+
+    if (profileCalls && (filesProcessed === 1 || filesProcessed % logEveryN === 0)) {
+      logDeferredProfile(
+        `calls ${filesProcessed}/${totalFiles} file=${filePath} sites=${calls.length}`,
+      );
     }
 
     ctx.enableCache(filePath);

@@ -828,13 +828,21 @@ export async function runChunkedParseAndResolve(
       }
     }
 
-    const tBuildHeritage = deferredProfile ? profileNow() : 0n;
-    const fullWorkerHeritageMap =
-      deferredWorkerHeritage.length > 0
-        ? buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
-        : undefined;
-    if (tBuildHeritage !== 0n) {
-      logDeferredProfile(`buildHeritageMap wall: ${profileElapsedMs(tBuildHeritage).toFixed(0)}ms`);
+    let fullWorkerHeritageMap: ReturnType<typeof buildHeritageMap> | undefined;
+    if (deferredWorkerHeritage.length > 0) {
+      const tBuildHeritage = deferredProfile ? profileNow() : 0n;
+      fullWorkerHeritageMap = buildHeritageMap(
+        deferredWorkerHeritage,
+        ctx,
+        getHeritageStrategyForLanguage,
+      );
+      if (tBuildHeritage !== 0n) {
+        logDeferredProfile(
+          `buildHeritageMap wall: ${profileElapsedMs(tBuildHeritage).toFixed(0)}ms`,
+        );
+      }
+    } else if (deferredProfile) {
+      logDeferredProfile('buildHeritageMap: skipped (no heritage records)');
     }
     // U15 (lightweight M1): buildHeritageMap is the LAST consumer of the
     // raw `deferredWorkerHeritage` records — processCallsFromExtracted
