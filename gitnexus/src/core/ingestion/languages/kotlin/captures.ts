@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
+import { makeScopeId, type Capture, type CaptureMatch, type Range } from 'gitnexus-shared';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -13,12 +13,13 @@ import { recordKotlinCacheHit, recordKotlinCacheMiss } from './cache-stats.js';
 import { normalizeKotlinType } from './interpret.js';
 import { synthesizeKotlinReceiverBinding } from './receiver-binding.js';
 import { getKotlinParser, getKotlinScopeQuery } from './query.js';
+import { markCompanionScope } from './companion-scopes.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
 
 export function emitKotlinScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getKotlinParser>['parse']> | undefined;
@@ -36,6 +37,7 @@ export function emitKotlinScopeCaptures(
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
+  out.push(...synthesizeKotlinLambdaBindings(tree.rootNode, returnTypes));
 
   for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
     const grouped: Record<string, Capture> = {};
@@ -44,6 +46,27 @@ export function emitKotlinScopeCaptures(
       grouped[tag] = nodeToCapture(tag, capture.node);
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // Companion-object marker (#1756 / U4). The `@scope.companion`
+    // capture is a side-channel marker — it shares its range with the
+    // existing `(companion_object) @scope.class` rule, so the Class
+    // scope already exists in the scope tree. Record the scope id into
+    // the per-file companion-scope set so `populateCompanionMembersOn
+    // EnclosingClass` (owners.ts) can identify companion scopes
+    // unambiguously, regardless of whether they are anonymous, named,
+    // or contain nested classes. The match itself is consumed here and
+    // NOT pushed to the output — the scope-extractor would reject the
+    // `companion` kind suffix anyway, but suppressing the emit keeps
+    // downstream pipelines from re-processing the same range twice.
+    if (grouped['@scope.companion'] !== undefined) {
+      const scopeId = makeScopeId({
+        filePath,
+        range: grouped['@scope.companion']!.range,
+        kind: 'Class',
+      });
+      markCompanionScope(filePath, scopeId);
+      continue;
+    }
 
     if (grouped['@import.statement'] !== undefined) {
       const importNode = findNodeAtRange(
@@ -309,6 +332,330 @@ function buildNarrowedTypeBindingCapture(
   };
 }
 
+/**
+ * Synthesize lambda-body type-bindings — issue #1757.
+ *
+ * For each `lambda_literal` we emit one or more `@type-binding.annotation`
+ * captures anchored INSIDE the lambda body (the lambda's `statements` child
+ * — or the `lambda_literal` itself when no statements child exists). The
+ * `@scope.block` query rule (see query.ts) makes each `lambda_literal` a
+ * Block scope, and the `@type-binding.lambda-scoped` marker forces the
+ * scope-extractor to keep the binding at the innermost (lambda body) scope
+ * via `kotlinBindingScopeFor`. This guarantees:
+ *   - explicit parameter names (`{ user -> ... }`) bind only inside the
+ *     body, NOT in the enclosing function scope;
+ *   - implicit `it` is visible only inside the lambda body and shadows
+ *     any same-named outer binding (`val it = "outer"; users.forEach
+ *     { it.save() }` — inner `it` is the lambda parameter);
+ *   - nested lambdas shadow deterministically (innermost lambda's `it`
+ *     wins; outer lambda's parameters are still visible by their own
+ *     names through the parent scope chain).
+ *
+ * Receiver-type inference is best-effort: the lambda's call-expression
+ * parent is inspected; if the receiver has a known local-variable type
+ * and the call's member is a well-known stdlib idiom (`forEach`/`map`/
+ * `filter` → element type of the collection; `let`/`apply`/`also`/`run`/
+ * `takeIf`/`takeUnless`/`use` → receiver type itself), the inferred type
+ * is attached. When inference fails (chained receivers, unknown member,
+ * non-stdlib idiom), we still emit the binding with a sentinel/erased
+ * type so the binding's scope semantics (no leak; no `it` cross-fire) are
+ * enforced — call-resolution from the body still falls through to free-
+ * call fallback, which is the correct behavior when the type is unknown.
+ *
+ * Standard-library coverage: `forEach`, `map`, `filter`, `flatMap`,
+ * `mapNotNull`, `filterNotNull`, `onEach`, `find`, `firstOrNull`,
+ * `lastOrNull`, `any`, `all`, `none`, `count`, `forEachIndexed`,
+ * `let`, `apply`, `also`, `run`, `takeIf`, `takeUnless`, `use`, `with`.
+ *
+ * Lambda-receiver typing for non-stdlib higher-order functions is a
+ * follow-up; the binding-existence guarantee above is the minimum
+ * acceptance criterion per the U9 plan.
+ */
+function synthesizeKotlinLambdaBindings(
+  rootNode: SyntaxNode,
+  returnTypes: ReadonlyMap<string, string>,
+): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const classMembers = collectKotlinClassMembers(rootNode);
+
+  for (const fnNode of descendantsOfType(rootNode, 'function_declaration')) {
+    const localTypes = collectKotlinLocalTypeTexts(fnNode, returnTypes);
+    for (const lambdaNode of descendantsOfType(fnNode, 'lambda_literal')) {
+      const anchor = lambdaBodyAnchor(lambdaNode);
+      if (anchor === null) continue;
+
+      const inferredType = inferKotlinLambdaReceiverType(
+        lambdaNode,
+        localTypes,
+        returnTypes,
+        classMembers,
+      );
+
+      const params = explicitLambdaParameters(lambdaNode);
+      if (params.length === 0) {
+        // No explicit `(x ->)` parameter list — implicit `it` is in
+        // scope inside the body. Synthesize the `it` type-binding so
+        // calls like `it.save()` resolve through the typeBinding chain.
+        const typeNode = inferredType?.typeNode ?? lambdaNode;
+        const typeText = inferredType?.typeText ?? '';
+        out.push(buildLambdaTypeBindingCapture(anchor, 'it', typeNode, typeText));
+      } else {
+        // Explicit parameters: `{ user -> ... }`, `{ (a, b) -> ... }`,
+        // `{ key, value -> ... }`. Emit one binding per parameter.
+        // For multi-arg lambdas (destructuring, `forEachIndexed { i, x
+        // -> ... }`), the per-arg type inference is finer than what we
+        // currently support — we bind the FIRST parameter to the
+        // inferred receiver type (matches single-arg idioms) and bind
+        // additional parameters with an empty/erased type, which still
+        // gates leakage but won't drive call resolution for those names.
+        for (let i = 0; i < params.length; i++) {
+          const paramName = params[i]!.text;
+          const typeNode = i === 0 ? (inferredType?.typeNode ?? params[i]!) : params[i]!;
+          const typeText = i === 0 ? (inferredType?.typeText ?? '') : '';
+          out.push(buildLambdaTypeBindingCapture(anchor, paramName, typeNode, typeText));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Anchor node used for synthesized lambda-body type-bindings.
+ *  Prefers the `statements` child of `lambda_literal` (always strictly
+ *  inside the lambda body, so the scope-extractor's `rangesEqual` auto-
+ *  hoist check fails — the binding stays in the Block scope). Falls
+ *  back to the lambda_literal itself when no statements child exists
+ *  (e.g. empty lambda); the `@type-binding.lambda-scoped` marker in
+ *  `kotlinBindingScopeFor` then forces no-hoist explicitly. */
+function lambdaBodyAnchor(lambdaNode: SyntaxNode): SyntaxNode | null {
+  const statements = lambdaNode.namedChildren.find((c) => c.type === 'statements');
+  return statements ?? lambdaNode;
+}
+
+/** Extract explicit lambda parameter `simple_identifier` nodes from a
+ *  `lambda_literal`. Returns an empty array when no `lambda_parameters`
+ *  is present (implicit `it` form). */
+function explicitLambdaParameters(lambdaNode: SyntaxNode): SyntaxNode[] {
+  const params = lambdaNode.namedChildren.find((c) => c.type === 'lambda_parameters');
+  if (params === undefined) return [];
+  const out: SyntaxNode[] = [];
+  for (const child of params.namedChildren) {
+    if (child.type !== 'variable_declaration') continue;
+    const ident = child.namedChildren.find((c) => c.type === 'simple_identifier');
+    if (ident !== undefined) out.push(ident);
+  }
+  return out;
+}
+
+function buildLambdaTypeBindingCapture(
+  anchor: SyntaxNode,
+  name: string,
+  typeNode: SyntaxNode,
+  typeText: string,
+): CaptureMatch {
+  return {
+    '@type-binding.annotation': nodeToCapture('@type-binding.annotation', anchor),
+    '@type-binding.name': syntheticCapture('@type-binding.name', anchor, name),
+    '@type-binding.type': syntheticCapture(
+      '@type-binding.type',
+      typeNode,
+      typeText === '' ? '' : normalizeKotlinType(typeText),
+    ),
+    // Marker consumed by `kotlinBindingScopeFor` (simple-hooks.ts) to
+    // pin this binding inside the lambda Block scope — without it the
+    // scope-extractor would auto-hoist the binding to the enclosing
+    // function scope and `it` (or the lambda parameter name) would
+    // leak past the closing brace.
+    '@type-binding.lambda-scoped': syntheticCapture('@type-binding.lambda-scoped', anchor, '1'),
+  };
+}
+
+/** Stdlib higher-order functions whose lambda parameter receives the
+ *  ELEMENT type of the receiver collection (Map / Iterable element). */
+const KOTLIN_ELEMENT_TYPE_LAMBDAS = new Set([
+  'forEach',
+  'forEachIndexed',
+  'map',
+  'mapNotNull',
+  'mapIndexed',
+  'filter',
+  'filterNot',
+  'filterNotNull',
+  'filterIsInstance',
+  'flatMap',
+  'flatten',
+  'onEach',
+  'find',
+  'findLast',
+  'firstOrNull',
+  'lastOrNull',
+  'singleOrNull',
+  'any',
+  'all',
+  'none',
+  'count',
+  'partition',
+  'sortedBy',
+  'sortedByDescending',
+  'groupBy',
+  'associate',
+  'associateBy',
+  'associateWith',
+  'minByOrNull',
+  'maxByOrNull',
+  'sumOf',
+  'distinctBy',
+]);
+
+/** Stdlib scope functions whose lambda receives the RECEIVER itself as
+ *  `it` (or as `this` for `apply`/`run`/`with`). For the binding-
+ *  existence guarantee we treat both forms the same way — `it` binds
+ *  to the receiver type; `apply`/`run`/`with` callers see free calls
+ *  inside the body which fall through to free-call resolution against
+ *  the enclosing scope (no `this`-aware dispatch yet — follow-up). */
+const KOTLIN_SCOPE_FUNCTION_LAMBDAS = new Set(['let', 'also', 'takeIf', 'takeUnless', 'use']);
+
+/** `apply`, `run`, `with` expose the receiver as `this` rather than
+ *  `it`. We still synthesize an `it` binding because the lambda may
+ *  reference the receiver elsewhere — but the more common usage
+ *  (`user.apply { save() }`) goes through free-call resolution on the
+ *  body, not through `it`. Including these here keeps the binding
+ *  scope correct without claiming we resolve `this`-form correctly. */
+const KOTLIN_THIS_RECEIVER_LAMBDAS = new Set(['apply', 'run', 'with']);
+
+/** Walk up from `lambdaNode` to the enclosing `call_expression` and
+ *  infer the lambda parameter's type from the call's receiver and
+ *  member name. Returns null when the inference path is not yet
+ *  supported (chained receivers, unknown member, non-stdlib idiom).
+ *
+ *  Best-effort: a null return is harmless — `synthesizeKotlinLambda
+ *  Bindings` still emits the binding with an empty type so the scope
+ *  semantics (no leak, no cross-fire) are enforced; only the call-
+ *  resolution path from `it.method()` may fall through to free-call
+ *  fallback when the type isn't known. */
+function inferKotlinLambdaReceiverType(
+  lambdaNode: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  returnTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers,
+): { typeText: string; typeNode: SyntaxNode } | null {
+  const callExpr = findEnclosingCallExpression(lambdaNode);
+  if (callExpr === null) return null;
+  const callee = callExpr.namedChildren.find(
+    (c) => c.type === 'navigation_expression' || c.type === 'simple_identifier',
+  );
+  if (callee === undefined) return null;
+
+  if (callee.type === 'simple_identifier') {
+    // `with(receiver) { ... }` — argument is the receiver. Not yet
+    // wired through; defer to follow-up.
+    return null;
+  }
+
+  // navigation_expression: <receiver>.<member>
+  const receiver = callee.namedChild(0);
+  const memberName = callee.namedChildren
+    .find((c) => c.type === 'navigation_suffix')
+    ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  if (receiver === null || memberName === undefined) return null;
+
+  const receiverType = inferKotlinLambdaReceiverExpressionType(
+    receiver,
+    localTypes,
+    returnTypes,
+    classMembers,
+  );
+  if (receiverType === null) return null;
+
+  if (KOTLIN_ELEMENT_TYPE_LAMBDAS.has(memberName)) {
+    const element = kotlinContainerElementType(receiverType, 'values');
+    if (element === null || element === '') return null;
+    return { typeText: element, typeNode: lambdaNode };
+  }
+
+  if (
+    KOTLIN_SCOPE_FUNCTION_LAMBDAS.has(memberName) ||
+    KOTLIN_THIS_RECEIVER_LAMBDAS.has(memberName)
+  ) {
+    // Strip nullable suffix for `?.let { ... }` semantics — inside the
+    // body, the receiver is non-null per Kotlin smart-cast.
+    const stripped = normalizeKotlinType(receiverType);
+    return { typeText: stripped, typeNode: lambdaNode };
+  }
+
+  return null;
+}
+
+/** Infer the static type of the expression that produced the lambda's
+ *  enclosing call. Supports: `simple_identifier` (lookup in
+ *  `localTypes`), `indexing_expression` on a Map-typed receiver, and
+ *  `call_expression` whose callee return type is in `returnTypes`. */
+function inferKotlinLambdaReceiverExpressionType(
+  receiver: SyntaxNode,
+  localTypes: ReadonlyMap<string, string>,
+  returnTypes: ReadonlyMap<string, string>,
+  classMembers: KotlinClassMembers,
+): string | null {
+  if (receiver.type === 'simple_identifier') {
+    return localTypes.get(receiver.text) ?? null;
+  }
+
+  if (receiver.type === 'indexing_expression') {
+    // `posts[user]` — the underlying receiver's container type tells
+    // us the element/value type.
+    const base = receiver.namedChild(0);
+    if (base === null) return null;
+    const baseType = base.type === 'simple_identifier' ? localTypes.get(base.text) : null;
+    if (baseType === undefined || baseType === null) return null;
+    // Indexing a Map returns the value type; indexing a List returns
+    // the element type. `kotlinContainerElementType` already encodes
+    // both via the 'values' tag.
+    return kotlinContainerElementType(baseType, 'values');
+  }
+
+  if (receiver.type === 'navigation_expression') {
+    // `users.map { ... }` chain — receiver is itself a navigation/
+    // call. Tier-2 chain inference: try the navigation field/method.
+    const navField = inferKotlinNavigationFieldType(receiver, localTypes, classMembers);
+    if (navField !== null) return navField;
+    const callee = receiver.namedChildren
+      .find((c) => c.type === 'navigation_suffix')
+      ?.namedChildren.find((c) => c.type === 'simple_identifier');
+    if (callee !== undefined) {
+      return inferKotlinNavigationCallReturnType(receiver, localTypes, classMembers);
+    }
+    return null;
+  }
+
+  if (receiver.type === 'call_expression') {
+    const callee = receiver.namedChildren.find((c) => c.type === 'simple_identifier');
+    if (callee === undefined) return null;
+    return returnTypes.get(callee.text) ?? null;
+  }
+
+  return null;
+}
+
+/** Walk up from `lambdaNode` (lambda_literal) to the enclosing call:
+ *  `lambda_literal → annotated_lambda → call_suffix → call_expression`
+ *  for trailing lambdas, or `lambda_literal → value_argument →
+ *  value_arguments → call_suffix → call_expression` for paren form.
+ *  Returns null if the lambda is not inside a call. */
+function findEnclosingCallExpression(lambdaNode: SyntaxNode): SyntaxNode | null {
+  let current: SyntaxNode | null = lambdaNode.parent;
+  while (current !== null) {
+    if (current.type === 'call_expression') return current;
+    // Don't cross out of the immediate call boundary — if we hit a
+    // function_body or function_declaration ancestor, the lambda is
+    // not call-bound.
+    if (current.type === 'function_body' || current.type === 'function_declaration') {
+      return null;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
 function synthesizeKotlinLocalAssignmentBindings(
   rootNode: SyntaxNode,
   returnTypes: ReadonlyMap<string, string>,
@@ -393,15 +740,21 @@ function collectKotlinClassMembers(rootNode: SyntaxNode): KotlinClassMembers {
           const ftype = v?.namedChildren.find((c) => isKotlinTypeNode(c))?.text;
           if (fname !== undefined && ftype !== undefined) fmap.set(fname, ftype);
         } else if (member.type === 'function_declaration') {
-          const mname = member.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
-          const paramsIdx = member.namedChildren.findIndex(
-            (c) => c.type === 'function_value_parameters',
-          );
-          const rtype =
-            paramsIdx < 0
-              ? undefined
-              : member.namedChildren.slice(paramsIdx + 1).find((c) => isKotlinTypeNode(c))?.text;
-          if (mname !== undefined && rtype !== undefined) mmap.set(mname, rtype);
+          collectKotlinFunctionReturn(member, mmap);
+        } else if (member.type === 'companion_object') {
+          // Companion-object methods (`companion object { fun create() … }`)
+          // are addressable via the outer class name (`Logger.create()`).
+          // Register them on the outer class so chain-binding for
+          // `val x = Logger.create(...)` picks up the return type (#1756).
+          // The receiver-side filtering needed to prevent
+          // `instance.companionMethod()` crossover is handled elsewhere.
+          const compBody = member.namedChildren.find((c) => c.type === 'class_body');
+          if (compBody !== undefined) {
+            for (const compMember of compBody.namedChildren) {
+              if (compMember.type !== 'function_declaration') continue;
+              collectKotlinFunctionReturn(compMember, mmap);
+            }
+          }
         }
       }
     }
@@ -410,6 +763,16 @@ function collectKotlinClassMembers(rootNode: SyntaxNode): KotlinClassMembers {
     methods.set(className, mmap);
   }
   return { fields, methods };
+}
+
+function collectKotlinFunctionReturn(fnNode: SyntaxNode, target: Map<string, string>): void {
+  const mname = fnNode.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
+  const paramsIdx = fnNode.namedChildren.findIndex((c) => c.type === 'function_value_parameters');
+  const rtype =
+    paramsIdx < 0
+      ? undefined
+      : fnNode.namedChildren.slice(paramsIdx + 1).find((c) => isKotlinTypeNode(c))?.text;
+  if (mname !== undefined && rtype !== undefined) target.set(mname, rtype);
 }
 
 function collectKotlinLocalTypeTexts(
@@ -520,9 +883,19 @@ function inferKotlinNavigationFieldType(
   return classMembers.fields.get(normalizeKotlinType(recvType))?.get(member) ?? null;
 }
 
-/** Resolve `receiver.method()` → method's declared return type, where
- *  `receiver` is a simple identifier whose type is in `localTypes` and
- *  `method` is declared on that type in `classMembers.methods`. */
+/** Resolve `receiver.method()` → method's declared return type. The
+ *  `receiver` is a simple identifier; we try two interpretations in
+ *  order:
+ *
+ *    1. `receiver` is a local variable whose type is in `localTypes` —
+ *       look up `method` on that type's class members.
+ *    2. `receiver` is itself a class name (e.g. `Logger.create("app")`,
+ *       a companion-object call via the class) — look up `method` on
+ *       `classMembers.methods.get(receiver.text)` directly.
+ *
+ *  Tier 2 supports `val logger = Logger.create(...)` patterns where the
+ *  RHS is a companion-object factory: the loop variable's type is the
+ *  factory's return type (#1756). */
 function inferKotlinNavigationCallReturnType(
   navCallee: SyntaxNode,
   localTypes: ReadonlyMap<string, string>,
@@ -536,8 +909,10 @@ function inferKotlinNavigationCallReturnType(
     ?.namedChildren.find((c) => c.type === 'simple_identifier')?.text;
   if (methodName === undefined) return null;
   const recvType = localTypes.get(receiver.text);
-  if (recvType === undefined) return null;
-  return classMembers.methods.get(normalizeKotlinType(recvType))?.get(methodName) ?? null;
+  if (recvType !== undefined) {
+    return classMembers.methods.get(normalizeKotlinType(recvType))?.get(methodName) ?? null;
+  }
+  return classMembers.methods.get(receiver.text)?.get(methodName) ?? null;
 }
 
 function inferKotlinIterableElementType(
