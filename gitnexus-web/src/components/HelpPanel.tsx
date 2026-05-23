@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, GitBranch, Search, Filter, Zap, Keyboard, BarChart2, HelpCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface HelpPanelProps {
   isOpen: boolean;
@@ -12,34 +13,33 @@ type TabId = 'overview' | 'graph' | 'search' | 'ai' | 'shortcuts' | 'status';
 
 interface Tab {
   id: TabId;
-  label: string;
   icon: React.ReactNode;
 }
 
 const tabs: Tab[] = [
-  { id: 'overview', label: 'Overview', icon: <HelpCircle className="h-4 w-4" /> },
-  { id: 'graph', label: 'Graph & nodes', icon: <GitBranch className="h-4 w-4" /> },
-  { id: 'search', label: 'Search & filter', icon: <Search className="h-4 w-4" /> },
-  { id: 'ai', label: 'Nexus AI', icon: <Zap className="h-4 w-4" /> },
-  { id: 'shortcuts', label: 'Shortcuts', icon: <Keyboard className="h-4 w-4" /> },
-  { id: 'status', label: 'Status bar', icon: <BarChart2 className="h-4 w-4" /> },
+  { id: 'overview', icon: <HelpCircle className="h-4 w-4" /> },
+  { id: 'graph', icon: <GitBranch className="h-4 w-4" /> },
+  { id: 'search', icon: <Search className="h-4 w-4" /> },
+  { id: 'ai', icon: <Zap className="h-4 w-4" /> },
+  { id: 'shortcuts', icon: <Keyboard className="h-4 w-4" /> },
+  { id: 'status', icon: <BarChart2 className="h-4 w-4" /> },
 ];
 
 const shortcuts = [
-  { label: 'Search nodes', mac: '⌘ K', win: 'Ctrl K' },
-  { label: 'Deselect / close', mac: 'Esc', win: 'Esc' },
+  { labelKey: 'shortcuts.searchNodes', mac: '⌘ K', win: 'Ctrl K' },
+  { labelKey: 'shortcuts.deselectClose', mac: 'Esc', win: 'Esc' },
 ];
 
 const nodeColors = [
-  { color: '#10b981', label: 'Function', desc: 'Function declarations' },
-  { color: '#3b82f6', label: 'File', desc: 'Source files' },
-  { color: '#f59e0b', label: 'Class', desc: 'Class declarations' },
-  { color: '#14b8a6', label: 'Method', desc: 'Class methods' },
-  { color: '#ec4899', label: 'Interface', desc: 'TypeScript interfaces' },
-  { color: '#6366f1', label: 'Folder', desc: 'Directory nodes' },
+  { color: '#10b981', labelKey: 'nodeTypes.function', descKey: 'nodeTypes.functionDesc' },
+  { color: '#3b82f6', labelKey: 'nodeTypes.file', descKey: 'nodeTypes.fileDesc' },
+  { color: '#f59e0b', labelKey: 'nodeTypes.class', descKey: 'nodeTypes.classDesc' },
+  { color: '#14b8a6', labelKey: 'nodeTypes.method', descKey: 'nodeTypes.methodDesc' },
+  { color: '#ec4899', labelKey: 'nodeTypes.interface', descKey: 'nodeTypes.interfaceDesc' },
+  { color: '#6366f1', labelKey: 'nodeTypes.folder', descKey: 'nodeTypes.folderDesc' },
 ];
 
-const getStatusItems = (nodeCount: number, edgeCount: number) => [
+const getStatusItems = (t: (key: string) => string, nodeCount: number, edgeCount: number) => [
   {
     badge: (
       <span
@@ -53,8 +53,8 @@ const getStatusItems = (nodeCount: number, edgeCount: number) => [
         }}
       />
     ),
-    title: 'Ready',
-    desc: 'Graph is fully loaded and interactive',
+    title: t('status.ready'),
+    desc: t('status.readyDesc'),
   },
   {
     badge: (
@@ -62,8 +62,8 @@ const getStatusItems = (nodeCount: number, edgeCount: number) => [
         {nodeCount}
       </span>
     ),
-    title: 'Nodes count',
-    desc: 'Total files and symbols in the graph',
+    title: t('status.nodesCount'),
+    desc: t('status.nodesCountDesc'),
   },
   {
     badge: (
@@ -71,8 +71,8 @@ const getStatusItems = (nodeCount: number, edgeCount: number) => [
         {edgeCount}
       </span>
     ),
-    title: 'Edges count',
-    desc: 'Import / dependency connections',
+    title: t('status.edgesCount'),
+    desc: t('status.edgesCountDesc'),
   },
   {
     badge: (
@@ -85,11 +85,11 @@ const getStatusItems = (nodeCount: number, edgeCount: number) => [
           whiteSpace: 'nowrap',
         }}
       >
-        Semantic Ready
+        {t('status.semanticReadyBadge')}
       </span>
     ),
-    title: 'AI index status',
-    desc: 'Repo is fully indexed for AI queries',
+    title: t('status.aiIndexStatus'),
+    desc: t('status.aiIndexStatusDesc'),
   },
   // { badge: <span style={{ fontSize: 11, fontWeight: 500, color: '#9ca3af', flexShrink: 0 }}>typescript</span>, title: 'Language', desc: 'Primary language detected in the repo' },
 ];
@@ -119,6 +119,8 @@ function TabContent({
   nodeCount: number;
   edgeCount: number;
 }) {
+  const { t } = useTranslation('help');
+
   if (active === 'overview')
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -131,7 +133,7 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Getting started
+          {t('overview.gettingStarted')}
         </p>
 
         <div
@@ -143,11 +145,10 @@ function TabContent({
           }}
         >
           <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>
-            What is GitNexus?
+            {t('overview.whatIsTitle')}
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            An interactive graph explorer for your codebase. Every file, function, and import
-            becomes a node you can explore, query, and navigate visually.
+            {t('overview.whatIsDescription')}
           </p>
         </div>
 
@@ -160,11 +161,10 @@ function TabContent({
           }}
         >
           <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>
-            Your current repo
+            {t('overview.currentRepoTitle')}
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            Loaded: <span style={{ color: '#a78bfa', fontFamily: 'monospace' }}></span> {nodeCount}{' '}
-            nodes · {edgeCount} edges
+            {t('overview.loadedCounts', { nodeCount, edgeCount })}
           </p>
         </div>
 
@@ -177,15 +177,16 @@ function TabContent({
           }}
         >
           <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>
-            Three ways to explore
+            {t('overview.threeWaysTitle')}
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>1.</strong> Click nodes to inspect
+            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>1.</strong>{' '}
+            {t('overview.wayInspect')}
             <br />
-            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>2.</strong> Search by name or type
+            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>2.</strong>{' '}
+            {t('overview.waySearch')}
             <br />
-            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>3.</strong> Ask Nexus AI a natural
-            language question
+            <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>3.</strong> {t('overview.wayAsk')}
           </p>
         </div>
 
@@ -198,11 +199,11 @@ function TabContent({
           }}
         >
           <p style={{ fontSize: 13, fontWeight: 500, color: '#e2e2e8', margin: '0 0 4px' }}>
-            Navigation
+            {t('overview.navigationTitle')}
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            · Scroll to zoom <br />
-            · Click and drag to pan <br />· Double-click a node to focus its subgraph
+            · {t('overview.navZoom')} <br />· {t('overview.navPan')} <br />·{' '}
+            {t('overview.navFocus')}
           </p>
         </div>
       </div>
@@ -220,44 +221,44 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Node color legend
+          {t('graph.nodeColorLegend')}
         </p>
 
-        {nodeColors.map(({ color, label, desc }) => (
-          <div key={label} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <span
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: '50%',
-                background: color,
-                flexShrink: 0,
-                marginTop: 2,
-              }}
-            />
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 500, color: '#e2e2e8', margin: '0 0 2px' }}>
-                {label} nodes
-              </p>
-              <p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>{desc}</p>
+        {nodeColors.map(({ color, labelKey, descKey }) => {
+          const label = t(labelKey);
+          return (
+            <div key={labelKey} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <span
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: '50%',
+                  background: color,
+                  flexShrink: 0,
+                  marginTop: 2,
+                }}
+              />
+              <div>
+                <p style={{ fontSize: 12, fontWeight: 500, color: '#e2e2e8', margin: '0 0 2px' }}>
+                  {t('graph.nodeLabel', { label })}
+                </p>
+                <p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>{t(descKey)}</p>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         <div style={{ borderTop: '0.5px solid rgba(255,255,255,0.08)', margin: '4px 0' }} />
 
         <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-          Node <strong style={{ color: '#e2e2e8', fontWeight: 500 }}>size</strong> reflects
-          connection count — larger nodes are depended on by more files. Edges point from importer →
-          imported.
+          {t('graph.sizeDescription')}
         </p>
 
         <div
           style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '10px 14px' }}
         >
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            Click any node to open its detail panel — showing imports, exports, and reverse
-            dependencies.
+            {t('graph.detailDescription')}
           </p>
         </div>
       </div>
@@ -275,7 +276,7 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Search & filter
+          {t('search.title')}
         </p>
 
         <div
@@ -284,12 +285,11 @@ function TabContent({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <kbd style={kbdStyle}>⌘K</kbd>/<kbd style={kbdStyle}>Ctrl K</kbd>
             <p style={{ fontSize: 12, fontWeight: 500, color: '#e2e2e8', margin: 0 }}>
-              Search nodes
+              {t('search.searchNodes')}
             </p>
           </div>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            Search by filename, function name, or import path. Matching nodes are highlighted live
-            in the graph.
+            {t('search.searchDescription')}
           </p>
         </div>
 
@@ -299,12 +299,11 @@ function TabContent({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <Filter style={{ width: 14, height: 14, color: '#a78bfa', flexShrink: 0 }} />
             <p style={{ fontSize: 12, fontWeight: 500, color: '#e2e2e8', margin: 0 }}>
-              Filter panel
+              {t('search.filterPanel')}
             </p>
           </div>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            Use the filter icon in the left sidebar to isolate specific node types, hide leaf nodes,
-            or focus on a depth range from a selected root.
+            {t('search.filterDescription')}
           </p>
         </div>
 
@@ -312,13 +311,13 @@ function TabContent({
           style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '12px 14px' }}
         >
           <p style={{ fontSize: 12, fontWeight: 500, color: '#e2e2e8', margin: '0 0 6px' }}>
-            Search syntax
+            {t('search.syntax')}
           </p>
           {[
-            { query: 'auth', hint: 'match by name fragment' },
-            { query: './utils/', hint: 'match by path prefix' },
-            { query: 'type:config', hint: 'filter by node type' },
-          ].map(({ query, hint }) => (
+            { query: 'auth', hintKey: 'search.hints.nameFragment' },
+            { query: './utils/', hintKey: 'search.hints.pathPrefix' },
+            { query: 'type:config', hintKey: 'search.hints.nodeType' },
+          ].map(({ query, hintKey }) => (
             <div
               key={query}
               style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}
@@ -336,7 +335,7 @@ function TabContent({
               >
                 {query}
               </code>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>{hint}</span>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>{t(hintKey)}</span>
             </div>
           ))}
         </div>
@@ -355,7 +354,7 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Nexus AI
+          {t('ai.title')}
         </p>
 
         <div
@@ -367,20 +366,19 @@ function TabContent({
           }}
         >
           <p style={{ fontSize: 12, fontWeight: 500, color: '#a78bfa', margin: '0 0 4px' }}>
-            ✓ Semantic Ready
+            {t('ai.semanticReady')}
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, lineHeight: 1.6 }}>
-            Your repo is indexed and ready for semantic queries. Nexus AI understands code structure
-            and relationships, not just file names.
+            {t('ai.description')}
           </p>
         </div>
 
-        <p style={{ fontSize: 12, color: '#9ca3af', margin: '4px 0 2px' }}>Try asking:</p>
+        <p style={{ fontSize: 12, color: '#9ca3af', margin: '4px 0 2px' }}>{t('tryAsking')}</p>
         {[
-          '"Which files depend on the auth module?"',
-          '"Find circular dependencies in this repo"',
-          '"What are the most connected components?"',
-          '"Show me all files that import useEffect"',
+          t('ai.questions.dependencies'),
+          t('ai.questions.circular'),
+          t('ai.questions.connected'),
+          t('ai.questions.imports'),
         ].map((q) => (
           <div
             key={q}
@@ -400,8 +398,7 @@ function TabContent({
         <div style={{ borderTop: '0.5px solid rgba(255,255,255,0.08)', margin: '4px 0' }} />
 
         <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.6 }}>
-          Open the prompt via the <span style={{ color: '#e2e2e8' }}>Nexus AI</span> button
-          (top-right).
+          {t('ai.openPrompt')}
         </p>
       </div>
     );
@@ -428,7 +425,7 @@ function TabContent({
               letterSpacing: '0.08em',
             }}
           >
-            Action
+            {t('shortcuts.columns.action')}
           </span>
           <span
             style={{
@@ -454,9 +451,9 @@ function TabContent({
           </span>
         </div>
 
-        {shortcuts.map(({ label, mac, win }, i) => (
+        {shortcuts.map(({ labelKey, mac, win }, i) => (
           <div
-            key={label}
+            key={labelKey}
             style={{
               display: 'grid',
               gridTemplateColumns: '1fr 80px 88px',
@@ -467,7 +464,7 @@ function TabContent({
                 i < shortcuts.length - 1 ? '0.5px solid rgba(255,255,255,0.05)' : 'none',
             }}
           >
-            <span style={{ fontSize: 12, color: '#9ca3af' }}>{label}</span>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>{t(labelKey)}</span>
             <span style={{ display: 'flex', justifyContent: 'center' }}>
               <kbd style={kbdStyle}>{mac}</kbd>
             </span>
@@ -491,9 +488,9 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Status bar explained
+          {t('status.explained')}
         </p>
-        {getStatusItems(nodeCount, edgeCount).map(({ badge, title, desc }) => (
+        {getStatusItems(t, nodeCount, edgeCount).map(({ badge, title, desc }) => (
           <div
             key={title}
             style={{
@@ -521,7 +518,9 @@ function TabContent({
 }
 
 export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelProps) => {
+  const { t } = useTranslation('help');
   const [active, setActive] = useState<TabId>('overview');
+  const localizedTabs = tabs.map((tab) => ({ ...tab, label: t(`tabs.${tab.id}`) }));
 
   if (!isOpen) return null;
 
@@ -592,9 +591,9 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             </div>
             <div>
               <h2 style={{ fontSize: 16, fontWeight: 600, color: '#e2e2e8', margin: 0 }}>
-                Help & Reference
+                {t('title')}
               </h2>
-              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>GitNexus — graph explorer</p>
+              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>{t('footer')}</p>
             </div>
           </div>
           <button
@@ -632,7 +631,7 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
               gap: 2,
             }}
           >
-            {tabs.map(({ id, label, icon }) => {
+            {localizedTabs.map(({ id, label, icon }) => {
               const isActive = active === id;
               return (
                 <button
@@ -699,16 +698,14 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             background: 'rgba(255,255,255,0.01)',
           }}
         >
-          <span style={{ fontSize: 11, color: '#4b5563' }}>
-            GitNexus — open source codebase graph explorer
-          </span>
+          <span style={{ fontSize: 11, color: '#4b5563' }}>{t('footerLong')}</span>
           <a
             href="https://github.com/abhigyanpatwari/GitNexus"
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: 11, color: '#a78bfa', textDecoration: 'none' }}
           >
-            Docs & GitHub ↗
+            {t('docsGithub')}
           </a>
         </div>
       </div>

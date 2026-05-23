@@ -1,0 +1,96 @@
+{
+  "tabs": {
+    "overview": "Overview",
+    "ai": "Nexus AI",
+    "shortcuts": "Shortcuts",
+    "status": "Status bar",
+    "graph": "Graph & nodes",
+    "search": "Search & filter"
+  },
+  "shortcuts": {
+    "searchNodes": "Search nodes",
+    "deselectClose": "Deselect / close",
+    "columns": {
+      "action": "Action",
+      "mac": "Mac",
+      "windows": "Windows"
+    }
+  },
+  "nodeTypes": {
+    "function": "Function",
+    "functionDesc": "Function declarations",
+    "file": "File",
+    "fileDesc": "Source files",
+    "class": "Class",
+    "classDesc": "Class declarations",
+    "method": "Method",
+    "methodDesc": "Class methods",
+    "interface": "Interface",
+    "interfaceDesc": "TypeScript interfaces",
+    "folder": "Folder",
+    "folderDesc": "Directory nodes"
+  },
+  "status": {
+    "ready": "Ready",
+    "readyDesc": "Graph is fully loaded and interactive",
+    "nodesCount": "Nodes count",
+    "nodesCountDesc": "Total files and symbols in the graph",
+    "edgesCount": "Edges count",
+    "edgesCountDesc": "Import / dependency connections",
+    "aiIndexStatus": "AI index status",
+    "aiIndexStatusDesc": "Repo is fully indexed for AI queries",
+    "semanticReadyBadge": "Semantic Ready",
+    "explained": "Status bar explained"
+  },
+  "tryAsking": "Try asking:",
+  "footer": "GitNexus — graph explorer",
+  "title": "Help & Reference",
+  "footerLong": "GitNexus — open source codebase graph explorer",
+  "docsGithub": "Docs & GitHub ↗",
+  "overview": {
+    "gettingStarted": "Getting started",
+    "whatIsTitle": "What is GitNexus?",
+    "whatIsDescription": "An interactive graph explorer for your codebase. Every file, function, and import becomes a node you can explore, query, and navigate visually.",
+    "currentRepoTitle": "Your current repo",
+    "loadedCounts": "Loaded: {{nodeCount}} nodes · {{edgeCount}} edges",
+    "threeWaysTitle": "Three ways to explore",
+    "wayInspect": "Click nodes to inspect",
+    "waySearch": "Search by name or type",
+    "wayAsk": "Ask Nexus AI a natural language question",
+    "navigationTitle": "Navigation",
+    "navZoom": "Scroll to zoom",
+    "navPan": "Click and drag to pan",
+    "navFocus": "Double-click a node to focus its subgraph"
+  },
+  "graph": {
+    "nodeColorLegend": "Node color legend",
+    "nodeLabel": "{{label}} nodes",
+    "sizeDescription": "Node size reflects connection count — larger nodes are depended on by more files. Edges point from importer → imported.",
+    "detailDescription": "Click any node to open its detail panel — showing imports, exports, and reverse dependencies."
+  },
+  "search": {
+    "title": "Search & filter",
+    "searchNodes": "Search nodes",
+    "searchDescription": "Search by filename, function name, or import path. Matching nodes are highlighted live in the graph.",
+    "filterPanel": "Filter panel",
+    "filterDescription": "Use the filter icon in the left sidebar to isolate specific node types, hide leaf nodes, or focus on a depth range from a selected root.",
+    "syntax": "Search syntax",
+    "hints": {
+      "nameFragment": "match by name fragment",
+      "pathPrefix": "match by path prefix",
+      "nodeType": "filter by node type"
+    }
+  },
+  "ai": {
+    "title": "Nexus AI",
+    "semanticReady": "✓ Semantic Ready",
+    "description": "Your repo is indexed and ready for semantic queries. Nexus AI understands code structure and relationships, not just file names.",
+    "questions": {
+      "dependencies": "\"Which files depend on the auth module?\"",
+      "circular": "\"Find circular dependencies in this repo\"",
+      "connected": "\"What are the most connected components?\"",
+      "imports": "\"Show me all files that import useEffect\""
+    },
+    "openPrompt": "Open the prompt via the Nexus AI button (top-right)."
+  }
+}

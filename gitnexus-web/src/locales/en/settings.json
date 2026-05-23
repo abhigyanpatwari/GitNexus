@@ -1,0 +1,93 @@
+{
+  "title": "AI Settings",
+  "subtitle": "Configure your LLM provider",
+  "localServer": "Local Server",
+  "backendUrl": "Backend URL",
+  "connected": "Connected",
+  "notConnected": "Not connected",
+  "runServeHint": "Run `gitnexus serve` to connect the web UI to a local backend.",
+  "provider": "Provider",
+  "apiKey": "API Key",
+  "learnMore": "Learn more",
+  "model": "Model",
+  "searchModelPlaceholder": "Search or type model ID...",
+  "selectModelPlaceholder": "Select or type a model...",
+  "customModelHint": "Type a model ID or press Enter",
+  "customModelExample": "e.g. openai/gpt-4o",
+  "pressEnterCustom": "Press Enter to use as custom ID",
+  "baseUrl": "Base URL",
+  "optional": "optional",
+  "deploymentName": "Deployment Name",
+  "apiVersion": "API Version",
+  "checkConnection": "Check connection",
+  "privacyLabel": "Privacy:",
+  "privacyText": "Your API keys are stored locally in this browser.",
+  "providers": {
+    "openai": {
+      "description": "Use OpenAI models for chat and code reasoning.",
+      "apiKeyPlaceholder": "Enter your OpenAI API key",
+      "helperText": "Get your API key from",
+      "helperLinkLabel": "OpenAI Platform",
+      "modelPlaceholder": "e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo",
+      "baseUrlPlaceholder": "https://api.openai.com/v1 (default)",
+      "baseUrlHint": "Leave empty to use the default OpenAI API. Set a custom URL for proxies or compatible APIs."
+    },
+    "gemini": {
+      "description": "Use Google Gemini models.",
+      "apiKeyPlaceholder": "Enter your Google AI API key",
+      "helperText": "Get your API key from",
+      "helperLinkLabel": "Google AI Studio",
+      "modelPlaceholder": "e.g., gemini-2.0-flash, gemini-1.5-pro"
+    },
+    "anthropic": {
+      "description": "Use Anthropic Claude models.",
+      "apiKeyPlaceholder": "Enter your Anthropic API key",
+      "helperText": "Get your API key from",
+      "helperLinkLabel": "Anthropic Console",
+      "modelPlaceholder": "e.g., claude-sonnet-4-20250514, claude-3-opus"
+    },
+    "azure": {
+      "apiKeyPlaceholder": "Enter your Azure OpenAI API key",
+      "deploymentNamePlaceholder": "e.g., gpt-4o-deployment"
+    },
+    "ollama": {
+      "quickStart": "📋 Quick Start:",
+      "installFrom": "Install Ollama from",
+      "thenRun": ", then run:",
+      "modelPlaceholder": "e.g., llama3.2, mistral, codellama"
+    },
+    "openrouter": {
+      "apiKeyPlaceholder": "Enter your OpenRouter API key",
+      "helperText": "Get your API key from",
+      "helperLinkLabel": "OpenRouter Keys"
+    },
+    "minimax": {
+      "apiKeyPlaceholder": "Enter your MiniMax API key",
+      "helperText": "Get your API key from",
+      "helperLinkLabel": "MiniMax Platform",
+      "modelPlaceholder": "e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed",
+      "helperModel": "Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)"
+    },
+    "glm": {
+      "apiKeyPlaceholder": "Enter your Z.AI API key"
+    }
+  },
+  "loadingModels": "Loading models...",
+  "noModelsMatch": "No models match \"{{searchTerm}}\"",
+  "moreModels": "+{{count}} more • Refine your search",
+  "apiKeySession": "API keys are stored in session storage and will be cleared when you close this tab.",
+  "startLocalServer": "start the local server",
+  "settingsSaved": "Settings saved",
+  "failedToSave": "Failed to save",
+  "saveSettings": "Save Settings",
+  "endpoint": "Endpoint",
+  "azurePortal": "Azure Portal",
+  "azureHint": "Configure your Azure OpenAI service in the",
+  "defaultPort": "Default port is",
+  "pullModel": "Pull a model with",
+  "browseModels": "Browse all models at",
+  "openRouterModels": "OpenRouter Models",
+  "zaiPlatform": "Z.AI Platform",
+  "glmCodingApi": "Coding API (default). Use https://api.z.ai/api/paas/v4 for the general API.",
+  "privacyFull": "Your API keys are stored only in your browser's session storage and are cleared when the tab closes. They're sent directly to the LLM provider when you chat. Your code never leaves your machine."
+}

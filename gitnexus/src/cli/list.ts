@@ -5,17 +5,18 @@
  */
 
 import { listRegisteredRepos } from '../storage/repo-manager.js';
+import { t } from './i18n/index.js';
 
 export const listCommand = async () => {
   const entries = await listRegisteredRepos({ validate: true });
 
   if (entries.length === 0) {
-    console.log('No indexed repositories found.');
-    console.log('Run `gitnexus analyze` in a git repo to index it.');
+    console.log(t('common.notIndexed'));
+    console.log(t('common.runAnalyze'));
     return;
   }
 
-  console.log(`\n  Indexed Repositories (${entries.length})\n`);
+  console.log(`\n  ${t('list.title', { count: entries.length })}\n`);
 
   // Count occurrences of each name so colliding entries can be
   // disambiguated in the header (#829). Unique-name entries render
@@ -29,19 +30,23 @@ export const listCommand = async () => {
   for (const entry of entries) {
     const indexedDate = new Date(entry.indexedAt).toLocaleString();
     const stats = entry.stats || {};
-    const commitShort = entry.lastCommit?.slice(0, 7) || 'unknown';
+    const commitShort = entry.lastCommit?.slice(0, 7) || t('list.unknown');
     const hasCollision = (nameCounts.get(entry.name.toLowerCase()) ?? 0) > 1;
     const header = hasCollision ? `${entry.name}  (${entry.path})` : entry.name;
 
     console.log(`  ${header}`);
-    console.log(`    Path:    ${entry.path}`);
-    console.log(`    Indexed: ${indexedDate}`);
-    console.log(`    Commit:  ${commitShort}`);
+    console.log(`    ${t('common.path')}:    ${entry.path}`);
+    console.log(`    ${t('list.indexed')}: ${indexedDate}`);
+    console.log(`    ${t('list.commit')}:  ${commitShort}`);
     console.log(
-      `    Stats:   ${stats.files ?? 0} files, ${stats.nodes ?? 0} symbols, ${stats.edges ?? 0} edges`,
+      `    ${t('list.stats')}:   ${t('list.statsValue', {
+        files: stats.files ?? 0,
+        symbols: stats.nodes ?? 0,
+        edges: stats.edges ?? 0,
+      })}`,
     );
-    if (stats.communities) console.log(`    Clusters:   ${stats.communities}`);
-    if (stats.processes) console.log(`    Processes:  ${stats.processes}`);
+    if (stats.communities) console.log(`    ${t('list.clusters')}:   ${stats.communities}`);
+    if (stats.processes) console.log(`    ${t('list.processes')}:  ${stats.processes}`);
     console.log('');
   }
 };
