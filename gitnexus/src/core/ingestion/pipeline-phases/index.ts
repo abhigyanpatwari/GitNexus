@@ -11,6 +11,7 @@ export { scanPhase, type ScanOutput } from './scan.js';
 export { structurePhase, type StructureOutput } from './structure.js';
 export { markdownPhase, type MarkdownOutput } from './markdown.js';
 export { cobolPhase, type CobolOutput } from './cobol.js';
+export { scenesPhase, type ScenesOutput } from './scenes.js';
 export { parsePhase, type ParseOutput } from './parse.js';
 export { routesPhase, type RoutesOutput, type RouteEntry } from './routes.js';
 export { toolsPhase, type ToolsOutput, type ToolDef } from './tools.js';
