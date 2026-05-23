@@ -21,9 +21,12 @@ import {
   type JobProgress,
 } from '../services/backend-client';
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { GraphNode } from 'gitnexus-shared';
 import { EmbeddingStatus } from './EmbeddingStatus';
 import { RepoAnalyzer } from './RepoAnalyzer';
+import { LanguageSwitcher } from './LanguageSwitcher';
+import { translateProgressMessage } from '../i18n/progress';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -55,6 +58,7 @@ export const Header = ({
   onAnalyzeComplete,
   onReposChanged,
 }: HeaderProps) => {
+  const { t } = useTranslation(['common', 'header']);
   const {
     projectName,
     graph,
@@ -208,7 +212,7 @@ export const Header = ({
                     {availableRepos.length > 0 && (
                       <div>
                         <div className="px-3 pt-2.5 pb-1.5 text-[10px] font-medium tracking-wider text-text-muted uppercase">
-                          Repositories
+                          {t('header:repositories')}
                         </div>
                         {availableRepos.map((repo) => (
                           <div
@@ -232,7 +236,7 @@ export const Header = ({
                               </span>
                               {repo.name === projectName && (
                                 <span className="shrink-0 font-mono text-[10px] text-accent">
-                                  active
+                                  {t('header:active')}
                                 </span>
                               )}
                             </button>
@@ -245,7 +249,7 @@ export const Header = ({
                                 setReanalyzeProgress({
                                   phase: 'queued',
                                   percent: 0,
-                                  message: 'Starting...',
+                                  message: t('common:progress.starting'),
                                 });
                                 try {
                                   const { jobId } = await startAnalyze({
@@ -282,8 +286,8 @@ export const Header = ({
                               }`}
                               title={
                                 reanalyzing === repo.name
-                                  ? 'Re-analyzing...'
-                                  : `Re-analyze ${repo.name}`
+                                  ? t('header:reanalyzing')
+                                  : t('header:reanalyzeRepo', { repoName: repo.name })
                               }
                             >
                               <RefreshCw
@@ -317,7 +321,7 @@ export const Header = ({
                                 }
                               }}
                               className="cursor-pointer rounded p-1 text-text-muted/0 transition-all group-hover:text-text-muted hover:!text-red-400"
-                              title={`Delete ${repo.name}`}
+                              title={t('header:deleteRepo', { repoName: repo.name })}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -332,7 +336,10 @@ export const Header = ({
                         <div className="mb-1.5 flex items-center gap-2">
                           <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
                           <span className="truncate text-xs text-text-secondary">
-                            Re-analyzing {reanalyzing}: {reanalyzeProgress.message}
+                            {t('header:reanalyzingRepo', {
+                              repoName: reanalyzing,
+                              message: translateProgressMessage(reanalyzeProgress.message, t),
+                            })}
                           </span>
                         </div>
                         <div className="h-1 overflow-hidden rounded-full bg-elevated">
@@ -359,7 +366,7 @@ export const Header = ({
                       >
                         <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />
                         <span className="text-sm text-text-secondary">
-                          Analyze a new repository...
+                          {t('header:analyzeNew')}
                         </span>
                       </button>
                     </div>
@@ -378,7 +385,7 @@ export const Header = ({
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search nodes..."
+            placeholder={t('header:searchNodes')}
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value);
@@ -399,7 +406,7 @@ export const Header = ({
           <div className="absolute top-full right-0 left-0 z-50 mt-1 overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-xl">
             {searchResults.length === 0 ? (
               <div className="px-4 py-3 text-sm text-text-muted">
-                No nodes found for &ldquo;{searchQuery}&rdquo;
+                {t('header:noNodesFound', { query: searchQuery })}
               </div>
             ) : (
               <div className="max-h-80 overflow-y-auto">
@@ -441,7 +448,7 @@ export const Header = ({
           className="group flex items-center gap-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 px-3.5 py-2 text-sm font-medium text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:from-purple-500 hover:to-pink-500 hover:shadow-xl"
         >
           <Github className="h-4 w-4" />
-          <span className="hidden sm:inline">Star if cool</span>
+          <span className="hidden sm:inline">{t('header:starIfCool')}</span>
           <Star className="h-3.5 w-3.5 transition-all group-hover:fill-yellow-300 group-hover:text-yellow-300" />
           <span className="hidden sm:inline">✨</span>
         </a>
@@ -449,24 +456,26 @@ export const Header = ({
         {/* Stats */}
         {graph && (
           <div className="mr-2 flex items-center gap-4 text-xs text-text-muted">
-            <span>{nodeCount} nodes</span>
-            <span>{edgeCount} edges</span>
+            <span>{t('common:counts.nodes', { count: nodeCount })}</span>
+            <span>{t('common:counts.edges', { count: edgeCount })}</span>
           </div>
         )}
 
         {/* Embedding Status */}
         <EmbeddingStatus />
 
+        <LanguageSwitcher />
+
         {/* Icon buttons */}
         <button
           onClick={() => setSettingsPanelOpen(true)}
           className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="AI Settings"
+          title={t('header:aiSettings')}
         >
           <Settings className="h-4.5 w-4.5" />
         </button>
         <button
-          title="Help"
+          title={t('header:help')}
           onClick={() => setHelpDialogBoxOpen(true)}
           className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
         >
@@ -483,7 +492,7 @@ export const Header = ({
           } `}
         >
           <Sparkles className="h-4 w-4" />
-          <span>Nexus AI</span>
+          <span>{t('common:app.nexusAI')}</span>
         </button>
       </div>
     </header>

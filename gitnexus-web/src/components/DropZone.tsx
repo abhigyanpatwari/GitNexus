@@ -10,6 +10,8 @@ import { useBackend } from '../hooks/useBackend';
 import { OnboardingGuide } from './OnboardingGuide';
 import { AnalyzeOnboarding } from './AnalyzeOnboarding';
 import { RepoLanding } from './RepoLanding';
+import { useTranslation } from 'react-i18next';
+import { formatBackendError } from '../i18n/error-messages';
 
 interface DropZoneProps {
   onServerConnect?: (result: ConnectResult, serverUrl?: string) => void | Promise<void>;
@@ -60,6 +62,8 @@ function Crossfade({ activeKey, children }: { activeKey: string; children: React
 // ── Phase cards ─────────────────────────────────────────────────────────────
 
 function SuccessCard() {
+  const { t } = useTranslation('onboarding');
+
   return (
     <div
       className="relative overflow-hidden rounded-3xl border border-emerald-500/20 bg-surface p-7"
@@ -76,10 +80,10 @@ function SuccessCard() {
         </div>
 
         <h2 className="mb-2 text-center text-lg font-semibold text-emerald-400">
-          Server Connected
+          {t('success.title')}
         </h2>
         <p className="text-center text-sm leading-relaxed text-text-secondary">
-          Preparing your code knowledge graph...
+          {t('success.description')}
         </p>
 
         {/* Subtle progress hint */}
@@ -100,6 +104,8 @@ function SuccessCard() {
 }
 
 function LoadingCard({ message }: { message: string }) {
+  const { t } = useTranslation(['common', 'onboarding']);
+
   return (
     <div
       className="relative overflow-hidden rounded-3xl border border-accent/20 bg-surface p-7"
@@ -116,10 +122,10 @@ function LoadingCard({ message }: { message: string }) {
         </div>
 
         <h2 className="mb-2 text-center text-lg font-semibold text-text-primary">
-          {message || 'Connecting...'}
+          {message || t('common:progress.connectingShort')}
         </h2>
         <p className="text-center text-sm leading-relaxed text-text-secondary">
-          This may take a moment for large repositories
+          {t('onboarding:loading.largeRepoHint')}
         </p>
 
         {/* Decorative sparkle */}
@@ -134,6 +140,7 @@ function LoadingCard({ message }: { message: string }) {
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
 export const DropZone = ({ onServerConnect }: DropZoneProps) => {
+  const { t } = useTranslation(['common', 'errors']);
   const [error, setError] = useState<string | null>(null);
 
   // Backend polling for server detection
@@ -163,7 +170,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   // appropriate screen (landing with repo cards, or analyze for zero repos).
   const handleAutoConnect = async () => {
     setPhase('loading');
-    setLoadingMessage('Connecting...');
+    setLoadingMessage(t('common:progress.connectingShort'));
     setError(null);
 
     try {
@@ -179,8 +186,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
       setPhase('landing');
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
-      const message = err instanceof Error ? err.message : 'Failed to connect';
-      setError(message);
+      setError(formatBackendError(err, t));
       setPhase('onboarding');
     }
   };
@@ -193,7 +199,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
   const connectToRepo = (repoName: string) => {
     autoConnectRan.current = true;
     setPhase('loading');
-    setLoadingMessage('Loading graph...');
+    setLoadingMessage(t('common:progress.loadingGraph'));
     setError(null);
 
     (async () => {
@@ -204,13 +210,17 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
           detectedBackendUrl,
           (p, downloaded, total) => {
             if (p === 'validating') {
-              setLoadingMessage('Validating server...');
+              setLoadingMessage(t('common:progress.validatingServerEllipsis'));
             } else if (p === 'downloading') {
               const pct = total ? Math.round((downloaded / total) * 100) : null;
               const mb = (downloaded / (1024 * 1024)).toFixed(1);
-              setLoadingMessage(pct ? `Downloading graph... ${pct}%` : `Downloading... ${mb} MB`);
+              setLoadingMessage(
+                pct
+                  ? t('common:progress.downloadingWithPercent', { percent: pct })
+                  : t('common:progress.downloadingMb', { mb }),
+              );
             } else if (p === 'extracting') {
-              setLoadingMessage('Processing graph...');
+              setLoadingMessage(t('common:progress.processingGraph'));
             }
           },
           abortController.signal,
@@ -221,7 +231,7 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         }
       } catch (err) {
         if ((err as Error).name === 'AbortError') return;
-        setError(err instanceof Error ? err.message : 'Failed to load graph');
+        setError(formatBackendError(err, t));
         setPhase(detectedRepos.length > 0 ? 'landing' : 'analyze');
       } finally {
         abortControllerRef.current = null;
