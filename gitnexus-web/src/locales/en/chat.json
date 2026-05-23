@@ -1,0 +1,36 @@
+{
+  "tabs": {
+    "chat": "Nexus AI",
+    "processes": "Processes"
+  },
+  "suggestions": {
+    "architecture": "Explain the project architecture",
+    "whatDoes": "What does this project do?",
+    "importantFiles": "Show me the most important files",
+    "apiHandlers": "Find all API handlers"
+  },
+  "empty": {
+    "title": "Ask me anything",
+    "description": "I can help you understand the architecture, find functions, or explain connections."
+  },
+  "input": {
+    "placeholder": "Ask about the codebase...",
+    "initializing": "Initializing AI agent...",
+    "configureProvider": "Configure an LLM provider to enable chat."
+  },
+  "actions": {
+    "closePanel": "Close Panel",
+    "scrollBottom": "Scroll to bottom",
+    "clearChat": "Clear chat",
+    "stopResponse": "Stop response"
+  },
+  "badges": {
+    "configureAI": "Configure AI",
+    "connecting": "Connecting"
+  },
+  "roles": {
+    "you": "You",
+    "assistant": "Nexus AI"
+  },
+  "newBadge": "NEW"
+}
