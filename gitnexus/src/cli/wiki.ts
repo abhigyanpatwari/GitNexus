@@ -107,6 +107,24 @@ function prompt(question: string, hide = false): Promise<string> {
 }
 
 export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptions) => {
+  // Snapshot GITNEXUS_VERBOSE at entry — wikiCommand mutates it (the impl
+  // below) so cursor-client (process.env-driven) sees the right value during
+  // this run. Restored in finally so back-to-back wiki calls in long-running
+  // hosts don't leak verbose state from one invocation to the next. Pairs
+  // with the same snapshot/restore pattern in `analyzeCommand`.
+  const originalVerbose = process.env.GITNEXUS_VERBOSE;
+  try {
+    await wikiCommandImpl(inputPath, options);
+  } finally {
+    if (originalVerbose === undefined) {
+      delete process.env.GITNEXUS_VERBOSE;
+    } else {
+      process.env.GITNEXUS_VERBOSE = originalVerbose;
+    }
+  }
+};
+
+const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions): Promise<void> => {
   // Set verbose mode globally for cursor-client to pick up
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';

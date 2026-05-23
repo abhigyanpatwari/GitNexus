@@ -34,6 +34,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  java: new Set([
+    // Duplicate-FQN same-module path-affinity ordering is implemented in the
+    // Java provider hook for the scope-resolution path. Legacy DAG parity runs
+    // still use legacy owner/type resolution behavior and can bind cross-module.
+    'resolves Module1App.run calls to module1 UserService, not module2',
+    'resolves Module2App.run calls to module2 UserService, not module1',
+  ]),
   php: new Set([
     // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
     // candidates that are definitively below required-parameter-count. The
@@ -79,6 +86,33 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // wins; backporting to legacy is out of scope.
     'argCount > required (2>1) on candidate with default param emits NO edge post-fix',
     'variadic candidate, argCount < required (1<2) emits NO edge',
+  ]),
+  typescript: new Set([
+    // Issue #1358 sub-cases: class-instance singleton (`export const foo = new Foo()`)
+    // and factory-pattern singleton (`export const foo = makeFoo()`) cross-file
+    // CALLS resolution. The scope-resolution path resolves these via
+    // `@type-binding.constructor` capture (TS query) +
+    // `propagateImportedReturnTypes` mirror + receiver-bound Case 4 simple
+    // typeBinding lookup. The legacy DAG's typeEnv does not propagate
+    // `new Foo()` constructor inference across module boundaries — verified
+    // by `scope-parity / typescript parity` CI job failure. Node-existence
+    // and HAS_METHOD edge assertions pass under legacy DAG (parser-level
+    // emission is intact); only the cross-file CALLS edge resolution
+    // requires the scope-resolution chain. Scope-resolver-only correctness
+    // wins; backporting requires constructor-typeBinding cross-file
+    // propagation in the legacy DAG.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+  ]),
+  javascript: new Set([
+    // Mirrors the TypeScript class-instance and factory-pattern singleton
+    // resolution gates above. JavaScript fails on the same 2 CALLS-edge
+    // resolution tests under `REGISTRY_PRIMARY_JAVASCRIPT=0` for the same
+    // reason — no cross-file constructor-typeBinding propagation in the
+    // legacy DAG path. Verified by `scope-parity / javascript parity` CI
+    // job failure on the bare singleton tests before this exclusion landed.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
   ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
@@ -189,6 +223,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    // Pointer/nullptr/ellipsis conversion ranks (#1637) need C++ type-class
+    // sidecars plus conversion-rank scoring. The legacy DAG has neither.
+    'f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)',
+    'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
+    "h(1, 'a') resolves to h(int, double), not h(int, ...)",
+    'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse

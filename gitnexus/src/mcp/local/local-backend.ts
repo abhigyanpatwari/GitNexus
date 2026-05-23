@@ -31,6 +31,8 @@ import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  canonicalizePath,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
@@ -248,6 +250,29 @@ function tryRealpath(p: string): string {
  */
 export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
   try {
+    // Verify repoPath is a git root before comparing against its canonical
+    // root. If getGitRoot returns a different path, repoPath is an arbitrary
+    // subdirectory — skip both the linked-worktree guard and auto-detection
+    // and fall through to the repoPath fallback.
+    const repoGitRoot = getGitRoot(repoPath);
+    const repoCanonical =
+      repoGitRoot && tryRealpath(repoGitRoot) === tryRealpath(repoPath)
+        ? getCanonicalRepoRoot(repoPath)
+        : null;
+
+    // Early exit: if repoPath is a linked worktree (differs from its canonical
+    // main-checkout root), return it unchanged. Do NOT override it with the
+    // server's launch directory — that would silently replace the explicitly-
+    // resolved worktree index with the main checkout.
+    //
+    // getCanonicalRepoRoot returns the main-checkout path for both the checkout
+    // and all linked worktrees:
+    //   repoPath === canonical → main checkout (auto-detect may fire below)
+    //   repoPath !== canonical → linked worktree (return as-is)
+    if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
+      return repoPath;
+    }
+
     const launchGitRoot = getGitRoot(launchCwd);
     if (launchGitRoot) {
       // Normalise via realpathSync before comparing so macOS /var → /private/var
@@ -256,8 +281,12 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
       const realRepo = tryRealpath(repoPath);
       if (realLaunch !== realRepo) {
         const launchCanonical = getCanonicalRepoRoot(launchCwd);
-        const repoCanonical = getCanonicalRepoRoot(repoPath);
-        if (launchCanonical && repoCanonical && launchCanonical === repoCanonical) {
+        // Use tryRealpath on both canonical values for cross-platform safety.
+        if (
+          launchCanonical &&
+          repoCanonical &&
+          tryRealpath(launchCanonical) === tryRealpath(repoCanonical)
+        ) {
           return launchGitRoot;
         }
       }
@@ -267,6 +296,13 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
   }
   return repoPath;
 }
+
+/**
+ * Length of the base64url path hash appended to a colliding repo id.
+ * Exported so tests can pin the suffix shape without re-deriving the
+ * literal; see `repoId()` and the hashed-id resolution tier (#1658).
+ */
+export const REPO_ID_HASH_LENGTH = 6;
 
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
@@ -396,7 +432,13 @@ export class LocalBackend {
     for (const [id, handle] of this.repos) {
       if (id === base && handle.repoPath !== path.resolve(repoPath)) {
         // Collision — use path hash
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
+        // Lowercase the hash so it survives the `paramLower` lookup in
+        // resolveRepoFromCache — base64url retains mixed case, but the id
+        // tier compares against `repoParam.toLowerCase()` (#1658 follow-up).
+        const hash = Buffer.from(repoPath)
+          .toString('base64url')
+          .slice(0, REPO_ID_HASH_LENGTH)
+          .toLowerCase();
         return `${base}-${hash}`;
       }
     }
@@ -415,7 +457,19 @@ export class LocalBackend {
    * while the MCP server was running.
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
-    const result = this.resolveRepoFromCache(repoParam);
+    let refreshedAfterAmbiguity = false;
+    let result: RepoHandle | null;
+    try {
+      result = this.resolveRepoFromCache(repoParam);
+    } catch (err) {
+      if (!(err instanceof RegistryAmbiguousTargetError)) throw err;
+      // Stale in-memory duplicate siblings can linger after unregister; refresh
+      // once before re-throwing so a resolved registry can disambiguate (#1658).
+      await this.refreshRepos();
+      refreshedAfterAmbiguity = true;
+      result = this.resolveRepoFromCache(repoParam);
+    }
+
     if (result) {
       // Issue: silent graph drift across sibling clones.
       // If the caller's cwd lives in a *different* on-disk clone of
@@ -429,8 +483,10 @@ export class LocalBackend {
       return result;
     }
 
-    // Miss — refresh registry and try once more
-    await this.refreshRepos();
+    // Miss — refresh registry and try once more (skip if already refreshed above)
+    if (!refreshedAfterAmbiguity) {
+      await this.refreshRepos();
+    }
     const retried = this.resolveRepoFromCache(repoParam);
     if (retried) {
       this.maybeWarnSiblingDrift(retried).catch(() => {});
@@ -465,27 +521,66 @@ export class LocalBackend {
 
   /**
    * Try to resolve a repo from the in-memory cache. Returns null on miss.
+   * Throws {@link RegistryAmbiguousTargetError} when `repoParam` matches
+   * multiple handles by name and cwd cannot disambiguate (#1658).
    */
   private resolveRepoFromCache(repoParam?: string): RepoHandle | null {
     if (this.repos.size === 0) return null;
 
     if (repoParam) {
       const paramLower = repoParam.toLowerCase();
-      // Match by id
+      const looksLikePath =
+        path.isAbsolute(repoParam) || repoParam.includes(path.sep) || repoParam.includes('/');
+
+      const resolvePathMatch = (): RepoHandle | undefined => {
+        const canonicalTarget = canonicalizePath(repoParam);
+        return [...this.repos.values()].find((handle) => {
+          const stored = canonicalizePath(handle.repoPath);
+          return process.platform === 'win32'
+            ? stored.toLowerCase() === canonicalTarget.toLowerCase()
+            : stored === canonicalTarget;
+        });
+      };
+
+      // Path-like params first (absolute or contains separators) — aligns with
+      // resolveRegistryEntry (#829). Bare aliases such as ".tmp-repro-mini" must
+      // not be resolved via path.resolve(cwd) before duplicate-name handling.
+      if (looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
+      }
+
+      // Exact name before id — the first duplicate sibling keeps id === name
+      // (e.g. id "shared"), so a name lookup must not be captured by the id tier.
+      const nameMatches = [...this.repos.values()].filter(
+        (handle) => handle.name.toLowerCase() === paramLower,
+      );
+      if (nameMatches.length === 1) return nameMatches[0];
+      if (nameMatches.length > 1) {
+        const cwdPick = this.pickRepoHandleForCwd(nameMatches);
+        if (cwdPick) return cwdPick;
+        throw new RegistryAmbiguousTargetError(
+          repoParam,
+          nameMatches.map((h) => this.handleToRegistryEntry(h)),
+        );
+      }
+
+      // Stable hashed id (e.g. "shared-abc123") from repoId() collision suffix
       if (this.repos.has(paramLower)) return this.repos.get(paramLower)!;
-      // Match by name (case-insensitive)
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase() === paramLower) return handle;
+
+      // Bare name resolved as a cwd-relative path (e.g. "myrepo" against process.cwd()),
+      // after name/id tiers. Path-like strings with separators were handled at the top.
+      if (!looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
       }
-      // Match by path (substring)
-      const resolved = path.resolve(repoParam);
-      for (const handle of this.repos.values()) {
-        if (handle.repoPath === resolved) return handle;
-      }
-      // Match by partial name
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase().includes(paramLower)) return handle;
-      }
+
+      // Partial name — only when unambiguous
+      const partialMatches = [...this.repos.values()].filter((handle) =>
+        handle.name.toLowerCase().includes(paramLower),
+      );
+      if (partialMatches.length === 1) return partialMatches[0];
+
       return null;
     }
 
@@ -494,6 +589,39 @@ export class LocalBackend {
     }
 
     return null; // Multiple repos, no param — ambiguous
+  }
+
+  /**
+   * Prefer the indexed repo whose path matches the git root of process.cwd().
+   *
+   * In MCP stdio server mode, `process.cwd()` is the server's launch directory,
+   * not the agent client's cwd. If the server was started from an unrelated
+   * directory, `getGitRoot` returns null and duplicate-name resolution throws
+   * {@link RegistryAmbiguousTargetError} — callers should pass an absolute path.
+   */
+  private pickRepoHandleForCwd(candidates: RepoHandle[]): RepoHandle | null {
+    const cwdRoot = getGitRoot(process.cwd());
+    if (!cwdRoot) return null;
+    const canonicalCwd = canonicalizePath(cwdRoot);
+    const cwdMatches = candidates.filter((handle) => {
+      const stored = canonicalizePath(handle.repoPath);
+      return process.platform === 'win32'
+        ? stored.toLowerCase() === canonicalCwd.toLowerCase()
+        : stored === canonicalCwd;
+    });
+    return cwdMatches.length === 1 ? cwdMatches[0] : null;
+  }
+
+  private handleToRegistryEntry(handle: RepoHandle): RegistryEntry {
+    return {
+      name: handle.name,
+      path: handle.repoPath,
+      storagePath: handle.storagePath,
+      indexedAt: handle.indexedAt,
+      lastCommit: handle.lastCommit,
+      stats: handle.stats,
+      remoteUrl: handle.remoteUrl,
+    };
   }
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
@@ -1039,7 +1167,7 @@ export class LocalBackend {
       timing,
       ...(!ftsUsed && {
         warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       }),
     };
   }

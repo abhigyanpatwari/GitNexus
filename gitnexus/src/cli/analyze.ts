@@ -9,11 +9,16 @@
  */
 
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
+import {
+  isLbugCheckpointIoError,
+  isWalCorruptionError,
+  parseWalCheckpointThreshold,
+  WAL_RECOVERY_SUGGESTION,
+} from '../core/lbug/lbug-config.js';
 import {
   getStoragePaths,
   getGlobalRegistryPath,
@@ -37,6 +42,7 @@ import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 // previous behaviour silently swallowed stack traces and made #1169
 // indistinguishable from a no-op success on Windows.
 const realStderrWrite = process.stderr.write.bind(process.stderr);
+const realStdoutWrite = process.stdout.write.bind(process.stdout);
 
 const writeFatalToStderr = (label: string, err: unknown): void => {
   const isErr = err instanceof Error;
@@ -78,15 +84,274 @@ const HEAP_FLAG = `--max-old-space-size=${RESPAWN_HEAP_MB}`;
 /** Increase default stack size (KB) to prevent stack overflow on deep class hierarchies. */
 const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
+const RESPAWN_OUTPUT_TAIL_CHARS = 1024 * 1024;
+const RESPAWN_PROGRESS_ENV = 'GITNEXUS_RESPAWN_PROGRESS_TTY';
+
+interface CliProgressTerminal {
+  cursorSave(): void;
+  cursorRestore(): void;
+  cursor(enabled: boolean): void;
+  lineWrapping(enabled: boolean): void;
+  cursorTo(x?: number | null, y?: number | null): void;
+  cursorRelative(dx?: number | null, dy?: number | null): void;
+  cursorRelativeReset(): void;
+  clearRight(): void;
+  clearLine(): void;
+  clearBottom(): void;
+  newline(): void;
+  write(s: string, rawWrite?: boolean): void;
+  isTTY(): boolean;
+  getWidth(): number;
+}
+
+const terminalColumns = (): number => {
+  const parsed = Number(process.env.COLUMNS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 80;
+};
+
+const ANSI_ESCAPE_PATTERN =
+  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[PX^_][\s\S]*?\x1B\\|[78]|[@-Z\\-_])/y;
+
+interface IntlSegmenterLike {
+  segment(input: string): Iterable<{ segment: string }>;
+}
+
+type IntlWithOptionalSegmenter = typeof Intl & {
+  Segmenter?: new (
+    locales?: string | string[],
+    options?: { granularity?: 'grapheme' },
+  ) => IntlSegmenterLike;
+};
+
+const splitGraphemes = (text: string): string[] => {
+  const Segmenter = (Intl as IntlWithOptionalSegmenter).Segmenter;
+  if (Segmenter) {
+    return Array.from(
+      new Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      (s) => s.segment,
+    );
+  }
+  return Array.from(text);
+};
+
+const isZeroWidthCodePoint = (codePoint: number): boolean =>
+  codePoint === 0x200d ||
+  (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+  (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+  (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+  (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+  (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+  (codePoint >= 0xfe20 && codePoint <= 0xfe2f);
+
+const isWideCodePoint = (codePoint: number): boolean =>
+  codePoint >= 0x1100 &&
+  (codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd));
+
+const visibleColumns = (text: string): number => {
+  let columns = 0;
+  for (const char of Array.from(text)) {
+    const codePoint = char.codePointAt(0);
+    if (codePoint === undefined || isZeroWidthCodePoint(codePoint)) continue;
+    columns += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return columns;
+};
+
+const readAnsiEscapeAt = (text: string, index: number): string | undefined => {
+  ANSI_ESCAPE_PATTERN.lastIndex = index;
+  return ANSI_ESCAPE_PATTERN.exec(text)?.[0];
+};
+
+const truncateAnsiToColumns = (text: string, maxColumns: number): string => {
+  if (!Number.isFinite(maxColumns) || maxColumns <= 0) return '';
+
+  let output = '';
+  let columns = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    const escape = readAnsiEscapeAt(text, index);
+    if (escape) {
+      output += escape;
+      index += escape.length;
+      continue;
+    }
+
+    const nextEscapeIndex = text.indexOf('\x1B', index);
+    const plainEnd = nextEscapeIndex === -1 ? text.length : nextEscapeIndex;
+    const plainText = text.slice(index, plainEnd);
+
+    for (const segment of splitGraphemes(plainText)) {
+      const width = visibleColumns(segment);
+      if (width > 0 && columns + width > maxColumns) return output;
+      output += segment;
+      columns += width;
+    }
+
+    index = plainEnd;
+  }
+
+  return output;
+};
+
+const createAnsiPipeTerminal = (stream: NodeJS.WriteStream): CliProgressTerminal => {
+  let linewrap = true;
+  let dy = 0;
+  const write = (s: string): void => {
+    stream.write(s);
+  };
+  const moveVertical = (delta: number): void => {
+    if (delta > 0) write(`\x1B[${delta}B`);
+    else if (delta < 0) write(`\x1B[${Math.abs(delta)}A`);
+  };
+
+  return {
+    cursorSave: () => write('\x1B7'),
+    cursorRestore: () => write('\x1B8'),
+    cursor: (enabled) => write(enabled ? '\x1B[?25h' : '\x1B[?25l'),
+    lineWrapping: (enabled) => {
+      linewrap = enabled;
+      write(enabled ? '\x1B[?7h' : '\x1B[?7l');
+    },
+    cursorTo: (x = null, y = null) => {
+      if (typeof y === 'number' && typeof x === 'number') {
+        write(`\x1B[${y + 1};${x + 1}H`);
+        return;
+      }
+      if (typeof x === 'number') {
+        write(x === 0 ? '\r' : `\x1B[${x + 1}G`);
+      }
+    },
+    cursorRelative: (dx = null, nextDy = null) => {
+      if (typeof dx === 'number' && dx !== 0) {
+        write(dx > 0 ? `\x1B[${dx}C` : `\x1B[${Math.abs(dx)}D`);
+      }
+      if (typeof nextDy === 'number' && nextDy !== 0) {
+        dy += nextDy;
+        moveVertical(nextDy);
+      }
+    },
+    cursorRelativeReset: () => {
+      moveVertical(-dy);
+      write('\r');
+      dy = 0;
+    },
+    clearRight: () => write('\x1B[0K'),
+    clearLine: () => write('\x1B[2K'),
+    clearBottom: () => write('\x1B[0J'),
+    newline: () => {
+      write('\n');
+      dy++;
+    },
+    write: (s, rawWrite = false) => {
+      const width = terminalColumns();
+      write(linewrap && rawWrite === false ? truncateAnsiToColumns(s, width) : s);
+    },
+    isTTY: () => true,
+    getWidth: terminalColumns,
+  };
+};
+
+const shouldBridgeRespawnProgressTty = (): boolean =>
+  process.stderr.isTTY === true || process.stdout.isTTY === true;
+
+interface RespawnExit {
+  status?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+  stderr?: string;
+  message?: string;
+}
+
+const appendOutputTail = (tail: string, chunk: unknown): string => {
+  const text = Buffer.isBuffer(chunk)
+    ? chunk.toString('utf8')
+    : typeof chunk === 'string'
+      ? chunk
+      : String(chunk ?? '');
+  if (!text) return tail;
+  const next = tail + text;
+  return next.length > RESPAWN_OUTPUT_TAIL_CHARS ? next.slice(-RESPAWN_OUTPUT_TAIL_CHARS) : next;
+};
+
+/**
+ * Run the respawned analyzer while teeing child output through to the parent
+ * and keeping a bounded tail for crash classification.
+ *
+ * `execFileSync(..., { stdio: 'inherit' })` preserved live progress but hid
+ * stderr/stdout from the parent on abnormal exits. That made every
+ * SIGABRT/status-134 child look like an output-less V8 heap OOM, even when the
+ * terminal had already shown a native crash such as
+ * `libc++abi: ... Napi::Error`. Piped streams plus an explicit tee keeps the UX
+ * and gives `childProcessLikelyOom` the evidence it needs.
+ */
+const runRespawnedAnalyze = (
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<RespawnExit> =>
+  new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      resolve(exit);
+    };
+
+    const child = spawn(process.execPath, [...args], {
+      stdio: ['inherit', 'pipe', 'pipe'],
+      env,
+    });
+
+    child.stdout?.on('data', (chunk) => {
+      stdout = appendOutputTail(stdout, chunk);
+      realStdoutWrite(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr = appendOutputTail(stderr, chunk);
+      realStderrWrite(chunk);
+    });
+    child.on('error', (err) => {
+      finish({
+        status: 1,
+        signal: null,
+        stdout,
+        stderr,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
+    child.on('close', (status, signal) => {
+      finish({
+        status,
+        signal,
+        stdout,
+        stderr,
+        message: `Command failed: ${process.execPath} ${args.join(' ')}`,
+      });
+    });
+  });
 
 /**
  * Heuristic for "child re-exec likely died from V8 OOM".
  *
- * Platform-independent detection is best-effort: V8/Node usually emit
- * stable heap-exhaustion phrases in stderr/message across Linux/macOS/Windows
- * (for example "JavaScript heap out of memory" or "Reached heap limit"),
- * while some environments only expose status/signal (e.g. 134/SIGABRT).
- * We combine both text signatures and process-exit signatures.
+ * Platform-independent detection is best-effort: V8/Node usually emit stable
+ * heap-exhaustion phrases in stderr/message across Linux/macOS/Windows (for
+ * example "JavaScript heap out of memory" or "Reached heap limit"). When the
+ * child produced no output at all, we still treat status 134/SIGABRT as likely
+ * heap OOM. If stderr/stdout contains a native crash diagnostic, the output
+ * evidence wins and we do not print heap guidance.
  */
 const childProcessLikelyOom = (err: unknown): boolean => {
   if (!err || typeof err !== 'object') return false;
@@ -122,6 +387,31 @@ const childProcessLikelyOom = (err: unknown): boolean => {
   return e.status === 134 || e.signal === 'SIGABRT';
 };
 
+const childProcessLikelyNativeAbort = (err: unknown): boolean => {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    stderr?: unknown;
+    stdout?: unknown;
+    message?: unknown;
+  };
+  const hasNativeAbortSignature = (v: unknown): boolean => {
+    const text = (
+      Buffer.isBuffer(v) ? v.toString('utf8') : typeof v === 'string' ? v : ''
+    ).toLowerCase();
+    if (!text) return false;
+    return (
+      text.includes('napi::error') ||
+      text.includes('libc++abi: terminating') ||
+      text.includes('abort trap') ||
+      text.includes('native stack') ||
+      text.includes('native worker') ||
+      text.includes('native binding')
+    );
+  };
+
+  return [e.message, e.stderr, e.stdout].some((v) => hasNativeAbortSignature(v));
+};
+
 const forceHeapOOMForTestIfEnabled = (): void => {
   if (process.env.GITNEXUS_TEST_FORCE_HEAP_OOM !== '1') return;
   // Allocate JS strings (not Buffers) so pressure lands on V8 heap itself.
@@ -130,8 +420,17 @@ const forceHeapOOMForTestIfEnabled = (): void => {
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
 
+// 64 MiB keeps auto-checkpoint enabled but triggers less frequently than
+// Ladybug's stock ~16 MiB threshold, reducing rename/remove churn on large
+// runs. Also matches the GitNexus default in `lbug-config.ts`.
+//
+// IMPORTANT: keep README examples (`README.md`, `gitnexus/README.md`) and
+// the `DEFAULT_WAL_CHECKPOINT_THRESHOLD` constant in
+// `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
+const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
+
 /** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
-function ensureHeap(): boolean {
+async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
   if (nodeOpts.includes('--max-old-space-size')) return false;
 
@@ -143,13 +442,15 @@ function ensureHeap(): boolean {
   const cliFlags = [HEAP_FLAG];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
-  try {
-    execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
-      stdio: 'inherit',
-      env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
-    });
-  } catch (e: any) {
-    if (childProcessLikelyOom(e)) {
+  const childArgs = [...cliFlags, ...process.argv.slice(1)];
+  const childEnv = {
+    ...process.env,
+    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim(),
+  };
+  if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
+  const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.status !== 0 || childExit.signal) {
+    if (childProcessLikelyOom(childExit)) {
       cliError(
         `  Analysis likely ran out of memory.\n` +
           `  Retry with a larger heap if your machine allows it:\n` +
@@ -158,14 +459,66 @@ function ensureHeap(): boolean {
           `  If this persists, it may be a native crash unrelated to heap size.\n`,
         { recoveryHint: 'heap-oom-respawn' },
       );
+    } else if (childProcessLikelyNativeAbort(childExit)) {
+      cliError(
+        `  Analysis aborted in a native worker or native binding path.\n` +
+          `  Try one of these recovery paths:\n` +
+          `    gitnexus analyze --workers 0\n` +
+          `    npm uninstall -g gitnexus && npm install -g gitnexus@latest\n` +
+          `    Use Node 22 LTS if you are on a newer non-LTS runtime.\n`,
+        { recoveryHint: 'native-worker-abort' },
+      );
     }
-    process.exitCode = e.status ?? 1;
+    const status =
+      typeof childExit.status === 'number' && childExit.status !== 0 ? childExit.status : 1;
+    process.exitCode = status;
   }
   return true;
 }
 
+/**
+ * GITNEXUS_* env vars that `analyzeCommand` writes for backward-compatible
+ * downstream consumption. Snapshotted at function entry and restored in the
+ * finally block so that programmatic callers (tests, long-running hosts)
+ * don't see leaked state across invocations. `GITNEXUS_WORKER_POOL_SIZE` is
+ * NOT in this list: that knob is threaded through `runFullAnalysis` options
+ * (see `workerPoolSize` plumbing) so the CLI never has to mutate `process.env`
+ * for it in the first place.
+ */
+const ANALYZE_CLI_ENV_KEYS = [
+  'GITNEXUS_VERBOSE',
+  'GITNEXUS_PROFILE_DEFERRED',
+  'GITNEXUS_PROFILE_DEFERRED_SLOW_MS',
+  'GITNEXUS_MAX_FILE_SIZE',
+  'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+  'GITNEXUS_WAL_CHECKPOINT_THRESHOLD',
+  'GITNEXUS_WAL_MANUAL_CHECKPOINT',
+  'GITNEXUS_EMBEDDING_THREADS',
+  'GITNEXUS_EMBEDDING_BATCH_SIZE',
+  'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
+  'GITNEXUS_EMBEDDING_DEVICE',
+  'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+] as const;
+
+type AnalyzeEnvSnapshot = Record<(typeof ANALYZE_CLI_ENV_KEYS)[number], string | undefined>;
+
+const snapshotAnalyzeEnv = (): AnalyzeEnvSnapshot => {
+  const snap = {} as AnalyzeEnvSnapshot;
+  for (const k of ANALYZE_CLI_ENV_KEYS) snap[k] = process.env[k];
+  return snap;
+};
+
+const restoreAnalyzeEnv = (snap: AnalyzeEnvSnapshot): void => {
+  for (const k of ANALYZE_CLI_ENV_KEYS) {
+    const v = snap[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+};
+
 export interface AnalyzeOptions {
   force?: boolean;
+  repairFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
    *   - `undefined` when the flag is omitted
@@ -225,6 +578,10 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
+  /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
+  walCheckpointThreshold?: string;
+  /** Parse worker pool size; 0 disables workers (sequential fallback). */
+  workers?: string;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
@@ -250,7 +607,7 @@ export const shouldGenerateCommunitySkillFiles = (
 ): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
-  if (ensureHeap()) return;
+  if (await ensureHeap()) return;
   forceHeapOOMForTestIfEnabled();
 
   // Install fatal handlers immediately after re-exec resolution so any
@@ -258,6 +615,22 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
 
+  // Snapshot the GITNEXUS_* env vars that the impl writes for downstream
+  // consumption, so they don't leak across `analyzeCommand` invocations in
+  // programmatic callers (tests, long-running hosts). `process.exit(0)` on
+  // the success path bypasses `finally` — intentional: when the process is
+  // exiting, restoration is moot. For early-return paths (validation
+  // errors) and the alreadyUpToDate fast path the finally restores the
+  // pre-call values.
+  const envSnap = snapshotAnalyzeEnv();
+  try {
+    await analyzeCommandImpl(inputPath, options);
+  } finally {
+    restoreAnalyzeEnv(envSnap);
+  }
+};
+
+const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions): Promise<void> => {
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
   }
@@ -276,6 +649,36 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
       Math.round(workerTimeoutSeconds * 1000),
     );
+  }
+
+  if (options?.walCheckpointThreshold !== undefined) {
+    const parsed = parseWalCheckpointThreshold(options.walCheckpointThreshold);
+    if (parsed === undefined) {
+      cliError('  --wal-checkpoint-threshold must be an integer >= -1.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(parsed);
+  }
+
+  // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions
+  // → createWorkerPool, intentionally bypassing the GITNEXUS_WORKER_POOL_SIZE
+  // env channel so this CLI surface never mutates `process.env` for pool size.
+  // Tests can therefore re-invoke analyzeCommand with different --workers
+  // values back-to-back and observe the value they passed, not whatever the
+  // previous call leaked.
+  let workerPoolSize: number | undefined;
+  if (options?.workers !== undefined) {
+    const parsedWorkers = Number(options.workers);
+    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 0) {
+      cliError(
+        '  --workers must be a non-negative integer. ' +
+          'Pass 0 to disable the worker pool (sequential fallback).\n',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    workerPoolSize = parsedWorkers;
   }
 
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
@@ -341,6 +744,15 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       return;
     }
     process.env.GITNEXUS_EMBEDDING_DEVICE = options.embeddingDevice;
+  }
+
+  if (options?.repairFts && options?.force) {
+    cliError(
+      '  Cannot combine `--repair-fts` with `--force`. ' +
+        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+    );
+    process.exitCode = 1;
+    return;
   }
 
   console.log('\n  GitNexus Analyzer\n');
@@ -428,19 +840,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
-  const bar = new cliProgress.SingleBar(
-    {
-      format: '  {bar} {percentage}% | {phase}',
-      barCompleteChar: '\u2588',
-      barIncompleteChar: '\u2591',
-      hideCursor: true,
-      barGlue: '',
-      autopadding: true,
-      clearOnComplete: false,
-      stopOnComplete: false,
-    },
-    cliProgress.Presets.shades_grey,
-  );
+  const barOptions: cliProgress.Options & { terminal?: CliProgressTerminal } = {
+    format: '  {bar} {percentage}% | {phase}',
+    barCompleteChar: '\u2588',
+    barIncompleteChar: '\u2591',
+    hideCursor: true,
+    barGlue: '',
+    autopadding: true,
+    clearOnComplete: false,
+    stopOnComplete: false,
+  };
+  if (process.env[RESPAWN_PROGRESS_ENV] === '1' && process.stderr.isTTY !== true) {
+    // Heap respawn pipes stderr so the parent can classify native/OOM crashes.
+    // The parent was a real TTY when it opted into this env var, so forward
+    // ANSI cursor controls through the pipe instead of cli-progress' non-TTY
+    // newline mode. That keeps one-line redraw UX while retaining stderr tail
+    // capture for diagnostics.
+    barOptions.terminal = createAnsiPipeTerminal(process.stderr);
+  }
+  const bar = new cliProgress.SingleBar(barOptions, cliProgress.Presets.shades_grey);
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
@@ -474,7 +892,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   const origError = console.error.bind(console);
   let barCurrentValue = 0;
-  const barLog = (...args: any[]) => {
+  const barLog = (...args: unknown[]) => {
     process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
     bar.update(barCurrentValue);
@@ -484,6 +902,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   console.warn = barLog;
   // eslint-disable-next-line no-console -- intentional console-routing for progress bar UX
   console.error = barLog;
+  process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
 
   // Track elapsed time per phase
   let lastPhaseLabel = 'Initializing...';
@@ -521,9 +940,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
+        repairFts: options?.repairFts,
         embeddings: embeddingsEnabled,
         embeddingsNodeLimit,
         dropEmbeddings: options?.dropEmbeddings,
+        verbose: options?.verbose,
         skipGit: options?.skipGit,
         skipAgentsMd,
         skipSkills,
@@ -539,6 +960,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // be able to accept the duplicate name without also paying the
         // cost of a full pipeline re-index. See #829 review round 2.
         allowDuplicateName: options?.allowDuplicateName,
+        // Worker pool size threaded from --workers, replacing the previous
+        // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
+        // env / auto-formula fallback inside the pipeline.
+        workerPoolSize,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -565,6 +990,19 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.log('  Already up to date\n');
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
+      return;
+    }
+
+    if (result.ftsRepairedOnly) {
+      clearInterval(elapsedTimer);
+      process.removeListener('SIGINT', sigintHandler);
+      console.log = origLog;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
+      console.warn = origWarn;
+      // eslint-disable-next-line no-console -- restoring after intentional progress-bar routing
+      console.error = origError;
+      bar.stop();
+      console.log('  FTS indexes repaired successfully\n');
       return;
     }
 
@@ -663,7 +1101,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     console.log('');
-  } catch (err: any) {
+  } catch (err: unknown) {
     clearInterval(elapsedTimer);
     process.removeListener('SIGINT', sigintHandler);
     console.log = origLog;
@@ -673,7 +1111,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     console.error = origError;
     bar.stop();
 
-    const msg = err.message || String(err);
+    const msg = err instanceof Error ? err.message : String(err);
 
     // Registry name-collision from --name (#829) — surface as an
     // actionable error rather than a generic stack-trace.
@@ -715,6 +1153,20 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           `  This usually happens when a previous analysis was interrupted mid-write.\n` +
           `  ${WAL_RECOVERY_SUGGESTION}\n`,
         { recoveryHint: 'wal-corruption' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (isLbugCheckpointIoError(err)) {
+      cliError(
+        `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
+          `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
+          `    gitnexus analyze --wal-checkpoint-threshold ${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD}\n` +
+          `    (or set GITNEXUS_WAL_CHECKPOINT_THRESHOLD=${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD})\n` +
+          `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
+        { recoveryHint: 'wal-checkpoint-threshold' },
       );
       process.exitCode = 1;
       return;

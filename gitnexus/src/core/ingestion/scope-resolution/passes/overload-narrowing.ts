@@ -38,7 +38,13 @@
  *   5. Empty input returns empty output.
  */
 
-import type { ArityVerdict, Callsite, ConstraintContext, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ArityVerdict,
+  Callsite,
+  ConstraintContext,
+  ParameterTypeClass,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 
 /**
  * Per-slot conversion-rank function. Returns a numeric cost for
@@ -51,7 +57,12 @@ import type { ArityVerdict, Callsite, ConstraintContext, SymbolDefinition } from
  * Each language provides its own implementation. The function operates
  * on normalized type strings (output of the language's type normalizer).
  */
-export type ConversionRankFn = (argType: string, paramType: string) => number;
+export type ConversionRankFn = (
+  argType: string,
+  paramType: string,
+  argTypeClass?: ParameterTypeClass,
+  paramTypeClass?: ParameterTypeClass,
+) => number;
 
 /**
  * Optional hook bundle for narrowing extension points. Threaded in
@@ -130,7 +141,16 @@ export function narrowOverloadCandidates(
       if (params === undefined) return false;
       for (let i = 0; i < argTypes.length && i < params.length; i++) {
         if (argTypes[i] === '') continue;
-        if (argTypes[i] !== params[i]) return false;
+        if (
+          !exactTypeSlotMatches(
+            argTypes[i],
+            params[i],
+            hookCtx?.argumentTypeClasses?.[i],
+            d.parameterTypeClasses?.[i],
+          )
+        ) {
+          return false;
+        }
       }
       return true;
     });
@@ -144,7 +164,12 @@ export function narrowOverloadCandidates(
       // are returned; multiple survivors are genuinely ambiguous. When
       // ranking also yields empty, fall through to the arity-filtered
       // `candidates` set — matches pre-#1606 behavior.
-      const ranked = rankByConversion(candidates, argTypes, hookCtx.conversionRankFn);
+      const ranked = rankByConversion(
+        candidates,
+        argTypes,
+        hookCtx.conversionRankFn,
+        hookCtx.argumentTypeClasses,
+      );
       if (ranked.length > 0) result = ranked;
     }
   }
@@ -183,6 +208,27 @@ export function narrowOverloadCandidates(
   return result;
 }
 
+function exactTypeSlotMatches(
+  argType: string,
+  paramType: string,
+  argTypeClass?: ParameterTypeClass,
+  paramTypeClass?: ParameterTypeClass,
+): boolean {
+  if (argType !== paramType) return false;
+  // C++ normalizes away pointer markers (`int*` -> `int`). When both sides
+  // provide shape sidecars, do not let that collapse make `int` exactly match
+  // `int*`. Unknown sidecar evidence preserves the previous string-only path.
+  if (argTypeClass === undefined || paramTypeClass === undefined) return true;
+  if (argTypeClass.indirection === 'unknown' || paramTypeClass.indirection === 'unknown') {
+    return true;
+  }
+  return isPointerShape(argTypeClass) === isPointerShape(paramTypeClass);
+}
+
+function isPointerShape(typeClass: ParameterTypeClass): boolean {
+  return typeClass.indirection === 'pointer' && typeClass.pointerDepth > 0;
+}
+
 /**
  * Pairwise dominance comparison (ISO C++ [over.ics.rank]).
  *
@@ -199,6 +245,7 @@ function rankByConversion(
   candidates: readonly SymbolDefinition[],
   argTypes: readonly string[],
   rankFn: ConversionRankFn,
+  argTypeClasses?: readonly ParameterTypeClass[],
 ): readonly SymbolDefinition[] {
   // Step 1: compute per-slot ranks and exclude non-viable candidates.
   const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
@@ -207,12 +254,22 @@ function rankByConversion(
     if (params === undefined) continue;
     const ranks: number[] = [];
     let ok = true;
-    for (let i = 0; i < argTypes.length && i < params.length; i++) {
+    for (let i = 0; i < argTypes.length; i++) {
+      const paramType = parameterTypeAt(params, i);
+      if (paramType === undefined) {
+        ok = false;
+        break;
+      }
       if (argTypes[i] === '') {
         ranks.push(0); // unknown arg → any-match (rank 0)
         continue;
       }
-      const r = rankFn(argTypes[i], params[i]);
+      const r = rankFn(
+        argTypes[i],
+        paramType,
+        argTypeClasses?.[i],
+        parameterTypeClassAt(d.parameterTypeClasses, i),
+      );
       if (!isFinite(r)) {
         ok = false;
         break;
@@ -237,6 +294,20 @@ function rankByConversion(
     }
   }
   return viable.filter((_, idx) => !dominated.has(idx)).map((v) => v.def);
+}
+
+function parameterTypeAt(params: readonly string[], argIndex: number): string | undefined {
+  if (argIndex < params.length) return params[argIndex];
+  return params[params.length - 1] === '...' ? '...' : undefined;
+}
+
+function parameterTypeClassAt(
+  params: readonly ParameterTypeClass[] | undefined,
+  argIndex: number,
+): ParameterTypeClass | undefined {
+  if (params === undefined) return undefined;
+  if (argIndex < params.length) return params[argIndex];
+  return params[params.length - 1]?.base === '...' ? params[params.length - 1] : undefined;
 }
 
 /**

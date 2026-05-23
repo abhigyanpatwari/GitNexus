@@ -45,24 +45,26 @@ describe('CLI commands', () => {
   });
 
   describe('optional parser dependencies', () => {
-    it('uses vendored source for tree-sitter-dart instead of a remote dependency', async () => {
+    it('materializes vendored grammars at postinstall instead of file: optionalDependencies (#1728)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
-      expect(pkg.default.optionalDependencies['tree-sitter-dart']).toBe(
-        'file:./vendor/tree-sitter-dart',
-      );
+      const optional = pkg.default.optionalDependencies ?? {};
+      expect(optional['tree-sitter-dart']).toBeUndefined();
+      expect(optional['tree-sitter-proto']).toBeUndefined();
+      expect(optional['tree-sitter-swift']).toBeUndefined();
+      expect(pkg.default.scripts.postinstall).toContain('materialize-vendor-grammars.cjs');
+      expect(pkg.default.files).toContain('vendor');
     });
 
-    it('uses the vendored official Swift runtime package instead of source-building on install', async () => {
+    it('keeps vendored Swift runtime with prebuilds and hoisted activation script', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const swiftPkg = await import('../../vendor/tree-sitter-swift/package.json', {
         with: { type: 'json' },
       });
       expect(pkg.default.dependencies['tree-sitter']).toBe('^0.21.1');
-      expect(pkg.default.optionalDependencies['tree-sitter-swift']).toBe(
-        'file:./vendor/tree-sitter-swift',
-      );
-      expect(pkg.default.scripts.postinstall).not.toContain('tree-sitter-swift');
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-swift.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
+      expect(swiftPkg.default.scripts?.install).toBeUndefined();
+      expect(swiftPkg.default.dependencies).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
     });
   });

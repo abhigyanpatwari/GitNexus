@@ -92,6 +92,77 @@ public class UserController {
       expect(getRoute!.confidence).toBe(0.9);
       expect(getRoute!.symbolUid).not.toBe('file-uid-ctrl');
     });
+
+    it('supplements graph providers with source-scan providers from other files', async () => {
+      const dir = path.join(tmpDir, 'graph-source-provider-union');
+      fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/controller/UserController.java'),
+        `
+@RestController
+@RequestMapping("/api/v2")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `
+package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) {
+          return [
+            {
+              fileId: 'file-uid-ctrl',
+              filePath: 'src/controller/UserController.java',
+              routePath: '/api/v2/users',
+              routeId: 'route-uid-users',
+              responseKeys: null,
+              routeSource: 'decorator-GetMapping',
+            },
+          ];
+        }
+        if (query.includes('FETCHES')) return [];
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'uid-ctrl-list',
+              name: 'list',
+              filePath: 'src/controller/UserController.java',
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      const graphRouteMatches = providers.filter(
+        (c) => c.contractId === 'http::GET::/api/v2/users',
+      );
+      expect(graphRouteMatches).toHaveLength(1);
+      expect(graphRouteMatches[0].symbolUid).toBe('uid-ctrl-list');
+      expect(graphRouteMatches[0].meta.extractionStrategy).toBe('graph_assisted');
+
+      const sourceRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(sourceRoute).toBeDefined();
+      expect(sourceRoute?.symbolName).toBe('healthHandler');
+      expect(sourceRoute?.meta.extractionStrategy).toBe('source_scan');
+    });
   });
 
   describe('provider extraction — source-scan fallback (Strategy B)', () => {
@@ -164,6 +235,30 @@ export default router;
       expect(
         providers.find((c) => c.contractId === 'http::DELETE::/api/users/{param}'),
       ).toBeDefined();
+    });
+
+    it('dedupes source-only providers by contract id', async () => {
+      const dir = path.join(tmpDir, 'source-only-same-contract-id');
+      fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-a.ts'),
+        `
+router.get('/api/health', healthA);
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src/routes/health-b.ts'),
+        `
+router.get('/api/health', healthB);
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.contractId === 'http::GET::/api/health');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].role).toBe('provider');
+      expect(providers[0].meta.extractionStrategy).toBe('source_scan');
     });
 
     it('extracts Go Gin and Echo route registrations', async () => {
@@ -443,8 +538,29 @@ def create_order():
         path.join(dir, 'src', 'client.py'),
         `
 import httpx
+import httpx as hx
+from httpx import AsyncClient
+from httpx import AsyncClient as HttpxAsyncClient
+
+# Dotted-package look-alikes — must NOT be detected as httpx.
+import my_pkg.httpx as evil_mod
+from my_pkg.httpx import AsyncClient as evil_async
+# Longer dotted path — must also NOT be detected.
+import a.b.c.httpx as deep_evil
+from a.b.c.httpx import AsyncClient as deep_evil_async
+# Relative import — module_name is a relative_import node, not dotted_name, so
+# it must not produce a contract either.
+from .httpx import AsyncClient as rel_evil_async
 
 module_client = httpx.AsyncClient(base_url="https://svc.local")
+module_alias_client = hx.AsyncClient(base_url="https://svc.local")
+module_direct_client = AsyncClient(base_url="https://svc.local")
+module_renamed_client = HttpxAsyncClient(base_url="https://svc.local")
+evil_mod_client = evil_mod.AsyncClient(base_url="https://svc.local")
+evil_direct_client = evil_async(base_url="https://svc.local")
+deep_evil_mod_client = deep_evil.AsyncClient(base_url="https://svc.local")
+deep_evil_direct_client = deep_evil_async(base_url="https://svc.local")
+rel_evil_direct_client = rel_evil_async(base_url="https://svc.local")
 
 class TopicClient:
     def __init__(self):
@@ -466,6 +582,18 @@ async def check_duplicate():
         service.request("POST", "/nope")
         return await client.post("https://svc.local/questions/duplicate-check")
 
+async def import_aliases():
+    local_alias_client = hx.AsyncClient(base_url="https://svc.local")
+    local_direct_client = AsyncClient(base_url="https://svc.local")
+    local_renamed_client = HttpxAsyncClient(base_url="https://svc.local")
+    await local_alias_client.get("/alias-topic")
+    await local_direct_client.patch("/direct-topic")
+    await local_renamed_client.request("PUT", "/renamed-topic")
+    async with hx.AsyncClient() as alias_context:
+        await alias_context.delete("/alias-context")
+    async with AsyncClient() as direct_context:
+        return await direct_context.post("/direct-context")
+
 def unrelated_scope_collision():
     client = acquire_cache_client()
     return client.get("/ignored-same-name")
@@ -474,7 +602,63 @@ def module_scope_shadow_collision():
     client = acquire_cache_client()
     return client.get("/ignored-module-same-name")
 
+def shadow_direct_alias():
+    AsyncClient = lambda: FakeClient()
+    client = AsyncClient()
+    return client.get("/shadow-direct-fp")
+
+def shadow_module_alias():
+    hx = FakeMod()
+    client = hx.AsyncClient()
+    return client.get("/shadow-module-fp")
+
+async def shadow_direct_context():
+    AsyncClient = lambda: FakeClient()
+    async with AsyncClient() as client:
+        return await client.get("/shadow-direct-context-fp")
+
+def shadow_tuple_destructure():
+    AsyncClient, _other = (lambda: FakeClient()), 42
+    client = AsyncClient()
+    return client.get("/shadow-tuple-fp")
+
+# Class-body assignment of an imported alias is a class attribute under Python
+# LEGB rules — methods inside still see the module binding. The detector must
+# NOT poison the methods, so the legitimate httpx call below should still emit.
+class ClassBodyRebindHolder:
+    AsyncClient = lambda: FakeClient()
+
+    def __init__(self):
+        self._client = httpx.AsyncClient(base_url="https://svc.local")
+
+    async def fetch(self):
+        return await self._client.get("/class-body-rebind-ok")
+
 module_client.get("/module-topic")
+module_alias_client.get("/module-alias-topic")
+module_direct_client.get("/module-direct-topic")
+module_renamed_client.get("/module-renamed-topic")
+evil_mod_client.get("/evil-module-dotted-fp")
+evil_direct_client.get("/evil-direct-dotted-fp")
+deep_evil_mod_client.get("/deep-evil-module-dotted-fp")
+deep_evil_direct_client.get("/deep-evil-direct-dotted-fp")
+rel_evil_direct_client.get("/rel-evil-direct-fp")
+`,
+      );
+
+      // Isolated file for module-level rebind: shadowing applies file-wide, so
+      // it must not affect the assertions in client.py above.
+      fs.writeFileSync(
+        path.join(dir, 'src', 'module_rebind.py'),
+        `
+from httpx import AsyncClient
+
+# Module-level rebind: the rest of this file's bare AsyncClient calls must NOT
+# emit httpx consumer contracts.
+AsyncClient = lambda: FakeClient()
+
+shadowed_module_client = AsyncClient(base_url="https://svc.local")
+shadowed_module_client.get("/module-level-rebind-fp")
 `,
       );
 
@@ -486,7 +670,19 @@ module_client.get("/module-topic")
         'http::POST::/questions/import',
         'http::DELETE::/topic',
         'http::POST::/questions/duplicate-check',
+        'http::GET::/alias-topic',
+        'http::PATCH::/direct-topic',
+        'http::PUT::/renamed-topic',
+        'http::DELETE::/alias-context',
+        'http::POST::/direct-context',
         'http::GET::/module-topic',
+        'http::GET::/module-alias-topic',
+        'http::GET::/module-direct-topic',
+        'http::GET::/module-renamed-topic',
+        // Class-body rebind of `AsyncClient` is a class attribute, not a
+        // method-scope shadow — the legitimate httpx.AsyncClient call inside
+        // the class must still emit.
+        'http::GET::/class-body-rebind-ok',
       ];
 
       for (const contractId of expected) {
@@ -495,6 +691,13 @@ module_client.get("/module-topic")
         expect(consumer?.meta.framework).toBe('python-httpx');
       }
 
+      // Positive control: the legitimate `module_direct_client = AsyncClient(...)`
+      // path was actually exercised, so the negative dotted-package assertions
+      // below are not passing vacuously.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/module-direct-topic'),
+      ).toBeDefined();
+
       expect(consumers.find((c) => c.contractId === 'http::GET::/nope')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::POST::/nope')).toBeUndefined();
       expect(
@@ -502,6 +705,39 @@ module_client.get("/module-topic")
       ).toBeUndefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/ignored-module-same-name'),
+      ).toBeUndefined();
+      // Finding 1: dotted-package look-alikes (`my_pkg.httpx`, three-segment
+      // `a.b.c.httpx`, and relative `.httpx`) must not be detected.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/evil-module-dotted-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/evil-direct-dotted-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/deep-evil-module-dotted-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/deep-evil-direct-dotted-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/rel-evil-direct-fp'),
+      ).toBeUndefined();
+      // Finding 2: locally rebound imported aliases must not be detected.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-direct-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-module-fp'),
+      ).toBeUndefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/shadow-direct-context-fp'),
+      ).toBeUndefined();
+      // Tuple/list destructuring rebinds must also shadow the alias.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/shadow-tuple-fp')).toBeUndefined();
+      // Module-level rebind in a separate file must shadow the whole file.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/module-level-rebind-fp'),
       ).toBeUndefined();
     });
 
@@ -739,6 +975,59 @@ async def create_user(user: UserCreate):
       expect(consumers.length).toBeGreaterThanOrEqual(1);
       expect(consumers[0].confidence).toBe(0.9);
       expect(consumers[0].symbolName).toBe('fetchUsers');
+    });
+
+    it('supplements graph consumers with source-scan consumers from other files', async () => {
+      const dir = path.join(tmpDir, 'graph-source-consumer-union');
+      fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/api/graph.ts'), 'export const api = {};');
+      fs.writeFileSync(
+        path.join(dir, 'src/api/health.ts'),
+        `
+export async function fetchHealth() {
+  const res = await fetch('/api/health');
+  return res.json();
+}
+`,
+      );
+
+      const mockDbExecutor = async (query: string) => {
+        if (query.includes('HANDLES_ROUTE')) return [];
+        if (query.includes('FETCHES')) {
+          return [
+            {
+              fileId: 'file-uid-api',
+              filePath: 'src/api/graph.ts',
+              routePath: '/api/users',
+              routeId: 'route-uid-users',
+              fetchReason: 'fetch-url-match',
+            },
+          ];
+        }
+        if (query.includes('CONTAINS')) {
+          return [
+            {
+              uid: 'uid-fn-fetch',
+              name: 'fetchUsers',
+              filePath: 'src/api/graph.ts',
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      const graphConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/users');
+      expect(graphConsumer).toBeDefined();
+      expect(graphConsumer?.symbolUid).toBe('uid-fn-fetch');
+      expect(graphConsumer?.meta.extractionStrategy).toBe('graph_assisted');
+
+      const sourceConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/health');
+      expect(sourceConsumer).toBeDefined();
+      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan');
     });
   });
 
