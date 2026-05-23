@@ -16,7 +16,9 @@ import { ToolCallCard } from './ToolCallCard';
 import { isProviderConfigured } from '../core/llm/settings-service';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ProcessesPanel } from './ProcessesPanel';
+import { useTranslation } from 'react-i18next';
 export const RightPanel = () => {
+  const { t } = useTranslation(['chat', 'common']);
   const {
     isRightPanelOpen,
     setRightPanelOpen,
@@ -202,10 +204,10 @@ export const RightPanel = () => {
   };
 
   const chatSuggestions = [
-    'Explain the project architecture',
-    'What does this project do?',
-    'Show me the most important files',
-    'Find all API handlers',
+    t('chat:suggestions.architecture'),
+    t('chat:suggestions.whatDoes'),
+    t('chat:suggestions.importantFiles'),
+    t('chat:suggestions.apiHandlers'),
   ];
 
   if (!isRightPanelOpen) return null;
@@ -225,7 +227,7 @@ export const RightPanel = () => {
             }`}
           >
             <Sparkles className="h-3.5 w-3.5" />
-            <span>Nexus AI</span>
+            <span>{t('chat:tabs.chat')}</span>
           </button>
 
           {/* Processes Tab */}
@@ -238,9 +240,9 @@ export const RightPanel = () => {
             }`}
           >
             <GitBranch className="h-3.5 w-3.5" />
-            <span>Processes</span>
+            <span>{t('chat:tabs.processes')}</span>
             <span className="rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-              NEW
+              {t('chat:newBadge')}
             </span>
           </button>
         </div>
@@ -249,7 +251,7 @@ export const RightPanel = () => {
         <button
           onClick={() => setRightPanelOpen(false)}
           className="rounded p-1.5 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
-          title="Close Panel"
+          title={t('chat:actions.closePanel')}
         >
           <PanelRightClose className="h-4 w-4" />
         </button>
@@ -270,12 +272,12 @@ export const RightPanel = () => {
             <div className="ml-auto flex items-center gap-2">
               {!isAgentReady && (
                 <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-300">
-                  Configure AI
+                  {t('chat:badges.configureAI')}
                 </span>
               )}
               {isAgentInitializing && (
                 <span className="flex items-center gap-1 rounded-full border border-border-subtle bg-surface px-2 py-1 text-[11px] text-text-muted">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Connecting
+                  <Loader2 className="h-3 w-3 animate-spin" /> {t('chat:badges.connecting')}
                 </span>
               )}
             </div>
@@ -296,10 +298,9 @@ export const RightPanel = () => {
                 <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-node-interface text-2xl shadow-glow">
                   🧠
                 </div>
-                <h3 className="mb-2 text-base font-medium">Ask me anything</h3>
+                <h3 className="mb-2 text-base font-medium">{t('chat:empty.title')}</h3>
                 <p className="mb-5 text-sm leading-relaxed text-text-secondary">
-                  I can help you understand the architecture, find functions, or explain
-                  connections.
+                  {t('chat:empty.description')}
                 </p>
                 <div className="flex flex-wrap justify-center gap-2">
                   {chatSuggestions.map((suggestion) => (
@@ -323,7 +324,7 @@ export const RightPanel = () => {
                         <div className="mb-2 flex items-center gap-2">
                           <User className="h-4 w-4 text-text-muted" />
                           <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
-                            You
+                            {t('chat:roles.you')}
                           </span>
                         </div>
                         <div className="pl-6 text-sm text-text-primary">{message.content}</div>
@@ -336,7 +337,7 @@ export const RightPanel = () => {
                         <div className="mb-3 flex items-center gap-2">
                           <Sparkles className="h-4 w-4 text-accent" />
                           <span className="text-xs font-medium tracking-wide text-text-muted uppercase">
-                            Nexus AI
+                            {t('chat:roles.assistant')}
                           </span>
                           {isChatLoading && message === chatMessages[chatMessages.length - 1] && (
                             <Loader2 className="h-3 w-3 animate-spin text-accent" />
@@ -394,7 +395,7 @@ export const RightPanel = () => {
 
           {/* Scroll to bottom */}
           <button
-            aria-label="Scroll to bottom"
+            aria-label={t('chat:actions.scrollBottom')}
             onClick={() => scrollToBottom()}
             className={`absolute bottom-20 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary shadow-lg transition-all duration-200 hover:border-accent hover:text-accent ${
               !isAtBottom && chatMessages.length > 0
@@ -403,7 +404,7 @@ export const RightPanel = () => {
             }`}
           >
             <ArrowDown className="mr-1 inline h-3.5 w-3.5" />
-            Scroll to bottom
+            {t('chat:actions.scrollBottom')}
           </button>
 
           {/* Input */}
@@ -414,7 +415,7 @@ export const RightPanel = () => {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about the codebase..."
+                placeholder={t('chat:input.placeholder')}
                 rows={1}
                 className="scrollbar-thin min-h-[36px] flex-1 resize-none border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
                 style={{ height: '36px', overflowY: 'hidden' }}
@@ -422,15 +423,15 @@ export const RightPanel = () => {
               <button
                 onClick={clearChat}
                 className="px-2 py-1 text-xs text-text-muted transition-colors hover:text-text-primary"
-                title="Clear chat"
+                title={t('chat:actions.clearChat')}
               >
-                Clear
+                {t('common:actions.clear')}
               </button>
               {isChatLoading ? (
                 <button
                   onClick={stopChatResponse}
                   className="flex h-9 w-9 items-center justify-center rounded-md bg-red-500/80 text-white transition-all hover:bg-red-500"
-                  title="Stop response"
+                  title={t('chat:actions.stopResponse')}
                 >
                   <Square className="h-3.5 w-3.5 fill-current" />
                 </button>
@@ -449,8 +450,8 @@ export const RightPanel = () => {
                 <AlertTriangle className="h-3.5 w-3.5" />
                 <span>
                   {isProviderConfigured()
-                    ? 'Initializing AI agent...'
-                    : 'Configure an LLM provider to enable chat.'}
+                    ? t('chat:input.initializing')
+                    : t('chat:input.configureProvider')}
                 </span>
               </div>
             )}

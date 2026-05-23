@@ -1,0 +1,96 @@
+{
+  "tabs": {
+    "overview": "概览",
+    "ai": "Nexus AI",
+    "shortcuts": "快捷键",
+    "status": "状态栏",
+    "graph": "图谱与节点",
+    "search": "搜索与过滤"
+  },
+  "shortcuts": {
+    "searchNodes": "搜索节点",
+    "deselectClose": "取消选择 / 关闭",
+    "columns": {
+      "action": "操作",
+      "mac": "Mac",
+      "windows": "Windows"
+    }
+  },
+  "nodeTypes": {
+    "function": "函数",
+    "functionDesc": "函数声明",
+    "file": "文件",
+    "fileDesc": "源码文件",
+    "class": "类",
+    "classDesc": "类声明",
+    "method": "方法",
+    "methodDesc": "类方法",
+    "interface": "接口",
+    "interfaceDesc": "TypeScript 接口",
+    "folder": "文件夹",
+    "folderDesc": "目录节点"
+  },
+  "status": {
+    "ready": "就绪",
+    "readyDesc": "图谱已完全加载并可交互",
+    "nodesCount": "节点数",
+    "nodesCountDesc": "图谱中的文件与符号总数",
+    "edgesCount": "边数",
+    "edgesCountDesc": "导入 / 依赖连接",
+    "aiIndexStatus": "AI 索引状态",
+    "aiIndexStatusDesc": "仓库已完成 AI 查询索引",
+    "semanticReadyBadge": "语义就绪",
+    "explained": "状态栏说明"
+  },
+  "tryAsking": "可以尝试问：",
+  "footer": "GitNexus — 图谱浏览器",
+  "title": "帮助与参考",
+  "footerLong": "GitNexus — 开源代码库图谱浏览器",
+  "docsGithub": "文档与 GitHub ↗",
+  "overview": {
+    "gettingStarted": "开始使用",
+    "whatIsTitle": "GitNexus 是什么？",
+    "whatIsDescription": "GitNexus 是代码库的交互式图谱浏览器。每个文件、函数和导入关系都会变成可探索、可查询、可视化导航的节点。",
+    "currentRepoTitle": "当前仓库",
+    "loadedCounts": "已加载：{{nodeCount}} 个节点 · {{edgeCount}} 条边",
+    "threeWaysTitle": "三种探索方式",
+    "wayInspect": "点击节点查看详情",
+    "waySearch": "按名称或类型搜索",
+    "wayAsk": "向 Nexus AI 提出自然语言问题",
+    "navigationTitle": "导航",
+    "navZoom": "滚动缩放",
+    "navPan": "点击并拖动进行平移",
+    "navFocus": "双击节点聚焦其子图"
+  },
+  "graph": {
+    "nodeColorLegend": "节点颜色图例",
+    "nodeLabel": "{{label}}节点",
+    "sizeDescription": "节点大小反映连接数量——越大的节点被越多文件依赖。边的方向表示从导入方 → 被导入方。",
+    "detailDescription": "点击任意节点可打开详情面板，查看导入、导出和反向依赖。"
+  },
+  "search": {
+    "title": "搜索与过滤",
+    "searchNodes": "搜索节点",
+    "searchDescription": "可按文件名、函数名或导入路径搜索，匹配的节点会在图谱中实时高亮。",
+    "filterPanel": "过滤面板",
+    "filterDescription": "使用左侧栏的过滤图标隔离特定节点类型、隐藏叶子节点，或以选中节点为根聚焦指定深度范围。",
+    "syntax": "搜索语法",
+    "hints": {
+      "nameFragment": "按名称片段匹配",
+      "pathPrefix": "按路径前缀匹配",
+      "nodeType": "按节点类型过滤"
+    }
+  },
+  "ai": {
+    "title": "Nexus AI",
+    "semanticReady": "✓ 语义索引就绪",
+    "description": "仓库已完成索引，可进行语义查询。Nexus AI 理解代码结构和关系，而不只是文件名。",
+    "questions": {
+      "dependencies": "“哪些文件依赖 auth 模块？”",
+      "circular": "“找出这个仓库中的循环依赖”",
+      "connected": "“哪些组件连接最密集？”",
+      "imports": "“显示所有导入 useEffect 的文件”"
+    },
+    "openPrompt": "点击右上角的 Nexus AI 按钮打开提问面板。"
+  }
+}
