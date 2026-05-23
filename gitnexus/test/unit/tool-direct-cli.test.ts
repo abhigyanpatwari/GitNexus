@@ -17,6 +17,8 @@ vi.mock('node:fs', () => ({
 
 describe('direct CLI tool commands', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('GITNEXUS_LANG', 'en');
     vi.resetModules();
     initMock.mockReset();
     callToolMock.mockReset();
@@ -106,5 +108,27 @@ describe('direct CLI tool commands', () => {
     const output: string = writeSyncMock.mock.calls[0][1];
     expect(output).toContain('proc9');
     expect(output).not.toContain('proc10');
+  });
+
+  it('localizes detect_changes formatter labels for Simplified Chinese', async () => {
+    vi.stubEnv('GITNEXUS_LANG', 'zh-CN');
+    callToolMock.mockResolvedValue({
+      summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+      affected_processes: [
+        { name: 'Auth Flow', step_count: 5, changed_steps: [{ symbol: 'foo' }] },
+      ],
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({});
+
+    const output: string = writeSyncMock.mock.calls[0][1];
+    expect(output).toContain('变更：2 个文件，3 个符号');
+    expect(output).toContain('受影响流程：1');
+    expect(output).toContain('风险等级：MEDIUM');
+    expect(output).toContain('已变更符号：');
+    expect(output).toContain('受影响执行流程：');
+    expect(output).toContain('Auth Flow (5 步) — 已变更：foo');
   });
 });

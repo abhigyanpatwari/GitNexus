@@ -15,6 +15,8 @@ import {
   AlertCircle,
 } from '@/lib/lucide-icons';
 import type { ToolCallInfo } from '../core/llm/types';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 
 interface ToolCallCardProps {
   toolCall: ToolCallInfo;
@@ -25,7 +27,7 @@ interface ToolCallCardProps {
 /**
  * Format tool arguments for display
  */
-const formatArgs = (args: Record<string, unknown>): string => {
+const formatArgs = (args: Record<string, unknown>, t: TFunction): string => {
   if (!args || Object.keys(args).length === 0) {
     return '';
   }
@@ -34,7 +36,7 @@ const formatArgs = (args: Record<string, unknown>): string => {
   if ('cypher' in args && typeof args.cypher === 'string') {
     let result = '';
     if ('query' in args && typeof args.query === 'string') {
-      result += `Search: "${args.query}"\n\n`;
+      result += t('graph:toolCall.searchPrefix', { query: args.query }) + '\n\n';
     }
     result += args.cypher;
     return result;
@@ -88,24 +90,25 @@ const getStatusDisplay = (status: ToolCallInfo['status']) => {
 /**
  * Get a friendly display name for the tool
  */
-const getToolDisplayName = (name: string): string => {
+const getToolDisplayName = (name: string, t: TFunction): string => {
   const names: Record<string, string> = {
     // Current 7-tool architecture
-    search: '🔍 Search Code',
-    cypher: '🔗 Cypher Query',
-    grep: '🔎 Pattern Search',
-    read: '📄 Read File',
-    overview: '🗺️ Codebase Overview',
-    explore: '🔬 Deep Dive',
-    impact: '💥 Impact Analysis',
+    search: t('graph:toolCall.tools.search'),
+    cypher: t('graph:toolCall.tools.cypher'),
+    grep: t('graph:toolCall.tools.grep'),
+    read: t('graph:toolCall.tools.read'),
+    overview: t('graph:toolCall.tools.overview'),
+    explore: t('graph:toolCall.tools.explore'),
+    impact: t('graph:toolCall.tools.impact'),
   };
   return names[name] || name;
 };
 
 export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCardProps) => {
+  const { t } = useTranslation(['common', 'graph']);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const status = getStatusDisplay(toolCall.status);
-  const formattedArgs = formatArgs(toolCall.args);
+  const formattedArgs = formatArgs(toolCall.args, t);
 
   return (
     <div
@@ -131,13 +134,13 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
 
         {/* Tool name */}
         <span className="flex-1 text-sm font-medium text-text-primary">
-          {getToolDisplayName(toolCall.name)}
+          {getToolDisplayName(toolCall.name, t)}
         </span>
 
         {/* Status indicator */}
         <span className={`flex items-center gap-1 text-xs ${status.color}`}>
           {status.icon}
-          <span className="capitalize">{toolCall.status}</span>
+          <span className="capitalize">{t(`graph:toolCall.status.${toolCall.status}`)}</span>
         </span>
       </div>
 
@@ -148,7 +151,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
           {formattedArgs && (
             <div className="border-b border-border-subtle/50 px-3 py-2">
               <div className="mb-1.5 text-[10px] tracking-wider text-text-muted uppercase">
-                {toolCall.name === 'cypher' ? 'Query' : 'Input'}
+                {toolCall.name === 'cypher' ? t('graph:toolCall.query') : t('graph:toolCall.input')}
               </div>
               <pre className="overflow-x-auto rounded bg-surface/50 p-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
                 {formattedArgs}
@@ -160,12 +163,12 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
           {toolCall.result && (
             <div className="px-3 py-2">
               <div className="mb-1.5 text-[10px] tracking-wider text-text-muted uppercase">
-                Result
+                {t('graph:toolCall.result')}
               </div>
               <div className="max-h-[400px] overflow-y-auto rounded bg-surface/50">
                 <pre className="p-2 font-mono text-xs whitespace-pre-wrap text-text-secondary">
                   {toolCall.result.length > 3000
-                    ? toolCall.result.slice(0, 3000) + '\n\n... (truncated)'
+                    ? toolCall.result.slice(0, 3000) + '\n\n' + t('common:progress.truncated')
                     : toolCall.result}
                 </pre>
               </div>
@@ -176,7 +179,7 @@ export const ToolCallCard = ({ toolCall, defaultExpanded = false }: ToolCallCard
           {toolCall.status === 'running' && !toolCall.result && (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-text-muted">
               <Loader2 className="h-3 w-3 animate-spin" />
-              <span>Executing...</span>
+              <span>{t('common:progress.executing')}</span>
             </div>
           )}
         </div>

@@ -4,7 +4,7 @@
  * Tests: formatQueryResult, formatContextResult, formatImpactResult,
  * formatCypherResult, formatDetectChangesResult, formatListReposResult, MAX_BODY_SIZE
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   formatQueryResult,
   formatContextResult,
@@ -17,6 +17,15 @@ import {
 } from '../../src/cli/eval-server.js';
 
 // ─── validateHost ────────────────────────────────────────────────────
+
+beforeEach(() => {
+  vi.unstubAllEnvs();
+  vi.stubEnv('GITNEXUS_LANG', 'en');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('validateHost', () => {
   it('passes "localhost" through unchanged', () => {
@@ -380,6 +389,25 @@ describe('formatDetectChangesResult', () => {
       affected_processes: [],
     });
     expect(result).toContain('and 5 more');
+  });
+
+  it('localizes detect_changes labels for Simplified Chinese', () => {
+    vi.stubEnv('GITNEXUS_LANG', 'zh-CN');
+
+    const result = formatDetectChangesResult({
+      summary: { changed_files: 2, changed_count: 3, affected_count: 1, risk_level: 'MEDIUM' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+      affected_processes: [
+        { name: 'Auth Flow', step_count: 5, changed_steps: [{ symbol: 'foo' }] },
+      ],
+    });
+
+    expect(result).toContain('变更：2 个文件，3 个符号');
+    expect(result).toContain('受影响流程：1');
+    expect(result).toContain('风险等级：MEDIUM');
+    expect(result).toContain('已变更符号：');
+    expect(result).toContain('受影响执行流程：');
+    expect(result).toContain('Auth Flow (5 步) — 已变更：foo');
   });
 });
 

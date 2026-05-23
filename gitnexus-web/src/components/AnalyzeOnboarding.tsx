@@ -17,6 +17,7 @@
 
 import { Sparkles, Github } from '@/lib/lucide-icons';
 import { RepoAnalyzer } from './RepoAnalyzer';
+import { useTranslation } from 'react-i18next';
 
 interface AnalyzeOnboardingProps {
   /** Called when analysis finishes and the repo is ready to load. */
@@ -24,6 +25,8 @@ interface AnalyzeOnboardingProps {
 }
 
 export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
+  const { t } = useTranslation('onboarding');
+
   return (
     <div className="relative animate-fade-in overflow-hidden rounded-3xl border border-border-default bg-surface p-7">
       {/* Ambient glows — mirrors OnboardingGuide aesthetic */}
@@ -47,11 +50,10 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
           </div>
 
           <h2 className="text-lg leading-snug font-semibold text-text-primary">
-            Analyze your first repository
+            {t('analyzeFirst.title')}
           </h2>
           <p className="mx-auto mt-1.5 max-w-xs text-sm leading-relaxed text-text-secondary">
-            Paste a GitHub URL and GitNexus will clone it, parse the code, and build a live
-            knowledge graph — right in your browser.
+            {t('analyzeFirst.description')}
           </p>
         </div>
       </div>
@@ -63,7 +65,7 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
 
       {/* Footer hint */}
       <p className="mt-5 text-center text-[11px] leading-relaxed text-text-muted">
-        Public repos only &middot; Cloned locally by the server &middot; No data leaves your machine
+        {t('analyzeFirst.footer')}
       </p>
     </div>
   );

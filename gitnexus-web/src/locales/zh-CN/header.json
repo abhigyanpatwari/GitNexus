@@ -1,0 +1,16 @@
+{
+  "repositories": "仓库",
+  "active": "当前",
+  "reanalyzing": "正在重新分析...",
+  "reanalyzeRepo": "重新分析 {{repoName}}",
+  "deleteRepo": "删除 {{repoName}}",
+  "reanalyzingRepo": "正在重新分析 {{repoName}}：{{message}}",
+  "analyzeNew": "分析新仓库...",
+  "searchNodes": "搜索节点...",
+  "noNodesFound": "未找到“{{query}}”相关节点",
+  "starIfCool": "觉得不错就点星",
+  "aiSettings": "AI 设置",
+  "help": "帮助",
+  "language": "语言",
+  "selectLanguage": "选择语言"
+}

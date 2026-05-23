@@ -21,8 +21,11 @@ import {
   type BackendRepo,
 } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
+import { formatBackendError } from './i18n/error-messages';
+import { useTranslation } from 'react-i18next';
 
 const AppContent = () => {
+  const { t } = useTranslation(['common', 'errors']);
   const {
     viewMode,
     setViewMode,
@@ -54,7 +57,6 @@ const AppContent = () => {
     async (result: ConnectResult): Promise<void> => {
       // Use the canonical repo name from the server response so all subsequent
       // backend calls (queries, search, grep, readFile) scope to this repo.
-      const repoName = result.repoInfo.name;
       const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
       // Normalize both Windows (\) and Unix (/) path separators before splitting
       const projectName =
@@ -104,6 +106,11 @@ const AppContent = () => {
 
   // Auto-connect when ?server or ?project query param is present (bookmarkable shortcut)
   const autoConnectRan = useRef(false);
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   useEffect(() => {
     if (autoConnectRan.current) return;
     const params = new URLSearchParams(window.location.search);
@@ -116,8 +123,8 @@ const AppContent = () => {
     setProgress({
       phase: 'extracting',
       percent: 0,
-      message: 'Connecting to server...',
-      detail: 'Validating server',
+      message: tRef.current('common:progress.connecting'),
+      detail: tRef.current('common:progress.validatingServer'),
     });
     setViewMode('loading');
 
@@ -132,8 +139,8 @@ const AppContent = () => {
             setProgress({
               phase: 'extracting',
               percent: 5,
-              message: 'Connecting to server...',
-              detail: 'Validating server',
+              message: tRef.current('common:progress.connecting'),
+              detail: tRef.current('common:progress.validatingServer'),
             });
           } else if (phase === 'downloading') {
             const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
@@ -141,15 +148,15 @@ const AppContent = () => {
             setProgress({
               phase: 'extracting',
               percent: pct,
-              message: 'Downloading graph...',
-              detail: `${mb} MB downloaded`,
+              message: tRef.current('common:progress.downloadingGraph'),
+              detail: tRef.current('common:progress.downloadedMb', { mb }),
             });
           } else if (phase === 'extracting') {
             setProgress({
               phase: 'extracting',
               percent: 97,
-              message: 'Processing...',
-              detail: 'Extracting file contents',
+              message: tRef.current('common:progress.processing'),
+              detail: tRef.current('common:progress.extractingFileContents'),
             });
           }
         },
@@ -173,8 +180,8 @@ const AppContent = () => {
         setProgress({
           phase: 'error',
           percent: 0,
-          message: 'Failed to connect to server',
-          detail: err instanceof Error ? err.message : 'Unknown error',
+          message: tRef.current('errors:connectFailed'),
+          detail: formatBackendError(err, tRef.current),
         });
         setTimeout(() => {
           setViewMode('onboarding');
@@ -299,7 +306,7 @@ const AppContent = () => {
 
       {serverDisconnected && (
         <div className="fixed bottom-12 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-yellow-500/30 bg-yellow-900/80 px-4 py-2 text-sm text-yellow-200 shadow-lg backdrop-blur">
-          Server connection lost — reconnecting&hellip;
+          {t('errors:backend.reconnecting')}
         </div>
       )}
 

@@ -1,0 +1,16 @@
+{
+  "repositories": "Repositories",
+  "active": "active",
+  "reanalyzing": "Re-analyzing...",
+  "reanalyzeRepo": "Re-analyze {{repoName}}",
+  "deleteRepo": "Delete {{repoName}}",
+  "reanalyzingRepo": "Re-analyzing {{repoName}}: {{message}}",
+  "analyzeNew": "Analyze a new repository...",
+  "searchNodes": "Search nodes...",
+  "noNodesFound": "No nodes found for \"{{query}}\"",
+  "starIfCool": "Star if cool",
+  "aiSettings": "AI Settings",
+  "help": "Help",
+  "language": "Language",
+  "selectLanguage": "Select language"
+}
