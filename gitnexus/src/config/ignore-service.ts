@@ -283,9 +283,19 @@ const IGNORED_FILES = new Set([
 // deterministic results independent of per-repo config.
 export const shouldIgnorePath = (filePath: string): boolean => {
   const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPathLower = normalizedPath.toLowerCase();
   const parts = normalizedPath.split('/');
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
+
+  // Laravel compiles Blade templates into generated PHP cache files under
+  // storage/framework/views.  Source templates live in resources/views and are
+  // handled separately; compiled cache should not become source-of-truth. Keep
+  // storage/framework/cache parseable unless a separate warning source is proven:
+  // Laravel route/config cache files are ordinary generated PHP, not Blade.
+  if (/(^|\/)storage\/framework\/views(\/|$)/.test(normalizedPathLower)) {
+    return true;
+  }
 
   // Check if any path segment is in the hardcoded ignore list.
   for (const part of parts) {
