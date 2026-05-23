@@ -1,4 +1,5 @@
 import { Suspense, useEffect, useRef, useState, lazy } from 'react';
+import { useTranslation } from 'react-i18next';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
@@ -55,6 +56,7 @@ interface MermaidDiagramProps {
 }
 
 export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
+  const { t } = useTranslation(['graph']);
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -98,7 +100,7 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
   const processData: any = showModal
     ? {
         id: 'ai-generated',
-        label: 'AI Generated Diagram',
+        label: t('graph:diagram.aiGenerated'),
         processType: 'intra_community',
         steps: [], // Empty - we'll render raw mermaid
         edges: [],
@@ -112,12 +114,12 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
       <div className="my-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-4">
         <div className="mb-2 flex items-center gap-2 text-sm text-rose-300">
           <AlertTriangle className="h-4 w-4" />
-          <span className="font-medium">Diagram Error</span>
+          <span className="font-medium">{t('graph:diagram.error')}</span>
         </div>
         <pre className="font-mono text-xs whitespace-pre-wrap text-rose-200/70">{error}</pre>
         <details className="mt-2">
           <summary className="cursor-pointer text-xs text-text-muted hover:text-text-secondary">
-            Show source
+            {t('graph:diagram.showSource')}
           </summary>
           <pre className="mt-2 overflow-x-auto rounded bg-surface p-2 text-xs text-text-muted">
             {code}
@@ -134,12 +136,12 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
           {/* Header */}
           <div className="flex items-center justify-between border-b border-border-subtle bg-surface/60 px-3 py-2">
             <span className="text-[10px] font-medium tracking-wider text-text-muted uppercase">
-              Diagram
+              {t('graph:diagram.label')}
             </span>
             <button
               onClick={() => setShowModal(true)}
               className="rounded p-1 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
-              title="Expand"
+              title={t('graph:diagram.expandTitle')}
             >
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
@@ -161,7 +163,9 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
 
       {/* Use ProcessFlowModal for expansion */}
       {showModal && processData && (
-        <Suspense fallback={<div className="p-4 text-sm text-text-muted">Loading diagram…</div>}>
+        <Suspense
+          fallback={<div className="p-4 text-sm text-text-muted">{t('graph:diagram.loading')}</div>}
+        >
           <ProcessFlowModal process={processData} onClose={() => setShowModal(false)} />
         </Suspense>
       )}

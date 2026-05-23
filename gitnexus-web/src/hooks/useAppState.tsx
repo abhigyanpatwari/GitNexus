@@ -18,7 +18,12 @@ import type {
   ToolCallInfo,
   MessageStep,
 } from '../core/llm/types';
-import { loadSettings, getActiveProviderConfig, saveSettings } from '../core/llm/settings-service';
+import {
+  loadSettings,
+  getActiveProviderConfig,
+  getProviderCapabilities,
+  saveSettings,
+} from '../core/llm/settings-service';
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import {
@@ -35,9 +40,17 @@ import {
   type JobProgress,
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
+import i18n from '../i18n';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
+
+export const AUTO_START_EMBEDDINGS_STORAGE_KEY = 'gitnexus.autoStartEmbeddings';
+
+export const shouldAutoStartEmbeddings = (): boolean => {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
+  return window.localStorage.getItem(AUTO_START_EMBEDDINGS_STORAGE_KEY) === 'true';
+};
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -529,6 +542,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setEmbeddingStatus('idle');
       return;
     }
+    if (!shouldAutoStartEmbeddings()) {
+      setEmbeddingStatus('idle');
+      return;
+    }
     startEmbeddings().catch((err) => {
       console.warn('Embeddings auto-start failed:', err);
     });
@@ -623,6 +640,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
+      if (isChatLoading) return;
+
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
       // Also clear previous tool-driven AI highlights (highlight_in_graph)
@@ -649,7 +668,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          content: 'Wait a moment, vector index is being created.',
+          content: i18n.t('common:chat.waitForVectorIndex'),
           timestamp: Date.now(),
         };
         setChatMessages((prev) => [...prev, assistantMessage]);
@@ -662,11 +681,23 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setIsChatLoading(true);
       setCurrentToolCalls([]);
 
+      const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
+
       // Prepare message history for agent (convert our format to AgentMessage format)
-      const history: AgentMessage[] = [...chatMessages, userMessage].map((m) => ({
-        role: m.role === 'tool' ? 'assistant' : m.role,
-        content: m.content,
-      }));
+      const history: AgentMessage[] = [...chatMessages, userMessage].flatMap<AgentMessage>((m) => {
+        if (m.role === 'user') {
+          return [{ role: 'user', content: m.content }];
+        }
+        if (m.role === 'tool') {
+          return m.toolCallId
+            ? [{ role: 'tool', content: m.content, toolCallId: m.toolCallId }]
+            : [];
+        }
+        if (providerCapabilities.preserveAssistantTranscript && m.historyMessages?.length) {
+          return m.historyMessages;
+        }
+        return [{ role: 'assistant', content: m.content }];
+      });
 
       // Create placeholder for assistant response
       const assistantMessageId = `assistant-${Date.now()}`;
@@ -675,6 +706,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Keep toolCalls for backwards compat and currentToolCalls state
       const toolCallsForMessage: ToolCallInfo[] = [];
       let stepCounter = 0;
+      let assistantHistoryMessages: ChatMessage['historyMessages'];
 
       // Helper to update the message with current steps
       const updateMessage = () => {
@@ -691,6 +723,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             id: assistantMessageId,
             role: 'assistant' as const,
             content,
+            historyMessages: assistantHistoryMessages,
             steps: [...stepsForMessage],
             toolCalls: [...toolCallsForMessage],
             timestamp: existing?.timestamp ?? Date.now(),
@@ -973,6 +1006,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               break;
 
             case 'done':
+              assistantHistoryMessages = providerCapabilities.preserveAssistantTranscript
+                ? chunk.historyMessages
+                : undefined;
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;
@@ -984,10 +1020,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const agent = agentRef.current;
         if (!agent) throw new Error('Agent not initialized');
         const { streamAgentResponse } = await import('../core/llm/agent');
-        for await (const chunk of streamAgentResponse(agent, history)) {
+        for await (const chunk of streamAgentResponse(agent, history, {
+          captureHistory: providerCapabilities.preserveAssistantTranscript,
+        })) {
           onChunk(chunk);
         }
-        onChunk({ type: 'done' });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setAgentError(message);
@@ -1007,6 +1044,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
+      isChatLoading,
     ],
   );
 
@@ -1032,8 +1070,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setProgress({
         phase: 'extracting',
         percent: 0,
-        message: 'Switching repository...',
-        detail: `Loading ${repoName}`,
+        message: i18n.t('common:progress.switchingRepository'),
+        detail: i18n.t('common:progress.loadingRepository', { repo: repoName }),
       });
       setViewMode('loading');
       setIsAgentReady(false);
@@ -1061,8 +1099,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               setProgress({
                 phase: 'extracting',
                 percent: 5,
-                message: 'Switching repository...',
-                detail: 'Validating',
+                message: i18n.t('common:progress.switchingRepository'),
+                detail: i18n.t('common:progress.validating'),
               });
             } else if (phase === 'downloading') {
               const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
@@ -1070,15 +1108,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               setProgress({
                 phase: 'extracting',
                 percent: pct,
-                message: 'Downloading graph...',
-                detail: `${mb} MB downloaded`,
+                message: i18n.t('common:progress.downloadingGraph'),
+                detail: i18n.t('common:progress.downloadedMb', { mb }),
               });
             } else if (phase === 'extracting') {
               setProgress({
                 phase: 'extracting',
                 percent: 97,
-                message: 'Processing...',
-                detail: 'Extracting file contents',
+                message: i18n.t('common:progress.processing'),
+                detail: i18n.t('common:progress.extractingFileContents'),
               });
             }
           },
@@ -1110,8 +1148,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         setProgress({
           phase: 'error',
           percent: 0,
-          message: 'Failed to switch repository',
-          detail: err instanceof Error ? err.message : 'Unknown error',
+          message: i18n.t('common:progress.failedSwitchRepository'),
+          detail: err instanceof Error ? err.message : i18n.t('common:progress.unknownError'),
         });
         setIsAgentReady(false);
         agentRef.current = null;

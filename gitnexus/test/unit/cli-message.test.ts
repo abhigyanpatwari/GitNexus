@@ -10,7 +10,8 @@
  * embedded newlines).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { cliInfo, cliWarn, cliError } from '../../src/cli/cli-message.js';
+import { cliInfo, cliWarn, cliError, cliInfoKey } from '../../src/cli/cli-message.js';
+import { setCliLanguage } from '../../src/cli/i18n/index.js';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
 describe('cli-message — stderr + logger tee', () => {
@@ -23,6 +24,7 @@ describe('cli-message — stderr + logger tee', () => {
   });
 
   afterEach(() => {
+    setCliLanguage(null);
     stderrSpy.mockRestore();
     cap.restore();
   });
@@ -85,6 +87,16 @@ describe('cli-message — stderr + logger tee', () => {
     expect(records.some((r) => r.msg === 'line one\nline two\nline three' && r.level === 50)).toBe(
       true,
     );
+  });
+
+  it('cliInfoKey translates key-based messages before teeing', () => {
+    setCliLanguage('zh-CN');
+    cliInfoKey('list.title', { count: 3 });
+    const stderrCalls = stderrSpy.mock.calls.map(([chunk]) =>
+      typeof chunk === 'string' ? chunk : chunk.toString(),
+    );
+    expect(stderrCalls).toContain('已索引仓库（3）\n');
+    expect(cap.records().some((r) => r.msg === '已索引仓库（3）' && r.level === 30)).toBe(true);
   });
 
   it('handles an empty message — stderr gets a bare newline, logger gets msg:""', () => {

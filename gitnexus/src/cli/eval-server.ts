@@ -35,6 +35,9 @@ import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
+import { formatDetectChangesResult } from './detect-changes-format.js';
+
+export { formatDetectChangesResult } from './detect-changes-format.js';
 
 export interface EvalServerOptions {
   port?: string;
@@ -240,42 +243,6 @@ export function formatCypherResult(result: any): string {
   }
 
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-}
-
-export function formatDetectChangesResult(result: any): string {
-  if (result.error) return `Error: ${result.error}`;
-
-  const summary = result.summary || {};
-  const lines: string[] = [];
-
-  if (summary.changed_count === 0) {
-    return 'No changes detected.';
-  }
-
-  lines.push(`Changes: ${summary.changed_files || 0} files, ${summary.changed_count || 0} symbols`);
-  lines.push(`Affected processes: ${summary.affected_count || 0}`);
-  lines.push(`Risk level: ${summary.risk_level || 'unknown'}\n`);
-
-  const changed = result.changed_symbols || [];
-  if (changed.length > 0) {
-    lines.push(`Changed symbols:`);
-    for (const s of changed.slice(0, 15)) {
-      lines.push(`  ${s.type} ${s.name} → ${s.filePath}`);
-    }
-    if (changed.length > 15) lines.push(`  ... and ${changed.length - 15} more`);
-    lines.push('');
-  }
-
-  const affected = result.affected_processes || [];
-  if (affected.length > 0) {
-    lines.push(`Affected execution flows:`);
-    for (const p of affected.slice(0, 10)) {
-      const steps = (p.changed_steps || []).map((s: any) => s.symbol).join(', ');
-      lines.push(`  • ${p.name} (${p.step_count} steps) — changed: ${steps}`);
-    }
-  }
-
-  return lines.join('\n').trim();
 }
 
 export function formatListReposResult(result: any): string {

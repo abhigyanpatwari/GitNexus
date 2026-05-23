@@ -10,31 +10,33 @@ import {
   Table,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { useTranslation } from 'react-i18next';
 
 const EXAMPLE_QUERIES = [
   {
-    label: 'All Functions',
+    labelKey: 'functions',
     query: `MATCH (n:Function) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
-    label: 'All Classes',
+    labelKey: 'classes',
     query: `MATCH (n:Class) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
-    label: 'All Interfaces',
+    labelKey: 'interfaces',
     query: `MATCH (n:Interface) RETURN n.id AS id, n.name AS name, n.filePath AS path LIMIT 50`,
   },
   {
-    label: 'Function Calls',
+    labelKey: 'calls',
     query: `MATCH (a:File)-[r:CodeRelation {type: 'CALLS'}]->(b:Function) RETURN a.id AS id, a.name AS caller, b.name AS callee LIMIT 50`,
   },
   {
-    label: 'Import Dependencies',
+    labelKey: 'imports',
     query: `MATCH (a:File)-[r:CodeRelation {type: 'IMPORTS'}]->(b:File) RETURN a.id AS id, a.name AS from, b.name AS imports LIMIT 50`,
   },
 ];
 
 export const QueryFAB = () => {
+  const { t } = useTranslation(['common', 'graph']);
   const {
     setHighlightedNodeIds,
     setQueryResult,
@@ -86,13 +88,13 @@ export const QueryFAB = () => {
     if (!query.trim() || isRunning) return;
 
     if (!graph) {
-      setError('No project loaded. Load a project first.');
+      setError(t('graph:queryFab.noProject'));
       return;
     }
 
     const ready = await isDatabaseReady();
     if (!ready) {
-      setError('Database not ready. Please wait for loading to complete.');
+      setError(t('graph:queryFab.dbNotReady'));
       return;
     }
 
@@ -147,13 +149,22 @@ export const QueryFAB = () => {
       setQueryResult({ rows, nodeIds, executionTime });
       setHighlightedNodeIds(new Set(nodeIds));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Query execution failed');
+      setError(err instanceof Error ? err.message : t('graph:queryFab.executionFailed'));
       setQueryResult(null);
       setHighlightedNodeIds(new Set());
     } finally {
       setIsRunning(false);
     }
-  }, [query, isRunning, graph, isDatabaseReady, runQuery, setHighlightedNodeIds, setQueryResult]);
+  }, [
+    query,
+    isRunning,
+    graph,
+    isDatabaseReady,
+    runQuery,
+    setHighlightedNodeIds,
+    setQueryResult,
+    t,
+  ]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -189,7 +200,7 @@ export const QueryFAB = () => {
         className="group absolute bottom-4 left-4 z-20 flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2.5 text-sm font-medium text-white shadow-[0_0_20px_rgba(6,182,212,0.4)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(6,182,212,0.6)]"
       >
         <Terminal className="h-4 w-4" />
-        <span>Query</span>
+        <span>{t('graph:queryFab.query')}</span>
         {queryResult && queryResult.nodeIds.length > 0 && (
           <span className="ml-1 rounded-md bg-white/20 px-1.5 py-0.5 text-xs font-semibold">
             {queryResult.nodeIds.length}
@@ -209,7 +220,7 @@ export const QueryFAB = () => {
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-teal-500">
             <Terminal className="h-4 w-4 text-white" />
           </div>
-          <span className="text-sm font-medium">Cypher Query</span>
+          <span className="text-sm font-medium">{t('graph:queryFab.cypherQuery')}</span>
         </div>
         <button
           onClick={handleClose}
@@ -239,7 +250,7 @@ export const QueryFAB = () => {
               className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              <span>Examples</span>
+              <span>{t('graph:queryFab.examples')}</span>
               <ChevronDown
                 className={`h-3.5 w-3.5 transition-transform ${showExamples ? 'rotate-180' : ''}`}
               />
@@ -249,11 +260,11 @@ export const QueryFAB = () => {
               <div className="absolute bottom-full left-0 mb-2 w-64 animate-fade-in rounded-lg border border-border-subtle bg-surface py-1 shadow-xl">
                 {EXAMPLE_QUERIES.map((example) => (
                   <button
-                    key={example.label}
+                    key={example.labelKey}
                     onClick={() => handleSelectExample(example.query)}
                     className="w-full px-3 py-2 text-left text-sm text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
                   >
-                    {example.label}
+                    {t(`graph:queryFab.exampleLabels.${example.labelKey}`)}
                   </button>
                 ))}
               </div>
@@ -266,7 +277,7 @@ export const QueryFAB = () => {
                 onClick={handleClear}
                 className="rounded-md px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
               >
-                Clear
+                {t('graph:queryFab.clear')}
               </button>
             )}
             <button
@@ -279,7 +290,7 @@ export const QueryFAB = () => {
               ) : (
                 <Play className="h-3.5 w-3.5" />
               )}
-              <span>Run</span>
+              <span>{t('graph:queryFab.run')}</span>
               <kbd className="ml-1 rounded bg-white/20 px-1 py-0.5 text-[10px]">⌘↵</kbd>
             </button>
           </div>
@@ -297,12 +308,13 @@ export const QueryFAB = () => {
           <div className="flex items-center justify-between bg-cyan-500/5 px-4 py-2.5">
             <div className="flex items-center gap-3 text-xs">
               <span className="text-text-secondary">
-                <span className="font-semibold text-cyan-400">{queryResult.rows.length}</span> rows
+                <span className="font-semibold text-cyan-400">{queryResult.rows.length}</span>{' '}
+                {t('graph:queryFab.rows')}
               </span>
               {queryResult.nodeIds.length > 0 && (
                 <span className="text-text-secondary">
                   <span className="font-semibold text-cyan-400">{queryResult.nodeIds.length}</span>{' '}
-                  highlighted
+                  {t('graph:queryFab.highlighted')}
                 </span>
               )}
               <span className="text-text-muted">{queryResult.executionTime.toFixed(1)}ms</span>
@@ -313,7 +325,7 @@ export const QueryFAB = () => {
                   onClick={clearQueryHighlights}
                   className="text-xs text-text-muted transition-colors hover:text-text-primary"
                 >
-                  Clear
+                  {t('graph:queryFab.clear')}
                 </button>
               )}
               <button
@@ -362,7 +374,7 @@ export const QueryFAB = () => {
               </table>
               {queryResult.rows.length > 50 && (
                 <div className="border-t border-border-subtle bg-surface px-3 py-2 text-xs text-text-muted">
-                  Showing 50 of {queryResult.rows.length} rows
+                  {t('graph:queryFab.showingRows', { count: queryResult.rows.length })}
                 </div>
               )}
             </div>

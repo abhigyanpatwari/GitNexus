@@ -28,6 +28,7 @@
  * stdout would corrupt that pipeline.
  */
 import { logger } from '../core/logger.js';
+import { t, type CliMessageKey, type CliMessageVars } from './i18n/index.js';
 
 /**
  * String-literal union of all `recoveryHint` tags emitted by the CLI.
@@ -79,12 +80,32 @@ export function cliInfo(msg: string, fields?: CliMessageFields): void {
 }
 
 /**
+ * Key-based informational message. Keeps the legacy string API intact while
+ * allowing commands to opt into localized user-facing stderr output.
+ */
+export function cliInfoKey(
+  key: CliMessageKey,
+  vars?: CliMessageVars,
+  fields?: Record<string, unknown>,
+): void {
+  cliInfo(t(key, vars), fields);
+}
+
+/**
  * User-facing warning. Operator-actionable but non-fatal — `cliWarn`
  * indicates the command can still proceed in some form.
  */
 export function cliWarn(msg: string, fields?: CliMessageFields): void {
   writeStderr(msg);
   logger.warn(fields ?? {}, msg);
+}
+
+export function cliWarnKey(
+  key: CliMessageKey,
+  vars?: CliMessageVars,
+  fields?: Record<string, unknown>,
+): void {
+  cliWarn(t(key, vars), fields);
 }
 
 /**
@@ -94,4 +115,12 @@ export function cliWarn(msg: string, fields?: CliMessageFields): void {
 export function cliError(msg: string, fields?: CliMessageFields): void {
   writeStderr(msg);
   logger.error(fields ?? {}, msg);
+}
+
+export function cliErrorKey(
+  key: CliMessageKey,
+  vars?: CliMessageVars,
+  fields?: Record<string, unknown>,
+): void {
+  cliError(t(key, vars), fields);
 }
