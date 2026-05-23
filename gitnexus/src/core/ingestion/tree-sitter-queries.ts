@@ -1514,7 +1514,41 @@ export const DART_QUERIES = `
 
 import { SupportedLanguages } from 'gitnexus-shared';
 
-export const GDSCRIPT_QUERIES = ``;
+export const GDSCRIPT_QUERIES = `
+;; ── Definitions ────────────────────────────────────────────────────
+
+(class_name_statement
+  (name) @name) @definition.class
+
+(function_definition
+  (name) @name) @definition.function
+
+;; Signals are runtime-callable class members declared with 'signal foo(args)'.
+;; They have parameters but no body and are emitted at runtime. Modeled as
+;; methods so the existing call-graph machinery can wire emit() calls back
+;; to them and the (slice-7) godot-crossref phase can hang CONNECTS_SIGNAL
+;; edges off them.
+(signal_statement
+  (name) @name) @definition.method
+
+(variable_statement
+  (name) @name) @definition.variable
+
+;; ── Heritage ───────────────────────────────────────────────────────
+
+(extends_statement
+  (type
+    (identifier) @heritage.extends)) @heritage
+
+;; ── Calls ──────────────────────────────────────────────────────────
+
+(call
+  (identifier) @call.name) @call
+
+(attribute
+  (attribute_call
+    (identifier) @call.name)) @call
+`;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
