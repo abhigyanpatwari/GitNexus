@@ -669,6 +669,7 @@ export async function runFullAnalysis(
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     progress('fts', 85, 'Creating search indexes...');
+    let ftsIndexed = false;
     try {
       await createSearchFTSIndexes({
         onIndexStart: options.verbose
@@ -684,11 +685,17 @@ export async function runFullAnalysis(
           `⚠️ FTS verification warning - missing indexes: ${missingIndexNames.join(', ')}. ` +
             'BM25 keyword search will be degraded. Upgrade macOS or run on a compatible platform to enable FTS.',
         );
+        progress('fts', 90, 'Search indexes degraded (BM25 unavailable)');
       } else {
+        ftsIndexed = true;
         progress('fts', 90, 'Search indexes ready');
       }
     } catch (ftsErr: unknown) {
       const ftsMsg = ftsErr instanceof Error ? ftsErr.message : String(ftsErr);
+      // Only suppress known FTS-extension-unavailable errors; rethrow DB/schema/programming errors.
+      if (!ftsMsg.includes('FTS extension unavailable')) {
+        throw ftsErr;
+      }
       log(`⚠️ FTS creation skipped (non-fatal): ${ftsMsg}`);
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
@@ -880,7 +887,7 @@ export async function runFullAnalysis(
       },
       capabilities: {
         graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
-        fts: { provider: 'ladybugdb-fts', status: runtimeCapabilities.fts },
+        fts: { provider: 'ladybugdb-fts', status: ftsIndexed ? runtimeCapabilities.fts : 'degraded' },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
           status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',

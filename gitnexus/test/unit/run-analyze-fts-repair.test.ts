@@ -227,17 +227,33 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-full-verify-fail-');
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      const logMessages: string[] = [];
+      const progressMessages: string[] = [];
+
       // FTS verification failure is now non-fatal — analyze completes with a warning
       // instead of throwing, so embedding generation can proceed.
       const result = await runFullAnalysis(
         tmpRepo.dbPath,
         { force: true },
         {
-          onProgress: () => {},
+          onProgress: (_phase, _pct, msg) => {
+            if (msg) progressMessages.push(msg);
+          },
+          onLog: (msg: string) => {
+            logMessages.push(msg);
+          },
         },
       );
       expect(result).toBeDefined();
       expect(result.repoPath).toContain('gitnexus-run-analyze-full-verify-fail-');
+
+      // Verify warning was logged about missing FTS indexes
+      expect(logMessages.some((m) => /FTS verification warning/i.test(m))).toBe(true);
+
+      // Verify progress did NOT report "Search indexes ready" (it should report degraded)
+      expect(progressMessages).not.toContain('Search indexes ready');
+      expect(progressMessages.some((m) => /degraded|unavailable/i.test(m))).toBe(true);
     } finally {
       await tmpRepo.cleanup();
     }
