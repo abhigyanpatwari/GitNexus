@@ -1,0 +1,93 @@
+{
+  "title": "AI 设置",
+  "subtitle": "配置你的 LLM 提供商",
+  "localServer": "本地服务器",
+  "backendUrl": "后端 URL",
+  "connected": "已连接",
+  "notConnected": "未连接",
+  "runServeHint": "运行 `gitnexus serve` 将 Web UI 连接到本地后端。",
+  "provider": "提供商",
+  "apiKey": "API Key",
+  "learnMore": "了解更多",
+  "model": "模型",
+  "searchModelPlaceholder": "搜索或输入模型 ID...",
+  "selectModelPlaceholder": "选择或输入模型...",
+  "customModelHint": "输入模型 ID 或按 Enter",
+  "customModelExample": "例如 openai/gpt-4o",
+  "pressEnterCustom": "按 Enter 使用自定义 ID",
+  "baseUrl": "Base URL",
+  "optional": "可选",
+  "deploymentName": "部署名称",
+  "apiVersion": "API 版本",
+  "checkConnection": "检查连接",
+  "privacyLabel": "隐私：",
+  "privacyText": "你的 API Key 仅保存在此浏览器本地。",
+  "providers": {
+    "openai": {
+      "description": "使用 OpenAI 模型进行聊天和代码推理。",
+      "apiKeyPlaceholder": "输入 OpenAI API Key",
+      "helperText": "从这里获取 API Key：",
+      "helperLinkLabel": "OpenAI Platform",
+      "modelPlaceholder": "例如：gpt-4o、gpt-4-turbo、gpt-3.5-turbo",
+      "baseUrlPlaceholder": "https://api.openai.com/v1（默认）",
+      "baseUrlHint": "留空则使用默认 OpenAI API。可为代理或兼容 API 设置自定义 URL。"
+    },
+    "gemini": {
+      "description": "使用 Google Gemini 模型。",
+      "apiKeyPlaceholder": "输入 Google AI API Key",
+      "helperText": "从这里获取 API Key：",
+      "helperLinkLabel": "Google AI Studio",
+      "modelPlaceholder": "例如：gemini-2.0-flash、gemini-1.5-pro"
+    },
+    "anthropic": {
+      "description": "使用 Anthropic Claude 模型。",
+      "apiKeyPlaceholder": "输入 Anthropic API Key",
+      "helperText": "从这里获取 API Key：",
+      "helperLinkLabel": "Anthropic Console",
+      "modelPlaceholder": "例如：claude-sonnet-4-20250514、claude-3-opus"
+    },
+    "azure": {
+      "apiKeyPlaceholder": "输入 Azure OpenAI API Key",
+      "deploymentNamePlaceholder": "例如：gpt-4o-deployment"
+    },
+    "ollama": {
+      "quickStart": "📋 快速开始：",
+      "installFrom": "从这里安装 Ollama：",
+      "thenRun": "，然后运行：",
+      "modelPlaceholder": "例如：llama3.2、mistral、codellama"
+    },
+    "openrouter": {
+      "apiKeyPlaceholder": "输入 OpenRouter API Key",
+      "helperText": "从这里获取 API Key：",
+      "helperLinkLabel": "OpenRouter Keys"
+    },
+    "minimax": {
+      "apiKeyPlaceholder": "输入 MiniMax API Key",
+      "helperText": "从这里获取 API Key：",
+      "helperLinkLabel": "MiniMax Platform",
+      "modelPlaceholder": "例如：MiniMax-M2.5、MiniMax-M2.5-highspeed",
+      "helperModel": "可用：MiniMax-M2.5（默认）、MiniMax-M2.5-highspeed（更快）"
+    },
+    "glm": {
+      "apiKeyPlaceholder": "输入 Z.AI API Key"
+    }
+  },
+  "loadingModels": "正在加载模型...",
+  "noModelsMatch": "没有匹配“{{searchTerm}}”的模型",
+  "moreModels": "+{{count}} 个更多模型 • 缩小搜索范围",
+  "apiKeySession": "API Key 保存在会话存储中，关闭此标签页后会被清除。",
+  "startLocalServer": "启动本地服务器",
+  "settingsSaved": "设置已保存",
+  "failedToSave": "保存失败",
+  "saveSettings": "保存设置",
+  "endpoint": "端点",
+  "azurePortal": "Azure Portal",
+  "azureHint": "在这里配置 Azure OpenAI 服务：",
+  "defaultPort": "默认端口为",
+  "pullModel": "使用以下命令拉取模型",
+  "browseModels": "在这里浏览全部模型：",
+  "openRouterModels": "OpenRouter Models",
+  "zaiPlatform": "Z.AI Platform",
+  "glmCodingApi": "Coding API（默认）。通用 API 请使用 https://api.z.ai/api/paas/v4。",
+  "privacyFull": "你的 API Key 只保存在此浏览器的会话存储中，关闭标签页后会清除。聊天时会直接发送给 LLM 提供商，你的代码不会离开本机。"
+}

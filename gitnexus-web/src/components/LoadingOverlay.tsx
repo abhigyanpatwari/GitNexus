@@ -1,10 +1,16 @@
 import type { PipelineProgress } from 'gitnexus-shared';
+import { useTranslation } from 'react-i18next';
+import { translateProgressMessage } from '../i18n/progress';
 
 interface LoadingOverlayProps {
   progress: PipelineProgress;
 }
 
 export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
+  const { t } = useTranslation(['common', 'graph']);
+  const message = translateProgressMessage(progress.message, t);
+  const detail = translateProgressMessage(progress.detail, t);
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-void">
       {/* Background gradient effects */}
@@ -32,11 +38,11 @@ export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
       {/* Status text */}
       <div className="text-center">
         <p className="mb-1 font-mono text-sm text-text-secondary">
-          {progress.message}
+          {message}
           <span className="animate-pulse">|</span>
         </p>
         {progress.detail && (
-          <p className="max-w-md truncate font-mono text-xs text-text-muted">{progress.detail}</p>
+          <p className="max-w-md truncate font-mono text-xs text-text-muted">{detail}</p>
         )}
       </div>
 
@@ -46,12 +52,15 @@ export const LoadingOverlay = ({ progress }: LoadingOverlayProps) => {
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-node-file" />
             <span>
-              {progress.stats.filesProcessed} / {progress.stats.totalFiles} files
+              {t('graph:loading.filesProgress', {
+                processed: progress.stats.filesProcessed,
+                total: progress.stats.totalFiles,
+              })}
             </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-node-function" />
-            <span>{progress.stats.nodesCreated} nodes</span>
+            <span>{t('common:counts.nodes', { count: progress.stats.nodesCreated })}</span>
           </div>
         </div>
       )}

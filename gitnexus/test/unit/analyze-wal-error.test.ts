@@ -134,4 +134,82 @@ describe('analyzeCommand WAL corruption error handling', () => {
 
     cap.restore();
   });
+
+  it('recommends --wal-checkpoint-threshold on Ladybug checkpoint I/O failures', async () => {
+    runFullAnalysisMock.mockRejectedValue(
+      new Error(
+        'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to /repo/.gitnexus/lbug.wal.checkpoint. ErrorMessage: Permission denied',
+      ),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(1);
+    const records = cap.records();
+    expect(
+      records.some(
+        (r) =>
+          typeof r.msg === 'string' &&
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
+      ),
+    ).toBe(true);
+
+    cap.restore();
+  });
+
+  it('also recommends threshold on .wal.checkpoint remove failures', async () => {
+    runFullAnalysisMock.mockRejectedValue(
+      new Error(
+        'Runtime exception: IO exception: Error removing directory or file /repo/.gitnexus/lbug.wal.checkpoint.  Error Message: Permission denied',
+      ),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(1);
+    const records = cap.records();
+    expect(
+      records.some(
+        (r) =>
+          typeof r.msg === 'string' &&
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
+      ),
+    ).toBe(true);
+
+    cap.restore();
+  });
+
+  it('does not recommend threshold for non-checkpoint IO exceptions', async () => {
+    runFullAnalysisMock.mockRejectedValue(
+      new Error(
+        'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/data.tmp to /repo/.gitnexus/data.tmp.bak. ErrorMessage: Permission denied',
+      ),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(1);
+    const records = cap.records();
+    expect(
+      records.some(
+        (r) =>
+          typeof r.msg === 'string' &&
+          r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
+      ),
+    ).toBe(false);
+
+    cap.restore();
+  });
 });
