@@ -17,6 +17,7 @@ import {
   OpenRouterConfig,
   MiniMaxConfig,
   GLMConfig,
+  DeepSeekConfig,
   ProviderConfig,
 } from './types';
 import { DEFAULT_OPENROUTER_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from '../../config/ui-constants';
@@ -58,6 +59,10 @@ const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings =>
   glm: {
     ...DEFAULT_LLM_SETTINGS.glm,
     ...parsed?.glm,
+  },
+  deepseek: {
+    ...DEFAULT_LLM_SETTINGS.deepseek,
+    ...parsed?.deepseek,
   },
 });
 
@@ -144,7 +149,9 @@ export const updateProviderSettings = <T extends LLMProvider>(
                   ? Partial<Omit<MiniMaxConfig, 'provider'>>
                   : T extends 'glm'
                     ? Partial<Omit<GLMConfig, 'provider'>>
-                    : never
+                    : T extends 'deepseek'
+                      ? Partial<Omit<DeepSeekConfig, 'provider'>>
+                      : never
   >,
 ): LLMSettings => {
   const current = loadSettings();
@@ -239,6 +246,17 @@ export const updateProviderSettings = <T extends LLMProvider>(
       saveSettings(updated);
       return updated;
     }
+    case 'deepseek': {
+      const updated: LLMSettings = {
+        ...current,
+        deepseek: {
+          ...(current.deepseek ?? {}),
+          ...(updates as Partial<Omit<DeepSeekConfig, 'provider'>>),
+        },
+      };
+      saveSettings(updated);
+      return updated;
+    }
     default: {
       // Should be unreachable due to T extends LLMProvider, but keep a safe fallback
       const updated: LLMSettings = { ...current };
@@ -316,6 +334,10 @@ const providerBuilders: Record<LLMProvider, ProviderBuilder> = {
       maxTokens: settings.glm.maxTokens,
     } as GLMConfig;
   },
+  deepseek: (settings) => {
+    if (!settings.deepseek?.apiKey) return null;
+    return { provider: 'deepseek', ...settings.deepseek } as DeepSeekConfig;
+  },
 };
 
 export const getActiveProviderConfig = (): ProviderConfig | null => {
@@ -347,6 +369,24 @@ export const clearSettings = (): void => {
   }
 };
 
+interface ProviderCapabilities {
+  /** Provider requires hidden assistant/tool transcript replay across turns. */
+  preserveAssistantTranscript: boolean;
+}
+
+const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapabilities = {
+  preserveAssistantTranscript: false,
+};
+
+const PROVIDER_CAPABILITIES: Partial<Record<LLMProvider, ProviderCapabilities>> = {
+  deepseek: { preserveAssistantTranscript: true },
+};
+
+export const getProviderCapabilities = (provider: LLMProvider): ProviderCapabilities => ({
+  ...DEFAULT_PROVIDER_CAPABILITIES,
+  ...PROVIDER_CAPABILITIES[provider],
+});
+
 /**
  * Get display name for a provider
  */
@@ -368,6 +408,8 @@ export const getProviderDisplayName = (provider: LLMProvider): string => {
       return 'MiniMax';
     case 'glm':
       return 'GLM (Z.AI)';
+    case 'deepseek':
+      return 'DeepSeek';
     default:
       return provider;
   }
@@ -398,6 +440,8 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
       return ['MiniMax-M2.5', 'MiniMax-M2.5-highspeed'];
     case 'glm':
       return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
+    case 'deepseek':
+      return ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'];
     default:
       return [];
   }
