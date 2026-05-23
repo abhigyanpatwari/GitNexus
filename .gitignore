@@ -68,8 +68,8 @@ gitnexus-web/test-results/
 eval/.coverage
 eval/.hypothesis/
 
-# Design docs (local only)
-docs/plans/
+# Local docs
+docs/
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude

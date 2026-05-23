@@ -6,6 +6,7 @@
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   GitBranch,
   Search,
@@ -26,6 +27,7 @@ import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';
 const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-/@]+$/.test(id);
 
 export const ProcessesPanel = () => {
+  const { t } = useTranslation(['graph']);
   const { graph, runQuery, setHighlightedNodeIds, highlightedNodeIds } = useAppState();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProcess, setSelectedProcess] = useState<ProcessData | null>(null);
@@ -120,7 +122,7 @@ export const ProcessesPanel = () => {
         if (!allStepsMap.has(stepId)) {
           allStepsMap.set(stepId, {
             id: stepId,
-            name: row.name || row[1] || 'Unknown',
+            name: row.name || row[1] || t('graph:processes.unknownStep'),
             filePath: row.filePath || row[2],
             stepNumber: row.stepNumber || row.step || row[3] || 0,
           });
@@ -158,7 +160,7 @@ export const ProcessesPanel = () => {
 
       const combinedProcessData: ProcessData = {
         id: 'combined-all',
-        label: `All Processes (${allProcessIds.length} combined)`,
+        label: t('graph:processes.allProcessesLabel', { count: allProcessIds.length }),
         processType: 'cross_community', // Treat as cross-community for styling
         steps: allSteps,
         edges: allEdges,
@@ -171,7 +173,7 @@ export const ProcessesPanel = () => {
     } finally {
       setLoadingProcess(null);
     }
-  }, [processes, runQuery]);
+  }, [processes, runQuery, t]);
 
   // Load process steps and open modal
   const handleViewProcess = useCallback(
@@ -191,7 +193,7 @@ export const ProcessesPanel = () => {
 
         const steps: ProcessStep[] = stepsResult.map((row: any) => ({
           id: row.id || row[0],
-          name: row.name || row[1] || 'Unknown',
+          name: row.name || row[1] || t('graph:processes.unknownStep'),
           filePath: row.filePath || row[2],
           stepNumber: row.stepNumber || row.step || row[3] || 0,
         }));
@@ -244,7 +246,7 @@ export const ProcessesPanel = () => {
         setLoadingProcess(null);
       }
     },
-    [runQuery, graph],
+    [runQuery, graph, t],
   );
 
   // Cache for process steps (so we don't re-query when toggling focus)
@@ -327,10 +329,11 @@ export const ProcessesPanel = () => {
         <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-surface">
           <GitBranch className="h-7 w-7 text-text-muted" />
         </div>
-        <h3 className="mb-2 text-base font-medium text-text-primary">No Processes Detected</h3>
+        <h3 className="mb-2 text-base font-medium text-text-primary">
+          {t('graph:processes.emptyTitle')}
+        </h3>
         <p className="max-w-xs text-sm text-text-secondary">
-          Processes are execution flows traced from entry points. Load a codebase to see detected
-          processes.
+          {t('graph:processes.emptyDescription')}
         </p>
       </div>
     );
@@ -347,7 +350,7 @@ export const ProcessesPanel = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter processes..."
+              placeholder={t('graph:processes.filterPlaceholder')}
               className="flex-1 border-none bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
             />
           </div>
@@ -356,7 +359,7 @@ export const ProcessesPanel = () => {
           className="flex items-center gap-2 text-xs text-text-muted"
           data-testid="process-list-loaded"
         >
-          <span>{totalCount} processes detected</span>
+          <span>{t('graph:processes.detected', { count: totalCount })}</span>
         </div>
       </div>
 
@@ -374,9 +377,11 @@ export const ProcessesPanel = () => {
             </div>
             <div className="flex-1">
               <h4 className="text-sm font-medium text-text-primary group-hover:text-cyan-200">
-                Full Process Map
+                {t('graph:processes.fullMap')}
               </h4>
-              <p className="text-xs text-text-muted">View combined map of {totalCount} processes</p>
+              <p className="text-xs text-text-muted">
+                {t('graph:processes.viewCombined', { count: totalCount })}
+              </p>
             </div>
             {loadingProcess === 'all' ? (
               <span className="mr-1 animate-spin">
@@ -401,7 +406,9 @@ export const ProcessesPanel = () => {
                 <ChevronRight className="h-4 w-4 text-text-muted" />
               )}
               <Zap className="h-4 w-4 text-amber-400" />
-              <span className="text-sm font-medium text-text-primary">Cross-Community</span>
+              <span className="text-sm font-medium text-text-primary">
+                {t('graph:processes.crossCommunity')}
+              </span>
               <span className="ml-auto rounded-full bg-surface px-2 py-0.5 text-xs text-text-muted">
                 {filteredProcesses.cross.length}
               </span>
@@ -438,7 +445,9 @@ export const ProcessesPanel = () => {
                 <ChevronRight className="h-4 w-4 text-text-muted" />
               )}
               <Home className="h-4 w-4 text-emerald-400" />
-              <span className="text-sm font-medium text-text-primary">Intra-Community</span>
+              <span className="text-sm font-medium text-text-primary">
+                {t('graph:processes.intraCommunity')}
+              </span>
               <span className="ml-auto rounded-full bg-surface px-2 py-0.5 text-xs text-text-muted">
                 {filteredProcesses.intra.length}
               </span>
@@ -492,6 +501,7 @@ const ProcessItem = ({
   onView,
   onToggleFocus,
 }: ProcessItemProps) => {
+  const { t } = useTranslation(['graph']);
   // Determine row styling - focused gets special highlight
   const rowClass = isFocused
     ? 'bg-amber-950/40 border border-amber-500/50 ring-1 ring-amber-400/30'
@@ -508,11 +518,11 @@ const ProcessItem = ({
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm text-text-primary">{process.label}</div>
         <div className="flex items-center gap-2 text-xs text-text-muted">
-          <span>{process.stepCount} steps</span>
+          <span>{t('graph:processes.steps', { count: process.stepCount })}</span>
           {process.clusters.length > 0 && (
             <>
               <span>•</span>
-              <span>{process.clusters.length} clusters</span>
+              <span>{t('graph:processes.clusters', { count: process.clusters.length })}</span>
             </>
           )}
         </div>
@@ -525,7 +535,11 @@ const ProcessItem = ({
             ? 'animate-pulse border border-amber-400/40 bg-amber-500/20 text-amber-400 opacity-100 hover:bg-amber-500/30 hover:text-amber-300'
             : 'border border-white/10 bg-white/5 text-text-muted opacity-0 group-hover:opacity-100 hover:border-cyan-400/40 hover:bg-cyan-500/20 hover:text-cyan-400'
         }`}
-        title={isFocused ? 'Click to remove highlight from graph' : 'Click to highlight in graph'}
+        title={
+          isFocused
+            ? t('graph:processes.removeHighlightTitle')
+            : t('graph:processes.highlightTitle')
+        }
         data-testid="process-highlight-button"
       >
         <Lightbulb className="h-4 w-4" />
@@ -541,16 +555,16 @@ const ProcessItem = ({
         }`}
       >
         {isLoading ? (
-          <span className="animate-pulse">Loading...</span>
+          <span className="animate-pulse">{t('graph:processes.loading')}</span>
         ) : isSelected ? (
           <>
             <Eye className="h-3.5 w-3.5" />
-            Viewing
+            {t('graph:processes.viewing')}
           </>
         ) : (
           <>
             <Eye className="h-3.5 w-3.5" />
-            View
+            {t('graph:processes.view')}
           </>
         )}
       </button>

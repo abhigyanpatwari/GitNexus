@@ -7,6 +7,8 @@ import { Command } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
+import { localizeCliHelp } from './help-i18n.js';
+import { t } from './i18n/index.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -84,25 +86,7 @@ program
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
   .option('--embedding-device <device>', 'Embedding device: auto, cpu, dml, cuda, or wasm')
-  .addHelpText(
-    'after',
-    '\nEnvironment variables:\n' +
-      '  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n' +
-      '  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n' +
-      '  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n' +
-      '  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n' +
-      '  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n' +
-      '  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n' +
-      '  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n' +
-      '  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n' +
-      '  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n' +
-      '  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n' +
-      '  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n' +
-      '  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n' +
-      '\nFlags override the corresponding env vars when both are provided.\n' +
-      '\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n' +
-      '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
-  )
+  .addHelpText('after', () => t('help.analyze.environment'))
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
@@ -146,6 +130,7 @@ program
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
+  .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
 program
@@ -266,5 +251,6 @@ program
   .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
 registerGroupCommands(program);
+localizeCliHelp(program);
 
 program.parse(process.argv);
