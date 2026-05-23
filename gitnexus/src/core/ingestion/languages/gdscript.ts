@@ -14,6 +14,8 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { GDSCRIPT_QUERIES } from '../tree-sitter-queries.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { gdscriptImportConfig } from '../import-resolvers/configs/gdscript.js';
 
 export const gdscriptProvider = defineLanguage({
   id: SupportedLanguages.Godot,
@@ -27,7 +29,9 @@ export const gdscriptProvider = defineLanguage({
     extractParameter: () => null,
   },
   exportChecker: () => false,
-  importResolver: () => null,
-  importSemantics: 'named',
+  importResolver: createImportResolver(gdscriptImportConfig),
+  // preload()/load() pull in the whole script as one unit — closest match
+  // to GitNexus's 'wildcard-leaf' policy (Go, Ruby, Swift, Dart).
+  importSemantics: 'wildcard-leaf',
   mroStrategy: 'first-wins',
 });

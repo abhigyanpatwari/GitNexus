@@ -28,6 +28,8 @@ describe('GDScript language registration', () => {
 const GDSCRIPT_FIXTURE = `class_name Player
 extends Node2D
 
+const BulletScene = preload("res://bullet.tscn")
+
 signal died(score: int)
 
 var health: int = 100
@@ -36,6 +38,7 @@ static var max_health: int = 100
 func _ready():
     print("ready")
     take_damage(10)
+    var hud = load("res://hud.gd")
 
 func take_damage(amount: int) -> void:
     health -= amount
@@ -65,11 +68,18 @@ describe('GDScript tree-sitter queries', () => {
       expect.arrayContaining(['Player', '_ready', 'take_damage', 'health', 'max_health', 'died']),
     );
     expect(named('heritage.extends')).toEqual(expect.arrayContaining(['Node2D']));
-    expect(named('call.name')).toEqual(expect.arrayContaining(['print', 'take_damage', 'emit']));
+    expect(named('call.name')).toEqual(
+      expect.arrayContaining(['print', 'take_damage', 'emit', 'preload', 'load']),
+    );
 
     const definitionTypes = new Set(captures.filter((c) => c.name.startsWith('definition.')).map((c) => c.name));
     expect(definitionTypes).toEqual(
       new Set(['definition.class', 'definition.function', 'definition.method', 'definition.variable']),
+    );
+
+    const importSources = named('import.source');
+    expect(importSources).toEqual(
+      expect.arrayContaining(['"res://bullet.tscn"', '"res://hud.gd"']),
     );
   });
 });

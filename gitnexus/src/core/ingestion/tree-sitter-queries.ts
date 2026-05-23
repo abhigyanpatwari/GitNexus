@@ -1548,6 +1548,15 @@ export const GDSCRIPT_QUERIES = `
 (attribute
   (attribute_call
     (identifier) @call.name)) @call
+
+;; ── Imports ────────────────────────────────────────────────────────
+;; GDScript expresses dependencies through preload()/load() calls.
+;; The string argument is a "res://..." path which the GDScript
+;; importResolver maps back to a repo-relative file.
+((call
+  (identifier) @_callee
+  (arguments (string) @import.source)) @import
+ (#match? @_callee "^(preload|load)$"))
 `;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
