@@ -112,6 +112,11 @@
     "codeNotAvailable": "Code not available in memory for {{path}}"
   },
   "canvas": {
+    "viewModes": {
+      "force": "Force Graph",
+      "tree": "Tree View",
+      "circles": "Circles"
+    },
     "zoomIn": "Zoom In",
     "zoomOut": "Zoom Out",
     "fit": "Fit to Screen",

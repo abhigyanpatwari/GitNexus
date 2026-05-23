@@ -123,6 +123,10 @@ interface AppState {
   depthFilter: number | null;
   setDepthFilter: (depth: number | null) => void;
 
+  // Graph view mode
+  graphViewMode: 'force' | 'tree' | 'circles';
+  setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
+
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
@@ -232,6 +236,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     highlightedNodeIds,
     setHighlightedNodeIds,
+    graphViewMode,
+    setGraphViewMode,
   } = useGraphState();
 
   // Right Panel
@@ -1266,6 +1272,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     toggleEdgeVisibility,
     depthFilter,
     setDepthFilter,
+    graphViewMode,
+    setGraphViewMode,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,
