@@ -18,7 +18,11 @@ export type { NodeTableName, RelType } from './lbug/schema-constants.js';
 
 // Language support
 export { SupportedLanguages } from './languages.js';
-export { getLanguageFromFilename, getSyntaxLanguageFromFilename } from './language-detection.js';
+export {
+  getLanguageFromFilename,
+  getSyntaxLanguageFromFilename,
+  isBladeTemplateFilename,
+} from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 
 // Pipeline progress
