@@ -49,7 +49,24 @@ describe('Blade/template static route extraction', () => {
     expect(calls).toEqual([]);
   });
 
-  it('does not turn dynamic Blade expressions or named routes into static URL signals', () => {
+  it('resolves parameterless Blade named route helpers from extracted route names', () => {
+    const calls = extractTemplateStaticFetchCalls(
+      'resources/views/auth/login.blade.php',
+      `<a href="{{ route('login') }}">Login</a>
+<form method="POST" action="{!! route('log-viewer.login.submit') !!}"></form>
+<a href="{{ route('orders.show') }}">Missing parameter</a>
+<a href="{{ route('orders.show', $order) }}">Dynamic order</a>`,
+      new Map([
+        ['login', '/login'],
+        ['log-viewer.login.submit', '/logs/login'],
+        ['orders.show', '/orders/{order}'],
+      ]),
+    );
+
+    expect(calls.map((call) => call.fetchURL)).toEqual(['/login', '/logs/login']);
+  });
+
+  it('does not turn dynamic Blade expressions or parameterized named routes into static URL signals', () => {
     const calls = extractTemplateStaticFetchCalls(
       'resources/views/orders/show.blade.php',
       `<a href="{{ $url }}">Dynamic</a>
@@ -80,7 +97,7 @@ describe('Blade/template static route extraction', () => {
       await fs.writeFile(
         path.join(repoPath, 'resources/views/orders/index.blade.php'),
         `<form action="/admin/orders" method="POST">
-  <a href="{{ url('/admin/orders') }}">Orders</a>
+  <a href="{{ route('admin.orders') }}">Orders</a>
   <link href="{{ asset('/css/app.css') }}" rel="stylesheet">
 </form>`,
       );
@@ -94,6 +111,7 @@ describe('Blade/template static route extraction', () => {
             filePath: 'routes/web.php',
             httpMethod: 'post',
             routePath: '/orders',
+            routeName: 'admin.orders',
             controllerName: null,
             methodName: null,
             middleware: [],
@@ -104,6 +122,7 @@ describe('Blade/template static route extraction', () => {
             filePath: 'routes/web.php',
             httpMethod: 'get',
             routePath: '/css/app.css',
+            routeName: 'assets.css',
             controllerName: null,
             methodName: null,
             middleware: [],

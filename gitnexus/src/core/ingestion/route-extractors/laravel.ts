@@ -5,6 +5,7 @@ export interface ExtractedRoute {
   filePath: string;
   httpMethod: string;
   routePath: string | null;
+  routeName: string | null;
   controllerName: string | null;
   methodName: string | null;
   middleware: string[];
@@ -15,6 +16,7 @@ export interface ExtractedRoute {
 interface RouteGroupContext {
   middleware: string[];
   prefix: string | null;
+  namePrefix: string | null;
   controller: string | null;
 }
 
@@ -130,6 +132,24 @@ function extractClassArg(argsNode: SyntaxNode | null): string | null {
   return null;
 }
 
+function joinRouteName(prefix: string | null, name: string | null): string | null {
+  if (!name) return null;
+  return prefix ? `${prefix}${name}` : name;
+}
+
+function routeNameBaseFromPath(routePath: string | null): string | null {
+  const base = routePath
+    ?.trim()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\//g, '.');
+  return base || null;
+}
+
+function appendResourceActionName(base: string | null, action: string): string | null {
+  if (!base) return null;
+  return base.endsWith('.') ? `${base}${action}` : `${base}.${action}`;
+}
+
 /** Extract controller class name from common Laravel handler argument shapes. */
 function extractControllerTarget(argsNode: SyntaxNode | null): {
   controller: string | null;
@@ -238,7 +258,12 @@ function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
 
 /** Parse Route::group(['middleware' => ..., 'prefix' => ...], fn) array syntax */
 function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
-  const ctx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
+  const ctx: RouteGroupContext = {
+    middleware: [],
+    prefix: null,
+    namePrefix: null,
+    controller: null,
+  };
   if (!argsNode) return ctx;
 
   for (const child of argsNode.children ?? []) {
@@ -266,6 +291,8 @@ function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
           }
         } else if (key === 'prefix') {
           ctx.prefix = extractStringContent(val) ?? null;
+        } else if (key === 'as' || key === 'name') {
+          ctx.namePrefix = extractStringContent(val) ?? null;
         } else if (key === 'controller') {
           if (val?.type === 'class_constant_access_expression') {
             ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
@@ -283,17 +310,21 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
   function resolveStack(stack: RouteGroupContext[]): {
     middleware: string[];
     prefix: string | null;
+    namePrefix: string | null;
     controller: string | null;
   } {
     const middleware: string[] = [];
     let prefix: string | null = null;
+    let namePrefix: string | null = null;
     let controller: string | null = null;
     for (const ctx of stack) {
       middleware.push(...ctx.middleware);
       if (ctx.prefix) prefix = prefix ? `${prefix}/${ctx.prefix}`.replace(/\/+/g, '/') : ctx.prefix;
+      if (ctx.namePrefix)
+        namePrefix = namePrefix ? `${namePrefix}${ctx.namePrefix}` : ctx.namePrefix;
       if (ctx.controller) controller = ctx.controller;
     }
-    return { middleware, prefix, controller };
+    return { middleware, prefix, namePrefix, controller };
   }
 
   function emitRoute(
@@ -304,6 +335,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
   ) {
     const effective = resolveStack(groupStack);
+    let routeName: string | null = null;
 
     for (const attr of chainAttrs) {
       if (attr.method === 'middleware')
@@ -316,6 +348,9 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         const cls = extractClassArg(attr.argsNode);
         if (cls) effective.controller = cls;
       }
+      if (attr.method === 'name') {
+        routeName = joinRouteName(effective.namePrefix, extractFirstStringArg(attr.argsNode));
+      }
     }
 
     const routePath = extractFirstStringArg(argsNode);
@@ -323,11 +358,14 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     if (ROUTE_RESOURCE_METHODS.has(httpMethod)) {
       const target = extractControllerTarget(argsNode);
       const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
+      const routeNameBase =
+        routeName ?? joinRouteName(effective.namePrefix, routeNameBaseFromPath(routePath));
       for (const action of actions) {
         routes.push({
           filePath,
           httpMethod,
           routePath,
+          routeName: appendResourceActionName(routeNameBase, action),
           controllerName: target.controller ?? effective.controller,
           methodName: action,
           middleware: [...effective.middleware],
@@ -341,6 +379,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         filePath,
         httpMethod,
         routePath,
+        routeName,
         controllerName: target.controller ?? effective.controller,
         methodName: target.method ?? (effective.controller ? target.bareMethod : null),
         middleware: [...effective.middleware],
@@ -389,11 +428,17 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     const chain = unwrapRouteChain(node);
     if (chain) {
       if (chain.terminalMethod === 'group') {
-        const groupCtx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
+        const groupCtx: RouteGroupContext = {
+          middleware: [],
+          prefix: null,
+          namePrefix: null,
+          controller: null,
+        };
         for (const attr of chain.attributes) {
           if (attr.method === 'middleware')
             groupCtx.middleware.push(...extractMiddlewareArg(attr.argsNode));
           if (attr.method === 'prefix') groupCtx.prefix = extractFirstStringArg(attr.argsNode);
+          if (attr.method === 'name') groupCtx.namePrefix = extractFirstStringArg(attr.argsNode);
           if (attr.method === 'controller') groupCtx.controller = extractClassArg(attr.argsNode);
         }
         const body = findClosureBody(chain.terminalArgs);
@@ -416,6 +461,25 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           node.startPosition.row,
           groupSnapshot,
           chain.attributes,
+        );
+        continue;
+      }
+      const chainedRouteIndex = chain.attributes.findIndex(
+        (attr) => ROUTE_HTTP_METHODS.has(attr.method) || ROUTE_RESOURCE_METHODS.has(attr.method),
+      );
+      if (chainedRouteIndex >= 0) {
+        const routeAttr = chain.attributes[chainedRouteIndex]!;
+        const routeAttrs = [
+          ...chain.attributes.slice(0, chainedRouteIndex),
+          ...chain.attributes.slice(chainedRouteIndex + 1),
+          { method: chain.terminalMethod, argsNode: chain.terminalArgs },
+        ];
+        emitRoute(
+          routeAttr.method,
+          routeAttr.argsNode,
+          node.startPosition.row,
+          groupSnapshot,
+          routeAttrs,
         );
         continue;
       }

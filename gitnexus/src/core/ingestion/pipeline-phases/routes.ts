@@ -63,6 +63,18 @@ const TEMPLATE_URL_PATTERNS: readonly RegExp[] = [
   /\{!![\s\S]{0,200}?\burl\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
 ];
 
+const TEMPLATE_NAMED_ROUTE_PATTERNS: readonly RegExp[] = [
+  // Parameterless Laravel route('name') helpers can be resolved from extracted
+  // route names. Parameterized helpers are intentionally deferred because they
+  // require binding runtime values onto route placeholders.
+  /\{\{[\s\S]{0,200}?\broute\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?\}\}/g,
+  /\{!![\s\S]{0,200}?\broute\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
+];
+
+function hasRouteParameters(routeUrl: string): boolean {
+  return /\{[^}]+\}/.test(routeUrl);
+}
+
 export const isTemplateRouteCandidate = (filePath: string): boolean => {
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   return (
@@ -77,6 +89,7 @@ export const isTemplateRouteCandidate = (filePath: string): boolean => {
 export function extractTemplateStaticFetchCalls(
   filePath: string,
   content: string,
+  namedRouteUrls: ReadonlyMap<string, string> = new Map(),
 ): TemplateFetchCall[] {
   const calls: TemplateFetchCall[] = [];
   const seen = new Set<string>();
@@ -86,6 +99,21 @@ export function extractTemplateStaticFetchCalls(
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(content)) !== null) {
       const normalized = normalizeFetchURL(match[1]);
+      if (!normalized) continue;
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      calls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+    }
+  }
+
+  for (const pattern of TEMPLATE_NAMED_ROUTE_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const routeUrl = namedRouteUrls.get(match[1]);
+      if (!routeUrl) continue;
+      if (hasRouteParameters(routeUrl)) continue;
+      const normalized = normalizeFetchURL(routeUrl);
       if (!normalized) continue;
       if (seen.has(normalized)) continue;
       seen.add(normalized);
@@ -167,6 +195,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     const ensureSlash = (path: string) => (path.startsWith('/') ? path : '/' + path);
     let duplicateRoutes = 0;
+    const namedRouteRegistry = new Map<string, string>();
     const addRoute = (url: string, entry: RouteEntry) => {
       if (routeRegistry.has(url)) {
         duplicateRoutes++;
@@ -176,10 +205,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     };
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
-      addRoute(normalizeExtractedRoutePath(route.routePath, route.prefix), {
+      const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
+      addRoute(routeUrl, {
         filePath: route.filePath,
         source: 'framework-route',
       });
+      if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
+        namedRouteRegistry.set(route.routeName, routeUrl);
+      }
     }
     for (const dr of allDecoratorRoutes) {
       addRoute(ensureSlash(dr.routePath), {
@@ -295,7 +328,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
       const htmlContents = await readFileContents(ctx.repoPath, htmlCandidates);
       for (const [filePath, content] of htmlContents) {
-        allFetchCalls.push(...extractTemplateStaticFetchCalls(filePath, content));
+        allFetchCalls.push(
+          ...extractTemplateStaticFetchCalls(filePath, content, namedRouteRegistry),
+        );
       }
     }
 

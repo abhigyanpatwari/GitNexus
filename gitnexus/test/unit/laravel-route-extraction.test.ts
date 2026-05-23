@@ -12,6 +12,7 @@ const extract = (source: string) =>
     routePath: route.routePath,
     controllerName: route.controllerName,
     methodName: route.methodName,
+    routeName: route.routeName,
     middleware: route.middleware,
     prefix: route.prefix,
   }));
@@ -82,6 +83,15 @@ Route::apiResource('/api/photos', ApiPhotoController::class);
     expect(new Set(photos.map((route) => route.controllerName))).toEqual(
       new Set(['PhotoController']),
     );
+    expect(photos.map((route) => route.routeName)).toEqual([
+      'photos.index',
+      'photos.create',
+      'photos.store',
+      'photos.show',
+      'photos.edit',
+      'photos.update',
+      'photos.destroy',
+    ]);
 
     const apiPhotos = routes.filter((route) => route.routePath === '/api/photos');
     expect(apiPhotos.map((route) => route.methodName)).toEqual([
@@ -94,6 +104,13 @@ Route::apiResource('/api/photos', ApiPhotoController::class);
     expect(new Set(apiPhotos.map((route) => route.controllerName))).toEqual(
       new Set(['ApiPhotoController']),
     );
+    expect(apiPhotos.map((route) => route.routeName)).toEqual([
+      'api.photos.index',
+      'api.photos.store',
+      'api.photos.show',
+      'api.photos.update',
+      'api.photos.destroy',
+    ]);
   });
 
   it('threads middleware, prefix, and controller chains into grouped routes', () => {
@@ -145,6 +162,56 @@ Route::middleware(['auth', 'verified'])
         controllerName: null,
         methodName: null,
       }),
+    );
+  });
+
+  it('extracts named routes from fluent routes and named groups', () => {
+    const routes = extract(`<?php
+Route::get('/login', [AuthController::class, 'login'])->name('login');
+Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth')->name('logout');
+
+Route::name('admin.')
+    ->prefix('admin')
+    ->group(function () {
+        Route::post('/settings/cache', [SettingsController::class, 'refresh'])
+            ->name('settings.refresh-cache');
+    });
+
+Route::group([
+    'as' => 'log-viewer.',
+    'prefix' => 'logs',
+], function () {
+    Route::post('/login', [LogViewerController::class, 'login'])
+        ->name('login.submit');
+});
+`);
+
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          httpMethod: 'get',
+          routePath: '/login',
+          routeName: 'login',
+        }),
+        expect.objectContaining({
+          httpMethod: 'post',
+          routePath: '/logout',
+          routeName: 'logout',
+          middleware: ['auth'],
+        }),
+        expect.objectContaining({
+          httpMethod: 'post',
+          routePath: '/settings/cache',
+          routeName: 'admin.settings.refresh-cache',
+          prefix: 'admin',
+        }),
+        expect.objectContaining({
+          httpMethod: 'post',
+          routePath: '/login',
+          routeName: 'log-viewer.login.submit',
+          prefix: 'logs',
+        }),
+      ]),
     );
   });
 });
