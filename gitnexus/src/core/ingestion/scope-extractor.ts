@@ -693,8 +693,14 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
     case 'property':
       return 'Property';
     case 'variable':
-    case 'const':
       return 'Variable';
+    // `const` / `let` declarations align with the legacy DAG parse phase,
+    // which emits `Const` graph nodes via `@definition.const` capture for
+    // `lexical_declaration`. Returning `'Const'` here lets resolveDefGraphId's
+    // qualified-key path succeed for value receivers without relying on the
+    // simple-key fallback (PR #1718 review Finding 1 / 2026-05-21-002 U4).
+    case 'const':
+      return 'Const';
     case 'typealias':
     case 'type_alias':
       return 'TypeAlias';
@@ -1042,6 +1048,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.type',
   '@reference.name',
   '@reference.receiver',
+  '@reference.operator',
   '@reference.arity',
   '@reference.parameter-types',
   '@reference.parameter-type-classes',

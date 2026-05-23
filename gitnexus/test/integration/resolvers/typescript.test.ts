@@ -1,12 +1,13 @@
 /**
  * TypeScript: heritage resolution + ambiguous symbol disambiguation
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,6 +15,13 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+// Shadow vitest's `it` with the parity-gated runner so tests listed in
+// `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.typescript` (helpers.ts) skip
+// under `REGISTRY_PRIMARY_TYPESCRIPT=0` (legacy DAG mode) and run normally
+// under the default registry-primary path. The scope-parity CI gate
+// requires this for the issue #1358 singleton describes below.
+const it = createResolverParityIt('typescript');
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
@@ -2934,5 +2942,102 @@ export function createUtf8User(): void {
       expect(save).toBeDefined();
       expect(save!.targetFilePath).toBe('src/models.ts');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: class-instance singleton (`export const x = new C()`)
+// PR #1718 closed the object-literal-shorthand sub-case; this fixture covers
+// the class-instance sub-case. Resolution chain: @type-binding.constructor
+// (TS query) → propagateImportedReturnTypes (cross-file mirror) →
+// receiver-bound Case 4 (simple typeBinding) → MRO walk.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript class-instance singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-class-instance-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, getUser method, caller function, fooService Const', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Method')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('emits HAS_METHOD edge from FooService to getUser', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromClass = hasMethod.filter((e) => e.source === 'FooService').map((e) => e.target);
+    expect(fromClass).toEqual(['getUser']);
+  });
+
+  it('resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.ts',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: factory-pattern singleton (`export const x = makeC()`)
+// Tests the @type-binding.alias chain-follow path through
+// propagateImportedReturnTypes (followChainPostFinalize) — fooService aliases
+// makeFooService's return type, which the constructor seeds as FooService.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript factory-pattern singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-factory-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, makeFooService function, fooService Const, caller function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('makeFooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('resolves caller.fooService.getUser() through the factory chain to FooService.getUser', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.ts',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
   });
 });

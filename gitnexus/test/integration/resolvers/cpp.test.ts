@@ -18,6 +18,65 @@ import {
 const it = createResolverParityIt('cpp');
 
 // ---------------------------------------------------------------------------
+// C++ overloaded operators (#1636)
+// ---------------------------------------------------------------------------
+
+describe('C++ overloaded operator call resolution (#1636)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overloaded-operators'), () => {});
+  }, 60000);
+
+  it('resolves member operator+ for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runMember' && c.target === 'operator+',
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetLabel).toBe('Method');
+    expect(calls[0]?.targetFilePath).toBe('lib.h');
+  });
+
+  it('resolves free operator<< for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runFree' && c.target === 'operator<<',
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetLabel).toBe('Function');
+    expect(calls[0]?.targetFilePath).toBe('lib.cpp');
+  });
+
+  it('does not synthesize an operator edge for built-in int + int', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runBuiltin' && c.target.startsWith('operator'),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not synthesize operator edges for built-in int variables', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runBuiltinVariables' && c.target.startsWith('operator'),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('classifies reference-return inline operators as methods', () => {
+    const methods = getNodesByLabelFull(result, 'Method').filter((m) => m.name === 'operator+=');
+    const functions = getNodesByLabelFull(result, 'Function').filter(
+      (f) => f.name === 'operator+=',
+    );
+
+    expect(methods).toHaveLength(1);
+    expect(methods[0]?.properties.filePath).toBe('lib.h');
+    expect(functions).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage: diamond inheritance + include-based imports
 // ---------------------------------------------------------------------------
 

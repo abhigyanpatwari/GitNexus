@@ -15,6 +15,10 @@
 
 import type { ResolutionContext } from './resolution-context.js';
 import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-shared';
+import {
+  isDeferredResolutionProfileEnabled,
+  logDeferredProfile,
+} from '../utils/deferred-resolution-profile.js';
 
 // ---------------------------------------------------------------------------
 // ExtractedHeritage — the shape produced by the parse worker / heritage
@@ -176,10 +180,34 @@ export const buildHeritageMap = (
   // interfaceName → Set<filePath>  (implementor lookup for interface dispatch)
   const implementorFiles = new Map<string, Set<string>>();
 
+  const profileHeritage = isDeferredResolutionProfileEnabled();
+  let maxNameCartesian = 0;
+  let ambiguousHeritageRecords = 0;
+  let unresolvedChildLookups = 0;
+  let unresolvedParentLookups = 0;
+
   for (const h of heritage) {
     // ── Parent lookup (nodeId-based) ────────────────────────────────
     const childDefs = ctx.model.types.lookupClassByName(h.className);
     const parentDefs = ctx.model.types.lookupClassByName(h.parentName);
+
+    // Unresolved-side counters live in a separate guard so they observe
+    // records the ambiguity block below skips. On JVM monorepos the
+    // pathological fan-out case is precisely "many same-named children
+    // with an unresolved external supertype" (or the inverse) — both
+    // sides non-empty is the case `ambiguousHeritageRecords` already
+    // covers; the unresolved cases were silently dropped from the
+    // metric before this counter.
+    if (profileHeritage) {
+      if (childDefs.length === 0) unresolvedChildLookups++;
+      if (parentDefs.length === 0) unresolvedParentLookups++;
+    }
+
+    if (profileHeritage && childDefs.length > 0 && parentDefs.length > 0) {
+      const product = childDefs.length * parentDefs.length;
+      if (product > 1) ambiguousHeritageRecords++;
+      if (product > maxNameCartesian) maxNameCartesian = product;
+    }
 
     if (childDefs.length > 0 && parentDefs.length > 0) {
       for (const child of childDefs) {
@@ -367,6 +395,17 @@ export const buildHeritageMap = (
   const getImplementorFiles = (interfaceName: string): ReadonlySet<string> => {
     return implementorFiles.get(interfaceName) ?? EMPTY_SET;
   };
+
+  if (profileHeritage) {
+    logDeferredProfile(
+      `buildHeritageMap: ${heritage.length} heritage records, ` +
+        `${ambiguousHeritageRecords} with child×parent lookup product >1, ` +
+        `max product ${maxNameCartesian}, ` +
+        `${unresolvedChildLookups} unresolved child lookups, ` +
+        `${unresolvedParentLookups} unresolved parent lookups, ` +
+        `${implementorFiles.size} interface implementor keys`,
+    );
+  }
 
   return {
     getParents,
