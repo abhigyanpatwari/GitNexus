@@ -68,6 +68,7 @@ export const REL_TYPES = [
   'WRAPS',
   'QUERIES',
   'CONNECTS_SIGNAL',
+  'USES',
 ] as const;
 
 export type RelType = (typeof REL_TYPES)[number];
