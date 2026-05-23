@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ToolCallCard } from './ToolCallCard';
+import { useTranslation } from 'react-i18next';
 import { Copy, Check } from '@/lib/lucide-icons';
 
 // Custom syntax theme
@@ -38,6 +39,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   toolCalls,
   showCopyButton = false,
 }) => {
+  const { t } = useTranslation('common');
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -125,7 +127,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               href={hrefStr}
               onClick={(e) => handleLinkClick(e, hrefStr)}
               className={`${baseParams} ${colorParams}`}
-              title={isNodeRef ? `View ${inner} in Code panel` : `Open in Code panel • ${inner}`}
+              title={t(isNodeRef ? 'chat.viewNodeInCodePanel' : 'chat.openInCodePanel', {
+                inner,
+              })}
               {...props}
             >
               <span className="text-inherit">{children}</span>
@@ -182,7 +186,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
       },
       pre: ({ children }: any) => <>{children}</>,
     }),
-    [handleLinkClick],
+    [handleLinkClick, t],
   );
 
   return (
@@ -205,14 +209,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
           <button
             onClick={handleCopy}
             className="flex items-center gap-1.5 rounded border border-transparent px-2 py-1 text-xs text-text-muted transition-all hover:border-border-subtle hover:bg-surface hover:text-text-primary"
-            title="Copy to clipboard"
+            title={t('actions.copy')}
           >
             {copied ? (
               <Check className="h-3.5 w-3.5 text-emerald-400" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
-            <span>{copied ? 'Copied' : 'Copy'}</span>
+            <span>{copied ? t('actions.copied') : t('actions.copy')}</span>
           </button>
         </div>
       )}
