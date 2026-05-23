@@ -81,6 +81,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
   | 'constraintCompatibility'
+  | 'isStaticOnly'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -303,9 +304,28 @@ export function emitReceiverBoundCalls(
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): same shape as Case 4's
+          // chain walk (skip-and-walk-on) but without overload
+          // narrowing — Case 0 uses `findOwnedMember` directly. When
+          // an owner's resolved candidate is static-only (Kotlin
+          // companion-promoted), continue to the next ancestor in
+          // the MRO chain so a legitimate instance member can bind.
+          // If the entire chain is static-only, no edge is emitted —
+          // unlike Case 4, Case 0 does NOT mark the site handled in
+          // that situation because compound receivers (`a.b.c()`)
+          // are not pre-emitted by `emitReferencesViaLookup` (the
+          // reference index has no compound-receiver entry for
+          // shapes like `Logger.create("a")`), so there's no wrong
+          // target to suppress.
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              // Skip static-only candidate; walk to next ancestor.
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -334,6 +354,17 @@ export function emitReceiverBoundCalls(
       // C++ `this->member()` (and same-shape receivers in other OO
       // languages) should resolve against the enclosing class + MRO
       // even when there is no explicit `this` typeBinding in scope.
+      //
+      // **Static-only filter dependency (#1756 / U3):** this case does
+      // NOT currently consult `provider.isStaticOnly`. Today it fires
+      // only for C++ (the sole `resolveThisViaEnclosingClass === true`
+      // language), which has no static-only semantics. Kotlin — the
+      // current `isStaticOnly` consumer — leaves `resolveThisVia
+      // EnclosingClass` unset, so Case 0.5 is dead code for Kotlin
+      // crossover suppression and U3 leaves it untouched. If any
+      // future language enables BOTH `resolveThisViaEnclosingClass`
+      // AND `isStaticOnly`, the chain-walk below MUST adopt the
+      // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
@@ -600,9 +631,22 @@ export function emitReceiverBoundCalls(
         if (ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): mirrors Case 0's chain
+          // walk — `findOwnedMember` without overload narrowing. When
+          // a static-only candidate is found at an ancestor, walk on
+          // so a legitimate instance member can bind. If the entire
+          // chain is static-only, no edge is emitted (Case 3b is fed
+          // by chain-typebinding receivers, not pre-emitted by
+          // `emitReferencesViaLookup` for compound shapes, so no
+          // handled-site marker is needed for chain-only-static).
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -658,21 +702,67 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
+          // Track whether the chain walk filtered out any static-only
+          // candidates. When it did and the chain ended with no
+          // legitimate instance member, we mark the site as handled so
+          // `emitReferencesViaLookup` doesn't re-emit a wrong target
+          // from the pre-resolved reference index (which has no
+          // static-only awareness).
+          let allFilteredStaticOnly = false;
+          // Static-only filter (#1756 / U2): the filter must run INSIDE
+          // the chain walk and BEFORE arity narrowing.
+          //
+          // INSIDE: when a derived owner's only candidates are static-
+          // only (Kotlin companion-promoted), `pickFirstNonStaticOnly`
+          // returns `undefined` and the loop `continue`s to the next
+          // ancestor in the MRO chain — giving a legitimate ancestor
+          // instance method a chance to bind. The earlier after-chain
+          // filter aborted the entire site instead, producing a false
+          // negative whenever the most-derived owner shadowed an
+          // ancestor's instance method with a static-only companion
+          // member.
+          //
+          // BEFORE narrowing: filtering survivors of `lookupAllByOwner`
+          // (rather than survivors of `narrowOverloadCandidates`) means
+          // a same-arity static + instance pair on one owner doesn't
+          // collapse to `OVERLOAD_AMBIGUOUS`. Kotlin compile-resolves
+          // such a pair unambiguously to the instance method because
+          // companion members are not legal instance-dispatch
+          // candidates.
           for (const ownerId of chain) {
-            const picked = pickOverload(ownerId, memberName, site, model, provider);
+            const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               break;
+            }
+            if (picked === STATIC_ONLY_FILTERED) {
+              // At least one static-only candidate was filtered out at
+              // this owner; remember so we can mark handled if the
+              // chain ends with no legitimate match.
+              allFilteredStaticOnly = true;
+              continue;
             }
             if (picked !== undefined) {
               memberDef = picked;
               break;
             }
+            // `picked === undefined` means this owner had no member of
+            // this name at all. Walk on to the next ancestor in the
+            // MRO chain.
           }
           if (ambiguous) {
             // Suppress and mark handled so `emitReferencesViaLookup`
             // doesn't re-emit the pre-resolved reference. See
             // OVERLOAD_AMBIGUOUS docstring for the upstream cause.
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (memberDef === undefined && allFilteredStaticOnly) {
+            // The chain ended with no candidates because every viable
+            // owner had only static-only members. Mark handled so
+            // `emitReferencesViaLookup` doesn't re-emit a wrong target
+            // from the pre-resolved reference index. Parallels the old
+            // after-chain `isStaticOnly` suppression block.
             handledSites.add(siteKey);
             continue;
           }
@@ -744,6 +834,19 @@ export function emitReceiverBoundCalls(
           continue;
         }
         if (picked !== undefined) {
+          // Static-only filter (#1756 / U3): unlike Case 4 there's no
+          // MRO chain to walk here — Case 5 dispatches on a single
+          // owner via `pickOverload`. When the picked candidate is
+          // static-only (Kotlin companion-promoted), suppress the
+          // edge entirely and mark the site handled so
+          // `emitReferencesViaLookup` doesn't re-emit a wrong target
+          // from the pre-resolved reference index. Matches the after-
+          // chain handled-marker semantic used by Case 4's
+          // all-filtered fall-through.
+          if (provider.isStaticOnly?.(picked) === true) {
+            handledSites.add(siteKey);
+            continue;
+          }
           const reason =
             site.kind === 'write' || site.kind === 'read'
               ? site.kind
@@ -822,3 +925,95 @@ function pickOverload(
  * collapses distinct types in arity-metadata).
  */
 export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
+
+/**
+ * Sentinel returned by `pickFirstNonStaticOnly` when the only candidates
+ * at the queried owner were filtered out by `provider.isStaticOnly`. Lets
+ * the Case 4 chain walk distinguish "owner had no member of this name"
+ * (return `undefined`, continue silently) from "owner had only static-
+ * only members" (return this sentinel, continue and remember so the
+ * post-chain handled-marker logic can suppress wrong-target re-emission
+ * from `emitReferencesViaLookup`). See #1756 / remediation plan U2.
+ */
+const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
+
+/**
+ * Receiver-bound member lookup that filters static-only candidates BEFORE
+ * arity narrowing. Wraps the raw `lookupAllByOwner` → `narrowOverloadCandidates`
+ * pipeline so:
+ *
+ *   1. Candidates flagged by `provider.isStaticOnly` (Kotlin companion-
+ *      promoted methods today) never enter the narrowing stage. A same-
+ *      name same-arity static + instance pair on one owner therefore does
+ *      NOT collapse to `OVERLOAD_AMBIGUOUS` — the instance member wins
+ *      unambiguously, matching Kotlin's compile-time resolution.
+ *   2. The chain walk in `emitReceiverBoundCalls` Case 4 can fall through
+ *      to ancestors when only static-only candidates exist at the
+ *      most-derived owner (returns `STATIC_ONLY_FILTERED`), rather than
+ *      aborting the site as the previous after-chain filter did.
+ *
+ * Returns:
+ *   - `undefined` — no member with this name on this owner; chain walk
+ *     continues silently.
+ *   - `STATIC_ONLY_FILTERED` — at least one candidate existed but every
+ *     one was static-only; chain walk continues and remembers so the
+ *     post-chain handled-marker can fire if no ancestor binds.
+ *   - `OVERLOAD_AMBIGUOUS` — narrowing on the surviving non-static
+ *     candidates left >1 ambiguous match; chain walk aborts and the
+ *     site is marked handled (existing sentinel handling preserved).
+ *   - `SymbolDefinition` — single survivor (the chosen target).
+ *
+ * See remediation plan `docs/plans/2026-05-22-002-fix-lang-kotlin-1782-
+ * remediation-plan.md` § U2 for the full rationale.
+ */
+function pickFirstNonStaticOnly(
+  ownerId: string,
+  memberName: string,
+  site: ParsedFile['referenceSites'][number],
+  model: SemanticModel,
+  provider: ReceiverBoundProviderSubset,
+): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
+  const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
+  if (rawOverloads.length === 0) {
+    // Non-callable member (field / property / variable) — ACCESSES
+    // write/read sites target these too. Static-only filtering doesn't
+    // apply to fields, so delegate straight to `lookupFieldByOwner`.
+    return model.fields.lookupFieldByOwner(ownerId, memberName);
+  }
+  const isStaticOnly = provider.isStaticOnly;
+  let overloads: readonly SymbolDefinition[] = rawOverloads;
+  let filteredAny = false;
+  if (isStaticOnly !== undefined) {
+    const survivors: SymbolDefinition[] = [];
+    for (const candidate of rawOverloads) {
+      if (isStaticOnly(candidate) === true) {
+        filteredAny = true;
+        continue;
+      }
+      survivors.push(candidate);
+    }
+    overloads = survivors;
+  }
+  if (overloads.length === 0) {
+    // Every candidate was static-only; the caller (Case 4 chain walk)
+    // should walk on to the next owner AND remember that filtering
+    // happened so it can mark the site handled if the whole chain
+    // ends with no legitimate match.
+    return filteredAny ? STATIC_ONLY_FILTERED : undefined;
+  }
+  if (overloads.length === 1) return overloads[0];
+
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
+  // Same ambiguity handling as `pickOverload`: when normalization
+  // collapses the surviving overloads into a single bucket (e.g., C++
+  // `f(int)`/`f(long)` normalized to `['int']`), suppress rather than
+  // arbitrarily picking. When narrowing leaves >1 distinct candidate
+  // with no tie-breaker, suppress for the same reason.
+  if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
+  if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
+  return candidates[0] ?? overloads[0];
+}
