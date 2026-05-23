@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { Eye, EyeOff, Key } from '@/lib/lucide-icons';
+import { useTranslation } from 'react-i18next';
 
 type ApiKeyField = {
   value: string;
@@ -35,6 +36,8 @@ export const ProviderConfigCard = ({
   model,
   children,
 }: ProviderConfigCardProps) => {
+  const { t } = useTranslation('settings');
+
   return (
     <div className="animate-fade-in space-y-4">
       <div className="flex items-center justify-between">
@@ -48,7 +51,7 @@ export const ProviderConfigCard = ({
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
             <Key className="h-4 w-4" />
-            API Key
+            {t('apiKey')}
           </label>
           <div className="relative">
             <input
@@ -76,7 +79,7 @@ export const ProviderConfigCard = ({
                   rel="noopener noreferrer"
                   className="text-accent hover:underline"
                 >
-                  {apiKey.helperLinkLabel ?? 'Learn more'}
+                  {apiKey.helperLinkLabel ?? t('learnMore')}
                 </a>
               ) : null}
             </p>
@@ -87,7 +90,7 @@ export const ProviderConfigCard = ({
       {model && (
         <div className="space-y-2">
           <label className="text-sm font-medium text-text-secondary">
-            {model.label ?? 'Model'}
+            {model.label ?? t('model')}
           </label>
           <input
             type="text"

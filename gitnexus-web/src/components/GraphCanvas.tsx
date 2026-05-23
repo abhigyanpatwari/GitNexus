@@ -21,12 +21,14 @@ import {
 import type { GraphNode } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
+import { useTranslation } from 'react-i18next';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
 }
 
 export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
+  const { t } = useTranslation('graph');
   const {
     graph,
     setSelectedNode,
@@ -268,7 +270,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             onClick={handleClearSelection}
             className="ml-2 rounded px-2 py-0.5 text-xs text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
           >
-            Clear
+            {t('canvas.clear')}
           </button>
         </div>
       )}
@@ -278,21 +280,21 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         <button
           onClick={zoomIn}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Zoom In"
+          title={t('canvas.zoomIn')}
         >
           <ZoomIn className="h-4 w-4" />
         </button>
         <button
           onClick={zoomOut}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Zoom Out"
+          title={t('canvas.zoomOut')}
         >
           <ZoomOut className="h-4 w-4" />
         </button>
         <button
           onClick={resetZoom}
           className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Fit to Screen"
+          title={t('canvas.fit')}
         >
           <Maximize2 className="h-4 w-4" />
         </button>
@@ -305,7 +307,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <button
             onClick={handleFocusSelected}
             className="flex h-9 w-9 items-center justify-center rounded-md border border-accent/30 bg-accent/20 text-accent transition-colors hover:bg-accent/30"
-            title="Focus on Selected Node"
+            title={t('canvas.focusSelected')}
           >
             <Focus className="h-4 w-4" />
           </button>
@@ -316,7 +318,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           <button
             onClick={handleClearSelection}
             className="flex h-9 w-9 items-center justify-center rounded-md border border-border-subtle bg-elevated text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-            title="Clear Selection"
+            title={t('canvas.clearSelection')}
           >
             <RotateCcw className="h-4 w-4" />
           </button>
@@ -333,7 +335,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
               ? 'animate-pulse border-accent bg-accent text-white shadow-glow'
               : 'border-border-subtle bg-elevated text-text-secondary hover:bg-hover hover:text-text-primary'
           } `}
-          title={isLayoutRunning ? 'Stop Layout' : 'Run Layout Again'}
+          title={isLayoutRunning ? t('canvas.stopLayout') : t('canvas.runLayout')}
         >
           {isLayoutRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </button>
@@ -343,7 +345,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
       {isLayoutRunning && (
         <div className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 animate-fade-in items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/20 px-3 py-1.5 backdrop-blur-sm">
           <div className="h-2 w-2 animate-ping rounded-full bg-emerald-400" />
-          <span className="text-xs font-medium text-emerald-400">Layout optimizing...</span>
+          <span className="text-xs font-medium text-emerald-400">
+            {t('canvas.layoutOptimizing')}
+          </span>
         </div>
       )}
 
@@ -359,7 +363,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
               ? 'flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 transition-colors hover:border-cyan-300/60 hover:bg-cyan-500/20'
               : 'flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-elevated text-text-muted transition-colors hover:bg-hover hover:text-text-primary'
           }
-          title={isAIHighlightsEnabled ? 'Turn off all highlights' : 'Turn on AI highlights'}
+          title={
+            isAIHighlightsEnabled ? t('canvas.turnOffHighlights') : t('canvas.turnOnHighlights')
+          }
           data-testid="ai-highlights-toggle"
         >
           {isAIHighlightsEnabled ? (
