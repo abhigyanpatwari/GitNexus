@@ -124,6 +124,82 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'binds the call to alpha/services/sync.py, not omega',
     'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
   ]),
+  kotlin: new Set<string>([
+    // #1756 companion-vs-instance dispatch: the registry-primary path
+    // suppresses `instance.companionMethod()` via `ScopeResolver.
+    // isStaticOnly` (see `isKotlinStaticOnly` + the Case 4 filter in
+    // `receiver-bound-calls.ts`). The legacy DAG has no equivalent
+    // static-only gate — companion methods promoted onto the outer
+    // class are also returned by `lookupMethodByOwner` when the
+    // receiver is an instance, producing a false `CALLS` edge. Scope-
+    // resolver-only correctness win; backporting to legacy is out of
+    // scope per the migration policy (the bug stops mattering once
+    // Kotlin enters `MIGRATED_LANGUAGES` and legacy stops running).
+    'crossover() invoking logger.create() on an instance emits NO CALLS edge',
+    // #1756 / U2 (remediation plan 2026-05-22-002) MRO shadow tests:
+    // the registry-primary path filters static-only candidates INSIDE
+    // the Case-4 MRO chain walk (`pickFirstNonStaticOnly` in
+    // `receiver-bound-calls.ts`), so a derived class whose only
+    // member is a companion-promoted static method falls through to
+    // an ancestor's legitimate instance method; if no ancestor has
+    // an instance method, no CALLS edge is emitted. The legacy DAG
+    // returns the static-only companion method via
+    // `lookupMethodByOwner` on the most-derived owner and emits a
+    // false `CALLS` edge to it. Same scope-resolver-only correctness
+    // class as the bare `crossover()` test above; backporting is out
+    // of scope per the migration policy.
+    'useChild() falls through static-only Child.foo to Base.foo',
+    'useChild() does NOT emit an edge to the companion-promoted Child.foo',
+    'useStandalone() emits no CALLS edge (entire chain is static-only)',
+    // #1757 lambda scopes: the registry-primary path creates a Block
+    // scope per `lambda_literal` and synthesizes scoped type-bindings
+    // for the lambda parameter / implicit `it` (see
+    // `synthesizeKotlinLambdaBindings` in `kotlin/captures.ts` plus
+    // the `@type-binding.lambda-scoped` gate in
+    // `kotlinBindingScopeFor`). This lets the body's call-resolution
+    // chain see the chain-typebinding for the lambda's enclosing
+    // call (`users.map { it.name }.forEach { name -> println(name) }`)
+    // and emit the `chained -> println` edge correctly. The legacy DAG
+    // has no lambda-body scope and no per-lambda type-binding
+    // synthesis; calls inside lambdas resolve against the enclosing
+    // function scope only, so the `name` parameter chain inside a
+    // chained-receiver forEach lambda doesn't carry the right binding
+    // and the call-extractor never emits the CALLS edge. Scope-
+    // resolver-only correctness win; backporting requires re-modeling
+    // lambda bodies as their own scopes in `call-processor.ts`, which
+    // is out of scope per migration policy.
+    'chained: println(name) inside forEach resolves to file-scope println',
+    // #1756 / U4 (remediation plan 2026-05-22-002) named-companion
+    // crossover: the registry-primary path stamps the static-only
+    // marker on named-companion methods (via the new `@scope.companion`
+    // marker capture and the updated `populateCompanionMembersOn
+    // EnclosingClass` guard), so `instance.namedCompanionMethod()`
+    // is filtered out at the `isStaticOnly` hook. The legacy DAG has
+    // no static-only gate AND no named-companion-aware owner
+    // promotion — it both leaves the named-companion method owned
+    // by `Helper` AND emits a crossover edge when the call site uses
+    // an instance receiver. Same scope-resolver-only correctness
+    // class as the bare `crossover()` test; backporting is out of
+    // scope per the migration policy.
+    'useNamedCrossover: o.create() emits NO CALLS edge to create',
+    // #1756 / U3 (remediation plan 2026-05-22-002) other-receiver
+    // crossover: the registry-primary path applies the `isStaticOnly`
+    // filter across Cases 0 (compound receiver), 3b (chain-typebinding),
+    // and 5 (value-receiver bridge) of `receiver-bound-calls.ts`. For
+    // the U3 fixture `kotlin-companion-other-cases/App.kt`, the
+    // chain-typebinding crossover (`services.first().build()` on a
+    // chain whose receiver type resolves through the legacy DAG's
+    // unfiltered lookup) and the value-receiver crossover
+    // (`l.create("nope")` where the legacy DAG binds `l` directly
+    // via its receiver-resolution path) both emit false `CALLS`
+    // edges to the companion-promoted static-only members. The
+    // legacy DAG has no `isStaticOnly`-equivalent hook, so these
+    // edges leak. Same scope-resolver-only correctness class as the
+    // bare `crossover()` test and the U2 MRO-shadow tests above;
+    // backporting is out of scope per the migration policy.
+    'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
+    'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class
