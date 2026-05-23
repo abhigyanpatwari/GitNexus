@@ -1,9 +1,12 @@
 import { useMemo } from 'react';
 import { Heart } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { useTranslation } from 'react-i18next';
+import { translateProgressMessage } from '../i18n/progress';
 
 export const StatusBar = () => {
   const { graph, progress } = useAppState();
+  const { t } = useTranslation(['common', 'graph']);
 
   const nodeCount = graph?.nodes.length ?? 0;
   const edgeCount = graph?.relationships.length ?? 0;
@@ -37,12 +40,12 @@ export const StatusBar = () => {
                 style={{ width: `${progress.percent}%` }}
               />
             </div>
-            <span>{progress.message}</span>
+            <span>{translateProgressMessage(progress.message, t)}</span>
           </>
         ) : (
           <div className="flex items-center gap-1.5" data-testid="status-ready">
             <span className="h-1.5 w-1.5 rounded-full bg-node-function" />
-            <span>Ready</span>
+            <span>{t('common:progress.ready')}</span>
           </div>
         )}
       </div>
@@ -56,10 +59,10 @@ export const StatusBar = () => {
       >
         <Heart className="h-3.5 w-3.5 animate-pulse fill-pink-500/40 text-pink-500 transition-all duration-200 group-hover:scale-110 group-hover:fill-pink-500" />
         <span className="text-[11px] font-medium text-pink-400 transition-colors group-hover:text-pink-300">
-          Sponsor
+          {t('graph:statusBar.sponsor')}
         </span>
         <span className="hidden text-[10px] text-pink-300/50 italic transition-colors group-hover:text-pink-300/80 md:inline">
-          need to buy some API credits to run SWE-bench 😅
+          {t('graph:statusBar.sponsorHint')}
         </span>
       </a>
 
@@ -67,9 +70,9 @@ export const StatusBar = () => {
       <div className="flex items-center gap-3" data-testid="graph-stats">
         {graph && (
           <>
-            <span>{nodeCount} nodes</span>
+            <span>{t('common:counts.nodes', { count: nodeCount })}</span>
             <span className="text-border-default">•</span>
-            <span>{edgeCount} edges</span>
+            <span>{t('common:counts.edges', { count: edgeCount })}</span>
             {primaryLanguage && (
               <>
                 <span className="text-border-default">•</span>

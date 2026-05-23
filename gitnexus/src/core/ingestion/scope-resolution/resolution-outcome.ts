@@ -2,10 +2,9 @@ import type { Range } from 'gitnexus-shared';
 
 export type ResolutionSuppressionReason =
   | 'adl-non-callable-block'
-  | 'constraint-unknown'
   | 'conversion-rank-tied'
-  | 'dependent-base-skipped'
   | 'inline-ns-ambiguous'
+  | 'overload-ambiguous'
   | 'overload-ambiguous-normalization';
 
 export type ResolutionOutcome =
@@ -20,6 +19,11 @@ export type ResolutionOutcome =
   | {
       readonly kind: 'suppressed';
       readonly reason: ResolutionSuppressionReason;
+      /**
+       * Scope-resolution definition IDs considered by the suppression decision.
+       * For `inline-ns-ambiguous` this is currently empty because the
+       * qualified namespace resolver returns only an `ambiguous` sentinel.
+       */
       readonly candidateIds: readonly string[];
       readonly phase: string;
       readonly filePath: string;

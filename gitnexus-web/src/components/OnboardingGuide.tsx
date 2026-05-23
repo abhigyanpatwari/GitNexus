@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Check, Copy, Terminal, Server, Zap, Sparkles } from '@/lib/lucide-icons';
 import { REQUIRED_NODE_VERSION } from '../config/ui-constants';
+import { useTranslation } from 'react-i18next';
 
 // ── Design constants ─────────────────────────────────────────────────────────
 
@@ -9,6 +10,7 @@ const isDev = import.meta.env.DEV;
 // ── Copy-to-clipboard button ─────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation('onboarding');
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -32,7 +34,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      aria-label={copied ? 'Copied!' : 'Copy to clipboard'}
+      aria-label={copied ? t('guide.copiedAria') : t('guide.copyAria')}
       className={`shrink-0 cursor-pointer rounded-md px-2 py-1 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:outline-none ${
         copied
           ? 'bg-emerald-400/10 text-emerald-400'
@@ -128,6 +130,7 @@ function StepRow({
   description?: string;
   children?: React.ReactNode;
 }) {
+  const { t } = useTranslation('onboarding');
   const isVisible = state !== 'waiting';
 
   return (
@@ -151,7 +154,7 @@ function StepRow({
             </span>
             {state === 'done' && (
               <span className="animate-fade-in font-mono text-[10px] tracking-wider text-emerald-400/60 uppercase">
-                done
+                {t('guide.done')}
               </span>
             )}
           </div>
@@ -168,6 +171,8 @@ function StepRow({
 // ── Polling status bar ────────────────────────────────────────────────────────
 
 function PollingBar() {
+  const { t } = useTranslation('onboarding');
+
   return (
     <div
       className="flex animate-fade-in items-center gap-3 rounded-xl border border-accent/15 bg-accent/5 px-4 py-3"
@@ -183,12 +188,12 @@ function PollingBar() {
 
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-text-secondary">
-          Listening for server
+          {t('guide.listeningForServer')}
           <span className="ml-0.5 inline-flex text-text-muted">
             <span className="animate-pulse">...</span>
           </span>
         </p>
-        <p className="mt-0.5 text-[11px] text-text-muted">Will auto-connect when detected</p>
+        <p className="mt-0.5 text-[11px] text-text-muted">{t('guide.willAutoConnect')}</p>
       </div>
     </div>
   );
@@ -201,8 +206,9 @@ interface OnboardingGuideProps {
 }
 
 export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
+  const { t } = useTranslation('onboarding');
   const primary = isDev ? 'npm run --prefix gitnexus serve' : 'npx gitnexus@latest serve';
-  const termLabel = isDev ? 'Start backend' : 'Terminal';
+  const termLabel = isDev ? t('guide.startBackend') : t('guide.terminal');
 
   // Step states: step 1 = copy command, step 2 = run/wait, step 3 = auto-connect
   // Once polling starts the user has presumably run the command — mark step 1 done.
@@ -226,12 +232,10 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
             </span>
           </div>
           <h2 className="text-lg leading-snug font-semibold text-text-primary">
-            Start your local server
+            {t('guide.startServer')}
           </h2>
           <p className="mx-auto mt-1 max-w-xs text-sm leading-relaxed text-text-secondary">
-            {isDev
-              ? 'Fire up the Express backend in a separate terminal to unlock the full graph.'
-              : 'One command is all it takes. The browser connects automatically.'}
+            {isDev ? t('guide.devDescription') : t('guide.prodDescription')}
           </p>
         </div>
       </div>
@@ -248,8 +252,8 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
         <StepRow
           state={step1State}
           number={1}
-          title="Copy the command"
-          description={isPolling ? undefined : 'Click the icon in the terminal to copy.'}
+          title={t('guide.copyCommand')}
+          description={isPolling ? undefined : t('guide.copyCommandDescription')}
         >
           <TerminalWindow command={primary} label={termLabel} isActive={step1State === 'active'} />
 
@@ -259,13 +263,13 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
               <div className="my-3 flex items-center gap-3">
                 <div className="h-px flex-1 bg-border-subtle" />
                 <span className="text-[11px] tracking-widest text-text-muted uppercase">
-                  or install globally
+                  {t('guide.orInstallGlobally')}
                 </span>
                 <div className="h-px flex-1 bg-border-subtle" />
               </div>
               <TerminalWindow
                 command="npm install -g gitnexus && gitnexus serve"
-                label="Global install"
+                label={t('guide.globalInstall')}
                 isActive={false}
               />
             </>
@@ -276,10 +280,8 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
         <StepRow
           state={step2State}
           number={2}
-          title={isPolling ? 'Waiting for server to start' : 'Paste and run in your terminal'}
-          description={
-            isPolling ? undefined : 'Open a terminal at the project root, paste, and hit Enter.'
-          }
+          title={isPolling ? t('guide.waitingForServer') : t('guide.pasteAndRun')}
+          description={isPolling ? undefined : t('guide.pasteAndRunDescription')}
         >
           {isPolling && <PollingBar />}
         </StepRow>
@@ -288,8 +290,8 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
         <StepRow
           state={step3State}
           number={3}
-          title="Auto-connects and opens the graph"
-          description="No refresh needed — the page detects the server automatically."
+          title={t('guide.autoConnects')}
+          description={t('guide.autoConnectsDescription')}
         />
       </div>
 
@@ -297,7 +299,7 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
       <div className="mt-6 flex items-center justify-center gap-1.5 border-t border-border-subtle pt-5 text-xs text-text-muted">
         <Server className="h-3 w-3 shrink-0" />
         <span>
-          Requires{' '}
+          {t('guide.requires')}{' '}
           <a
             href="https://nodejs.org"
             target="_blank"
@@ -309,7 +311,7 @@ export const OnboardingGuide = ({ isPolling }: OnboardingGuideProps) => {
         </span>
         <span className="mx-1 text-border-default">·</span>
         <Terminal className="h-3 w-3 shrink-0" />
-        <span>Port 4747</span>
+        <span>{t('guide.port')}</span>
       </div>
     </div>
   );

@@ -162,7 +162,10 @@ export function emitFreeCallFallback(
                     filePath: parsed.filePath,
                     name: site.name,
                     range: site.atRange,
-                    reason: suppressionReasonForOverload(narrowed, site.arity),
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
                     candidates: narrowed,
                   });
                   handledSites.add(siteKey(parsed.filePath, site));
@@ -197,7 +200,7 @@ export function emitFreeCallFallback(
                 parsedFiles,
               );
 
-          const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+          const key = siteKey(parsed.filePath, site);
           if (adlSuppressed && ordinary.length === 0) {
             recordSuppressedOutcome(options.recordResolutionOutcome, {
               phase: 'free-call-fallback',
@@ -207,6 +210,8 @@ export function emitFreeCallFallback(
               reason: 'adl-non-callable-block',
               candidates: ordinary,
             });
+            handledSites.add(key);
+            continue;
           }
           if (adl === undefined || adl.length === 0) {
             // No ADL contribution. Default behavior: `ordinary[0]` —
@@ -231,7 +236,7 @@ export function emitFreeCallFallback(
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
               } else if (narrowed.length === 0) {
-                handledSites.add(siteKey);
+                handledSites.add(key);
                 continue;
               } else {
                 // >1 survivors: same-file → suppress (true overloads,
@@ -245,10 +250,13 @@ export function emitFreeCallFallback(
                     filePath: parsed.filePath,
                     name: site.name,
                     range: site.atRange,
-                    reason: suppressionReasonForOverload(narrowed, site.arity),
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
                     candidates: narrowed,
                   });
-                  handledSites.add(siteKey);
+                  handledSites.add(key);
                   continue;
                 }
                 fnDef = ordinary[0];
@@ -275,7 +283,7 @@ export function emitFreeCallFallback(
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
             } else if (narrowed.length === 0) {
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             } else if (narrowed.length > 1) {
               recordSuppressedOutcome(options.recordResolutionOutcome, {
@@ -283,16 +291,19 @@ export function emitFreeCallFallback(
                 filePath: parsed.filePath,
                 name: site.name,
                 range: site.atRange,
-                reason: suppressionReasonForOverload(narrowed, site.arity),
+                reason: suppressionReasonForOverload(narrowed, site.arity, {
+                  conversionRankFn: options.conversionRankFn,
+                  argumentTypes: site.argumentTypes,
+                }),
                 candidates: narrowed,
               });
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                handledSites.add(siteKey);
+                handledSites.add(key);
                 continue;
               }
               // Multiple survivors remain after conversion-rank scoring;
               // suppress instead of picking arbitrarily.
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             }
           }
@@ -332,7 +343,7 @@ export function emitFreeCallFallback(
       // Always mark the site as handled — even when the dedup-collapse
       // means we don't add a new edge — so `emit-references` skips its
       // potentially-wrong fallback for the same site.
-      handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+      handledSites.add(siteKey(parsed.filePath, site));
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
       if (seen.has(relId)) continue;
       seen.add(relId);
@@ -362,10 +373,18 @@ function siteKey(
 function suppressionReasonForOverload(
   candidates: readonly SymbolDefinition[],
   arity: number | undefined,
+  ctx: {
+    readonly conversionRankFn?: ConversionRankFn;
+    readonly argumentTypes?: readonly string[];
+  },
 ): ResolutionSuppressionReason {
-  return isOverloadAmbiguousAfterNormalization(candidates, arity)
-    ? 'overload-ambiguous-normalization'
-    : 'conversion-rank-tied';
+  if (isOverloadAmbiguousAfterNormalization(candidates, arity)) {
+    return 'overload-ambiguous-normalization';
+  }
+  if (ctx.conversionRankFn !== undefined && ctx.argumentTypes !== undefined) {
+    return 'conversion-rank-tied';
+  }
+  return 'overload-ambiguous';
 }
 
 function recordSuppressedOutcome(

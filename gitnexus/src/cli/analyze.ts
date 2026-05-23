@@ -13,7 +13,12 @@ import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
-import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
+import {
+  isLbugCheckpointIoError,
+  isWalCorruptionError,
+  parseWalCheckpointThreshold,
+  WAL_RECOVERY_SUGGESTION,
+} from '../core/lbug/lbug-config.js';
 import {
   getStoragePaths,
   getGlobalRegistryPath,
@@ -415,6 +420,15 @@ const forceHeapOOMForTestIfEnabled = (): void => {
   for (;;) chunks.push('x'.repeat(1024 * 1024));
 };
 
+// 64 MiB keeps auto-checkpoint enabled but triggers less frequently than
+// Ladybug's stock ~16 MiB threshold, reducing rename/remove churn on large
+// runs. Also matches the GitNexus default in `lbug-config.ts`.
+//
+// IMPORTANT: keep README examples (`README.md`, `gitnexus/README.md`) and
+// the `DEFAULT_WAL_CHECKPOINT_THRESHOLD` constant in
+// `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
+const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
+
 /** Re-exec the process with a 16GB heap and larger stack if we're currently below that. */
 async function ensureHeap(): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
@@ -477,6 +491,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_PROFILE_DEFERRED_SLOW_MS',
   'GITNEXUS_MAX_FILE_SIZE',
   'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+  'GITNEXUS_WAL_CHECKPOINT_THRESHOLD',
+  'GITNEXUS_WAL_MANUAL_CHECKPOINT',
   'GITNEXUS_EMBEDDING_THREADS',
   'GITNEXUS_EMBEDDING_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
@@ -562,6 +578,8 @@ export interface AnalyzeOptions {
   maxFileSize?: string;
   /** Override worker sub-batch idle timeout in seconds. */
   workerTimeout?: string;
+  /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
+  walCheckpointThreshold?: string;
   /** Parse worker pool size; 0 disables workers (sequential fallback). */
   workers?: string;
   embeddingThreads?: string;
@@ -631,6 +649,16 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(
       Math.round(workerTimeoutSeconds * 1000),
     );
+  }
+
+  if (options?.walCheckpointThreshold !== undefined) {
+    const parsed = parseWalCheckpointThreshold(options.walCheckpointThreshold);
+    if (parsed === undefined) {
+      cliError('  --wal-checkpoint-threshold must be an integer >= -1.\n');
+      process.exitCode = 1;
+      return;
+    }
+    process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(parsed);
   }
 
   // `--workers` is threaded through `runFullAnalysis` options → PipelineOptions
@@ -1125,6 +1153,20 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
           `  This usually happens when a previous analysis was interrupted mid-write.\n` +
           `  ${WAL_RECOVERY_SUGGESTION}\n`,
         { recoveryHint: 'wal-corruption' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    if (isLbugCheckpointIoError(err)) {
+      cliError(
+        `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
+          `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
+          `    gitnexus analyze --wal-checkpoint-threshold ${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD}\n` +
+          `    (or set GITNEXUS_WAL_CHECKPOINT_THRESHOLD=${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD})\n` +
+          `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
+        { recoveryHint: 'wal-checkpoint-threshold' },
       );
       process.exitCode = 1;
       return;
