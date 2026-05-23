@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
+import * as ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
@@ -11,7 +13,11 @@ const repoRoot = path.resolve(testDir, '../..');
 const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 
 function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, command, '--help'], {
+  return runHelpArgs([command], env);
+}
+
+function runHelpArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...args, '--help'], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, ...env },
@@ -19,11 +25,84 @@ function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
 }
 
 function runRootHelp(env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, '--help'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
+  return runHelpArgs([], env);
+}
+
+const allHelpCommands = [
+  [],
+  ['setup'],
+  ['analyze'],
+  ['index'],
+  ['serve'],
+  ['mcp'],
+  ['list'],
+  ['status'],
+  ['doctor'],
+  ['clean'],
+  ['remove'],
+  ['wiki'],
+  ['augment'],
+  ['publish'],
+  ['query'],
+  ['context'],
+  ['impact'],
+  ['cypher'],
+  ['detect-changes'],
+  ['eval-server'],
+  ['group'],
+  ['group', 'create'],
+  ['group', 'add'],
+  ['group', 'remove'],
+  ['group', 'list'],
+  ['group', 'status'],
+  ['group', 'sync'],
+  ['group', 'impact'],
+  ['group', 'query'],
+  ['group', 'contracts'],
+];
+
+function staticStringValue(node: ts.Node | undefined): string | undefined {
+  if (!node) return undefined;
+  if (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticStringValue(node.left);
+    const right = staticStringValue(node.right);
+    if (left !== undefined && right !== undefined) return `${left}${right}`;
+  }
+  return undefined;
+}
+
+function extractRegisteredHelpDescriptions(): string[] {
+  const descriptions = new Set<string>();
+  const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts'];
+
+  for (const relativePath of sourceFiles) {
+    const filePath = path.join(repoRoot, relativePath);
+    const source = fs.readFileSync(filePath, 'utf8');
+    const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const method = node.expression.name.text;
+        const description =
+          method === 'description'
+            ? staticStringValue(node.arguments[0])
+            : method === 'option' || method === 'requiredOption'
+              ? staticStringValue(node.arguments[1])
+              : undefined;
+
+        if (description && /[A-Za-z]/.test(description)) {
+          descriptions.add(description.replace(/\s+/g, ' ').trim());
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+  }
+
+  return [...descriptions].filter((description) => description.length > 0).sort();
 }
 
 function metadataHelp(language: SupportedCliLanguage) {
@@ -68,6 +147,23 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('-l, --limit <n>       最多返回的流程数（默认：5）');
     expect(result.stdout).toContain('-h, --help            显示命令帮助');
     expect(result.stdout).not.toContain('Target repository (omit if only one indexed)');
+  });
+
+  it('localizes every registered CLI command and option description in zh-CN help', () => {
+    const zhHelpOutput = allHelpCommands
+      .map((args) => {
+        const result = runHelpArgs(args, { GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
+
+        expect(result.status, `gitnexus ${args.join(' ')} --help`).toBe(0);
+        return result.stdout;
+      })
+      .join('\n');
+
+    const untranslated = extractRegisteredHelpDescriptions().filter((description) =>
+      zhHelpOutput.includes(description),
+    );
+
+    expect(untranslated).toEqual([]);
   });
 
   it('analyze help localizes custom environment variable help text', () => {
