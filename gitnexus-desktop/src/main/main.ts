@@ -25,14 +25,8 @@ const DESKTOP_APP_ICON_PATH = app.isPackaged
 const DESKTOP_GET_SHELL_STATE_CHANNEL = 'gitnexus-desktop:get-shell-state';
 const DESKTOP_WINDOW_ACTION_CHANNEL = 'gitnexus-desktop:window-action';
 const DESKTOP_WINDOW_STATE_CHANGED_CHANNEL = 'gitnexus-desktop:window-state-changed';
-const GITNEXUS_PORT = 4747;
 const GITNEXUS_HOST = 'localhost';
-const GITNEXUS_SERVER_URL = `http://${GITNEXUS_HOST}:${GITNEXUS_PORT}`;
-const GITNEXUS_SERVER_HEALTH_URLS = [
-  `${GITNEXUS_SERVER_URL}/api/info`,
-  `http://127.0.0.1:${GITNEXUS_PORT}/api/info`,
-  `http://[::1]:${GITNEXUS_PORT}/api/info`,
-];
+let gitNexusPort = 0;
 const GITNEXUS_DEV_RUNTIME_DIR = path.resolve(__dirname, '../../../gitnexus');
 const GITNEXUS_WEB_DEV_HOST = 'localhost';
 const GITNEXUS_WEB_DEV_PORT = 5173;
@@ -72,7 +66,7 @@ const MIME_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-let serverReadyPromise: Promise<void> | null = null;
+let serverReadyPromise: Promise<number> | null = null;
 let gitNexusServerProcess: ChildProcess | null = null;
 let gitNexusServerOutput = '';
 let webDevServerProcess: ChildProcess | null = null;
@@ -284,7 +278,7 @@ const getNodeProcessEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.Pr
 const spawnGitNexusServer = (): ChildProcess => {
   const childProcess = spawn(
     getNodeCommand(),
-    [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST],
+    [getGitNexusCliEntry(), 'serve', '--host', GITNEXUS_HOST, '--port', '0'],
     {
       cwd: getGitNexusRuntimeDir(),
       env: getNodeProcessEnvironment(app.isPackaged ? { GITNEXUS_DISABLE_MCP_HTTP: '1' } : {}),
@@ -295,7 +289,12 @@ const spawnGitNexusServer = (): ChildProcess => {
 
   childProcess.stdout?.on('data', (chunk) => {
     appendGitNexusServerOutput(chunk);
-    process.stdout.write(`[gitnexus-server] ${chunk.toString()}`);
+    const str = chunk.toString();
+    const match = str.match(/GITNEXUS_PORT=(\d+)/);
+    if (match) {
+      gitNexusPort = parseInt(match[1], 10);
+    }
+    process.stdout.write(`[gitnexus-server] ${str}`);
   });
 
   childProcess.stderr?.on('data', (chunk) => {
@@ -314,12 +313,25 @@ const spawnGitNexusServer = (): ChildProcess => {
   return childProcess;
 };
 
-const waitForGitNexusServerReady = async (): Promise<void> => {
+const waitForGitNexusServerReady = async (): Promise<number> => {
   const deadline = Date.now() + GITNEXUS_SERVER_READY_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    if (await isAnyHttpUrlReady(GITNEXUS_SERVER_HEALTH_URLS)) {
-      return;
+    if (gitNexusPort > 0) {
+      const healthUrl = `http://${GITNEXUS_HOST}:${gitNexusPort}/api/info`;
+      const responseText = await fetchUrlText(healthUrl, 2_000);
+
+      if (responseText) {
+        try {
+          const data = JSON.parse(responseText);
+          // Identity check: /api/info must return { version: string }
+          if (typeof data.version === 'string') {
+            return gitNexusPort;
+          }
+        } catch {
+          // Retry — response may be incomplete or not yet the API server
+        }
+      }
     }
 
     if (gitNexusServerProcess?.exitCode !== null && gitNexusServerProcess?.exitCode !== undefined) {
@@ -337,8 +349,8 @@ const waitForGitNexusServerReady = async (): Promise<void> => {
   const output = gitNexusServerOutput.trim();
   throw new Error(
     output
-      ? `Timed out waiting for GitNexus backend at ${GITNEXUS_SERVER_HEALTH_URLS.join(', ')}.\n\n${output}`
-      : `Timed out waiting for GitNexus backend at ${GITNEXUS_SERVER_HEALTH_URLS.join(', ')}.`,
+      ? `Timed out waiting for GitNexus backend.\n\n${output}`
+      : 'Timed out waiting for GitNexus backend.',
   );
 };
 
@@ -687,7 +699,7 @@ const showStartupError = (error: unknown): void => {
   if (isAddressInUseError(error)) {
     dialog.showErrorBox(
       'GitNexus Desktop Startup Failed',
-      `Port ${GITNEXUS_PORT} is already in use.\n\nStop the other process using port ${GITNEXUS_PORT} and try again.`,
+      'Another process is already using the port GitNexus needs.\n\nClose the other application and try again.',
     );
     return;
   }
@@ -698,29 +710,40 @@ const showStartupError = (error: unknown): void => {
   );
 };
 
-const ensureGitNexusServerStarted = async (): Promise<void> => {
+const ensureGitNexusServerStarted = async (): Promise<number> => {
   if (!serverReadyPromise) {
     serverReadyPromise = (async () => {
-      if (await isAnyHttpUrlReady(GITNEXUS_SERVER_HEALTH_URLS)) {
-        return;
+      if (gitNexusPort > 0) {
+        const healthUrl = `http://${GITNEXUS_HOST}:${gitNexusPort}/api/info`;
+        const responseText = await fetchUrlText(healthUrl, 2_000);
+        if (responseText) {
+          try {
+            const data = JSON.parse(responseText);
+            if (typeof data.version === 'string') {
+              return gitNexusPort;
+            }
+          } catch {}
+        }
       }
 
       if (!gitNexusServerProcess || gitNexusServerProcess.exitCode !== null) {
+        gitNexusPort = 0;
         gitNexusServerOutput = '';
         gitNexusServerProcess = spawnGitNexusServer();
       }
 
-      await waitForGitNexusServerReady();
+      return await waitForGitNexusServerReady();
     })().catch((error) => {
       serverReadyPromise = null;
       throw error;
     });
   }
 
-  await serverReadyPromise;
+  return serverReadyPromise;
 };
 
 async function createWindow(): Promise<void> {
+  const serverPort = await ensureGitNexusServerStarted();
   let embeddedAppUrl: string;
 
   if (app.isPackaged) {
@@ -729,6 +752,11 @@ async function createWindow(): Promise<void> {
     await ensureWebDevServerStarted();
     embeddedAppUrl = GITNEXUS_WEB_DEV_URL;
   }
+
+  // Pass server URL to web UI via query param so it auto-connects (App.tsx reads ?server=)
+  const serverUrl = `http://${GITNEXUS_HOST}:${serverPort}`;
+  const separator = embeddedAppUrl.includes('?') ? '&' : '?';
+  embeddedAppUrl += `${separator}server=${encodeURIComponent(serverUrl)}`;
 
   const window = new BrowserWindow({
     width: 1280,
@@ -803,7 +831,6 @@ async function createWindow(): Promise<void> {
 app.whenReady().then(async () => {
   try {
     registerWindowIpcHandlers();
-    await ensureGitNexusServerStarted();
     await createWindow();
   } catch (error) {
     showStartupError(error);
@@ -812,12 +839,10 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (openWindows.size === 0) {
-      void ensureGitNexusServerStarted()
-        .then(() => createWindow())
-        .catch((error) => {
-          showStartupError(error);
-          exitStartupFailure();
-        });
+      void createWindow().catch((error) => {
+        showStartupError(error);
+        exitStartupFailure();
+      });
     }
   });
 });

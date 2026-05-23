@@ -1865,8 +1865,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // to the caller instead of crashing with an unhandled 'error' event.
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(port, host, () => {
+      const addr = server.address();
+      const actualPort: number = addr && typeof addr !== 'string' ? addr.port : port;
       const displayHost = host === '::' || host === '0.0.0.0' ? 'localhost' : host;
-      console.log(`GitNexus server running on http://${displayHost}:${port}`);
+      console.log(`GITNEXUS_PORT=${actualPort}`);
+      console.log(`GitNexus server running on http://${displayHost}:${actualPort}`);
       resolve();
     });
     server.on('error', (err) => reject(err));
