@@ -72,4 +72,50 @@ describe('end-to-end pipeline — dodge_the_creeps', () => {
     const calls = [...result.graph.iterRelationships()].filter((r) => r.type === 'CALLS');
     expect(calls.length).toBeGreaterThan(0);
   });
+
+  it.skipIf(!existsSync(dodgeCreeps))(
+    'emits CONNECTS_SIGNAL edges for the user-defined cross-scene signal wires',
+    () => {
+      const connects = [...result.graph.iterRelationships()].filter(
+        (r) => r.type === 'CONNECTS_SIGNAL' && r.reason === 'declarative-connection',
+      );
+
+      // dodge_the_creeps has two user-defined cross-scene signals:
+      //   main.tscn: [connection signal="hit" from="Player" to="." method="game_over"]
+      //     -> Player is an instance of player.tscn, so the emitter `hit`
+      //        lives in player.gd; the handler `game_over` is in main.gd.
+      //   main.tscn: [connection signal="start_game" from="HUD" to="." method="new_game"]
+      //     -> HUD instances hud.tscn; emitter `start_game` in hud.gd,
+      //        handler `new_game` in main.gd.
+      // The other 7 connections wire built-in signals (Timer.timeout,
+      // Button.pressed, VisibleOnScreenNotifier2D.screen_exited,
+      // body_entered) which have no user-script emitter symbol and are
+      // intentionally skipped.
+      expect(connects.length).toBeGreaterThanOrEqual(2);
+
+      const sigLookups = connects.map((r) => {
+        const src = result.graph.getNode(r.sourceId);
+        const tgt = result.graph.getNode(r.targetId);
+        return {
+          fromFile: src?.properties.filePath,
+          fromName: src?.properties.name,
+          toFile: tgt?.properties.filePath,
+          toName: tgt?.properties.name,
+        };
+      });
+
+      expect(sigLookups).toContainEqual({
+        fromFile: 'player.gd',
+        fromName: 'hit',
+        toFile: 'main.gd',
+        toName: 'game_over',
+      });
+      expect(sigLookups).toContainEqual({
+        fromFile: 'hud.gd',
+        fromName: 'start_game',
+        toFile: 'main.gd',
+        toName: 'new_game',
+      });
+    },
+  );
 });
