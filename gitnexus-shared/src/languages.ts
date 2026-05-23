@@ -22,4 +22,6 @@ export enum SupportedLanguages {
   Vue = 'vue',
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
+  /** Godot Engine GDScript (.gd). Scene files (.tscn) are handled by a separate pipeline phase, not this provider. */
+  Godot = 'godot',
 }
