@@ -124,6 +124,24 @@ describe('parseGodotResource — scene files', () => {
     const parsed = parseGodotResource(MINIMAL_SCENE);
     expect(parsed.autoloads).toEqual([]);
   });
+
+  it('handles scene files larger than tree-sitter\'s default 32 KB buffer', () => {
+    // Real-world levels exceed 32 KB easily (e.g. platformer/level/level.tscn
+    // is ~55 KB / 1722 lines). Without an explicit bufferSize, tree-sitter's
+    // native binding throws "Invalid argument" — this test pins the fix.
+    const header = '[gd_scene format=3 uid="uid://big"]\n\n';
+    const nodes: string[] = [];
+    for (let i = 0; i < 800; i++) {
+      nodes.push(
+        `[node name="N${i}" type="Sprite2D" parent="."]\nposition = Vector2(${i}, ${i})\n`,
+      );
+    }
+    const big = header + nodes.join('\n');
+    expect(big.length).toBeGreaterThan(32 * 1024);
+    const parsed = parseGodotResource(big);
+    expect(parsed.header?.kind).toBe('gd_scene');
+    expect(parsed.nodes).toHaveLength(800);
+  });
 });
 
 describe('parseGodotResource — project.godot', () => {

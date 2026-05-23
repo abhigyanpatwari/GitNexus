@@ -64,9 +64,32 @@ function stripResPrefix(path: string): string {
   return path.startsWith('res://') ? path.slice('res://'.length) : path;
 }
 
-function findSceneNode(name: string, scene: ParsedGodotResource): SceneNode | null {
-  if (name === '.') return scene.nodes.find((n) => n.parent === null) ?? null;
-  return scene.nodes.find((n) => n.name === name && n.parent === '.') ?? null;
+/**
+ * Resolves a Godot scene-tree path (e.g. "." , "Player",
+ * "Level/Player", "Black/SplitContainer/ViewportContainer1/Viewport1")
+ * to the SceneNode at that position in the supplied scene.
+ *
+ * Godot encodes ancestry in each [node]'s `parent` attribute as the
+ * cumulative path from root (excluding the root itself), separated by
+ * "/". Direct children of root have parent="." and the root has no
+ * parent. Deep paths like "Level/Player" are resolved by walking
+ * one segment at a time: at depth N the next node's parent attribute
+ * equals the joined prefix of the first N-1 segments (or "." for
+ * depth 0 children).
+ */
+function findSceneNode(path: string, scene: ParsedGodotResource): SceneNode | null {
+  if (path === '.') return scene.nodes.find((n) => n.parent === null) ?? null;
+  const segments = path.split('/');
+  let parentPath = '.';
+  let found: SceneNode | null = null;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    found = scene.nodes.find((n) => n.parent === parentPath && n.name === segment) ?? null;
+    if (found === null) return null;
+    if (i === segments.length - 1) return found;
+    parentPath = parentPath === '.' ? segment : `${parentPath}/${segment}`;
+  }
+  return found;
 }
 
 /**
@@ -141,11 +164,18 @@ function getGdScriptParser(): Parser {
   return parser;
 }
 
+/**
+ * tree-sitter's default input buffer is 32 KB. Some GDScript files
+ * (e.g. generated boilerplate or large data tables) exceed that;
+ * 1 MB is a safe headroom and the binding allocates lazily.
+ */
+const GDSCRIPT_PARSE_BUFFER_BYTES = 1024 * 1024;
+
 /** Returns the set of autoload names referenced as identifiers in the file. */
 function scanAutoloadRefs(content: string, autoloadNames: ReadonlySet<string>): Set<string> {
   if (autoloadNames.size === 0) return new Set();
   const parser = getGdScriptParser();
-  const tree = parser.parse(content);
+  const tree = parser.parse(content, undefined, { bufferSize: GDSCRIPT_PARSE_BUFFER_BYTES });
   const language = parser.getLanguage();
   const query = new (
     Parser as unknown as { Query: new (lang: unknown, src: string) => unknown }

@@ -93,9 +93,18 @@ function getParser(): Parser {
   return parser;
 }
 
+/**
+ * tree-sitter's default input buffer is 32 KB. Real-world Godot scene
+ * files for complex levels exceed that easily (e.g. platformer's
+ * level/level.tscn is ~55 KB / 1722 lines). Bumping to 1 MB covers
+ * every scene file we've encountered without measurable cost — the
+ * binding allocates lazily.
+ */
+const PARSE_BUFFER_BYTES = 1024 * 1024;
+
 export function parseGodotResource(text: string): ParsedGodotResource {
   const parser = getParser();
-  const tree = parser.parse(text);
+  const tree = parser.parse(text, undefined, { bufferSize: PARSE_BUFFER_BYTES });
   const root = tree.rootNode as unknown as SyntaxNode;
 
   const result: ParsedGodotResource = {

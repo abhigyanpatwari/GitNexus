@@ -212,6 +212,124 @@ describe('godotCrossrefPhase integration', () => {
     }
   });
 
+  it('resolves multi-segment connection paths through nested scene-tree nodes', async () => {
+    // Mirrors the platformer pattern:
+    //   game_singleplayer.tscn has a [connection signal=... from="Level/Player"
+    //   to="InterfaceLayer/PauseMenu" ...] where Level and InterfaceLayer
+    //   are direct children of root and Player / PauseMenu are their children.
+    //   Player itself is instanced from player.tscn, so its script lives in
+    //   player.gd; same for PauseMenu and pause_menu.gd.
+    const graph = createKnowledgeGraph();
+    seedFileNodes(graph, [
+      { path: 'main.tscn' },
+      { path: 'player.tscn' },
+      { path: 'player.gd' },
+      { path: 'pause_menu.tscn' },
+      { path: 'pause_menu.gd' },
+    ]);
+    graph.addNode({
+      id: 'Method:player.gd::coin_collected',
+      label: 'Method',
+      properties: { name: 'coin_collected', filePath: 'player.gd' },
+    });
+    graph.addNode({
+      id: 'Function:pause_menu.gd::_on_coin_collected',
+      label: 'Function',
+      properties: { name: '_on_coin_collected', filePath: 'pause_menu.gd' },
+    });
+
+    const index = createSceneIndex();
+    // player.tscn: root attaches player.gd
+    index.addScene('res://player.tscn', {
+      header: { kind: 'gd_scene', uid: null, format: 3 },
+      extResources: [{ id: '1', type: 'Script', path: 'res://player.gd' }],
+      subResources: [],
+      nodes: [
+        {
+          name: 'Player',
+          type: 'CharacterBody2D',
+          parent: null,
+          instanceExtResourceId: null,
+          properties: { script: { kind: 'ext_resource_ref', id: '1' } },
+        },
+      ],
+      connections: [],
+      autoloads: [],
+    });
+    // pause_menu.tscn: root attaches pause_menu.gd
+    index.addScene('res://pause_menu.tscn', {
+      header: { kind: 'gd_scene', uid: null, format: 3 },
+      extResources: [{ id: '1', type: 'Script', path: 'res://pause_menu.gd' }],
+      subResources: [],
+      nodes: [
+        {
+          name: 'PauseMenu',
+          type: 'Control',
+          parent: null,
+          instanceExtResourceId: null,
+          properties: { script: { kind: 'ext_resource_ref', id: '1' } },
+        },
+      ],
+      connections: [],
+      autoloads: [],
+    });
+    // main.tscn: nested tree with multi-segment paths in the connection
+    index.addScene('res://main.tscn', {
+      header: { kind: 'gd_scene', uid: null, format: 3 },
+      extResources: [
+        { id: '1', type: 'PackedScene', path: 'res://player.tscn' },
+        { id: '2', type: 'PackedScene', path: 'res://pause_menu.tscn' },
+      ],
+      subResources: [],
+      nodes: [
+        { name: 'Main', type: 'Node', parent: null, instanceExtResourceId: null, properties: {} },
+        { name: 'Level', type: 'Node', parent: '.', instanceExtResourceId: null, properties: {} },
+        {
+          name: 'Player',
+          type: null,
+          parent: 'Level',
+          instanceExtResourceId: '1',
+          properties: {},
+        },
+        {
+          name: 'InterfaceLayer',
+          type: 'CanvasLayer',
+          parent: '.',
+          instanceExtResourceId: null,
+          properties: {},
+        },
+        {
+          name: 'PauseMenu',
+          type: null,
+          parent: 'InterfaceLayer',
+          instanceExtResourceId: '2',
+          properties: {},
+        },
+      ],
+      connections: [
+        {
+          signal: 'coin_collected',
+          from: 'Level/Player',
+          to: 'InterfaceLayer/PauseMenu',
+          method: '_on_coin_collected',
+        },
+      ],
+      autoloads: [],
+    });
+    const scenesOutput: ScenesOutput = { index, sceneCount: 3, autoloadCount: 0 };
+
+    const ctx = buildContext('/tmp/multiseg', graph);
+    const output = await godotCrossrefPhase.execute(ctx, buildDeps(scenesOutput));
+
+    expect(output.signalConnectionCount).toBe(1);
+    const connects = [...graph.iterRelationships()].filter(
+      (r) => r.type === 'CONNECTS_SIGNAL' && r.reason === 'declarative-connection',
+    );
+    expect(connects).toHaveLength(1);
+    expect(connects[0].sourceId).toBe('Method:player.gd::coin_collected');
+    expect(connects[0].targetId).toBe('Function:pause_menu.gd::_on_coin_collected');
+  });
+
   it('does not emit autoload IMPORTS edges when no autoloads are registered', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'gn-autoload-empty-'));
     try {
