@@ -90,6 +90,10 @@ describe('LadybugDB Schema', () => {
         expect(REL_TYPES).toContain(t);
       }
     });
+
+    it('includes CONNECTS_SIGNAL for Godot signal connections', () => {
+      expect(REL_TYPES).toContain('CONNECTS_SIGNAL');
+    });
   });
 
   describe('node schema DDL', () => {
