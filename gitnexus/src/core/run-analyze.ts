@@ -887,7 +887,10 @@ export async function runFullAnalysis(
       },
       capabilities: {
         graph: { provider: 'ladybugdb', status: runtimeCapabilities.graph },
-        fts: { provider: 'ladybugdb-fts', status: ftsIndexed ? runtimeCapabilities.fts : 'degraded' },
+        fts: {
+          provider: 'ladybugdb-fts',
+          status: ftsIndexed ? runtimeCapabilities.fts : 'degraded',
+        },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
           status: embeddingCount > 0 ? effectiveSemanticMode : 'unavailable',
