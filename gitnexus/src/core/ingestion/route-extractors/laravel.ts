@@ -1,9 +1,5 @@
 import type Parser from 'tree-sitter';
-import {
-  extractStringContent,
-  findDescendant,
-  type SyntaxNode,
-} from '../utils/ast-helpers.js';
+import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/ast-helpers.js';
 
 export interface ExtractedRoute {
   filePath: string;
@@ -163,8 +159,7 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
     if (elements[0]) {
       const classAccess = findDescendant(elements[0], 'class_constant_access_expression');
       if (classAccess) {
-        controller =
-          classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+        controller = classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
       }
     }
     if (elements[1]) {

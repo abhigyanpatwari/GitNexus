@@ -95,9 +95,7 @@ describe('getLanguageFromFilename', () => {
 
     it('treats Laravel Blade templates as markup templates, not PHP code files', () => {
       expect(getLanguageFromFilename('resources/views/users/index.blade.php')).toBeNull();
-      expect(getSyntaxLanguageFromFilename('resources/views/users/index.blade.php')).toBe(
-        'markup',
-      );
+      expect(getSyntaxLanguageFromFilename('resources/views/users/index.blade.php')).toBe('markup');
       expect(isBladeTemplateFilename('resources/views/users/index.blade.php')).toBe(true);
     });
 

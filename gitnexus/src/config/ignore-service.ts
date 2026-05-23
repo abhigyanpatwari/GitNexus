@@ -290,7 +290,9 @@ export const shouldIgnorePath = (filePath: string): boolean => {
 
   // Laravel compiles Blade templates into generated PHP cache files under
   // storage/framework/views.  Source templates live in resources/views and are
-  // handled separately; compiled cache should not become source-of-truth.
+  // handled separately; compiled cache should not become source-of-truth. Keep
+  // storage/framework/cache parseable unless a separate warning source is proven:
+  // Laravel route/config cache files are ordinary generated PHP, not Blade.
   if (/(^|\/)storage\/framework\/views(\/|$)/.test(normalizedPathLower)) {
     return true;
   }

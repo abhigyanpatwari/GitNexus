@@ -18,7 +18,7 @@ describe('Blade/template static route extraction', () => {
     expect(isTemplateRouteCandidate('resources\\views\\Orders\\INDEX.BLADE.PHP')).toBe(true);
   });
 
-  it('extracts safe static form, href, AJAX, and Blade helper URLs', () => {
+  it('extracts safe static form, href, AJAX, and Blade URL helper URLs', () => {
     const calls = extractTemplateStaticFetchCalls(
       'resources/views/orders/index.blade.php',
       `<form action="/orders" method="POST">
@@ -28,23 +28,25 @@ describe('Blade/template static route extraction', () => {
   </script>
   <a href="{{ url('/checkout') }}">Checkout</a>
   <a href="{!! url('/checkout/raw') !!}">Raw checkout</a>
-  <link href="{{ asset('/css/app.css') }}" rel="stylesheet">
 </form>`,
     );
 
     expect(new Set(calls.map((call) => call.fetchURL))).toEqual(
-      new Set([
-        '/orders',
-        '/orders/history',
-        '/api/orders',
-        '/checkout',
-        '/checkout/raw',
-        '/css/app.css',
-      ]),
+      new Set(['/orders', '/orders/history', '/api/orders', '/checkout', '/checkout/raw']),
     );
     expect(new Set(calls.map((call) => call.filePath))).toEqual(
       new Set(['resources/views/orders/index.blade.php']),
     );
+  });
+
+  it('does not treat Laravel asset helper URLs as route signals', () => {
+    const calls = extractTemplateStaticFetchCalls(
+      'resources/views/layouts/app.blade.php',
+      `<link href="{{ asset('/css/app.css') }}" rel="stylesheet">
+<script src="{!! asset('/js/app.js') !!}"></script>`,
+    );
+
+    expect(calls).toEqual([]);
   });
 
   it('does not turn dynamic Blade expressions or named routes into static URL signals', () => {
@@ -79,6 +81,7 @@ describe('Blade/template static route extraction', () => {
         path.join(repoPath, 'resources/views/orders/index.blade.php'),
         `<form action="/admin/orders" method="POST">
   <a href="{{ url('/admin/orders') }}">Orders</a>
+  <link href="{{ asset('/css/app.css') }}" rel="stylesheet">
 </form>`,
       );
 
@@ -96,6 +99,16 @@ describe('Blade/template static route extraction', () => {
             middleware: [],
             prefix: 'admin',
             lineNumber: 1,
+          },
+          {
+            filePath: 'routes/web.php',
+            httpMethod: 'get',
+            routePath: '/css/app.css',
+            controllerName: null,
+            methodName: null,
+            middleware: [],
+            prefix: null,
+            lineNumber: 2,
           },
         ],
         allDecoratorRoutes: [],
@@ -118,6 +131,9 @@ describe('Blade/template static route extraction', () => {
 
       const fetchEdges = graph.relationships.filter((rel) => rel.type === 'FETCHES');
       expect(fetchEdges).toHaveLength(1);
+      expect(fetchEdges.map((rel) => graph.getNode(rel.targetId)?.properties.name)).toEqual([
+        '/admin/orders',
+      ]);
       const target = graph.getNode(fetchEdges[0]!.targetId);
       expect(fetchEdges[0]!.sourceId).toBe(
         generateId('File', 'resources/views/orders/index.blade.php'),

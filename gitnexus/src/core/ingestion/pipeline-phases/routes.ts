@@ -57,8 +57,10 @@ export interface TemplateFetchCall {
 const TEMPLATE_URL_PATTERNS: readonly RegExp[] = [
   /\b(?:action|href)\s*=\s*["']([^"']+)["']/gi,
   /\burl\s*:\s*["']([^"']+)["'](?!\s*\+)/g,
-  /\{\{[\s\S]{0,200}?\b(?:url|asset)\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?\}\}/g,
-  /\{!![\s\S]{0,200}?\b(?:url|asset)\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
+  // Laravel asset() points at static assets, not application routes; keep it
+  // out of route matching so asset paths cannot collide with real route URLs.
+  /\{\{[\s\S]{0,200}?\burl\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?\}\}/g,
+  /\{!![\s\S]{0,200}?\burl\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
 ];
 
 export const isTemplateRouteCandidate = (filePath: string): boolean => {
