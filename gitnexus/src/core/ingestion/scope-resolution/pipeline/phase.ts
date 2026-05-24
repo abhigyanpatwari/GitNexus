@@ -37,6 +37,7 @@ import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
+import type { ResolutionOutcome } from '../resolution-outcome.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -48,6 +49,8 @@ export interface ScopeResolutionOutput {
   readonly importsEmitted: number;
   /** Reference (CALLS / ACCESSES / INHERITS / USES) edges emitted. */
   readonly referenceEdgesEmitted: number;
+  /** Additive stream of resolver diagnostics; does not affect graph edges. */
+  readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /** Per-language breakdown for telemetry / shadow-parity. */
   readonly perLanguage: ReadonlyMap<
     SupportedLanguages,
@@ -64,6 +67,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   filesProcessed: 0,
   importsEmitted: 0,
   referenceEdgesEmitted: 0,
+  resolutionOutcomes: [],
   perLanguage: new Map(),
 });
 
@@ -116,6 +120,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalImports = 0;
     let totalRefs = 0;
     let anyRan = false;
+    const resolutionOutcomes: ResolutionOutcome[] = [];
     const perLanguage = new Map<
       SupportedLanguages,
       {
@@ -156,6 +161,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           treeCache: scopeTreeCache,
           resolutionConfig,
           preExtractedParsedFiles: preExtractedByPath,
+          recordResolutionOutcome: (outcome) => {
+            resolutionOutcomes.push(outcome);
+          },
           onWarn: (msg) => {
             if (isSemanticModelValidatorEnabled()) {
               logger.warn(`[scope-resolution:${lang}] ${msg}`);
@@ -197,6 +205,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       filesProcessed: totalFiles,
       importsEmitted: totalImports,
       referenceEdgesEmitted: totalRefs,
+      resolutionOutcomes,
       perLanguage,
     };
   },

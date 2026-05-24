@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
-import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import {
+  getLanguageFromFilename,
+  getSyntaxLanguageFromFilename,
+  isBladeTemplateFilename,
+  SupportedLanguages,
+} from 'gitnexus-shared';
+import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { LanguageProvider } from '../../src/core/ingestion/language-provider.js';
@@ -87,6 +92,24 @@ describe('getLanguageFromFilename', () => {
     it.each(['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'])('detects %s files', (ext) => {
       expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.PHP);
     });
+
+    it('treats Laravel Blade templates as markup templates, not PHP code files', () => {
+      expect(getLanguageFromFilename('resources/views/users/index.blade.php')).toBeNull();
+      expect(getSyntaxLanguageFromFilename('resources/views/users/index.blade.php')).toBe('markup');
+      expect(isBladeTemplateFilename('resources/views/users/index.blade.php')).toBe(true);
+    });
+
+    it('recognises Blade templates with Windows paths and case variants', () => {
+      const file = 'resources\\views\\Users\\INDEX.BLADE.PHP';
+      expect(isBladeTemplateFilename(file)).toBe(true);
+      expect(getLanguageFromFilename(file)).toBeNull();
+      expect(getSyntaxLanguageFromFilename(file)).toBe('markup');
+    });
+
+    it('keeps .phtml classified as provider-backed PHP', () => {
+      expect(getLanguageFromFilename('templates/product/list.phtml')).toBe(SupportedLanguages.PHP);
+      expect(getSyntaxLanguageFromFilename('templates/product/list.phtml')).toBe('php');
+    });
   });
 
   describe('Swift', () => {
@@ -130,6 +153,21 @@ describe('getLanguageFromFilename', () => {
     it('returns null for empty string', () => {
       expect(getLanguageFromFilename('')).toBeNull();
     });
+  });
+});
+
+describe('getProviderForFile', () => {
+  it('does not route Blade templates to the PHP provider', () => {
+    expect(getProviderForFile('resources/views/users/index.blade.php')).toBeNull();
+  });
+
+  it('keeps PHP and PHTML files on the PHP provider', () => {
+    expect(getProviderForFile('app/Http/Controllers/UserController.php')?.id).toBe(
+      SupportedLanguages.PHP,
+    );
+    expect(getProviderForFile('vendor/mage-os/templates/product/list.phtml')?.id).toBe(
+      SupportedLanguages.PHP,
+    );
   });
 });
 
