@@ -1044,7 +1044,8 @@ service OrderService {
       });
 
       // executeParameterized (manifest symbol resolution) must fire before closeLbug
-      expect(executeCalledAt).toBeGreaterThan(0);
+      expect(executeCalledAt).toBe(6);
+      expect(closeLbugCalledAt).toBe(7);
       expect(executeCalledAt).toBeLessThan(closeLbugCalledAt);
 
       // The manifest cross-link must use the real UID from the DB, not synthetic
