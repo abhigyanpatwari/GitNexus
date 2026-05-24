@@ -109,6 +109,7 @@ function hasGitNexusServerOwnerWindows(dbPathAbs, myPid) {
       encoding: 'utf-8',
       timeout: 6000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
       env: { ...process.env, GITNEXUS_HOOK_RM_TARGET: dbPathAbs },
     },
   );
@@ -192,6 +193,7 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
     encoding: 'utf-8',
     timeout: 1000,
     stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
   });
   if (lsof.error) return lsof.error.code === 'ETIMEDOUT';
 
@@ -203,6 +205,7 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
       encoding: 'utf-8',
       timeout: 500,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     if (ps.error) {
       if (ps.error.code === 'ETIMEDOUT') return true;

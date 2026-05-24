@@ -525,6 +525,7 @@ const ensureReadOnlyConnectionUsable = async (
   dbPath: string,
   handle: LbugConnectionHandle,
 ): Promise<LbugConnectionHandle> => {
+  let shadowReplayErr: unknown;
   try {
     await queryAndDrain(handle.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
     return handle;
@@ -537,11 +538,25 @@ const ensureReadOnlyConnectionUsable = async (
       await closeLbugConnection(handle);
       throw err;
     }
+    shadowReplayErr = err;
   }
 
   await closeLbugConnection(handle);
 
-  const writable = await openLbugConnection(lbug, dbPath);
+  let writable: LbugConnectionHandle;
+  try {
+    writable = await openLbugConnection(lbug, dbPath);
+  } catch (openErr) {
+    const code = extractErrnoCode(openErr);
+    if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
+      throw new Error(
+        shadowSidecarRecoveryMessage(dbPath, shadowReplayErr) +
+          '\n  The workspace appears to be read-only — mount it read-write to perform shadow replay recovery,' +
+          ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
+      );
+    }
+    throw openErr;
+  }
   let missingShadowError: unknown;
   try {
     await queryAndDrain(writable.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
@@ -691,94 +706,112 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
     ensuredFTSIndexes.clear();
   }
 
-  // LadybugDB stores the database as a single file (not a directory).
-  // If the path already exists, it must be a valid LadybugDB database file.
-  // Remove stale empty directories or files from older versions.
-  try {
-    const stat = await fs.lstat(dbPath);
-    if (stat.isSymbolicLink()) {
-      // Never follow symlinks — just remove the link itself
-      await fs.unlink(dbPath);
-    } else if (stat.isDirectory()) {
-      // Verify path is within expected storage directory before deleting
-      const realPath = await fs.realpath(dbPath);
-      const parentDir = path.dirname(dbPath);
-      const realParent = await fs.realpath(parentDir);
-      if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
-        throw new Error(
-          `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
-        );
-      }
-      // Old-style directory database or empty leftover - remove it
-      await fs.rm(dbPath, { recursive: true, force: true });
-    }
-    // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch (err) {
-    if (!isMissingFileError(err)) {
-      throw err;
-    }
-    // Path doesn't exist, which is what LadybugDB wants for a new database
-  }
-
   // ---------------------------------------------------------------------------
-  // Cross-process critical section: acquire init lock, clean orphan sidecars,
-  // and open the database. The lock prevents a TOCTOU race where another
-  // process could create a fresh DB between our access() check and the
-  // unlink() of stale sidecars.
+  // Read-only fast path: skip all filesystem mutations (path cleanup, init
+  // lock, orphan sidecar removal, mkdir) so the open succeeds on read-only
+  // filesystems such as Docker `:ro` bind mounts. The init lock exists to
+  // prevent a TOCTOU race during DB *creation* — read-only opens never
+  // create databases and don't need the lock.
   // ---------------------------------------------------------------------------
-  const releaseInitLock = await acquireInitLock(dbPath);
-  try {
-    // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
-    // from an interrupted run can block fresh opens indefinitely.
-    try {
-      await fs.access(dbPath);
-    } catch (err) {
-      if (isMissingFileError(err)) {
-        // `.shadow` is documented by LadybugDB checkpointing and `.wal.checkpoint`
-        // was observed in the #1618 crash loop that motivated this recovery path.
-        const orphanSidecars = [`${dbPath}.shadow`, `${dbPath}.wal.checkpoint`];
-        for (const sidecar of orphanSidecars) {
-          try {
-            await fs.unlink(sidecar);
-            logger.warn(
-              `GitNexus: removed orphan sidecar ${path.basename(sidecar)} (no main DB file present)`,
-            );
-          } catch (err) {
-            if (isMissingFileError(err)) {
-              continue;
-            }
-            const code = extractErrnoCode(err);
-            logger.warn(
-              `GitNexus: failed to remove orphan sidecar ${path.basename(sidecar)} (${code ?? 'UNKNOWN'}) while main DB file is missing; LadybugDB open may still fail: ${summarizeError(err)}`,
-            );
-          }
-        }
-      } else {
-        const code = extractErrnoCode(err);
-        logger.warn(
-          `GitNexus: unable to verify main DB file before orphan sidecar cleanup (${code ?? 'UNKNOWN'}); skipping cleanup: ${summarizeError(err)}`,
-        );
-      }
-    }
-
-    // Ensure parent directory exists
-    const parentDir = path.dirname(dbPath);
-    await fs.mkdir(parentDir, { recursive: true });
+  if (readOnly) {
     await preflightLbugSidecars(dbPath, {
-      mode: readOnly ? 'read-only' : 'write',
+      mode: 'read-only',
       logger,
-      allowQuarantine: true,
+      allowQuarantine: false,
     });
 
-    const opened = readOnly
-      ? await openLbugConnection(lbug, dbPath, { readOnly: true })
-      : await openLbugConnection(lbug, dbPath);
-    const usable = readOnly ? await ensureReadOnlyConnectionUsable(dbPath, opened) : opened;
+    const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+    const usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
     db = usable.db;
     conn = usable.conn;
-    currentDbReadOnly = readOnly;
-  } finally {
-    await releaseInitLock();
+    currentDbReadOnly = true;
+  } else {
+    // LadybugDB stores the database as a single file (not a directory).
+    // If the path already exists, it must be a valid LadybugDB database file.
+    // Remove stale empty directories or files from older versions.
+    try {
+      const stat = await fs.lstat(dbPath);
+      if (stat.isSymbolicLink()) {
+        // Never follow symlinks — just remove the link itself
+        await fs.unlink(dbPath);
+      } else if (stat.isDirectory()) {
+        // Verify path is within expected storage directory before deleting
+        const realPath = await fs.realpath(dbPath);
+        const parentDir = path.dirname(dbPath);
+        const realParent = await fs.realpath(parentDir);
+        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+          throw new Error(
+            `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
+          );
+        }
+        // Old-style directory database or empty leftover - remove it
+        await fs.rm(dbPath, { recursive: true, force: true });
+      }
+      // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
+    } catch (err) {
+      if (!isMissingFileError(err)) {
+        throw err;
+      }
+      // Path doesn't exist, which is what LadybugDB wants for a new database
+    }
+
+    // -------------------------------------------------------------------------
+    // Cross-process critical section: acquire init lock, clean orphan sidecars,
+    // and open the database. The lock prevents a TOCTOU race where another
+    // process could create a fresh DB between our access() check and the
+    // unlink() of stale sidecars.
+    // -------------------------------------------------------------------------
+    const releaseInitLock = await acquireInitLock(dbPath);
+    try {
+      // Crash-recovery cleanup: if the main DB file is missing, stale sidecars
+      // from an interrupted run can block fresh opens indefinitely.
+      try {
+        await fs.access(dbPath);
+      } catch (err) {
+        if (isMissingFileError(err)) {
+          // `.shadow` is documented by LadybugDB checkpointing and `.wal.checkpoint`
+          // was observed in the #1618 crash loop that motivated this recovery path.
+          const orphanSidecars = [`${dbPath}.shadow`, `${dbPath}.wal.checkpoint`];
+          for (const sidecar of orphanSidecars) {
+            try {
+              await fs.unlink(sidecar);
+              logger.warn(
+                `GitNexus: removed orphan sidecar ${path.basename(sidecar)} (no main DB file present)`,
+              );
+            } catch (err) {
+              if (isMissingFileError(err)) {
+                continue;
+              }
+              const code = extractErrnoCode(err);
+              logger.warn(
+                `GitNexus: failed to remove orphan sidecar ${path.basename(sidecar)} (${code ?? 'UNKNOWN'}) while main DB file is missing; LadybugDB open may still fail: ${summarizeError(err)}`,
+              );
+            }
+          }
+        } else {
+          const code = extractErrnoCode(err);
+          logger.warn(
+            `GitNexus: unable to verify main DB file before orphan sidecar cleanup (${code ?? 'UNKNOWN'}); skipping cleanup: ${summarizeError(err)}`,
+          );
+        }
+      }
+
+      // Ensure parent directory exists
+      const parentDir = path.dirname(dbPath);
+      await fs.mkdir(parentDir, { recursive: true });
+      await preflightLbugSidecars(dbPath, {
+        mode: 'write',
+        logger,
+        allowQuarantine: true,
+      });
+
+      const opened = await openLbugConnection(lbug, dbPath);
+      db = opened.db;
+      conn = opened.conn;
+      currentDbReadOnly = false;
+    } finally {
+      await releaseInitLock();
+    }
   }
 
   if (!readOnly) {

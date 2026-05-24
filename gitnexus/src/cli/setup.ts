@@ -54,6 +54,7 @@ function resolveGitnexusBin(): string | null {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     const lines = output
       .split('\n')
@@ -532,6 +533,7 @@ async function setupCodex(result: SetupResult): Promise<void> {
     const entry = getMcpEntry();
     await execFileAsync('codex', ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args], {
       shell: process.platform === 'win32',
+      windowsHide: true,
     });
     result.configured.push('Codex');
     return;

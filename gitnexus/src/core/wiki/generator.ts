@@ -884,7 +884,12 @@ export class WikiGenerator {
 
   private getCurrentCommit(): string {
     try {
-      return execSync('git rev-parse HEAD', { cwd: this.repoPath }).toString().trim();
+      return execSync('git rev-parse HEAD', {
+        cwd: this.repoPath,
+        windowsHide: true,
+      })
+        .toString()
+        .trim();
     } catch {
       return '';
     }
@@ -899,6 +904,7 @@ export class WikiGenerator {
       execFileSync('git', ['merge-base', '--is-ancestor', fromCommit, toCommit], {
         cwd: this.repoPath,
         stdio: 'ignore',
+        windowsHide: true,
       });
       return true;
     } catch {
@@ -916,6 +922,7 @@ export class WikiGenerator {
     try {
       const output = execFileSync('git', ['diff', `${fromCommit}..${toCommit}`, '--name-only'], {
         cwd: this.repoPath,
+        windowsHide: true,
       })
         .toString()
         .trim();
