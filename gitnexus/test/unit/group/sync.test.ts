@@ -1013,19 +1013,20 @@ service OrderService {
 
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
 
-    let closeLbugCalledAt = Infinity;
-    let executeCalledAt = -1;
-    let callCounter = 0;
+    let closeLbugCalled = false;
+    let manifestResolvedWhilePoolOpen = false;
 
     const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
     const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockImplementation(async () => {
-      closeLbugCalledAt = Math.min(closeLbugCalledAt, ++callCounter);
+      closeLbugCalled = true;
     });
     const execSpy = vi
       .spyOn(poolAdapter, 'executeParameterized')
       .mockImplementation(
-        async (_poolId: string, _query: string, _params: Record<string, unknown>) => {
-          executeCalledAt = ++callCounter;
+        async (_poolId: string, query: string, _params: Record<string, unknown>) => {
+          if (query.includes('HANDLES_ROUTE')) {
+            manifestResolvedWhilePoolOpen = !closeLbugCalled;
+          }
           return [
             { uid: 'real-uid-checkout', name: 'CheckoutHandler', filePath: 'src/checkout.ts' },
           ];
@@ -1043,10 +1044,9 @@ service OrderService {
         skipWrite: true,
       });
 
-      // executeParameterized (manifest symbol resolution) must fire before closeLbug
-      expect(executeCalledAt).toBe(6);
-      expect(closeLbugCalledAt).toBe(7);
-      expect(executeCalledAt).toBeLessThan(closeLbugCalledAt);
+      // Manifest symbol resolution must run while pools are still open
+      expect(manifestResolvedWhilePoolOpen).toBe(true);
+      expect(closeLbugCalled).toBe(true);
 
       // The manifest cross-link must use the real UID from the DB, not synthetic
       const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
