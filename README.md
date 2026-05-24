@@ -118,12 +118,15 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | -------------------- | --- | ------ | --------------------------------------------------------------------------------------- | ------------ |
 | **Claude Code**      | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                          | **Full**     |
 | **Cursor**           | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
-| **Antigravity** (Google) | Yes | Yes | Yes (PreToolUse + PostToolUse, [JSON Hooks](https://antigravity.google/docs/features))   | **Full**     |
+| **Antigravity** (Google) | Yes | Yes | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
 | **Codex**            | Yes | Yes    | —                                                                                       | MCP + Skills |
 | **Windsurf**         | Yes | —      | —                                                                                       | MCP          |
 | **OpenCode**         | Yes | Yes    | —                                                                                       | MCP + Skills |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+
+<a id="fn-antigravity-hooks"></a>
+> ¹ **Antigravity hooks** follow the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/) (Antigravity 2.0 is the documented successor to Gemini CLI). Augmentation runs in `AfterTool` because `BeforeTool` has no context-injection channel in the Gemini contract — the agent sees graph context appended to the tool result via `hookSpecificOutput.additionalContext`. Stale-index hints land in the same channel after a successful `git commit/merge/rebase/cherry-pick/pull`. The schema may evolve if Antigravity-specific hook docs diverge from Gemini CLI's; the implementation will track those changes.
 
 ## Community Integrations
 
@@ -182,7 +185,7 @@ codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 }
 ```
 
-> `gitnexus setup` also writes JSON Hooks to `~/.gemini/config/hooks.json` and installs skills to `~/.gemini/antigravity/skills/`.
+> `gitnexus setup` also merges an `AfterTool` entry into `~/.gemini/settings.json` (under the canonical [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/)) and installs skills to `~/.gemini/antigravity/skills/`. Existing user hooks are preserved. The hook adapter's path is rewritten at install time, so run `gitnexus setup` rather than hand-editing.
 
 **OpenCode** (`~/.config/opencode/config.json`):
 

@@ -13,7 +13,6 @@ import { execFile, execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
-import { glob } from 'glob';
 import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
 import { getGlobalDir } from '../storage/repo-manager.js';
 
@@ -525,14 +524,21 @@ async function installAntigravitySkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Merge a top-level `<group>.<eventName>` array into ~/.gemini/config/hooks.json.
- * Antigravity's hooks.json layout is a flat object keyed by integration name,
- * not the Claude-style nested `{ hooks: { ... } }`, so we own a `gitnexus`
- * group rather than appending to a shared array.
+ * Merge hook entries into ~/.gemini/settings.json under the canonical
+ * `hooks.<EventName>` array layout documented at
+ * https://geminicli.com/docs/hooks/reference/.
+ *
+ * Polite-neighbor behavior:
+ *   - Existing user hooks under `hooks.BeforeTool` / `hooks.AfterTool` are
+ *     preserved (we append our entry rather than replacing the array).
+ *   - Idempotent: re-running skips events that already contain a gitnexus
+ *     command string (see `geminiHasGitnexusHook`).
+ *   - JSONC comments and indentation in settings.json are preserved via
+ *     jsonc-parser's `modify` / `applyEdits`.
+ * Returns false if the file is non-empty but unparseable.
  */
-async function mergeAntigravityHooksJsonc(
+async function mergeGeminiSettingsHooks(
   filePath: string,
-  group: string,
   entries: Array<{ eventName: string; value: unknown }>,
 ): Promise<boolean> {
   let raw: string;
@@ -544,13 +550,13 @@ async function mergeAntigravityHooksJsonc(
 
   if (raw.trim().length === 0) {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    const groupValue: Record<string, unknown[]> = {};
-    for (const { eventName, value } of entries) {
-      groupValue[eventName] = [value];
-    }
     const formattingOptions = { tabSize: 2, insertSpaces: true };
-    const edits = modify('{}', [group], groupValue, { formattingOptions });
-    await fs.writeFile(filePath, applyEdits('{}', edits), 'utf-8');
+    let current = '{}';
+    for (const { eventName, value } of entries) {
+      const edits = modify(current, ['hooks', eventName, 0], value, { formattingOptions });
+      current = applyEdits(current, edits);
+    }
+    await fs.writeFile(filePath, current, 'utf-8');
     return true;
   }
 
@@ -565,10 +571,10 @@ async function mergeAntigravityHooksJsonc(
 
   for (const { eventName, value } of entries) {
     const currentTree = parseTree(current, []);
-    const groupNode = currentTree?.children?.find(
-      (c: any) => c.type === 'property' && c.children?.[0]?.value === group,
+    const hooksNode = currentTree?.children?.find(
+      (c: any) => c.type === 'property' && c.children?.[0]?.value === 'hooks',
     );
-    const eventNode = groupNode?.children?.[1]?.children?.find(
+    const eventNode = hooksNode?.children?.[1]?.children?.find(
       (c: any) => c.type === 'property' && c.children?.[0]?.value === eventName,
     );
 
@@ -579,7 +585,7 @@ async function mergeAntigravityHooksJsonc(
       insertIndex = 0;
     }
 
-    const edits = modify(current, [group, eventName, insertIndex], value, { formattingOptions });
+    const edits = modify(current, ['hooks', eventName, insertIndex], value, { formattingOptions });
     current = applyEdits(current, edits);
   }
 
@@ -587,8 +593,8 @@ async function mergeAntigravityHooksJsonc(
   return true;
 }
 
-function antigravityHasGitnexusHook(parsed: any, eventName: string): boolean {
-  const entries = parsed?.gitnexus?.[eventName];
+function geminiHasGitnexusHook(parsed: any, eventName: string): boolean {
+  const entries = parsed?.hooks?.[eventName];
   if (!Array.isArray(entries)) return false;
   return entries.some(
     (h: any) =>
@@ -601,16 +607,23 @@ function antigravityHasGitnexusHook(parsed: any, eventName: string): boolean {
 }
 
 /**
- * Install the Antigravity hook adapter to ~/.gemini/config/hooks/gitnexus/
- * and register PreToolUse + PostToolUse entries in ~/.gemini/config/hooks.json.
+ * Install the Antigravity/Gemini-CLI hook adapter to
+ * ~/.gemini/config/hooks/gitnexus/ and register an AfterTool entry in
+ * ~/.gemini/settings.json under `hooks.AfterTool`.
+ *
+ * Why AfterTool (and not BeforeTool): the Gemini hooks reference
+ * (https://geminicli.com/docs/hooks/reference/) does not provide a context-
+ * injection channel for BeforeTool. AfterTool's
+ * `hookSpecificOutput.additionalContext` is the only documented way to
+ * append text the agent will read.
  */
 async function installAntigravityHooks(result: SetupResult): Promise<void> {
   const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
   if (!(await dirExists(antigravityDir))) return;
 
-  const configDir = path.join(os.homedir(), '.gemini', 'config');
-  const hooksJsonPath = path.join(configDir, 'hooks.json');
-  const destHooksDir = path.join(configDir, 'hooks', 'gitnexus');
+  const geminiDir = path.join(os.homedir(), '.gemini');
+  const settingsPath = path.join(geminiDir, 'settings.json');
+  const destHooksDir = path.join(geminiDir, 'config', 'hooks', 'gitnexus');
 
   // The antigravity adapter shares its lock/probe helpers with the claude
   // adapter — same DB, same concurrency rules — so we reuse those CJS files
@@ -639,8 +652,11 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       // Adapter not found in source — skip
     }
 
-    // Shared helpers (copied from hooks/claude/)
-    for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs']) {
+    // Shared helpers (copied from hooks/claude/). win-rm-list-json.ps1 is
+    // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
+    // server ownership probe silently fails open and the hook may contend
+    // with the MCP server on the LadybugDB.
+    for (const helper of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1']) {
       try {
         await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
       } catch {
@@ -654,7 +670,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
 
     const parsed = await (async () => {
       try {
-        const r = await fs.readFile(hooksJsonPath, 'utf-8');
+        const r = await fs.readFile(settingsPath, 'utf-8');
         return parseJsonc(r);
       } catch {
         return null;
@@ -663,21 +679,23 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
 
-    if (!antigravityHasGitnexusHook(parsed, 'PreToolUse')) {
+    if (!geminiHasGitnexusHook(parsed, 'AfterTool')) {
+      // Matcher follows the Gemini CLI built-in tool naming (snake_case).
+      // search_file_content / glob cover content + filename search; run_shell_command
+      // catches rg/grep invocations and the git commit family for stale-index hints.
       hookEntries.push({
-        eventName: 'PreToolUse',
+        eventName: 'AfterTool',
         value: {
-          matcher: 'grep_search|run_command',
-          hooks: [{ type: 'command', command: hookCmd, timeout: 10000 }],
-        },
-      });
-    }
-    if (!antigravityHasGitnexusHook(parsed, 'PostToolUse')) {
-      hookEntries.push({
-        eventName: 'PostToolUse',
-        value: {
-          matcher: 'run_command',
-          hooks: [{ type: 'command', command: hookCmd, timeout: 10000 }],
+          matcher: 'search_file_content|glob|run_shell_command',
+          hooks: [
+            {
+              type: 'command',
+              command: hookCmd,
+              name: 'gitnexus',
+              timeout: 10000,
+              description: 'GitNexus graph context + stale-index hints',
+            },
+          ],
         },
       });
     }
@@ -687,12 +705,12 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       return;
     }
 
-    const ok = await mergeAntigravityHooksJsonc(hooksJsonPath, 'gitnexus', hookEntries);
+    const ok = await mergeGeminiSettingsHooks(settingsPath, hookEntries);
     if (ok) {
-      result.configured.push('Antigravity hooks (PreToolUse, PostToolUse)');
+      result.configured.push('Antigravity hooks (AfterTool)');
     } else {
       result.errors.push(
-        'Antigravity hooks: hooks.json is corrupt — skipping to preserve existing content',
+        'Antigravity hooks: settings.json is corrupt — skipping to preserve existing content',
       );
     }
   } catch (err: any) {
@@ -795,15 +813,33 @@ async function setupCodex(result: SetupResult): Promise<void> {
  */
 async function installSkillsTo(targetDir: string): Promise<string[]> {
   const installed: string[] = [];
-  const skillsRoot = path.join(__dirname, '..', '..', 'skills');
+  // GITNEXUS_TEST_SKILLS_ROOT lets tests stage a fixture skills tree without
+  // depending on __dirname resolution under Vitest.
+  const skillsRoot =
+    process.env.GITNEXUS_TEST_SKILLS_ROOT ?? path.join(__dirname, '..', '..', 'skills');
 
+  // Was glob('*.md') + glob('*/SKILL.md'); replaced with fs.readdir because
+  // glob v13's cwd handling did not match the fixture path on Windows runners
+  // (absolute temp paths containing the 8.3 short-name `RUNNER~1` returned
+  // zero matches). fs.readdir has no such path quirks.
   let flatFiles: string[] = [];
   let dirSkillFiles: string[] = [];
   try {
-    [flatFiles, dirSkillFiles] = await Promise.all([
-      glob('*.md', { cwd: skillsRoot }),
-      glob('*/SKILL.md', { cwd: skillsRoot }),
-    ]);
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    flatFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => e.name);
+    const subdirSkillFiles = await Promise.all(
+      entries
+        .filter((e) => e.isDirectory())
+        .map(async (e) => {
+          try {
+            await fs.access(path.join(skillsRoot, e.name, 'SKILL.md'));
+            return path.join(e.name, 'SKILL.md');
+          } catch {
+            return null;
+          }
+        }),
+    );
+    dirSkillFiles = subdirSkillFiles.filter((p): p is string => p !== null);
   } catch {
     return [];
   }

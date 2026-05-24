@@ -4,13 +4,16 @@
  * Covers:
  * - setupAntigravity: detection of ~/.gemini/antigravity, MCP write, preserve
  *   existing keys, corrupt-file handling, skips when not installed.
- * - installAntigravityHooks: writes ~/.gemini/config/hooks.json with the
- *   `gitnexus` group containing PreToolUse + PostToolUse entries; copies
- *   the adapter and lock helpers to ~/.gemini/config/hooks/gitnexus/;
- *   idempotent across re-runs.
+ * - installAntigravityHooks: writes ~/.gemini/settings.json with an
+ *   AfterTool entry under the canonical Gemini CLI / Antigravity 2.0 layout
+ *   (https://geminicli.com/docs/hooks/reference/); copies the adapter and
+ *   lock helpers to ~/.gemini/config/hooks/gitnexus/; idempotent across
+ *   re-runs; preserves existing user hooks ("polite neighbor").
  * - installAntigravitySkills: lays out skills under ~/.gemini/antigravity/skills/.
- * - hook adapter: PostToolUse stdout is always `{}`; stale-index hint lands
- *   on stderr; ignores non-git run_command invocations.
+ * - hook adapter: AfterTool emits `{hookSpecificOutput.additionalContext}`
+ *   with graph context after search-like tools; emits a stale-index hint
+ *   after a successful `git commit/merge/rebase/cherry-pick/pull`; ignores
+ *   unrelated tools silently.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
@@ -137,9 +140,7 @@ describe('setupAntigravity', () => {
     await expect(
       fs.access(path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json')),
     ).rejects.toThrow();
-    await expect(
-      fs.access(path.join(tempHome, '.gemini', 'config', 'hooks.json')),
-    ).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.gemini', 'settings.json'))).rejects.toThrow();
   });
 
   it('preserves existing keys in mcp_config.json', async () => {
@@ -173,24 +174,18 @@ describe('setupAntigravity', () => {
     expect(raw).toBe(corrupt);
   });
 
-  it('writes hooks.json with PreToolUse and PostToolUse under gitnexus group', async () => {
+  it('writes ~/.gemini/settings.json with an AfterTool entry under hooks', async () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    const raw = await fs.readFile(path.join(tempHome, '.gemini', 'config', 'hooks.json'), 'utf-8');
+    const raw = await fs.readFile(path.join(tempHome, '.gemini', 'settings.json'), 'utf-8');
     const config = JSON.parse(raw);
 
-    expect(config.gitnexus.PreToolUse).toBeInstanceOf(Array);
-    expect(config.gitnexus.PreToolUse[0].matcher).toBe('grep_search|run_command');
-    expect(config.gitnexus.PreToolUse[0].hooks[0].command).toMatch(
-      /gitnexus-antigravity-hook\.cjs/,
-    );
-
-    expect(config.gitnexus.PostToolUse).toBeInstanceOf(Array);
-    expect(config.gitnexus.PostToolUse[0].matcher).toBe('run_command');
-    expect(config.gitnexus.PostToolUse[0].hooks[0].command).toMatch(
-      /gitnexus-antigravity-hook\.cjs/,
-    );
+    expect(config.hooks.AfterTool).toBeInstanceOf(Array);
+    expect(config.hooks.AfterTool[0].matcher).toBe('search_file_content|glob|run_shell_command');
+    expect(config.hooks.AfterTool[0].hooks[0].command).toMatch(/gitnexus-antigravity-hook\.cjs/);
+    expect(config.hooks.AfterTool[0].hooks[0].timeout).toBe(10000);
+    expect(config.hooks.AfterTool[0].hooks[0].name).toBe('gitnexus');
   });
 
   it('is idempotent — re-running setup does not duplicate hook entries', async () => {
@@ -198,11 +193,44 @@ describe('setupAntigravity', () => {
     await setupCommand();
     await setupCommand();
 
-    const raw = await fs.readFile(path.join(tempHome, '.gemini', 'config', 'hooks.json'), 'utf-8');
+    const raw = await fs.readFile(path.join(tempHome, '.gemini', 'settings.json'), 'utf-8');
     const config = JSON.parse(raw);
 
-    expect(config.gitnexus.PreToolUse).toHaveLength(1);
-    expect(config.gitnexus.PostToolUse).toHaveLength(1);
+    expect(config.hooks.AfterTool).toHaveLength(1);
+  });
+
+  it('preserves existing user hooks in settings.json (polite-neighbor merge)', async () => {
+    const settingsPath = path.join(tempHome, '.gemini', 'settings.json');
+    await fs.writeFile(
+      settingsPath,
+      JSON.stringify({
+        theme: 'dark',
+        hooks: {
+          AfterTool: [
+            {
+              matcher: 'write_file',
+              hooks: [{ type: 'command', command: 'echo "user-hook"', name: 'user-formatter' }],
+            },
+          ],
+        },
+      }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(settingsPath, 'utf-8');
+    const config = JSON.parse(raw);
+
+    // Unrelated keys preserved
+    expect(config.theme).toBe('dark');
+
+    // User's hook still present
+    expect(config.hooks.AfterTool).toHaveLength(2);
+    expect(config.hooks.AfterTool[0].hooks[0].command).toBe('echo "user-hook"');
+    // Our entry appended after, not replacing
+    expect(config.hooks.AfterTool[1].hooks[0].command).toMatch(/gitnexus-antigravity-hook\.cjs/);
   });
 
   it('copies adapter + lock helpers to ~/.gemini/config/hooks/gitnexus/', async () => {
@@ -215,20 +243,38 @@ describe('setupAntigravity', () => {
     ).resolves.toBeUndefined();
     await expect(fs.access(path.join(destDir, 'hook-lock.cjs'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(destDir, 'hook-db-lock-probe.cjs'))).resolves.toBeUndefined();
+    // Required by hook-db-lock-probe.cjs on Windows; without it the MCP
+    // server ownership probe silently fails open.
+    await expect(fs.access(path.join(destDir, 'win-rm-list-json.ps1'))).resolves.toBeUndefined();
   });
 
   it('installs skills under ~/.gemini/antigravity/skills/<name>/SKILL.md', async () => {
-    const { setupCommand } = await import('../../src/cli/setup.js');
-    await setupCommand();
+    // Stage a fixture skills tree so the assertion does not depend on
+    // installSkillsTo's __dirname resolution (which is brittle under
+    // Vitest on Windows). Production reads the real gitnexus/skills/ dir.
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    await fs.mkdir(fixtureSkillsRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
 
-    const skillsDir = path.join(tempHome, '.gemini', 'antigravity', 'skills');
-    const entries = await fs.readdir(skillsDir, { withFileTypes: true });
-    const skillDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-    expect(skillDirs.length).toBeGreaterThan(0);
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
 
-    // Spot-check that each installed skill has a SKILL.md
-    for (const name of skillDirs) {
-      await expect(fs.access(path.join(skillsDir, name, 'SKILL.md'))).resolves.toBeUndefined();
+      const skillsDir = path.join(tempHome, '.gemini', 'antigravity', 'skills');
+      const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+      const skillDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+
+      expect(skillDirs).toContain('gitnexus-test');
+      await expect(
+        fs.access(path.join(skillsDir, 'gitnexus-test', 'SKILL.md')),
+      ).resolves.toBeUndefined();
+    } finally {
+      delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
     }
   });
 });
@@ -285,36 +331,62 @@ describe('gitnexus-antigravity-hook adapter', () => {
     await fs.rm(workdir, { recursive: true, force: true });
   });
 
-  it('PostToolUse always writes `{}` to stdout (Antigravity contract)', async () => {
+  it('AfterTool with no .gitnexus/ produces no stdout', async () => {
     const { stdout } = runAdapter(
       adapter,
       {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'run_command',
-        tool_input: { command: 'ls -la' },
+        hook_event_name: 'AfterTool',
+        tool_name: 'search_file_content',
+        tool_input: { pattern: 'someSymbol' },
+        tool_response: { llmContent: '...' },
         cwd: workdir,
       },
       workdir,
     );
-    expect(stdout.trim()).toBe('{}');
+    expect(stdout.trim()).toBe('');
   });
 
-  it('PostToolUse ignores non-git commands silently', async () => {
+  it('AfterTool ignores unrelated tools silently', async () => {
     const { stdout, stderr } = runAdapter(
       adapter,
       {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'run_command',
-        tool_input: { command: 'npm test' },
+        hook_event_name: 'AfterTool',
+        tool_name: 'read_file',
+        tool_input: { path: 'README.md' },
+        tool_response: { llmContent: '...' },
         cwd: workdir,
       },
       workdir,
     );
-    expect(stdout.trim()).toBe('{}');
+    expect(stdout.trim()).toBe('');
     expect(stderr).not.toMatch(/\[GitNexus\]/);
   });
 
-  it('PostToolUse emits stale-index hint on stderr when .gitnexus is out of date', async () => {
+  it('AfterTool ignores non-git run_shell_command silently', async () => {
+    const gnDir = path.join(workdir, '.gitnexus');
+    await fs.mkdir(gnDir, { recursive: true });
+    await fs.writeFile(
+      path.join(gnDir, 'meta.json'),
+      JSON.stringify({ lastCommit: 'deadbeef', stats: {} }),
+      'utf-8',
+    );
+
+    const { stdout, stderr } = runAdapter(
+      adapter,
+      {
+        hook_event_name: 'AfterTool',
+        tool_name: 'run_shell_command',
+        tool_input: { command: 'npm test' },
+        tool_response: { llmContent: '...' },
+        cwd: workdir,
+      },
+      workdir,
+    );
+    expect(stdout.trim()).toBe('');
+    expect(stderr).not.toMatch(/\[GitNexus\]/);
+  });
+
+  it('AfterTool emits stale-index hint after a successful git commit', async () => {
     // Initialize a git repo and a stale .gitnexus/meta.json.
     spawnSync('git', ['init', '-q'], { cwd: workdir });
     spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workdir });
@@ -334,27 +406,40 @@ describe('gitnexus-antigravity-hook adapter', () => {
     const { stdout, stderr } = runAdapter(
       adapter,
       {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'run_command',
+        hook_event_name: 'AfterTool',
+        tool_name: 'run_shell_command',
         tool_input: { command: 'git commit -m "x"' },
-        tool_output: { exit_code: 0 },
+        tool_response: { llmContent: '[committed]' },
         cwd: workdir,
       },
       workdir,
     );
 
-    expect(stdout.trim()).toBe('{}');
+    // Hint surfaces both via the agent-visible channel and stderr (terminal).
     expect(stderr).toMatch(/\[GitNexus\] index is stale/);
     expect(stderr).toMatch(/gitnexus analyze/);
+
+    const parsed = JSON.parse(stdout);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('AfterTool');
+    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/index is stale/);
   });
 
-  it('PreToolUse with no .gitnexus/ produces no stdout', async () => {
+  it('AfterTool skips augment when the tool failed', async () => {
+    const gnDir = path.join(workdir, '.gitnexus');
+    await fs.mkdir(gnDir, { recursive: true });
+    await fs.writeFile(
+      path.join(gnDir, 'meta.json'),
+      JSON.stringify({ lastCommit: 'deadbeef', stats: {} }),
+      'utf-8',
+    );
+
     const { stdout } = runAdapter(
       adapter,
       {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'grep_search',
-        tool_input: { query: 'someSymbol' },
+        hook_event_name: 'AfterTool',
+        tool_name: 'search_file_content',
+        tool_input: { pattern: 'someSymbol' },
+        tool_response: { error: 'boom' },
         cwd: workdir,
       },
       workdir,
@@ -366,9 +451,10 @@ describe('gitnexus-antigravity-hook adapter', () => {
     const { status } = runAdapter(
       adapter,
       {
-        hook_event_name: 'PreToolUse',
+        hook_event_name: 'AfterTool',
         tool_name: 'unknown_tool',
         tool_input: {},
+        tool_response: { llmContent: '' },
         cwd: workdir,
       },
       workdir,

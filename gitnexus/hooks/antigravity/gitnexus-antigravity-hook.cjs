@@ -1,25 +1,23 @@
 #!/usr/bin/env node
 /**
- * GitNexus Antigravity Hook Adapter
+ * GitNexus Antigravity / Gemini CLI Hook Adapter
  *
- * Bridges Antigravity's JSON Hooks (https://antigravity.google/docs/features)
- * to the same graph-aware augmentation / staleness signals that the Claude
- * Code hook provides. Antigravity differs from Claude Code in two ways that
- * matter here:
+ * Bridges the Gemini CLI hooks contract (also used by Antigravity 2.0 — see
+ * https://geminicli.com/docs/hooks/reference/) to the same graph-aware
+ * augmentation / staleness signals the Claude Code hook provides.
  *
- *   1. Tool names are snake_case (`grep_search`, `run_command`) instead of
- *      Pascal-case (`Grep`, `Glob`, `Bash`).
- *   2. PostToolUse stdout MUST be `{}` (no `hookSpecificOutput.additionalContext`
- *      injection like Claude). Hints must go to stderr instead.
- *
- * PreToolUse — grep_search and run_command (rg/grep) → runs `gitnexus
- *              augment` and emits `{ decision: "allow", reason: "<graph
- *              context>" }` on stdout when context is found. The
- *              `decision: "allow"` form is the documented way to surface
- *              extra context to Antigravity without blocking the tool call.
- *
- * PostToolUse — run_command after `git commit/merge/rebase/cherry-pick/pull`
- *              → emits a stale-index hint to stderr; stdout is `{}`.
+ * Schema differences from the Claude adapter:
+ *   - Events are BeforeTool / AfterTool (not PreToolUse / PostToolUse).
+ *   - Tool names are snake_case (run_shell_command, search_file_content, glob).
+ *   - BeforeTool cannot inject context — decision: "allow" provides no channel
+ *     to surface text to the agent. Augmentation therefore runs in AfterTool,
+ *     where `hookSpecificOutput.additionalContext` is appended to the tool
+ *     result the agent sees.
+ *   - Stale-index hints after git commit/merge/rebase/cherry-pick/pull are
+ *     surfaced via the same `additionalContext` channel (so the agent reads
+ *     them, not only the user) and mirrored to stderr for terminal users.
+ *   - Stdin uses `tool_name`, `tool_input`, and `tool_response`
+ *     (with `llmContent`, `returnDisplay`, optional `error`).
  */
 
 const fs = require('fs');
@@ -98,18 +96,20 @@ function extractAugmentContext(stderr) {
 }
 
 /**
- * Extract a usable search token from an Antigravity tool invocation.
- * - grep_search: top-level `query` (occasionally `pattern`)
- * - run_command: parse rg/grep argv similar to Bash, returning the first
- *   non-flag positional ≥ 3 chars
+ * Extract a usable search token from a tool invocation.
+ *   - search_file_content / glob: top-level `pattern` (sometimes `query`).
+ *   - run_shell_command: parse rg/grep argv, returning the first non-flag
+ *     positional ≥ 3 chars.
+ * Returns null when the tool is not a recognized search or the pattern is
+ * too short.
  */
 function extractPattern(toolName, toolInput) {
-  if (toolName === 'grep_search') {
-    const q = toolInput.query || toolInput.pattern || '';
+  if (toolName === 'search_file_content' || toolName === 'glob' || toolName === 'grep_search') {
+    const q = toolInput.pattern || toolInput.query || '';
     return typeof q === 'string' && q.length >= 3 ? q : null;
   }
 
-  if (toolName === 'run_command') {
+  if (toolName === 'run_shell_command') {
     const cmd = toolInput.command || '';
     if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
 
@@ -187,82 +187,88 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
   });
 }
 
-function handlePreToolUse(input) {
+function writeAdditionalContext(text) {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'AfterTool',
+        additionalContext: text,
+      },
+    }),
+  );
+}
+
+function toolSucceeded(toolResponse) {
+  if (!toolResponse || typeof toolResponse !== 'object') return true;
+  if (toolResponse.error) return false;
+  if (typeof toolResponse.exit_code === 'number' && toolResponse.exit_code !== 0) return false;
+  return true;
+}
+
+/**
+ * Compute the additionalContext for a tool result, if any.
+ *   1. Graph augment for search-like tools (search_file_content, glob,
+ *      grep_search, run_shell_command-with-rg/grep) that completed
+ *      successfully.
+ *   2. Stale-index hint after a successful git commit/merge/rebase/cherry-
+ *      pick/pull.
+ * Returns null when nothing is to be appended.
+ */
+function buildAfterToolContext(input) {
   const cwd = input.cwd || process.cwd();
-  if (!path.isAbsolute(cwd)) return;
+  if (!path.isAbsolute(cwd)) return null;
   const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) return;
+  if (!gitNexusDir) return null;
 
   const toolName = input.tool_name || '';
-  if (toolName !== 'grep_search' && toolName !== 'run_command') return;
+  const toolInput = input.tool_input || {};
+  const toolResponse = input.tool_response || {};
+  const parts = [];
 
-  const pattern = extractPattern(toolName, input.tool_input || {});
-  if (!pattern || pattern.length < 3) return;
-
-  if (hasGitNexusServerOwner(gitNexusDir)) {
-    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
-    return;
+  if (toolSucceeded(toolResponse)) {
+    const pattern = extractPattern(toolName, toolInput);
+    if (pattern) {
+      const augmentText = runAugment(gitNexusDir, cwd, pattern);
+      if (augmentText) parts.push(augmentText);
+    }
   }
 
-  const release = acquireHookSlot(gitNexusDir);
-  if (!release) return;
+  if (toolName === 'run_shell_command' && toolSucceeded(toolResponse)) {
+    const command = toolInput.command || '';
+    if (/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) {
+      const hint = buildStaleIndexHint(gitNexusDir, cwd);
+      if (hint) {
+        process.stderr.write(`${hint}\n`);
+        parts.push(hint);
+      }
+    }
+  }
 
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+function runAugment(gitNexusDir, cwd, pattern) {
+  if (hasGitNexusServerOwner(gitNexusDir)) {
+    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+    return '';
+  }
+  const release = acquireHookSlot(gitNexusDir);
+  if (!release) return '';
   const cliPath = resolveCliPath();
-  let context = '';
   try {
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
-      context = extractAugmentContext(child.stderr || '');
+      return extractAugmentContext(child.stderr || '');
     }
   } catch {
     /* graceful failure */
   } finally {
     release();
   }
-
-  if (context) {
-    // Antigravity surfaces hook context to the agent via { decision: "allow",
-    // reason }. The decision is "allow" so the tool still runs — we're
-    // augmenting, not blocking.
-    process.stdout.write(JSON.stringify({ decision: 'allow', reason: context }));
-  }
+  return '';
 }
 
-function handlePostToolUse(input) {
-  // Antigravity contract: PostToolUse stdout MUST be `{}` (or empty). Hints
-  // go to stderr instead so they surface in the agent's tool feedback.
-  const writeEmpty = () => process.stdout.write('{}');
-
-  const toolName = input.tool_name || '';
-  if (toolName !== 'run_command') {
-    writeEmpty();
-    return;
-  }
-
-  const command = (input.tool_input || {}).command || '';
-  if (!/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) {
-    writeEmpty();
-    return;
-  }
-
-  const toolOutput = input.tool_output || {};
-  if (toolOutput.exit_code !== undefined && toolOutput.exit_code !== 0) {
-    writeEmpty();
-    return;
-  }
-
-  const cwd = input.cwd || process.cwd();
-  if (!path.isAbsolute(cwd)) {
-    writeEmpty();
-    return;
-  }
-
-  const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) {
-    writeEmpty();
-    return;
-  }
-
+function buildStaleIndexHint(gitNexusDir, cwd) {
   let currentHead = '';
   try {
     const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
@@ -273,14 +279,9 @@ function handlePostToolUse(input) {
     });
     currentHead = (headResult.stdout || '').trim();
   } catch {
-    writeEmpty();
-    return;
+    return '';
   }
-
-  if (!currentHead) {
-    writeEmpty();
-    return;
-  }
+  if (!currentHead) return '';
 
   let lastCommit = '';
   let hadEmbeddings = false;
@@ -292,22 +293,22 @@ function handlePostToolUse(input) {
     /* no meta — treat as stale */
   }
 
-  if (currentHead === lastCommit) {
-    writeEmpty();
-    return;
-  }
+  if (currentHead === lastCommit) return '';
 
   const analyzeCmd = `npx gitnexus analyze${hadEmbeddings ? ' --embeddings' : ''}`;
-  process.stderr.write(
+  return (
     `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-      `Run \`${analyzeCmd}\` to refresh the knowledge graph.\n`,
+    `Run \`${analyzeCmd}\` to refresh the knowledge graph.`
   );
-  writeEmpty();
+}
+
+function handleAfterTool(input) {
+  const context = buildAfterToolContext(input);
+  if (context) writeAdditionalContext(context);
 }
 
 const handlers = {
-  PreToolUse: handlePreToolUse,
-  PostToolUse: handlePostToolUse,
+  AfterTool: handleAfterTool,
 };
 
 function main() {
