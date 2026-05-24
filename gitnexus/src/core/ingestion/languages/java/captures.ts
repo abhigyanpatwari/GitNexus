@@ -202,6 +202,8 @@ export function emitJavaScopeCaptures(
 function resolveVarTypeBindings(matches: CaptureMatch[]): CaptureMatch[] {
   const returnTypes = new Map<string, string>();
   const varTypes = new Map<string, string>();
+  const ambiguousReturns = new Set<string>();
+  const ambiguousVars = new Set<string>();
 
   for (const m of matches) {
     if (
@@ -209,22 +211,47 @@ function resolveVarTypeBindings(matches: CaptureMatch[]): CaptureMatch[] {
       m['@type-binding.type'] !== undefined &&
       m['@type-binding.name'] !== undefined
     ) {
-      returnTypes.set(m['@type-binding.name'].text, m['@type-binding.type'].text);
+      const name = m['@type-binding.name'].text;
+      const type = m['@type-binding.type'].text;
+      const existing = returnTypes.get(name);
+      if (existing !== undefined && existing !== type) {
+        ambiguousReturns.add(name);
+        returnTypes.delete(name);
+      } else if (!ambiguousReturns.has(name)) {
+        returnTypes.set(name, type);
+      }
     }
     if (
       m['@type-binding.annotation'] !== undefined &&
       m['@type-binding.type'] !== undefined &&
       m['@type-binding.name'] !== undefined
     ) {
+      const name = m['@type-binding.name'].text;
       const t = m['@type-binding.type'].text;
-      if (t !== 'var') varTypes.set(m['@type-binding.name'].text, t);
+      if (t !== 'var') {
+        const existing = varTypes.get(name);
+        if (existing !== undefined && existing !== t) {
+          ambiguousVars.add(name);
+          varTypes.delete(name);
+        } else if (!ambiguousVars.has(name)) {
+          varTypes.set(name, t);
+        }
+      }
     }
     if (
       m['@type-binding.constructor'] !== undefined &&
       m['@type-binding.type'] !== undefined &&
       m['@type-binding.name'] !== undefined
     ) {
-      varTypes.set(m['@type-binding.name'].text, m['@type-binding.type'].text);
+      const name = m['@type-binding.name'].text;
+      const type = m['@type-binding.type'].text;
+      const existing = varTypes.get(name);
+      if (existing !== undefined && existing !== type) {
+        ambiguousVars.add(name);
+        varTypes.delete(name);
+      } else if (!ambiguousVars.has(name)) {
+        varTypes.set(name, type);
+      }
     }
   }
 

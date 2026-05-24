@@ -588,7 +588,7 @@ function pickConstructorOrClass(
   if (scopes !== undefined) {
     for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
       const childScope = scopes.scopeTree.getScope(childId);
-      if (childScope === undefined) continue;
+      if (childScope === undefined || childScope.kind === 'Class') continue;
       for (const def of childScope.ownedDefs) {
         if (def.type === 'Constructor') return def;
       }

@@ -62,8 +62,11 @@ export function populateJavaPackageSiblings(
 
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
+  const MAX_PACKAGE_FILES = 500;
+
   for (const bucket of buckets.values()) {
     if (bucket.moduleScopes.length < 2) continue;
+    if (bucket.moduleScopes.length > MAX_PACKAGE_FILES) continue;
 
     const classDefs: { def: BindingRef['def']; filePath: string }[] = [];
     for (const parsed of bucket.parsed) {
@@ -89,7 +92,7 @@ export function populateJavaPackageSiblings(
         .filter((d) => d.filePath !== filePath)
         .sort(
           (a, b) =>
-            sharedPrefixLength(b.filePath, filePath) - sharedPrefixLength(a.filePath, filePath),
+            sharedSegmentCount(b.filePath, filePath) - sharedSegmentCount(a.filePath, filePath),
         );
 
       for (const { def } of sorted) {
@@ -130,10 +133,10 @@ export function populateJavaPackageSiblings(
   }
 }
 
-function sharedPrefixLength(a: string, b: string): number {
-  const na = a.replace(/\\/g, '/');
-  const nb = b.replace(/\\/g, '/');
+function sharedSegmentCount(a: string, b: string): number {
+  const sa = a.replace(/\\/g, '/').split('/');
+  const sb = b.replace(/\\/g, '/').split('/');
   let i = 0;
-  while (i < na.length && i < nb.length && na[i] === nb[i]) i++;
+  while (i < sa.length && i < sb.length && sa[i] === sb[i]) i++;
   return i;
 }

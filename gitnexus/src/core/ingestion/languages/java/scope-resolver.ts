@@ -104,7 +104,7 @@ function populateJavaCrossFileReturnTypes(
 
         for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
           for (const [srcName, srcRef] of classScope.typeBindings) {
-            if (srcRef.source === 'self') continue;
+            if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
             if (importerModule.typeBindings.has(srcName)) continue;
             (importerModule.typeBindings as Map<string, TypeRef>).set(srcName, srcRef);
           }
