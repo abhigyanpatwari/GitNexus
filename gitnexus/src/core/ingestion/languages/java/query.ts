@@ -102,6 +102,47 @@ const JAVA_SCOPE_QUERY = `
   declarator: (variable_declarator
     name: (identifier) @type-binding.name)) @type-binding.annotation
 
+;; Type bindings — var u = svc.getUser(); (Java 10+ call-result inference)
+(local_variable_declaration
+  type: (type_identifier) @_var_type
+  (#eq? @_var_type "var")
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name
+    value: (method_invocation
+      name: (identifier) @type-binding.type))) @type-binding.call-result
+
+;; Type bindings — var alias = u; (Java 10+ alias inference)
+(local_variable_declaration
+  type: (type_identifier) @_var_type
+  (#eq? @_var_type "var")
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name
+    value: (identifier) @type-binding.type)) @type-binding.alias
+
+;; Type bindings — var addr = user.address; (Java 10+ field-access alias)
+(local_variable_declaration
+  type: (type_identifier) @_var_type
+  (#eq? @_var_type "var")
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name
+    value: (field_access
+      field: (identifier) @type-binding.type))) @type-binding.alias
+
+;; Type bindings — enhanced-for with var: for (var user : users)
+(enhanced_for_statement
+  (type_identifier) @_var_type
+  (#eq? @_var_type "var")
+  (identifier) @type-binding.name
+  (identifier) @type-binding.type) @type-binding.alias
+
+;; Enhanced-for with var + method iterable: for (var user : data.values())
+(enhanced_for_statement
+  (type_identifier) @_var_type
+  (#eq? @_var_type "var")
+  (identifier) @type-binding.name
+  (method_invocation
+    object: (identifier) @type-binding.type)) @type-binding.alias
+
 ;; Type bindings — var u = new User(); (Java 10+ local variable type inference)
 ;; tree-sitter-java parses \`var\` as a \`type_identifier\` with text "var".
 ;; The type-binding.constructor anchor fires when the rhs is an
@@ -143,6 +184,16 @@ const JAVA_SCOPE_QUERY = `
   type: (generic_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.annotation
 
+;; Type bindings — instanceof pattern (Java 16+): if (obj instanceof User user)
+(instanceof_expression
+  (type_identifier) @type-binding.type
+  (identifier) @type-binding.name) @type-binding.pattern
+
+;; Type bindings — switch case pattern (Java 21+): case User user ->
+(type_pattern
+  (type_identifier) @type-binding.type
+  (identifier) @type-binding.name) @type-binding.pattern
+
 ;; References — all method calls: foo() and obj.method()
 ;; tree-sitter-java's query engine drops negation-based \`!object\`
 ;; patterns when a positive \`object:\` pattern exists for the same
@@ -165,6 +216,30 @@ const JAVA_SCOPE_QUERY = `
 
 (object_creation_expression
   type: (scoped_type_identifier) @reference.call.constructor.qualified) @reference.call.constructor
+
+;; References — method references: User::getName, obj::method
+(method_reference
+  (identifier) @reference.receiver
+  (identifier) @reference.name) @reference.call.member
+
+;; References — this::method and super::method
+(method_reference
+  (this) @reference.receiver
+  (identifier) @reference.name) @reference.call.member
+
+(method_reference
+  (super) @reference.receiver
+  (identifier) @reference.name) @reference.call.member
+
+;; References — field_access::method: responseBuilder::buildResponse
+(method_reference
+  (field_access) @reference.receiver
+  (identifier) @reference.name) @reference.call.member
+
+;; References — constructor references: User::new
+(method_reference
+  (identifier) @reference.name
+  "new") @reference.call.constructor
 
 ;; References — field/property writes: obj.name = "x"
 (assignment_expression

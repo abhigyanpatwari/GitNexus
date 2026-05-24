@@ -77,6 +77,12 @@ export interface ScopeResolutionIndexes {
    *  are returned first and win duplicate `def.nodeId` metadata, with
    *  unique augmentations appended after. See I8. */
   readonly bindingAugmentations: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
+  /** Workspace-level FQN binding lookup. Populated by PHP namespace-
+   *  siblings Step 3b as a shared map instead of per-scope duplication.
+   *  Consulted by `lookupBindingsAt` as a third source after finalized
+   *  and per-scope augmented bindings. Keys are backslash-separated FQNs
+   *  (e.g. `App\Models\User`). */
+  readonly workspaceFqnBindings: ReadonlyMap<string, readonly BindingRef[]>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
   /** SCC condensation of the file-level import graph — callers that want

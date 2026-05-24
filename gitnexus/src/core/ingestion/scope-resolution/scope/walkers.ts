@@ -55,20 +55,34 @@ export function lookupBindingsAt(
 ): readonly BindingRef[] {
   const finalized = scopes.bindings.get(scopeId)?.get(name);
   const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
+  const workspace = scopes.workspaceFqnBindings?.get(name);
   const fLen = finalized?.length ?? 0;
   const aLen = augmented?.length ?? 0;
-  if (fLen === 0 && aLen === 0) return EMPTY_BINDINGS;
-  if (aLen === 0) return finalized!;
-  if (fLen === 0) return augmented!;
+  const wLen = workspace?.length ?? 0;
+  if (fLen === 0 && aLen === 0 && wLen === 0) return EMPTY_BINDINGS;
+  if (aLen === 0 && wLen === 0) return finalized!;
+  if (fLen === 0 && wLen === 0) return augmented!;
+  if (fLen === 0 && aLen === 0) return workspace!;
   const seen = new Set<string>();
   const out: BindingRef[] = [];
-  for (const r of finalized!) {
-    seen.add(r.def.nodeId);
-    out.push(r);
+  if (fLen > 0) {
+    for (const r of finalized!) {
+      seen.add(r.def.nodeId);
+      out.push(r);
+    }
   }
-  for (const r of augmented!) {
-    if (seen.has(r.def.nodeId)) continue;
-    out.push(r);
+  if (aLen > 0) {
+    for (const r of augmented!) {
+      if (seen.has(r.def.nodeId)) continue;
+      seen.add(r.def.nodeId);
+      out.push(r);
+    }
+  }
+  if (wLen > 0) {
+    for (const r of workspace!) {
+      if (seen.has(r.def.nodeId)) continue;
+      out.push(r);
+    }
   }
   return out;
 }

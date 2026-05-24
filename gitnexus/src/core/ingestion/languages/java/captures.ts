@@ -38,10 +38,6 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
   if (parent === null) return true;
 
   switch (parent.type) {
-    case 'method_invocation':
-      // Don't emit read.member when the field_access is the object of a method_invocation
-      // (the method call already handles this relationship)
-      return parent.childForFieldName('object')?.id !== memberNode.id;
     case 'assignment_expression':
       return parent.childForFieldName('left')?.id !== memberNode.id;
     default:
@@ -185,13 +181,137 @@ export function emitJavaScopeCaptures(
           callNode,
           JSON.stringify(argTypes),
         );
+
+        const argNames = args.map((a) => (a!.type === 'identifier' ? a!.text : ''));
+        if (argNames.some((n) => n !== '')) {
+          grouped['@reference.arg-names'] = syntheticCapture(
+            '@reference.arg-names',
+            callNode,
+            JSON.stringify(argNames),
+          );
+        }
       }
     }
 
     out.push(grouped);
   }
 
-  return out;
+  return resolveVarTypeBindings(out);
+}
+
+function resolveVarTypeBindings(matches: CaptureMatch[]): CaptureMatch[] {
+  const returnTypes = new Map<string, string>();
+  const varTypes = new Map<string, string>();
+  const ambiguousReturns = new Set<string>();
+  const ambiguousVars = new Set<string>();
+
+  for (const m of matches) {
+    if (
+      m['@type-binding.return'] !== undefined &&
+      m['@type-binding.type'] !== undefined &&
+      m['@type-binding.name'] !== undefined
+    ) {
+      const name = m['@type-binding.name'].text;
+      const type = m['@type-binding.type'].text;
+      const existing = returnTypes.get(name);
+      if (existing !== undefined && existing !== type) {
+        ambiguousReturns.add(name);
+        returnTypes.delete(name);
+      } else if (!ambiguousReturns.has(name)) {
+        returnTypes.set(name, type);
+      }
+    }
+    if (
+      m['@type-binding.annotation'] !== undefined &&
+      m['@type-binding.type'] !== undefined &&
+      m['@type-binding.name'] !== undefined
+    ) {
+      const name = m['@type-binding.name'].text;
+      const t = m['@type-binding.type'].text;
+      if (t !== 'var') {
+        const existing = varTypes.get(name);
+        if (existing !== undefined && existing !== t) {
+          ambiguousVars.add(name);
+          varTypes.delete(name);
+        } else if (!ambiguousVars.has(name)) {
+          varTypes.set(name, t);
+        }
+      }
+    }
+    if (
+      m['@type-binding.constructor'] !== undefined &&
+      m['@type-binding.type'] !== undefined &&
+      m['@type-binding.name'] !== undefined
+    ) {
+      const name = m['@type-binding.name'].text;
+      const type = m['@type-binding.type'].text;
+      const existing = varTypes.get(name);
+      if (existing !== undefined && existing !== type) {
+        ambiguousVars.add(name);
+        varTypes.delete(name);
+      } else if (!ambiguousVars.has(name)) {
+        varTypes.set(name, type);
+      }
+    }
+  }
+
+  const resolved: CaptureMatch[] = [];
+  for (const m of matches) {
+    if (m['@type-binding.call-result'] !== undefined && m['@type-binding.type'] !== undefined) {
+      const methodName = m['@type-binding.type'].text;
+      const resolvedType = returnTypes.get(methodName);
+      if (resolvedType !== undefined) {
+        const patched: Record<string, Capture> = { ...m };
+        patched['@type-binding.type'] = { ...m['@type-binding.type']!, text: resolvedType };
+        patched['@type-binding.annotation'] = m['@type-binding.call-result']!;
+        delete patched['@type-binding.call-result'];
+        resolved.push(patched);
+        continue;
+      }
+    }
+    if (m['@type-binding.alias'] !== undefined && m['@type-binding.type'] !== undefined) {
+      const sourceName = m['@type-binding.type'].text;
+      const resolvedType = varTypes.get(sourceName);
+      if (resolvedType !== undefined) {
+        const patched: Record<string, Capture> = { ...m };
+        patched['@type-binding.type'] = { ...m['@type-binding.type']!, text: resolvedType };
+        patched['@type-binding.annotation'] = m['@type-binding.alias']!;
+        delete patched['@type-binding.alias'];
+        resolved.push(patched);
+        continue;
+      }
+    }
+    if (m['@reference.arg-names'] !== undefined && m['@reference.parameter-types'] !== undefined) {
+      try {
+        const types: string[] = JSON.parse(m['@reference.parameter-types'].text);
+        const names: string[] = JSON.parse(m['@reference.arg-names'].text);
+        let patched = false;
+        for (let i = 0; i < types.length; i++) {
+          if (types[i] === '' && names[i] !== undefined && names[i] !== '') {
+            const rt = varTypes.get(names[i]!);
+            if (rt !== undefined) {
+              types[i] = rt;
+              patched = true;
+            }
+          }
+        }
+        if (patched) {
+          const patchedMatch: Record<string, Capture> = { ...m };
+          patchedMatch['@reference.parameter-types'] = {
+            ...m['@reference.parameter-types']!,
+            text: JSON.stringify(types),
+          };
+          delete patchedMatch['@reference.arg-names'];
+          resolved.push(patchedMatch);
+          continue;
+        }
+      } catch {
+        // pass through
+      }
+    }
+    resolved.push(m);
+  }
+  return resolved;
 }
 
 type SyntaxNode = ReturnType<ReturnType<typeof getJavaParser>['parse']>['rootNode'];

@@ -108,7 +108,7 @@ export function emitFreeCallFallback(
       if (site.callForm === 'constructor') {
         const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
         if (classDef !== undefined) {
-          fnDef = pickConstructorOrClass(classDef, workspaceIndex);
+          fnDef = pickConstructorOrClass(classDef, workspaceIndex, scopes);
         }
       }
       // Implicit-this overload narrowing: an unqualified call inside
@@ -578,11 +578,21 @@ function logicalCallableKey(def: SymbolDefinition): string {
 function pickConstructorOrClass(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex,
+  scopes?: ScopeResolutionIndexes,
 ): SymbolDefinition {
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
   if (classScope === undefined) return classDef;
   for (const def of classScope.ownedDefs) {
     if (def.type === 'Constructor') return def;
+  }
+  if (scopes !== undefined) {
+    for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
+      const childScope = scopes.scopeTree.getScope(childId);
+      if (childScope === undefined || childScope.kind === 'Class') continue;
+      for (const def of childScope.ownedDefs) {
+        if (def.type === 'Constructor') return def;
+      }
+    }
   }
   return classDef;
 }
