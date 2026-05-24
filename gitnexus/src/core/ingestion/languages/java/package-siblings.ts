@@ -13,6 +13,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { getJavaParser } from './query.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { logger } from '../../../logger.js';
 
 function extractPackageName(content: string, cachedTree?: unknown): string {
   const tree =
@@ -66,12 +67,20 @@ export function populateJavaPackageSiblings(
 
   for (const bucket of buckets.values()) {
     if (bucket.moduleScopes.length < 2) continue;
-    if (bucket.moduleScopes.length > MAX_PACKAGE_FILES) continue;
+    if (bucket.moduleScopes.length > MAX_PACKAGE_FILES) {
+      logger.warn(
+        `[java-package-siblings] skipping package with ${bucket.moduleScopes.length} files (cap=${MAX_PACKAGE_FILES}); same-package implicit visibility disabled for this package`,
+      );
+      continue;
+    }
 
     const classDefs: { def: BindingRef['def']; filePath: string }[] = [];
     for (const parsed of bucket.parsed) {
+      const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+      const moduleScopeId = moduleScope?.id;
       for (const scope of parsed.scopes) {
         if (scope.kind !== 'Class') continue;
+        if (scope.parent !== moduleScopeId) continue;
         for (const def of scope.ownedDefs) {
           if (isClassLike(def.type)) {
             classDefs.push({ def, filePath: parsed.filePath });

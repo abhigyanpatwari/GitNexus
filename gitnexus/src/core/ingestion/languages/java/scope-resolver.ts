@@ -87,6 +87,7 @@ function populateJavaCrossFileReturnTypes(
     const importerModule = moduleScopeByFile.get(parsed.filePath);
     if (importerModule === undefined) continue;
 
+    const ambiguousMirrors = new Set<string>();
     for (const name of namesAtScope(importerModule.id, indexes)) {
       const refs = lookupBindingsAt(importerModule.id, name, indexes);
       for (const ref of refs) {
@@ -96,17 +97,30 @@ function populateJavaCrossFileReturnTypes(
         const sourceModule = moduleScopeByFile.get(ref.def.filePath);
         if (sourceModule === undefined) continue;
 
+        const tb = importerModule.typeBindings as Map<string, TypeRef>;
         for (const [srcName, srcRef] of sourceModule.typeBindings) {
           if (srcRef.source !== 'return-annotation') continue;
-          if (importerModule.typeBindings.has(srcName)) continue;
-          (importerModule.typeBindings as Map<string, TypeRef>).set(srcName, srcRef);
+          if (ambiguousMirrors.has(srcName)) continue;
+          const existing = tb.get(srcName);
+          if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+            ambiguousMirrors.add(srcName);
+            tb.delete(srcName);
+            continue;
+          }
+          if (existing === undefined) tb.set(srcName, srcRef);
         }
 
         for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
           for (const [srcName, srcRef] of classScope.typeBindings) {
             if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
-            if (importerModule.typeBindings.has(srcName)) continue;
-            (importerModule.typeBindings as Map<string, TypeRef>).set(srcName, srcRef);
+            if (ambiguousMirrors.has(srcName)) continue;
+            const existing = tb.get(srcName);
+            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+              ambiguousMirrors.add(srcName);
+              tb.delete(srcName);
+              continue;
+            }
+            if (existing === undefined) tb.set(srcName, srcRef);
           }
         }
       }
