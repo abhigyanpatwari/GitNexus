@@ -98,6 +98,14 @@ export interface WikiRunResult {
 // ─── Constants ────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
+/**
+ * Per-field token cap for graph reference data (INTRA/OUTGOING/INCOMING/PROCESSES).
+ * Each field gets ~1/6 of the module budget. Without these caps, a large cluster
+ * with many cross-references can push the assembled prompt beyond the model's
+ * input or output context (e.g. gemini-2.5-flash 8K output cap), causing
+ * deterministic failures even after SOURCE_CODE itself is truncated.
+ */
+const DEFAULT_GRAPH_FIELD_BUDGET = 5_000;
 const WIKI_DIR = 'wiki';
 
 // ─── Generator Class ──────────────────────────────────────────────────
@@ -627,13 +635,26 @@ export class WikiGenerator {
       getProcessesForFiles(filePaths, 5),
     ]);
 
+    // Cap each graph-reference field independently. Even when SOURCE_CODE is
+    // already truncated to maxTokensPerModule, uncapped call edges + processes
+    // can re-explode the assembled prompt past the model's context (or hit the
+    // output max_completion_tokens cap for smaller models like gemini-2.5-flash).
+    const graphBudget = DEFAULT_GRAPH_FIELD_BUDGET;
     const prompt = fillTemplate(MODULE_USER_PROMPT, {
       MODULE_NAME: node.name,
       SOURCE_CODE: finalSourceCode,
-      INTRA_CALLS: formatCallEdges(intraCalls),
-      OUTGOING_CALLS: formatCallEdges(interCalls.outgoing),
-      INCOMING_CALLS: formatCallEdges(interCalls.incoming),
-      PROCESSES: formatProcesses(processes),
+      INTRA_CALLS: this.truncateText(formatCallEdges(intraCalls), graphBudget, 'intra-module calls'),
+      OUTGOING_CALLS: this.truncateText(
+        formatCallEdges(interCalls.outgoing),
+        graphBudget,
+        'outgoing calls',
+      ),
+      INCOMING_CALLS: this.truncateText(
+        formatCallEdges(interCalls.incoming),
+        graphBudget,
+        'incoming calls',
+      ),
+      PROCESSES: this.truncateText(formatProcesses(processes), graphBudget, 'execution flows'),
     });
 
     const response = await this.invokeLLM(
@@ -947,10 +968,18 @@ export class WikiGenerator {
   }
 
   private truncateSource(source: string, maxTokens: number): string {
+    return this.truncateText(source, maxTokens, 'source');
+  }
+
+  /**
+   * Generic token-budget truncation for prompt fields. Used by both SOURCE_CODE
+   * and graph reference data (INTRA/OUTGOING/INCOMING calls + PROCESSES).
+   */
+  private truncateText(text: string, maxTokens: number, label = 'data'): string {
     // Rough truncation: keep first maxTokens*4 chars and add notice
     const maxChars = maxTokens * 4;
-    if (source.length <= maxChars) return source;
-    return source.slice(0, maxChars) + '\n\n... (source truncated for context window limits)';
+    if (text.length <= maxChars) return text;
+    return text.slice(0, maxChars) + `\n\n... (${label} truncated for context window limits)`;
   }
 
   private async estimateModuleTokens(filePaths: string[]): Promise<number> {
