@@ -77,6 +77,7 @@ function findCanonicalRepoRoot(cwd) {
       timeout: 2000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) return null;
     const commonDir = (result.stdout || '').trim();
@@ -218,6 +219,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   }
   // On Windows, invoke npx.cmd directly (no shell needed)
@@ -226,6 +228,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
     timeout: timeout + 5000,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 
@@ -315,6 +318,7 @@ function handlePostToolUse(input) {
       timeout: 3000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     currentHead = (headResult.stdout || '').trim();
   } catch {

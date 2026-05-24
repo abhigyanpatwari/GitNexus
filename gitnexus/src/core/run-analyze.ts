@@ -332,6 +332,7 @@ export async function runFullAnalysis(
             {
               cwd: repoPath,
               stdio: ['ignore', 'pipe', 'ignore'],
+              windowsHide: true,
               encoding: 'utf8',
             },
           );
