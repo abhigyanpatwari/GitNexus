@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import { logger } from '../core/logger.js';
 import {
   findRepo,
@@ -14,21 +15,64 @@ import {
   assertSafeStoragePath,
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
+import {
+  cleanQuarantinedMissingShadowWals,
+  inspectLbugSidecars,
+  listQuarantinedMissingShadowWals,
+} from '../core/lbug/sidecar-recovery.js';
+import { t } from './i18n/index.js';
 
-export const cleanCommand = async (options?: { force?: boolean; all?: boolean }) => {
+export const cleanCommand = async (options?: {
+  force?: boolean;
+  all?: boolean;
+  lbugSidecars?: boolean;
+}) => {
+  if (options?.lbugSidecars) {
+    const cwd = process.cwd();
+    const repo = await findRepo(cwd);
+
+    if (!repo) {
+      console.log(t('clean.notFoundHere'));
+      return;
+    }
+
+    const lbugPath = path.join(repo.storagePath, 'lbug');
+    const state = await inspectLbugSidecars(lbugPath);
+    const quarantined = await listQuarantinedMissingShadowWals(lbugPath);
+
+    console.log(t('clean.lbugSidecars.state', { state: state.kind }));
+    if (quarantined.length === 0) {
+      console.log(t('clean.lbugSidecars.none'));
+      return;
+    }
+
+    if (!options.force) {
+      console.log(t('clean.lbugSidecars.preview', { count: quarantined.length }));
+      for (const file of quarantined) {
+        console.log(`  - ${file}`);
+      }
+      console.log(`\n${t('common.runForceConfirm')}`);
+      return;
+    }
+
+    const deleted = await cleanQuarantinedMissingShadowWals(lbugPath);
+    console.log(t('clean.lbugSidecars.deleted', { count: deleted.length }));
+    return;
+  }
+
   // --all flag: clean all indexed repos
   if (options?.all) {
     if (!options?.force) {
       const entries = await listRegisteredRepos();
       if (entries.length === 0) {
-        console.log('No indexed repositories found.');
+        console.log(t('common.notIndexed'));
         return;
       }
-      console.log(`This will delete GitNexus indexes for ${entries.length} repo(s):`);
+      console.log(t('clean.deleteAll', { count: entries.length }));
       for (const entry of entries) {
         console.log(`  - ${entry.name} (${entry.path})`);
       }
-      console.log('\nRun with --force to confirm deletion.');
+      console.log(`\n${t('common.runForceConfirm')}`);
       return;
     }
 
@@ -55,7 +99,7 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
       try {
         await fs.rm(entry.storagePath, { recursive: true, force: true });
         await unregisterRepo(entry.path);
-        console.log(`Deleted: ${entry.name} (${entry.storagePath})`);
+        console.log(t('clean.deletedRepo', { name: entry.name, storagePath: entry.storagePath }));
       } catch (err) {
         logger.error({ err }, `Failed to delete ${entry.name}:`);
       }
@@ -68,23 +112,23 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
   const repo = await findRepo(cwd);
 
   if (!repo) {
-    console.log('No indexed repository found in this directory.');
+    console.log(t('clean.notFoundHere'));
     return;
   }
 
   const repoName = repo.repoPath.split(/[/\\]/).pop() || repo.repoPath;
 
   if (!options?.force) {
-    console.log(`This will delete the GitNexus index for: ${repoName}`);
-    console.log(`   Path: ${repo.storagePath}`);
-    console.log('\nRun with --force to confirm deletion.');
+    console.log(t('clean.deleteCurrent', { repoName }));
+    console.log(`   ${t('common.path')}: ${repo.storagePath}`);
+    console.log(`\n${t('common.runForceConfirm')}`);
     return;
   }
 
   try {
     await fs.rm(repo.storagePath, { recursive: true, force: true });
     await unregisterRepo(repo.repoPath);
-    console.log(`Deleted: ${repo.storagePath}`);
+    console.log(t('common.deleted', { target: repo.storagePath }));
   } catch (err) {
     logger.error({ err }, 'Failed to delete:');
   }

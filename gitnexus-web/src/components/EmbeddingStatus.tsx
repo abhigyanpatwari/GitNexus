@@ -2,12 +2,14 @@ import { Brain, Loader2, Check, AlertCircle, Zap } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { useState } from 'react';
 import { WebGPUFallbackDialog } from './WebGPUFallbackDialog';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Embedding status indicator and trigger button
  * Shows in header when graph is loaded
  */
 export const EmbeddingStatus = () => {
+  const { t } = useTranslation('graph');
   const { embeddingStatus, embeddingProgress, startEmbeddings, graph, viewMode, serverBaseUrl } =
     useAppState();
 
@@ -63,10 +65,10 @@ export const EmbeddingStatus = () => {
           <button
             onClick={() => handleStartEmbeddings()}
             className="group flex items-center gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-sm text-text-secondary transition-all hover:border-accent/50 hover:bg-hover hover:text-text-primary"
-            title="Generate embeddings for semantic search"
+            title={t('embedding.generateTitle')}
           >
             <Brain className="h-4 w-4 text-node-interface transition-colors group-hover:text-accent" />
-            <span className="hidden sm:inline">Enable Semantic Search</span>
+            <span className="hidden sm:inline">{t('embedding.enable')}</span>
             <Zap className="h-3 w-3 text-text-muted" />
           </button>
         </div>
@@ -83,7 +85,7 @@ export const EmbeddingStatus = () => {
         <div className="flex items-center gap-2.5 rounded-lg border border-accent/30 bg-surface px-3 py-1.5 text-sm">
           <Loader2 className="h-4 w-4 animate-spin text-accent" />
           <div className="flex flex-col gap-0.5">
-            <span className="text-xs text-text-secondary">Loading AI model...</span>
+            <span className="text-xs text-text-secondary">{t('embedding.loadingModel')}</span>
             <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
               <div
                 className="h-full rounded-full bg-gradient-to-r from-accent to-node-interface transition-all duration-300"
@@ -108,7 +110,7 @@ export const EmbeddingStatus = () => {
         <Loader2 className="h-4 w-4 animate-spin text-node-function" />
         <div className="flex flex-col gap-0.5">
           <span className="text-xs text-text-secondary">
-            Embedding {processed}/{total} nodes
+            {t('embedding.embeddingNodes', { processed, total })}
           </span>
           <div className="h-1 w-24 overflow-hidden rounded-full bg-elevated">
             <div
@@ -126,7 +128,7 @@ export const EmbeddingStatus = () => {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-node-interface/30 bg-surface px-3 py-1.5 text-sm text-text-secondary">
         <Loader2 className="h-4 w-4 animate-spin text-node-interface" />
-        <span className="text-xs">Creating vector index...</span>
+        <span className="text-xs">{t('embedding.creatingIndex')}</span>
       </div>
     );
   }
@@ -136,10 +138,10 @@ export const EmbeddingStatus = () => {
     return (
       <div
         className="flex items-center gap-2 rounded-lg border border-node-function/30 bg-node-function/10 px-3 py-1.5 text-sm text-node-function"
-        title="Semantic search is ready! Use natural language in the AI chat."
+        title={t('embedding.readyTitle')}
       >
         <Check className="h-4 w-4" />
-        <span className="text-xs font-medium">Semantic Ready</span>
+        <span className="text-xs font-medium">{t('embedding.ready')}</span>
       </div>
     );
   }
@@ -151,10 +153,10 @@ export const EmbeddingStatus = () => {
         <button
           onClick={() => handleStartEmbeddings()}
           className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 transition-colors hover:bg-red-500/20"
-          title="Embedding failed. Click to retry."
+          title={t('embedding.errorTitle')}
         >
           <AlertCircle className="h-4 w-4" />
-          <span className="text-xs">Failed - Retry</span>
+          <span className="text-xs">{t('embedding.failedRetry')}</span>
         </button>
         {fallbackDialog}
       </>

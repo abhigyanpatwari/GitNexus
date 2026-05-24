@@ -9,6 +9,52 @@ const KOTLIN_SCOPE_QUERY = `
 (companion_object) @scope.class
 (function_declaration) @scope.function
 
+;; Companion-object marker (issue #1756 / U4). Side-channel capture that
+;; lets populateCompanionMembersOnEnclosingClass distinguish a companion
+;; Class scope from a regular Class scope without inspecting ownedDefs.
+;; Anonymous companions AND companions containing nested classes both
+;; look like regular classes through the old ownedDefs-based heuristic;
+;; the marker lifts the distinction up to the parser layer where it is
+;; unambiguous (any companion_object AST node is a companion, full
+;; stop). Consumed by markCompanionScope / isCompanionScope in
+;; captures.ts / companion-scopes.ts. The scope-extractor ignores the
+;; "companion" suffix (no ScopeKind mapping), so this rule contributes
+;; no Scope record of its own — the existing (companion_object)
+;; @scope.class rule still creates the Class scope.
+(companion_object) @scope.companion
+
+;; Smart-cast narrowing scopes (RFC #909 Ring 3, issue #1758).
+;; Each is-test arm body and each if-then body becomes its own Block
+;; scope so synthesized narrowed type-bindings (see captures.ts
+;; synthesizeKotlinSmartCastBindings) shadow the outer parameter
+;; binding for calls inside the body — without leaking across arms.
+(when_entry
+  (when_condition (type_test))
+  (control_structure_body) @scope.block)
+
+(if_expression
+  (check_expression)
+  (control_structure_body) @scope.block)
+
+;; Lambda body scope (issue #1757). Each lambda_literal becomes its
+;; own Block scope so synthesized lambda-parameter and implicit-'it'
+;; type-bindings (see captures.ts synthesizeKotlinLambdaBindings) stay
+;; inside the lambda — they must not leak to the enclosing function
+;; scope and must shadow same-named outer bindings (val it = "outer";
+;; users.forEach { it.save() } — inner 'it' is the lambda's, not the
+;; outer String).
+;;
+;; Lambdas appear inside call_suffix for trailing-lambda syntax
+;; (list.forEach { it.foo() }) and inside value_arguments for
+;; explicit-paren syntax (list.forEach({ x -> x.foo() })); both AST
+;; positions produce the same lambda_literal subtree, so a single
+;; capture suffices.
+;;
+;; Uses @scope.block (not @scope.function) to match the smart-cast
+;; precedent (#1758) — keeps narrowed/lambda bindings scope-local
+;; without the auto-hoist semantics of Function scopes.
+(lambda_literal) @scope.block
+
 ;; Declarations — types
 (class_declaration
   "interface"

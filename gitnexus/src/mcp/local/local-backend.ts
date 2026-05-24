@@ -2404,6 +2404,7 @@ export class LocalBackend {
         cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
+        windowsHide: true,
       });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
@@ -2680,6 +2681,7 @@ export class LocalBackend {
         timeout: 5000,
         // Avoid ENOBUFS on large repos: rg -l can list many files.
         maxBuffer: 256 * 1024 * 1024,
+        windowsHide: true,
       });
       const files = output
         .trim()

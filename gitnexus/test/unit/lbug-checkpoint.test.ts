@@ -53,9 +53,19 @@ describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
     expect(closeLbugBlock).not.toMatch(/db\.close\(\)/);
   });
 
-  it('flushWAL is the only place that issues conn.query(CHECKPOINT)', () => {
+  it('CHECKPOINT is issued only by flushWAL (best-effort) and tryFlushWAL (rethrows for the retry driver)', () => {
     const matches = adapterSource.match(/conn\.query\('CHECKPOINT'\)/g) ?? [];
-    expect(matches.length).toBe(1);
+    // Two authorized sites: `flushWAL` (swallows errors — used by
+    // `safeClose` and the server's best-effort flush) and `tryFlushWAL`
+    // (rethrows so the manual checkpoint driver in `wal-checkpoint-driver.ts`
+    // can apply its bounded retry). Any third occurrence is a regression —
+    // a CHECKPOINT outside these two helpers will be invisible to the
+    // retry/error policy.
+    expect(matches.length).toBe(2);
+  });
+
+  it('exports tryFlushWAL (CHECKPOINT-with-rethrow for the manual retry driver)', () => {
+    expect(adapterSource).toMatch(/export const tryFlushWAL/);
   });
 
   it('flushWAL drains and closes the CHECKPOINT result before returning', () => {
