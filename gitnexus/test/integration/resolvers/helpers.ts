@@ -218,6 +218,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // resolver-only correctness win (PR #1520 review follow-up plan U2 /
     // Claude review Finding 5); backporting to legacy is out of scope.
     'emits zero CALLS edges when process(int)/process(long) collide after normalization',
+    'records a structured suppression reason for normalization ambiguity',
     // The legacy DAG path resolves `using namespace a; using namespace b; foo()`
     // by walking the workspace registry by simple name and binding to
     // the first match — same shape as the integer-width collision, just
@@ -299,6 +300,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    'records a structured suppression reason for conversion-rank ties',
     // Pointer/nullptr/ellipsis conversion ranks (#1637) need C++ type-class
     // sidecars plus conversion-rank scoring. The legacy DAG has neither.
     'f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)',
@@ -328,6 +330,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // 'ambiguous' and suppresses edge emission. Scope-resolver-only
     // correctness win (#1564); backporting to legacy is out of scope.
     'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
+    'records a structured suppression reason for inline namespace ambiguity',
     // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
     // `foo(double)` in v2. The scope-resolver conservatively suppresses
     // because `resolveQualifiedReceiverMember` lacks call-site argument
@@ -348,6 +351,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // scope-resolver-only. The legacy DAG has no scope-aware ADL blocker
     // detection; it falls back to `pickUniqueGlobalCallable`. Scope-
     // resolver-only correctness wins; backporting is out of scope.
+    'record(e) emits zero CALLS when a variable named record exists in scope',
+    'records a structured suppression reason for ADL blocker lookup',
     'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
     'record(e) emits zero CALLS when a block-scope function declaration exists',
   ]),
@@ -427,6 +432,10 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
     }
   }
   return edges;
+}
+
+export function getResolutionOutcomes(result: PipelineResult) {
+  return result.resolutionOutcomes ?? [];
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {
