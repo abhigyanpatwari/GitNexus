@@ -1,0 +1,139 @@
+/**
+ * Java package-scope implicit visibility.
+ *
+ * Classes in the same Java package see each other without explicit
+ * `import` statements.  This hook groups files by `package` declaration,
+ * then injects cross-file class defs into each file's module-scope
+ * `bindingAugmentations` and mirrors type-bindings across same-package
+ * files — the Java equivalent of C#'s `populateNamespaceSiblings`.
+ */
+
+import type { BindingRef, ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import { getJavaParser } from './query.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+
+function extractPackageName(content: string, cachedTree?: unknown): string {
+  const tree =
+    (cachedTree as ReturnType<ReturnType<typeof getJavaParser>['parse']> | undefined) ??
+    parseSourceSafe(getJavaParser(), content);
+  for (const child of tree.rootNode.namedChildren) {
+    if (child.type === 'package_declaration') {
+      const scoped = child.namedChildren.find(
+        (c) => c.type === 'scoped_identifier' || c.type === 'identifier',
+      );
+      return scoped?.text ?? '';
+    }
+  }
+  return '';
+}
+
+interface PackageBucket {
+  readonly parsed: ParsedFile[];
+  readonly moduleScopes: { filePath: string; scope: ParsedFile['scopes'][number] }[];
+}
+
+export function populateJavaPackageSiblings(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+  ctx: {
+    readonly fileContents: ReadonlyMap<string, string>;
+    readonly treeCache?: { get(filePath: string): unknown };
+  },
+): void {
+  const buckets = new Map<string, PackageBucket>();
+
+  for (const parsed of parsedFiles) {
+    const content = ctx.fileContents.get(parsed.filePath);
+    if (content === undefined) continue;
+    const pkg = extractPackageName(content, ctx.treeCache?.get(parsed.filePath));
+    let bucket = buckets.get(pkg);
+    if (bucket === undefined) {
+      bucket = { parsed: [], moduleScopes: [] };
+      buckets.set(pkg, bucket);
+    }
+    bucket.parsed.push(parsed);
+    const ms = parsed.scopes.find((s) => s.kind === 'Module');
+    if (ms !== undefined) {
+      bucket.moduleScopes.push({ filePath: parsed.filePath, scope: ms });
+    }
+  }
+
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+
+  for (const bucket of buckets.values()) {
+    if (bucket.moduleScopes.length < 2) continue;
+
+    const classDefs: { def: BindingRef['def']; filePath: string }[] = [];
+    for (const parsed of bucket.parsed) {
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Class') continue;
+        for (const def of scope.ownedDefs) {
+          if (isClassLike(def.type)) {
+            classDefs.push({ def, filePath: parsed.filePath });
+            break;
+          }
+        }
+      }
+    }
+
+    for (const { filePath, scope } of bucket.moduleScopes) {
+      let scopeAug = augmentations.get(scope.id);
+      if (scopeAug === undefined) {
+        scopeAug = new Map();
+        augmentations.set(scope.id, scopeAug);
+      }
+
+      const sorted = classDefs
+        .filter((d) => d.filePath !== filePath)
+        .sort(
+          (a, b) =>
+            sharedPrefixLength(b.filePath, filePath) - sharedPrefixLength(a.filePath, filePath),
+        );
+
+      for (const { def } of sorted) {
+        const qn = def.qualifiedName;
+        if (qn === undefined) continue;
+        const simpleName = qn.includes('.') ? qn.slice(qn.lastIndexOf('.') + 1) : qn;
+        let list = scopeAug.get(simpleName);
+        if (list === undefined) {
+          list = [];
+          scopeAug.set(simpleName, list);
+        }
+        if (!list.some((r) => r.def.nodeId === def.nodeId)) {
+          list.push({ def, origin: 'namespace' });
+        }
+      }
+
+      const tb = scope.typeBindings as Map<string, TypeRef>;
+      for (const sibling of bucket.moduleScopes) {
+        if (sibling.filePath === filePath) continue;
+        for (const [name, ref] of sibling.scope.typeBindings) {
+          if (tb.has(name)) continue;
+          tb.set(name, ref);
+        }
+      }
+
+      for (const sibParsed of bucket.parsed) {
+        if (sibParsed.filePath === filePath) continue;
+        for (const sibScope of sibParsed.scopes) {
+          if (sibScope.kind !== 'Class') continue;
+          for (const [name, ref] of sibScope.typeBindings) {
+            if (ref.source === 'self') continue;
+            if (tb.has(name)) continue;
+            tb.set(name, ref);
+          }
+        }
+      }
+    }
+  }
+}
+
+function sharedPrefixLength(a: string, b: string): number {
+  const na = a.replace(/\\/g, '/');
+  const nb = b.replace(/\\/g, '/');
+  let i = 0;
+  while (i < na.length && i < nb.length && na[i] === nb[i]) i++;
+  return i;
+}
