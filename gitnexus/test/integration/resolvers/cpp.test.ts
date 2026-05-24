@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -1819,6 +1820,21 @@ describe('C++ ambiguous integer-width overloads', () => {
     // GitNexus does not have. The resolver must suppress entirely.
     expect(processCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for normalization ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'process' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.filePath.endsWith('caller.cpp') &&
+        o.reason === 'overload-ambiguous-normalization',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1892,6 +1908,20 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
     // dominates → ambiguous. Same pattern for h('a',2.5).
     // Contract: zero edges for ALL h() call sites combined (dedup).
     expect(hCalls.length).toBe(0);
+  });
+
+  it('records a structured suppression reason for conversion-rank ties', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'h' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'conversion-rank-tied',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
   });
 });
 
@@ -2722,6 +2752,20 @@ describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
     // `e` is audit::Event, audit::record should NOT be discovered.
     expect(recordCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for ADL blocker lookup', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'record' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'adl-ordinary-lookup-blocked',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
@@ -2983,6 +3027,20 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
     // ISO C++ leaves this ambiguous — both inline namespace children declare
     // the same name. The resolver must suppress rather than pick arbitrarily.
     expect(fooCalls.length).toBe(0);
+  });
+
+  it('records a structured suppression reason for inline namespace ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'foo' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.reason === 'inline-ns-ambiguous',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
   });
 });
 

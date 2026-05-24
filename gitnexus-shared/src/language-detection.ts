@@ -57,10 +57,20 @@ for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
 }
 
 /**
+ * Laravel Blade templates are source templates whose filename convention ends
+ * in `.blade.php`.  They may contain PHP snippets, but the full file is not a
+ * pure PHP translation unit and must not enter the generic PHP provider path.
+ */
+export const isBladeTemplateFilename = (filePath: string): boolean =>
+  filePath.replace(/\\/g, '/').toLowerCase().endsWith('.blade.php');
+
+/**
  * Map file extension to SupportedLanguage enum.
  * Returns null if the file extension is not recognized.
  */
 export const getLanguageFromFilename = (filename: string): SupportedLanguages | null => {
+  if (isBladeTemplateFilename(filename)) return null;
+
   // Fast path: check the extension map
   const lastDot = filename.lastIndexOf('.');
   if (lastDot >= 0) {
@@ -138,6 +148,8 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  * Returns 'text' for unrecognised files.
  */
 export const getSyntaxLanguageFromFilename = (filePath: string): string => {
+  if (isBladeTemplateFilename(filePath)) return 'markup';
+
   const lang = getLanguageFromFilename(filePath);
   if (lang) return SYNTAX_MAP[lang];
   const ext = filePath.split('.').pop()?.toLowerCase();
