@@ -88,25 +88,30 @@ export function populateJavaPackageSiblings(
         augmentations.set(scope.id, scopeAug);
       }
 
-      const sorted = classDefs
-        .filter((d) => d.filePath !== filePath)
-        .sort(
-          (a, b) =>
-            sharedSegmentCount(b.filePath, filePath) - sharedSegmentCount(a.filePath, filePath),
-        );
+      const candidates = classDefs.filter((d) => d.filePath !== filePath);
+      const proximityCache = new Map<string, number>();
+      for (const c of candidates) {
+        if (!proximityCache.has(c.filePath)) {
+          proximityCache.set(c.filePath, sharedSegmentCount(c.filePath, filePath));
+        }
+      }
+      const sorted = candidates.sort(
+        (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
+      );
 
+      const injectedIds = new Set<string>();
       for (const { def } of sorted) {
+        if (injectedIds.has(def.nodeId)) continue;
         const qn = def.qualifiedName;
         if (qn === undefined) continue;
+        injectedIds.add(def.nodeId);
         const simpleName = qn.includes('.') ? qn.slice(qn.lastIndexOf('.') + 1) : qn;
         let list = scopeAug.get(simpleName);
         if (list === undefined) {
           list = [];
           scopeAug.set(simpleName, list);
         }
-        if (!list.some((r) => r.def.nodeId === def.nodeId)) {
-          list.push({ def, origin: 'namespace' });
-        }
+        list.push({ def, origin: 'namespace' });
       }
 
       const tb = scope.typeBindings as Map<string, TypeRef>;

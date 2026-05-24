@@ -191,8 +191,9 @@ function closeInterfaces(
   const out: string[] = [];
   const seen = new Set<string>();
   const queue: string[] = [...seeds];
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
     if (seen.has(cur)) continue;
     seen.add(cur);
     out.push(cur);
