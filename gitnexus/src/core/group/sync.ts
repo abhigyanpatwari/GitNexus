@@ -91,22 +91,23 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   let dbExecutors: Map<string, CypherExecutor> | undefined;
   let registryEntries: RegistryEntry[] | undefined;
 
-  const eo = opts?.extractorOverride;
-  if (eo && eo.length === 0) {
-    autoContracts = await (eo as () => Promise<StoredContract[]>)();
-  } else {
-    registryEntries = await readRegistry();
-    const entries = registryEntries;
-    const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
-    const httpEx = new HttpRouteExtractor();
-    const grpcEx = new GrpcExtractor();
-    const thriftEx = new ThriftExtractor();
-    const topicEx = new TopicExtractor();
-    const includeEx = new IncludeExtractor();
-    dbExecutors = new Map<string, CypherExecutor>();
-    const openPoolIds: string[] = [];
+  const openPoolIds: string[] = [];
 
-    try {
+  try {
+    const eo = opts?.extractorOverride;
+    if (eo && eo.length === 0) {
+      autoContracts = await (eo as () => Promise<StoredContract[]>)();
+    } else {
+      registryEntries = await readRegistry();
+      const entries = registryEntries;
+      const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
+      const httpEx = new HttpRouteExtractor();
+      const grpcEx = new GrpcExtractor();
+      const thriftEx = new ThriftExtractor();
+      const topicEx = new TopicExtractor();
+      const includeEx = new IncludeExtractor();
+      dbExecutors = new Map<string, CypherExecutor>();
+
       for (const [groupPath, regName] of Object.entries(config.repos)) {
         const handle = await resolve(regName, groupPath);
         if (!handle) {
@@ -201,64 +202,58 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
         }
       }
-    } finally {
-      for (const id of [...new Set(openPoolIds)]) {
-        await closeLbug(id).catch(() => {});
+    }
+
+    // Workspace discovery and manifest extraction run inside this outer try
+    // block so dbExecutors closures resolve against live pools (issue #1802).
+    // The finally below closes pools after this completes (or throws).
+    let allLinks = [...config.links];
+
+    if (config.detect.workspace_deps) {
+      const repoPaths = new Map<string, string>();
+      if (!registryEntries) registryEntries = await readRegistry();
+      for (const [groupPath, regName] of Object.entries(config.repos)) {
+        const e = registryEntries.find((en) => en.name === regName);
+        if (e) repoPaths.set(groupPath, e.path);
       }
-    }
-  }
 
-  // Auto-discover workspace dependency contracts (Rust Cargo workspaces, etc.)
-  // and merge them with explicit manifest links. Discovered links use the same
-  // ManifestExtractor pipeline as hand-written links in group.yaml.
-  let allLinks = [...config.links];
-
-  if (config.detect.workspace_deps) {
-    const repoPaths = new Map<string, string>();
-    if (!registryEntries) registryEntries = await readRegistry();
-    for (const [groupPath, regName] of Object.entries(config.repos)) {
-      const e = registryEntries.find((en) => en.name === regName);
-      if (e) repoPaths.set(groupPath, e.path);
-    }
-
-    const wsResult = await discoverWorkspaceLinks(config.repos, repoPaths, dbExecutors);
-    if (wsResult.links.length > 0) {
-      allLinks = [...allLinks, ...wsResult.links];
-      if (opts?.verbose) {
-        for (const s of wsResult.stats) {
-          logger.info(
-            `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
-          );
+      const wsResult = await discoverWorkspaceLinks(config.repos, repoPaths, dbExecutors);
+      if (wsResult.links.length > 0) {
+        allLinks = [...allLinks, ...wsResult.links];
+        if (opts?.verbose) {
+          for (const s of wsResult.stats) {
+            logger.info(
+              `  workspace-deps: discovered ${s.linkCount} cross-${s.ecosystem.toLowerCase()} links from ${s.projectCount} ${s.ecosystem} projects`,
+            );
+          }
         }
       }
     }
-  }
 
-  // Process manifest links declared in group.yaml (plus any auto-discovered).
-  // ManifestExtractor is fully implemented but was never wired into this
-  // pipeline — config.links were parsed and validated but silently dropped.
-  // Placed after the DB try/finally: resolveSymbol falls back to synthetic
-  // UIDs when dbExecutors is undefined or a pool is closed, so cross-links
-  // are always generated regardless of whether real DB executors are available.
-  if (allLinks.length > 0) {
-    const knownRepos = new Set(Object.keys(config.repos));
-    for (const link of allLinks) {
-      const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
-      if (dangling.length > 0) {
-        logger.warn(
-          `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
+    if (allLinks.length > 0) {
+      const knownRepos = new Set(Object.keys(config.repos));
+      for (const link of allLinks) {
+        const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
+        if (dangling.length > 0) {
+          logger.warn(
+            `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
+          );
+        }
+      }
+
+      const manifestEx = new ManifestExtractor();
+      const manifestResult = await manifestEx.extractFromManifest(allLinks, dbExecutors);
+      autoContracts.push(...manifestResult.contracts);
+      manifestCrossLinks = manifestResult.crossLinks;
+      if (opts?.verbose) {
+        logger.info(
+          `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
         );
       }
     }
-
-    const manifestEx = new ManifestExtractor();
-    const manifestResult = await manifestEx.extractFromManifest(allLinks, dbExecutors);
-    autoContracts.push(...manifestResult.contracts);
-    manifestCrossLinks = manifestResult.crossLinks;
-    if (opts?.verbose) {
-      logger.info(
-        `  manifest: ${manifestCrossLinks.length} cross-links from ${allLinks.length} links (${config.links.length} declared + ${allLinks.length - config.links.length} discovered)`,
-      );
+  } finally {
+    for (const id of [...new Set(openPoolIds)]) {
+      await closeLbug(id).catch(() => {});
     }
   }
 

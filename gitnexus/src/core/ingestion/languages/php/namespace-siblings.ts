@@ -345,6 +345,9 @@ export function populatePhpNamespaceSiblings(
   //
   // Additionally, mirror from files that are imported via `use` (different
   // namespace) so return types from dependencies are chain-followable too.
+  const parsedByPath = new Map<string, (typeof parsedFiles)[number]>();
+  for (const p of parsedFiles) parsedByPath.set(p.filePath, p);
+
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
@@ -386,7 +389,7 @@ export function populatePhpNamespaceSiblings(
 
     // Mirror return-type bindings from accessible files.
     for (const srcFilePath of accessibleFiles) {
-      const srcParsed = parsedFiles.find((p) => p.filePath === srcFilePath);
+      const srcParsed = parsedByPath.get(srcFilePath);
       if (srcParsed === undefined) continue;
       const srcModuleScope = srcParsed.scopes.find((s) => s.kind === 'Module');
       if (srcModuleScope === undefined) continue;
