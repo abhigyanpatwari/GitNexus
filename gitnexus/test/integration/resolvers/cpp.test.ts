@@ -2759,7 +2759,7 @@ describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
         o.kind === 'suppressed' &&
         o.name === 'record' &&
         o.phase === 'free-call-fallback' &&
-        o.reason === 'adl-non-callable-block',
+        o.reason === 'adl-ordinary-lookup-blocked',
     );
 
     expect(outcomes.length).toBeGreaterThan(0);

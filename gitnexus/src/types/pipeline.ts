@@ -14,10 +14,10 @@ export interface PipelineResult {
   processResult?: ProcessDetectionResult;
   /**
    * Additive diagnostics for registry-primary resolution decisions that
-   * deliberately suppress edge emission. Empty/undefined means no diagnostic
-   * stream was requested or produced; graph edge semantics are unchanged.
+   * deliberately suppress edge emission. Empty means no diagnostic was
+   * produced; graph edge semantics are unchanged.
    */
-  resolutionOutcomes?: readonly ResolutionOutcome[];
+  resolutionOutcomes: readonly ResolutionOutcome[];
   /**
    * True if the parse phase spawned a worker pool for this run. False means
    * the sequential fallback handled every chunk. Primarily a test affordance

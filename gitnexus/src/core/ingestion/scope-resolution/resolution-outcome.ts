@@ -1,7 +1,7 @@
 import type { Range } from 'gitnexus-shared';
 
 export type ResolutionSuppressionReason =
-  | 'adl-non-callable-block'
+  | 'adl-ordinary-lookup-blocked'
   | 'conversion-rank-tied'
   | 'inline-ns-ambiguous'
   | 'overload-ambiguous'

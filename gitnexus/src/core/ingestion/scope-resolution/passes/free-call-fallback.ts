@@ -207,7 +207,7 @@ export function emitFreeCallFallback(
               filePath: parsed.filePath,
               name: site.name,
               range: site.atRange,
-              reason: 'adl-non-callable-block',
+              reason: 'adl-ordinary-lookup-blocked',
               candidates: ordinary,
             });
             handledSites.add(key);
@@ -381,7 +381,11 @@ function suppressionReasonForOverload(
   if (isOverloadAmbiguousAfterNormalization(candidates, arity)) {
     return 'overload-ambiguous-normalization';
   }
-  if (ctx.conversionRankFn !== undefined && ctx.argumentTypes !== undefined) {
+  if (
+    ctx.conversionRankFn !== undefined &&
+    ctx.argumentTypes !== undefined &&
+    ctx.argumentTypes.length > 0
+  ) {
     return 'conversion-rank-tied';
   }
   return 'overload-ambiguous';
