@@ -29,7 +29,7 @@
 
 **Building nervous system for agent context.**
 
-Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
+Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents stop missing critical code context.
 
 https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
@@ -38,6 +38,40 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 **TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
 ---
+
+## Why this repo is worth sharing on X
+
+- **Turns a codebase into a knowledge graph** so agents can reason over structure instead of guessing from local snippets.
+- **Targets a real failure mode in coding agents**: missed dependencies, broken call chains, and shallow repo understanding.
+- **Works across CLI, MCP, and Web UI workflows** instead of locking users into one interface.
+- **Makes smaller models more useful** by giving them architectural context they usually lack.
+
+## TL;DR
+
+> GitNexus indexes repositories into a graph of dependencies, call chains, clusters, and execution flow, then exposes that structure to humans and AI agents through CLI, MCP, and a web UI.
+
+## Suggested X / Twitter post
+
+```text
+Most coding agents still operate on partial context.
+GitNexus gives them an actual architectural map of the repo:
+
+- dependency graph
+- call chains
+- execution flow
+- MCP tools for editors/agents
+
+Interesting project if you care about making AI coding less blind:
+https://github.com/abhigyanpatwari/GitNexus
+```
+
+## Quick links
+
+- **Web UI**: https://gitnexus.vercel.app
+- **Discord**: https://discord.gg/MgJrmsqr62
+- **Architecture**: [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Runbook**: [RUNBOOK.md](RUNBOOK.md)
+- **Testing**: [TESTING.md](TESTING.md)
 
 ## Star History
 
