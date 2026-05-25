@@ -705,6 +705,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
+    callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
