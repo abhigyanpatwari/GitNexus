@@ -63,16 +63,23 @@ describe('knowledgeGraphToTreeGraphology', () => {
 
     const sigmaGraph = knowledgeGraphToTreeGraphology(graph);
 
-    // Find edges and check their attributes
-    sigmaGraph.forEachEdge((edge, attrs) => {
-      if (attrs.relationType === 'CONTAINS') {
-        expect(attrs.isHierarchyEdge).toBe(true);
-        expect(attrs.color).toBe(EDGE_INFO.CONTAINS.color);
-      } else if (attrs.relationType === 'CALLS') {
-        expect(attrs.isHierarchyEdge).toBe(false);
-        expect(attrs.color).toBe(EDGE_INFO.CALLS.color);
-      }
+    // MultiGraph allows multiple edges per pair — both CONTAINS and CALLS must survive.
+    expect(sigmaGraph.size).toBe(2);
+
+    const attrsByType = new Map<string, { isHierarchyEdge?: boolean; color: string }>();
+    sigmaGraph.forEachEdge((_edge, attrs) => {
+      attrsByType.set(attrs.relationType, attrs);
     });
+
+    const containsAttrs = attrsByType.get('CONTAINS');
+    expect(containsAttrs).toBeDefined();
+    expect(containsAttrs!.isHierarchyEdge).toBe(true);
+    expect(containsAttrs!.color).toBe(EDGE_INFO.CONTAINS.color);
+
+    const callsAttrs = attrsByType.get('CALLS');
+    expect(callsAttrs).toBeDefined();
+    expect(callsAttrs!.isHierarchyEdge).toBe(false);
+    expect(callsAttrs!.color).toBe(EDGE_INFO.CALLS.color);
   });
 
   it('should treat imports as cross-cutting edges in tree view', () => {
@@ -161,16 +168,25 @@ describe('knowledgeGraphToCirclesGraphology', () => {
       ],
     };
 
-    // Two relationships between the same pair — graph-adapter deduplicates via
-    // hasEdge check, so only the first inserted (CONTAINS, hierarchy) is kept.
+    // MultiGraph allows multiple edges per pair — both CONTAINS and CALLS must survive.
     const sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
 
+    expect(sigmaGraph.size).toBe(2);
+
+    const attrsByType = new Map<string, { isHierarchyEdge?: boolean; color: string }>();
     sigmaGraph.forEachEdge((_, attrs) => {
-      if (attrs.relationType === 'CONTAINS') {
-        expect(attrs.isHierarchyEdge).toBe(true);
-        expect(attrs.color).toBe(EDGE_INFO.CONTAINS.color);
-      }
+      attrsByType.set(attrs.relationType, attrs);
     });
+
+    const containsAttrs = attrsByType.get('CONTAINS');
+    expect(containsAttrs).toBeDefined();
+    expect(containsAttrs!.isHierarchyEdge).toBe(true);
+    expect(containsAttrs!.color).toBe(EDGE_INFO.CONTAINS.color);
+
+    const callsAttrs = attrsByType.get('CALLS');
+    expect(callsAttrs).toBeDefined();
+    expect(callsAttrs!.isHierarchyEdge).toBe(false);
+    expect(callsAttrs!.color).toBe(EDGE_INFO.CALLS.color);
   });
 
   it('should treat CALLS as a cross-cutting edge in circles view', () => {

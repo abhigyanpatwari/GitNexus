@@ -835,151 +835,156 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         treeAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
         const dtScale = 0.6;
 
-        // --- Accumulate forces ---
-        const forceX = new Map<string, number>();
-        const forceY = new Map<string, number>();
-
-        // 1. Layer gravity: soft pull toward each node's preferred Y within its band.
-        // Directional nodes (above-only or below-only connections) are pulled to the
-        // top or bottom of the band; bidirectional / same-layer-only nodes go to
-        // the center.  This leaves band edges free for nodes that actually use them.
-        graph.forEachNode((nodeId, attrs) => {
-          const layer = attrs.treeLayer ?? 0;
-          const centerY = layerCenterY.get(layer) ?? attrs.y;
-          const bias = nodeYBias.get(nodeId) ?? 0;
-          const targetY = centerY + bias * TREE_LAYER_BAND_HALF;
-          forceX.set(nodeId, 0);
-          forceY.set(nodeId, (targetY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
-        });
-
-        // 2. Edge springs — X and Y handled separately.
-        //
-        // Root cause of long horizontal edges: the previous 2D spring projected
-        // force through (dx/distance, dy/distance).  When the Y layer gap
-        // dominates (|dy|≈200, |dx|≈30) the X component shrinks to ~15% of
-        // the total spring force, too weak to overcome sibling repulsion.
-        //
-        // Fix: compute X spring from |dx| alone.  This keeps full strength
-        // regardless of how far apart two nodes are in Y.
-        graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
-          const dx = targetAttrs.x - sourceAttrs.x;
-          const rawWeight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
-
-          // 2a. Pure X spring.
-          // Hierarchy edges: zero rest length so children want to sit directly
-          // under their parent (repulsion then spreads siblings out naturally).
-          // Cross edges: 60 px rest so far-spanning CALLS/IMPORTS edges only
-          // pull when really stretched, and their weight is capped so they
-          // don't override the hierarchy structure.
-          const xRestLength = edgeAttrs.isHierarchyEdge ? 0 : 60;
-          const xStretch = Math.abs(dx) - xRestLength;
-          if (xStretch > 0) {
-            const xWeight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
-            const fxX = Math.sign(dx) * xStretch * xWeight * 0.3 * dtScale;
-            forceX.set(source, (forceX.get(source) ?? 0) + fxX);
-            forceX.set(target, (forceX.get(target) ?? 0) - fxX);
-          }
-
-          // 2b. Weak Y spring — layer gravity handles most vertical placement;
-          // this just prevents extreme cross-layer stretching.
-          const dy = targetAttrs.y - sourceAttrs.y;
-          const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-          const layerGap = Math.abs((targetAttrs.treeLayer ?? 0) - (sourceAttrs.treeLayer ?? 0));
-          const yRestLength =
-            (edgeAttrs.isHierarchyEdge ? 70 : 95) +
-            layerGap * (edgeAttrs.isHierarchyEdge ? 28 : 36);
-          const yStretch = distance - yRestLength;
-          if (yStretch > 0) {
-            const fy = (dy / distance) * yStretch * rawWeight * 0.008 * dtScale;
-            forceY.set(source, (forceY.get(source) ?? 0) + fy);
-            forceY.set(target, (forceY.get(target) ?? 0) - fy);
-          }
-        });
-
-        // 3. Node repulsion in 2D: all pairs within range (cross-layer included)
-        // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far.
-        //
-        // Skipped for large graphs (N > 5 000) — sorting + pair comparisons make each
-        // frame take hundreds of ms, leaving the canvas apparently frozen.  Layer gravity
-        // and edge springs provide sufficient structure without repulsion.
-        if (treeUseRepulsion) {
-          const nodeList = graph.nodes().map((id) => {
-            const a = graph.getNodeAttributes(id);
-            return { id, x: a.x, y: a.y, size: a.size ?? 6, layer: a.treeLayer ?? 0 };
-          });
-          nodeList.sort((a, b) => a.x - b.x);
-
-          for (let i = 0; i < nodeList.length; i++) {
-            const nodeA = nodeList[i];
-            for (let j = i + 1; j < nodeList.length; j++) {
-              const nodeB = nodeList[j];
-              const dx = nodeB.x - nodeA.x;
-              if (dx > TREE_REPULSION_RANGE) break; // X-sorted: all further pairs are also too far
-
-              const dy = nodeB.y - nodeA.y;
-              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-              if (dist > TREE_REPULSION_RANGE) continue;
-
-              const sameLayer = nodeA.layer === nodeB.layer;
-              // Same-layer repulsion reduced from 160→100 so the stronger X spring
-              // (0.30) can now overcome collective repulsion from 3-4 nearby nodes.
-              // Cross-layer kept low (28) so intermediate-layer nodes don't block
-              // parent-child X alignment.
-              const repulsionStrength = sameLayer ? 100 : 28;
-              const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
-              let repulsion =
-                (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
-              if (dist < minGap && sameLayer) {
-                repulsion += (minGap - dist) * 0.1 * dtScale;
-              }
-              if (repulsion <= 0) continue;
-
-              const fx = (dx / dist) * repulsion;
-              const fy = (dy / dist) * repulsion;
-
-              forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
-              forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
-              forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
-              forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
-            }
-          }
-        }
-
-        // 4. Spread force: equalize node density within each layer.
-        //
-        // For each layer, rank nodes by current X, compute where they would sit
-        // in a perfectly even distribution, then add a weak force toward that
-        // ideal position.  Nodes that are held by strong hierarchy springs
-        // (force ≈ 1–2 units) resist and stay clustered; nodes without a
-        // strong spring anchor (isolated or same-layer-only) drift to fill gaps.
-        // Net effect: dense centre spreads outward, sparse edges fill in.
-        // Skipped for large graphs — per-layer sort is O(N log N) per frame.
-        if (treeUseSpread) {
-          const spreadByLayer = new Map<number, Array<{ id: string; x: number }>>();
-          graph.forEachNode((nodeId, attrs) => {
-            const layer = attrs.treeLayer ?? 0;
-            if (!spreadByLayer.has(layer)) spreadByLayer.set(layer, []);
-            spreadByLayer.get(layer)!.push({ id: nodeId, x: attrs.x });
-          });
-          for (const [, layerNodes] of spreadByLayer) {
-            if (layerNodes.length < 2) continue;
-            layerNodes.sort((a, b) => a.x - b.x);
-            const count = layerNodes.length;
-            const spacing = (TREE_MAX_X * 2) / count;
-            for (let i = 0; i < count; i++) {
-              const { id, x } = layerNodes[i];
-              const idealX = -TREE_MAX_X + (i + 0.5) * spacing;
-              forceX.set(id, (forceX.get(id) ?? 0) + (idealX - x) * TREE_SPREAD_STRENGTH * dtScale);
-            }
-          }
-        }
-
         // --- Apply forces: velocity integration with boundary resistance ---
+        // Forces are recomputed from current node positions each sub-step so that
+        // slow frames (simulationSteps > 1) integrate correctly and don't double-apply.
         let totalVelocity = 0;
         let maxVelocity = 0;
         let activeNodes = 0;
 
         for (let simulationStep = 0; simulationStep < simulationSteps; simulationStep++) {
+          // --- Accumulate forces (recomputed each sub-step from current positions) ---
+          const forceX = new Map<string, number>();
+          const forceY = new Map<string, number>();
+
+          // 1. Layer gravity: soft pull toward each node's preferred Y within its band.
+          // Directional nodes (above-only or below-only connections) are pulled to the
+          // top or bottom of the band; bidirectional / same-layer-only nodes go to
+          // the center.  This leaves band edges free for nodes that actually use them.
+          graph.forEachNode((nodeId, attrs) => {
+            const layer = attrs.treeLayer ?? 0;
+            const centerY = layerCenterY.get(layer) ?? attrs.y;
+            const bias = nodeYBias.get(nodeId) ?? 0;
+            const targetY = centerY + bias * TREE_LAYER_BAND_HALF;
+            forceX.set(nodeId, 0);
+            forceY.set(nodeId, (targetY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
+          });
+
+          // 2. Edge springs — X and Y handled separately.
+          //
+          // Root cause of long horizontal edges: the previous 2D spring projected
+          // force through (dx/distance, dy/distance).  When the Y layer gap
+          // dominates (|dy|≈200, |dx|≈30) the X component shrinks to ~15% of
+          // the total spring force, too weak to overcome sibling repulsion.
+          //
+          // Fix: compute X spring from |dx| alone.  This keeps full strength
+          // regardless of how far apart two nodes are in Y.
+          graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
+            const dx = targetAttrs.x - sourceAttrs.x;
+            const rawWeight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
+
+            // 2a. Pure X spring.
+            // Hierarchy edges: zero rest length so children want to sit directly
+            // under their parent (repulsion then spreads siblings out naturally).
+            // Cross edges: 60 px rest so far-spanning CALLS/IMPORTS edges only
+            // pull when really stretched, and their weight is capped so they
+            // don't override the hierarchy structure.
+            const xRestLength = edgeAttrs.isHierarchyEdge ? 0 : 60;
+            const xStretch = Math.abs(dx) - xRestLength;
+            if (xStretch > 0) {
+              const xWeight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
+              const fxX = Math.sign(dx) * xStretch * xWeight * 0.3 * dtScale;
+              forceX.set(source, (forceX.get(source) ?? 0) + fxX);
+              forceX.set(target, (forceX.get(target) ?? 0) - fxX);
+            }
+
+            // 2b. Weak Y spring — layer gravity handles most vertical placement;
+            // this just prevents extreme cross-layer stretching.
+            const dy = targetAttrs.y - sourceAttrs.y;
+            const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+            const layerGap = Math.abs((targetAttrs.treeLayer ?? 0) - (sourceAttrs.treeLayer ?? 0));
+            const yRestLength =
+              (edgeAttrs.isHierarchyEdge ? 70 : 95) +
+              layerGap * (edgeAttrs.isHierarchyEdge ? 28 : 36);
+            const yStretch = distance - yRestLength;
+            if (yStretch > 0) {
+              const fy = (dy / distance) * yStretch * rawWeight * 0.008 * dtScale;
+              forceY.set(source, (forceY.get(source) ?? 0) + fy);
+              forceY.set(target, (forceY.get(target) ?? 0) - fy);
+            }
+          });
+
+          // 3. Node repulsion in 2D: all pairs within range (cross-layer included)
+          // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far.
+          //
+          // Skipped for large graphs (N > 5 000) — sorting + pair comparisons make each
+          // frame take hundreds of ms, leaving the canvas apparently frozen.  Layer gravity
+          // and edge springs provide sufficient structure without repulsion.
+          if (treeUseRepulsion) {
+            const nodeList = graph.nodes().map((id) => {
+              const a = graph.getNodeAttributes(id);
+              return { id, x: a.x, y: a.y, size: a.size ?? 6, layer: a.treeLayer ?? 0 };
+            });
+            nodeList.sort((a, b) => a.x - b.x);
+
+            for (let i = 0; i < nodeList.length; i++) {
+              const nodeA = nodeList[i];
+              for (let j = i + 1; j < nodeList.length; j++) {
+                const nodeB = nodeList[j];
+                const dx = nodeB.x - nodeA.x;
+                if (dx > TREE_REPULSION_RANGE) break; // X-sorted: all further pairs are also too far
+
+                const dy = nodeB.y - nodeA.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                if (dist > TREE_REPULSION_RANGE) continue;
+
+                const sameLayer = nodeA.layer === nodeB.layer;
+                // Same-layer repulsion reduced from 160→100 so the stronger X spring
+                // (0.30) can now overcome collective repulsion from 3-4 nearby nodes.
+                // Cross-layer kept low (28) so intermediate-layer nodes don't block
+                // parent-child X alignment.
+                const repulsionStrength = sameLayer ? 100 : 28;
+                const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+                let repulsion =
+                  (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
+                if (dist < minGap && sameLayer) {
+                  repulsion += (minGap - dist) * 0.1 * dtScale;
+                }
+                if (repulsion <= 0) continue;
+
+                const fx = (dx / dist) * repulsion;
+                const fy = (dy / dist) * repulsion;
+
+                forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+                forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+                forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+                forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+              }
+            }
+          }
+
+          // 4. Spread force: equalize node density within each layer.
+          //
+          // For each layer, rank nodes by current X, compute where they would sit
+          // in a perfectly even distribution, then add a weak force toward that
+          // ideal position.  Nodes that are held by strong hierarchy springs
+          // (force ≈ 1–2 units) resist and stay clustered; nodes without a
+          // strong spring anchor (isolated or same-layer-only) drift to fill gaps.
+          // Net effect: dense centre spreads outward, sparse edges fill in.
+          // Skipped for large graphs — per-layer sort is O(N log N) per frame.
+          if (treeUseSpread) {
+            const spreadByLayer = new Map<number, Array<{ id: string; x: number }>>();
+            graph.forEachNode((nodeId, attrs) => {
+              const layer = attrs.treeLayer ?? 0;
+              if (!spreadByLayer.has(layer)) spreadByLayer.set(layer, []);
+              spreadByLayer.get(layer)!.push({ id: nodeId, x: attrs.x });
+            });
+            for (const [, layerNodes] of spreadByLayer) {
+              if (layerNodes.length < 2) continue;
+              layerNodes.sort((a, b) => a.x - b.x);
+              const count = layerNodes.length;
+              const spacing = (TREE_MAX_X * 2) / count;
+              for (let i = 0; i < count; i++) {
+                const { id, x } = layerNodes[i];
+                const idealX = -TREE_MAX_X + (i + 0.5) * spacing;
+                forceX.set(
+                  id,
+                  (forceX.get(id) ?? 0) + (idealX - x) * TREE_SPREAD_STRENGTH * dtScale,
+                );
+              }
+            }
+          }
+
           totalVelocity = 0;
           maxVelocity = 0;
           activeNodes = 0;

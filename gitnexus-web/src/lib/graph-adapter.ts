@@ -1,4 +1,4 @@
-import Graph from 'graphology';
+import Graph, { MultiGraph } from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
 import { EDGE_INFO, NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
@@ -95,7 +95,7 @@ export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
   communityMemberships?: Map<string, number>,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
-  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const graph = new MultiGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
 
   // Build parent-child map from hierarchy relationships
@@ -314,9 +314,13 @@ export const knowledgeGraphToGraphology = (
   // and cross-edges (CALLS, IMPORTS, EXTENDS) are drawn on top.
   const BACKGROUND_EDGE_TYPES = new Set(['CONTAINS', 'DEFINES', 'HAS_METHOD', 'HAS_PROPERTY']);
 
+  // Dedup by relationship ID, not by node-pair — a node pair can have both a
+  // CONTAINS edge and a CALLS edge (MultiGraph allows multiple edges per pair).
+  const addedRelIds = new Set<string>();
   const addEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
     if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
-    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    if (addedRelIds.has(rel.id)) return;
+    addedRelIds.add(rel.id);
     const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
     const curvature = 0.12 + Math.random() * 0.08;
     graph.addEdge(rel.sourceId, rel.targetId, {
@@ -343,7 +347,7 @@ export const knowledgeGraphToGraphology = (
 export const knowledgeGraphToTreeGraphology = (
   knowledgeGraph: KnowledgeGraph,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
-  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const graph = new MultiGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
   const positions = calculateTreeLayout(knowledgeGraph);
 
@@ -392,9 +396,12 @@ export const knowledgeGraphToTreeGraphology = (
   };
 
   // Two-pass insertion: hierarchy edges first (rendered behind), cross-edges on top.
+  // Dedup by relationship ID so CONTAINS + CALLS between the same pair both survive.
+  const addedTreeRelIds = new Set<string>();
   const addTreeEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
     if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
-    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    if (addedTreeRelIds.has(rel.id)) return;
+    addedTreeRelIds.add(rel.id);
     const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
     const style = isHierarchy
       ? HIERARCHY_EDGE_STYLES[rel.type]
@@ -422,7 +429,7 @@ export const knowledgeGraphToTreeGraphology = (
 export const knowledgeGraphToCirclesGraphology = (
   knowledgeGraph: KnowledgeGraph,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
-  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const graph = new MultiGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
   const positions = calculateCirclesLayout(knowledgeGraph);
 
@@ -471,9 +478,12 @@ export const knowledgeGraphToCirclesGraphology = (
   };
 
   // Two-pass insertion: hierarchy edges first (rendered behind), cross-edges on top.
+  // Dedup by relationship ID so CONTAINS + CALLS between the same pair both survive.
+  const addedCirclesRelIds = new Set<string>();
   const addCirclesEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
     if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
-    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    if (addedCirclesRelIds.has(rel.id)) return;
+    addedCirclesRelIds.add(rel.id);
     const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
     const style = isHierarchy
       ? HIERARCHY_EDGE_STYLES[rel.type]
