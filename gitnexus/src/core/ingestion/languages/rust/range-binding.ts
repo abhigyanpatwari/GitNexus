@@ -81,6 +81,7 @@ export function populateRustRangeBindings(
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);
+    processPendingAssignments(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
   }
 }
 
@@ -301,6 +302,100 @@ function processStructDestructuring(
       }
       if (fieldType !== null) {
         injectTypeBinding(targetScope, fieldName, fieldType);
+      }
+    }
+  }
+}
+
+function processPendingAssignments(
+  root: SyntaxNode,
+  parsed: ParsedFile,
+  scopeMap: ReadonlyMap<string, Scope>,
+  moduleScope: Scope,
+  allReturnTypes: ReadonlyMap<string, string>,
+): void {
+  for (let pass = 0; pass < 3; pass++) {
+    for (const letNode of root.descendantsOfType('let_declaration')) {
+      const patternNode = letNode.childForFieldName('pattern');
+      if (patternNode === null) continue;
+      const varName = extractVarName(patternNode);
+      if (varName === null) continue;
+
+      const targetScope = findEnclosingFunctionScope(letNode, scopeMap) ?? moduleScope;
+      if (targetScope.typeBindings.has(varName)) continue;
+
+      const valueNode = letNode.childForFieldName('value');
+      if (valueNode === null) continue;
+
+      if (valueNode.type === 'field_expression') {
+        const receiver = valueNode.childForFieldName('value');
+        const field = valueNode.childForFieldName('field');
+        if (receiver !== null && field !== null && receiver.type === 'identifier') {
+          const receiverType = lookupTypeInScopes(
+            receiver.text,
+            letNode,
+            parsed,
+            scopeMap,
+            moduleScope,
+          );
+          if (receiverType !== null) {
+            for (const scope of parsed.scopes) {
+              if (scope.kind !== 'Class') continue;
+              const tb = scope.typeBindings.get(field.text);
+              if (tb !== undefined) {
+                const hasDef = scope.ownedDefs.some(
+                  (d) =>
+                    d.qualifiedName === receiverType ||
+                    d.qualifiedName?.endsWith('.' + receiverType),
+                );
+                if (hasDef) {
+                  injectTypeBinding(targetScope, varName, tb.rawName);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (valueNode.type === 'call_expression') {
+        const func = valueNode.childForFieldName('function');
+        if (func !== null && func.type === 'field_expression') {
+          const receiver = func.childForFieldName('value');
+          const method = func.childForFieldName('field');
+          if (receiver !== null && method !== null && receiver.type === 'identifier') {
+            const receiverType = lookupTypeInScopes(
+              receiver.text,
+              letNode,
+              parsed,
+              scopeMap,
+              moduleScope,
+            );
+            if (receiverType !== null) {
+              for (const scope of parsed.scopes) {
+                if (scope.kind !== 'Class') continue;
+                const hasDef = scope.ownedDefs.some(
+                  (d) =>
+                    d.qualifiedName === receiverType ||
+                    d.qualifiedName?.endsWith('.' + receiverType),
+                );
+                if (!hasDef) continue;
+                const retTb = scope.typeBindings.get(method.text);
+                if (retTb !== undefined && retTb.source === 'return-annotation') {
+                  injectTypeBinding(targetScope, varName, retTb.rawName);
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        if (func !== null && func.type === 'identifier') {
+          const rawReturn = allReturnTypes.get(func.text);
+          if (rawReturn !== undefined) {
+            injectTypeBinding(targetScope, varName, normalizeFieldType(rawReturn));
+          }
+        }
       }
     }
   }

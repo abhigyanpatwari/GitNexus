@@ -122,6 +122,12 @@ const RUST_SCOPE_QUERY = `
   left: (field_expression
     value: (_) @reference.receiver
     field: (field_identifier) @reference.name)) @reference.write
+
+;; References — field writes (compound assignment: +=, -=, etc.)
+(compound_assignment_expr
+  left: (field_expression
+    value: (_) @reference.receiver
+    field: (field_identifier) @reference.name)) @reference.write
 `;
 
 let _parser: Parser | null = null;
