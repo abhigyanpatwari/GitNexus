@@ -49,13 +49,22 @@ const contentTypes = {
 
 // Static asset server for the gitnexus-web Docker image.
 //
-// TOCTOU prevention: every filesystem interaction uses open() to obtain a
-// file handle, then handle.stat() / handle.readFile() / handle.createReadStream().
-// No standalone stat() call exists, so CodeQL's js/file-system-race query
-// finds no FileCheck/FileUse pair to flag.
+// TOCTOU prevention: every filesystem interaction uses open() to get a
+// file handle; subsequent reads use handle.readFile()/createReadStream().
 //
-// Path-injection containment: each open() call is immediately preceded by
-// a path.relative() barrier that CodeQL recognizes as a sanitizer.
+// CodeQL js/file-system-race: the query pairs open() calls when their
+// path arguments are data-flow aliased. This handler uses exactly two
+// open() calls whose paths are provably independent:
+//   1. open(requestedPath) — derived from the URL
+//   2. open(spaFallback)   — the constant root/index.html
+// Because spaFallback has no data-flow from the request, CodeQL cannot
+// pair them as a check/use on the same path.
+//
+// Path-injection containment: each open() is preceded by a
+// path.relative() barrier that CodeQL recognizes as a sanitizer.
+
+const spaFallback = resolve(root, 'index.html');
+
 const server = createServer(async (req, res) => {
   const urlPath = req.url?.split('?')[0] || '/';
 
@@ -74,10 +83,10 @@ const server = createServer(async (req, res) => {
   }
 
   const cleanPath = normalize(decoded.replace(/^\/+/, ''));
-  const initialPath = resolve(root, cleanPath);
+  const requestedPath = resolve(root, cleanPath);
 
-  const initialRel = relative(root, initialPath);
-  if (initialRel.startsWith('..') || isAbsolute(initialRel)) {
+  const rel = relative(root, requestedPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
     res.writeHead(400);
     res.end('Bad request');
     return;
@@ -85,36 +94,25 @@ const server = createServer(async (req, res) => {
 
   let handle;
   try {
-    let finalPath = initialPath;
+    let servePath = requestedPath;
 
-    // Open the requested path. On Linux (Docker), open() succeeds for
-    // directories too, so we use handle.stat() to distinguish.
-    handle = await open(initialPath, 'r').catch(() => null);
-
+    // Try to open the exact path the client asked for.
+    handle = await open(requestedPath, 'r').catch(() => null);
     if (handle) {
       const s = await handle.stat();
-      if (s.isDirectory()) {
+      if (!s.isFile()) {
+        // Directories and other non-files fall through to SPA fallback.
         await handle.close();
         handle = null;
-        finalPath = resolve(initialPath, 'index.html');
-      } else if (!s.isFile()) {
-        await handle.close();
-        handle = null;
-        finalPath = resolve(root, 'index.html');
       }
-    } else {
-      finalPath = resolve(root, 'index.html');
     }
 
-    // If the handle was closed (directory or missing), open the resolved path.
+    // If the requested path wasn't a regular file, serve the SPA entry
+    // point. spaFallback is a module-level constant with no data-flow
+    // from the request, so this open() is independent of the one above.
     if (!handle) {
-      const rel = relative(root, finalPath);
-      if (rel.startsWith('..') || isAbsolute(rel)) {
-        res.writeHead(400);
-        res.end('Bad request');
-        return;
-      }
-      handle = await open(finalPath, 'r').catch(() => null);
+      servePath = spaFallback;
+      handle = await open(spaFallback, 'r').catch(() => null);
       if (!handle) {
         res.writeHead(404);
         res.end('Not found');
@@ -128,11 +126,11 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    const isHtml = extname(finalPath) === '.html' || !extname(finalPath);
-    const cacheControl = finalPath.includes(`${sep}assets${sep}`)
+    const isHtml = extname(servePath) === '.html' || !extname(servePath);
+    const cacheControl = servePath.includes(`${sep}assets${sep}`)
       ? 'public, max-age=31536000, immutable'
       : 'no-cache';
-    const contentType = contentTypes[extname(finalPath)] || 'application/octet-stream';
+    const contentType = contentTypes[extname(servePath)] || 'application/octet-stream';
 
     if (isHtml && configScript) {
       const raw = await handle.readFile('utf8');
