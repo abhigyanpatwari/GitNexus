@@ -29,7 +29,14 @@ export function toNativeSafePath(p: string): string {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const shortPath = result.trim();
-    if (shortPath && !NON_ASCII_RE.test(shortPath)) {
+    // cmd.exe replaces unrepresentable Unicode with '?' when it can't
+    // convert to the console code page. Reject results that contain '?'
+    // but the input did not, or that still have non-ASCII characters.
+    if (
+      shortPath &&
+      !NON_ASCII_RE.test(shortPath) &&
+      (!shortPath.includes('?') || p.includes('?'))
+    ) {
       return shortPath;
     }
   } catch {
