@@ -30,7 +30,10 @@ function junctionHash(targetDir: string): string {
   return crypto.createHash('sha256').update(targetDir).digest('hex').slice(0, 16);
 }
 
+const CMD_UNSAFE_RE = /["%|&<>^]/;
+
 function tryShortPath(p: string): string | null {
+  if (CMD_UNSAFE_RE.test(p)) return null;
   try {
     const result = execFileSync('cmd.exe', ['/c', `for %I in ("${p}") do @echo %~sI`], {
       encoding: 'utf-8',
