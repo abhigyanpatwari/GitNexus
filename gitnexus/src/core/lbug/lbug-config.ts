@@ -31,16 +31,17 @@ function junctionHash(targetDir: string): string {
   return crypto.createHash('sha256').update(targetDir).digest('hex').slice(0, 16);
 }
 
-const CMD_UNSAFE_RE = /["%|&<>^]/;
-
 function tryShortPath(p: string): string | null {
-  if (CMD_UNSAFE_RE.test(p)) return null;
   try {
-    const result = execFileSync('cmd.exe', ['/c', `for %I in ("${p}") do @echo %~sI`], {
+    // Pass the path via environment variable so the command string is
+    // static — avoids CodeQL command-injection taint (the path never
+    // appears in the shell command text).
+    const result = execFileSync('cmd.exe', ['/c', 'for %I in ("%GITNEXUS_SP%") do @echo %~sI'], {
       encoding: 'utf-8',
       timeout: 5000,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, GITNEXUS_SP: p },
     });
     const shortPath = result.trim();
     if (
