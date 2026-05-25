@@ -40,10 +40,64 @@ export function populateRustRangeBindings(
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
+    processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope);
   }
+}
+
+function processFieldTypeBindings(
+  root: SyntaxNode,
+  parsed: ParsedFile,
+  scopeMap: ReadonlyMap<string, Scope>,
+): void {
+  for (const structNode of root.descendantsOfType('struct_item')) {
+    const nameNode = structNode.childForFieldName('name');
+    if (nameNode === null) continue;
+
+    const structScope = findScopeForNode(structNode, parsed, scopeMap);
+    if (structScope === null) continue;
+
+    const body = structNode.childForFieldName('body');
+    if (body === null) continue;
+
+    for (const field of body.descendantsOfType('field_declaration')) {
+      const fieldName = field.childForFieldName('name');
+      const fieldType = field.childForFieldName('type');
+      if (fieldName === null || fieldType === null) continue;
+
+      const normalizedType = normalizeFieldType(fieldType.text);
+      injectTypeBinding(structScope, fieldName.text, normalizedType);
+    }
+  }
+}
+
+function findScopeForNode(
+  node: SyntaxNode,
+  parsed: ParsedFile,
+  scopeMap: ReadonlyMap<string, Scope>,
+): Scope | null {
+  for (const scope of parsed.scopes) {
+    if (
+      scope.kind === 'Class' &&
+      scope.range.startLine === node.startPosition.row + 1 &&
+      scope.range.startCol === node.startPosition.column
+    ) {
+      return scope;
+    }
+  }
+  return null;
+}
+
+function normalizeFieldType(text: string): string {
+  let t = text.trim();
+  if (t.startsWith('&')) t = t.replace(/^&\s*(mut\s+)?/, '');
+  const bracket = t.indexOf('<');
+  if (bracket !== -1) t = t.slice(0, bracket);
+  const lastColon = t.lastIndexOf('::');
+  if (lastColon !== -1) t = t.slice(lastColon + 2);
+  return t.trim();
 }
 
 function processForLoops(
@@ -336,6 +390,9 @@ function lookupFieldType(
       (d) => d.qualifiedName === structName || d.qualifiedName?.endsWith('.' + structName),
     );
     if (!hasDef) continue;
+
+    const tb = scope.typeBindings.get(fieldName);
+    if (tb !== undefined) return tb.rawName;
 
     for (const def of scope.ownedDefs) {
       const defName = def.qualifiedName?.split('.').pop();
