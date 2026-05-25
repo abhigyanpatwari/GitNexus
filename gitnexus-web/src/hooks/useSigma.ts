@@ -238,6 +238,15 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+
+  // Keep callback refs fresh so the one-time sigma event handlers always
+  // call the latest version (avoids stale-closure bugs when graph loads).
+  const onNodeClickRef = useRef(options.onNodeClick);
+  const onNodeHoverRef = useRef(options.onNodeHover);
+  const onStageClickRef = useRef(options.onStageClick);
+  onNodeClickRef.current = options.onNodeClick;
+  onNodeHoverRef.current = options.onNodeHover;
+  onStageClickRef.current = options.onStageClick;
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const effectsAnimationFrameRef = useRef<number | null>(null);
   const treeLayoutFrameRef = useRef<number | null>(null);
@@ -665,23 +674,23 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
     sigma.on('clickNode', ({ node }) => {
       setSelectedNode(node);
-      options.onNodeClick?.(node);
+      onNodeClickRef.current?.(node);
     });
 
     sigma.on('clickStage', () => {
       setSelectedNode(null);
-      options.onStageClick?.();
+      onStageClickRef.current?.();
     });
 
     sigma.on('enterNode', ({ node }) => {
-      options.onNodeHover?.(node);
+      onNodeHoverRef.current?.(node);
       if (containerRef.current) {
         containerRef.current.style.cursor = 'pointer';
       }
     });
 
     sigma.on('leaveNode', () => {
-      options.onNodeHover?.(null);
+      onNodeHoverRef.current?.(null);
       if (containerRef.current) {
         containerRef.current.style.cursor = 'grab';
       }
