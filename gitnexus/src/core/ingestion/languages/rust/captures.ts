@@ -71,8 +71,9 @@ export function emitRustScopeCaptures(
           cachedImplLookup?.fnNode === fnNode
             ? cachedImplLookup.implNode
             : findEnclosingImpl(fnNode);
-        // Reclassify as method if inside an impl block
-        if (implNode !== null) {
+        const traitNode = implNode === null ? findEnclosingTrait(fnNode) : null;
+        // Reclassify as method if inside an impl block or trait definition
+        if (implNode !== null || traitNode !== null) {
           const nameCap = grouped['@declaration.name'];
           delete (grouped as Record<string, Capture | undefined>)['@declaration.function'];
           grouped['@declaration.method'] = syntheticCapture(
@@ -164,6 +165,16 @@ function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {
   let current: SyntaxNode | null = node.parent;
   while (current !== null) {
     if (current.type === 'impl_item') return current;
+    if (current.type === 'source_file' || current.type === 'mod_item') return null;
+    current = current.parent;
+  }
+  return null;
+}
+
+function findEnclosingTrait(node: SyntaxNode): SyntaxNode | null {
+  let current: SyntaxNode | null = node.parent;
+  while (current !== null) {
+    if (current.type === 'trait_item') return current;
     if (current.type === 'source_file' || current.type === 'mod_item') return null;
     current = current.parent;
   }
