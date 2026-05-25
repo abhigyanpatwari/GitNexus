@@ -55,7 +55,9 @@ export function detectLocalCLI(provider: LocalAgentProvider): string | null {
     });
     cachedCommands.set(provider, commandInfo);
   } catch (err: unknown) {
-    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
+    const isNotFound =
+      err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (!isNotFound && err instanceof Error) {
       logger.warn(
         `${provider} CLI found but --version failed (exit ${(err as { status?: number }).status ?? '?'}). ` +
           `Ensure it is authenticated: run \`${COMMANDS[provider]} --version\` manually.`,

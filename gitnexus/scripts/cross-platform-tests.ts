@@ -79,6 +79,7 @@ const SPAWN_CLI = [
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
   'test/integration/setup-skills.test.ts',
+  'test/unit/local-cli-subprocess.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have
