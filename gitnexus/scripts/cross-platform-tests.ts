@@ -59,6 +59,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
+  'test/integration/lbug-non-ascii-path.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
