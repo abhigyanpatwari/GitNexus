@@ -362,6 +362,9 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // correctly suppresses when detail::Inner and public_api::Inner share the
     // same simple name. The legacy DAG picks an arbitrary match.
     'Derived<T>::g() -> this->f_a() emits zero CALLS when detail::Inner and public_api::Inner are sibling namespaces (ambiguity suppressed)',
+    // PR #1634: deep-nesting suppression. The scope-resolver enforces a
+    // one-level cap on namespace walking. The legacy DAG picks arbitrarily.
+    'Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced',
   ]),
 };
 

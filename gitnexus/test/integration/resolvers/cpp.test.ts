@@ -2341,6 +2341,23 @@ describe('C++ two-phase template lookup — dependent-base inline-namespace vari
   });
 });
 
+describe('C++ two-phase template lookup — dependent-base deep nesting suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-deep'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+});
+
 describe('C++ two-phase template lookup — dependent-base sibling-namespace suppression', () => {
   let result: PipelineResult;
 

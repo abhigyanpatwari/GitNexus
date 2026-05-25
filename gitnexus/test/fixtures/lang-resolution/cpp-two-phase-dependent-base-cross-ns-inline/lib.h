@@ -9,7 +9,7 @@ namespace ns {
   }
 
   template<class T>
-  struct Derived : v1::Base<T> {
+  struct Derived : Base<T> {
     void g() {
       this->f();
     }

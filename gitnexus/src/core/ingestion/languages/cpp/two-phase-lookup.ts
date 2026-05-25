@@ -174,8 +174,8 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
         // syntactic qualifier (available at captures.ts:611 as
         // qualified_identifier scope) to navigate from the current scope,
         // which would resolve `detail::Inner` vs `public_api::Inner`
-        // unambiguously. Threading the qualifier is deferred to a
-        // follow-up. Until then, sibling collisions correctly suppress.
+        // unambiguously. Threading the qualifier is tracked in #1815.
+        // Until then, sibling collisions correctly suppress.
         const nsMatches = candidates.filter((c) => {
           if (c.nsPrefix === classEntry.nsPrefix) return true;
           if (classEntry.nsPrefix === '') {
