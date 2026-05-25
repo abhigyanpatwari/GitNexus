@@ -103,6 +103,35 @@ export function emitRustScopeCaptures(
       }
     }
 
+    // Hoist return-type bindings from impl block functions to module level
+    // so the compound receiver's hoistTypeBindingsToModule walk can find them.
+    if (
+      grouped['@type-binding.return'] !== undefined &&
+      grouped['@type-binding.name'] !== undefined
+    ) {
+      const tbReturnAnchor = grouped['@type-binding.return']!;
+      const fnNode = findNodeAtRange(tree.rootNode, tbReturnAnchor.range, 'function_item');
+      if (fnNode !== null && findEnclosingImpl(fnNode) !== null) {
+        out.push({
+          '@type-binding.name': syntheticCapture(
+            '@type-binding.name',
+            tree.rootNode,
+            grouped['@type-binding.name']!.text,
+          ),
+          '@type-binding.type': syntheticCapture(
+            '@type-binding.type',
+            tree.rootNode,
+            grouped['@type-binding.type']!.text,
+          ),
+          '@type-binding.return': syntheticCapture(
+            '@type-binding.return',
+            tree.rootNode,
+            tbReturnAnchor.text,
+          ),
+        });
+      }
+    }
+
     // Attach call arity for call expressions
     const callAnchor =
       grouped['@reference.call.free'] ??
