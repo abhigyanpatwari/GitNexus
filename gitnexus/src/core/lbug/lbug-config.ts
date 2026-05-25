@@ -538,10 +538,7 @@ export async function openLbugConnection(
   const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
-    db = await openWithLockRetry(
-      () => createLbugDatabase(lbugModule, safePath, options),
-      safePath,
-    );
+    db = await openWithLockRetry(() => createLbugDatabase(lbugModule, safePath, options), safePath);
     return { db, conn: new lbugModule.Connection(db) };
   } catch (err) {
     if (db) await db.close().catch(() => {});
