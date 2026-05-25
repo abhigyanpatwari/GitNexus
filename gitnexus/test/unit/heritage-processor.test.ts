@@ -57,6 +57,31 @@ describe('processHeritageFromExtracted', () => {
       expect(rels[0].targetId).toContain('BaseUser');
     });
 
+    it('generates file-qualified ID for unresolved same-file parent class', async () => {
+      // Regression test: parent class defined in the same file as the child was
+      // previously assigned a bare-name fallback ID ("Class:BaseError") instead of
+      // the file-qualified format used everywhere ("Class:src/errors.ts:BaseError").
+      // This caused lbug to drop all EXTENDS edges between same-file classes because
+      // the source and target node IDs never matched any indexed node.
+      const heritage: ExtractedHeritage[] = [
+        {
+          filePath: 'src/errors.ts',
+          className: 'WorkerError',
+          parentName: 'BaseError',
+          kind: 'extends',
+        },
+      ];
+
+      await processHeritageFromExtracted(graph, heritage, ctx);
+
+      const rels = graph.relationships.filter((r) => r.type === 'EXTENDS');
+      expect(rels).toHaveLength(1);
+      // Child: explicit fallbackKey always was correct
+      expect(rels[0].sourceId).toBe('Class:src/errors.ts:WorkerError');
+      // Parent: must now use the file-qualified format, not bare "Class:BaseError"
+      expect(rels[0].targetId).toBe('Class:src/errors.ts:BaseError');
+    });
+
     it('skips self-inheritance', async () => {
       ctx.model.symbols.add('src/a.ts', 'Foo', 'Class:src/a.ts:Foo', 'Class');
 

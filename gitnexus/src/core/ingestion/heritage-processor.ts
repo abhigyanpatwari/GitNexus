@@ -79,9 +79,11 @@ const resolveHeritageId = (
     }
     return { id: resolved.candidates[0].nodeId, confidence: TIER_CONFIDENCE[resolved.tier] };
   }
-  // Unresolved: use global-tier confidence as fallback
+  // Unresolved: use file-qualified fallback so same-file parent classes match the
+  // "Label:filePath:ClassName" node ID format used throughout the graph.
+  // When an explicit fallbackKey is provided (child class lookups), use it as-is.
   return {
-    id: generateId(fallbackLabel, fallbackKey ?? name),
+    id: generateId(fallbackLabel, fallbackKey ?? `${filePath}:${name}`),
     confidence: TIER_CONFIDENCE['global'],
   };
 };
