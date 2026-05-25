@@ -42,7 +42,12 @@ export function populateRustRangeBindings(
       const nameNode = fn.childForFieldName('name');
       const retType = fn.childForFieldName('return_type');
       if (nameNode !== null && retType !== null) {
-        allReturnTypes.set(nameNode.text, retType.text);
+        const name = nameNode.text;
+        if (allReturnTypes.has(name)) {
+          allReturnTypes.delete(name);
+        } else {
+          allReturnTypes.set(name, retType.text);
+        }
       }
     }
 
@@ -58,7 +63,14 @@ export function populateRustRangeBindings(
           fields.set(fieldName.text, normalizeFieldType(fieldType.text));
         }
       }
-      if (fields.size > 0) allFieldTypes.set(nameNode.text, fields);
+      if (fields.size > 0) {
+        const name = nameNode.text;
+        if (allFieldTypes.has(name)) {
+          allFieldTypes.delete(name);
+        } else {
+          allFieldTypes.set(name, fields);
+        }
+      }
     }
   }
 
@@ -210,7 +222,7 @@ function processCapturedPattern(
 ): void {
   const varNode = patternNode.namedChildren.find((c) => c.type === 'identifier');
   const structPatternNode = patternNode.namedChildren.find((c) => c.type === 'struct_pattern');
-  if (varNode === null || structPatternNode === undefined) return;
+  if (varNode === undefined || structPatternNode === undefined) return;
 
   const typeName = structPatternNode.childForFieldName('type')?.text;
   if (typeName === undefined) return;
@@ -555,13 +567,8 @@ function lookupTypeInScopes(
     if (tb !== undefined) return tb.rawName;
   }
 
-  for (const scope of parsed.scopes) {
-    const tb = scope.typeBindings.get(name);
-    if (tb !== undefined) return tb.rawName;
-  }
-
-  const tb = moduleScope.typeBindings.get(name);
-  if (tb !== undefined) return tb.rawName;
+  const mtb = moduleScope.typeBindings.get(name);
+  if (mtb !== undefined) return mtb.rawName;
 
   return null;
 }
