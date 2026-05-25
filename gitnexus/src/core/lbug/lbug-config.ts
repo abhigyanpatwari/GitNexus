@@ -1,8 +1,42 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import type lbug from '@ladybugdb/core';
 import { logger } from '../logger.js';
+
+// ─── Windows non-ASCII path workaround ────────────────────────────────────────
+//
+// KuzuDB's native C++ layer on Windows uses ANSI file APIs (fopen, not
+// _wfopen). When the path contains CJK or other non-ASCII characters,
+// the UTF-8 bytes from Node.js are misinterpreted as the system's Active
+// Code Page (e.g. GBK on Chinese Windows), producing a garbled path that
+// the OS cannot resolve — "Error 3: The system cannot find the path."
+//
+// Workaround: convert to the 8.3 short-name form which is all-ASCII.
+// Falls back to the original path if short names are unavailable.
+
+const NON_ASCII_RE = /[^\x00-\x7F]/;
+
+export function toNativeSafePath(p: string): string {
+  if (process.platform !== 'win32') return p;
+  if (!NON_ASCII_RE.test(p)) return p;
+  try {
+    const result = execFileSync('cmd.exe', ['/c', `for %I in ("${p}") do @echo %~sI`], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const shortPath = result.trim();
+    if (shortPath && !NON_ASCII_RE.test(shortPath)) {
+      return shortPath;
+    }
+  } catch {
+    // 8.3 short names unavailable or cmd failed — fall through
+  }
+  return p;
+}
 
 /**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
@@ -351,10 +385,11 @@ export async function openLbugConnection(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): Promise<LbugConnectionHandle> {
+  const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
     db = await openWithLockRetry(
-      () => createLbugDatabase(lbugModule, databasePath, options),
+      () => createLbugDatabase(lbugModule, safePath, options),
       databasePath,
     );
     return { db, conn: new lbugModule.Connection(db) };

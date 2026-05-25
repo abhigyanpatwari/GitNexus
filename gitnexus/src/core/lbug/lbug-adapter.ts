@@ -23,6 +23,7 @@ import {
   isOpenRetryExhausted,
   isWalCorruptionError,
   openLbugConnection,
+  toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
@@ -386,7 +387,8 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
   }
 };
 
-const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+const normalizeCopyPath = (filePath: string): string =>
+  toNativeSafePath(filePath).replace(/\\/g, '/');
 
 const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
   try {
