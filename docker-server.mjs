@@ -133,7 +133,14 @@ const server = createServer(async (req, res) => {
     const contentType = contentTypes[extname(finalPath)] || 'application/octet-stream';
 
     if (isHtml && configScript) {
-      const raw = await readFile(finalPath, 'utf8');
+      let raw;
+      try {
+        raw = await readFile(finalPath, 'utf8');
+      } catch {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
       if (!raw.includes('</head>')) {
         console.warn('[gitnexus-web] Could not inject config: no </head> tag found in HTML');
       }
