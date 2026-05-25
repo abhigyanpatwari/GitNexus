@@ -108,7 +108,7 @@ function registerCleanupHandlers(): void {
     process.on(signal, () => {
       cleanupNativePathJunctions();
       if (process.platform === 'win32') {
-        process.exit(0);
+        process.exit(signal === 'SIGINT' ? 130 : 143);
       } else {
         process.kill(process.pid, signal);
       }
