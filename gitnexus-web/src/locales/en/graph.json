@@ -10,7 +10,8 @@
     "status": {
       "running": "running",
       "completed": "completed",
-      "error": "error"
+      "error": "error",
+      "stopped": "stopped"
     },
     "tools": {
       "search": "🔍 Search Code",

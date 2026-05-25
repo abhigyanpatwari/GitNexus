@@ -367,11 +367,11 @@ export interface AgentRuntimeOptions {
   signal?: AbortSignal;
 }
 
-const isAbortError = (error: unknown): boolean => {
+const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
+  if (signal?.aborted) return true;
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof Error && error.name === 'AbortError') return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /aborted|abort/i.test(message);
+  return false;
 };
 
 export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
@@ -662,7 +662,7 @@ export async function* streamAgentResponse(
           : undefined,
     };
   } catch (error) {
-    if (options.signal?.aborted || isAbortError(error)) {
+    if (isAbortError(error, options.signal)) {
       yield { type: 'cancelled' };
       return;
     }

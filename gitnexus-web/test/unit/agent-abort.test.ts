@@ -27,7 +27,6 @@ describe('streamAgentResponse abort', () => {
       stream: async function* () {
         yield ['values', { messages: [] }];
         controller.abort();
-        // Simulate a long-running graph step after abort
         for (let i = 0; i < 100; i++) {
           yield ['messages', [{ _getType: () => 'ai', content: 'still going' }]];
         }
@@ -44,5 +43,42 @@ describe('streamAgentResponse abort', () => {
 
     expect(chunks.some((c) => c.type === 'cancelled')).toBe(true);
     expect(chunks.some((c) => c.type === 'error')).toBe(false);
+  });
+
+  it('passes AbortSignal to agent.stream config', async () => {
+    const controller = new AbortController();
+    let capturedConfig: Record<string, unknown> | undefined;
+
+    const agent = {
+      stream: async (_input: unknown, config: Record<string, unknown>) => {
+        capturedConfig = config;
+        throw new DOMException('aborted', 'AbortError');
+      },
+    };
+
+    for await (const _chunk of streamAgentResponse(agent as any, userMessage, {
+      signal: controller.signal,
+    })) {
+      // drain
+    }
+
+    expect(capturedConfig?.signal).toBe(controller.signal);
+  });
+
+  it('does not treat unrelated errors mentioning abort as cancellation', async () => {
+    const agent = {
+      stream: async () => {
+        throw new Error('Cannot abort the current transaction');
+      },
+    };
+
+    const chunks = [];
+    for await (const chunk of streamAgentResponse(agent as any, userMessage)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual([
+      { type: 'error', error: 'Cannot abort the current transaction' },
+    ]);
   });
 });

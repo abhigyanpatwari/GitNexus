@@ -1017,39 +1017,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;
-
-            case 'cancelled': {
-              const stoppedLabel = i18n.t('chat:stopped');
-              for (let i = 0; i < toolCallsForMessage.length; i++) {
-                const tc = toolCallsForMessage[i];
-                if (tc.status === 'running' || tc.status === 'pending') {
-                  toolCallsForMessage[i] = {
-                    ...tc,
-                    status: 'error',
-                    result: stoppedLabel,
-                  };
-                }
-              }
-              for (let i = 0; i < stepsForMessage.length; i++) {
-                const step = stepsForMessage[i];
-                if (
-                  step.type === 'tool_call' &&
-                  step.toolCall &&
-                  (step.toolCall.status === 'running' || step.toolCall.status === 'pending')
-                ) {
-                  stepsForMessage[i] = {
-                    ...step,
-                    toolCall: {
-                      ...step.toolCall,
-                      status: 'error',
-                      result: stoppedLabel,
-                    },
-                  };
-                }
-              }
-              scheduleMessageUpdate();
-              break;
-            }
           }
         };
 
@@ -1062,9 +1029,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
         })) {
-          if (chatAbortController.signal.aborted) {
-            break;
-          }
           onChunk(chunk);
           if (chunk.type === 'cancelled') {
             break;
@@ -1078,9 +1042,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       } finally {
         if (chatAbortRef.current === chatAbortController) {
           chatAbortRef.current = null;
+          setIsChatLoading(false);
+          setCurrentToolCalls([]);
+        } else if (!chatAbortRef.current) {
+          // Stopped with no new turn started — safe to clear loading UI
+          setIsChatLoading(false);
+          setCurrentToolCalls([]);
         }
-        setIsChatLoading(false);
-        setCurrentToolCalls([]);
       }
     },
     [
@@ -1105,13 +1073,12 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     chatAbortRef.current = null;
 
     const stoppedLabel = i18n.t('chat:stopped');
-    setCurrentToolCalls((prev) =>
-      prev.map((tc) =>
-        tc.status === 'running' || tc.status === 'pending'
-          ? { ...tc, status: 'error', result: stoppedLabel }
-          : tc,
-      ),
-    );
+    const markStoppedToolCall = (tc: ToolCallInfo): ToolCallInfo =>
+      tc.status === 'running' || tc.status === 'pending'
+        ? { ...tc, status: 'stopped', result: stoppedLabel }
+        : tc;
+
+    setCurrentToolCalls((prev) => prev.map(markStoppedToolCall));
 
     setChatMessages((prev) => {
       const lastAssistantIdx = [...prev]
@@ -1121,10 +1088,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       if (lastAssistantIdx === undefined) return prev;
 
       const message = prev[lastAssistantIdx];
-      const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
-        tc.status === 'running' || tc.status === 'pending'
-          ? { ...tc, status: 'error', result: stoppedLabel }
-          : tc;
+      const markStopped = markStoppedToolCall;
 
       const updated: ChatMessage = {
         ...message,

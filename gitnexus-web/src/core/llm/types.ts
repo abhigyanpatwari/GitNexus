@@ -254,7 +254,7 @@ export interface ToolCallInfo {
   name: string;
   args: Record<string, unknown>;
   result?: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'error' | 'stopped';
 }
 
 /**
