@@ -3,11 +3,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { rustProvider } from '../rust.js';
-import {
-  rustArityCompatibility,
-  rustMergeBindings,
-  resolveRustImportTarget,
-} from './index.js';
+import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
 
 export const rustScopeResolver: ScopeResolver = {
@@ -18,8 +14,7 @@ export const rustScopeResolver: ScopeResolver = {
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
 
-  mergeBindings: (existing, incoming, scopeId) =>
-    rustMergeBindings(existing, incoming, scopeId),
+  mergeBindings: (existing, incoming, scopeId) => rustMergeBindings(existing, incoming, scopeId),
 
   arityCompatibility: (callsite, def) => rustArityCompatibility(def, callsite),
 

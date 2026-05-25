@@ -87,9 +87,7 @@ function decomposeUseArgument(
       const aliasChild = node.childForFieldName('alias');
       if (pathChild === null || aliasChild === null) return [];
       const originalName =
-        pathChild.type === 'scoped_identifier'
-          ? buildScopedPath(pathChild)
-          : pathChild.text;
+        pathChild.type === 'scoped_identifier' ? buildScopedPath(pathChild) : pathChild.text;
       const aliasName = aliasChild.text;
       const segments = originalName.split('::');
       const importedName = segments[segments.length - 1];

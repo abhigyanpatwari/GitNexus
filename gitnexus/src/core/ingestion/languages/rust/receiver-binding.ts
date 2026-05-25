@@ -112,7 +112,10 @@ export function getImplTraitName(implNode: SyntaxNode): string | null {
     if (child.type === 'for') {
       break;
     }
-    if (afterImpl && (child.type === 'type_identifier' || child.type === 'scoped_type_identifier')) {
+    if (
+      afterImpl &&
+      (child.type === 'type_identifier' || child.type === 'scoped_type_identifier')
+    ) {
       for (let j = i + 1; j < implNode.childCount; j++) {
         const next = implNode.child(j);
         if (next === null) continue;

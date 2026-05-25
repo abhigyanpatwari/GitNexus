@@ -103,7 +103,8 @@ export function emitRustScopeCaptures(
       grouped['@reference.call.member'] ??
       grouped['@reference.call.constructor'];
     if (callAnchor !== undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
+      const callNode =
+        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'struct_expression');
       if (callNode !== null) {
         const arity = computeRustCallArity(callNode);
@@ -133,9 +134,10 @@ function findEnclosingImpl(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-function computeRustDeclarationArity(
-  fnNode: SyntaxNode,
-): { parameterCount?: number; requiredParameterCount?: number } {
+function computeRustDeclarationArity(fnNode: SyntaxNode): {
+  parameterCount?: number;
+  requiredParameterCount?: number;
+} {
   const params = fnNode.childForFieldName('parameters');
   if (params === null) return {};
 

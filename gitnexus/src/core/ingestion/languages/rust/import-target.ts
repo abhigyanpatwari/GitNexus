@@ -29,9 +29,7 @@ export function resolveRustImportTarget(
   }
 
   if (segments[0] === 'super') {
-    const parentDir = fromDir.includes('/')
-      ? fromDir.slice(0, fromDir.lastIndexOf('/'))
-      : '';
+    const parentDir = fromDir.includes('/') ? fromDir.slice(0, fromDir.lastIndexOf('/')) : '';
     const restPath = segments.slice(1);
     return resolveModulePath(restPath, parentDir, allFilePaths);
   }
@@ -86,9 +84,7 @@ function resolveModulePath(
     const parentFile = baseDir ? `${baseDir}/${parentPath}.rs` : `${parentPath}.rs`;
     if (allFilePaths.has(parentFile)) return parentFile;
 
-    const parentModFile = baseDir
-      ? `${baseDir}/${parentPath}/mod.rs`
-      : `${parentPath}/mod.rs`;
+    const parentModFile = baseDir ? `${baseDir}/${parentPath}/mod.rs` : `${parentPath}/mod.rs`;
     if (allFilePaths.has(parentModFile)) return parentModFile;
   }
 

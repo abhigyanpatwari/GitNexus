@@ -12,8 +12,6 @@ import os from 'node:os';
 import {
   getRelationships,
   getNodesByLabel,
-  getNodesByLabelFull,
-  edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -162,17 +160,13 @@ impl Drawable for Circle {
 
   it('emits IMPLEMENTS edge from Circle to Drawable', () => {
     const impls = getRelationships(result, 'IMPLEMENTS');
-    const circleDrawable = impls.find(
-      (e) => e.source === 'Circle' && e.target === 'Drawable',
-    );
+    const circleDrawable = impls.find((e) => e.source === 'Circle' && e.target === 'Drawable');
     expect(circleDrawable).toBeDefined();
   });
 
   it('resolves main → c.draw() to shapes.rs', () => {
     const calls = getRelationships(result, 'CALLS');
-    const drawCall = calls.find(
-      (c) => c.target === 'draw' && c.source === 'main',
-    );
+    const drawCall = calls.find((c) => c.target === 'draw' && c.source === 'main');
     expect(drawCall).toBeDefined();
   });
 });
@@ -234,17 +228,13 @@ impl Config {
 
   it('resolves u.save() to User#save via grouped import binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.source === 'process',
-    );
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
   });
 
   it('resolves c.validate() to Config#validate via grouped import binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const validateCall = calls.find(
-      (c) => c.target === 'validate' && c.source === 'process',
-    );
+    const validateCall = calls.find((c) => c.target === 'validate' && c.source === 'process');
     expect(validateCall).toBeDefined();
   });
 });
@@ -340,9 +330,7 @@ pub fn process() {
   it('resolves crate::models::User import from services.rs to models.rs', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const imp = imports.find(
-      (e) =>
-        e.targetFilePath?.includes('models.rs') &&
-        e.sourceFilePath?.includes('services.rs'),
+      (e) => e.targetFilePath?.includes('models.rs') && e.sourceFilePath?.includes('services.rs'),
     );
     expect(imp).toBeDefined();
   });
@@ -351,9 +339,7 @@ pub fn process() {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) =>
-        c.target === 'save' &&
-        c.source === 'process' &&
-        c.targetFilePath?.includes('models.rs'),
+        c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('models.rs'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -414,10 +400,7 @@ impl Repo {
   it('resolves u.save() to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'process' &&
-        c.targetFilePath?.includes('user.rs'),
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rs'),
     );
     expect(userSave).toBeDefined();
   });
@@ -425,10 +408,7 @@ impl Repo {
   it('resolves r.save() to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'process' &&
-        c.targetFilePath?.includes('repo.rs'),
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.rs'),
     );
     expect(repoSave).toBeDefined();
   });
@@ -518,10 +498,7 @@ impl User {
   it('resolves u.save() to User#save via struct literal type inference', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'process' &&
-        c.targetFilePath?.includes('user.rs'),
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rs'),
     );
     expect(saveCall).toBeDefined();
   });
@@ -574,18 +551,14 @@ impl User {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) =>
-        c.target === 'save' &&
-        c.source === 'process' &&
-        c.targetFilePath?.includes('models.rs'),
+        c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('models.rs'),
     );
     expect(saveCall).toBeDefined();
   });
 
   it('resolves process → get_user() free call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const getUserCall = calls.find(
-      (c) => c.target === 'get_user' && c.source === 'process',
-    );
+    const getUserCall = calls.find((c) => c.target === 'get_user' && c.source === 'process');
     expect(getUserCall).toBeDefined();
   });
 });
@@ -635,9 +608,7 @@ impl User {
 
   it('resolves process → User::new() free call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const newCall = calls.find(
-      (c) => c.target === 'new' && c.source === 'process',
-    );
+    const newCall = calls.find((c) => c.target === 'new' && c.source === 'process');
     expect(newCall).toBeDefined();
   });
 });
@@ -761,17 +732,13 @@ impl User {
 
   it('resolves u.save() from first impl block', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.source === 'process',
-    );
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
   });
 
   it('resolves u.display() from second impl block', () => {
     const calls = getRelationships(result, 'CALLS');
-    const displayCall = calls.find(
-      (c) => c.target === 'display' && c.source === 'process',
-    );
+    const displayCall = calls.find((c) => c.target === 'display' && c.source === 'process');
     expect(displayCall).toBeDefined();
   });
 });
@@ -810,9 +777,7 @@ pub fn helper() {
 
   it('resolves main → helper() free call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const helperCall = calls.find(
-      (c) => c.target === 'helper' && c.source === 'main',
-    );
+    const helperCall = calls.find((c) => c.target === 'helper' && c.source === 'main');
     expect(helperCall).toBeDefined();
   });
 });
@@ -858,9 +823,7 @@ impl User {
 
   it('resolves u.save() via typed let binding', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.source === 'process',
-    );
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
   });
 });
@@ -956,9 +919,7 @@ impl User {
 
   it('resolves x.save() to User#save after shadow rebind', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) => c.target === 'save' && c.source === 'process',
-    );
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
   });
 });
@@ -999,9 +960,7 @@ fn main() {
 
   it('resolves main → adder() call', () => {
     const calls = getRelationships(result, 'CALLS');
-    const call = calls.find(
-      (c) => c.target === 'adder' && c.source === 'main',
-    );
+    const call = calls.find((c) => c.target === 'adder' && c.source === 'main');
     expect(call).toBeDefined();
   });
 });
@@ -1058,9 +1017,7 @@ fn main() {
 
   it('emits IMPLEMENTS edge from User to Greeter', () => {
     const impls = getRelationships(result, 'IMPLEMENTS');
-    const edge = impls.find(
-      (e) => e.source === 'User' && e.target === 'Greeter',
-    );
+    const edge = impls.find((e) => e.source === 'User' && e.target === 'Greeter');
     expect(edge).toBeDefined();
   });
 });
