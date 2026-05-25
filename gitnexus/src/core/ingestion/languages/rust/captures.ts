@@ -50,11 +50,13 @@ export function emitRustScopeCaptures(
     }
 
     // Synthesize self receiver bindings for methods inside impl blocks
+    let cachedImplLookup: { fnNode: SyntaxNode; implNode: SyntaxNode | null } | undefined;
     if (grouped['@scope.function'] !== undefined) {
       const scopeCap = grouped['@scope.function']!;
       const fnNode = findNodeAtRange(tree.rootNode, scopeCap.range, 'function_item');
       if (fnNode !== null) {
         const implNode = findEnclosingImpl(fnNode);
+        cachedImplLookup = { fnNode, implNode };
         const receiver = synthesizeRustReceiverBinding(fnNode, implNode);
         if (receiver !== null) out.push(receiver);
       }
@@ -65,8 +67,12 @@ export function emitRustScopeCaptures(
     if (declAnchor !== undefined) {
       const fnNode = findNodeAtRange(tree.rootNode, declAnchor.range, 'function_item');
       if (fnNode !== null) {
+        const implNode =
+          cachedImplLookup?.fnNode === fnNode
+            ? cachedImplLookup.implNode
+            : findEnclosingImpl(fnNode);
         // Reclassify as method if inside an impl block
-        if (findEnclosingImpl(fnNode) !== null) {
+        if (implNode !== null) {
           const nameCap = grouped['@declaration.name'];
           delete (grouped as Record<string, Capture | undefined>)['@declaration.function'];
           grouped['@declaration.method'] = syntheticCapture(
@@ -158,8 +164,8 @@ function computeRustCallArity(callNode: SyntaxNode): number | undefined {
     if (body === null) return 0;
     let count = 0;
     for (let i = 0; i < body.namedChildCount; i++) {
-      if (body.namedChild(i)?.type === 'field_initializer') count++;
-      if (body.namedChild(i)?.type === 'shorthand_field_initializer') count++;
+      const t = body.namedChild(i)?.type;
+      if (t === 'field_initializer' || t === 'shorthand_field_initializer') count++;
     }
     return count;
   }

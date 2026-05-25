@@ -1,5 +1,8 @@
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
 
+const REF_PREFIX_RE = /^&\s*(mut\s+)?/;
+const PTR_PREFIX_RE = /^\*\s*(const|mut)?\s*/;
+
 // ─── interpretImport ──────────────────────────────────────────────────────
 
 export function interpretRustImport(captures: CaptureMatch): ParsedImport | null {
@@ -76,8 +79,8 @@ export function interpretRustTypeBinding(captures: CaptureMatch): ParsedTypeBind
 export function normalizeRustTypeName(text: string): string {
   let t = text.trim();
   // Strip reference prefixes (&, &mut, *const, *mut)
-  while (t.startsWith('&')) t = t.replace(/^&\s*(mut\s+)?/, '');
-  while (t.startsWith('*')) t = t.replace(/^\*\s*(const|mut)?\s*/, '');
+  while (t.startsWith('&')) t = t.replace(REF_PREFIX_RE, '');
+  while (t.startsWith('*')) t = t.replace(PTR_PREFIX_RE, '');
   // Unwrap common smart-pointer/container wrappers to their inner type
   const wrappers = ['Box', 'Option', 'Arc', 'Rc', 'Mutex', 'RwLock', 'RefCell', 'Cell'];
   for (const w of wrappers) {
@@ -141,7 +144,7 @@ function normalizeRustCallReturnType(text: string): string {
 
 function normalizeRustReturnType(text: string): string {
   let t = text.trim();
-  while (t.startsWith('&')) t = t.replace(/^&\s*(mut\s+)?/, '');
+  while (t.startsWith('&')) t = t.replace(REF_PREFIX_RE, '');
   // Unwrap Result<T, E>, Option<T> for return types
   const wrappers = ['Result', 'Option'];
   for (const w of wrappers) {

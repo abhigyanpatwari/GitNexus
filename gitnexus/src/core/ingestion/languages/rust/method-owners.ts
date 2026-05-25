@@ -35,8 +35,13 @@ function populateRustImplOwners(parsed: ParsedFile): void {
   }
   if (structByName.size === 0) return;
 
-  // For each method whose ownerId is unset, try to remap to the struct def
-  // using the self typeBinding's receiver type.
+  const structBySuffix = new Map<string, string>();
+  for (const [qname, nodeId] of structByName) {
+    const dot = qname.lastIndexOf('.');
+    const suffix = dot !== -1 ? qname.slice(dot + 1) : qname;
+    structBySuffix.set(suffix, nodeId);
+  }
+
   for (const scope of parsed.scopes) {
     if (scope.kind !== 'Function') continue;
     const methodDefs = scope.ownedDefs.filter(
@@ -53,16 +58,7 @@ function populateRustImplOwners(parsed: ParsedFile): void {
     }
     if (receiverType === undefined) continue;
 
-    let ownerId = structByName.get(receiverType);
-    if (ownerId === undefined) {
-      // Try suffix match (qualifiedName might be `module.StructName`)
-      for (const [qname, nodeId] of structByName) {
-        if (qname.endsWith('.' + receiverType) || qname === receiverType) {
-          ownerId = nodeId;
-          break;
-        }
-      }
-    }
+    const ownerId = structByName.get(receiverType) ?? structBySuffix.get(receiverType);
     if (ownerId !== undefined) {
       for (const def of methodDefs) {
         (def as { ownerId?: string }).ownerId = ownerId;
