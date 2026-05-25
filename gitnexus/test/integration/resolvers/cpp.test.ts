@@ -3044,7 +3044,7 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
   });
 });
 
-describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+describe('C++ inline namespace — distinct signatures resolved via call-site types', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
