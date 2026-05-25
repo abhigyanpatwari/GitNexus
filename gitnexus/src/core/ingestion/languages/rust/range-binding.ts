@@ -78,6 +78,7 @@ export function populateRustRangeBindings(
     if (moduleScope === undefined) continue;
 
     processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
+    processIdentityMethodBindings(parsed);
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);
@@ -302,6 +303,31 @@ function processStructDestructuring(
       }
       if (fieldType !== null) {
         injectTypeBinding(targetScope, fieldName, fieldType);
+      }
+    }
+  }
+}
+
+const IDENTITY_METHODS = ['unwrap', 'expect', 'clone', 'as_ref', 'as_mut'];
+
+function processIdentityMethodBindings(parsed: ParsedFile): void {
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Class') continue;
+    const classDef = scope.ownedDefs.find((d) => {
+      const t = d.type;
+      return t === 'Struct' || t === 'Enum' || t === 'Class';
+    });
+    if (classDef === undefined) continue;
+    const name = classDef.qualifiedName?.split('.').pop();
+    if (name === undefined) continue;
+
+    for (const method of IDENTITY_METHODS) {
+      if (!scope.typeBindings.has(method)) {
+        (scope.typeBindings as Map<string, TypeRef>).set(method, {
+          rawName: name,
+          declaredAtScope: scope.id,
+          source: 'return-annotation',
+        });
       }
     }
   }
