@@ -116,9 +116,7 @@ function generateRustFixture(
       `    item`,
       `}`,
       '',
-    ]
-      .filter((line) => line !== '' || true)
-      .join('\n');
+    ].join('\n');
 
     const modDir = path.join(srcDir, modName);
     const existingMod = path.join(modDir, 'mod.rs');
@@ -126,11 +124,8 @@ function generateRustFixture(
 
     fs.writeFileSync(path.join(modDir, `${fileBaseName}.rs`), content);
 
-    if (fs.existsSync(existingMod)) {
-      fs.appendFileSync(existingMod, `pub mod ${fileBaseName};\npub use ${fileBaseName}::*;\n`);
-    } else {
-      fs.writeFileSync(existingMod, `pub mod ${fileBaseName};\npub use ${fileBaseName}::*;\n`);
-    }
+    const modEntry = `pub mod ${fileBaseName};\npub use ${fileBaseName}::*;\n`;
+    fs.appendFileSync(existingMod, modEntry);
   }
 
   const libContent = modDeclarations.join('\n') + '\n';

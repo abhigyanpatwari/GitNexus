@@ -114,13 +114,7 @@ export function emitRustScopeCaptures(
         findNodeAtRange(tree.rootNode, callAnchor.range, 'struct_expression');
       if (callNode !== null) {
         const arity = computeRustCallArity(callNode);
-        if (arity !== undefined) {
-          grouped['@reference.arity'] = syntheticCapture(
-            '@reference.arity',
-            callNode,
-            String(arity),
-          );
-        }
+        grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
       }
     }
 
@@ -158,7 +152,7 @@ function computeRustDeclarationArity(fnNode: SyntaxNode): {
   return { parameterCount: count, requiredParameterCount: count };
 }
 
-function computeRustCallArity(callNode: SyntaxNode): number | undefined {
+function computeRustCallArity(callNode: SyntaxNode): number {
   if (callNode.type === 'struct_expression') {
     const body = callNode.childForFieldName('body');
     if (body === null) return 0;
