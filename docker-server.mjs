@@ -1,4 +1,4 @@
-import { open, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
@@ -49,14 +49,13 @@ const contentTypes = {
 
 // Static asset server for the gitnexus-web Docker image.
 //
-// Path-injection containment: each filesystem sink is preceded by the
-// canonical `path.relative` containment check that CodeQL recognizes as
-// a sanitizer barrier.
+// TOCTOU prevention: every filesystem interaction uses open() to obtain a
+// file handle, then handle.stat() / handle.readFile() / handle.createReadStream().
+// No standalone stat() call exists, so CodeQL's js/file-system-race query
+// finds no FileCheck/FileUse pair to flag.
 //
-// TOCTOU prevention: after the path barrier, the file is opened once via
-// fs.promises.open() and all subsequent operations (stat, readFile,
-// createReadStream) use the file handle, eliminating any race between
-// the existence check and the read.
+// Path-injection containment: each open() call is immediately preceded by
+// a path.relative() barrier that CodeQL recognizes as a sanitizer.
 const server = createServer(async (req, res) => {
   const urlPath = req.url?.split('?')[0] || '/';
 
@@ -77,7 +76,6 @@ const server = createServer(async (req, res) => {
   const cleanPath = normalize(decoded.replace(/^\/+/, ''));
   const initialPath = resolve(root, cleanPath);
 
-  // Sanitizer barrier #1 — guards the first stat() sink.
   const initialRel = relative(root, initialPath);
   if (initialRel.startsWith('..') || isAbsolute(initialRel)) {
     res.writeHead(400);
@@ -87,40 +85,47 @@ const server = createServer(async (req, res) => {
 
   let handle;
   try {
-    const initialStat = await stat(initialPath).catch(() => null);
+    let finalPath = initialPath;
 
-    // Pick the path we actually serve. Note: any branch reassigns to a
-    // freshly-resolved path; the next sanitizer barrier re-validates.
-    let finalPath;
-    if (initialStat?.isDirectory()) {
-      finalPath = resolve(initialPath, 'index.html');
-    } else if (!initialStat?.isFile()) {
-      finalPath = resolve(root, 'index.html');
+    // Open the requested path. On Linux (Docker), open() succeeds for
+    // directories too, so we use handle.stat() to distinguish.
+    handle = await open(initialPath, 'r').catch(() => null);
+
+    if (handle) {
+      const s = await handle.stat();
+      if (s.isDirectory()) {
+        await handle.close();
+        handle = null;
+        finalPath = resolve(initialPath, 'index.html');
+      } else if (!s.isFile()) {
+        await handle.close();
+        handle = null;
+        finalPath = resolve(root, 'index.html');
+      }
     } else {
-      finalPath = initialPath;
+      finalPath = resolve(root, 'index.html');
     }
 
-    // Sanitizer barrier #2 — guards the open() sink below. No
-    // reassignment of finalPath happens between this guard and the
-    // open(), so the analyzer can prove containment.
-    const finalRel = relative(root, finalPath);
-    if (finalRel.startsWith('..') || isAbsolute(finalRel)) {
-      res.writeHead(400);
-      res.end('Bad request');
-      return;
-    }
-
-    handle = await open(finalPath, 'r').catch(() => null);
+    // If the handle was closed (directory or missing), open the resolved path.
     if (!handle) {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
-    const finalStat = await handle.stat();
-    if (!finalStat.isFile()) {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
+      const rel = relative(root, finalPath);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        res.writeHead(400);
+        res.end('Bad request');
+        return;
+      }
+      handle = await open(finalPath, 'r').catch(() => null);
+      if (!handle) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+      const s = await handle.stat();
+      if (!s.isFile()) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
     }
 
     const isHtml = extname(finalPath) === '.html' || !extname(finalPath);
