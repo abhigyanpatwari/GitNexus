@@ -62,9 +62,7 @@ describe('LadybugDB with non-ASCII storage path (#1811)', () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const graph = createMinimalTestGraph();
 
-    await expect(
-      adapter.loadGraphToLbug(graph, tmpBase, storagePath),
-    ).resolves.not.toThrow();
+    await expect(adapter.loadGraphToLbug(graph, tmpBase, storagePath)).resolves.not.toThrow();
   });
 
   it('data is queryable after loading through non-ASCII paths', async () => {
@@ -76,9 +74,7 @@ describe('LadybugDB with non-ASCII storage path (#1811)', () => {
     const functions = await adapter.executeQuery('MATCH (n:Function) RETURN n.id AS id');
     expect(functions).toHaveLength(2);
 
-    const calls = await adapter.executeQuery(
-      'MATCH ()-[r:CALLS]->() RETURN count(r) AS cnt',
-    );
+    const calls = await adapter.executeQuery('MATCH ()-[r:CALLS]->() RETURN count(r) AS cnt');
     expect(calls[0].cnt).toBe(2);
   });
 });
