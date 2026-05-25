@@ -581,7 +581,9 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     try {
       await fs.access(adapterDest);
     } catch {
-      result.errors.push('Antigravity hooks: adapter script was not installed — skipping hook registration');
+      result.errors.push(
+        'Antigravity hooks: adapter script was not installed — skipping hook registration',
+      );
       return;
     }
 
@@ -593,7 +595,9 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       try {
         await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
       } catch {
-        result.errors.push(`Antigravity hooks: failed to copy ${helper} — hook may crash at runtime`);
+        result.errors.push(
+          `Antigravity hooks: failed to copy ${helper} — hook may crash at runtime`,
+        );
       }
     }
 
