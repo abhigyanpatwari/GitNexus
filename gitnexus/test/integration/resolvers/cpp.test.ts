@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -1819,6 +1820,21 @@ describe('C++ ambiguous integer-width overloads', () => {
     // GitNexus does not have. The resolver must suppress entirely.
     expect(processCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for normalization ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'process' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.filePath.endsWith('caller.cpp') &&
+        o.reason === 'overload-ambiguous-normalization',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1892,6 +1908,20 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
     // dominates → ambiguous. Same pattern for h('a',2.5).
     // Contract: zero edges for ALL h() call sites combined (dedup).
     expect(hCalls.length).toBe(0);
+  });
+
+  it('records a structured suppression reason for conversion-rank ties', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'h' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'conversion-rank-tied',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
   });
 });
 
@@ -2722,6 +2752,20 @@ describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
     // `e` is audit::Event, audit::record should NOT be discovered.
     expect(recordCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for ADL blocker lookup', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'record' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'adl-ordinary-lookup-blocked',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
@@ -2984,9 +3028,23 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
     // the same name. The resolver must suppress rather than pick arbitrarily.
     expect(fooCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for inline namespace ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'foo' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.reason === 'inline-ns-ambiguous',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
-describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+describe('C++ inline namespace — distinct signatures resolved via call-site types', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2996,14 +3054,35 @@ describe('C++ inline namespace — ambiguous distinct signatures (conservative s
     );
   }, 60000);
 
-  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+  it('outer::foo(42) emits exactly 1 CALLS edge to v1::foo(int) when v1 declares foo(int) and v2 declares foo(double)', () => {
     const calls = getRelationships(result, 'CALLS');
     const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
-    // Even though the two overloads have distinct signatures and a compiler
-    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
-    // hook lacks call-site arity/argument-type information, so multi-hit cases
-    // are conservatively suppressed. Documents the limitation noted in
-    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    // Call-site arity and argument types are now threaded through the
+    // resolveQualifiedReceiverMember contract (#1632). narrowOverloadCandidates
+    // matches the exact type 'int' against v1::foo(int), producing exactly 1 edge.
+    expect(fooCalls).toHaveLength(1);
+    // Verify it resolved to v1::foo(int) at line 4 (0-indexed), not v2::foo(double) at line 7
+    const targetNode = result.graph.getNode(fooCalls[0].rel.targetId);
+    expect(targetNode?.properties.startLine).toBe(4);
+  });
+});
+
+describe('C++ inline namespace — ambiguous normalized signatures', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-normalized'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(long) — both normalize to int', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // int and long both normalize to 'int' via normalizeCppParamType, making
+    // the two candidates indistinguishable after normalization. The resolver
+    // must suppress rather than pick arbitrarily (isOverloadAmbiguousAfterNormalization).
     expect(fooCalls.length).toBe(0);
   });
 });

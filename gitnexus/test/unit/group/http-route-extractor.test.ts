@@ -11,6 +11,7 @@ vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
 });
 
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
+import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
 describe('HttpRouteExtractor', () => {
@@ -31,6 +32,13 @@ describe('HttpRouteExtractor', () => {
     path: 'test/backend',
     repoPath,
     storagePath: path.join(repoPath, '.gitnexus'),
+  });
+
+  describe('plugin selection', () => {
+    it('does not route Blade templates through the PHP source-scan plugin', () => {
+      expect(getPluginForFile('resources/views/welcome.blade.php')).toBeUndefined();
+      expect(getPluginForFile('routes/web.php')).toBeDefined();
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {

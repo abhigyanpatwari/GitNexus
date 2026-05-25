@@ -65,6 +65,10 @@ import {
   extractTemplateArguments,
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
+import type {
+  ResolutionOutcomeRecorder,
+  ResolutionSuppressionReason,
+} from '../resolution-outcome.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -140,6 +144,9 @@ export function emitReceiverBoundCalls(
   provider: ReceiverBoundProviderSubset,
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
+  options: {
+    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+  } = {},
 ): number {
   let emitted = 0;
   // Per-pass dedup so the multiple cases don't double-emit if two of
@@ -494,10 +501,20 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           parsedFiles,
+          site,
         );
         if (memberDef === 'ambiguous') {
           // Same-name ambiguity across inline-namespace children (#1564):
           // suppress edge emission, mark site handled.
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            reason: 'inline-ns-ambiguous',
+            candidateIds: [],
+          });
           handledSites.add(siteKey);
           continue;
         }
@@ -702,6 +719,7 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
+          let ambiguousOwnerId: string | undefined;
           // Track whether the chain walk filtered out any static-only
           // candidates. When it did and the chain ended with no
           // legitimate instance member, we mark the site as handled so
@@ -733,6 +751,7 @@ export function emitReceiverBoundCalls(
             const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
+              ambiguousOwnerId = ownerId;
               break;
             }
             if (picked === STATIC_ONLY_FILTERED) {
@@ -754,6 +773,15 @@ export function emitReceiverBoundCalls(
             // Suppress and mark handled so `emitReferencesViaLookup`
             // doesn't re-emit the pre-resolved reference. See
             // OVERLOAD_AMBIGUOUS docstring for the upstream cause.
+            recordReceiverOverloadSuppression(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              ambiguousOwnerId ?? ownerDef.nodeId,
+              memberName,
+              model,
+              provider,
+            );
             handledSites.add(siteKey);
             continue;
           }
@@ -830,6 +858,15 @@ export function emitReceiverBoundCalls(
           resolveDefGraphId(valueDef.filePath, valueDef, nodeLookup) ?? valueDef.nodeId;
         const picked = pickOverload(ownerGraphId, memberName, site, model, provider);
         if (picked === OVERLOAD_AMBIGUOUS) {
+          recordReceiverOverloadSuppression(
+            options.recordResolutionOutcome,
+            parsed.filePath,
+            site,
+            ownerGraphId,
+            memberName,
+            model,
+            provider,
+          );
           handledSites.add(siteKey);
           continue;
         }
@@ -1016,4 +1053,50 @@ function pickFirstNonStaticOnly(
   if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
   if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
   return candidates[0] ?? overloads[0];
+}
+
+function recordReceiverOverloadSuppression(
+  record: ResolutionOutcomeRecorder | undefined,
+  filePath: string,
+  site: ParsedFile['referenceSites'][number],
+  ownerId: string,
+  memberName: string,
+  model: SemanticModel,
+  provider: ReceiverBoundProviderSubset,
+): void {
+  if (record === undefined) return;
+  const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
+  const reason: ResolutionSuppressionReason = isOverloadAmbiguousAfterNormalization(
+    candidates,
+    site.arity,
+  )
+    ? 'overload-ambiguous-normalization'
+    : hasConversionRankingSignal(site, provider)
+      ? 'conversion-rank-tied'
+      : 'overload-ambiguous';
+  record({
+    kind: 'suppressed',
+    phase: 'receiver-bound-calls',
+    filePath,
+    name: site.name,
+    range: site.atRange,
+    reason,
+    candidateIds: candidates.map((d) => d.nodeId),
+  });
+}
+
+function hasConversionRankingSignal(
+  site: ParsedFile['referenceSites'][number],
+  provider: ReceiverBoundProviderSubset,
+): boolean {
+  return (
+    provider.conversionRankFn !== undefined &&
+    site.argumentTypes !== undefined &&
+    site.argumentTypes.length > 0
+  );
 }

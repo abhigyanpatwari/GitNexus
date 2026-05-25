@@ -178,6 +178,12 @@ describe('shouldIgnorePath', () => {
     it('ignores TypeScript declaration files', () => {
       expect(shouldIgnorePath('types/index.d.ts')).toBe(true);
     });
+
+    it('ignores Laravel compiled Blade view cache files', () => {
+      expect(shouldIgnorePath('storage/framework/views/1a2b3c.php')).toBe(true);
+      expect(shouldIgnorePath('project/storage/framework/views/1a2b3c.php')).toBe(true);
+      expect(shouldIgnorePath('project\\storage\\framework\\views\\1a2b3c.php')).toBe(true);
+    });
   });
 
   describe('Windows path normalization', () => {

@@ -312,6 +312,7 @@ const runRespawnedAnalyze = (
 
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
+      windowsHide: true,
       env,
     });
 

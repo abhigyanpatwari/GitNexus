@@ -26,6 +26,7 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
 
     const commitsBehind = parseInt(result, 10) || 0;
@@ -59,6 +60,7 @@ export async function checkStalenessAsync(
     const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
       cwd: repoPath,
       encoding: 'utf-8',
+      windowsHide: true,
     });
 
     const commitsBehind = parseInt(stdout.trim(), 10) || 0;
@@ -90,6 +92,7 @@ function commitsAheadOfIndexed(siblingPath: string, indexedCommit: string): numb
       cwd: siblingPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
     return parseInt(result, 10) || 0;
   } catch {

@@ -24,6 +24,19 @@ name: Scope Resolution Parity
 # When the set is empty (e.g. mid-Ring-3 for every language), the parity
 # matrix is skipped and the workflow reports success — no-op until a
 # language is explicitly claimed migrated.
+#
+# ── Consolidation (chore/vitest-speed-strategy) ────────────────────────
+# Previously each language was a separate GitHub Actions matrix job,
+# meaning N languages × 1 checkout+install+build per shard. The build
+# cost dwarfed the test cost (~5 min setup for ~15 sec test execution).
+#
+# Now a single job runs `scripts/run-parity.ts` which loops through all
+# migrated languages sequentially (2 vitest invocations per language:
+# legacy + registry-primary). All failures are collected and reported
+# at the end (equivalent to the old fail-fast: false behavior).
+#
+# Adding a new language to MIGRATED_LANGUAGES still requires no workflow
+# edit — the script auto-discovers the set at runtime.
 
 on:
   workflow_call:
@@ -37,7 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      languages: ${{ steps.read.outputs.languages }}
       has-any: ${{ steps.read.outputs.has-any }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -49,65 +61,27 @@ jobs:
         working-directory: gitnexus
         run: |
           set -euo pipefail
-          # `tsx` evaluates the TS source directly (no build step), imports
-          # the exported `Set`, and emits a GH-Actions-friendly JSON matrix.
           LANGS=$(npx tsx scripts/ci-list-migrated-languages.ts)
           COUNT=$(printf '%s' "$LANGS" | jq 'length')
           HAS_ANY="false"
           if [[ "$COUNT" -gt 0 ]]; then HAS_ANY="true"; fi
-          echo "languages=$LANGS" >> "$GITHUB_OUTPUT"
           echo "has-any=$HAS_ANY" >> "$GITHUB_OUTPUT"
           echo "Discovered $COUNT migrated language(s): $LANGS"
-          echo "Parity matrix will run: $HAS_ANY"
+          echo "Parity will run: $HAS_ANY"
 
   parity:
-    name: ${{ matrix.lang.slug }} parity
+    name: scope-resolution parity
     needs: discover
     if: needs.discover.outputs.has-any == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      # One language failing must not abort the others — we want the full
-      # parity matrix result on a single CI run so a reviewer sees every
-      # regression at once rather than one-at-a-time.
-      fail-fast: false
-      matrix:
-        lang: ${{ fromJSON(needs.discover.outputs.languages) }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
 
-      - name: Verify resolver test file exists
+      - name: Run parity for all migrated languages
         shell: bash
         working-directory: gitnexus
-        run: |
-          set -euo pipefail
-          TEST_FILE="test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"
-          if [[ ! -f "$TEST_FILE" ]]; then
-            echo "::error title=Missing resolver test::\
-          Expected $TEST_FILE for '${{ matrix.lang.slug }}' (listed in \
-          MIGRATED_LANGUAGES). Either fix the slug or add the test file \
-          before listing this language as migrated."
-            exit 1
-          fi
-
-      - name: Resolver tests — legacy DAG (REGISTRY_PRIMARY_${{ matrix.lang.envvar }}=0)
-        shell: bash
-        working-directory: gitnexus
-        env:
-          FLAG_NAME: REGISTRY_PRIMARY_${{ matrix.lang.envvar }}
-        # Explicitly force the flag to `0` even though it also defaults to
-        # `MIGRATED_LANGUAGES.has(lang)` — once a language is in the set,
-        # the default flips to registry-primary, so an unset env var would
-        # silently re-run the same path as step #2. `env FOO=0 cmd` spawns
-        # `cmd` with the override scoped to just this invocation.
-        run: env "$FLAG_NAME=0" npx vitest run "test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"
-
-      - name: Resolver tests — registry-primary (REGISTRY_PRIMARY_${{ matrix.lang.envvar }}=1)
-        shell: bash
-        working-directory: gitnexus
-        env:
-          FLAG_NAME: REGISTRY_PRIMARY_${{ matrix.lang.envvar }}
-        run: env "$FLAG_NAME=1" npx vitest run "test/integration/resolvers/${{ matrix.lang.slug }}.test.ts"
+        run: npx tsx scripts/run-parity.ts

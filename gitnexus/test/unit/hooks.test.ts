@@ -94,6 +94,7 @@ function runGit(dir: string, args: string[]) {
     cwd: dir,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   if (result.status !== 0) {
     const message = result.stderr || result.stdout || result.error?.message || 'unknown error';
@@ -216,6 +217,176 @@ describe('Shell injection regression', () => {
           throw new Error(`${label} hook line ${i + 1} has shell injection risk: ${line.trim()}`);
         }
       }
+    });
+  }
+});
+
+// ─── Source code regression: windowsHide:true on every spawn-family call ───
+
+/**
+ * Every ``spawn`` / ``spawnSync`` / ``execFile`` / ``execFileSync`` /
+ * ``execFileAsync`` / ``execSync`` call in the hook layer **and the
+ * core/CLI/MCP/server source tree** must pass ``windowsHide: true``
+ * in its options object. Without it, Node's ``child_process`` module
+ * asks ``CreateProcess`` to use ``STARTF_USESHOWWINDOW`` with
+ * ``SW_SHOWDEFAULT`` and a black console window flashes onto the
+ * user's desktop for each call. Under active Claude Code / MCP /
+ * gitnexus-serve use that's a near-continuous stream of pop-ups —
+ * unusable in practice on Windows.
+ *
+ * ``windowsHide`` is a no-op on POSIX (silently dropped), so the
+ * flag is safe to require unconditionally. ``stdio: 'inherit'``
+ * callers (interactive editors etc.) are unaffected — windowsHide
+ * only suppresses NEW console allocation; an inherited parent
+ * console isn't touched.
+ *
+ * The check is source-level rather than behavioural because:
+ *   - the flag's effect is observable only on Windows;
+ *   - GitHub Actions runs vitest on Linux for these tests;
+ *   - regressing this is easy (every new spawn site has to remember
+ *     the flag), and a runtime check on a Windows-only CI leg would
+ *     still let a PR land on the main branch first.
+ *
+ * The pre-existing fix at ``src/core/lbug/extension-loader.ts:96``
+ * established the convention. This test enforces it everywhere.
+ */
+describe('windowsHide regression', () => {
+  // Hook-layer files. Adding a new hook file MUST be reflected here.
+  const HOOK_FILES: Array<readonly [string, string]> = [
+    ['gitnexus/hooks/claude/gitnexus-hook.cjs', CJS_HOOK],
+    [
+      'gitnexus/hooks/claude/hook-db-lock-probe.cjs',
+      path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-db-lock-probe.cjs'),
+    ],
+    ['gitnexus-claude-plugin/hooks/gitnexus-hook.js', PLUGIN_HOOK],
+    [
+      'gitnexus-claude-plugin/hooks/hook-db-lock-probe.cjs',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-claude-plugin',
+        'hooks',
+        'hook-db-lock-probe.cjs',
+      ),
+    ],
+    [
+      'gitnexus-cursor-integration/hooks/gitnexus-hook.cjs',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-cursor-integration',
+        'hooks',
+        'gitnexus-hook.cjs',
+      ),
+    ],
+  ];
+
+  // Source-tree files. Every file that imports a spawn-family
+  // function from ``child_process`` belongs here. Discovered via
+  //   grep -rn "from 'child_process'" -- gitnexus/src/
+  // plus the explicit ``await import('child_process')`` callers in
+  // local-backend.ts.
+  const SRC_FILES: Array<readonly [string, string]> = [
+    [
+      'gitnexus/src/cli/analyze.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'cli', 'analyze.ts'),
+    ],
+    ['gitnexus/src/cli/setup.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'setup.ts')],
+    ['gitnexus/src/cli/wiki.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'wiki.ts')],
+    [
+      'gitnexus/src/core/embeddings/embedder.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'embeddings', 'embedder.ts'),
+    ],
+    [
+      'gitnexus/src/core/git-staleness.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'git-staleness.ts'),
+    ],
+    [
+      'gitnexus/src/core/lbug/extension-loader.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'lbug', 'extension-loader.ts'),
+    ],
+    [
+      'gitnexus/src/core/run-analyze.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'run-analyze.ts'),
+    ],
+    [
+      'gitnexus/src/core/wiki/cursor-client.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'wiki', 'cursor-client.ts'),
+    ],
+    [
+      'gitnexus/src/core/wiki/generator.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'core', 'wiki', 'generator.ts'),
+    ],
+    [
+      'gitnexus/src/mcp/local/local-backend.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'mcp', 'local', 'local-backend.ts'),
+    ],
+    [
+      'gitnexus/src/server/git-clone.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'server', 'git-clone.ts'),
+    ],
+    // New post-upstream-merge (May 2026 sync):
+    [
+      'gitnexus/src/storage/git.ts',
+      path.resolve(__dirname, '..', '..', 'src', 'storage', 'git.ts'),
+    ],
+  ];
+
+  /**
+   * Strip pure-comment lines so prose mentions of ``spawn`` /
+   * ``exec`` don't inflate the call count.
+   */
+  function stripComments(source: string): string {
+    return source
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      })
+      .join('\n');
+  }
+
+  /**
+   * Count spawn-family invocations. The regex matches ``spawn(``,
+   * ``spawnSync(``, ``execFile(``, ``execFileSync(``,
+   * ``execFileAsync(``, ``execSync(`` as function calls — not
+   * destructures (``const { spawn } = ...``), not method calls
+   * (``.exec(``), not bare ``exec()`` (which collides with regex
+   * ``.exec()``; we explicitly drop it).
+   */
+  function countSpawnCalls(codeSource: string): number {
+    const re =
+      /(^|[^a-zA-Z0-9_$.])(spawn|spawnSync|execFile|execFileSync|execFileAsync|execSync)\s*\(/gm;
+    let count = 0;
+    while (re.exec(codeSource) !== null) {
+      count++;
+    }
+    return count;
+  }
+
+  for (const [label, file] of [...HOOK_FILES, ...SRC_FILES]) {
+    it(`${label}: every spawn-family options object contains windowsHide: true`, () => {
+      // The file must exist — silent-skip would mask a deletion.
+      expect(fs.existsSync(file)).toBe(true);
+      const source = fs.readFileSync(file, 'utf-8');
+      const codeSource = stripComments(source);
+
+      const spawnCount = countSpawnCalls(codeSource);
+      const hideCount = (codeSource.match(/windowsHide\s*:\s*true/g) ?? []).length;
+
+      // Sanity: catch a refactor that accidentally deletes every
+      // spawn call (which would otherwise make the equality below
+      // trivially true at 0 == 0).
+      expect(spawnCount).toBeGreaterThan(0);
+      // One windowsHide per spawn-family call. We don't try to
+      // match brace structure — a same-count proxy is sufficient
+      // because every spawn site in these files passes an options
+      // object literal (no helper indirection).
+      expect(hideCount).toBe(spawnCount);
     });
   }
 });

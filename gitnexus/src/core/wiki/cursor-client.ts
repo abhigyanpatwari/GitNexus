@@ -36,7 +36,7 @@ let cachedCursorBin: string | null | undefined;
 export function detectCursorCLI(): string | null {
   if (cachedCursorBin !== undefined) return cachedCursorBin;
   try {
-    execSync('agent --version', { stdio: 'ignore' });
+    execSync('agent --version', { stdio: 'ignore', windowsHide: true });
     cachedCursorBin = 'agent';
   } catch {
     cachedCursorBin = null;
@@ -109,6 +109,7 @@ export async function callCursorLLM(
     const child = spawn(cursorBin, args, {
       cwd: config.workingDirectory || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
       env: {
         ...process.env,
         // Ensure non-interactive mode

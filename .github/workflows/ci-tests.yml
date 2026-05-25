@@ -59,21 +59,25 @@ jobs:
             gitnexus-web/web-test-results.json
           retention-days: 5
 
+  # Platform-sensitive subset only — the full suite runs on Ubuntu above.
+  # See gitnexus/scripts/cross-platform-tests.ts for the file list and
+  # rationale for each included test.
   cross-platform:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} (platform-sensitive)
     strategy:
       fail-fast: false
       matrix:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      - run: npx vitest run
+      - name: Run platform-sensitive tests
+        run: npx tsx scripts/run-cross-platform.ts
         working-directory: gitnexus
 
   # End-to-end smoke test for the #1728 packaging fix: pack the published
