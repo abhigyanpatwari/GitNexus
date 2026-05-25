@@ -130,12 +130,16 @@ function processTupleStructPattern(
   if (innerIdent === null || innerIdent === undefined) return;
   const varName = innerIdent.text;
 
-  const sourceVarNode =
-    contextNode.type === 'let_condition'
-      ? contextNode.childForFieldName('value')
-      : contextNode.parent?.type === 'match_expression'
-        ? (contextNode.parent as SyntaxNode).childForFieldName('value')
-        : null;
+  let sourceVarNode: SyntaxNode | null = null;
+  if (contextNode.type === 'let_condition') {
+    sourceVarNode = contextNode.childForFieldName('value');
+  } else {
+    let matchExpr: SyntaxNode | null = contextNode.parent;
+    while (matchExpr !== null && matchExpr.type !== 'match_expression') {
+      matchExpr = matchExpr.parent;
+    }
+    sourceVarNode = matchExpr?.childForFieldName('value') ?? null;
+  }
   if (sourceVarNode === null || sourceVarNode === undefined) return;
 
   const sourceVarName = sourceVarNode.type === 'identifier' ? sourceVarNode.text : null;
@@ -232,11 +236,26 @@ function resolveIterableElementType(
     }
 
     if (func.type === 'identifier') {
+      const rawReturn = lookupRawFunctionReturnType(func.text, valueNode);
+      if (rawReturn !== null) return unwrapGeneric(rawReturn);
       const returnType = lookupReturnTypeInScopes(func.text, parsed, scopeMap, moduleScope);
       if (returnType !== null) return unwrapGeneric(returnType);
     }
   }
 
+  return null;
+}
+
+function lookupRawFunctionReturnType(funcName: string, contextNode: SyntaxNode): string | null {
+  let root: SyntaxNode = contextNode;
+  while (root.parent !== null) root = root.parent;
+  for (const fn of root.descendantsOfType('function_item')) {
+    const nameNode = fn.childForFieldName('name');
+    if (nameNode !== null && nameNode.text === funcName) {
+      const retType = fn.childForFieldName('return_type');
+      if (retType !== null) return retType.text;
+    }
+  }
   return null;
 }
 
