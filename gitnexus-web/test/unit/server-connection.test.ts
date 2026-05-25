@@ -172,6 +172,37 @@ describe('fetchGraph', () => {
   });
 });
 
+describe('DEFAULT_BACKEND_URL resolution', () => {
+  afterEach(() => {
+    delete window.__GITNEXUS_CONFIG__;
+    vi.resetModules();
+  });
+
+  it('falls back to localhost:4747 when no config is injected', async () => {
+    delete window.__GITNEXUS_CONFIG__;
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('http://localhost:4747');
+  });
+
+  it('uses window.__GITNEXUS_CONFIG__.backendUrl when set', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: 'http://10.0.0.1:4747' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('http://10.0.0.1:4747');
+  });
+
+  it('falls back to localhost:4747 when config object has no backendUrl', async () => {
+    window.__GITNEXUS_CONFIG__ = {};
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('http://localhost:4747');
+  });
+
+  it('falls back to localhost:4747 when backendUrl is an empty string', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('http://localhost:4747');
+  });
+});
+
 describe('validateBackendUrl', () => {
   it('allows http:// URLs', () => {
     expect(() => validateBackendUrl('http://localhost:4747')).not.toThrow();
@@ -225,7 +256,6 @@ describe('setBackendUrl', () => {
   it('does not mutate _backendUrl when validation fails', () => {
     setBackendUrl('http://localhost:4747');
     expect(() => setBackendUrl('javascript:alert(1)')).toThrow();
-    // State must be preserved — validation must happen before the assignment
     expect(getBackendUrl()).toBe('http://localhost:4747');
   });
 });
