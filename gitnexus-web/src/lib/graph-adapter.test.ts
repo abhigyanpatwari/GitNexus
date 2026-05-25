@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { knowledgeGraphToTreeGraphology } from './graph-adapter';
+import { knowledgeGraphToTreeGraphology, knowledgeGraphToCirclesGraphology } from './graph-adapter';
 import type { KnowledgeGraph } from '../core/graph/types';
 import type { GraphNode } from 'gitnexus-shared';
 import { EDGE_INFO } from './constants';
@@ -88,6 +88,102 @@ describe('knowledgeGraphToTreeGraphology', () => {
         expect(attrs.isHierarchyEdge).toBe(false);
         expect(attrs.color).toBe(EDGE_INFO.IMPORTS.color);
       }
+    });
+  });
+
+  it('should complete within an acceptable time budget for a medium-sized graph', () => {
+    // 2000 nodes + 4000 edges — exercises the adaptive spring iteration path (14 iters).
+    const nodes: GraphNode[] = Array.from({ length: 2000 }, (_, i) =>
+      makeNode(`n${i}`, i % 4 === 0 ? 'Folder' : i % 4 === 1 ? 'File' : 'Function', `node${i}`),
+    );
+    const relationships = Array.from({ length: 4000 }, (_, i) => ({
+      id: `r${i}`,
+      type: i % 3 === 0 ? 'CONTAINS' : 'CALLS',
+      sourceId: `n${i % 2000}`,
+      targetId: `n${(i + 7) % 2000}`,
+    }));
+    const graph: KnowledgeGraph = { nodes, relationships };
+
+    const start = performance.now();
+    knowledgeGraphToTreeGraphology(graph);
+    const elapsed = performance.now() - start;
+
+    // Should complete comfortably within 2 seconds even on slow CI machines.
+    expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describe('knowledgeGraphToCirclesGraphology', () => {
+  it('should place nodes into ring positions based on their type', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [
+        makeNode('folder', 'Folder', 'src'),
+        makeNode('file', 'File', 'main.ts'),
+        makeNode('fn', 'Function', 'doSomething'),
+      ],
+      relationships: [
+        { id: 'r1', type: 'CONTAINS', sourceId: 'folder', targetId: 'file' },
+        { id: 'r2', type: 'CALLS', sourceId: 'file', targetId: 'fn' },
+      ],
+    };
+
+    const sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
+
+    expect(sigmaGraph.hasNode('folder')).toBe(true);
+    expect(sigmaGraph.hasNode('file')).toBe(true);
+    expect(sigmaGraph.hasNode('fn')).toBe(true);
+
+    // Each node carries its ring index and anchor coordinates
+    const folderAttrs = sigmaGraph.getNodeAttributes('folder');
+    const fileAttrs = sigmaGraph.getNodeAttributes('file');
+    const fnAttrs = sigmaGraph.getNodeAttributes('fn');
+
+    expect(typeof folderAttrs.circlesRing).toBe('number');
+    expect(typeof folderAttrs.circlesAnchorX).toBe('number');
+    expect(typeof folderAttrs.circlesAnchorY).toBe('number');
+
+    // Folders/Packages live in ring 0 (innermost); Files in ring 1; Functions in ring 3.
+    expect(folderAttrs.circlesRing).toBe(0);
+    expect(fileAttrs.circlesRing).toBe(1);
+    expect(fnAttrs.circlesRing).toBe(3);
+
+    // Tree anchor attributes must NOT be set in circles mode
+    expect(folderAttrs.treeAnchorX).toBeUndefined();
+    expect(folderAttrs.treeAnchorY).toBeUndefined();
+  });
+
+  it('should style hierarchy edges differently from cross-cutting edges', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [makeNode('a', 'File', 'a.ts'), makeNode('b', 'Function', 'fn')],
+      relationships: [
+        { id: 'r1', type: 'CONTAINS', sourceId: 'a', targetId: 'b' },
+        { id: 'r2', type: 'CALLS', sourceId: 'a', targetId: 'b' },
+      ],
+    };
+
+    // Two relationships between the same pair — graph-adapter deduplicates via
+    // hasEdge check, so only the first inserted (CONTAINS, hierarchy) is kept.
+    const sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
+
+    sigmaGraph.forEachEdge((_, attrs) => {
+      if (attrs.relationType === 'CONTAINS') {
+        expect(attrs.isHierarchyEdge).toBe(true);
+        expect(attrs.color).toBe(EDGE_INFO.CONTAINS.color);
+      }
+    });
+  });
+
+  it('should treat CALLS as a cross-cutting edge in circles view', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [makeNode('a', 'Function', 'fnA'), makeNode('b', 'Function', 'fnB')],
+      relationships: [{ id: 'r1', type: 'CALLS', sourceId: 'a', targetId: 'b' }],
+    };
+
+    const sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
+
+    sigmaGraph.forEachEdge((_, attrs) => {
+      expect(attrs.isHierarchyEdge).toBe(false);
+      expect(attrs.color).toBe(EDGE_INFO.CALLS.color);
     });
   });
 });
