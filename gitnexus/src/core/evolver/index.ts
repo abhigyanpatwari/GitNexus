@@ -4,3 +4,4 @@ export * from './resource-manager.js';
 export * from './variant-generator.js';
 export * from './sandbox-runner.js';
 export * from './safety-gate.js';
+export * from './promotion-controller.js';
