@@ -1,5 +1,4 @@
-import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
@@ -50,22 +49,14 @@ const contentTypes = {
 
 // Static asset server for the gitnexus-web Docker image.
 //
-// Path-injection containment: the request handler is intentionally a single
-// inline pipeline with no helper functions on the path-data flow. Each
-// filesystem sink (stat, createReadStream) is immediately preceded by the
-// canonical `path.relative` containment check that CodeQL's
-// `js/path-injection` query recognizes as a sanitizer barrier:
+// Path-injection containment: each filesystem sink is preceded by the
+// canonical `path.relative` containment check that CodeQL recognizes as
+// a sanitizer barrier.
 //
-//     const rel = relative(root, candidate);
-//     if (rel.startsWith('..') || isAbsolute(rel)) reject;
-//     // candidate is now proven inside `root`
-//
-// Earlier iterations of this file used a helper (`resolveWithinRoot`) and a
-// `startsWith(root + sep)` check. Both were semantically correct but neither
-// was recognized by CodeQL: `startsWith(root + sep)` is not in the analyzer's
-// barrier-pattern set, and helper-based sanitization is not followed across
-// the request handler's reassignment paths in vanilla JS. The inline-at-sink
-// shape below is the documented analyzer-friendly idiom.
+// TOCTOU prevention: after the path barrier, the file is opened once via
+// fs.promises.open() and all subsequent operations (stat, readFile,
+// createReadStream) use the file handle, eliminating any race between
+// the existence check and the read.
 const server = createServer(async (req, res) => {
   const urlPath = req.url?.split('?')[0] || '/';
 
@@ -94,6 +85,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  let handle;
   try {
     const initialStat = await stat(initialPath).catch(() => null);
 
@@ -108,10 +100,9 @@ const server = createServer(async (req, res) => {
       finalPath = initialPath;
     }
 
-    // Sanitizer barrier #2 — guards both the second stat() and the
-    // createReadStream() sinks. No reassignment of finalPath happens
-    // between this guard and either sink, so the analyzer can prove
-    // containment for both.
+    // Sanitizer barrier #2 — guards the open() sink below. No
+    // reassignment of finalPath happens between this guard and the
+    // open(), so the analyzer can prove containment.
     const finalRel = relative(root, finalPath);
     if (finalRel.startsWith('..') || isAbsolute(finalRel)) {
       res.writeHead(400);
@@ -119,8 +110,14 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const finalStat = await stat(finalPath).catch(() => null);
-    if (!finalStat?.isFile()) {
+    handle = await open(finalPath, 'r').catch(() => null);
+    if (!handle) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+    const finalStat = await handle.stat();
+    if (!finalStat.isFile()) {
       res.writeHead(404);
       res.end('Not found');
       return;
@@ -133,14 +130,9 @@ const server = createServer(async (req, res) => {
     const contentType = contentTypes[extname(finalPath)] || 'application/octet-stream';
 
     if (isHtml && configScript) {
-      let raw;
-      try {
-        raw = await readFile(finalPath, 'utf8');
-      } catch {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
+      const raw = await handle.readFile('utf8');
+      await handle.close();
+      handle = null;
       if (!raw.includes('</head>')) {
         console.warn('[gitnexus-web] Could not inject config: no </head> tag found in HTML');
       }
@@ -161,7 +153,8 @@ const server = createServer(async (req, res) => {
         'Cross-Origin-Opener-Policy': 'same-origin',
         'Cross-Origin-Embedder-Policy': 'require-corp',
       });
-      const stream = createReadStream(finalPath);
+      const stream = handle.createReadStream();
+      handle = null;
       stream.on('error', () => res.destroy());
       stream.pipe(res);
     }
@@ -169,6 +162,8 @@ const server = createServer(async (req, res) => {
     console.error(error);
     res.writeHead(500);
     res.end('Internal server error');
+  } finally {
+    if (handle) await handle.close().catch(() => {});
   }
 });
 
