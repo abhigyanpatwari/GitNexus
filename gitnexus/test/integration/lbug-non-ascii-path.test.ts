@@ -74,7 +74,7 @@ describe('LadybugDB with non-ASCII storage path (#1811)', () => {
     const functions = await adapter.executeQuery('MATCH (n:Function) RETURN n.id AS id');
     expect(functions).toHaveLength(2);
 
-    const calls = await adapter.executeQuery('MATCH ()-[r:CALLS]->() RETURN count(r) AS cnt');
-    expect(calls[0].cnt).toBe(2);
+    const rels = await adapter.executeQuery('MATCH ()-[r:CodeRelation]->() RETURN count(r) AS cnt');
+    expect(rels[0].cnt).toBe(4);
   });
 });
