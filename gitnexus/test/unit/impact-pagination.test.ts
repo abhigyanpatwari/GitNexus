@@ -229,10 +229,10 @@ describe('impact: pagination and summaryOnly (#414)', () => {
       summaryOnly: true,
     });
 
-    const jsonSize = JSON.stringify(res).length;
-    expect(jsonSize).toBeLessThan(10000);
     expect(res.impactedCount).toBe(800);
+    expect(res.byDepthCounts).toEqual({ 1: 800 });
     expect(res.byDepth).toBeUndefined();
+    expect(res.pagination).toBeUndefined();
   });
 
   it('limit clamps to 1–10000 range', async () => {
