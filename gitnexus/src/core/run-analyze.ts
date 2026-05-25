@@ -163,6 +163,7 @@ export const PHASE_LABELS: Record<string, string> = {
   imports: 'Resolving imports',
   calls: 'Tracing calls',
   heritage: 'Extracting inheritance',
+  scopeResolution: 'Resolving types',
   communities: 'Detecting communities',
   processes: 'Detecting processes',
   complete: 'Pipeline complete',

@@ -34,7 +34,7 @@ import type { ParseOutput } from '../../pipeline-phases/parse.js';
 import { isRegistryPrimary } from '../../registry-primary-flag.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
-import { runScopeResolution } from './run.js';
+import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
@@ -130,6 +130,31 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       }
     >();
 
+    // Pre-count files and languages for progress reporting. This avoids
+    // a frozen progress bar during long scope-resolution runs (#1741).
+    let totalScopeFiles = 0;
+    let totalScopeLangs = 0;
+    for (const [lang] of SCOPE_RESOLVERS) {
+      if (!isRegistryPrimary(lang)) continue;
+      const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
+      if (count > 0) {
+        totalScopeLangs++;
+        totalScopeFiles += count;
+      }
+    }
+    const SCOPE_PCT_START = 90;
+    const SCOPE_PCT_RANGE = 8; // 90-98 internal → 54-59% display
+    let processedScopeFiles = 0;
+    let currentLangIdx = 0;
+
+    if (totalScopeFiles > 0) {
+      ctx.onProgress({
+        phase: 'scopeResolution',
+        percent: SCOPE_PCT_START,
+        message: 'Resolving types',
+      });
+    }
+
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
 
@@ -153,6 +178,23 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           ? await provider.loadResolutionConfig(ctx.repoPath)
           : undefined;
 
+      const langFileCount = files.length;
+      const langLabel = lang.charAt(0).toUpperCase() + lang.slice(1);
+      currentLangIdx++;
+      const langTag =
+        totalScopeLangs > 1 ? `${langLabel} [${currentLangIdx}/${totalScopeLangs}]` : langLabel;
+
+      if (totalScopeFiles > 0) {
+        const pct =
+          SCOPE_PCT_START + Math.round((processedScopeFiles / totalScopeFiles) * SCOPE_PCT_RANGE);
+        ctx.onProgress({
+          phase: 'scopeResolution',
+          percent: pct,
+          message: 'Resolving types',
+          detail: `${langTag}, ${langFileCount.toLocaleString()} files`,
+        });
+      }
+
       const stats = runScopeResolution(
         {
           graph: ctx.graph,
@@ -169,6 +211,44 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
               logger.warn(`[scope-resolution:${lang}] ${msg}`);
             }
           },
+          onProgress:
+            totalScopeFiles > 0
+              ? (subPhase: ScopeResolutionSubPhase, current, total) => {
+                  let langRatio: number;
+                  switch (subPhase) {
+                    case 'extracting':
+                      langRatio = total > 0 ? (current / total) * 0.5 : 0;
+                      break;
+                    case 'analyzing types':
+                      langRatio = 0.5;
+                      break;
+                    case 'resolving references':
+                      langRatio = 0.7;
+                      break;
+                    case 'linking symbols':
+                      langRatio = 0.85;
+                      break;
+                    default: {
+                      const _exhaustive: never = subPhase;
+                      langRatio = 0.85;
+                    }
+                  }
+                  const overallRatio = Math.min(
+                    1,
+                    (processedScopeFiles + langRatio * langFileCount) / totalScopeFiles,
+                  );
+                  const pct = SCOPE_PCT_START + Math.round(overallRatio * SCOPE_PCT_RANGE);
+                  ctx.onProgress({
+                    phase: 'scopeResolution',
+                    percent: pct,
+                    message: 'Resolving types',
+                    detail:
+                      subPhase === 'extracting'
+                        ? `${langTag} — extracting ${current.toLocaleString()}/${total.toLocaleString()} files`
+                        : `${langTag} — ${subPhase}`,
+                  });
+                }
+              : undefined,
         },
         provider,
       );
@@ -183,6 +263,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         preExtractedByPath.delete(fp);
       }
 
+      processedScopeFiles += langFileCount;
       anyRan = true;
       totalFiles += stats.filesProcessed;
       totalImports += stats.importsEmitted;
@@ -198,6 +279,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           `[scope-resolution:${lang}] ${stats.filesProcessed} files → ${stats.importsEmitted} IMPORTS + ${stats.referenceEdgesEmitted} reference edges (${stats.resolve.unresolved} unresolved sites, ${stats.referenceSkipped} skipped)`,
         );
       }
+    }
+
+    if (totalScopeFiles > 0 && anyRan) {
+      ctx.onProgress({
+        phase: 'scopeResolution',
+        percent: SCOPE_PCT_START + SCOPE_PCT_RANGE,
+        message: 'Resolving types',
+        detail: 'complete',
+      });
     }
 
     // Dispose the cross-phase Tree cache — scope-resolution is the
