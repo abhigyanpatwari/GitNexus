@@ -32,6 +32,15 @@ import { rustVariableConfig } from '../variable-extractors/configs/rust.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { rustCallConfig } from '../call-extractors/configs/rust.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitRustScopeCaptures,
+  rustArityCompatibility,
+  rustBindingScopeFor,
+  rustImportOwningScope,
+  rustReceiverBinding,
+  interpretRustImport,
+  interpretRustTypeBinding,
+} from './rust/index.js';
 
 /** Rust impl_item: find the function_item child and extract its name as a Method. */
 const rustExtractFunctionName = (
@@ -173,4 +182,12 @@ export const rustProvider = defineLanguage({
   classExtractor: createClassExtractor(rustClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Rust),
   builtInNames: BUILT_INS,
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
+  emitScopeCaptures: emitRustScopeCaptures,
+  interpretImport: interpretRustImport,
+  interpretTypeBinding: interpretRustTypeBinding,
+  bindingScopeFor: rustBindingScopeFor,
+  importOwningScope: rustImportOwningScope,
+  receiverBinding: rustReceiverBinding,
+  arityCompatibility: rustArityCompatibility,
 });
