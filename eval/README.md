@@ -162,8 +162,8 @@ Each mode has a `system_{mode}.jinja` + `instance_{mode}.jinja` pair. The agent 
 
 ```
 Agent → bash command → /usr/local/bin/gitnexus-query
-  → curl localhost:4848/tool/query     (fast path: eval-server, ~100ms)
-  → npx gitnexus query                 (fallback: cold CLI, ~5-10s)
+  → curl http://127.0.0.1:4848/tool/query   (fast path: eval-server, ~100ms)
+  → npx gitnexus query                       (fallback: cold CLI, ~5-10s)
 ```
 
 Each tool script in `/usr/local/bin/` is standalone — no sourcing, no env inheritance needed. This is critical because mini-swe-agent runs every command via `subprocess.run` in a fresh subshell.
@@ -175,6 +175,61 @@ The eval-server is a lightweight HTTP daemon that:
 - Returns LLM-friendly text (not raw JSON — saves tokens)
 - Includes next-step hints to guide tool chaining (query → context → impact → fix)
 - Auto-shuts down after idle timeout
+
+**CLI flags:**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--port <port>` | `4848` | Port to listen on |
+| `--host <host>` | `127.0.0.1` | Bind address — use `0.0.0.0` for cross-container access |
+| `--idle-timeout <seconds>` | `0` (disabled) | Auto-shutdown after N seconds of inactivity |
+
+**READY signal:**
+
+When the server is ready, it writes to stdout:
+
+```
+# IPv4
+GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
+
+# IPv6 (bracketed to avoid colon ambiguity)
+GITNEXUS_EVAL_SERVER_READY:[::1]:4848
+```
+
+Parse the port as the last colon-segment (`split(':').pop()`) — not `split(':')[1]`, which breaks for IPv6 and for non-loopback IPv4 hosts added in this release.
+
+### Custom port and host
+
+`run_eval.py` does not expose `--port` or `--host` as CLI flags. Configure them in your mode YAML under the `environment:` key:
+
+```yaml
+# configs/modes/native_augment.yaml (or whichever mode you're running)
+environment:
+  eval_server_port: 4849         # change if 4848 is already in use on the host
+  eval_server_host: "0.0.0.0"   # bind all interfaces — needed for cross-container setups
+```
+
+Defaults are `port: 4848` and `host: 127.0.0.1` (loopback only). Use `0.0.0.0` only when the agent container needs to reach the eval-server from a separate network namespace. The health probe and tool scripts connect via the configured bind host (defaulting to `127.0.0.1`), which is reachable for both loopback and all-interface binds.
+
+`"localhost"` is also a valid `eval_server_host` value. The OS resolves it at bind time — typically `127.0.0.1` on dual-stack or IPv4-only systems, and `::1` on IPv6-only systems. The exact result depends on your `/etc/hosts` and `gai.conf`. The READY signal will reflect the actual bound address (e.g. `GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848` or `GITNEXUS_EVAL_SERVER_READY:[::1]:4848`), not the literal string `localhost`. Use this when you want the server to bind to whichever loopback address the OS prefers rather than forcing IPv4.
+
+**Running eval-server directly in Docker / Docker Compose:**
+
+```bash
+# Bind to all interfaces so sibling containers can reach it
+gitnexus eval-server --host 0.0.0.0 --port 4848
+
+# Then probe from a sibling container via its service hostname
+curl http://eval-container:4848/health
+```
+
+If you need a non-default port (e.g. to avoid conflicts), pass `--port <port>` alongside `--host`. The READY signal will reflect both:
+
+```
+GITNEXUS_EVAL_SERVER_READY:0.0.0.0:5000
+```
+
+Parse the port as the last colon-segment (`split(':').pop()`) — safe for both IPv4 and bracketed IPv6 forms.
 
 ### Index caching
 

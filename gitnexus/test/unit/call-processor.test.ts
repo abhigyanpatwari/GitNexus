@@ -1383,10 +1383,18 @@ describe('processCallsFromExtracted', () => {
 describe('processCalls — Phase P class lookup fallback', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
+  let prevRegistryJava: string | undefined;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+    prevRegistryJava = process.env['REGISTRY_PRIMARY_JAVA'];
+    process.env['REGISTRY_PRIMARY_JAVA'] = 'false';
+  });
+
+  afterEach(() => {
+    if (prevRegistryJava === undefined) delete process.env['REGISTRY_PRIMARY_JAVA'];
+    else process.env['REGISTRY_PRIMARY_JAVA'] = prevRegistryJava;
   });
 
   it('uses lookupClassByName to override interface receiver types for cross-file virtual dispatch', async () => {
@@ -2147,10 +2155,13 @@ describe('processNextjsFetchRoutes', () => {
 describe('processCallsFromExtracted — interface dispatch', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
+  let prevRegistryJava: string | undefined;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+    prevRegistryJava = process.env['REGISTRY_PRIMARY_JAVA'];
+    process.env['REGISTRY_PRIMARY_JAVA'] = 'false';
     const ifaceFile = 'contracts/Action.java';
     const runnerFile = 'runner.java';
     const implA = 'impl/A.java';
@@ -2193,6 +2204,11 @@ describe('processCallsFromExtracted — interface dispatch', () => {
       label: 'Method',
       properties: { name: 'execute', filePath: implB },
     });
+  });
+
+  afterEach(() => {
+    if (prevRegistryJava === undefined) delete process.env['REGISTRY_PRIMARY_JAVA'];
+    else process.env['REGISTRY_PRIMARY_JAVA'] = prevRegistryJava;
   });
 
   it('adds CALLS to interface method plus lower-confidence edges to implementing methods', async () => {
@@ -2241,21 +2257,26 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;
   let prevRegistryPython: string | undefined;
+  let prevRegistryJava: string | undefined;
 
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
     // These tests exercise the LEGACY call-resolution DAG directly
-    // using .py fixtures. Python defaults to registry-primary now
-    // (MIGRATED_LANGUAGES), which gates call-processor out for
-    // Python files. Force the flag off so the legacy DAG runs.
+    // using .py/.java fixtures. Python and Java default to registry-
+    // primary now (MIGRATED_LANGUAGES), which gates call-processor
+    // out for those files. Force the flags off so the legacy DAG runs.
     prevRegistryPython = process.env['REGISTRY_PRIMARY_PYTHON'];
     process.env['REGISTRY_PRIMARY_PYTHON'] = 'false';
+    prevRegistryJava = process.env['REGISTRY_PRIMARY_JAVA'];
+    process.env['REGISTRY_PRIMARY_JAVA'] = 'false';
   });
 
   afterEach(() => {
     if (prevRegistryPython === undefined) delete process.env['REGISTRY_PRIMARY_PYTHON'];
     else process.env['REGISTRY_PRIMARY_PYTHON'] = prevRegistryPython;
+    if (prevRegistryJava === undefined) delete process.env['REGISTRY_PRIMARY_JAVA'];
+    else process.env['REGISTRY_PRIMARY_JAVA'] = prevRegistryJava;
   });
 
   const setupChildParent = () => {

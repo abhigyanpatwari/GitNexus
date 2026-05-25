@@ -19,6 +19,7 @@ import {
   Type,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { useTranslation } from 'react-i18next';
 import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO } from '../lib/constants';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
@@ -211,6 +212,7 @@ interface FileTreePanelProps {
 }
 
 export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
+  const { t } = useTranslation(['common', 'graph']);
   const {
     graph,
     visibleLabels,
@@ -303,7 +305,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
         <button
           onClick={() => setIsCollapsed(false)}
           className="rounded p-2 text-text-secondary transition-colors hover:bg-hover hover:text-text-primary"
-          title="Expand Panel"
+          title={t('graph:fileTree.expandPanel')}
         >
           <PanelLeft className="h-5 w-5" />
         </button>
@@ -314,7 +316,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             setActiveTab('files');
           }}
           className={`rounded p-2 transition-colors ${activeTab === 'files' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:bg-hover hover:text-text-primary'}`}
-          title="File Explorer"
+          title={t('graph:fileTree.fileExplorer')}
         >
           <Folder className="h-5 w-5" />
         </button>
@@ -324,7 +326,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             setActiveTab('filters');
           }}
           className={`rounded p-2 transition-colors ${activeTab === 'filters' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:bg-hover hover:text-text-primary'}`}
-          title="Filters"
+          title={t('graph:fileTree.filters')}
         >
           <Filter className="h-5 w-5" />
         </button>
@@ -345,7 +347,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                 : 'text-text-secondary hover:bg-hover hover:text-text-primary'
             }`}
           >
-            Explorer
+            {t('graph:fileTree.explorer')}
           </button>
           <button
             onClick={() => setActiveTab('filters')}
@@ -355,13 +357,13 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
                 : 'text-text-secondary hover:bg-hover hover:text-text-primary'
             }`}
           >
-            Filters
+            {t('graph:fileTree.filters')}
           </button>
         </div>
         <button
           onClick={() => setIsCollapsed(true)}
           className="rounded p-1 text-text-muted transition-colors hover:bg-hover hover:text-text-primary"
-          title="Collapse Panel"
+          title={t('graph:fileTree.collapsePanel')}
         >
           <PanelLeftClose className="h-4 w-4" />
         </button>
@@ -375,7 +377,7 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
               <Search className="absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" />
               <input
                 type="text"
-                placeholder="Search files..."
+                placeholder={t('graph:fileTree.searchFiles')}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full rounded border border-border-subtle bg-elevated py-1.5 pr-3 pl-8 text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
@@ -384,9 +386,11 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
           </div>
 
           {/* File tree */}
-          <div className="scrollbar-thin flex-1 overflow-y-auto py-2">
+          <div className="flex-1 scrollbar-thin overflow-y-auto py-2">
             {fileTree.length === 0 ? (
-              <div className="px-3 py-4 text-center text-xs text-text-muted">No files loaded</div>
+              <div className="px-3 py-4 text-center text-xs text-text-muted">
+                {t('graph:fileTree.noFilesLoaded')}
+              </div>
             ) : (
               fileTree.map((node) => (
                 <TreeItem
@@ -406,14 +410,12 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
       )}
 
       {activeTab === 'filters' && (
-        <div className="scrollbar-thin flex-1 overflow-y-auto p-3">
+        <div className="flex-1 scrollbar-thin overflow-y-auto p-3">
           <div className="mb-3">
             <h3 className="mb-2 text-xs font-medium tracking-wide text-text-secondary uppercase">
-              Node Types
+              {t('graph:fileTree.nodeTypes')}
             </h3>
-            <p className="mb-3 text-[11px] text-text-muted">
-              Toggle visibility of node types in the graph
-            </p>
+            <p className="mb-3 text-[11px] text-text-muted">{t('graph:fileTree.nodeTypesDesc')}</p>
           </div>
 
           <div className="flex flex-col gap-1">
@@ -449,11 +451,9 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
           {/* Edge Type Toggles */}
           <div className="mt-6 border-t border-border-subtle pt-4">
             <h3 className="mb-2 text-xs font-medium tracking-wide text-text-secondary uppercase">
-              Edge Types
+              {t('graph:fileTree.edgeTypes')}
             </h3>
-            <p className="mb-3 text-[11px] text-text-muted">
-              Toggle visibility of relationship types
-            </p>
+            <p className="mb-3 text-[11px] text-text-muted">{t('graph:fileTree.edgeTypesDesc')}</p>
 
             <div className="flex flex-col gap-1">
               {ALL_EDGE_TYPES.map((edgeType) => {
@@ -488,19 +488,17 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
           <div className="mt-6 border-t border-border-subtle pt-4">
             <h3 className="mb-2 text-xs font-medium tracking-wide text-text-secondary uppercase">
               <Target className="mr-1.5 inline h-3 w-3" />
-              Focus Depth
+              {t('graph:fileTree.focusDepth')}
             </h3>
-            <p className="mb-3 text-[11px] text-text-muted">
-              Show nodes within N hops of selection
-            </p>
+            <p className="mb-3 text-[11px] text-text-muted">{t('graph:fileTree.focusDepthDesc')}</p>
 
             <div className="flex flex-wrap gap-1.5">
               {[
-                { value: null, label: 'All' },
-                { value: 1, label: '1 hop' },
-                { value: 2, label: '2 hops' },
-                { value: 3, label: '3 hops' },
-                { value: 5, label: '5 hops' },
+                { value: null, label: t('graph:fileTree.all') },
+                { value: 1, label: t('graph:fileTree.hops', { count: 1 }) },
+                { value: 2, label: t('graph:fileTree.hops', { count: 2 }) },
+                { value: 3, label: t('graph:fileTree.hops', { count: 3 }) },
+                { value: 5, label: t('graph:fileTree.hops', { count: 5 }) },
               ].map(({ value, label }) => (
                 <button
                   key={label}
@@ -517,14 +515,16 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
             </div>
 
             {depthFilter !== null && !selectedNode && (
-              <p className="mt-2 text-[10px] text-amber-400">Select a node to apply depth filter</p>
+              <p className="mt-2 text-[10px] text-amber-400">
+                {t('graph:fileTree.selectNodeDepth')}
+              </p>
             )}
           </div>
 
           {/* Legend */}
           <div className="mt-6 border-t border-border-subtle pt-4">
             <h3 className="mb-3 text-xs font-medium tracking-wide text-text-secondary uppercase">
-              Color Legend
+              {t('graph:fileTree.colorLegend')}
             </h3>
             <div className="grid grid-cols-2 gap-2">
               {(
@@ -558,8 +558,8 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
       {graph && (
         <div className="border-t border-border-subtle bg-elevated/50 px-3 py-2">
           <div className="flex items-center justify-between text-[10px] text-text-muted">
-            <span>{graph.nodes.length} nodes</span>
-            <span>{graph.relationships.length} edges</span>
+            <span>{t('common:counts.nodes', { count: graph.nodes.length })}</span>
+            <span>{t('common:counts.edges', { count: graph.relationships.length })}</span>
           </div>
         </div>
       )}

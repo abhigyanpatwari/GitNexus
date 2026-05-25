@@ -195,10 +195,13 @@ describe('Pass 1: scope tree', () => {
     ).toThrow(/overlap/i);
   });
 
-  it('throws when no Module scope is present', () => {
-    expect(() => extract([scopeMatch('function', 1, 0, 10, 0)], 'a.ts', mockProvider())).toThrow(
-      /Module/,
-    );
+  it('synthesizes a Module scope and re-parents orphan Function when no Module is present', () => {
+    const result = extract([scopeMatch('function', 1, 0, 10, 0)], 'a.ts', mockProvider());
+    const moduleScope = result.scopes.find((s) => s.kind === 'Module');
+    expect(moduleScope).toBeDefined();
+    const fnScope = result.scopes.find((s) => s.kind === 'Function');
+    expect(fnScope).toBeDefined();
+    expect(fnScope!.parent).toBe(moduleScope!.id);
   });
 });
 

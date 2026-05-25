@@ -34,6 +34,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // which is only available in the registry-primary path.
     'resolves user.Save() to the method whose receiver type is declared in another package file',
   ]),
+  java: new Set([
+    // Duplicate-FQN same-module path-affinity ordering is implemented in the
+    // Java provider hook for the scope-resolution path. Legacy DAG parity runs
+    // still use legacy owner/type resolution behavior and can bind cross-module.
+    'resolves Module1App.run calls to module1 UserService, not module2',
+    'resolves Module2App.run calls to module2 UserService, not module1',
+  ]),
   php: new Set([
     // Arity-narrowing in `pickUniqueGlobalCallable` rejects free-call
     // candidates that are definitively below required-parameter-count. The
@@ -80,6 +87,33 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'argCount > required (2>1) on candidate with default param emits NO edge post-fix',
     'variadic candidate, argCount < required (1<2) emits NO edge',
   ]),
+  typescript: new Set([
+    // Issue #1358 sub-cases: class-instance singleton (`export const foo = new Foo()`)
+    // and factory-pattern singleton (`export const foo = makeFoo()`) cross-file
+    // CALLS resolution. The scope-resolution path resolves these via
+    // `@type-binding.constructor` capture (TS query) +
+    // `propagateImportedReturnTypes` mirror + receiver-bound Case 4 simple
+    // typeBinding lookup. The legacy DAG's typeEnv does not propagate
+    // `new Foo()` constructor inference across module boundaries — verified
+    // by `scope-parity / typescript parity` CI job failure. Node-existence
+    // and HAS_METHOD edge assertions pass under legacy DAG (parser-level
+    // emission is intact); only the cross-file CALLS edge resolution
+    // requires the scope-resolution chain. Scope-resolver-only correctness
+    // wins; backporting requires constructor-typeBinding cross-file
+    // propagation in the legacy DAG.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+  ]),
+  javascript: new Set([
+    // Mirrors the TypeScript class-instance and factory-pattern singleton
+    // resolution gates above. JavaScript fails on the same 2 CALLS-edge
+    // resolution tests under `REGISTRY_PRIMARY_JAVASCRIPT=0` for the same
+    // reason — no cross-file constructor-typeBinding propagation in the
+    // legacy DAG path. Verified by `scope-parity / javascript parity` CI
+    // job failure on the bare singleton tests before this exclusion landed.
+    'resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding',
+    'resolves caller.fooService.getUser() through the factory chain to FooService.getUser',
+  ]),
   python: new Set([
     // Suffix-fallback lex tiebreak depends on the registry-primary
     // resolver's deterministic sort. The legacy resolver returns the
@@ -89,6 +123,82 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'picks the lexicographically smaller path on equal-depth ties',
     'binds the call to alpha/services/sync.py, not omega',
     'lex tiebreak still picks alpha/services/sync.py with reversed file-write order',
+  ]),
+  kotlin: new Set<string>([
+    // #1756 companion-vs-instance dispatch: the registry-primary path
+    // suppresses `instance.companionMethod()` via `ScopeResolver.
+    // isStaticOnly` (see `isKotlinStaticOnly` + the Case 4 filter in
+    // `receiver-bound-calls.ts`). The legacy DAG has no equivalent
+    // static-only gate — companion methods promoted onto the outer
+    // class are also returned by `lookupMethodByOwner` when the
+    // receiver is an instance, producing a false `CALLS` edge. Scope-
+    // resolver-only correctness win; backporting to legacy is out of
+    // scope per the migration policy (the bug stops mattering once
+    // Kotlin enters `MIGRATED_LANGUAGES` and legacy stops running).
+    'crossover() invoking logger.create() on an instance emits NO CALLS edge',
+    // #1756 / U2 (remediation plan 2026-05-22-002) MRO shadow tests:
+    // the registry-primary path filters static-only candidates INSIDE
+    // the Case-4 MRO chain walk (`pickFirstNonStaticOnly` in
+    // `receiver-bound-calls.ts`), so a derived class whose only
+    // member is a companion-promoted static method falls through to
+    // an ancestor's legitimate instance method; if no ancestor has
+    // an instance method, no CALLS edge is emitted. The legacy DAG
+    // returns the static-only companion method via
+    // `lookupMethodByOwner` on the most-derived owner and emits a
+    // false `CALLS` edge to it. Same scope-resolver-only correctness
+    // class as the bare `crossover()` test above; backporting is out
+    // of scope per the migration policy.
+    'useChild() falls through static-only Child.foo to Base.foo',
+    'useChild() does NOT emit an edge to the companion-promoted Child.foo',
+    'useStandalone() emits no CALLS edge (entire chain is static-only)',
+    // #1757 lambda scopes: the registry-primary path creates a Block
+    // scope per `lambda_literal` and synthesizes scoped type-bindings
+    // for the lambda parameter / implicit `it` (see
+    // `synthesizeKotlinLambdaBindings` in `kotlin/captures.ts` plus
+    // the `@type-binding.lambda-scoped` gate in
+    // `kotlinBindingScopeFor`). This lets the body's call-resolution
+    // chain see the chain-typebinding for the lambda's enclosing
+    // call (`users.map { it.name }.forEach { name -> println(name) }`)
+    // and emit the `chained -> println` edge correctly. The legacy DAG
+    // has no lambda-body scope and no per-lambda type-binding
+    // synthesis; calls inside lambdas resolve against the enclosing
+    // function scope only, so the `name` parameter chain inside a
+    // chained-receiver forEach lambda doesn't carry the right binding
+    // and the call-extractor never emits the CALLS edge. Scope-
+    // resolver-only correctness win; backporting requires re-modeling
+    // lambda bodies as their own scopes in `call-processor.ts`, which
+    // is out of scope per migration policy.
+    'chained: println(name) inside forEach resolves to file-scope println',
+    // #1756 / U4 (remediation plan 2026-05-22-002) named-companion
+    // crossover: the registry-primary path stamps the static-only
+    // marker on named-companion methods (via the new `@scope.companion`
+    // marker capture and the updated `populateCompanionMembersOn
+    // EnclosingClass` guard), so `instance.namedCompanionMethod()`
+    // is filtered out at the `isStaticOnly` hook. The legacy DAG has
+    // no static-only gate AND no named-companion-aware owner
+    // promotion — it both leaves the named-companion method owned
+    // by `Helper` AND emits a crossover edge when the call site uses
+    // an instance receiver. Same scope-resolver-only correctness
+    // class as the bare `crossover()` test; backporting is out of
+    // scope per the migration policy.
+    'useNamedCrossover: o.create() emits NO CALLS edge to create',
+    // #1756 / U3 (remediation plan 2026-05-22-002) other-receiver
+    // crossover: the registry-primary path applies the `isStaticOnly`
+    // filter across Cases 0 (compound receiver), 3b (chain-typebinding),
+    // and 5 (value-receiver bridge) of `receiver-bound-calls.ts`. For
+    // the U3 fixture `kotlin-companion-other-cases/App.kt`, the
+    // chain-typebinding crossover (`services.first().build()` on a
+    // chain whose receiver type resolves through the legacy DAG's
+    // unfiltered lookup) and the value-receiver crossover
+    // (`l.create("nope")` where the legacy DAG binds `l` directly
+    // via its receiver-resolution path) both emit false `CALLS`
+    // edges to the companion-promoted static-only members. The
+    // legacy DAG has no `isStaticOnly`-equivalent hook, so these
+    // edges leak. Same scope-resolver-only correctness class as the
+    // bare `crossover()` test and the U2 MRO-shadow tests above;
+    // backporting is out of scope per the migration policy.
+    'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
+    'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
   ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
@@ -108,6 +218,7 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // resolver-only correctness win (PR #1520 review follow-up plan U2 /
     // Claude review Finding 5); backporting to legacy is out of scope.
     'emits zero CALLS edges when process(int)/process(long) collide after normalization',
+    'records a structured suppression reason for normalization ambiguity',
     // The legacy DAG path resolves `using namespace a; using namespace b; foo()`
     // by walking the workspace registry by simple name and binding to
     // the first match — same shape as the integer-width collision, just
@@ -175,10 +286,11 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'Derived<T>::g_unqualified() -> f() does NOT bind to Base<T>::f',
     'Derived<T>::g_this() -> this->f() resolves to Base<T>::f (1 edge)',
     'Derived<T>::g() -> this->f() emits zero CALLS edges when only hidden derived overload is arity-incompatible',
-    // Conversion-rank scoring (#1578) disambiguates `f(int)` vs `f(double)`
-    // by ranking exact match over standard conversion. The legacy DAG has no
-    // conversion-rank scoring; it either picks arbitrarily or leaves the call
-    // unresolved. Scope-resolver-only correctness win.
+    // Conversion-rank scoring (#1578 / #1606) disambiguates `f(int)` vs
+    // `f(double)` by ranking exact match over standard conversion. The
+    // legacy DAG has no conversion-rank scoring; it either picks
+    // arbitrarily or leaves the call unresolved. Scope-resolver-only
+    // correctness win.
     'f(2.5) resolves to f(double) — exact match beats standard conversion',
     'f(42) resolves to f(int) — exact match beats standard conversion',
     'g(42) emits zero CALLS edges — int/long normalize to same type, ambiguous',
@@ -188,18 +300,46 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // Multi-arg incomparable overloads: pairwise dominance check finds
     // neither h(int,int) nor h(double,double) dominates. Scope-resolver-only.
     'h(42, 2.5) emits zero CALLS edges — incomparable multi-arg overloads, ambiguous',
+    'records a structured suppression reason for conversion-rank ties',
+    // Pointer/nullptr/ellipsis conversion ranks (#1637) need C++ type-class
+    // sidecars plus conversion-rank scoring. The legacy DAG has neither.
+    'f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)',
+    'g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)',
+    "h(1, 'a') resolves to h(int, double), not h(int, ...)",
+    'k(1, 2, 3) keeps the ellipsis overload viable when it is the only match',
+    // The legacy DAG path lacks the SFINAE / `requires`-clause aware
+    // overload filter (issue #1579). The two `process<T>` overloads
+    // guarded by mutually-exclusive `enable_if_t` predicates collapse
+    // into false multi-candidate ambiguity → 0 CALLS edges. The
+    // registry-primary path filters via `constraintCompatibility` and
+    // emits exactly 2 edges (one per ISO-resolved overload). Scope-
+    // resolver-only correctness win; backporting requires a constexpr
+    // evaluation engine in the legacy DAG.
+    'enable_if_t<is_integral_v<T>> overload binds only on integral call sites',
+    'enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites',
+    'requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)',
+    'is_pointer_v and is_class_v disambiguate pointer vs class arguments',
+    'is_reference_v keeps reference-shaped arguments distinct from values',
+    'is_class_v rejects primitive arguments while keeping class arguments',
+    'is_enum_v distinguishes known enum declarations from primitives',
+    'is_const_v and is_volatile_v disambiguate cv-qualified locals',
+    'is_void_v does not misclassify void pointers as void values',
     // The legacy DAG path has no inline-namespace same-name ambiguity
     // detection. When two inline children declare the same name, the
     // legacy path picks an arbitrary match. The scope-resolver returns
     // 'ambiguous' and suppresses edge emission. Scope-resolver-only
     // correctness win (#1564); backporting to legacy is out of scope.
     'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
+    'records a structured suppression reason for inline namespace ambiguity',
     // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
-    // `foo(double)` in v2. The scope-resolver conservatively suppresses
-    // because `resolveQualifiedReceiverMember` lacks call-site argument
-    // types. Legacy DAG has no inline-namespace resolver. Scope-resolver-
-    // only correctness win (#1600 / Claude review Finding 1).
-    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)',
+    // `foo(double)` in v2. PR #1810 threads call-site types through the
+    // resolveQualifiedReceiverMember contract — resolved in both mode paths.
+    // Legacy DAG emits an edge via the global callable fallback; the test
+    // now expects 1 edge, so the old expected-failure entry is removed.
+    // Normalized-signature ambiguity: `foo(int)` vs `foo(long)` both map to
+    // `int` via normalizeCppParamType. Scope-resolver suppresses via
+    // isOverloadAmbiguousAfterNormalization; legacy path picks arbitrarily.
+    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(long) — both normalize to int',
     // PR #1598: ADL free-function reference arg negative fixtures rely on
     // scope-resolver-only correctness. The legacy DAG falls back to
     // `pickUniqueGlobalCallable` which resolves the callee by simple-name
@@ -214,6 +354,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     // scope-resolver-only. The legacy DAG has no scope-aware ADL blocker
     // detection; it falls back to `pickUniqueGlobalCallable`. Scope-
     // resolver-only correctness wins; backporting is out of scope.
+    'record(e) emits zero CALLS when a variable named record exists in scope',
+    'records a structured suppression reason for ADL blocker lookup',
     'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
     'record(e) emits zero CALLS when a block-scope function declaration exists',
   ]),
@@ -293,6 +435,10 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
     }
   }
   return edges;
+}
+
+export function getResolutionOutcomes(result: PipelineResult) {
+  return result.resolutionOutcomes ?? [];
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {

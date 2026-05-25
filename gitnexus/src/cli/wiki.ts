@@ -35,6 +35,24 @@ export interface WikiCommandOptions {
   review?: boolean;
   timeout?: string;
   retries?: string;
+  lang?: string;
+}
+
+function parsePositiveIntegerOption(
+  value: string | undefined,
+  flag: string,
+  multiplier = 1,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${flag} must be a positive integer`);
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (parsed > Math.floor(Number.MAX_SAFE_INTEGER / multiplier)) {
+    throw new Error(`${flag} is too large`);
+  }
+  return parsed;
 }
 
 /**
@@ -89,6 +107,24 @@ function prompt(question: string, hide = false): Promise<string> {
 }
 
 export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptions) => {
+  // Snapshot GITNEXUS_VERBOSE at entry — wikiCommand mutates it (the impl
+  // below) so cursor-client (process.env-driven) sees the right value during
+  // this run. Restored in finally so back-to-back wiki calls in long-running
+  // hosts don't leak verbose state from one invocation to the next. Pairs
+  // with the same snapshot/restore pattern in `analyzeCommand`.
+  const originalVerbose = process.env.GITNEXUS_VERBOSE;
+  try {
+    await wikiCommandImpl(inputPath, options);
+  } finally {
+    if (originalVerbose === undefined) {
+      delete process.env.GITNEXUS_VERBOSE;
+    } else {
+      process.env.GITNEXUS_VERBOSE = originalVerbose;
+    }
+  }
+};
+
+const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions): Promise<void> => {
   // Set verbose mode globally for cursor-client to pick up
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
@@ -123,6 +159,17 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   if (!meta) {
     console.log('  Error: No GitNexus index found.');
     console.log('  Run `gitnexus analyze` first to index this repository.\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  let timeoutSeconds: number | undefined;
+  let retries: number | undefined;
+  try {
+    timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
+    retries = parsePositiveIntegerOption(options?.retries, '--retries');
+  } catch (error) {
+    console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
     return;
   }
@@ -350,13 +397,11 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   }
 
   // ── Apply per-run overrides not saved to config ────────────────────
-  if (options?.timeout) {
-    const secs = parseInt(options.timeout, 10);
-    if (!isNaN(secs) && secs > 0) llmConfig.requestTimeoutMs = secs * 1000;
+  if (timeoutSeconds !== undefined) {
+    llmConfig.requestTimeoutMs = timeoutSeconds * 1000;
   }
-  if (options?.retries) {
-    const n = parseInt(options.retries, 10);
-    if (!isNaN(n) && n > 0) llmConfig.maxAttempts = n;
+  if (retries !== undefined) {
+    llmConfig.maxAttempts = retries;
   }
 
   // ── Setup progress bar with elapsed timer ──────────────────────────
@@ -395,6 +440,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     force: options?.force,
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
+    lang: options?.lang,
   };
 
   const generator = new WikiGenerator(
@@ -473,7 +519,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
         console.log('  Save and close the editor when done.\n');
 
         try {
-          execFileSync(editor, [treeFile], { stdio: 'inherit' });
+          execFileSync(editor, [treeFile], { stdio: 'inherit', windowsHide: true });
         } catch {
           console.log(`  Could not open editor. Please edit manually:\n  ${treeFile}\n`);
           console.log('  Then run `gitnexus wiki` to continue.\n');
@@ -563,6 +609,8 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
     if (err.message?.includes('No source files')) {
       console.log(`\n  ${err.message}\n`);
+    } else if (err.message?.includes('LLM request timed out after')) {
+      console.log(`\n  Timeout: ${err.message}\n`);
     } else if (err.message?.includes('content filter')) {
       // Content filter block — actionable message
       console.log(`\n  Content Filter: ${err.message}\n`);
@@ -607,7 +655,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
 function hasGhCLI(): boolean {
   try {
-    execSync('gh --version', { stdio: 'ignore' });
+    execSync('gh --version', { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -651,7 +699,7 @@ function publishGist(htmlPath: string): { url: string; rawUrl: string } | null {
     const output = execFileSync(
       'gh',
       ['gist', 'create', htmlPath, '--desc', 'Repository Wiki — generated by GitNexus', '--public'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     ).trim();
 
     // `gh gist create` prints the gist URL as a line in the output. Find the

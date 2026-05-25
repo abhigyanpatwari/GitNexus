@@ -1,32 +1,85 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
+import { t } from './i18n/index.js';
+
+function isCombiningMark(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
+    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+    (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
+  );
+}
+
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+    (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
+}
+
+export function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of value) {
+    const codePoint = char.codePointAt(0);
+    if (codePoint === undefined || codePoint === 0) continue;
+    if (isCombiningMark(codePoint)) continue;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+  return width;
+}
+
+export function padDisplayEnd(value: string, columns: number): string {
+  return value + ' '.repeat(Math.max(0, columns - displayWidth(value)));
+}
+
+const label = (key: Parameters<typeof t>[0], width: number): string => padDisplayEnd(t(key), width);
 
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
   const embeddingConfig = resolveEmbeddingConfig();
 
-  console.log('GitNexus Doctor\n');
-  console.log('Runtime');
-  console.log(`  OS:        ${fingerprint.platform}/${fingerprint.arch}`);
-  console.log(`  Node:      ${fingerprint.node}`);
-  console.log(`  GitNexus:  ${fingerprint.gitnexus}`);
-  console.log(`  LadybugDB: ${fingerprint.ladybugdb ?? 'unknown'}`);
-  console.log(`  ONNX:      ${fingerprint.onnxruntime ?? 'unknown'}`);
+  console.log(t('doctor.title') + '\n');
+  console.log(t('doctor.runtime'));
+  console.log(`  ${label('doctor.labels.os', 10)}${fingerprint.platform}/${fingerprint.arch}`);
+  console.log(`  ${label('doctor.labels.node', 10)}${fingerprint.node}`);
+  console.log(`  ${label('doctor.labels.gitnexus', 10)}${fingerprint.gitnexus}`);
+  console.log(`  ${label('doctor.labels.ladybugdb', 10)}${fingerprint.ladybugdb ?? 'unknown'}`);
+  console.log(`  ${label('doctor.labels.onnx', 10)}${fingerprint.onnxruntime ?? 'unknown'}`);
   console.log('');
-  console.log('Capabilities');
-  console.log(`  Graph store:     ${capabilities.graph}`);
-  console.log(`  Full-text search:${capabilities.fts.padStart(10)}`);
-  console.log(`  VECTOR index:    ${capabilities.vector}`);
-  console.log(`  Semantic mode:   ${capabilities.semanticMode}`);
-  console.log(`  Exact scan limit:${String(capabilities.exactScanLimit).padStart(9)} chunks`);
-  if (capabilities.reason) console.log(`  Note:            ${capabilities.reason}`);
+  console.log(t('doctor.capabilities'));
+  console.log(`  ${label('doctor.labels.graphStore', 18)}${capabilities.graph}`);
+  console.log(`  ${label('doctor.labels.fullTextSearch', 18)}${capabilities.fts}`);
+  console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
+  console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
+  console.log(
+    `  ${label('doctor.labels.exactScanLimit', 18)}${t('doctor.chunks', { count: capabilities.exactScanLimit })}`,
+  );
+  if (capabilities.reason)
+    console.log(`  ${label('doctor.labels.note', 18)}${capabilities.reason}`);
   console.log('');
-  console.log('Embeddings');
-  console.log(`  Backend:   ${isHttpMode() ? 'http' : 'local'}`);
-  console.log(`  Device:    ${embeddingConfig.device}`);
-  console.log(`  Threads:   ${embeddingConfig.threads}`);
-  console.log(`  Batch:     ${embeddingConfig.batchSize} nodes`);
-  console.log(`  Sub-batch: ${embeddingConfig.subBatchSize} chunks`);
+  console.log(t('doctor.embeddings'));
+  console.log(`  ${label('doctor.labels.backend', 12)}${isHttpMode() ? 'http' : 'local'}`);
+  console.log(`  ${label('doctor.labels.device', 12)}${embeddingConfig.device}`);
+  console.log(`  ${label('doctor.labels.threads', 12)}${embeddingConfig.threads}`);
+  console.log(
+    `  ${label('doctor.labels.batch', 12)}${t('doctor.nodes', { count: embeddingConfig.batchSize })}`,
+  );
+  console.log(
+    `  ${label('doctor.labels.subBatch', 12)}${t('doctor.chunks', { count: embeddingConfig.subBatchSize })}`,
+  );
 };

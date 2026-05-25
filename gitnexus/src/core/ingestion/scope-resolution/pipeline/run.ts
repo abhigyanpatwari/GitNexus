@@ -25,6 +25,7 @@
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
 import { validateBindingsImmutability } from './validate-bindings-immutability.js';
@@ -43,6 +44,7 @@ import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findClassBindingInScope, findEnclosingClassDef } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
+import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 
 import { logger } from '../../../logger.js';
 
@@ -160,6 +162,11 @@ interface RunScopeResolutionInput {
    * Cache miss is safe — falls back to fresh extract.
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
+  /**
+   * Optional additive diagnostics sink. Resolver passes call this when they
+   * intentionally suppress an edge; the graph remains unchanged.
+   */
+  readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
 }
 
 interface RunScopeResolutionStats {
@@ -169,6 +176,7 @@ interface RunScopeResolutionStats {
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
   readonly referenceSkipped: number;
+  readonly resolutionOutcomes: readonly ResolutionOutcome[];
 }
 
 export function runScopeResolution(
@@ -177,6 +185,11 @@ export function runScopeResolution(
 ): RunScopeResolutionStats {
   const { graph, files } = input;
   const onWarn = input.onWarn ?? (() => {});
+  const resolutionOutcomes: ResolutionOutcome[] = [];
+  const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
+    resolutionOutcomes.push(outcome);
+    input.recordResolutionOutcome?.(outcome);
+  };
   const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
   const tStart = PROF ? process.hrtime.bigint() : 0n;
   let fileContents: Map<string, string> | undefined;
@@ -247,6 +260,7 @@ export function runScopeResolution(
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
+      resolutionOutcomes,
     };
   }
 
@@ -342,6 +356,8 @@ export function runScopeResolution(
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    ownedMembersByOwner: (ownerDefId, memberName) =>
+      lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
   });
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
@@ -356,6 +372,9 @@ export function runScopeResolution(
     provider,
     workspaceIndex,
     readonlyModel,
+    {
+      recordResolutionOutcome,
+    },
   );
   const unresolvedReceiverExtras =
     provider.emitUnresolvedReceiverEdges !== undefined
@@ -383,6 +402,8 @@ export function runScopeResolution(
       isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
       resolveAdlCandidates: provider.resolveAdlCandidates,
       conversionRankFn: provider.conversionRankFn,
+      constraintCompatibility: provider.constraintCompatibility,
+      recordResolutionOutcome,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
@@ -420,5 +441,6 @@ export function runScopeResolution(
     resolve: resolveStats,
     referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
     referenceSkipped: skipped,
+    resolutionOutcomes,
   };
 }

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import express from 'express';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -322,5 +323,19 @@ describe('Real Express dispatch — API and asset isolation', () => {
     registerWebUI(app, null);
     const status = await makeRequest(app, 'GET', '/');
     expect(status).toBe(200);
+  });
+
+  it('does not register a legacy "*" OPTIONS route (Express 5 startup crash regression guard)', async () => {
+    // The original PR #1747 startup crash was `app.options('*', ...)` throwing
+    // under Express 5's stricter path parser. The fix on main is to NOT register
+    // any explicit OPTIONS route — cors() handles preflights automatically and
+    // the Access-Control-Allow-Private-Network header is set by global middleware
+    // before cors. This regression guard fails loudly if someone re-adds a legacy
+    // wildcard route to api.ts.
+    const apiSource = readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
+      'utf-8',
+    );
+    expect(apiSource).not.toMatch(/app\.options\(\s*['"`]\*['"`]/);
   });
 });

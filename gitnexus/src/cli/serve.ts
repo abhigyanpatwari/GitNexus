@@ -1,6 +1,7 @@
 import { createServer } from '../server/api.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
-import { cliError } from './cli-message.js';
+import { cliErrorKey } from './cli-message.js';
+import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../core/lbug/lbug-config.js';
 
 // Catch anything that would cause a silent exit. Pino v10's default
 // destination is `sync: false` (SonicBoom buffered) — call
@@ -34,21 +35,24 @@ export const serveCommand = async (options?: { port?: string; host?: string }) =
   try {
     await createServer(port, host);
   } catch (err: any) {
-    if (err.code === 'EADDRINUSE') {
-      cliError(
-        `\nFailed to start GitNexus server:\n` +
-          `  ${err.message || err}\n\n` +
-          `  Port ${port} is already in use. Either:\n` +
-          `    1. Stop the other process using port ${port}\n` +
-          `    2. Use a different port: gitnexus serve --port 4748\n`,
+    if (isWalCorruptionError(err)) {
+      cliErrorKey(
+        'serve.walCorruption',
+        { suggestion: WAL_RECOVERY_SUGGESTION },
+        { recoveryHint: 'wal-corruption' },
+      );
+    } else if (err.code === 'EADDRINUSE') {
+      cliErrorKey(
+        'serve.portInUse',
+        { message: String(err.message || err), port },
         { code: err.code, port, host },
       );
     } else {
-      cliError(`\nFailed to start GitNexus server:\n  ${err.message || err}\n`, {
-        code: err.code,
-        port,
-        host,
-      });
+      cliErrorKey(
+        'serve.startFailed',
+        { message: String(err.message || err) },
+        { code: err.code, port, host },
+      );
     }
     if (err.stack && process.env.DEBUG) {
       logger.debug({ stack: err.stack }, 'serve start error stack');

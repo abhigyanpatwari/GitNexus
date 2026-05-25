@@ -4,53 +4,29 @@
  *
  * ## Registry-primary parity status
  *
- * Java is **not** in `MIGRATED_LANGUAGES` — the scope-resolution
- * registry runs in shadow mode only.  Parity in forced registry mode
- * (`REGISTRY_PRIMARY_JAVA=1`) is 143/172 (83%).  The 29 gaps fall into:
+ * Java is in `MIGRATED_LANGUAGES` — the scope-resolution registry is
+ * the primary call-resolution path.  Parity: 178/178 (100%).
  *
- *   - switch pattern binding / sealed-class exhaustiveness
- *   - Map.values() / entrySet() iteration type propagation
- *   - assignment / method chain return-type propagation across files
- *   - virtual dispatch / interface default methods
- *
- * These are the same category of advanced-resolution gaps seen in prior
- * migrations (Python, C#, Go).  Parity is below the ≥99% flip threshold
- * per RFC §6.4.
- *
- * **CI visibility:** Because Java is absent from `MIGRATED_LANGUAGES`,
- * the parity CI workflow (`ci-scope-parity.yml`) does not run Java in
- * either `REGISTRY_PRIMARY_JAVA=0` or `=1` mode.  Regressions in forced
- * mode are only visible via manual `REGISTRY_PRIMARY_JAVA=1 npx vitest
- * run java.test.ts`.  Before flipping Java to registry-primary, a
- * non-required CI step should be added to run Java tests in forced mode
- * and report parity as a dashboard input.
- *
- * **Parity baseline (29 failures):** The 29 gaps in forced registry mode
- * are tracked in this PR (#1482) and this JSDoc.  If the gap count
- * changes (up or down), update this baseline accordingly.
- *
- * ### Known flip-blockers (must fix before adding to MIGRATED_LANGUAGES)
- *
- *   - Varargs arity: fixed-prefix count is now preserved, but no
- *     integration fixture exercises the 0-arg rejection path yet.
- *   - Static import resolution: `import static X.Y.m` now correctly
- *     resolves to `X/Y.java` (the class), not `X/Y/m.java` (the member).
- *     Edge cases with nested classes may remain.
- *   - Generic superclass receiver binding: `BaseModel<T>` now strips
- *     to `BaseModel` via JVM type-erasure fallback in `stripGeneric`.
- *   - Wildcard import (`import com.example.*`) file selection is
- *     nondeterministic when multiple classes share a package directory.
- *     May produce wrong-file edges in forced mode.
- *   - Qualified generic type parameters in field/parameter annotations
- *     (`com.example.BaseModel<T>`) — rare in practice but may miss
- *     resolution when the full qualifier is present with generics.
+ * **CI visibility:** The parity CI workflow (`ci-scope-parity.yml`)
+ * runs Java tests in both `REGISTRY_PRIMARY_JAVA=0` and `=1` modes
+ * automatically.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, TypeRef } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
+import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import {
+  isClassLike,
+  lookupBindingsAt,
+  namesAtScope,
+  populateClassOwnedMembers,
+} from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
 import { javaProvider } from '../java.js';
 import {
   javaArityCompatibility,
@@ -58,6 +34,7 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
+import { populateJavaPackageSiblings } from './package-siblings.js';
 
 const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
@@ -76,22 +53,167 @@ const javaScopeResolver: ScopeResolver = {
 
   arityCompatibility: (callsite, def) => javaArityCompatibility(def, callsite),
 
-  buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+  buildMro: buildJavaMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
-  // Java is statically typed — field-fallback heuristic stays off
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
-
-  // Java doesn't collapse member calls
-  collapseMemberCallsByCallerTarget: false,
-
-  // Hoist return-type bindings to Module scope for cross-file propagation
+  collapseMemberCallsByCallerTarget: true,
   hoistTypeBindingsToModule: true,
+
+  populateNamespaceSiblings: populateJavaPackageSiblings,
+  populateRangeBindings: populateJavaCrossFileReturnTypes,
 };
 
 export { javaScopeResolver };
+
+function populateJavaCrossFileReturnTypes(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+): void {
+  const moduleScopeByFile = new Map<string, ParsedFile['scopes'][number]>();
+  const classScopesByFile = new Map<string, ParsedFile['scopes'][number][]>();
+  for (const parsed of parsedFiles) {
+    const ms = parsed.scopes.find((s) => s.kind === 'Module');
+    if (ms !== undefined) moduleScopeByFile.set(parsed.filePath, ms);
+    const cs = parsed.scopes.filter((s) => s.kind === 'Class');
+    if (cs.length > 0) classScopesByFile.set(parsed.filePath, cs);
+  }
+
+  for (const parsed of parsedFiles) {
+    const importerModule = moduleScopeByFile.get(parsed.filePath);
+    if (importerModule === undefined) continue;
+
+    const ambiguousMirrors = new Set<string>();
+    for (const name of namesAtScope(importerModule.id, indexes)) {
+      const refs = lookupBindingsAt(importerModule.id, name, indexes);
+      for (const ref of refs) {
+        if (ref.origin !== 'import' && ref.origin !== 'reexport') continue;
+        if (!isClassLike(ref.def.type)) continue;
+
+        const sourceModule = moduleScopeByFile.get(ref.def.filePath);
+        if (sourceModule === undefined) continue;
+
+        const tb = importerModule.typeBindings as Map<string, TypeRef>;
+        for (const [srcName, srcRef] of sourceModule.typeBindings) {
+          if (srcRef.source !== 'return-annotation') continue;
+          if (ambiguousMirrors.has(srcName)) continue;
+          const existing = tb.get(srcName);
+          if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+            ambiguousMirrors.add(srcName);
+            tb.delete(srcName);
+            continue;
+          }
+          if (existing === undefined) tb.set(srcName, srcRef);
+        }
+
+        for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
+          for (const [srcName, srcRef] of classScope.typeBindings) {
+            if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
+            if (ambiguousMirrors.has(srcName)) continue;
+            const existing = tb.get(srcName);
+            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+              ambiguousMirrors.add(srcName);
+              tb.delete(srcName);
+              continue;
+            }
+            if (existing === undefined) tb.set(srcName, srcRef);
+          }
+        }
+      }
+    }
+
+    for (const [name, ref] of importerModule.typeBindings) {
+      const resolved = followChainPostFinalize(ref, importerModule.id, indexes);
+      if (resolved !== ref) {
+        (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
+      }
+    }
+  }
+
+  for (const parsed of parsedFiles) {
+    const moduleScopeId = moduleScopeByFile.get(parsed.filePath)?.id;
+    for (const scope of parsed.scopes) {
+      if (scope.id === moduleScopeId) continue;
+      for (const [name, ref] of scope.typeBindings) {
+        const resolved = followChainPostFinalize(ref, scope.id, indexes);
+        if (resolved !== ref) {
+          (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
+        }
+      }
+    }
+  }
+}
+
+function buildJavaMro(
+  graph: KnowledgeGraph,
+  parsedFiles: readonly ParsedFile[],
+  nodeLookup: GraphNodeLookup,
+): Map<string, string[]> {
+  const mro = buildMro(graph, parsedFiles, nodeLookup, defaultLinearize);
+
+  const defIdByGraphId = new Map<string, string>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (!isClassLike(def.type)) continue;
+      const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+      if (graphId !== undefined) defIdByGraphId.set(graphId, def.nodeId);
+    }
+  }
+
+  const directImpls = new Map<string, string[]>();
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    const source = defIdByGraphId.get(rel.sourceId);
+    const target = defIdByGraphId.get(rel.targetId);
+    if (source === undefined || target === undefined) continue;
+    let list = directImpls.get(source);
+    if (list === undefined) {
+      list = [];
+      directImpls.set(source, list);
+    }
+    if (!list.includes(target)) list.push(target);
+  }
+
+  for (const [classDefId, extendsMro] of mro) {
+    const ancestorChain = [classDefId, ...extendsMro];
+    const seeds: string[] = [];
+    for (const ancestorId of ancestorChain) {
+      for (const ifaceId of directImpls.get(ancestorId) ?? []) {
+        seeds.push(ifaceId);
+      }
+    }
+    if (seeds.length === 0) continue;
+    const interfaces = closeInterfaces(seeds, directImpls);
+    mro.set(classDefId, [...extendsMro, ...interfaces.filter((i) => !extendsMro.includes(i))]);
+  }
+
+  for (const [classDefId, ifaces] of directImpls) {
+    if (mro.has(classDefId)) continue;
+    mro.set(classDefId, closeInterfaces([...ifaces], directImpls));
+  }
+
+  return mro;
+}
+
+function closeInterfaces(
+  seeds: readonly string[],
+  directImpls: ReadonlyMap<string, readonly string[]>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const queue: string[] = [...seeds];
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    out.push(cur);
+    for (const next of directImpls.get(cur) ?? []) {
+      if (!seen.has(next)) queue.push(next);
+    }
+  }
+  return out;
+}

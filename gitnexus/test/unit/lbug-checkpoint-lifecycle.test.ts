@@ -10,6 +10,24 @@ const makeOpenMock = () =>
     close: vi.fn(async () => {}),
   }));
 
+/** Mock prepared statement shape for executePrepared/prepare+execute paths. */
+const makePreparedStatement = (sql: string) => ({
+  sql,
+  isSuccess: () => true,
+  getErrorMessage: () => '',
+});
+
+/** Mock connection supporting both query() and prepare/execute() call paths. */
+const makeConn = (runQuery: (sql: string) => Promise<unknown>) => {
+  const query = vi.fn(runQuery);
+  return {
+    query,
+    prepare: vi.fn(async (sql: string) => makePreparedStatement(sql)),
+    execute: vi.fn(async (statement: { sql: string }) => query(statement.sql)),
+    close: vi.fn(async () => {}),
+  };
+};
+
 /** Standard `fs/promises` mock for tests that only need doInitLbug to succeed. */
 const mockFsForInit = (dbPath: string) => {
   const ENOENT_ERROR = makeErrnoError(
@@ -50,10 +68,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       `ENOENT: no such file or directory, access '${dbPath}'`,
     );
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-    const conn = {
-      query: vi.fn(async () => queryResult),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async () => queryResult);
     const db = { close: vi.fn(async () => {}) };
 
     const unlinkMock = vi.fn(async () => {});
@@ -125,10 +140,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
     );
     const EACCES_ERROR = makeErrnoError('EACCES', `EACCES: permission denied, access '${dbPath}'`);
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-    const conn = {
-      query: vi.fn(async () => queryResult),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async () => queryResult);
     const db = { close: vi.fn(async () => {}) };
     const accessMock = vi.fn(async () => {
       throw EACCES_ERROR;
@@ -194,10 +206,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       `ENOENT: no such file or directory, access '${dbPath}'`,
     );
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-    const conn = {
-      query: vi.fn(async () => queryResult),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async () => queryResult);
     const db = { close: vi.fn(async () => {}) };
     const accessMock = vi.fn(async () => {});
     const unlinkMock = vi.fn(async () => {});
@@ -318,10 +327,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       `ENOENT: no such file or directory, access '${dbPath}'`,
     );
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-    const conn = {
-      query: vi.fn(async () => queryResult),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async () => queryResult);
     const db = { close: vi.fn(async () => {}) };
     const accessMock = vi.fn(async () => {
       throw ENOENT_ERROR;
@@ -391,10 +397,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       `EPERM: operation not permitted, unlink '${dbPath}.shadow'`,
     );
     const queryResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-    const conn = {
-      query: vi.fn(async () => queryResult),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async () => queryResult);
     const db = { close: vi.fn(async () => {}) };
     const accessMock = vi.fn(async () => {
       throw ENOENT_ERROR;
@@ -473,18 +476,16 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'CHECKPOINT') {
-          events.push('checkpoint:query');
-          return checkpointResult;
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {
-        events.push('conn:close');
-      }),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'CHECKPOINT') {
+        events.push('checkpoint:query');
+        return checkpointResult;
+      }
+      return genericResult;
+    });
+    conn.close = vi.fn(async () => {
+      events.push('conn:close');
+    });
     const db = {
       close: vi.fn(async () => {
         events.push('db:close');
@@ -539,16 +540,13 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
-          events.push('query:run');
-          return queryResult;
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+        events.push('query:run');
+        return queryResult;
+      }
+      return genericResult;
+    });
     const db = {
       close: vi.fn(async () => {}),
     };
@@ -595,15 +593,12 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
-          return queryResult;
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+        return queryResult;
+      }
+      return genericResult;
+    });
     const db = {
       close: vi.fn(async () => {}),
     };
@@ -661,15 +656,12 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
-          return [firstResult, secondResult];
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+        return [firstResult, secondResult];
+      }
+      return genericResult;
+    });
     const db = {
       close: vi.fn(async () => {}),
     };
@@ -741,16 +733,13 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
-          events.push('stream:query');
-          return [firstResult, secondResult];
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+        events.push('stream:query');
+        return [firstResult, secondResult];
+      }
+      return genericResult;
+    });
     const db = {
       close: vi.fn(async () => {}),
     };
@@ -822,16 +811,13 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       getAll: vi.fn(async () => []),
       close: vi.fn(),
     };
-    const conn = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === 'MATCH (n:File) RETURN n.id AS id') {
-          events.push('stream:query');
-          return queryResult;
-        }
-        return genericResult;
-      }),
-      close: vi.fn(async () => {}),
-    };
+    const conn = makeConn(async (sql: string) => {
+      if (sql === 'MATCH (n:File) RETURN n.id AS id') {
+        events.push('stream:query');
+        return queryResult;
+      }
+      return genericResult;
+    });
     const db = {
       close: vi.fn(async () => {}),
     };

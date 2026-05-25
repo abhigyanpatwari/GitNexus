@@ -21,6 +21,11 @@
  *      but not a namespace prefix → compound resolver
  *   7. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
+ *   8. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
+ *      whose `nodeId` is referenced as an `ownerId` in `model.methods`
+ *      (object-literal services). Last-resort fallback for lowercase
+ *      receivers with no class-like or type-binding match. Mirrors
+ *      the legacy DAG bridge in `call-processor.ts`.
  *
  * Reordering or merging cases changes resolution semantics.
  *
@@ -46,9 +51,10 @@ import {
   findExportedDef,
   findOwnedMember,
   findReceiverTypeBinding,
+  findValueBindingInScope,
   isClassLike,
 } from '../scope/walkers.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
+import { tryEmitEdge, tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
@@ -59,6 +65,10 @@ import {
   extractTemplateArguments,
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
+import type {
+  ResolutionOutcomeRecorder,
+  ResolutionSuppressionReason,
+} from '../resolution-outcome.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -74,6 +84,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
+  | 'constraintCompatibility'
+  | 'isStaticOnly'
 >;
 
 function normalizeTemplateArgToken(value: string): string {
@@ -132,6 +144,9 @@ export function emitReceiverBoundCalls(
   provider: ReceiverBoundProviderSubset,
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
+  options: {
+    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+  } = {},
 ): number {
   let emitted = 0;
   // Per-pass dedup so the multiple cases don't double-emit if two of
@@ -296,9 +311,28 @@ export function emitReceiverBoundCalls(
         if (currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): same shape as Case 4's
+          // chain walk (skip-and-walk-on) but without overload
+          // narrowing — Case 0 uses `findOwnedMember` directly. When
+          // an owner's resolved candidate is static-only (Kotlin
+          // companion-promoted), continue to the next ancestor in
+          // the MRO chain so a legitimate instance member can bind.
+          // If the entire chain is static-only, no edge is emitted —
+          // unlike Case 4, Case 0 does NOT mark the site handled in
+          // that situation because compound receivers (`a.b.c()`)
+          // are not pre-emitted by `emitReferencesViaLookup` (the
+          // reference index has no compound-receiver entry for
+          // shapes like `Logger.create("a")`), so there's no wrong
+          // target to suppress.
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              // Skip static-only candidate; walk to next ancestor.
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -327,6 +361,17 @@ export function emitReceiverBoundCalls(
       // C++ `this->member()` (and same-shape receivers in other OO
       // languages) should resolve against the enclosing class + MRO
       // even when there is no explicit `this` typeBinding in scope.
+      //
+      // **Static-only filter dependency (#1756 / U3):** this case does
+      // NOT currently consult `provider.isStaticOnly`. Today it fires
+      // only for C++ (the sole `resolveThisViaEnclosingClass === true`
+      // language), which has no static-only semantics. Kotlin — the
+      // current `isStaticOnly` consumer — leaves `resolveThisVia
+      // EnclosingClass` unset, so Case 0.5 is dead code for Kotlin
+      // crossover suppression and U3 leaves it untouched. If any
+      // future language enables BOTH `resolveThisViaEnclosingClass`
+      // AND `isStaticOnly`, the chain-walk below MUST adopt the
+      // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
@@ -344,7 +389,11 @@ export function emitReceiverBoundCalls(
                 methodOverloads,
                 site.arity,
                 site.argumentTypes,
-                provider.conversionRankFn,
+                {
+                  argumentTypeClasses: site.argumentTypeClasses,
+                  conversionRankFn: provider.conversionRankFn,
+                  constraintCompatibility: provider.constraintCompatibility,
+                },
               );
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
                 ambiguous = true;
@@ -452,10 +501,20 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           parsedFiles,
+          site,
         );
         if (memberDef === 'ambiguous') {
           // Same-name ambiguity across inline-namespace children (#1564):
           // suppress edge emission, mark site handled.
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            reason: 'inline-ns-ambiguous',
+            candidateIds: [],
+          });
           handledSites.add(siteKey);
           continue;
         }
@@ -589,9 +648,22 @@ export function emitReceiverBoundCalls(
         if (ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
+          // Static-only filter (#1756 / U3): mirrors Case 0's chain
+          // walk — `findOwnedMember` without overload narrowing. When
+          // a static-only candidate is found at an ancestor, walk on
+          // so a legitimate instance member can bind. If the entire
+          // chain is static-only, no edge is emitted (Case 3b is fed
+          // by chain-typebinding receivers, not pre-emitted by
+          // `emitReferencesViaLookup` for compound shapes, so no
+          // handled-site marker is needed for chain-only-static).
           for (const ownerId of chain) {
-            memberDef = findOwnedMember(ownerId, memberName, model);
-            if (memberDef !== undefined) break;
+            const candidate = findOwnedMember(ownerId, memberName, model);
+            if (candidate === undefined) continue;
+            if (provider.isStaticOnly?.(candidate) === true) {
+              continue;
+            }
+            memberDef = candidate;
+            break;
           }
           if (memberDef !== undefined) {
             const ok = tryEmitEdge(
@@ -647,27 +719,78 @@ export function emitReceiverBoundCalls(
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguous = false;
+          let ambiguousOwnerId: string | undefined;
+          // Track whether the chain walk filtered out any static-only
+          // candidates. When it did and the chain ended with no
+          // legitimate instance member, we mark the site as handled so
+          // `emitReferencesViaLookup` doesn't re-emit a wrong target
+          // from the pre-resolved reference index (which has no
+          // static-only awareness).
+          let allFilteredStaticOnly = false;
+          // Static-only filter (#1756 / U2): the filter must run INSIDE
+          // the chain walk and BEFORE arity narrowing.
+          //
+          // INSIDE: when a derived owner's only candidates are static-
+          // only (Kotlin companion-promoted), `pickFirstNonStaticOnly`
+          // returns `undefined` and the loop `continue`s to the next
+          // ancestor in the MRO chain — giving a legitimate ancestor
+          // instance method a chance to bind. The earlier after-chain
+          // filter aborted the entire site instead, producing a false
+          // negative whenever the most-derived owner shadowed an
+          // ancestor's instance method with a static-only companion
+          // member.
+          //
+          // BEFORE narrowing: filtering survivors of `lookupAllByOwner`
+          // (rather than survivors of `narrowOverloadCandidates`) means
+          // a same-arity static + instance pair on one owner doesn't
+          // collapse to `OVERLOAD_AMBIGUOUS`. Kotlin compile-resolves
+          // such a pair unambiguously to the instance method because
+          // companion members are not legal instance-dispatch
+          // candidates.
           for (const ownerId of chain) {
-            const picked = pickOverload(
-              ownerId,
-              memberName,
-              site,
-              model,
-              provider.conversionRankFn,
-            );
+            const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
+              ambiguousOwnerId = ownerId;
               break;
+            }
+            if (picked === STATIC_ONLY_FILTERED) {
+              // At least one static-only candidate was filtered out at
+              // this owner; remember so we can mark handled if the
+              // chain ends with no legitimate match.
+              allFilteredStaticOnly = true;
+              continue;
             }
             if (picked !== undefined) {
               memberDef = picked;
               break;
             }
+            // `picked === undefined` means this owner had no member of
+            // this name at all. Walk on to the next ancestor in the
+            // MRO chain.
           }
           if (ambiguous) {
             // Suppress and mark handled so `emitReferencesViaLookup`
             // doesn't re-emit the pre-resolved reference. See
             // OVERLOAD_AMBIGUOUS docstring for the upstream cause.
+            recordReceiverOverloadSuppression(
+              options.recordResolutionOutcome,
+              parsed.filePath,
+              site,
+              ambiguousOwnerId ?? ownerDef.nodeId,
+              memberName,
+              model,
+              provider,
+            );
+            handledSites.add(siteKey);
+            continue;
+          }
+          if (memberDef === undefined && allFilteredStaticOnly) {
+            // The chain ended with no candidates because every viable
+            // owner had only static-only members. Mark handled so
+            // `emitReferencesViaLookup` doesn't re-emit a wrong target
+            // from the pre-resolved reference index. Parallels the old
+            // after-chain `isStaticOnly` suppression block.
             handledSites.add(siteKey);
             continue;
           }
@@ -707,6 +830,83 @@ export function emitReceiverBoundCalls(
           }
         }
       }
+
+      // ── Case 5: value-receiver bridge (object-literal services) ──
+      // When prior cases couldn't resolve the receiver as a class or
+      // type binding, fall back to value-binding resolution. Covers:
+      //
+      //   export const fooService = { getUser(id) {...} };
+      //   import { fooService } from './service';
+      //   fooService.getUser(id);   // ← resolve here
+      //
+      // `fooService` is a `Const`/`Variable` (not class-like, no typeBinding
+      // for unannotated literals), so Cases 2-4 skip it. Scope-resolution
+      // defs for non-class values carry a synthetic id, so we translate to
+      // the canonical graph node ID via `resolveDefGraphId` before owner-
+      // indexed lookup — the parser writes the graph node ID as `ownerId`
+      // on the method symbol-table entry to match.
+      //
+      // Object-literal methods do not carry a `qualifiedName` (no class
+      // owner to seed it), so the picked def cannot round-trip through
+      // `tryEmitEdge` → `resolveDefGraphId`. We use
+      // `tryEmitEdgeWithExplicitTargetId` instead, passing `picked.nodeId`
+      // directly — same dedup-key shape, collapse-flag honoring, and
+      // caller resolution as `tryEmitEdge`.
+      const valueDef = findValueBindingInScope(site.inScope, receiverName, scopes);
+      if (valueDef !== undefined) {
+        const ownerGraphId =
+          resolveDefGraphId(valueDef.filePath, valueDef, nodeLookup) ?? valueDef.nodeId;
+        const picked = pickOverload(ownerGraphId, memberName, site, model, provider);
+        if (picked === OVERLOAD_AMBIGUOUS) {
+          recordReceiverOverloadSuppression(
+            options.recordResolutionOutcome,
+            parsed.filePath,
+            site,
+            ownerGraphId,
+            memberName,
+            model,
+            provider,
+          );
+          handledSites.add(siteKey);
+          continue;
+        }
+        if (picked !== undefined) {
+          // Static-only filter (#1756 / U3): unlike Case 4 there's no
+          // MRO chain to walk here — Case 5 dispatches on a single
+          // owner via `pickOverload`. When the picked candidate is
+          // static-only (Kotlin companion-promoted), suppress the
+          // edge entirely and mark the site handled so
+          // `emitReferencesViaLookup` doesn't re-emit a wrong target
+          // from the pre-resolved reference index. Matches the after-
+          // chain handled-marker semantic used by Case 4's
+          // all-filtered fall-through.
+          if (provider.isStaticOnly?.(picked) === true) {
+            handledSites.add(siteKey);
+            continue;
+          }
+          const reason =
+            site.kind === 'write' || site.kind === 'read'
+              ? site.kind
+              : picked.filePath !== parsed.filePath
+                ? 'import-resolved'
+                : 'global';
+          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          const ok = tryEmitEdgeWithExplicitTargetId(
+            graph,
+            scopes,
+            nodeLookup,
+            site,
+            picked.nodeId,
+            reason,
+            seen,
+            confidence,
+            collapse,
+          );
+          if (ok) emitted++;
+          handledSites.add(siteKey);
+          continue;
+        }
+      }
     }
   }
 
@@ -722,7 +922,7 @@ function pickOverload(
   memberName: string,
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
-  conversionRankFn?: (argType: string, paramType: string) => number,
+  provider: ReceiverBoundProviderSubset,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | undefined {
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (overloads.length === 0) {
@@ -733,12 +933,11 @@ function pickOverload(
   }
   if (overloads.length === 1) return overloads[0];
 
-  const candidates = narrowOverloadCandidates(
-    overloads,
-    site.arity,
-    site.argumentTypes,
-    conversionRankFn,
-  );
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
   // When narrowing leaves >1 candidate that share identical normalized
   // parameter-types (e.g., C++ `f(int)` vs `f(long)` both collapsed to
   // `['int']` by `normalizeCppParamType`), suppress the edge entirely.
@@ -763,3 +962,141 @@ function pickOverload(
  * collapses distinct types in arity-metadata).
  */
 export const OVERLOAD_AMBIGUOUS = Symbol('overload-ambiguous');
+
+/**
+ * Sentinel returned by `pickFirstNonStaticOnly` when the only candidates
+ * at the queried owner were filtered out by `provider.isStaticOnly`. Lets
+ * the Case 4 chain walk distinguish "owner had no member of this name"
+ * (return `undefined`, continue silently) from "owner had only static-
+ * only members" (return this sentinel, continue and remember so the
+ * post-chain handled-marker logic can suppress wrong-target re-emission
+ * from `emitReferencesViaLookup`). See #1756 / remediation plan U2.
+ */
+const STATIC_ONLY_FILTERED = Symbol('static-only-filtered');
+
+/**
+ * Receiver-bound member lookup that filters static-only candidates BEFORE
+ * arity narrowing. Wraps the raw `lookupAllByOwner` → `narrowOverloadCandidates`
+ * pipeline so:
+ *
+ *   1. Candidates flagged by `provider.isStaticOnly` (Kotlin companion-
+ *      promoted methods today) never enter the narrowing stage. A same-
+ *      name same-arity static + instance pair on one owner therefore does
+ *      NOT collapse to `OVERLOAD_AMBIGUOUS` — the instance member wins
+ *      unambiguously, matching Kotlin's compile-time resolution.
+ *   2. The chain walk in `emitReceiverBoundCalls` Case 4 can fall through
+ *      to ancestors when only static-only candidates exist at the
+ *      most-derived owner (returns `STATIC_ONLY_FILTERED`), rather than
+ *      aborting the site as the previous after-chain filter did.
+ *
+ * Returns:
+ *   - `undefined` — no member with this name on this owner; chain walk
+ *     continues silently.
+ *   - `STATIC_ONLY_FILTERED` — at least one candidate existed but every
+ *     one was static-only; chain walk continues and remembers so the
+ *     post-chain handled-marker can fire if no ancestor binds.
+ *   - `OVERLOAD_AMBIGUOUS` — narrowing on the surviving non-static
+ *     candidates left >1 ambiguous match; chain walk aborts and the
+ *     site is marked handled (existing sentinel handling preserved).
+ *   - `SymbolDefinition` — single survivor (the chosen target).
+ *
+ * See remediation plan `docs/plans/2026-05-22-002-fix-lang-kotlin-1782-
+ * remediation-plan.md` § U2 for the full rationale.
+ */
+function pickFirstNonStaticOnly(
+  ownerId: string,
+  memberName: string,
+  site: ParsedFile['referenceSites'][number],
+  model: SemanticModel,
+  provider: ReceiverBoundProviderSubset,
+): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
+  const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
+  if (rawOverloads.length === 0) {
+    // Non-callable member (field / property / variable) — ACCESSES
+    // write/read sites target these too. Static-only filtering doesn't
+    // apply to fields, so delegate straight to `lookupFieldByOwner`.
+    return model.fields.lookupFieldByOwner(ownerId, memberName);
+  }
+  const isStaticOnly = provider.isStaticOnly;
+  let overloads: readonly SymbolDefinition[] = rawOverloads;
+  let filteredAny = false;
+  if (isStaticOnly !== undefined) {
+    const survivors: SymbolDefinition[] = [];
+    for (const candidate of rawOverloads) {
+      if (isStaticOnly(candidate) === true) {
+        filteredAny = true;
+        continue;
+      }
+      survivors.push(candidate);
+    }
+    overloads = survivors;
+  }
+  if (overloads.length === 0) {
+    // Every candidate was static-only; the caller (Case 4 chain walk)
+    // should walk on to the next owner AND remember that filtering
+    // happened so it can mark the site handled if the whole chain
+    // ends with no legitimate match.
+    return filteredAny ? STATIC_ONLY_FILTERED : undefined;
+  }
+  if (overloads.length === 1) return overloads[0];
+
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
+  // Same ambiguity handling as `pickOverload`: when normalization
+  // collapses the surviving overloads into a single bucket (e.g., C++
+  // `f(int)`/`f(long)` normalized to `['int']`), suppress rather than
+  // arbitrarily picking. When narrowing leaves >1 distinct candidate
+  // with no tie-breaker, suppress for the same reason.
+  if (isOverloadAmbiguousAfterNormalization(candidates, site.arity)) return OVERLOAD_AMBIGUOUS;
+  if (candidates.length > 1) return OVERLOAD_AMBIGUOUS;
+  return candidates[0] ?? overloads[0];
+}
+
+function recordReceiverOverloadSuppression(
+  record: ResolutionOutcomeRecorder | undefined,
+  filePath: string,
+  site: ParsedFile['referenceSites'][number],
+  ownerId: string,
+  memberName: string,
+  model: SemanticModel,
+  provider: ReceiverBoundProviderSubset,
+): void {
+  if (record === undefined) return;
+  const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: provider.conversionRankFn,
+    constraintCompatibility: provider.constraintCompatibility,
+  });
+  const reason: ResolutionSuppressionReason = isOverloadAmbiguousAfterNormalization(
+    candidates,
+    site.arity,
+  )
+    ? 'overload-ambiguous-normalization'
+    : hasConversionRankingSignal(site, provider)
+      ? 'conversion-rank-tied'
+      : 'overload-ambiguous';
+  record({
+    kind: 'suppressed',
+    phase: 'receiver-bound-calls',
+    filePath,
+    name: site.name,
+    range: site.atRange,
+    reason,
+    candidateIds: candidates.map((d) => d.nodeId),
+  });
+}
+
+function hasConversionRankingSignal(
+  site: ParsedFile['referenceSites'][number],
+  provider: ReceiverBoundProviderSubset,
+): boolean {
+  return (
+    provider.conversionRankFn !== undefined &&
+    site.argumentTypes !== undefined &&
+    site.argumentTypes.length > 0
+  );
+}

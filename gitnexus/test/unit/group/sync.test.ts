@@ -980,6 +980,129 @@ service OrderService {
       expect(nodeLink).toBeDefined();
     });
   });
+
+  it('manifest symbol resolution runs before closeLbug (issue #1802)', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'svc/orders',
+        to: 'svc/payments',
+        type: 'http',
+        contract: 'GET::/api/checkout',
+        role: 'consumer',
+      },
+    ];
+
+    const config: GroupConfig = {
+      version: 1,
+      name: 'test',
+      description: '',
+      repos: { 'svc/orders': 'orders-repo', 'svc/payments': 'payments-repo' },
+      links,
+      packages: {},
+      detect: {
+        http: true,
+        grpc: false,
+        thrift: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+        workspace_deps: false,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+
+    let closeLbugCalled = false;
+    let manifestResolvedWhilePoolOpen = false;
+
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockImplementation(async () => {
+      closeLbugCalled = true;
+    });
+    const execSpy = vi
+      .spyOn(poolAdapter, 'executeParameterized')
+      .mockImplementation(
+        async (_poolId: string, query: string, _params: Record<string, unknown>) => {
+          if (query.includes('HANDLES_ROUTE')) {
+            manifestResolvedWhilePoolOpen = !closeLbugCalled;
+          }
+          return [
+            { uid: 'real-uid-checkout', name: 'CheckoutHandler', filePath: 'src/checkout.ts' },
+          ];
+        },
+      );
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: groupPath.replace(/\//g, '-'),
+          path: groupPath,
+          repoPath: '/tmp/' + groupPath,
+          storagePath: '/tmp/' + groupPath + '/.gitnexus',
+        }),
+        skipWrite: true,
+      });
+
+      // Manifest symbol resolution must run while pools are still open
+      expect(manifestResolvedWhilePoolOpen).toBe(true);
+      expect(closeLbugCalled).toBe(true);
+
+      // The manifest cross-link must use the real UID from the DB, not synthetic
+      const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
+      expect(manifestLinks).toHaveLength(1);
+      expect(manifestLinks[0].to.symbolUid).toBe('real-uid-checkout');
+      expect(manifestLinks[0].to.symbolUid).not.toContain('manifest::');
+
+      // closeLbug must fire exactly twice (one per repo)
+      expect(closeSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      execSpy.mockRestore();
+    }
+  });
+
+  it('extractorOverride no-DB path still produces synthetic manifest UIDs', async () => {
+    const links: GroupManifestLink[] = [
+      {
+        from: 'svc/orders',
+        to: 'svc/payments',
+        type: 'http',
+        contract: 'GET::/api/checkout',
+        role: 'consumer',
+      },
+    ];
+
+    const config: GroupConfig = {
+      version: 1,
+      name: 'test',
+      description: '',
+      repos: { 'svc/orders': 'orders-repo', 'svc/payments': 'payments-repo' },
+      links,
+      packages: {},
+      detect: {
+        http: true,
+        grpc: false,
+        thrift: false,
+        topics: false,
+        shared_libs: false,
+        embedding_fallback: false,
+        workspace_deps: false,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [],
+      skipWrite: true,
+    });
+
+    const manifestLinks = result.crossLinks.filter((cl) => cl.matchType === 'manifest');
+    expect(manifestLinks).toHaveLength(1);
+    expect(manifestLinks[0].from.symbolUid).toBe('manifest::svc/orders::http::GET::/api/checkout');
+    expect(manifestLinks[0].to.symbolUid).toBe('manifest::svc/payments::http::GET::/api/checkout');
+  });
 });
 
 describe('stableRepoPoolId', () => {

@@ -17,12 +17,23 @@
  * generalization plan.
  */
 
-import type { ParsedFile, Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParameterTypeClass,
+  ParsedFile,
+  Reference,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type {
+  ResolutionOutcomeRecorder,
+  ResolutionSuppressionReason,
+} from '../resolution-outcome.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   findAllCallableBindingsInScope,
@@ -66,10 +77,23 @@ export function emitFreeCallFallback(
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
     readonly conversionRankFn?: ConversionRankFn;
+    /** Optional per-language constraint hook threaded into
+     *  `narrowOverloadCandidates`. Drops candidates whose template
+     *  constraints (e.g. C++ `enable_if_t`, C++20 `requires`) provably
+     *  fail at the call site. Three-valued; `'unknown'` keeps the
+     *  candidate (monotonicity). */
+    readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
   } = {},
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
+
+  // Build an O(1) simple-name -> callable defs index over scopes.defs once
+  // per pass so pickUniqueGlobalCallable doesn't re-scan defs.byId.values()
+  // per call site. Same name + callable-kind filter that the previous scan
+  // applied (see pickUniqueGlobalCallable JSDoc). Cost: O(|defs|) once.
+  const globalCallablesBySimpleName = buildGlobalCallableIndex(scopes);
 
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
@@ -84,7 +108,7 @@ export function emitFreeCallFallback(
       if (site.callForm === 'constructor') {
         const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
         if (classDef !== undefined) {
-          fnDef = pickConstructorOrClass(classDef, workspaceIndex);
+          fnDef = pickConstructorOrClass(classDef, workspaceIndex, scopes);
         }
       }
       // Implicit-this overload narrowing: an unqualified call inside
@@ -93,13 +117,10 @@ export function emitFreeCallFallback(
       // the same name in a single class, choose the best match by
       // arity + argument types.
       if (fnDef === undefined) {
-        fnDef = pickImplicitThisOverload(
-          site,
-          scopes,
-          workspaceIndex,
-          model,
-          options.conversionRankFn,
-        );
+        fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model, {
+          conversionRankFn: options.conversionRankFn,
+          constraintCompatibility: options.constraintCompatibility,
+        });
       }
       // Scope-chain callable lookup. First-match preserves scope-chain
       // precedence (local shadows import). When a conversion-rank function
@@ -121,7 +142,11 @@ export function emitFreeCallFallback(
                 allCallables,
                 site.arity,
                 site.argumentTypes,
-                options.conversionRankFn,
+                {
+                  argumentTypeClasses: site.argumentTypeClasses,
+                  conversionRankFn: options.conversionRankFn,
+                  constraintCompatibility: options.constraintCompatibility,
+                },
               );
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
@@ -132,9 +157,18 @@ export function emitFreeCallFallback(
                 // Cross-file candidates are shadowing; keep first-match.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  handledSites.add(
-                    `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-                  );
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
+                    candidates: narrowed,
+                  });
+                  handledSites.add(siteKey(parsed.filePath, site));
                   continue;
                 }
               }
@@ -166,37 +200,69 @@ export function emitFreeCallFallback(
                 parsedFiles,
               );
 
-          // When ADL contributed no candidates, narrow ordinary candidates
-          // with conversion-rank scoring when multiple overloads exist.
-          // Single candidate or empty falls through to first-match.
+          const key = siteKey(parsed.filePath, site);
+          if (adlSuppressed && ordinary.length === 0) {
+            recordSuppressedOutcome(options.recordResolutionOutcome, {
+              phase: 'free-call-fallback',
+              filePath: parsed.filePath,
+              name: site.name,
+              range: site.atRange,
+              reason: 'adl-ordinary-lookup-blocked',
+              candidates: ordinary,
+            });
+            handledSites.add(key);
+            continue;
+          }
           if (adl === undefined || adl.length === 0) {
-            if (ordinary.length <= 1 || options.conversionRankFn === undefined) {
+            // No ADL contribution. Default behavior: `ordinary[0]` —
+            // scope-chain walk preserves local-shadows-import precedence.
+            //
+            // Narrowing kicks in when either disambiguation signal is
+            // present: any candidate carries `templateConstraints`
+            // (SFINAE / `requires`-clause guarded templates, #1579), OR
+            // a conversion-rank function is provided (#1606 / #1578).
+            // Both hooks are threaded into `narrowOverloadCandidates`
+            // via the unified `OverloadNarrowingHookCtx`.
+            const hasConstraints = ordinary.some((d) => d.templateConstraints !== undefined);
+            const canNarrow = hasConstraints || options.conversionRankFn !== undefined;
+            if (ordinary.length <= 1 || !canNarrow) {
               fnDef = ordinary[0];
             } else {
-              const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
-              const narrowed = narrowOverloadCandidates(
-                ordinary,
-                site.arity,
-                site.argumentTypes,
-                options.conversionRankFn,
-              );
+              const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
+                argumentTypeClasses: site.argumentTypeClasses,
+                conversionRankFn: options.conversionRankFn,
+                constraintCompatibility: options.constraintCompatibility,
+              });
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
-              } else if (narrowed.length > 1) {
-                // Multiple survivors — suppress when same-file (true
-                // overloads), mirrors ADL merged-candidate behavior.
+              } else if (narrowed.length === 0) {
+                handledSites.add(key);
+                continue;
+              } else {
+                // >1 survivors: same-file → suppress (true overloads,
+                // "degrade not lie" — no edge beats a wrong one, and
+                // SFINAE-ambiguous calls land here). Cross-file →
+                // first-match (shadowing semantics).
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  handledSites.add(siteKey);
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
+                    candidates: narrowed,
+                  });
+                  handledSites.add(key);
                   continue;
                 }
-                fnDef = ordinary[0]; // cross-file shadowing → first-match
-              } else {
-                fnDef = ordinary[0]; // narrowed empty → first-match
+                fnDef = ordinary[0];
               }
             }
           } else {
-            const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
             const merged: SymbolDefinition[] = [];
             const seenMerge = new Set<string>();
             const push = (defs: readonly SymbolDefinition[]): void => {
@@ -209,25 +275,35 @@ export function emitFreeCallFallback(
             push(ordinary);
             push(adl);
 
-            const narrowed = narrowOverloadCandidates(
-              merged,
-              site.arity,
-              site.argumentTypes,
-              options.conversionRankFn,
-            );
+            const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
+              argumentTypeClasses: site.argumentTypeClasses,
+              conversionRankFn: options.conversionRankFn,
+              constraintCompatibility: options.constraintCompatibility,
+            });
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
             } else if (narrowed.length === 0) {
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             } else if (narrowed.length > 1) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: suppressionReasonForOverload(narrowed, site.arity, {
+                  conversionRankFn: options.conversionRankFn,
+                  argumentTypes: site.argumentTypes,
+                }),
+                candidates: narrowed,
+              });
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                handledSites.add(siteKey);
+                handledSites.add(key);
                 continue;
               }
               // Multiple survivors remain after conversion-rank scoring;
               // suppress instead of picking arbitrarily.
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             }
           }
@@ -241,7 +317,7 @@ export function emitFreeCallFallback(
         fnDef = pickUniqueGlobalCallable(
           site.name,
           model,
-          scopes,
+          globalCallablesBySimpleName,
           parsed.filePath,
           options.isFileLocalDef,
           site.arity,
@@ -255,6 +331,7 @@ export function emitFreeCallFallback(
                 })
             : undefined,
           site.argumentTypes,
+          site.argumentTypeClasses,
           options.conversionRankFn,
         );
       }
@@ -266,7 +343,7 @@ export function emitFreeCallFallback(
       // Always mark the site as handled — even when the dedup-collapse
       // means we don't add a new edge — so `emit-references` skips its
       // potentially-wrong fallback for the same site.
-      handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+      handledSites.add(siteKey(parsed.filePath, site));
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
       if (seen.has(relId)) continue;
       seen.add(relId);
@@ -286,23 +363,101 @@ export function emitFreeCallFallback(
   return emitted;
 }
 
+function siteKey(
+  filePath: string,
+  site: { readonly atRange: { readonly startLine: number; readonly startCol: number } },
+): string {
+  return `${filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+}
+
+function suppressionReasonForOverload(
+  candidates: readonly SymbolDefinition[],
+  arity: number | undefined,
+  ctx: {
+    readonly conversionRankFn?: ConversionRankFn;
+    readonly argumentTypes?: readonly string[];
+  },
+): ResolutionSuppressionReason {
+  if (isOverloadAmbiguousAfterNormalization(candidates, arity)) {
+    return 'overload-ambiguous-normalization';
+  }
+  if (
+    ctx.conversionRankFn !== undefined &&
+    ctx.argumentTypes !== undefined &&
+    ctx.argumentTypes.length > 0
+  ) {
+    return 'conversion-rank-tied';
+  }
+  return 'overload-ambiguous';
+}
+
+function recordSuppressedOutcome(
+  record: ResolutionOutcomeRecorder | undefined,
+  input: {
+    readonly phase: string;
+    readonly filePath: string;
+    readonly name: string;
+    readonly range: {
+      readonly startLine: number;
+      readonly startCol: number;
+      readonly endLine: number;
+      readonly endCol: number;
+    };
+    readonly reason: ResolutionSuppressionReason;
+    readonly candidates: readonly SymbolDefinition[];
+  },
+): void {
+  record?.({
+    kind: 'suppressed',
+    phase: input.phase,
+    filePath: input.filePath,
+    name: input.name,
+    range: input.range,
+    reason: input.reason,
+    candidateIds: input.candidates.map((d) => d.nodeId),
+  });
+}
+
+/**
+ * Build a `simpleName -> callable defs` index from `scopes.defs` once per
+ * pass. Mirrors the filter the old per-site scan applied: Function /
+ * Method / Constructor, keyed by the last `.`-segment of `qualifiedName`
+ * (falling back to the qualifiedName itself when undotted). Used by
+ * `pickUniqueGlobalCallable` so every free-call fallback site is O(1)
+ * instead of O(|defs|).
+ */
+function buildGlobalCallableIndex(
+  scopes: ScopeResolutionIndexes,
+): ReadonlyMap<string, readonly SymbolDefinition[]> {
+  const out = new Map<string, SymbolDefinition[]>();
+  for (const def of scopes.defs.byId.values()) {
+    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+    const qualified = def.qualifiedName;
+    if (qualified === undefined || qualified.length === 0) continue;
+    const dot = qualified.lastIndexOf('.');
+    const simple = dot === -1 ? qualified : qualified.slice(dot + 1);
+    const bucket = out.get(simple);
+    if (bucket) bucket.push(def);
+    else out.set(simple, [def]);
+  }
+  return out;
+}
+
 function pickUniqueGlobalCallable(
   name: string,
   model: SemanticModel,
-  scopes: ScopeResolutionIndexes,
+  globalCallablesBySimpleName: ReadonlyMap<string, readonly SymbolDefinition[]>,
   callerFilePath: string,
   isFileLocalDef?: (def: SymbolDefinition) => boolean,
   callArity?: number,
   isCallerVisible?: (candidate: SymbolDefinition) => boolean,
   callArgTypes?: readonly string[],
+  callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
 ): SymbolDefinition | undefined {
   const scopeDefs: SymbolDefinition[] = [];
   const scopeSeen = new Set<string>();
-  for (const def of scopes.defs.byId.values()) {
-    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName;
-    if (simple !== name) continue;
-    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+  for (const def of globalCallablesBySimpleName.get(name) ?? []) {
     // Skip file-local defs (e.g. C `static` functions) that live in a
     // different file from the caller — they are logically invisible.
     if (isFileLocalDef !== undefined && def.filePath !== callerFilePath && isFileLocalDef(def)) {
@@ -335,7 +490,10 @@ function pickUniqueGlobalCallable(
   // best-rank candidate when exact-type or conversion-rank scoring can
   // disambiguate (e.g., `f(int)` vs `f(double)` called with `f(2.5)`).
   if (scopeDefs.length > 1) {
-    const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, conversionRankFn);
+    const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
+      conversionRankFn,
+    });
     if (narrowed.length === 1) return narrowed[0];
   }
 
@@ -373,7 +531,10 @@ function pickUniqueGlobalCallable(
   }
   // Same argument-type + conversion-rank narrowing for the model pool.
   if (defs.length > 1) {
-    const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, conversionRankFn);
+    const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, {
+      argumentTypeClasses: callArgTypeClasses,
+      conversionRankFn,
+    });
     if (narrowed.length === 1) return narrowed[0];
   }
 
@@ -417,11 +578,21 @@ function logicalCallableKey(def: SymbolDefinition): string {
 function pickConstructorOrClass(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex,
+  scopes?: ScopeResolutionIndexes,
 ): SymbolDefinition {
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
   if (classScope === undefined) return classDef;
   for (const def of classScope.ownedDefs) {
     if (def.type === 'Constructor') return def;
+  }
+  if (scopes !== undefined) {
+    for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
+      const childScope = scopes.scopeTree.getScope(childId);
+      if (childScope === undefined || childScope.kind === 'Class') continue;
+      for (const def of childScope.ownedDefs) {
+        if (def.type === 'Constructor') return def;
+      }
+    }
   }
   return classDef;
 }
@@ -445,11 +616,15 @@ export function pickImplicitThisOverload(
     readonly name: string;
     readonly arity?: number;
     readonly argumentTypes?: readonly string[];
+    readonly argumentTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
   },
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   model: SemanticModel,
-  conversionRankFn?: ConversionRankFn,
+  hookCtx?: {
+    readonly conversionRankFn?: ConversionRankFn;
+    readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+  },
 ): SymbolDefinition | undefined {
   // Find the enclosing Class scope by walking parents.
   let curId: ScopeId | null = site.inScope;
@@ -477,12 +652,11 @@ export function pickImplicitThisOverload(
   // ambiguous narrowing (multiple compatible candidates with no
   // disambiguating signal) leaves the call unresolved rather than
   // routing to an arbitrary first overload by registration order.
-  const candidates = narrowOverloadCandidates(
-    overloads,
-    site.arity,
-    site.argumentTypes,
-    conversionRankFn,
-  );
+  const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
+    argumentTypeClasses: site.argumentTypeClasses,
+    conversionRankFn: hookCtx?.conversionRankFn,
+    constraintCompatibility: hookCtx?.constraintCompatibility,
+  });
   if (candidates.length !== 1) return undefined;
   return candidates[0];
 }

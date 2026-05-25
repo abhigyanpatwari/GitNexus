@@ -14,6 +14,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
+import { isBladeTemplateFilename } from 'gitnexus-shared';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
@@ -45,6 +46,89 @@ export interface RouteEntry {
 
 export interface RoutesOutput {
   routeRegistry: Map<string, RouteEntry>;
+}
+
+export interface TemplateFetchCall {
+  filePath: string;
+  fetchURL: string;
+  lineNumber: number;
+}
+
+const TEMPLATE_URL_PATTERNS: readonly RegExp[] = [
+  /\b(?:action|href)\s*=\s*["']([^"']+)["']/gi,
+  /\burl\s*:\s*["']([^"']+)["'](?!\s*\+)/g,
+  // Laravel asset() points at static assets, not application routes; keep it
+  // out of route matching so asset paths cannot collide with real route URLs.
+  /\{\{[\s\S]{0,200}?\burl\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?\}\}/g,
+  /\{!![\s\S]{0,200}?\burl\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
+];
+
+const TEMPLATE_NAMED_ROUTE_PATTERNS: readonly RegExp[] = [
+  // Parameterless Laravel route('name') helpers can be resolved from extracted
+  // route names. Parameterized helpers are intentionally deferred because they
+  // require binding runtime values onto route placeholders.
+  /\{\{[\s\S]{0,200}?\broute\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?\}\}/g,
+  /\{!![\s\S]{0,200}?\broute\(\s*["']([^"']+)["']\s*\)[\s\S]{0,200}?!\}/g,
+];
+
+function hasRouteParameters(routeUrl: string): boolean {
+  return /\{[^}]+\}/.test(routeUrl);
+}
+
+export const isTemplateRouteCandidate = (filePath: string): boolean => {
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  return (
+    normalized.endsWith('.html') ||
+    normalized.endsWith('.htm') ||
+    normalized.endsWith('.ejs') ||
+    normalized.endsWith('.hbs') ||
+    isBladeTemplateFilename(normalized)
+  );
+};
+
+export function extractTemplateStaticFetchCalls(
+  filePath: string,
+  content: string,
+  namedRouteUrls: ReadonlyMap<string, string> = new Map(),
+): TemplateFetchCall[] {
+  const calls: TemplateFetchCall[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of TEMPLATE_URL_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const normalized = normalizeFetchURL(match[1]);
+      if (!normalized) continue;
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      calls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+    }
+  }
+
+  for (const pattern of TEMPLATE_NAMED_ROUTE_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const routeUrl = namedRouteUrls.get(match[1]);
+      if (!routeUrl) continue;
+      if (hasRouteParameters(routeUrl)) continue;
+      const normalized = normalizeFetchURL(routeUrl);
+      if (!normalized) continue;
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      calls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
+    }
+  }
+
+  return calls;
+}
+
+export function normalizeExtractedRoutePath(routePath: string, prefix: string | null): string {
+  const pathPart = routePath.trim().replace(/^\/+/, '').replace(/\/+$/g, '');
+  const prefixPart = prefix?.trim().replace(/^\/+/, '').replace(/\/+$/g, '');
+  const joined = prefixPart ? `/${prefixPart}${pathPart ? `/${pathPart}` : ''}` : `/${pathPart}`;
+  return joined.replace(/\/+/g, '/') || '/';
 }
 
 export const routesPhase: PipelinePhase<RoutesOutput> = {
@@ -111,6 +195,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     const ensureSlash = (path: string) => (path.startsWith('/') ? path : '/' + path);
     let duplicateRoutes = 0;
+    const namedRouteRegistry = new Map<string, string>();
     const addRoute = (url: string, entry: RouteEntry) => {
       if (routeRegistry.has(url)) {
         duplicateRoutes++;
@@ -120,10 +205,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     };
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
-      addRoute(ensureSlash(route.routePath), {
+      const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
+      addRoute(routeUrl, {
         filePath: route.filePath,
         source: 'framework-route',
       });
+      if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
+        namedRouteRegistry.set(route.routeName, routeUrl);
+      }
     }
     for (const dr of allDecoratorRoutes) {
       addRoute(ensureSlash(dr.routePath), {
@@ -233,29 +322,15 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
 
-    // Scan HTML/template files for form action and AJAX url patterns
-    const htmlCandidates = allPaths.filter(
-      (p) =>
-        p.endsWith('.html') ||
-        p.endsWith('.htm') ||
-        p.endsWith('.ejs') ||
-        p.endsWith('.hbs') ||
-        p.endsWith('.blade.php'),
-    );
+    // Scan HTML/template files for safe static form/link/AJAX URL patterns.
+    // Blade stays template-only here; it must not re-enter PHP provider paths.
+    const htmlCandidates = allPaths.filter(isTemplateRouteCandidate);
     if (htmlCandidates.length > 0 && routeRegistry.size > 0) {
       const htmlContents = await readFileContents(ctx.repoPath, htmlCandidates);
-      const htmlPatterns = [/action=["']([^"']+)["']/g, /url:\s*["']([^"']+)["']/g];
       for (const [filePath, content] of htmlContents) {
-        for (const pattern of htmlPatterns) {
-          pattern.lastIndex = 0;
-          let match;
-          while ((match = pattern.exec(content)) !== null) {
-            const normalized = normalizeFetchURL(match[1]);
-            if (normalized) {
-              allFetchCalls.push({ filePath, fetchURL: normalized, lineNumber: 0 });
-            }
-          }
-        }
+        allFetchCalls.push(
+          ...extractTemplateStaticFetchCalls(filePath, content, namedRouteRegistry),
+        );
       }
     }
 

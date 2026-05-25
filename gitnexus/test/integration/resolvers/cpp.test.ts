@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   createResolverParityIt,
@@ -16,6 +17,65 @@ import {
 } from './helpers.js';
 
 const it = createResolverParityIt('cpp');
+
+// ---------------------------------------------------------------------------
+// C++ overloaded operators (#1636)
+// ---------------------------------------------------------------------------
+
+describe('C++ overloaded operator call resolution (#1636)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-overloaded-operators'), () => {});
+  }, 60000);
+
+  it('resolves member operator+ for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runMember' && c.target === 'operator+',
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetLabel).toBe('Method');
+    expect(calls[0]?.targetFilePath).toBe('lib.h');
+  });
+
+  it('resolves free operator<< for user-defined operands', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runFree' && c.target === 'operator<<',
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetLabel).toBe('Function');
+    expect(calls[0]?.targetFilePath).toBe('lib.cpp');
+  });
+
+  it('does not synthesize an operator edge for built-in int + int', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runBuiltin' && c.target.startsWith('operator'),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not synthesize operator edges for built-in int variables', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'runBuiltinVariables' && c.target.startsWith('operator'),
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('classifies reference-return inline operators as methods', () => {
+    const methods = getNodesByLabelFull(result, 'Method').filter((m) => m.name === 'operator+=');
+    const functions = getNodesByLabelFull(result, 'Function').filter(
+      (f) => f.name === 'operator+=',
+    );
+
+    expect(methods).toHaveLength(1);
+    expect(methods[0]?.properties.filePath).toBe('lib.h');
+    expect(functions).toHaveLength(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Heritage: diamond inheritance + include-based imports
@@ -1760,6 +1820,21 @@ describe('C++ ambiguous integer-width overloads', () => {
     // GitNexus does not have. The resolver must suppress entirely.
     expect(processCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for normalization ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'process' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.filePath.endsWith('caller.cpp') &&
+        o.reason === 'overload-ambiguous-normalization',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1833,6 +1908,78 @@ describe('C++ overload resolution — conversion-rank disambiguation (#1578)', (
     // dominates → ambiguous. Same pattern for h('a',2.5).
     // Contract: zero edges for ALL h() call sites combined (dedup).
     expect(hCalls.length).toBe(0);
+  });
+
+  it('records a structured suppression reason for conversion-rank ties', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'h' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'conversion-rank-tied',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(2);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
+});
+
+// C++ overload resolution: pointer/nullptr/ellipsis conversion ranks (#1637)
+describe('C++ overload resolution — pointer/nullptr/ellipsis ranks (#1637)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-pointer-null-ellipsis'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(nullptr) and f(p) resolve to f(int*) while f(42) resolves to f(bool)', () => {
+    const calls = getRelationships(result, 'CALLS');
+
+    const nullptrCall = calls.find((c) => c.source === 'runNullptr' && c.target === 'f');
+    const pointerCall = calls.find((c) => c.source === 'runPointer' && c.target === 'f');
+    const boolCall = calls.find((c) => c.source === 'runBoolConversion' && c.target === 'f');
+
+    expect(
+      result.graph.getNode(nullptrCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(
+      result.graph.getNode(pointerCall?.rel.targetId ?? '')?.properties.parameterTypes,
+    ).toEqual(['int']);
+    expect(result.graph.getNode(boolCall?.rel.targetId ?? '')?.properties.parameterTypes).toEqual([
+      'bool',
+    ]);
+  });
+
+  it('g(1, 2) resolves to fixed-arity g(int, int), not g(int, ...)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+
+    expect(gCalls.length).toBe(1);
+    const tgt = result.graph.getNode(gCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes).toEqual(['int', 'int']);
+  });
+
+  it("h(1, 'a') resolves to h(int, double), not h(int, ...)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+
+    expect(hCalls.length).toBe(1);
+    const tgt = result.graph.getNode(hCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterTypes).toEqual(['int', 'double']);
+  });
+
+  it('k(1, 2, 3) keeps the ellipsis overload viable when it is the only match', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const kCalls = calls.filter((c) => c.source === 'run' && c.target === 'k');
+
+    expect(kCalls.length).toBe(1);
+    const tgt = result.graph.getNode(kCalls[0].rel.targetId);
+    expect(tgt?.properties.parameterCount).toBeUndefined();
+    expect(tgt?.properties.parameterTypes).toEqual(['int']);
   });
 });
 
@@ -2605,6 +2752,20 @@ describe('C++ ADL — non-function ordinary lookup suppresses ADL', () => {
     // `e` is audit::Event, audit::record should NOT be discovered.
     expect(recordCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for ADL blocker lookup', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'record' &&
+        o.phase === 'free-call-fallback' &&
+        o.reason === 'adl-ordinary-lookup-blocked',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
 describe('C++ ADL — inner callable + outer non-callable: ADL not suppressed', () => {
@@ -2867,9 +3028,23 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
     // the same name. The resolver must suppress rather than pick arbitrarily.
     expect(fooCalls.length).toBe(0);
   });
+
+  it('records a structured suppression reason for inline namespace ambiguity', () => {
+    const outcomes = getResolutionOutcomes(result).filter(
+      (o) =>
+        o.kind === 'suppressed' &&
+        o.name === 'foo' &&
+        o.phase === 'receiver-bound-calls' &&
+        o.reason === 'inline-ns-ambiguous',
+    );
+
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(outcomes[0]?.candidateIds.length).toBe(0);
+    expect(outcomes[0]?.range.startLine).toBeGreaterThan(0);
+  });
 });
 
-describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+describe('C++ inline namespace — distinct signatures resolved via call-site types', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2879,14 +3054,35 @@ describe('C++ inline namespace — ambiguous distinct signatures (conservative s
     );
   }, 60000);
 
-  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+  it('outer::foo(42) emits exactly 1 CALLS edge to v1::foo(int) when v1 declares foo(int) and v2 declares foo(double)', () => {
     const calls = getRelationships(result, 'CALLS');
     const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
-    // Even though the two overloads have distinct signatures and a compiler
-    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
-    // hook lacks call-site arity/argument-type information, so multi-hit cases
-    // are conservatively suppressed. Documents the limitation noted in
-    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    // Call-site arity and argument types are now threaded through the
+    // resolveQualifiedReceiverMember contract (#1632). narrowOverloadCandidates
+    // matches the exact type 'int' against v1::foo(int), producing exactly 1 edge.
+    expect(fooCalls).toHaveLength(1);
+    // Verify it resolved to v1::foo(int) at line 4 (0-indexed), not v2::foo(double) at line 7
+    const targetNode = result.graph.getNode(fooCalls[0].rel.targetId);
+    expect(targetNode?.properties.startLine).toBe(4);
+  });
+});
+
+describe('C++ inline namespace — ambiguous normalized signatures', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-normalized'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(long) — both normalize to int', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // int and long both normalize to 'int' via normalizeCppParamType, making
+    // the two candidates indistinguishable after normalization. The resolver
+    // must suppress rather than pick arbitrarily (isOverloadAmbiguousAfterNormalization).
     expect(fooCalls.length).toBe(0);
   });
 });
@@ -3093,5 +3289,159 @@ describe('C++ Phase 5 U1×U3×U5 — qualified outer::v1::Base<T>::f() inside te
     expect(freeCalls.length).toBe(1);
     expect(freeCalls[0].targetLabel).toBe('Function');
     expect(freeCalls[0].rel.reason).toBe('import-resolved');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SFINAE / concept-constrained candidate filtering (issue #1579)
+// Pre-fix: `enable_if_t` / `requires` guarded overloads collapse into a
+// false multi-candidate ambiguity → suppressed edge. With
+// constraintCompatibility wired up the integral / floating overloads
+// disambiguate cleanly.
+// ---------------------------------------------------------------------------
+
+describe('C++ SFINAE filter — golden case (enable_if_t guarded free function templates)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-golden'), () => {});
+  }, 60000);
+
+  it('enable_if_t<is_integral_v<T>> overload binds only on integral call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    // Distinct targets — the integral and floating overloads disambiguate
+    // via constraintCompatibility, not collapsing to one arbitrary pick.
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+
+  it('enable_if_t<is_floating_point_v<T>> overload binds only on floating call sites', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    // Disambiguate-by-startLine — integral overload (earlier line) vs
+    // floating overload (later line). Both must be reachable as targets.
+    const targetStartLines = calls
+      .map((c) => result.graph.getNode(c.rel.targetId))
+      .filter((n): n is NonNullable<typeof n> => n !== undefined)
+      .map((n) => (n.properties as { startLine?: number }).startLine)
+      .filter((x): x is number => typeof x === 'number')
+      .sort((a, b) => a - b);
+    expect(targetStartLines.length).toBe(2);
+    expect(targetStartLines[0]).toBeLessThan(targetStartLines[1]);
+  });
+});
+
+describe('C++ SFINAE filter — C++20 requires-clause shape', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'cpp-sfinae-requires-clause'), () => {});
+  }, 60000);
+
+  it('requires-clause overloads disambiguate same as enable_if_t (F4 AST shape)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(2);
+    const targetIds = new Set(calls.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
+  });
+});
+
+describe('C++ SFINAE filter — Tier-A type_traits predicates', () => {
+  async function runFixture(name: string): Promise<PipelineResult> {
+    return runPipelineFromRepo(path.join(FIXTURES, name), () => {});
+  }
+
+  function callsFromRunToPick(result: PipelineResult) {
+    return getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'pick',
+    );
+  }
+
+  it('is_pointer_v and is_class_v disambiguate pointer vs class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-pointer');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_reference_v keeps reference-shaped arguments distinct from values', async () => {
+    const result = await runFixture('cpp-sfinae-is-reference');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_class_v rejects primitive arguments while keeping class arguments', async () => {
+    const result = await runFixture('cpp-sfinae-is-class');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_enum_v distinguishes known enum declarations from primitives', async () => {
+    const result = await runFixture('cpp-sfinae-is-enum');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_const_v and is_volatile_v disambiguate cv-qualified locals', async () => {
+    const result = await runFixture('cpp-sfinae-is-const-volatile');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(2);
+    expect(new Set(calls.map((c) => c.rel.targetId)).size).toBe(2);
+  }, 60000);
+
+  it('is_void_v does not misclassify void pointers as void values', async () => {
+    const result = await runFixture('cpp-sfinae-is-void');
+    const calls = callsFromRunToPick(result);
+    expect(calls.length).toBe(1);
+  }, 60000);
+});
+
+describe('C++ SFINAE filter — unknown predicate keeps both candidates (monotonicity contract)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-unknown-predicate'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits zero CALLS edges when predicate is outside the Tier-A registry', () => {
+    // `MyCustomTrait_v` is not registered; both overloads' constraint
+    // check returns 'unknown' → both kept → OVERLOAD_AMBIGUOUS suppression
+    // by `isOverloadAmbiguousAfterNormalization` (both have parameterTypes=['T']).
+    // Asserts the monotonicity guarantee: adding a predicate must never
+    // produce a wrong edge.
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe('C++ SFINAE filter — arity gate runs before constraint filter', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-sfinae-arity-survives-unknown'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits exactly 1 CALLS edge to the arity-matching overload (bad-arity dropped before constraint check)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'run' && c.target === 'process',
+    );
+    expect(calls.length).toBe(1);
   });
 });

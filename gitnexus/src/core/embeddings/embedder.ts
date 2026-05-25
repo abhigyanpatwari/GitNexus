@@ -78,7 +78,11 @@ function isCudaAvailable(): boolean {
   // Primary: query the dynamic linker cache — covers all architectures,
   // distro layouts, and custom install paths registered with ldconfig
   try {
-    const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
+    const out = execFileSync('ldconfig', ['-p'], {
+      timeout: 3000,
+      encoding: 'utf-8',
+      windowsHide: true,
+    });
     if (out.includes('libcublasLt.so.12')) return true;
   } catch {
     // ldconfig not available (e.g. non-standard container)

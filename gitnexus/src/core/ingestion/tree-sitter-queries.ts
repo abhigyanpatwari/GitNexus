@@ -702,7 +702,9 @@ export const CPP_QUERIES = `
 
 ; Functions & Methods (direct declarator)
 (function_definition declarator: (function_declarator declarator: (identifier) @name)) @definition.function
+(function_definition declarator: (function_declarator declarator: (operator_name) @name)) @definition.function
 (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name))) @definition.method
+(function_definition declarator: (function_declarator declarator: (qualified_identifier name: (operator_name) @name))) @definition.method
 
 ; Functions/methods returning pointers (pointer_declarator wraps function_declarator)
 (function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @definition.function
@@ -714,14 +716,18 @@ export const CPP_QUERIES = `
 
 ; Functions/methods returning references (reference_declarator wraps function_declarator)
 (function_definition declarator: (reference_declarator (function_declarator declarator: (identifier) @name))) @definition.function
+(function_definition declarator: (reference_declarator (function_declarator declarator: (operator_name) @name))) @definition.function
 (function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier name: (identifier) @name)))) @definition.method
+(function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier name: (operator_name) @name)))) @definition.method
 
 ; Destructors (destructor_name is distinct from identifier in tree-sitter-cpp)
 (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (destructor_name) @name))) @definition.method
 
 ; Function declarations / prototypes (common in headers)
 (declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.function
+(declaration declarator: (function_declarator declarator: (operator_name) @name)) @definition.function
 (declaration declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @definition.function
+(declaration declarator: (reference_declarator (function_declarator declarator: (operator_name) @name))) @definition.function
 
 ; Class/struct data member fields (Address address; int count;)
 ; Uses field_identifier to exclude method declarations (which use function_declarator)
@@ -740,13 +746,13 @@ export const CPP_QUERIES = `
 
 ; Inline class method declarations (inside class body, no body: void save();)
 ; tree-sitter-cpp uses field_identifier (not identifier) for names inside class bodies
-(field_declaration declarator: (function_declarator declarator: [(field_identifier) (identifier)] @name)) @definition.method
+(field_declaration declarator: (function_declarator declarator: [(field_identifier) (identifier) (operator_name)] @name)) @definition.method
 
 ; Inline class method declarations returning a pointer (User* lookup();)
 (field_declaration declarator: (pointer_declarator declarator: (function_declarator declarator: [(field_identifier) (identifier)] @name))) @definition.method
 
 ; Inline class method declarations returning a reference (User& lookup();)
-(field_declaration declarator: (reference_declarator (function_declarator declarator: [(field_identifier) (identifier)] @name))) @definition.method
+(field_declaration declarator: (reference_declarator (function_declarator declarator: [(field_identifier) (identifier) (operator_name)] @name))) @definition.method
 
 ; Inline class method definitions (inside class body, with body: void Foo() { ... })
 (field_declaration_list
@@ -785,6 +791,8 @@ export const CPP_QUERIES = `
 (call_expression function: (field_expression field: (field_identifier) @call.name)) @call
 (call_expression function: (qualified_identifier name: (identifier) @call.name)) @call
 (call_expression function: (template_function name: (identifier) @call.name)) @call
+(binary_expression operator: "+" @call.name) @call
+(binary_expression operator: "<<" @call.name) @call
 
 ; Constructor calls: new User()
 (new_expression type: (type_identifier) @call.name) @call

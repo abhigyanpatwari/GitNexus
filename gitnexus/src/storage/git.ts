@@ -6,7 +6,11 @@ import path from 'path';
 
 export const isGitRepo = (repoPath: string): boolean => {
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: repoPath, stdio: 'ignore' });
+    execSync('git rev-parse --is-inside-work-tree', {
+      cwd: repoPath,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
     return true;
   } catch {
     return false;
@@ -23,6 +27,7 @@ export const getCurrentCommit = (repoPath: string): string => {
       // "fatal: not a git repository" to stderr, which leaks to the user's
       // terminal even though the error is caught here (#1172).
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     })
       .toString()
       .trim();
@@ -60,6 +65,7 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
     raw = execSync('git config --get remote.origin.url', {
       cwd: repoPath,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     })
       .toString()
       .trim();
@@ -100,6 +106,7 @@ export const getGitRoot = (fromPath: string): string | null => {
       cwd: fromPath,
       // Suppress stderr -- see getCurrentCommit comment and #1172.
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     })
       .toString()
       .trim();
@@ -142,6 +149,7 @@ export const getCanonicalRepoRoot = (fromPath: string): string | null => {
     const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', {
       cwd: fromPath,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     })
       .toString()
       .trim();
@@ -245,6 +253,7 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
     const url = execSync('git config --get remote.origin.url', {
       cwd: repoPath,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     })
       .toString()
       .trim();

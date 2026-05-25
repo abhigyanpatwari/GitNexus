@@ -14,18 +14,25 @@ import {
   executeParameterized,
   closeLbug,
   isLbugReady,
-  isWriteQuery,
 } from '../../core/lbug/pool-adapter.js';
+import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
-export { isWriteQuery };
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
-import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
+import {
+  parseDiffHunks,
+  getCanonicalRepoRoot,
+  getGitRoot,
+  type FileDiff,
+} from '../../storage/git.js';
+import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  canonicalizePath,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
@@ -169,6 +176,9 @@ function logQueryError(context: string, err: unknown): void {
   logger.error({ context, err: msg }, 'GitNexus query failed');
 }
 
+const isReadOnlyDbError = (err: unknown): boolean =>
+  /read-only database/i.test(err instanceof Error ? err.message : String(err));
+
 /**
  * Per-query latency telemetry for production aggregation (#553).
  *
@@ -210,6 +220,89 @@ interface RepoHandle {
   remoteUrl?: string;
   stats?: RegistryEntry['stats'];
 }
+
+/** Resolve symlinks for path comparison; falls back to path.resolve on error.
+ * Uses `realpathSync.native` (not the pure-JS `realpathSync`) so that Windows
+ * 8.3 short names (e.g. RUNNER~1 → runneradmin) are expanded to long form,
+ * matching the output of `git rev-parse --show-toplevel`. */
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * Resolve the git diff cwd for detect_changes, auto-detecting linked worktrees.
+ *
+ * When `launchCwd` is a linked worktree of the same canonical repository as
+ * `repoPath` (i.e. `getGitRoot(launchCwd)` differs from `repoPath` but both
+ * share the same `getCanonicalRepoRoot`), returns the worktree's git root so
+ * that `git diff` sees the correct working directory and index.
+ *
+ * Returns `repoPath` unchanged in all other cases (non-worktree, git
+ * unavailable, unrelated repo).
+ *
+ * Extracted as a module-level export so tests can pass any `launchCwd` instead
+ * of relying on `process.cwd()`, which is fixed to the server launch directory
+ * and cannot be changed mid-process.
+ */
+export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string {
+  try {
+    // Verify repoPath is a git root before comparing against its canonical
+    // root. If getGitRoot returns a different path, repoPath is an arbitrary
+    // subdirectory — skip both the linked-worktree guard and auto-detection
+    // and fall through to the repoPath fallback.
+    const repoGitRoot = getGitRoot(repoPath);
+    const repoCanonical =
+      repoGitRoot && tryRealpath(repoGitRoot) === tryRealpath(repoPath)
+        ? getCanonicalRepoRoot(repoPath)
+        : null;
+
+    // Early exit: if repoPath is a linked worktree (differs from its canonical
+    // main-checkout root), return it unchanged. Do NOT override it with the
+    // server's launch directory — that would silently replace the explicitly-
+    // resolved worktree index with the main checkout.
+    //
+    // getCanonicalRepoRoot returns the main-checkout path for both the checkout
+    // and all linked worktrees:
+    //   repoPath === canonical → main checkout (auto-detect may fire below)
+    //   repoPath !== canonical → linked worktree (return as-is)
+    if (repoCanonical && tryRealpath(repoPath) !== tryRealpath(repoCanonical)) {
+      return repoPath;
+    }
+
+    const launchGitRoot = getGitRoot(launchCwd);
+    if (launchGitRoot) {
+      // Normalise via realpathSync before comparing so macOS /var → /private/var
+      // symlinks (and Windows 8.3 short names) don't create false mismatches.
+      const realLaunch = tryRealpath(launchGitRoot);
+      const realRepo = tryRealpath(repoPath);
+      if (realLaunch !== realRepo) {
+        const launchCanonical = getCanonicalRepoRoot(launchCwd);
+        // Use tryRealpath on both canonical values for cross-platform safety.
+        if (
+          launchCanonical &&
+          repoCanonical &&
+          tryRealpath(launchCanonical) === tryRealpath(repoCanonical)
+        ) {
+          return launchGitRoot;
+        }
+      }
+    }
+  } catch {
+    // Best-effort; fall through to repoPath.
+  }
+  return repoPath;
+}
+
+/**
+ * Length of the base64url path hash appended to a colliding repo id.
+ * Exported so tests can pin the suffix shape without re-deriving the
+ * literal; see `repoId()` and the hashed-id resolution tier (#1658).
+ */
+export const REPO_ID_HASH_LENGTH = 6;
 
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
@@ -339,7 +432,13 @@ export class LocalBackend {
     for (const [id, handle] of this.repos) {
       if (id === base && handle.repoPath !== path.resolve(repoPath)) {
         // Collision — use path hash
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
+        // Lowercase the hash so it survives the `paramLower` lookup in
+        // resolveRepoFromCache — base64url retains mixed case, but the id
+        // tier compares against `repoParam.toLowerCase()` (#1658 follow-up).
+        const hash = Buffer.from(repoPath)
+          .toString('base64url')
+          .slice(0, REPO_ID_HASH_LENGTH)
+          .toLowerCase();
         return `${base}-${hash}`;
       }
     }
@@ -358,7 +457,19 @@ export class LocalBackend {
    * while the MCP server was running.
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
-    const result = this.resolveRepoFromCache(repoParam);
+    let refreshedAfterAmbiguity = false;
+    let result: RepoHandle | null;
+    try {
+      result = this.resolveRepoFromCache(repoParam);
+    } catch (err) {
+      if (!(err instanceof RegistryAmbiguousTargetError)) throw err;
+      // Stale in-memory duplicate siblings can linger after unregister; refresh
+      // once before re-throwing so a resolved registry can disambiguate (#1658).
+      await this.refreshRepos();
+      refreshedAfterAmbiguity = true;
+      result = this.resolveRepoFromCache(repoParam);
+    }
+
     if (result) {
       // Issue: silent graph drift across sibling clones.
       // If the caller's cwd lives in a *different* on-disk clone of
@@ -372,8 +483,10 @@ export class LocalBackend {
       return result;
     }
 
-    // Miss — refresh registry and try once more
-    await this.refreshRepos();
+    // Miss — refresh registry and try once more (skip if already refreshed above)
+    if (!refreshedAfterAmbiguity) {
+      await this.refreshRepos();
+    }
     const retried = this.resolveRepoFromCache(repoParam);
     if (retried) {
       this.maybeWarnSiblingDrift(retried).catch(() => {});
@@ -408,27 +521,66 @@ export class LocalBackend {
 
   /**
    * Try to resolve a repo from the in-memory cache. Returns null on miss.
+   * Throws {@link RegistryAmbiguousTargetError} when `repoParam` matches
+   * multiple handles by name and cwd cannot disambiguate (#1658).
    */
   private resolveRepoFromCache(repoParam?: string): RepoHandle | null {
     if (this.repos.size === 0) return null;
 
     if (repoParam) {
       const paramLower = repoParam.toLowerCase();
-      // Match by id
+      const looksLikePath =
+        path.isAbsolute(repoParam) || repoParam.includes(path.sep) || repoParam.includes('/');
+
+      const resolvePathMatch = (): RepoHandle | undefined => {
+        const canonicalTarget = canonicalizePath(repoParam);
+        return [...this.repos.values()].find((handle) => {
+          const stored = canonicalizePath(handle.repoPath);
+          return process.platform === 'win32'
+            ? stored.toLowerCase() === canonicalTarget.toLowerCase()
+            : stored === canonicalTarget;
+        });
+      };
+
+      // Path-like params first (absolute or contains separators) — aligns with
+      // resolveRegistryEntry (#829). Bare aliases such as ".tmp-repro-mini" must
+      // not be resolved via path.resolve(cwd) before duplicate-name handling.
+      if (looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
+      }
+
+      // Exact name before id — the first duplicate sibling keeps id === name
+      // (e.g. id "shared"), so a name lookup must not be captured by the id tier.
+      const nameMatches = [...this.repos.values()].filter(
+        (handle) => handle.name.toLowerCase() === paramLower,
+      );
+      if (nameMatches.length === 1) return nameMatches[0];
+      if (nameMatches.length > 1) {
+        const cwdPick = this.pickRepoHandleForCwd(nameMatches);
+        if (cwdPick) return cwdPick;
+        throw new RegistryAmbiguousTargetError(
+          repoParam,
+          nameMatches.map((h) => this.handleToRegistryEntry(h)),
+        );
+      }
+
+      // Stable hashed id (e.g. "shared-abc123") from repoId() collision suffix
       if (this.repos.has(paramLower)) return this.repos.get(paramLower)!;
-      // Match by name (case-insensitive)
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase() === paramLower) return handle;
+
+      // Bare name resolved as a cwd-relative path (e.g. "myrepo" against process.cwd()),
+      // after name/id tiers. Path-like strings with separators were handled at the top.
+      if (!looksLikePath) {
+        const pathMatch = resolvePathMatch();
+        if (pathMatch) return pathMatch;
       }
-      // Match by path (substring)
-      const resolved = path.resolve(repoParam);
-      for (const handle of this.repos.values()) {
-        if (handle.repoPath === resolved) return handle;
-      }
-      // Match by partial name
-      for (const handle of this.repos.values()) {
-        if (handle.name.toLowerCase().includes(paramLower)) return handle;
-      }
+
+      // Partial name — only when unambiguous
+      const partialMatches = [...this.repos.values()].filter((handle) =>
+        handle.name.toLowerCase().includes(paramLower),
+      );
+      if (partialMatches.length === 1) return partialMatches[0];
+
       return null;
     }
 
@@ -437,6 +589,39 @@ export class LocalBackend {
     }
 
     return null; // Multiple repos, no param — ambiguous
+  }
+
+  /**
+   * Prefer the indexed repo whose path matches the git root of process.cwd().
+   *
+   * In MCP stdio server mode, `process.cwd()` is the server's launch directory,
+   * not the agent client's cwd. If the server was started from an unrelated
+   * directory, `getGitRoot` returns null and duplicate-name resolution throws
+   * {@link RegistryAmbiguousTargetError} — callers should pass an absolute path.
+   */
+  private pickRepoHandleForCwd(candidates: RepoHandle[]): RepoHandle | null {
+    const cwdRoot = getGitRoot(process.cwd());
+    if (!cwdRoot) return null;
+    const canonicalCwd = canonicalizePath(cwdRoot);
+    const cwdMatches = candidates.filter((handle) => {
+      const stored = canonicalizePath(handle.repoPath);
+      return process.platform === 'win32'
+        ? stored.toLowerCase() === canonicalCwd.toLowerCase()
+        : stored === canonicalCwd;
+    });
+    return cwdMatches.length === 1 ? cwdMatches[0] : null;
+  }
+
+  private handleToRegistryEntry(handle: RepoHandle): RegistryEntry {
+    return {
+      name: handle.name,
+      path: handle.repoPath,
+      storagePath: handle.storagePath,
+      indexedAt: handle.indexedAt,
+      lastCommit: handle.lastCommit,
+      stats: handle.stats,
+      remoteUrl: handle.remoteUrl,
+    };
   }
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
@@ -982,7 +1167,7 @@ export class LocalBackend {
       timing,
       ...(!ftsUsed && {
         warning:
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
+          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       }),
     };
   }
@@ -1218,31 +1403,41 @@ export class LocalBackend {
     }
   }
 
-  async executeCypher(repoName: string, query: string): Promise<any> {
+  async executeCypher(
+    repoName: string,
+    query: string,
+    params: Record<string, unknown> = {},
+  ): Promise<any> {
     const repo = await this.resolveRepo(repoName);
-    return this.cypher(repo, { query });
+    return this.cypher(repo, { query, params });
   }
 
-  private async cypher(repo: RepoHandle, params: { query: string }): Promise<any> {
+  private async cypher(
+    repo: RepoHandle,
+    request: { query: string; params?: Record<string, unknown> },
+  ): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     if (!isLbugReady(repo.id)) {
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
-
-    // Block write operations (defense-in-depth — DB is already read-only)
-    if (isWriteQuery(params.query)) {
+    if (request.params !== undefined && !isValidQueryParams(request.params)) {
       return {
-        error:
-          'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        error: '"params" must be a plain object with scalar values (string/number/boolean/null).',
       };
     }
 
     try {
-      const result = await executeQuery(repo.id, params.query);
+      const result = await executeParameterized(repo.id, request.query, request.params ?? {});
       return result;
     } catch (err: any) {
       const msg = err.message || 'Query failed';
+      if (isReadOnlyDbError(err)) {
+        return {
+          error:
+            'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,
@@ -2133,6 +2328,7 @@ export class LocalBackend {
     params: {
       scope?: string;
       base_ref?: string;
+      worktree?: string;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
@@ -2161,13 +2357,54 @@ export class LocalBackend {
 
     let diffOutput: string;
     try {
+      // Resolve the cwd for git diff.
+      //
+      // In a linked worktree (e.g. /repo/wt-feature/), the user's staged and
+      // unstaged changes live in that worktree's separate working directory and
+      // index. Running `git diff` from the canonical repo root sees a different
+      // working tree and returns empty output.
+      //
+      // Resolution order (see resolveWorktreeCwd for details):
+      //   1. params.worktree — explicit override, validated against the
+      //      registered repo's canonical root.
+      //   2. Auto-detect — if the server's launch cwd (process.cwd()) is a
+      //      linked worktree of the same canonical repo, use its git root.
+      //   3. repo.repoPath — fallback (original behaviour, handled inside
+      //      resolveWorktreeCwd when no worktree is detected).
+      //
+      // Start with the auto-detected value; override with the validated
+      // explicit param when provided. This avoids a dead initial assignment.
+      let diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
+      if (params.worktree) {
+        if (!path.isAbsolute(params.worktree)) {
+          return {
+            error: `worktree must be an absolute path, got: "${params.worktree}"`,
+          };
+        }
+        const providedResolved = path.resolve(params.worktree);
+        const repoCanonical = getCanonicalRepoRoot(repo.repoPath);
+        if (!repoCanonical) {
+          return {
+            error: `Could not determine canonical root for repo "${repo.repoPath}". Is git available?`,
+          };
+        }
+        const worktreeCanonical = getCanonicalRepoRoot(providedResolved);
+        if (!worktreeCanonical || tryRealpath(worktreeCanonical) !== tryRealpath(repoCanonical)) {
+          return {
+            error: `worktree "${params.worktree}" is not a worktree of repo "${repo.repoPath}". Ensure the path is inside the same git repository.`,
+          };
+        }
+        diffCwd = providedResolved;
+      }
+
       // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
       // repos with large unstaged/untracked diffs (e.g. unignored build folders).
       // See issue: spawnSync git ENOBUFS in detect_changes(scope="unstaged").
       diffOutput = execFileSync('git', diffArgs, {
-        cwd: repo.repoPath,
+        cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
+        windowsHide: true,
       });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
@@ -2444,6 +2681,7 @@ export class LocalBackend {
         timeout: 5000,
         // Avoid ENOBUFS on large repos: rg -l can list many files.
         maxBuffer: 256 * 1024 * 1024,
+        windowsHide: true,
       });
       const files = output
         .trim()

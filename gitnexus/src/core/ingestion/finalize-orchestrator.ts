@@ -144,6 +144,7 @@ export function finalizeScopeModel(
     // AFTER `finalizeScopeModel` returns, before `resolveReferenceSites`
     // consumes the bundle. Most languages leave it empty.
     bindingAugmentations: new Map(),
+    workspaceFqnBindings: new Map(),
     referenceSites: Object.freeze([...allReferenceSites]),
     sccs: finalizeOut.sccs,
     stats: finalizeOut.stats,

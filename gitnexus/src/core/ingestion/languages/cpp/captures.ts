@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, ParameterTypeClass } from 'gitnexus-shared';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -9,11 +9,16 @@ import { getCppParser, getCppScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCppInclude, splitCppUsingDecl } from './import-decomposer.js';
-import { computeCppDeclarationArity, computeCppCallArity } from './arity-metadata.js';
+import {
+  classifyCppParameterType,
+  computeCppDeclarationArity,
+  computeCppCallArity,
+} from './arity-metadata.js';
 import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase } from './two-phase-lookup.js';
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
+import { extractCppTemplateConstraints } from './constraint-extractor.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -114,6 +119,13 @@ export function emitCppScopeCaptures(
             JSON.stringify(arity.parameterTypes),
           );
         }
+        if (arity.parameterTypeClasses !== undefined) {
+          grouped['@declaration.parameter-type-classes'] = syntheticCapture(
+            '@declaration.parameter-type-classes',
+            fnNode,
+            JSON.stringify(arity.parameterTypeClasses),
+          );
+        }
 
         // Detect static storage class (file-local linkage)
         if (hasStaticStorageClass(fnNode)) {
@@ -128,6 +140,24 @@ export function emitCppScopeCaptures(
           const nameText = grouped['@declaration.name']?.text;
           if (nameText !== undefined) {
             markFileLocal(filePath, nameText);
+          }
+        }
+
+        // SFINAE / `requires`-clause aware constraints for overload
+        // narrowing (issue #1579). Walk from the enclosing
+        // `template_declaration` — not the inner `function_definition` —
+        // so inline method templates (`template<...> class C { template<...> void f(); }`)
+        // pick up the correct outer constraint scope.
+        const templateDecl = findEnclosingTemplateDeclaration(fnNode);
+        if (templateDecl !== null) {
+          const funcDeclarator = findFunctionDeclarator(fnNode);
+          const constraints = extractCppTemplateConstraints(templateDecl, funcDeclarator);
+          if (constraints !== undefined) {
+            grouped['@declaration.template-constraints'] = syntheticCapture(
+              '@declaration.template-constraints',
+              fnNode,
+              JSON.stringify(constraints),
+            );
           }
         }
       }
@@ -152,15 +182,39 @@ export function emitCppScopeCaptures(
       grouped['@reference.call.free'] ??
       grouped['@reference.call.member'] ??
       grouped['@reference.call.qualified'];
+    const operatorAnchor = grouped['@reference.operator'];
+    if (operatorAnchor !== undefined) {
+      const operatorNode =
+        callAnchor !== undefined
+          ? findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression')
+          : null;
+      if (operatorNode !== null && isPrimitiveOnlyBinaryOperator(operatorNode)) continue;
+    }
     if (callAnchor !== undefined && grouped['@reference.arity'] === undefined) {
-      const callNode = findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression');
-      if (callNode !== null) {
+      const callNode =
+        findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
+        findNodeAtRange(tree.rootNode, callAnchor.range, 'binary_expression');
+      if (callNode?.type === 'call_expression') {
         grouped['@reference.arity'] = syntheticCapture(
           '@reference.arity',
           callNode,
           String(computeCppCallArity(callNode)),
         );
+      } else if (callNode?.type === 'binary_expression') {
+        grouped['@reference.arity'] = syntheticCapture(
+          '@reference.arity',
+          callNode,
+          grouped['@reference.call.member'] !== undefined ? '1' : '2',
+        );
       }
+    }
+
+    if (operatorAnchor !== undefined && grouped['@reference.name'] === undefined) {
+      grouped['@reference.name'] = syntheticCapture(
+        '@reference.name',
+        findNodeAtRange(tree.rootNode, operatorAnchor.range, operatorAnchor.text) ?? tree.rootNode,
+        `operator${operatorAnchor.text}`,
+      );
     }
 
     // ── Enrich constructor calls (new Foo()) with arity ─────────────
@@ -181,14 +235,32 @@ export function emitCppScopeCaptures(
     if (anyCallAnchor !== undefined && grouped['@reference.parameter-types'] === undefined) {
       const cNode =
         findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'call_expression') ??
-        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'new_expression');
+        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'new_expression') ??
+        findNodeAtRange(tree.rootNode, anyCallAnchor.range, 'binary_expression');
       if (cNode !== null) {
-        const argTypes = inferCppCallArgTypes(cNode);
+        const argTypes =
+          cNode.type === 'binary_expression'
+            ? inferCppBinaryOperatorArgTypes(cNode, grouped['@reference.call.free'] !== undefined)
+            : inferCppCallArgTypes(cNode);
         if (argTypes !== undefined && argTypes.length > 0) {
           grouped['@reference.parameter-types'] = syntheticCapture(
             '@reference.parameter-types',
             cNode,
             JSON.stringify(argTypes),
+          );
+        }
+        const argTypeClasses =
+          cNode.type === 'binary_expression'
+            ? inferCppBinaryOperatorArgTypeClasses(
+                cNode,
+                grouped['@reference.call.free'] !== undefined,
+              )
+            : inferCppCallArgTypeClasses(cNode);
+        if (argTypeClasses !== undefined && argTypeClasses.length > 0) {
+          grouped['@reference.parameter-type-classes'] = syntheticCapture(
+            '@reference.parameter-type-classes',
+            cNode,
+            JSON.stringify(argTypeClasses),
           );
         }
       }
@@ -552,6 +624,52 @@ function extractBaseLookupName(baseNode: SyntaxNode): string {
   return '';
 }
 
+/**
+ * Walk parent chain from a function_definition / declaration / field_declaration
+ * to find the enclosing `template_declaration`. Returns null when the function
+ * isn't templated. The walk only ascends through wrapper nodes the C++
+ * grammar inserts between `template_declaration` and the function — direct
+ * parent in the common case, two hops for member templates whose outer
+ * class is also templated (we return the INNERMOST template_declaration,
+ * which carries this function's own template parameters).
+ */
+function findEnclosingTemplateDeclaration(fnNode: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = fnNode.parent;
+  // Cap the walk — `template_declaration` is typically the immediate parent
+  // or one wrapper away. Anything deeper is an inline-method-in-template
+  // shape and we still want the innermost templates_declaration whose body
+  // wraps `fnNode`.
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'template_declaration') return cur;
+    // Don't ascend past structural boundaries that should reset template scope.
+    if (cur.type === 'translation_unit') return null;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Locate the `function_declarator` AST node within a function definition
+ * or declaration. Unwraps pointer/reference declarator wrappers. Returns
+ * null when no function_declarator is found (e.g. variable declaration
+ * mis-classified upstream).
+ */
+function findFunctionDeclarator(fnNode: SyntaxNode): SyntaxNode | null {
+  const direct = fnNode.childForFieldName('declarator');
+  let cur: SyntaxNode | null = direct;
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'function_declarator') return cur;
+    if (cur.type === 'pointer_declarator' || cur.type === 'reference_declarator') {
+      cur = cur.childForFieldName('declarator');
+      continue;
+    }
+    break;
+  }
+  return findFirstDescendantOfType(fnNode, 'function_declarator');
+}
+
 /** Find the first direct child matching one of the given types. */
 function findChildOfType(node: SyntaxNode, types: readonly string[]): SyntaxNode | null {
   for (let i = 0; i < node.childCount; i++) {
@@ -611,6 +729,98 @@ function inferCppCallArgTypes(node: SyntaxNode): string[] | undefined {
   return types.length > 0 ? types : undefined;
 }
 
+function inferCppCallArgTypeClasses(node: SyntaxNode): ParameterTypeClass[] | undefined {
+  const argList = node.childForFieldName('arguments');
+  if (argList === null) return undefined;
+
+  const classes: ParameterTypeClass[] = [];
+  for (let i = 0; i < argList.childCount; i++) {
+    const child = argList.child(i);
+    if (child === null) continue;
+    if (child.type === ',' || child.type === '(' || child.type === ')') continue;
+    const litType = inferCppLiteralType(child);
+    if (litType !== '') {
+      classes.push(valueTypeClass(litType));
+    } else if (child.type === 'identifier') {
+      classes.push(lookupDeclaredTypeClassForIdentifier(child));
+    } else {
+      classes.push(unknownTypeClass('unknown'));
+    }
+  }
+  return classes.length > 0 ? classes : undefined;
+}
+
+function inferCppBinaryOperatorArgTypes(
+  node: SyntaxNode,
+  includeLeftOperand: boolean,
+): string[] | undefined {
+  const operands = binaryOperatorOperands(node, includeLeftOperand);
+  if (operands.length === 0) return undefined;
+  const types = operands.map(inferCppExpressionType);
+  return types.length > 0 ? types : undefined;
+}
+
+function inferCppBinaryOperatorArgTypeClasses(
+  node: SyntaxNode,
+  includeLeftOperand: boolean,
+): ParameterTypeClass[] | undefined {
+  const operands = binaryOperatorOperands(node, includeLeftOperand);
+  if (operands.length === 0) return undefined;
+  const classes = operands.map(inferCppExpressionTypeClass);
+  return classes.length > 0 ? classes : undefined;
+}
+
+function binaryOperatorOperands(node: SyntaxNode, includeLeftOperand: boolean): SyntaxNode[] {
+  const operands: SyntaxNode[] = [];
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (includeLeftOperand && left !== null) operands.push(left);
+  if (right !== null) operands.push(right);
+  return operands;
+}
+
+function isPrimitiveOnlyBinaryOperator(node: SyntaxNode): boolean {
+  const operands = binaryOperatorOperands(node, true);
+  return operands.length > 0 && operands.every((operand) => isBuiltinOperatorType(operand));
+}
+
+function isBuiltinOperatorType(node: SyntaxNode): boolean {
+  const type = inferCppExpressionType(node);
+  return (
+    type === 'bool' ||
+    type === 'char' ||
+    type === 'double' ||
+    type === 'float' ||
+    type === 'int' ||
+    type === 'long' ||
+    type === 'short' ||
+    type === 'signed' ||
+    type === 'unsigned'
+  );
+}
+
+function inferCppExpressionType(node: SyntaxNode): string {
+  const litType = inferCppLiteralType(node);
+  if (litType !== '') return litType;
+  if (node.type === 'identifier') return lookupDeclaredTypeForIdentifier(node);
+  return '';
+}
+
+function inferCppExpressionTypeClass(node: SyntaxNode): ParameterTypeClass {
+  const litType = inferCppLiteralType(node);
+  if (litType !== '') return valueTypeClass(litType);
+  if (node.type === 'identifier') return lookupDeclaredTypeClassForIdentifier(node);
+  return unknownTypeClass('unknown');
+}
+
+function valueTypeClass(base: string): ParameterTypeClass {
+  return { base, cv: 'none', indirection: 'value', pointerDepth: 0 };
+}
+
+function unknownTypeClass(base: string): ParameterTypeClass {
+  return { base, cv: 'unknown', indirection: 'unknown', pointerDepth: 0 };
+}
+
 /**
  * Infer the canonical type name of a C++ literal AST node.
  * Returns empty string for non-literal / unknown nodes.
@@ -655,6 +865,15 @@ function inferCppLiteralType(node: SyntaxNode): string {
  *   - `int n = ...` → 'int'
  *   - `const int n = ...` → 'int'
  * Returns empty string if no declaration found or type is auto/placeholder.
+ *
+ * Limitation: only `declaration` siblings inside the enclosing
+ * `compound_statement` are inspected. Function parameters live in the
+ * `function_declarator`'s `parameter_list` and are NOT resolved here, so
+ *   `void run(int n) { process(n); }`
+ * infers `''` for `n` and the constraint filter falls through to
+ * `'unknown'` → ambiguity suppression → 0 CALLS edges. This is a
+ * "degrade not lie" gap (no wrong edges, just missing ones); extending
+ * the scan to `parameter_list` is tracked under #1579 as a follow-up.
  */
 function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
   const varName = identNode.text;
@@ -669,6 +888,9 @@ function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
   }
   if (scope === null) return '';
 
+  const paramType = lookupFunctionParameterType(scope, varName);
+  if (paramType !== '') return paramType;
+
   // Scan declarations in the scope for a matching variable name
   for (let i = 0; i < scope.childCount; i++) {
     const stmt = scope.child(i);
@@ -682,16 +904,116 @@ function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
     // Check init_declarator children for the variable name
     const declarator = stmt.childForFieldName('declarator');
     if (declarator === null) continue;
-    if (declarator.type === 'init_declarator') {
-      const nameChild = declarator.childForFieldName('declarator');
-      if (nameChild !== null && nameChild.text === varName) {
-        return normalizeCppTypeText(typeNode.text);
-      }
-    } else if (declarator.text === varName) {
+    const nameChild = declaredNameNode(declarator);
+    if (nameChild !== null && extractDeclaratorLeafName(nameChild) === varName) {
       return normalizeCppTypeText(typeNode.text);
     }
   }
   return '';
+}
+
+function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterTypeClass {
+  const varName = identNode.text;
+  let scope: SyntaxNode | null = identNode.parent;
+  while (
+    scope !== null &&
+    scope.type !== 'compound_statement' &&
+    scope.type !== 'translation_unit'
+  ) {
+    scope = scope.parent;
+  }
+  if (scope === null) return unknownTypeClass('unknown');
+
+  const paramTypeClass = lookupFunctionParameterTypeClass(scope, varName, identNode);
+  if (paramTypeClass !== undefined) return paramTypeClass;
+
+  for (let i = 0; i < scope.childCount; i++) {
+    const stmt = scope.child(i);
+    if (stmt === null || stmt.type !== 'declaration') continue;
+
+    const typeNode = stmt.childForFieldName('type');
+    if (typeNode === null) continue;
+    if (typeNode.type === 'placeholder_type_specifier') continue;
+
+    const declarator = stmt.childForFieldName('declarator');
+    if (declarator === null) continue;
+    const nameChild = declaredNameNode(declarator);
+    if (nameChild === null || extractDeclaratorLeafName(nameChild) !== varName) continue;
+
+    const typeClass = classifyCppParameterType(
+      typeNode.text,
+      nameChild.text,
+      stmt.text.replace(/;\s*$/, ''),
+    );
+    if (isKnownEnumName(identNode, typeClass.base)) {
+      return { ...typeClass, base: `enum:${typeClass.base}` };
+    }
+    return typeClass;
+  }
+  return unknownTypeClass('unknown');
+}
+
+function lookupFunctionParameterType(scope: SyntaxNode, varName: string): string {
+  const param = findEnclosingFunctionParameter(scope, varName);
+  if (param === null) return '';
+  const typeNode = param.childForFieldName('type');
+  if (typeNode === null) return '';
+  return normalizeCppTypeText(typeNode.text);
+}
+
+function lookupFunctionParameterTypeClass(
+  scope: SyntaxNode,
+  varName: string,
+  identNode: SyntaxNode,
+): ParameterTypeClass | undefined {
+  const param = findEnclosingFunctionParameter(scope, varName);
+  if (param === null) return undefined;
+  const typeNode = param.childForFieldName('type');
+  if (typeNode === null) return undefined;
+  const declarator = param.childForFieldName('declarator');
+  if (declarator === null) return undefined;
+  const typeClass = classifyCppParameterType(typeNode.text, declarator.text, param.text);
+  if (isKnownEnumName(identNode, typeClass.base)) {
+    return { ...typeClass, base: `enum:${typeClass.base}` };
+  }
+  return typeClass;
+}
+
+function findEnclosingFunctionParameter(scope: SyntaxNode, varName: string): SyntaxNode | null {
+  let node: SyntaxNode | null = scope.parent;
+  while (node !== null) {
+    if (node.type === 'function_definition' || node.type === 'function_declarator') {
+      const fnDecl =
+        node.type === 'function_declarator'
+          ? node
+          : findFirstDescendantOfType(node, 'function_declarator');
+      const params = fnDecl?.childForFieldName('parameters') ?? null;
+      if (params !== null) {
+        for (let i = 0; i < params.namedChildCount; i++) {
+          const param = params.namedChild(i);
+          if (param === null || param.type !== 'parameter_declaration') continue;
+          const declarator = param.childForFieldName('declarator');
+          if (declarator !== null && extractDeclaratorLeafName(declarator) === varName) {
+            return param;
+          }
+        }
+      }
+      return null;
+    }
+    node = node.parent;
+  }
+  return null;
+}
+
+function declaredNameNode(declarator: SyntaxNode): SyntaxNode | null {
+  if (declarator.type !== 'init_declarator') return declarator;
+  for (let i = 0; i < declarator.namedChildCount; i++) {
+    const child = declarator.namedChild(i);
+    if (child === null) continue;
+    if (child.type === 'identifier') return child;
+    if (child.type.endsWith('_declarator')) return child;
+  }
+  return declarator.childForFieldName('declarator');
 }
 
 /** Normalize a type-specifier text for argument type matching.
@@ -703,6 +1025,25 @@ function normalizeCppTypeText(text: string): string {
   t = t.replace(/^.*::/, ''); // strip namespace prefix
   t = t.replace(/[*&]/g, '').trim();
   return t;
+}
+
+function isKnownEnumName(node: SyntaxNode, typeName: string): boolean {
+  if (typeName === '' || typeName === 'unknown') return false;
+  let root: SyntaxNode = node;
+  while (root.parent !== null) root = root.parent;
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur.type === 'enum_specifier') {
+      const name = cur.childForFieldName('name');
+      if (name?.text === typeName) return true;
+    }
+    for (let i = 0; i < cur.childCount; i++) {
+      const child = cur.child(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return false;
 }
 
 /**
@@ -1166,7 +1507,9 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
     const next =
       cur.childForFieldName('declarator') ??
       // parenthesized_declarator: single named child
-      (cur.type === 'parenthesized_declarator' ? cur.namedChild(0) : null);
+      (cur.type === 'parenthesized_declarator' || cur.type.endsWith('_declarator')
+        ? cur.namedChild(0)
+        : null);
     if (next === null) return null;
     cur = next;
   }

@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Copy, Focus, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
@@ -59,6 +60,7 @@ export const ProcessFlowModal = ({
   onFocusInGraph,
   isFullScreen = false,
 }: ProcessFlowModalProps) => {
+  const { t } = useTranslation(['graph', 'common']);
   const containerRef = useRef<HTMLDivElement>(null);
   const diagramRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -171,13 +173,13 @@ export const ProcessFlowModal = ({
         diagramRef.current!.innerHTML = `
           <div class="text-center p-8">
             <div class="text-red-400 text-sm font-medium mb-2">
-              ${isSizeError ? '📊 Diagram Too Large' : '⚠️ Render Error'}
+              ${isSizeError ? t('graph:processFlow.diagramTooLarge') : t('graph:processFlow.renderError')}
             </div>
             <div class="text-slate-400 text-xs max-w-md">
               ${
                 isSizeError
-                  ? `This diagram has ${process.steps?.length || 0} steps and is too complex to render. Try viewing individual processes instead of "All Processes".`
-                  : `Unable to render diagram. Steps: ${process.steps?.length || 0}`
+                  ? t('graph:processFlow.tooComplex', { count: process.steps?.length || 0 })
+                  : t('graph:processFlow.unableToRender', { count: process.steps?.length || 0 })
               }
             </div>
           </div>
@@ -186,7 +188,7 @@ export const ProcessFlowModal = ({
     };
 
     renderDiagram();
-  }, [process]);
+  }, [process, t]);
 
   // Close on escape
   useEffect(() => {
@@ -242,7 +244,9 @@ export const ProcessFlowModal = ({
 
         {/* Header */}
         <div className="relative z-10 border-b border-white/10 px-6 py-5">
-          <h2 className="text-lg font-semibold text-white">Process: {process.label}</h2>
+          <h2 className="text-lg font-semibold text-white">
+            {t('graph:processFlow.title', { label: process.label })}
+          </h2>
         </div>
 
         {/* Diagram */}
@@ -271,7 +275,7 @@ export const ProcessFlowModal = ({
             <button
               onClick={handleZoomOut}
               className="rounded-md p-2 text-slate-300 transition-all hover:bg-white/10 hover:text-white"
-              title="Zoom out (-)"
+              title={t('graph:processFlow.zoomOutTitle')}
             >
               <ZoomOut className="h-4 w-4" />
             </button>
@@ -281,7 +285,7 @@ export const ProcessFlowModal = ({
             <button
               onClick={handleZoomIn}
               className="rounded-md p-2 text-slate-300 transition-all hover:bg-white/10 hover:text-white"
-              title="Zoom in (+)"
+              title={t('graph:processFlow.zoomInTitle')}
             >
               <ZoomIn className="h-4 w-4" />
             </button>
@@ -289,9 +293,9 @@ export const ProcessFlowModal = ({
           <button
             onClick={resetView}
             className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 transition-all hover:bg-white/10 hover:text-white"
-            title="Reset zoom and pan"
+            title={t('graph:processFlow.resetTitle')}
           >
-            Reset View
+            {t('graph:processFlow.resetView')}
           </button>
           {onFocusInGraph && (
             <button
@@ -299,7 +303,7 @@ export const ProcessFlowModal = ({
               className="flex items-center gap-2 rounded-lg bg-cyan-400 px-5 py-2.5 text-sm font-medium text-slate-900 shadow-lg shadow-cyan-500/20 transition-all hover:bg-cyan-300"
             >
               <Focus className="h-4 w-4" />
-              Toggle Focus
+              {t('graph:processFlow.toggleFocus')}
             </button>
           )}
           <button
@@ -307,13 +311,13 @@ export const ProcessFlowModal = ({
             className="flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-purple-500/20 transition-all hover:bg-purple-500"
           >
             <Copy className="h-4 w-4" />
-            Copy Mermaid
+            {t('graph:processFlow.copyMermaid')}
           </button>
           <button
             onClick={onClose}
             className="rounded-lg border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-medium text-slate-300 transition-all hover:bg-white/10 hover:text-white"
           >
-            Close
+            {t('common:actions.close')}
           </button>
         </div>
       </div>

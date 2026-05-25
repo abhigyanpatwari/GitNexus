@@ -77,6 +77,7 @@ function findCanonicalRepoRoot(cwd) {
       timeout: 2000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) return null;
     const commonDir = (result.stdout || '').trim();
@@ -200,6 +201,7 @@ function runGitNexusCli(args, cwd, timeout) {
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   }
 
@@ -210,6 +212,7 @@ function runGitNexusCli(args, cwd, timeout) {
       encoding: 'utf-8',
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     useDirectBinary = which.status === 0;
   } catch {
@@ -222,6 +225,7 @@ function runGitNexusCli(args, cwd, timeout) {
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   }
   // npx fallback needs shell on Windows since npx is a .cmd script
@@ -230,6 +234,7 @@ function runGitNexusCli(args, cwd, timeout) {
     timeout: timeout + 5000,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 
@@ -318,6 +323,7 @@ function handlePostToolUse(input) {
       timeout: 3000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     currentHead = (headResult.stdout || '').trim();
   } catch {

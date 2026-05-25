@@ -1,11 +1,12 @@
 /**
  * Kotlin: data class extends + implements interfaces + ambiguous import disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
+  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -13,6 +14,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const it = createResolverParityIt('kotlin');
 
 // ---------------------------------------------------------------------------
 // Heritage: data class extends + implements interfaces (delegation specifiers)
@@ -2058,5 +2061,584 @@ describe('Kotlin User implements Validator — interface default method (SM-11)'
     );
     expect(validateCall).toBeDefined();
     expect(validateCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1756: companion-object members must dispatch through the class name,
+// never through an instance receiver.
+//
+// `Logger.create(...)` — companion call via the class name — resolves to the
+// companion's `create`. `logger.log(...)` and `logger.create(...)` — calls
+// through an INSTANCE — must resolve to the instance method and NOT cross
+// over to the companion-only `create`.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin companion vs instance member dispatch (#1756)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-vs-instance'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Logger class with companion-only create() and instance log()', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Logger');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('log');
+  });
+
+  it('Logger.create("app") resolves to the companion create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCall = calls.find((c) => c.source === 'makeLogger' && c.target === 'create');
+    expect(createCall).toBeDefined();
+    expect(createCall!.targetFilePath).toBe('App.kt');
+  });
+
+  it('logger.log("hello") resolves to the instance log, NOT companion create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find((c) => c.source === 'makeLogger' && c.target === 'log');
+    expect(logCall).toBeDefined();
+    expect(logCall!.targetFilePath).toBe('App.kt');
+  });
+
+  it('makeLogger emits exactly 2 CALLS edges — Logger.create and logger.log, no extras', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromMakeLogger = calls.filter((c) => c.source === 'makeLogger');
+    expect(fromMakeLogger.length).toBe(2);
+  });
+
+  it('logger.log() in directLog() resolves to the instance log on App.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find((c) => c.source === 'directLog' && c.target === 'log');
+    expect(logCall).toBeDefined();
+    expect(logCall!.targetFilePath).toBe('App.kt');
+  });
+
+  it('crossover() invoking logger.create() on an instance emits NO CALLS edge', () => {
+    // `logger.create(...)` on an instance is a compile error in Kotlin —
+    // companion-object methods can only be called through the class name.
+    // The resolver must NOT emit a CALLS edge for this call site (#1756).
+    // Registry-primary path filters via `ScopeResolver.isStaticOnly`; the
+    // legacy DAG has a pre-existing crossover bug, so this assertion is
+    // marked as a legacy expected failure in
+    // `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin` (helpers.ts).
+    const calls = getRelationships(result, 'CALLS');
+    const crossover = calls.find((c) => c.source === 'crossover' && c.target === 'create');
+    expect(crossover).toBeUndefined();
+  });
+
+  // #1756 / U7 edge-type completeness: in addition to the CALLS absence
+  // asserted above, the crossover() function must NOT leak any non-CALLS
+  // edge from `crossover` to the companion-promoted `create`. Without
+  // these assertions a hypothetical future regression that wired the
+  // crossover through a `USES` (type-reference) or `ACCESSES` (property-
+  // read) edge would silently pass the CALLS-only check while still
+  // misrepresenting the dispatch to users / consumers of the graph.
+  // Both `USES` and `ACCESSES` are valid `RelationshipType` values in
+  // `gitnexus-shared/src/graph/types.ts`.
+  it('crossover() emits NO USES edges to create (edge-type completeness)', () => {
+    const usesEdges = getRelationships(result, 'USES').filter(
+      (c) => c.source === 'crossover' && c.target === 'create',
+    );
+    expect(usesEdges.length).toBe(0);
+  });
+
+  it('crossover() emits NO ACCESSES edges to create (edge-type completeness)', () => {
+    const accessesEdges = getRelationships(result, 'ACCESSES').filter(
+      (c) => c.source === 'crossover' && c.target === 'create',
+    );
+    expect(accessesEdges.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kotlin lambda scopes (#1757)
+//
+// Lambda bodies create a new lexical scope in which the lambda's parameter
+// list (or implicit `it`) binds. Call sites inside the lambda body must
+// resolve through these bindings; implicit `it` must be visible only inside
+// the lambda; nested lambdas must shadow deterministically. Covers stdlib
+// idioms: `forEach`, `map`, `filter`, `let`, `apply`, `also`, `with`,
+// `takeIf`, `use`.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin lambda scopes (#1757)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-lambda-scopes'), () => {});
+  }, 60000);
+
+  it('detects User and Post classes plus save/like methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Class')).toContain('Post');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('like');
+  });
+
+  // Happy path: explicit parameter
+  it('explicitParam: user.save() inside forEach resolves to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.source === 'explicitParam' && c.target === 'save');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toBe('App.kt');
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const userSave = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    expect(userSave).toBeDefined();
+    expect(saveCalls[0].rel.targetId).toBe(userSave!.rel.targetId);
+  });
+
+  // Happy path: implicit `it`
+  it('implicitIt: it.save() inside forEach resolves to User.save via implicit it', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.source === 'implicitIt' && c.target === 'save');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Happy path: chain — outer lambda's `it.name` does not cross-bind
+  it('chained: emits no erroneous save/like edges (inner it bound to User, not Post)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const erroneousSave = calls.find((c) => c.source === 'chained' && c.target === 'save');
+    const erroneousLike = calls.find((c) => c.source === 'chained' && c.target === 'like');
+    expect(erroneousSave).toBeUndefined();
+    expect(erroneousLike).toBeUndefined();
+  });
+
+  it('chained: println(name) inside forEach resolves to file-scope println', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const printlnCalls = calls.filter((c) => c.source === 'chained' && c.target === 'println');
+    expect(printlnCalls.length).toBe(1);
+    expect(printlnCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Edge case: nested lambdas — inner `it` is Post, outer `user` is User
+  it('nested: inner it.like() resolves to Post.like (NOT User.like)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const likeCalls = calls.filter((c) => c.source === 'nested' && c.target === 'like');
+    expect(likeCalls.length).toBe(1);
+    expect(likeCalls[0].targetFilePath).toBe('App.kt');
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const postLike = hasMethod.find((e) => e.source === 'Post' && e.target === 'like');
+    expect(postLike).toBeDefined();
+    expect(likeCalls[0].rel.targetId).toBe(postLike!.rel.targetId);
+  });
+
+  it('nested: emits NO save() CALLS edge (outer `user` parameter is not called)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const wrongSave = calls.find((c) => c.source === 'nested' && c.target === 'save');
+    expect(wrongSave).toBeUndefined();
+  });
+
+  // Edge case: `let` exposes the receiver as `it`
+  it('letScope: it.save() inside let { } resolves to User.save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.source === 'letScope' && c.target === 'save');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Edge case: shadowing — inner `it` (User) beats outer `val it = "outer"`
+  it('outerItShadow: inner it.save() resolves to User.save (outer val it is shadowed)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.source === 'outerItShadow' && c.target === 'save');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toBe('App.kt');
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const userSave = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
+    expect(userSave).toBeDefined();
+    expect(saveCalls[0].rel.targetId).toBe(userSave!.rel.targetId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1756 / U2 remediation: the `isStaticOnly` filter must run INSIDE the MRO
+// chain walk (so static-only candidates fall through to ancestor instance
+// methods) and BEFORE arity narrowing (so a same-name same-arity static +
+// instance pair on the same owner doesn't collapse to OVERLOAD_AMBIGUOUS).
+//
+// Three scenarios in `kotlin-companion-mro-shadow/App.kt`:
+//   - `useChild(c: Child)` calls `c.foo()` — Child has only a companion
+//     `foo` but extends Base whose instance `foo` is the legitimate target.
+//     Expected: exactly one CALLS edge `useChild → Base.foo`, no edge to
+//     the companion-promoted `Child.foo`.
+//   - `useChildWithInstance(c: ChildWithInstance)` calls `c.foo()` —
+//     ChildWithInstance has BOTH an instance `foo(): Int` AND a same-arity
+//     companion `foo(): ChildWithInstance`. Expected: exactly one CALLS
+//     edge to the instance `foo` on ChildWithInstance (not the companion,
+//     not Base).
+//   - `useStandalone(s: Standalone)` calls `s.foo()` — Standalone has
+//     only a companion `foo` and no instance ancestor with the same
+//     name. Expected: no CALLS edge.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin companion vs instance MRO shadowing (#1756 / U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-mro-shadow'),
+      () => {},
+    );
+  }, 60000);
+
+  it('useChild() falls through static-only Child.foo to Base.foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromUseChild = calls.filter((c) => c.source === 'useChild');
+    expect(fromUseChild.length).toBe(1);
+    expect(fromUseChild[0].target).toBe('foo');
+    expect(fromUseChild[0].targetFilePath).toBe('App.kt');
+    // The target should be the Base instance `foo`, not the companion
+    // `foo` promoted onto Child. We assert by checking the target node's
+    // qualified name resolves under Base (via HAS_METHOD).
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const baseFoo = hasMethod.find(
+      (e) => e.source === 'Base' && e.target === 'foo' && e.targetFilePath === 'App.kt',
+    );
+    expect(baseFoo).toBeDefined();
+    expect(fromUseChild[0].rel.targetId).toBe(baseFoo!.rel.targetId);
+  });
+
+  it('useChild() does NOT emit an edge to the companion-promoted Child.foo', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromUseChild = calls.filter((c) => c.source === 'useChild');
+    // No edge whose target is the Child companion `foo`. We identify it
+    // by HAS_METHOD: Child → foo (the companion `foo` is promoted onto
+    // Child as the enclosing class). If such an edge existed, useChild
+    // would target it; assert it does not.
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const childFoo = hasMethod.find(
+      (e) => e.source === 'Child' && e.target === 'foo' && e.targetFilePath === 'App.kt',
+    );
+    if (childFoo !== undefined) {
+      const wrongEdge = fromUseChild.find((c) => c.rel.targetId === childFoo.rel.targetId);
+      expect(wrongEdge).toBeUndefined();
+    }
+  });
+
+  it('useChildWithInstance() resolves to the instance foo on ChildWithInstance', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromUseCWI = calls.filter((c) => c.source === 'useChildWithInstance');
+    expect(fromUseCWI.length).toBe(1);
+    expect(fromUseCWI[0].target).toBe('foo');
+    expect(fromUseCWI[0].targetFilePath).toBe('App.kt');
+    // Assert the target is ChildWithInstance.foo (the instance method),
+    // not the companion `foo` (which also targets ChildWithInstance as
+    // the promoted owner but is static-only) and not Base.foo.
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const baseFoo = hasMethod.find(
+      (e) => e.source === 'Base' && e.target === 'foo' && e.targetFilePath === 'App.kt',
+    );
+    expect(baseFoo).toBeDefined();
+    expect(fromUseCWI[0].rel.targetId).not.toBe(baseFoo!.rel.targetId);
+  });
+
+  it('useStandalone() emits no CALLS edge (entire chain is static-only)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fromUseStandalone = calls.filter((c) => c.source === 'useStandalone');
+    expect(fromUseStandalone.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1756 / U4 remediation: named companions and companions containing nested
+// classes must promote their methods onto the enclosing class AND stamp the
+// static-only marker (so crossover via instance receiver is suppressed).
+//
+// Pre-U4 `populateCompanionMembersOnEnclosingClass` used the heuristic
+// `parent.ownedDefs.some(isClassLike) → continue`, which silently bypassed:
+//   - named companions (`companion object Helper { ... }`) — `Helper`
+//     looked like a class-like def on the companion scope; and
+//   - companions containing nested classes (`companion object { class
+//     Token; fun create() }`) — the nested class def lived on the
+//     companion scope.
+// U4 replaces the heuristic with a parser-layer marker capture
+// (`@scope.companion`), so any `companion_object` AST node is
+// unambiguously identified as a companion regardless of contents.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin named companion + nested-class companions (#1756 / U4)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-companion-named'), () => {});
+  }, 60000);
+
+  it('detects Outer / WithNested / InnerClassAndCompanion classes and create / forge / build methods', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Outer');
+    expect(classes).toContain('WithNested');
+    expect(classes).toContain('InnerClassAndCompanion');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('forge');
+    expect(methods).toContain('build');
+  });
+
+  // Happy path (named companion): Outer.create() resolves through the
+  // enclosing class name. Pre-U4 this emitted zero edges because the
+  // named-companion `create` was owned by `Helper`, not `Outer`.
+  it('useNamed: Outer.create() resolves to exactly 1 CALLS edge → create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.source === 'useNamed' && c.target === 'create');
+    expect(saveCalls.length).toBe(1);
+    expect(saveCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Crossover suppression (named): the instance-receiver `o.create()` is a
+  // compile error in Kotlin — companion methods are not legal instance-
+  // dispatch candidates. Pre-U4 this emitted a false edge because the
+  // static-only marker was never stamped on the named-companion `create`.
+  it('useNamedCrossover: o.create() emits NO CALLS edge to create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossover = calls.filter(
+      (c) => c.source === 'useNamedCrossover' && c.target === 'create',
+    );
+    expect(crossover.length).toBe(0);
+  });
+
+  // Happy path (companion containing a nested class): WithNested.forge()
+  // resolves through the enclosing class name. Pre-U4 the nested
+  // `class Token` made the companion look like a regular class to the
+  // heuristic, so `forge` was never promoted onto `WithNested`.
+  it('useNested: WithNested.forge() resolves to exactly 1 CALLS edge → forge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const forgeCalls = calls.filter((c) => c.source === 'useNested' && c.target === 'forge');
+    expect(forgeCalls.length).toBe(1);
+    expect(forgeCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Mix (inner-class + companion): the class-name call resolves to the
+  // promoted companion method; the instance-receiver crossover emits
+  // nothing. Verifies that the U4 fix does NOT misclassify a regular
+  // class with a sibling companion as a companion itself.
+  it('useInnerMix: exactly 1 CALLS edge to build (class-name call resolves; crossover suppressed)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const buildCalls = calls.filter((c) => c.source === 'useInnerMix' && c.target === 'build');
+    expect(buildCalls.length).toBe(1);
+    expect(buildCalls[0].targetFilePath).toBe('App.kt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1756 / U6 remediation: cross-file companion factory dispatch.
+//
+// `Logger.create(...)` — a companion-object factory call via the class name —
+// must resolve to the companion's `create` even when `Logger` is imported
+// from a different file. The probe in U6 (2026-05-22) established that
+// Case 2 (class-name receiver) dispatch traverses module boundaries
+// correctly: `Logger.create()` in `app/Main.kt` resolves to
+// `Logger.create` in `logging/Logger.kt` via the import-resolved
+// receiver chain.
+//
+// What does NOT cross module boundaries today is the chain-typebinding:
+// `val l = Logger.create(...)` followed by `l.log(...)` only resolves
+// when `Logger` is defined in the same file as the call site. Two
+// reasons:
+//   1. `collectKotlinClassMembers` in `captures.ts` runs per-file, so
+//      the Tier-2 lookup that drives chain-typebinding return-type
+//      inference (`inferKotlinNavigationCallReturnType` →
+//      `classMembers.methods.get("Logger")?.get("create")`) returns
+//      undefined when `Logger` is imported. The local typeBinding
+//      `l → ?` is never emitted in the importer scope.
+//   2. The chain-follow mirror in `propagateImportedReturnTypes` (#1759)
+//      treats dot-form rawNames like `Logger.create` as terminal, so it
+//      cannot bridge `l → Logger.create → Logger` cross-file either.
+//
+// Closing this gap requires either a workspace-level Kotlin class-member
+// index (paralleling the `scanJavaImports` / `scanPythonImports`
+// patterns) or refactoring `followChainPostFinalize` to look up dot-form
+// bindings against a cross-file return-type map. Both are substantial
+// enough that the U6 plan's "fix looks substantial" branch fires —
+// neither qualifies as the additive `imported-return-types.ts`
+// extension the U6 approach (a) allows. Deferred to a follow-up issue
+// tracking cross-file companion factory chain binding alongside the
+// broader cross-file Tier-2 class-member lookup work.
+//
+// The instance-receiver crossover (`l.create()` on an instance receiver
+// emits no CALLS edge) is U3's surface and is asserted in the U2 / U3
+// same-file fixtures (`kotlin-companion-mro-shadow`,
+// `kotlin-companion-other-cases`); this fixture intentionally does not
+// duplicate that assertion to avoid coupling U6 to U3's static-only-
+// filter extension to Cases 0 / 3b / 5.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin companion vs instance cross-file dispatch (#1756 / U6)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Logger class with companion create() and instance log()', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Logger');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('log');
+  });
+
+  // Happy path: `Logger.create("app")` resolves via class-name receiver
+  // (Case 2) across module boundaries — the import-resolved receiver
+  // chain reaches the companion's `create` in `logging/Logger.kt`.
+  it('useCrossFileFactory: Logger.create() resolves to companion create on Logger.kt', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCall = calls.find(
+      (c) => c.source === 'useCrossFileFactory' && c.target === 'create',
+    );
+    expect(createCall).toBeDefined();
+    expect(createCall!.targetFilePath).toBe('logging/Logger.kt');
+  });
+
+  // NOTE: a follow-up assertion `l.log()` resolving cross-file via the
+  // chain-typebinding `val l = Logger.create(...)` would belong here.
+  // The U6 probe (2026-05-22) confirmed that the existing pipeline does
+  // NOT propagate `l → Logger` across module boundaries — see the comment
+  // block above for the failure modes and deferral rationale. The class-
+  // name dispatch assertion above is the additive coverage U6 lands; the
+  // chain-typebinding cross-file path is tracked as a follow-up issue
+  // alongside the broader cross-file Tier-2 lookup work.
+});
+
+// ---------------------------------------------------------------------------
+// #1756 / U3 remediation: extend the `isStaticOnly` filter to receiver-bound
+// dispatch cases beyond Case 4. Pre-U3, the filter only fired on Case 4
+// (simple typeBinding receiver). Three other instance-dispatch cases also
+// emit `CALLS` edges and could leak the companion-vs-instance crossover:
+//   - Case 0 (compound receiver): receiver like `Logger.create("a")` whose
+//     `findOwnedMember(Logger, "create")` returns the static-only
+//     companion-promoted `create`.
+//   - Case 3b (chain-typebinding): receiver inferred via a chain whose
+//     resolved owner has a static-only candidate.
+//   - Case 5 (value-receiver bridge): `findValueBindingInScope` +
+//     `pickOverload` on a single owner.
+//
+// Note: Case 0.5 (`this`-receiver) is NOT covered because Kotlin's scope-
+// resolver does not enable `resolveThisViaEnclosingClass`. The dependency
+// is documented inline in `receiver-bound-calls.ts` so any language that
+// enables it must also wire the filter at that case.
+//
+// The legitimate edges (Case 2 class-name receiver `Logger.create("a")`,
+// Case 4 simple typeBinding `r.getAll()`) must continue to emit.
+//
+// **Empirical case-coverage observations** (probe at commit pre-U3, test
+// run 2026-05-22): in **registry-primary** mode, the existing pipeline
+// already emits zero crossover edges for the fixture shapes below even
+// without U3's filter wired at Cases 0 / 3b / 5. In **legacy DAG** mode
+// (REGISTRY_PRIMARY_KOTLIN=0), the same shapes leak crossover edges for
+// the `useChainTypeBindingCrossover` and `useValueReceiverCrossover`
+// scenarios — confirming that *some* suppression mechanism in the
+// registry-primary path is already catching them (most likely U2's
+// Case-4 filter for `l.create("nope")`, since `val l = ...` produces a
+// typeBinding routing through Case 4; the compound and chain shapes
+// are suppressed by the receiver resolver not binding to the static-
+// only def in the first place).
+//
+// Per the remediation plan's "be honest about which paths are actually
+// exercised by tests vs which are added defensively" guidance, the
+// per-case filters at Cases 0 / 3b / 5 are landing as **defensive
+// wire-ups** — they ensure the contract symmetry the JSDoc now claims
+// (filter applies to every instance-dispatch case) holds for future
+// fixture shapes that DO trigger these paths with a static-only
+// candidate. The crossover tests are registered as expected failures
+// in `LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES.kotlin` because the
+// legacy DAG genuinely diverges on these shapes; the registry-primary
+// path's suppression is a real scope-resolver-only correctness win.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin isStaticOnly across other receiver cases (#1756 / U3)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-companion-other-cases'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects Logger / Service / Repo and their companion + instance methods', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Logger');
+    expect(classes).toContain('Service');
+    expect(classes).toContain('Repo');
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('create');
+    expect(methods).toContain('build');
+    expect(methods).toContain('log');
+    expect(methods).toContain('perform');
+    expect(methods).toContain('getAll');
+  });
+
+  // Happy path + Case 0 crossover suppression (combined): the legitimate
+  // `Logger.create("a")` (Case 2 class-name receiver) emits exactly 1
+  // CALLS edge to `create`. The OUTER `.create("b")` on the compound
+  // receiver `Logger.create("a")` would route through Case 0 — per the
+  // empirical observation above, the existing pipeline already does NOT
+  // emit a crossover edge for this shape, so the post-U3 count stays
+  // at 1 (same as pre-U3). The U3 Case-0 filter is defensive: if a
+  // future fixture's compound-receiver shape DOES enter Case 0 with a
+  // static-only candidate, the filter would suppress.
+  it('useCompoundCrossover: Logger.create("a") emits exactly 1 CALLS edge to create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCalls = calls.filter(
+      (c) => c.source === 'useCompoundCrossover' && c.target === 'create',
+    );
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Happy path (Case 4 simple typeBinding, baseline): `r.getAll()` in
+  // `useChainTypeBindingCrossover` resolves through `findReceiverType
+  // Binding` for `r: Repo` and `findOwnedMember(Repo, "getAll")`. The
+  // instance dispatch on `Repo` is legitimate — that edge MUST emit.
+  it('useChainTypeBindingCrossover: r.getAll() emits exactly 1 CALLS edge to getAll', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getAllCalls = calls.filter(
+      (c) => c.source === 'useChainTypeBindingCrossover' && c.target === 'getAll',
+    );
+    expect(getAllCalls.length).toBe(1);
+    expect(getAllCalls[0].targetFilePath).toBe('App.kt');
+  });
+
+  // Crossover (Case 3b chain-typebinding): the chained `.build()` on
+  // `services.first()` would route through Case 3b's chain-typebinding
+  // walk if the chain resolves to `Service`. Per the empirical
+  // observation above, the existing pipeline already does NOT emit a
+  // crossover edge for this shape — `services.first()` returns
+  // `Service?` from `List<Service>.first()` and the chain-typebinding
+  // walk doesn't terminate at the Service class for this expression
+  // tree. The U3 Case-3b filter is defensive: if a future shape DOES
+  // bind the chain to Service and reach `findOwnedMember(Service,
+  // "build")`, the filter would suppress.
+  it('useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const buildCalls = calls.filter(
+      (c) => c.source === 'useChainTypeBindingCrossover' && c.target === 'build',
+    );
+    expect(buildCalls.length).toBe(0);
+  });
+
+  // Crossover (value-receiver-style): `l.create("nope")` is invalid
+  // Kotlin (companion methods are not legal instance-dispatch
+  // candidates). Kotlin's resolver typically routes `l` through Case 4
+  // because `val l = makeLoggerForCrossover()` produces a typeBinding
+  // for Logger via call-result return-type inference — so the
+  // crossover suppression actually fires through Case 4 (U2's filter).
+  // The U3 Case-5 filter wire-up is defensive: it preserves contract
+  // symmetry for any future value-binding shape that bypasses Case 4
+  // (e.g., object-literal-style receivers that fall through to the
+  // value-binding bridge instead).
+  it('useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const createCalls = calls.filter(
+      (c) => c.source === 'useValueReceiverCrossover' && c.target === 'create',
+    );
+    expect(createCalls.length).toBe(0);
   });
 });

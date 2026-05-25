@@ -24,10 +24,11 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
   switch (kind) {
     case 'named': {
       // `import com.example.User;`
+      const simpleName = sourceCap.text.split('.').pop() ?? sourceCap.text;
       return {
         kind: 'named',
-        localName: nameCap?.text ?? sourceCap.text.split('.').pop() ?? sourceCap.text,
-        importedName: sourceCap.text,
+        localName: nameCap?.text ?? simpleName,
+        importedName: simpleName,
         targetRaw: sourceCap.text,
       };
     }
@@ -40,17 +41,14 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
     }
     case 'static': {
       // `import static com.example.Utils.format;`
-      // The source contains the full path including the member name
-      // (e.g. `com.example.Utils.format`).  For file resolution we need
-      // the class path (`com.example.Utils`), so strip the final member
-      // segment.  The local binding name is the member itself.
       const fullSource = sourceCap.text;
       const lastDot = fullSource.lastIndexOf('.');
+      const memberName = lastDot >= 0 ? fullSource.slice(lastDot + 1) : fullSource;
       const classPath = lastDot >= 0 ? fullSource.slice(0, lastDot) : fullSource;
       return {
         kind: 'named',
-        localName: nameCap?.text ?? (lastDot >= 0 ? fullSource.slice(lastDot + 1) : fullSource),
-        importedName: fullSource,
+        localName: nameCap?.text ?? memberName,
+        importedName: memberName,
         targetRaw: classPath,
       };
     }
@@ -89,6 +87,9 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   let source: TypeRef['source'] = 'parameter-annotation';
   if (captures['@type-binding.self'] !== undefined) source = 'self';
   else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
+  else if (captures['@type-binding.pattern'] !== undefined) source = 'annotation';
+  else if (captures['@type-binding.call-result'] !== undefined) source = 'annotation';
+  else if (captures['@type-binding.alias'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
 

@@ -254,6 +254,7 @@
 import type {
   BindingRef,
   Callsite,
+  ConstraintContext,
   ParsedFile,
   ScopeId,
   SupportedLanguages,
@@ -278,6 +279,10 @@ export type LinearizeStrategy = (
 
 /** Result of `ScopeResolver.arityCompatibility` — mirrors `RegistryProviders.arityCompatibility`. */
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
+
+/** Re-exported for ScopeResolver consumers — same shape as
+ *  `RegistryProviders.constraintCompatibility`'s third parameter. */
+export type { ConstraintContext } from 'gitnexus-shared';
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -373,6 +378,28 @@ export interface ScopeResolver {
    * `(def, callsite)` and need an adapter at the wiring site.
    */
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
+
+  /**
+   * Per-language constraint compatibility between a callsite and a
+   * candidate `def` that carries `templateConstraints` metadata.
+   * Mirrors `arityCompatibility` semantics: the three-valued verdict
+   * MUST treat `'unknown'` as keep-candidate (monotonicity — adding
+   * a predicate can only narrow correctly, never produce a wrong
+   * edge). Consulted by `narrowOverloadCandidates` after the arity
+   * and parameter-type filters.
+   *
+   * Optional. Languages without constrained-overload semantics
+   * (SFINAE, `requires` clauses, trait bounds, conditional types)
+   * leave this undefined and the constraint filter is a pass-through.
+   *
+   * C++ is the first consumer; see `languages/cpp/constraint-filter.ts`
+   * for the Tier-A predicate registry and Kleene 3-valued evaluator.
+   */
+  readonly constraintCompatibility?: (
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ) => ArityVerdict;
 
   // ─── Per-language strategies ───────────────────────────────────────────────
 
@@ -561,6 +588,44 @@ export interface ScopeResolver {
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional predicate to identify members for which dispatch through
+   * an instance receiver is **invalid at the language level** — i.e.
+   * calling `instance.member()` would be a compile error or a
+   * type-system violation, even if a member of that name exists on
+   * the receiver's class. When provided, the receiver-bound calls
+   * pass filters out such members at every instance-receiver dispatch
+   * case (Case 0 compound receiver, Case 3b chain-typebinding, Case 4
+   * simple typeBinding, Case 5 value-receiver bridge) so the resolver
+   * does not emit a misleading `CALLS` edge for a call site the
+   * language itself would reject.
+   *
+   * **Reserved for the "instance receiver is invalid" semantic only.**
+   * Hooks for languages where static / class-level members are still
+   * legally callable through an instance (Python `@staticmethod`,
+   * JavaScript `static` methods accessed via the prototype chain in
+   * some lookup paths) should return `false` for those members — the
+   * filter would silently suppress legitimate edges otherwise. The
+   * canonical fit today is Kotlin companion-object methods, where
+   * `instance.companionMethod()` is a compile error.
+   *
+   * Case 2 (class-name receiver) is intentionally unaffected: a call
+   * through the class name (`Foo.staticMethod()`) is a legitimate
+   * dispatch.
+   *
+   * Case 0.5 (implicit `this` receiver) currently fires only for
+   * languages with `resolveThisViaEnclosingClass === true` (C++ at
+   * time of writing), none of which expose static-only semantics. A
+   * future language that enables BOTH `resolveThisViaEnclosingClass`
+   * AND `isStaticOnly` must wire the filter into Case 0.5's chain
+   * walk too — see the inline note in `receiver-bound-calls.ts`.
+   *
+   * Languages without static-only semantics leave this undefined and
+   * the legacy unfiltered behavior applies (every owned member of the
+   * receiver class is a dispatch candidate).
+   */
+  readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
+
+  /**
    * Optional predicate to gate free-call fallback emission by caller-side
    * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
    * the caller cannot legally reach — e.g., a PHP function in a different
@@ -640,6 +705,7 @@ export interface ScopeResolver {
     callerScope: ScopeId,
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
+    callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**

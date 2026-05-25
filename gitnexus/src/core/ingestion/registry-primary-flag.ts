@@ -37,6 +37,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { parseTruthyEnv } from './utils/env.js';
 
 /**
  * Languages whose RFC #909 Ring 3 scope-resolution migration is complete.
@@ -74,6 +75,9 @@ export const MIGRATED_LANGUAGES: ReadonlySet<SupportedLanguages> = new Set<Suppo
   SupportedLanguages.C,
   SupportedLanguages.CPlusPlus,
   SupportedLanguages.PHP,
+  SupportedLanguages.JavaScript,
+  SupportedLanguages.Kotlin,
+  SupportedLanguages.Java,
 ]);
 
 /**
@@ -114,10 +118,6 @@ export function primaryLanguages(): ReadonlySet<SupportedLanguages> {
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-/** Accepted truthy strings (case-insensitive, trimmed). */
-const TRUTHY_VALUES: ReadonlySet<string> = new Set(['true', '1', 'yes']);
-
 function parseFlag(raw: string | undefined): boolean {
-  if (raw === undefined) return false;
-  return TRUTHY_VALUES.has(raw.trim().toLowerCase());
+  return parseTruthyEnv(raw);
 }

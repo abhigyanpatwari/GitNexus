@@ -101,6 +101,15 @@ withTestLbugDB(
         expect(Array.isArray(results)).toBe(true);
       });
 
+      it('does not treat write-like words inside search text as write operations (#1608)', async () => {
+        const { results, ftsAvailable } = await searchFTSFromLbug(
+          'create user authentication delete',
+          10,
+        );
+        expect(ftsAvailable).toBe(true);
+        expect(results.length).toBeGreaterThan(0);
+      });
+
       it('handles limit of 0', async () => {
         const { results } = await searchFTSFromLbug('user authentication', 0);
         expect(results).toEqual([]);

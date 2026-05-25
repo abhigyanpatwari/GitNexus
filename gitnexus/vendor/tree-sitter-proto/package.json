@@ -5,7 +5,7 @@
   "repository": "https://github.com/coder3101/tree-sitter-proto",
   "license": "MIT",
   "main": "bindings/node",
-  "_vendoredBy": "gitnexus — build deps (node-addon-api, node-gyp-build) are hoisted into gitnexus/package.json optionalDependencies, and native compilation is performed by gitnexus/scripts/build-tree-sitter-proto.cjs at gitnexus postinstall. Do NOT re-add a dependencies block or an install script here — doing so reintroduces https://github.com/abhigyanpatwari/GitNexus/issues/836 (ENOTEMPTY on global upgrade).",
+  "_vendoredBy": "gitnexus — materialized to node_modules/ by materialize-vendor-grammars.cjs; native build via build-tree-sitter-proto.cjs. Do NOT re-add dependencies or an install script (#836, #1728).",
   "peerDependencies": {
     "tree-sitter": ">=0.21.0"
   }

@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { isBladeTemplateFilename } from 'gitnexus-shared';
 import type { HttpLanguagePlugin } from './types.js';
 import { JAVA_HTTP_PLUGIN } from './java.js';
 import { GO_HTTP_PLUGIN } from './go.js';
@@ -45,6 +46,7 @@ export const HTTP_SCAN_GLOB = '**/*.{ts,tsx,js,jsx,java,go,py,php}';
  * or `undefined` if the extension is not registered.
  */
 export function getPluginForFile(rel: string): HttpLanguagePlugin | undefined {
+  if (isBladeTemplateFilename(rel)) return undefined;
   const ext = path.extname(rel).toLowerCase();
   return REGISTRY[ext];
 }

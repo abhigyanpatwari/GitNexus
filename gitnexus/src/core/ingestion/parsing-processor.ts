@@ -1,4 +1,4 @@
-import type { GraphNode, GraphRelationship, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, GraphRelationship, NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import Parser from 'tree-sitter';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
@@ -14,6 +14,7 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findObjectLiteralBindingInfo,
   getLabelFromCaptures,
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
@@ -30,7 +31,11 @@ import {
   constTagForId,
   buildCollisionGroups,
 } from './utils/method-props.js';
-import { extractTemplateArguments, templateArgumentsIdTag } from './utils/template-arguments.js';
+import {
+  extractTemplateArguments,
+  templateArgumentsIdTag,
+  templateConstraintsIdTag,
+} from './utils/template-arguments.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
@@ -128,6 +133,7 @@ export const mergeChunkResults = (
         parameterCount: sym.parameterCount,
         requiredParameterCount: sym.requiredParameterCount,
         parameterTypes: sym.parameterTypes,
+        parameterTypeClasses: sym.parameterTypeClasses,
         returnType: sym.returnType,
         declaredType: sym.declaredType,
         templateArguments: sym.templateArguments,
@@ -526,6 +532,10 @@ const processParsingSequential = async (
           )
         : null;
       const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      const objectLiteralOwnerInfo =
+        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          : null;
 
       // Qualify method/property IDs with enclosing class name to avoid collisions
       // e.g. "Method:animal.dart:Animal.speak" vs "Method:animal.dart:Dog.speak"
@@ -650,9 +660,38 @@ const processParsingSequential = async (
         classTemplateArguments.length > 0
           ? templateArgumentsIdTag(classTemplateArguments)
           : '';
+      // SFINAE / `requires`-clause aware ID disambiguation (issue #1579).
+      // Function-template overloads with identical parameterTypes but
+      // mutually-exclusive constraints (e.g. `enable_if_t<is_integral_v<T>>`
+      // vs `enable_if_t<is_floating_point_v<T>>`) need distinct graph
+      // nodes so the constraint-filter step in `narrowOverloadCandidates`
+      // has two candidates to narrow between. Without this tag they
+      // collapse to a single Function node and the SFINAE call resolves
+      // to only one edge regardless of which overload's constraint holds.
+      // The provider hook is the right invocation point — parsing-processor
+      // sees raw tree-sitter matches without the `@`-prefixed synthetic
+      // captures `scope-extractor` consumes, so we delegate extraction to
+      // the language adapter (C++ implements this; other languages opt out).
+      let parsedTemplateConstraints: unknown = undefined;
+      let constraintsTag = '';
+      if (
+        (nodeLabel === 'Function' || nodeLabel === 'Method') &&
+        provider.extractTemplateConstraints !== undefined &&
+        definitionNode !== null
+      ) {
+        try {
+          parsedTemplateConstraints = provider.extractTemplateConstraints(definitionNode);
+          if (parsedTemplateConstraints !== undefined) {
+            constraintsTag = templateConstraintsIdTag(parsedTemplateConstraints);
+          }
+        } catch {
+          parsedTemplateConstraints = undefined;
+          constraintsTag = '';
+        }
+      }
       const nodeId = generateId(
         nodeLabel,
-        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}`,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${constraintsTag}`,
       );
       const classNodeForSymbol = definitionNodeForRange || definitionNode || nameNode;
       const qualifiedTypeName =
@@ -688,6 +727,9 @@ const processParsingSequential = async (
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
             ? { templateArguments: classTemplateArguments }
+            : {}),
+          ...(parsedTemplateConstraints !== undefined
+            ? { templateConstraints: parsedTemplateConstraints }
             : {}),
           ...(frameworkHint
             ? {
@@ -744,10 +786,11 @@ const processParsingSequential = async (
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        parameterTypeClasses: methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         declaredType,
         templateArguments: classTemplateArguments,
-        ownerId: enclosingClassId ?? undefined,
+        ownerId: enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? undefined,
         qualifiedName: qualifiedTypeName,
       });
 
@@ -767,15 +810,18 @@ const processParsingSequential = async (
       graph.addRelationship(relationship);
 
       // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      if (enclosingClassId) {
+      const ownerIdForMemberEdge = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId ?? null;
+      if (ownerIdForMemberEdge) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         graph.addRelationship({
-          id: generateId(memberEdgeType, `${enclosingClassId}->${nodeId}`),
-          sourceId: enclosingClassId,
+          id: generateId(memberEdgeType, `${ownerIdForMemberEdge}->${nodeId}`),
+          sourceId: ownerIdForMemberEdge,
           targetId: nodeId,
           type: memberEdgeType,
           confidence: 1.0,
-          reason: '',
+          reason: objectLiteralOwnerInfo
+            ? 'object literal method belongs to exported object binding'
+            : '',
         });
       }
     });
@@ -793,6 +839,14 @@ const processParsingSequential = async (
 // ============================================================================
 // Public API
 // ============================================================================
+
+/**
+ * Per-`WorkerPool` log-dedup state for quarantine reporting. Keyed on the
+ * pool instance so multiple concurrent pools (test fixtures, future
+ * multi-pool callers) each get their own seen-set. WeakMap entries vanish
+ * when the pool is garbage-collected.
+ */
+const loggedQuarantineByPool = new WeakMap<WorkerPool, Set<string>>();
 
 export const processParsing = async (
   graph: KnowledgeGraph,
@@ -836,25 +890,75 @@ export const processParsing = async (
         `[scope-resolution prof] worker pool engaged for ${files.length} files — cross-phase tree cache will be empty; scope-resolution re-parses.`,
       );
     }
-    try {
-      return await processParsingWithWorkers(
-        graph,
-        files,
-        symbolTable,
-        astCache,
-        workerPool,
-        reportProgress,
-        outRawResults,
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.warn({ message }, 'Worker pool parsing stopped; continuing with sequential parser:');
-      reportProgress?.(
-        lastProgress,
-        files.length,
-        `Sequential fallback after worker issue: ${message}`,
-      );
+    // U20 design pivot: the worker pool's resilience layers
+    // (respawn budget, circuit breaker, quarantine, slot-attribution,
+    // cumulative timeout) are the SOLE contract for handling worker
+    // failures. There is no sequential-parser fallback for either
+    // partial quarantine or full pool failure — the operator must see
+    // a clear hard signal when workers can't recover, instead of a
+    // silently-degraded graph from a possibly-crashing main-thread
+    // sequential parser. A failing tree-sitter native binding that
+    // quarantined a worker would, under the previous design, re-trigger
+    // the same SIGSEGV on the main thread; we avoid that risk entirely.
+    //
+    // - Partial quarantine: the file is missing from this run's graph;
+    //   the per-chunk warn log below surfaces it; U2's chunk-cache
+    //   write-guard in parse-impl.ts keeps the chunk uncached so the
+    //   next analyze gets a cache miss and a fresh pool retries.
+    // - Full pool failure: `WorkerPoolDispatchError` propagates from
+    //   `processParsingWithWorkers` up through this function. The
+    //   analyze run errors out instead of falling back to sequential.
+    const data = await processParsingWithWorkers(
+      graph,
+      files,
+      symbolTable,
+      astCache,
+      workerPool,
+      reportProgress,
+      outRawResults,
+    );
+    // Session-scoped quarantine (worker-pool resilience Layer 3): surface
+    // any files this pool has decided are unsafe for workers so the
+    // operator can see what was skipped. The pool already filtered them
+    // out of dispatch; we only need to log + progress-report. Quarantine
+    // is session-scoped per pool instance — a fresh `createWorkerPool`
+    // call clears it.
+    //
+    // Dedup: log full path list only for entries newly quarantined since
+    // the previous dispatch on the same pool. The per-chunk progress
+    // message still surfaces the count for UX continuity, but the
+    // structured `quarantinedFiles` payload is only emitted when there
+    // is new signal — prevents O(quarantine × chunks) log spam.
+    const quarantineSnapshot = workerPool.getQuarantinedPaths?.() ?? [];
+    const quarantineSet = new Set(quarantineSnapshot);
+    if (quarantineSet.size > 0) {
+      const quarantinedInChunk = files.filter((file) => quarantineSet.has(file.path));
+      if (quarantinedInChunk.length > 0) {
+        const seenForPool = loggedQuarantineByPool.get(workerPool) ?? new Set<string>();
+        const newlyQuarantined = quarantinedInChunk
+          .map((file) => file.path)
+          .filter((p) => !seenForPool.has(p));
+        for (const p of newlyQuarantined) seenForPool.add(p);
+        loggedQuarantineByPool.set(workerPool, seenForPool);
+        if (newlyQuarantined.length > 0) {
+          logger.warn(
+            {
+              newlyQuarantined,
+              cumulativeQuarantine: quarantineSet.size,
+              chunkSkipped: quarantinedInChunk.length,
+            },
+            `Worker quarantine: ${newlyQuarantined.length} new file(s) skipped this chunk ` +
+              `(${quarantinedInChunk.length} skipped total, ${quarantineSet.size} cumulative).`,
+          );
+        }
+        reportProgress?.(
+          lastProgress,
+          files.length,
+          `${quarantinedInChunk.length} worker-quarantined file(s) skipped`,
+        );
+      }
     }
+    return data;
   }
 
   // Fallback: sequential parsing (no pre-extracted data)
