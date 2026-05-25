@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync, spawn } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import type { LLMResponse, CallLLMOptions } from './llm-client.js';
 
 import { logger } from '../logger.js';
@@ -53,7 +54,13 @@ export function detectLocalCLI(provider: LocalAgentProvider): string | null {
       stdio: 'ignore',
     });
     cachedCommands.set(provider, commandInfo);
-  } catch {
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn(
+        `${provider} CLI found but --version failed (exit ${(err as { status?: number }).status ?? '?'}). ` +
+          `Ensure it is authenticated: run \`${COMMANDS[provider]} --version\` manually.`,
+      );
+    }
     cachedCommands.set(provider, null);
   }
   return cachedCommands.get(provider)?.displayName ?? null;
@@ -84,7 +91,11 @@ export async function callClaudeLLM(
   }
   const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
 
-  return runLocalCLI('claude', commandInfo, args, config, fullPrompt, options);
+  const response = await runLocalCLI('claude', commandInfo, args, config, fullPrompt, options);
+  if (!response.content) {
+    throw new Error('claude CLI returned empty output');
+  }
+  return response;
 }
 
 export async function callCodexLLM(
@@ -124,7 +135,11 @@ export async function callCodexLLM(
   try {
     const response = await runLocalCLI('codex', commandInfo, args, config, fullPrompt, options);
     const lastMessage = await fs.readFile(outputPath, 'utf-8').catch(() => '');
-    return { content: (lastMessage || response.content).trim() };
+    const content = (lastMessage || response.content).trim();
+    if (!content) {
+      throw new Error('codex CLI returned empty output');
+    }
+    return { content };
   } finally {
     await fs.rm(outputDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -169,6 +184,8 @@ function runLocalCLI(
 
     let stdout = '';
     let stderr = '';
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let stdinError: Error | undefined;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -204,14 +221,14 @@ function runLocalCLI(
     }
 
     child.stdout.on('data', (chunk: Buffer) => {
-      const chunkStr = chunk.toString();
+      const chunkStr = stdoutDecoder.write(chunk);
       stdout += chunkStr;
       verboseLog(provider, `[stdout] received ${chunkStr.length} chars, total: ${stdout.length}`);
       options?.onChunk?.(stdout.length);
     });
 
     child.stderr.on('data', (chunk: Buffer) => {
-      const chunkStr = chunk.toString();
+      const chunkStr = stderrDecoder.write(chunk);
       stderr += chunkStr;
       verboseLog(provider, '[stderr]', chunkStr.trim());
     });
@@ -222,6 +239,8 @@ function runLocalCLI(
     });
 
     child.on('close', (code) => {
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       verboseLog(provider, `Process exited with code ${code} after ${elapsed}s`);
 
@@ -234,12 +253,7 @@ function runLocalCLI(
         rejectOnce(new Error(`${provider} CLI stdin error: ${stdinError.message}`));
         return;
       }
-      const output = stdout.trim();
-      if (!output) {
-        rejectOnce(new Error(`${provider} CLI returned empty output`));
-        return;
-      }
-      resolveOnce({ content: output });
+      resolveOnce({ content: stdout.trim() });
     });
 
     child.on('error', (err) => {

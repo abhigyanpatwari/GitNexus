@@ -317,8 +317,8 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         const modelInput = await prompt('  Model (leave empty for CLI default): ');
         const model = modelInput || '';
 
-        const localConfig: Record<string, string> = { provider };
-        if (model) localConfig[localModelConfigKey(provider)] = model;
+        const localConfig = { ...savedConfig, provider };
+        if (model) (localConfig as Record<string, unknown>)[localModelConfigKey(provider)] = model;
         await saveCLIConfig(localConfig);
         console.log('  Config saved to ~/.gitnexus/config.json\n');
 
@@ -370,6 +370,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         const azureBaseUrl = `${endpoint}/openai/v1`;
 
         await saveCLIConfig({
+          ...savedConfig,
           apiKey: azureKey,
           baseUrl: azureBaseUrl,
           model: deploymentName,
