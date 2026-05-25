@@ -35,6 +35,22 @@ function getBuildTimeoutMs() {
 
 const BUILD_TIMEOUT_MS = getBuildTimeoutMs();
 
+// Published-package guard: when installed from the npm registry the
+// monorepo sibling `gitnexus-shared` does not exist and `dist/` is
+// already pre-built. Skip the build to avoid a misleading ENOENT
+// crash (#1795).
+if (!fs.existsSync(SHARED_ROOT)) {
+  if (fs.existsSync(DIST)) {
+    console.log('[build] skipping — dist/ already present (published package).');
+    process.exit(0);
+  }
+  console.error(
+    `[build] gitnexus-shared not found at ${SHARED_ROOT} and no dist/ exists.\n` +
+      'Are you running from the monorepo checkout? Run `npm install` from the repo root first.',
+  );
+  process.exit(1);
+}
+
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
 const tscCmd =
