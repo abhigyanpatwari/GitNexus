@@ -114,8 +114,8 @@
   "canvas": {
     "viewModes": {
       "force": "Force Graph",
-      "tree": "Tree View",
-      "circles": "Circles"
+      "tree": "Sequential Layout",
+      "circles": "Radial Layout"
     },
     "zoomIn": "Zoom In",
     "zoomOut": "Zoom Out",

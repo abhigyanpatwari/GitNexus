@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * E2E tests for tree view mode switching.
+ * E2E tests for graph layout mode switching (Sequential / Radial layouts).
  *
  * Requires:
  *   - gitnexus serve running on localhost:4747 with at least one indexed repo
@@ -71,36 +71,36 @@ async function waitForGraphLoaded(page: import('@playwright/test').Page) {
   await page.waitForSelector('.sigma-container', { timeout: 10_000 });
 }
 
-test.describe('Tree View', () => {
+test.describe('Graph Layout Modes', () => {
   test.beforeEach(async ({ page }) => {
     await waitForGraphLoaded(page);
   });
 
-  test('should switch between force and tree views', async ({ page }) => {
+  test('should switch between force, sequential, and radial layouts', async ({ page }) => {
     const forceTab = page.locator('button:has-text("Force Graph")');
-    const treeTab = page.locator('button:has-text("Tree View")');
-    const circlesTab = page.locator('button:has-text("Circles")');
+    const sequentialTab = page.locator('button:has-text("Sequential Layout")');
+    const radialTab = page.locator('button:has-text("Radial Layout")');
 
     // Force Graph is the default active tab
     await expect(forceTab).toHaveClass(/bg-accent/);
-    await expect(treeTab).not.toHaveClass(/bg-accent/);
+    await expect(sequentialTab).not.toHaveClass(/bg-accent/);
 
-    // Switch to Tree View
-    await treeTab.click();
-    await expect(treeTab).toHaveClass(/bg-accent/, { timeout: 5_000 });
+    // Switch to Sequential Layout
+    await sequentialTab.click();
+    await expect(sequentialTab).toHaveClass(/bg-accent/, { timeout: 5_000 });
     await expect(forceTab).not.toHaveClass(/bg-accent/);
 
-    // All three view tabs should be present in the tab bar
-    await expect(circlesTab).toBeVisible();
+    // All three layout tabs should be present in the tab bar
+    await expect(radialTab).toBeVisible();
 
     // Switch back to Force Graph
     await forceTab.click();
     await expect(forceTab).toHaveClass(/bg-accent/, { timeout: 5_000 });
-    await expect(treeTab).not.toHaveClass(/bg-accent/);
+    await expect(sequentialTab).not.toHaveClass(/bg-accent/);
   });
 
-  test('should interact with nodes in tree view', async ({ page }) => {
-    await page.locator('button:has-text("Tree View")').click();
+  test('should interact with nodes in sequential layout', async ({ page }) => {
+    await page.locator('button:has-text("Sequential Layout")').click();
 
     // Click the first file-tree item in the sidebar (more reliable than a
     // blind canvas click, which may land on empty space).  The FileTreePanel

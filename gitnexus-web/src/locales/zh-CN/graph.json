@@ -114,8 +114,8 @@
   "canvas": {
     "viewModes": {
       "force": "力导向图",
-      "tree": "树形图",
-      "circles": "同心圆"
+      "tree": "顺序布局",
+      "circles": "径向布局"
     },
     "zoomIn": "放大",
     "zoomOut": "缩小",
