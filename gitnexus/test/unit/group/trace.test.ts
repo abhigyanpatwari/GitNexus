@@ -26,7 +26,7 @@ function tmpGroup(opts?: { repos?: Record<string, string> }): {
   groupDir: string;
   cleanup: () => void;
 } {
-  const tmpDir = path.join(os.tmpdir(), `gitnexus-trace-${Date.now()}-${Math.random()}`);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-trace-'));
   const groupDir = path.join(tmpDir, 'groups', 'g1');
   fs.mkdirSync(groupDir, { recursive: true });
 
@@ -202,8 +202,7 @@ describe('runGroupTrace', () => {
     try {
       writeContractsJson(groupDir); // empty crossLinks
 
-      const { executeParameterized, executeQuery } =
-        await import('../../../src/core/lbug/pool-adapter.js');
+      const { executeParameterized } = await import('../../../src/core/lbug/pool-adapter.js');
 
       // Resolve entry symbol by id
       (executeParameterized as any).mockResolvedValueOnce([
@@ -269,8 +268,7 @@ describe('runGroupTrace', () => {
         },
       ]);
 
-      const { executeParameterized, executeQuery } =
-        await import('../../../src/core/lbug/pool-adapter.js');
+      const { executeParameterized } = await import('../../../src/core/lbug/pool-adapter.js');
 
       // Entry repo: resolve entry symbol (exact id match → LIMIT 1 query)
       (executeParameterized as any).mockResolvedValueOnce([
@@ -567,8 +565,7 @@ describe('runGroupTrace', () => {
     try {
       writeContractsJson(groupDir);
 
-      const { executeParameterized, executeQuery } =
-        await import('../../../src/core/lbug/pool-adapter.js');
+      const { executeParameterized } = await import('../../../src/core/lbug/pool-adapter.js');
 
       // Resolve entry symbol (exact id match) — id has Method: prefix so drillDown is skipped
       (executeParameterized as any).mockResolvedValueOnce([
