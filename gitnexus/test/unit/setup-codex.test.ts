@@ -74,7 +74,7 @@ describe('setupCommand codex execution', () => {
     expect(execFileMock).toHaveBeenCalledWith(
       'codex',
       ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
-      { shell: true },
+      { shell: true, windowsHide: true },
       expect.any(Function),
     );
   });
@@ -89,7 +89,7 @@ describe('setupCommand codex execution', () => {
     expect(execFileMock).toHaveBeenCalledWith(
       'codex',
       ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
-      { shell: true },
+      { shell: true, windowsHide: true },
       expect.any(Function),
     );
   });
@@ -104,7 +104,7 @@ describe('setupCommand codex execution', () => {
     expect(execFileMock).toHaveBeenCalledWith(
       'codex',
       ['mcp', 'add', 'gitnexus', '--', 'npx', '-y', NPX_REF, 'mcp'],
-      { shell: false },
+      { shell: false, windowsHide: true },
       expect.any(Function),
     );
 

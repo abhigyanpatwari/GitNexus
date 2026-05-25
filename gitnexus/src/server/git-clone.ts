@@ -304,6 +304,7 @@ export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
     const proc = spawn('git', ['config', '--get', 'remote.origin.url'], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
     let stdout = '';
@@ -427,6 +428,7 @@ function runGit(args: string[], cwd?: string): Promise<void> {
     const proc = spawn('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: {
         ...process.env,
         // Prevent git from prompting for credentials (hangs the process)

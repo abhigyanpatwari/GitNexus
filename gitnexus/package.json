@@ -48,6 +48,8 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:parity": "tsx scripts/run-parity.ts",
+    "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "postinstall": "node scripts/materialize-vendor-grammars.cjs && node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs && node scripts/build-tree-sitter-swift.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"

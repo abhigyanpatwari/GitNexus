@@ -30,6 +30,10 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type {
+  ResolutionOutcomeRecorder,
+  ResolutionSuppressionReason,
+} from '../resolution-outcome.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   findAllCallableBindingsInScope,
@@ -79,6 +83,7 @@ export function emitFreeCallFallback(
      *  fail at the call site. Three-valued; `'unknown'` keeps the
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
   } = {},
 ): number {
   let emitted = 0;
@@ -103,7 +108,7 @@ export function emitFreeCallFallback(
       if (site.callForm === 'constructor') {
         const classDef = findClassBindingInScope(site.inScope, site.name, scopes);
         if (classDef !== undefined) {
-          fnDef = pickConstructorOrClass(classDef, workspaceIndex);
+          fnDef = pickConstructorOrClass(classDef, workspaceIndex, scopes);
         }
       }
       // Implicit-this overload narrowing: an unqualified call inside
@@ -152,9 +157,18 @@ export function emitFreeCallFallback(
                 // Cross-file candidates are shadowing; keep first-match.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  handledSites.add(
-                    `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`,
-                  );
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
+                    candidates: narrowed,
+                  });
+                  handledSites.add(siteKey(parsed.filePath, site));
                   continue;
                 }
               }
@@ -186,7 +200,19 @@ export function emitFreeCallFallback(
                 parsedFiles,
               );
 
-          const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+          const key = siteKey(parsed.filePath, site);
+          if (adlSuppressed && ordinary.length === 0) {
+            recordSuppressedOutcome(options.recordResolutionOutcome, {
+              phase: 'free-call-fallback',
+              filePath: parsed.filePath,
+              name: site.name,
+              range: site.atRange,
+              reason: 'adl-ordinary-lookup-blocked',
+              candidates: ordinary,
+            });
+            handledSites.add(key);
+            continue;
+          }
           if (adl === undefined || adl.length === 0) {
             // No ADL contribution. Default behavior: `ordinary[0]` —
             // scope-chain walk preserves local-shadows-import precedence.
@@ -210,7 +236,7 @@ export function emitFreeCallFallback(
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
               } else if (narrowed.length === 0) {
-                handledSites.add(siteKey);
+                handledSites.add(key);
                 continue;
               } else {
                 // >1 survivors: same-file → suppress (true overloads,
@@ -219,7 +245,18 @@ export function emitFreeCallFallback(
                 // first-match (shadowing semantics).
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  handledSites.add(siteKey);
+                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    phase: 'free-call-fallback',
+                    filePath: parsed.filePath,
+                    name: site.name,
+                    range: site.atRange,
+                    reason: suppressionReasonForOverload(narrowed, site.arity, {
+                      conversionRankFn: options.conversionRankFn,
+                      argumentTypes: site.argumentTypes,
+                    }),
+                    candidates: narrowed,
+                  });
+                  handledSites.add(key);
                   continue;
                 }
                 fnDef = ordinary[0];
@@ -246,16 +283,27 @@ export function emitFreeCallFallback(
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
             } else if (narrowed.length === 0) {
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             } else if (narrowed.length > 1) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: suppressionReasonForOverload(narrowed, site.arity, {
+                  conversionRankFn: options.conversionRankFn,
+                  argumentTypes: site.argumentTypes,
+                }),
+                candidates: narrowed,
+              });
               if (isOverloadAmbiguousAfterNormalization(narrowed, site.arity)) {
-                handledSites.add(siteKey);
+                handledSites.add(key);
                 continue;
               }
               // Multiple survivors remain after conversion-rank scoring;
               // suppress instead of picking arbitrarily.
-              handledSites.add(siteKey);
+              handledSites.add(key);
               continue;
             }
           }
@@ -295,7 +343,7 @@ export function emitFreeCallFallback(
       // Always mark the site as handled — even when the dedup-collapse
       // means we don't add a new edge — so `emit-references` skips its
       // potentially-wrong fallback for the same site.
-      handledSites.add(`${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+      handledSites.add(siteKey(parsed.filePath, site));
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
       if (seen.has(relId)) continue;
       seen.add(relId);
@@ -313,6 +361,61 @@ export function emitFreeCallFallback(
     }
   }
   return emitted;
+}
+
+function siteKey(
+  filePath: string,
+  site: { readonly atRange: { readonly startLine: number; readonly startCol: number } },
+): string {
+  return `${filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+}
+
+function suppressionReasonForOverload(
+  candidates: readonly SymbolDefinition[],
+  arity: number | undefined,
+  ctx: {
+    readonly conversionRankFn?: ConversionRankFn;
+    readonly argumentTypes?: readonly string[];
+  },
+): ResolutionSuppressionReason {
+  if (isOverloadAmbiguousAfterNormalization(candidates, arity)) {
+    return 'overload-ambiguous-normalization';
+  }
+  if (
+    ctx.conversionRankFn !== undefined &&
+    ctx.argumentTypes !== undefined &&
+    ctx.argumentTypes.length > 0
+  ) {
+    return 'conversion-rank-tied';
+  }
+  return 'overload-ambiguous';
+}
+
+function recordSuppressedOutcome(
+  record: ResolutionOutcomeRecorder | undefined,
+  input: {
+    readonly phase: string;
+    readonly filePath: string;
+    readonly name: string;
+    readonly range: {
+      readonly startLine: number;
+      readonly startCol: number;
+      readonly endLine: number;
+      readonly endCol: number;
+    };
+    readonly reason: ResolutionSuppressionReason;
+    readonly candidates: readonly SymbolDefinition[];
+  },
+): void {
+  record?.({
+    kind: 'suppressed',
+    phase: input.phase,
+    filePath: input.filePath,
+    name: input.name,
+    range: input.range,
+    reason: input.reason,
+    candidateIds: input.candidates.map((d) => d.nodeId),
+  });
 }
 
 /**
@@ -475,11 +578,21 @@ function logicalCallableKey(def: SymbolDefinition): string {
 function pickConstructorOrClass(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex,
+  scopes?: ScopeResolutionIndexes,
 ): SymbolDefinition {
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
   if (classScope === undefined) return classDef;
   for (const def of classScope.ownedDefs) {
     if (def.type === 'Constructor') return def;
+  }
+  if (scopes !== undefined) {
+    for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
+      const childScope = scopes.scopeTree.getScope(childId);
+      if (childScope === undefined || childScope.kind === 'Class') continue;
+      for (const def of childScope.ownedDefs) {
+        if (def.type === 'Constructor') return def;
+      }
+    }
   }
   return classDef;
 }

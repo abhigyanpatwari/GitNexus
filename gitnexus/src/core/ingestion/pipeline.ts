@@ -34,6 +34,7 @@ import {
   mroPhase,
   communitiesPhase,
   processesPhase,
+  type ScopeResolutionOutput,
   type PipelinePhase,
   type CommunitiesOutput,
   type ProcessesOutput,
@@ -182,6 +183,10 @@ export const runPipelineFromRepo = async (
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
+  const resolutionOutcomes = getPhaseOutput<ScopeResolutionOutput>(
+    results,
+    'scopeResolution',
+  ).resolutionOutcomes;
 
   if (!options?.skipGraphPhases) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
@@ -208,6 +213,7 @@ export const runPipelineFromRepo = async (
     totalFileCount: totalFiles,
     communityResult,
     processResult,
+    resolutionOutcomes,
     usedWorkerPool,
   };
 };
