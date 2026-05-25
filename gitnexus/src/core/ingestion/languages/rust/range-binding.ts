@@ -123,7 +123,10 @@ function processTupleStructPattern(
   if (wrapperNode === null) return;
   const wrapper = wrapperNode.text;
 
-  const innerIdent = patternNode.namedChildren.find((c) => c.type === 'identifier');
+  const wrapperIdx = patternNode.namedChildren.indexOf(wrapperNode);
+  const innerIdent = patternNode.namedChildren.find(
+    (c, i) => i > wrapperIdx && c.type === 'identifier',
+  );
   if (innerIdent === null || innerIdent === undefined) return;
   const varName = innerIdent.text;
 
@@ -145,10 +148,15 @@ function processTupleStructPattern(
 
   if (wrapper === 'Some') {
     resolvedType = unwrapGeneric(sourceType);
-  } else if (wrapper === 'Ok') {
-    resolvedType = extractNthGenericArg(sourceType, 0);
-  } else if (wrapper === 'Err') {
-    resolvedType = extractNthGenericArg(sourceType, 1);
+  } else if (wrapper === 'Ok' || wrapper === 'Err') {
+    const rawType = lookupRawParameterType(sourceVarName, contextNode);
+    if (rawType !== null) {
+      const argIdx = wrapper === 'Ok' ? 0 : 1;
+      resolvedType = extractNthGenericArg(rawType, argIdx);
+    }
+    if (resolvedType === null) {
+      resolvedType = wrapper === 'Ok' ? unwrapGeneric(sourceType) : null;
+    }
   }
 
   if (resolvedType === null) return;
@@ -229,6 +237,29 @@ function resolveIterableElementType(
     }
   }
 
+  return null;
+}
+
+function lookupRawParameterType(paramName: string, contextNode: SyntaxNode): string | null {
+  let current: SyntaxNode | null = contextNode;
+  while (current !== null) {
+    if (current.type === 'function_item') {
+      const params = current.childForFieldName('parameters');
+      if (params !== null) {
+        for (let i = 0; i < params.namedChildCount; i++) {
+          const param = params.namedChild(i);
+          if (param === null || param.type !== 'parameter') continue;
+          const pattern = param.childForFieldName('pattern');
+          const typeNode = param.childForFieldName('type');
+          if (pattern !== null && typeNode !== null && pattern.text === paramName) {
+            return typeNode.text;
+          }
+        }
+      }
+      break;
+    }
+    current = current.parent;
+  }
   return null;
 }
 
