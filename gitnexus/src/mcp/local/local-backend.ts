@@ -304,6 +304,21 @@ export function resolveWorktreeCwd(repoPath: string, launchCwd: string): string 
  */
 export const REPO_ID_HASH_LENGTH = 6;
 
+interface ImpactParams {
+  target: string;
+  target_uid?: string;
+  file_path?: string;
+  kind?: string;
+  direction: 'upstream' | 'downstream';
+  maxDepth?: number;
+  relationTypes?: string[];
+  includeTests?: boolean;
+  minConfidence?: number;
+  limit?: number;
+  offset?: number;
+  summaryOnly?: boolean;
+}
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -2750,23 +2765,7 @@ export class LocalBackend {
     };
   }
 
-  private async impact(
-    repo: RepoHandle,
-    params: {
-      target: string;
-      target_uid?: string;
-      file_path?: string;
-      kind?: string;
-      direction: 'upstream' | 'downstream';
-      maxDepth?: number;
-      relationTypes?: string[];
-      includeTests?: boolean;
-      minConfidence?: number;
-      limit?: number;
-      offset?: number;
-      summaryOnly?: boolean;
-    },
-  ): Promise<any> {
+  private async impact(repo: RepoHandle, params: ImpactParams): Promise<any> {
     try {
       return await this._impactImpl(repo, params);
     } catch (err: any) {
@@ -2783,23 +2782,7 @@ export class LocalBackend {
     }
   }
 
-  private async _impactImpl(
-    repo: RepoHandle,
-    params: {
-      target: string;
-      target_uid?: string;
-      file_path?: string;
-      kind?: string;
-      direction: 'upstream' | 'downstream';
-      maxDepth?: number;
-      relationTypes?: string[];
-      includeTests?: boolean;
-      minConfidence?: number;
-      limit?: number;
-      offset?: number;
-      summaryOnly?: boolean;
-    },
-  ): Promise<any> {
+  private async _impactImpl(repo: RepoHandle, params: ImpactParams): Promise<any> {
     await this.ensureInitialized(repo.id);
 
     const { target, direction } = params;
@@ -3554,6 +3537,9 @@ export class LocalBackend {
       if (typeof params.subgroup === 'string') impactArgs.subgroup = params.subgroup;
       if (params.timeoutMs !== undefined) impactArgs.timeoutMs = params.timeoutMs;
       if (params.timeout !== undefined) impactArgs.timeout = params.timeout;
+      if (params.limit !== undefined) impactArgs.limit = params.limit;
+      if (params.offset !== undefined) impactArgs.offset = params.offset;
+      if (params.summaryOnly !== undefined) impactArgs.summaryOnly = params.summaryOnly;
       return svc.groupImpact(impactArgs);
     }
     if (method === 'query') {

@@ -206,17 +206,19 @@ export function formatImpactResult(result: any): string {
     3: 'MAY NEED TESTING (transitive)',
   };
 
+  const depthCounts = result.byDepthCounts || {};
   for (const depth of [1, 2, 3]) {
     const items = byDepth[depth];
     if (!items || items.length === 0) continue;
 
-    lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${items.length})`);
+    const trueCount = depthCounts[depth] ?? items.length;
+    lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${trueCount})`);
     for (const item of items.slice(0, 12)) {
       const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
       lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
     }
-    if (items.length > 12) {
-      lines.push(`  ... and ${items.length - 12} more`);
+    if (trueCount > 12) {
+      lines.push(`  ... and ${trueCount - 12} more`);
     }
     lines.push('');
   }

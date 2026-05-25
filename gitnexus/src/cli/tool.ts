@@ -117,6 +117,9 @@ export async function impactCommand(
     repo?: string;
     depth?: string;
     includeTests?: boolean;
+    limit?: string;
+    offset?: string;
+    summaryOnly?: boolean;
   },
 ): Promise<void> {
   if (!target?.trim()) {
@@ -132,6 +135,9 @@ export async function impactCommand(
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
+      limit: options?.limit ? parseInt(options.limit, 10) : undefined,
+      offset: options?.offset ? parseInt(options.offset, 10) : undefined,
+      summaryOnly: options?.summaryOnly ?? undefined,
     });
     output(result);
   } catch (err: unknown) {
