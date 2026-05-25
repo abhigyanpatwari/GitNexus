@@ -173,6 +173,16 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         provider,
       );
 
+      // Release file contents and pre-extracted entries after each language
+      // to reduce memory pressure. For large codebases (16K+ PHP files),
+      // holding all source code simultaneously with scope trees causes OOM.
+      // See: https://github.com/abhigyanpatwari/GitNexus/issues/1741
+      files.length = 0;
+      contents.clear();
+      for (const fp of filePaths) {
+        preExtractedByPath.delete(fp);
+      }
+
       anyRan = true;
       totalFiles += stats.filesProcessed;
       totalImports += stats.importsEmitted;

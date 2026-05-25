@@ -46,6 +46,7 @@ import {
 import { createResolutionContext } from '../model/resolution-context.js';
 import { ASTCache, createASTCache } from '../ast-cache.js';
 import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
+import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { createWorkerPool, WorkerPoolInitializationError } from '../workers/worker-pool.js';
@@ -606,11 +607,31 @@ export async function runChunkedParseAndResolve(
         if (chunkNeedsSynthesis[chunkIdx]) {
           anyChunkNeedsWildcardSynth = true;
         }
-        for (const item of chunkWorkerData.imports) deferredWorkerImports.push(item);
-        for (const item of chunkWorkerData.calls) deferredWorkerCalls.push(item);
-        for (const item of chunkWorkerData.heritage) deferredWorkerHeritage.push(item);
-        for (const item of chunkWorkerData.constructorBindings)
-          deferredConstructorBindings.push(item);
+        const skipFile = new Set<string>();
+        const checkFile = new Set<string>();
+        const shouldAccumulate = (filePath: string): boolean => {
+          if (checkFile.has(filePath)) return true;
+          if (skipFile.has(filePath)) return false;
+          const lang = getLanguageFromFilename(filePath);
+          if (lang !== null && isRegistryPrimary(lang)) {
+            skipFile.add(filePath);
+            return false;
+          }
+          checkFile.add(filePath);
+          return true;
+        };
+        for (const item of chunkWorkerData.imports) {
+          if (shouldAccumulate(item.filePath)) deferredWorkerImports.push(item);
+        }
+        for (const item of chunkWorkerData.calls) {
+          if (shouldAccumulate(item.filePath)) deferredWorkerCalls.push(item);
+        }
+        for (const item of chunkWorkerData.heritage) {
+          if (shouldAccumulate(item.filePath)) deferredWorkerHeritage.push(item);
+        }
+        for (const item of chunkWorkerData.constructorBindings) {
+          if (shouldAccumulate(item.filePath)) deferredConstructorBindings.push(item);
+        }
         // Aggregate worker-produced ParsedFile artifacts so scope-
         // resolution can use them as a re-extraction cache (skips its
         // own tree-sitter re-parse on warm runs).
@@ -618,7 +639,9 @@ export async function runChunkedParseAndResolve(
           for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
         }
         if (chunkWorkerData.assignments?.length) {
-          for (const item of chunkWorkerData.assignments) deferredAssignments.push(item);
+          for (const item of chunkWorkerData.assignments) {
+            if (shouldAccumulate(item.filePath)) deferredAssignments.push(item);
+          }
         }
 
         if (chunkWorkerData.fileScopeBindings?.length) {

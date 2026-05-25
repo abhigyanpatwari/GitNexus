@@ -28,8 +28,6 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getPhpParser } from './query.js';
-import { getTreeSitterBufferSize } from '../../constants.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 // ─── PHP file structure extraction ──────────────────────────────────────────
 
@@ -40,21 +38,94 @@ interface PhpFileStructure {
 
 type PhpTree = ReturnType<ReturnType<typeof getPhpParser>['parse']>;
 
+const NAMESPACE_RE = /^\s*namespace\s+([\w\\]+)\s*[;{]/i;
+const HEREDOC_START_RE = /<<<\s*['"]?(\w+)['"]?\s*$/;
+
+/**
+ * Extract a PHP namespace declaration from raw source without tree-sitter.
+ *
+ * Single-pass line scanner that skips heredoc/nowdoc bodies, block
+ * comments, and single-line comments before matching. This avoids the
+ * false positives that a multiline regex produces when `namespace` appears
+ * inside a heredoc, nowdoc, string, or comment.
+ */
+export function extractNamespaceViaScanner(content: string): string {
+  const lines = content.split('\n');
+  let inBlockComment = false;
+  let heredocDelimiter: string | null = null;
+
+  for (const raw of lines) {
+    if (heredocDelimiter !== null) {
+      const trimmed = raw.trim();
+      if (trimmed === heredocDelimiter + ';' || trimmed === heredocDelimiter) {
+        heredocDelimiter = null;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (raw.includes('*/')) {
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    let line = raw;
+
+    const blockStart = line.indexOf('/*');
+    if (blockStart >= 0) {
+      const blockEnd = line.indexOf('*/', blockStart + 2);
+      if (blockEnd >= 0) {
+        line = line.slice(0, blockStart) + line.slice(blockEnd + 2);
+      } else {
+        line = line.slice(0, blockStart);
+        inBlockComment = true;
+      }
+    }
+
+    const slashIdx = line.indexOf('//');
+    const hashIdx = line.indexOf('#');
+    if (slashIdx >= 0 && (hashIdx < 0 || slashIdx < hashIdx)) {
+      line = line.slice(0, slashIdx);
+    } else if (hashIdx >= 0) {
+      line = line.slice(0, hashIdx);
+    }
+
+    const heredocMatch = raw.match(HEREDOC_START_RE);
+    if (heredocMatch) {
+      heredocDelimiter = heredocMatch[1];
+      continue;
+    }
+
+    const stripped = line.replace(/<\?php/gi, '').replace(/declare\s*\([^)]*\)\s*;?/gi, '');
+    const nsMatch = stripped.match(NAMESPACE_RE);
+    if (nsMatch) {
+      return nsMatch[1];
+    }
+  }
+
+  return '';
+}
+
 /**
  * Extract the declared namespace from a PHP file's source.
  * Uses the cached AST tree when available to avoid re-parsing.
+ *
+ * When no cached tree is available (worker-parsed files can't transfer
+ * native Tree objects across MessageChannels), uses a line scanner
+ * instead of re-parsing every file with tree-sitter. For 16K+ PHP files
+ * this eliminates ~16K tree-sitter re-parses during the namespace-siblings
+ * pass. See: https://github.com/abhigyanpatwari/GitNexus/issues/1741
  */
-function extractPhpFileStructure(content: string, cachedTree: unknown): PhpFileStructure {
-  const tree =
-    (cachedTree as PhpTree | undefined) ??
-    parseSourceSafe(getPhpParser(), content, undefined, {
-      bufferSize: getTreeSitterBufferSize(content),
-    });
+export function extractPhpFileStructure(content: string, cachedTree: unknown): PhpFileStructure {
+  if (!cachedTree) {
+    return { namespace: extractNamespaceViaScanner(content) };
+  }
 
   // Walk top-level nodes looking for namespace_definition.
   // PHP files have at most one namespace declaration (PSR-4 convention).
   // `namespace_definition` has a `name:` field of type `namespace_name`.
-  const root = tree.rootNode;
+  const root = (cachedTree as PhpTree).rootNode;
   for (let i = 0; i < root.namedChildCount; i++) {
     const child = root.namedChild(i);
     if (child === null) continue;
@@ -240,35 +311,28 @@ export function populatePhpNamespaceSiblings(
     }
   }
 
-  // Step 3b: Inject fully-qualified-name bindings into every PHP file's
-  // Module scope. PHP `\App\Models\User` (leading-backslash FQN) and
-  // `App\Models\User` (already-qualified relative) on a parameter or
-  // typed receiver must resolve to the exact namespace-qualified class
-  // regardless of which simple-name `User` the caller's `use` imports
-  // shadowed. The shared `findClassBindingInScope` scope-chain walk
-  // consumes these augmentations via `lookupBindingsAt`, so adding the
-  // qualified key on every file's module scope routes FQN-receivers to
-  // the right def. Codex PR #1497 review, finding 1.
+  // Step 3b: Register FQN bindings in a workspace-level map instead of
+  // per-scope augmentations. PHP `\App\Models\User` and `App\Models\User`
+  // must resolve regardless of which file the lookup originates from.
+  // `lookupBindingsAt` consults `workspaceFqnBindings` as a third source.
   //
-  // Cost: O(PHP files × class-like defs in the workspace) augmentation
-  // entries. Bounded and acceptable in practice — typical PHP projects
-  // have hundreds of files and classes, not tens of thousands.
-  for (const parsed of parsedFiles) {
-    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
-    if (moduleScope === undefined) continue;
-    const moduleScopeId = moduleScope.id;
-
-    for (const [ns, bucket] of buckets) {
-      if (ns === '') continue; // global-namespace classes have no qualified form to register
-      for (const def of bucket.classDefs) {
-        const q = def.qualifiedName ?? '';
-        const simpleName = q.includes('\\') ? q.slice(q.lastIndexOf('\\') + 1) : q;
-        if (simpleName === '') continue;
-        const fqn = `${ns}\\${simpleName}`;
-        const arr = getAugmentationBucket(augmentations, moduleScopeId, fqn);
-        if (arr.some((b) => b.def.nodeId === def.nodeId)) continue;
-        arr.push({ def, origin: 'namespace' });
+  // Cost: O(class-like defs) entries — NOT O(files × classDefs). For 16K
+  // PHP files with 5K classes, this is 5K entries instead of 80M.
+  const fqnMap = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
+  for (const [ns, bucket] of buckets) {
+    if (ns === '') continue;
+    for (const def of bucket.classDefs) {
+      const q = def.qualifiedName ?? '';
+      const simpleName = q.includes('\\') ? q.slice(q.lastIndexOf('\\') + 1) : q;
+      if (simpleName === '') continue;
+      const fqn = `${ns}\\${simpleName}`;
+      let arr = fqnMap.get(fqn);
+      if (arr === undefined) {
+        arr = [];
+        fqnMap.set(fqn, arr);
       }
+      if (arr.some((b) => b.def.nodeId === def.nodeId)) continue;
+      arr.push({ def, origin: 'namespace' });
     }
   }
 
@@ -281,6 +345,9 @@ export function populatePhpNamespaceSiblings(
   //
   // Additionally, mirror from files that are imported via `use` (different
   // namespace) so return types from dependencies are chain-followable too.
+  const parsedByPath = new Map<string, (typeof parsedFiles)[number]>();
+  for (const p of parsedFiles) parsedByPath.set(p.filePath, p);
+
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
@@ -322,7 +389,7 @@ export function populatePhpNamespaceSiblings(
 
     // Mirror return-type bindings from accessible files.
     for (const srcFilePath of accessibleFiles) {
-      const srcParsed = parsedFiles.find((p) => p.filePath === srcFilePath);
+      const srcParsed = parsedByPath.get(srcFilePath);
       if (srcParsed === undefined) continue;
       const srcModuleScope = srcParsed.scopes.find((s) => s.kind === 'Module');
       if (srcModuleScope === undefined) continue;
