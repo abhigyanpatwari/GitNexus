@@ -69,6 +69,7 @@
     "imports": "正在解析导入",
     "calls": "正在追踪调用",
     "heritage": "正在提取继承关系",
+    "scopeResolution": "正在解析类型",
     "communities": "正在检测社区",
     "processes": "正在检测流程",
     "complete": "流水线完成",
