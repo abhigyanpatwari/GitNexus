@@ -5,7 +5,7 @@
  * 8.3 short-name form before passing them to KuzuDB's native layer.
  */
 import { describe, it, expect } from 'vitest';
-import { toNativeSafePath } from '../../src/core/lbug/lbug-config.js';
+import { toNativeSafePath, cleanupNativePathJunctions } from '../../src/core/lbug/lbug-config.js';
 
 describe('toNativeSafePath', () => {
   it('returns ASCII paths unchanged on any platform', () => {
@@ -30,26 +30,27 @@ describe('toNativeSafePath', () => {
   }
 
   if (process.platform === 'win32') {
-    it('attempts short-path conversion for non-ASCII paths on Windows', () => {
-      // Use os.tmpdir() which exists — create a subdir with CJK chars,
-      // then verify toNativeSafePath either converts it or falls back.
+    it('converts a path with non-ASCII parent directory to an ASCII-safe form', () => {
+      // Real-world scenario: repo at C:\Project\中文\code, leaf is ASCII (.gitnexus/lbug).
+      // Create a CJK parent dir with an ASCII leaf to match.
       const os = require('os');
       const fs = require('fs');
       const path = require('path');
-
-      const tmpBase = path.join(os.tmpdir(), `gn-safepath-测试-${Date.now()}`);
-      fs.mkdirSync(tmpBase, { recursive: true });
+      const cjkParent = path.join(os.tmpdir(), `gn-safepath-测试-${Date.now()}`);
+      const asciiLeaf = path.join(cjkParent, 'lbug');
+      fs.mkdirSync(cjkParent, { recursive: true });
       try {
-        const result = toNativeSafePath(tmpBase);
-        // Either converted to a short path (all ASCII) or fell back to original
+        const result = toNativeSafePath(asciiLeaf);
         expect(typeof result).toBe('string');
         expect(result.length).toBeGreaterThan(0);
-        // If 8.3 names are enabled, the result should be all-ASCII
-        if (result !== tmpBase) {
+        // Either 8.3 short path or junction — both produce an all-ASCII result
+        // since the leaf ('lbug') is ASCII and the parent is resolved
+        if (result !== asciiLeaf) {
           expect(/^[\x00-\x7F]+$/.test(result)).toBe(true);
         }
       } finally {
-        fs.rmSync(tmpBase, { recursive: true, force: true });
+        cleanupNativePathJunctions();
+        fs.rmSync(cjkParent, { recursive: true, force: true });
       }
     });
 

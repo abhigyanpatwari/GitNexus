@@ -23,6 +23,7 @@ import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
+  toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
 import {
@@ -390,7 +391,7 @@ async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
 async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> {
   let db: lbug.Database | undefined;
   try {
-    db = createLbugDatabase(lbug, dbPath, { throwOnWalReplayFailure: false });
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: false });
     await db.init();
     await probeDatabaseForShadowReplay(db);
   } catch (err) {
@@ -415,7 +416,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
       logger: poolSidecarLogger,
       allowQuarantine: true,
     });
-    db = createLbugDatabase(lbug, dbPath, {
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
       readOnly: true,
       throwOnWalReplayFailure: false,
     });
@@ -434,7 +435,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
           logger: poolSidecarLogger,
           allowQuarantine: true,
         });
-        db = createLbugDatabase(lbug, dbPath, {
+        db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
           readOnly: true,
           throwOnWalReplayFailure: false,
         });
@@ -448,7 +449,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
       await db.close().catch(() => {});
       db = undefined;
       await replayShadowPagesWithWritableOpen(dbPath);
-      db = createLbugDatabase(lbug, dbPath, {
+      db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
         readOnly: true,
         throwOnWalReplayFailure: false,
       });
