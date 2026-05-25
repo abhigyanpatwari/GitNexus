@@ -4,7 +4,7 @@
  * Computes Method Resolution Order (MRO) and creates METHOD_OVERRIDES
  * and METHOD_IMPLEMENTS edges.
  *
- * @deps    crossFile
+ * @deps    crossFile, scopeResolution
  * @reads   graph (all nodes and relationships)
  * @writes  graph (METHOD_OVERRIDES, METHOD_IMPLEMENTS edges)
  */

@@ -244,7 +244,10 @@ export function runScopeResolution(
     }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
-    if (input.onProgress && (fileIdx + 1) % progressInterval === 0) {
+    if (
+      input.onProgress &&
+      ((fileIdx + 1) % progressInterval === 0 || fileIdx === files.length - 1)
+    ) {
       input.onProgress('extracting', fileIdx + 1, files.length);
     }
   }

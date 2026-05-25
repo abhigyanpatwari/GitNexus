@@ -217,8 +217,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
                   } else {
                     langRatio = 0.85;
                   }
-                  const overallRatio =
-                    (processedScopeFiles + langRatio * langFileCount) / totalScopeFiles;
+                  const overallRatio = Math.min(
+                    1,
+                    (processedScopeFiles + langRatio * langFileCount) / totalScopeFiles,
+                  );
                   const pct = SCOPE_PCT_START + Math.round(overallRatio * SCOPE_PCT_RANGE);
                   ctx.onProgress({
                     phase: 'scopeResolution',
