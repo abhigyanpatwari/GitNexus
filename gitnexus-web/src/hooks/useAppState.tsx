@@ -582,6 +582,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Agent state — agent runs on main thread now (I/O-bound, not CPU-bound)
   const agentRef = useRef<any>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
 
   const initializeAgent = useCallback(
     async (overrideProjectName?: string): Promise<void> => {
@@ -680,6 +681,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       setIsChatLoading(true);
       setCurrentToolCalls([]);
+
+      chatAbortRef.current?.abort();
+      const chatAbortController = new AbortController();
+      chatAbortRef.current = chatAbortController;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
 
@@ -1012,6 +1017,39 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;
+
+            case 'cancelled': {
+              const stoppedLabel = i18n.t('chat:stopped');
+              for (let i = 0; i < toolCallsForMessage.length; i++) {
+                const tc = toolCallsForMessage[i];
+                if (tc.status === 'running' || tc.status === 'pending') {
+                  toolCallsForMessage[i] = {
+                    ...tc,
+                    status: 'error',
+                    result: stoppedLabel,
+                  };
+                }
+              }
+              for (let i = 0; i < stepsForMessage.length; i++) {
+                const step = stepsForMessage[i];
+                if (
+                  step.type === 'tool_call' &&
+                  step.toolCall &&
+                  (step.toolCall.status === 'running' || step.toolCall.status === 'pending')
+                ) {
+                  stepsForMessage[i] = {
+                    ...step,
+                    toolCall: {
+                      ...step.toolCall,
+                      status: 'error',
+                      result: stoppedLabel,
+                    },
+                  };
+                }
+              }
+              scheduleMessageUpdate();
+              break;
+            }
           }
         };
 
@@ -1022,13 +1060,25 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const { streamAgentResponse } = await import('../core/llm/agent');
         for await (const chunk of streamAgentResponse(agent, history, {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
+          signal: chatAbortController.signal,
         })) {
+          if (chatAbortController.signal.aborted) {
+            break;
+          }
           onChunk(chunk);
+          if (chunk.type === 'cancelled') {
+            break;
+          }
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setAgentError(message);
+        if (!chatAbortController.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          setAgentError(message);
+        }
       } finally {
+        if (chatAbortRef.current === chatAbortController) {
+          chatAbortRef.current = null;
+        }
         setIsChatLoading(false);
         setCurrentToolCalls([]);
       }
@@ -1049,11 +1099,46 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   );
 
   const stopChatResponse = useCallback(() => {
-    if (isChatLoading) {
-      // Agent streaming will be interrupted by the AbortController in sendChatMessage
-      setIsChatLoading(false);
-      setCurrentToolCalls([]);
-    }
+    if (!isChatLoading) return;
+
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+
+    const stoppedLabel = i18n.t('chat:stopped');
+    setCurrentToolCalls((prev) =>
+      prev.map((tc) =>
+        tc.status === 'running' || tc.status === 'pending'
+          ? { ...tc, status: 'error', result: stoppedLabel }
+          : tc,
+      ),
+    );
+
+    setChatMessages((prev) => {
+      const lastAssistantIdx = [...prev]
+        .map((m, i) => (m.role === 'assistant' ? i : -1))
+        .filter((i) => i >= 0)
+        .pop();
+      if (lastAssistantIdx === undefined) return prev;
+
+      const message = prev[lastAssistantIdx];
+      const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
+        tc.status === 'running' || tc.status === 'pending'
+          ? { ...tc, status: 'error', result: stoppedLabel }
+          : tc;
+
+      const updated: ChatMessage = {
+        ...message,
+        toolCalls: message.toolCalls?.map(markStopped),
+        steps: message.steps?.map((step) =>
+          step.type === 'tool_call' && step.toolCall
+            ? { ...step, toolCall: markStopped(step.toolCall) }
+            : step,
+        ),
+      };
+      return prev.map((m, i) => (i === lastAssistantIdx ? updated : m));
+    });
+
+    setIsChatLoading(false);
   }, [isChatLoading]);
 
   const clearChat = useCallback(() => {
