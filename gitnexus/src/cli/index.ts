@@ -18,7 +18,9 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 
 program
   .command('setup')
-  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex')
+  .description(
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+  )
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
