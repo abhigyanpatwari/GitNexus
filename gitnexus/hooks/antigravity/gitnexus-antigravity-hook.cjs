@@ -116,9 +116,15 @@ function extractAugmentContext(stderr) {
  * too short.
  */
 function extractPattern(toolName, toolInput) {
-  if (toolName === 'search_file_content' || toolName === 'glob') {
+  if (toolName === 'search_file_content') {
     const q = toolInput.pattern || toolInput.query || '';
     return typeof q === 'string' && q.length >= 3 ? q : null;
+  }
+
+  if (toolName === 'glob') {
+    const raw = toolInput.pattern || '';
+    const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
+    return match ? match[1] : null;
   }
 
   if (toolName === 'run_shell_command') {
@@ -215,7 +221,7 @@ function writeAdditionalContext(text) {
 function toolSucceeded(toolResponse) {
   if (!toolResponse || typeof toolResponse !== 'object') return true;
   if (toolResponse.error) return false;
-  if (typeof toolResponse.exit_code === 'number' && toolResponse.exit_code !== 0) return false;
+  if (toolResponse.exit_code != null && Number(toolResponse.exit_code) !== 0) return false;
   return true;
 }
 

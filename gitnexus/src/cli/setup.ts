@@ -253,14 +253,18 @@ async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
 /**
  * Check whether an event array already contains a gitnexus-hook entry.
  */
-function hasGitnexusHook(hooksObj: any, eventName: string): boolean {
+function hasGitnexusHook(
+  hooksObj: any,
+  eventName: string,
+  commandFragment = 'gitnexus-hook',
+): boolean {
   const entries = hooksObj?.[eventName];
   if (!Array.isArray(entries)) return false;
   return entries.some(
     (h: any) =>
       Array.isArray(h.hooks) &&
       h.hooks.some(
-        (hh: any) => typeof hh.command === 'string' && hh.command.includes('gitnexus-hook'),
+        (hh: any) => typeof hh.command === 'string' && hh.command.includes(commandFragment),
       ),
   );
 }
@@ -526,89 +530,6 @@ async function installAntigravitySkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Merge hook entries into ~/.gemini/settings.json under the canonical
- * `hooks.<EventName>` array layout documented at
- * https://geminicli.com/docs/hooks/reference/.
- *
- * Polite-neighbor behavior:
- *   - Existing user hooks under `hooks.BeforeTool` / `hooks.AfterTool` are
- *     preserved (we append our entry rather than replacing the array).
- *   - Idempotent: re-running skips events that already contain a gitnexus
- *     command string (see `geminiHasGitnexusHook`).
- *   - JSONC comments and indentation in settings.json are preserved via
- *     jsonc-parser's `modify` / `applyEdits`.
- * Returns false if the file is non-empty but unparseable.
- */
-async function mergeGeminiSettingsHooks(
-  filePath: string,
-  entries: Array<{ eventName: string; value: unknown }>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
-    raw = '';
-  }
-
-  if (raw.trim().length === 0) {
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    const formattingOptions = { tabSize: 2, insertSpaces: true };
-    let current = '{}';
-    for (const { eventName, value } of entries) {
-      const edits = modify(current, ['hooks', eventName, 0], value, { formattingOptions });
-      current = applyEdits(current, edits);
-    }
-    await fs.writeFile(filePath, current, 'utf-8');
-    return true;
-  }
-
-  const parseErrors: ParseError[] = [];
-  const tree = parseTree(raw, parseErrors);
-  if (!tree || tree.type !== 'object' || parseErrors.length > 0) {
-    return false;
-  }
-
-  const formattingOptions = detectIndentation(raw);
-  let current = raw;
-
-  for (const { eventName, value } of entries) {
-    const currentTree = parseTree(current, []);
-    const hooksNode = currentTree?.children?.find(
-      (c: any) => c.type === 'property' && c.children?.[0]?.value === 'hooks',
-    );
-    const eventNode = hooksNode?.children?.[1]?.children?.find(
-      (c: any) => c.type === 'property' && c.children?.[0]?.value === eventName,
-    );
-
-    let insertIndex: number;
-    if (eventNode?.children?.[1] && Array.isArray(eventNode.children[1].children)) {
-      insertIndex = eventNode.children[1].children.length;
-    } else {
-      insertIndex = 0;
-    }
-
-    const edits = modify(current, ['hooks', eventName, insertIndex], value, { formattingOptions });
-    current = applyEdits(current, edits);
-  }
-
-  await fs.writeFile(filePath, current, 'utf-8');
-  return true;
-}
-
-function geminiHasGitnexusHook(parsed: any, eventName: string): boolean {
-  const entries = parsed?.hooks?.[eventName];
-  if (!Array.isArray(entries)) return false;
-  return entries.some(
-    (h: any) =>
-      Array.isArray(h.hooks) &&
-      h.hooks.some(
-        (hh: any) =>
-          typeof hh.command === 'string' && hh.command.includes('gitnexus-antigravity-hook'),
-      ),
-  );
-}
-
-/**
  * Install the Antigravity/Gemini-CLI hook adapter to
  * ~/.gemini/config/hooks/gitnexus/ and register an AfterTool entry in
  * ~/.gemini/settings.json under `hooks.AfterTool`.
@@ -654,6 +575,16 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       // Adapter not found in source — skip
     }
 
+    // Bail out if the adapter was not written — registering the hook entry
+    // without the script would crash on every tool invocation (top-level
+    // require() of sibling helpers fails with MODULE_NOT_FOUND).
+    try {
+      await fs.access(adapterDest);
+    } catch {
+      result.errors.push('Antigravity hooks: adapter script was not installed — skipping hook registration');
+      return;
+    }
+
     // Shared helpers (copied from hooks/claude/). win-rm-list-json.ps1 is
     // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
     // server ownership probe silently fails open and the hook may contend
@@ -662,7 +593,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       try {
         await fs.copyFile(path.join(pluginClaudeDir, helper), path.join(destHooksDir, helper));
       } catch {
-        // Helper missing — adapter will fail gracefully at runtime
+        result.errors.push(`Antigravity hooks: failed to copy ${helper} — hook may crash at runtime`);
       }
     }
 
@@ -681,7 +612,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
 
-    if (!geminiHasGitnexusHook(parsed, 'AfterTool')) {
+    if (!hasGitnexusHook(parsed?.hooks, 'AfterTool', 'gitnexus-antigravity-hook')) {
       // Matcher follows the Gemini CLI built-in tool naming (snake_case).
       // search_file_content / glob cover content + filename search; run_shell_command
       // catches rg/grep invocations and the git commit family for stale-index hints.
@@ -709,7 +640,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
       return;
     }
 
-    const ok = await mergeGeminiSettingsHooks(settingsPath, hookEntries);
+    const ok = await mergeHooksJsonc(settingsPath, hookEntries);
     if (ok) {
       result.configured.push('Antigravity hooks (AfterTool)');
     } else {

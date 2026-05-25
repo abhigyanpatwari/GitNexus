@@ -147,7 +147,6 @@ describe('setupCommand Antigravity integration', () => {
     const entries = await fs.readdir(skillsDir, { withFileTypes: true });
     const skillNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 
-    expect(skillNames.length).toBeGreaterThan(0);
     expect(skillNames).toContain('gitnexus-cli');
 
     const cliSkill = await fs.readFile(path.join(skillsDir, 'gitnexus-cli', 'SKILL.md'), 'utf-8');
