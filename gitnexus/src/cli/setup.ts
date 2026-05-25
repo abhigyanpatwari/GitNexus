@@ -469,15 +469,17 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
 
 // ─── Antigravity (Google) ──────────────────────────────────────────
 //
-// Antigravity stores its MCP config under ~/.gemini/antigravity/ and its
-// JSON Hooks config under ~/.gemini/config/hooks.json. The hooks schema is
-// the same {matcher, hooks:[{type:"command",command}]} shape Antigravity
-// inherited from Gemini CLI, but grouped under a top-level `gitnexus` key
-// so multiple integrations can coexist without colliding on event arrays.
+// Antigravity stores its MCP config under ~/.gemini/antigravity/mcp_config.json
+// and inherits Gemini CLI's hooks contract
+// (https://geminicli.com/docs/hooks/reference/), which lives at
+// ~/.gemini/settings.json under the canonical `hooks.<EventName>` array layout.
 //
-// Tool names differ from Claude Code: `grep_search` and `run_command`
-// (snake_case) replace `Grep`/`Glob`/`Bash`. PostToolUse stdout must be `{}`
-// — see the antigravity hook adapter for the contract.
+// We register a single AfterTool entry matching Gemini's built-in search/shell
+// tools (search_file_content|glob|run_shell_command). BeforeTool is not used:
+// the Gemini contract provides no documented context-injection channel for it,
+// so augmentation runs in AfterTool where `hookSpecificOutput.additionalContext`
+// is appended to the tool result the agent reads. See the antigravity hook
+// adapter for the stdin/stdout contract details.
 
 async function setupAntigravity(result: SetupResult): Promise<void> {
   const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
@@ -692,6 +694,8 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
               type: 'command',
               command: hookCmd,
               name: 'gitnexus',
+              // ms — Gemini CLI uses milliseconds (default 60000); Claude Code
+              // uses seconds. 10000 ms = 10 s.
               timeout: 10000,
               description: 'GitNexus graph context + stale-index hints',
             },

@@ -293,12 +293,17 @@ const ADAPTER_SRC = path.join(
 );
 const LOCK_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-lock.cjs');
 const PROBE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-db-lock-probe.cjs');
+const WIN_RM_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'win-rm-list-json.ps1');
 
 async function stageAdapter(): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-adapter-'));
   await fs.copyFile(ADAPTER_SRC, path.join(tmp, 'gitnexus-antigravity-hook.cjs'));
   await fs.copyFile(LOCK_SRC, path.join(tmp, 'hook-lock.cjs'));
   await fs.copyFile(PROBE_SRC, path.join(tmp, 'hook-db-lock-probe.cjs'));
+  // hook-db-lock-probe.cjs loads this PowerShell script on Windows; without it,
+  // the lock probe silently fails open and the adapter's Windows DB-lock path
+  // would be untested in child-process smoke tests.
+  await fs.copyFile(WIN_RM_SRC, path.join(tmp, 'win-rm-list-json.ps1'));
   return path.join(tmp, 'gitnexus-antigravity-hook.cjs');
 }
 

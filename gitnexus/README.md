@@ -34,7 +34,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 |--------|-----|--------|---------------------|---------|
 | **Claude Code** | Yes | Yes | Yes (PreToolUse) | **Full** |
 | **Cursor** | Yes | Yes | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full** |
-| **Antigravity** (Google) | Yes | Yes | Yes (PreToolUse + PostToolUse, [JSON Hooks](https://antigravity.google/docs/features)) | **Full** |
+| **Antigravity** (Google) | Yes | Yes | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/)) | **Full** |
 | **Codex** | Yes | Yes | — | MCP + Skills |
 | **Windsurf** | Yes | — | — | MCP |
 | **OpenCode** | Yes | Yes | — | MCP + Skills |

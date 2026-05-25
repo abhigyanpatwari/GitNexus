@@ -64,6 +64,7 @@ function findCanonicalRepoRoot(cwd) {
       timeout: 2000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) return null;
     const commonDir = (result.stdout || '').trim();
@@ -92,6 +93,17 @@ function hasGitNexusServerOwner(gitNexusDir) {
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
+  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  if (debug && output.length > 0) {
+    // Emit the FULL discarded prefix (everything before the marker, or all of
+    // it when no marker is present) so suppressed diagnostics — LadybugDB lock
+    // warnings, parser errors, etc. — remain recoverable on the hook's own
+    // stderr. Mirrors the Claude adapter's debug behavior.
+    const discarded = marker === -1 ? output : output.slice(0, marker).trim();
+    if (discarded.length > 0) {
+      process.stderr.write(`[GitNexus hook] augment stderr discarded prefix:\n${discarded}\n`);
+    }
+  }
   return marker === -1 ? '' : output.slice(marker).trim();
 }
 
@@ -104,7 +116,7 @@ function extractAugmentContext(stderr) {
  * too short.
  */
 function extractPattern(toolName, toolInput) {
-  if (toolName === 'search_file_content' || toolName === 'glob' || toolName === 'grep_search') {
+  if (toolName === 'search_file_content' || toolName === 'glob') {
     const q = toolInput.pattern || toolInput.query || '';
     return typeof q === 'string' && q.length >= 3 ? q : null;
   }
@@ -177,6 +189,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   }
   return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
@@ -184,6 +197,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
     timeout: timeout + 5000,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 }
 
@@ -208,8 +222,7 @@ function toolSucceeded(toolResponse) {
 /**
  * Compute the additionalContext for a tool result, if any.
  *   1. Graph augment for search-like tools (search_file_content, glob,
- *      grep_search, run_shell_command-with-rg/grep) that completed
- *      successfully.
+ *      run_shell_command-with-rg/grep) that completed successfully.
  *   2. Stale-index hint after a successful git commit/merge/rebase/cherry-
  *      pick/pull.
  * Returns null when nothing is to be appended.
@@ -276,6 +289,7 @@ function buildStaleIndexHint(gitNexusDir, cwd) {
       timeout: 3000,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     currentHead = (headResult.stdout || '').trim();
   } catch {
