@@ -332,11 +332,14 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'outer::foo() emits zero CALLS edges when v1 and v2 both declare foo',
     'records a structured suppression reason for inline namespace ambiguity',
     // Distinct-signature inline-namespace ambiguity: `foo(int)` in v1 and
-    // `foo(double)` in v2. The scope-resolver conservatively suppresses
-    // because `resolveQualifiedReceiverMember` lacks call-site argument
-    // types. Legacy DAG has no inline-namespace resolver. Scope-resolver-
-    // only correctness win (#1600 / Claude review Finding 1).
-    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)',
+    // `foo(double)` in v2. PR #1810 threads call-site types through the
+    // resolveQualifiedReceiverMember contract — resolved in both mode paths.
+    // Legacy DAG emits an edge via the global callable fallback; the test
+    // now expects 1 edge, so the old expected-failure entry is removed.
+    // Normalized-signature ambiguity: `foo(int)` vs `foo(long)` both map to
+    // `int` via normalizeCppParamType. Scope-resolver suppresses via
+    // isOverloadAmbiguousAfterNormalization; legacy path picks arbitrarily.
+    'outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(long) — both normalize to int',
     // PR #1598: ADL free-function reference arg negative fixtures rely on
     // scope-resolver-only correctness. The legacy DAG falls back to
     // `pickUniqueGlobalCallable` which resolves the callee by simple-name
