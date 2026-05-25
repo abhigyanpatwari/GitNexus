@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import { isMainThread } from 'worker_threads';
 import type lbug from '@ladybugdb/core';
 import { logger } from '../logger.js';
 
@@ -106,7 +107,11 @@ function registerCleanupHandlers(): void {
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
       cleanupNativePathJunctions();
-      process.kill(process.pid, signal);
+      if (process.platform === 'win32') {
+        process.exit(0);
+      } else {
+        process.kill(process.pid, signal);
+      }
     });
   }
 }
@@ -122,7 +127,9 @@ function scanOrphanedJunctions(): void {
       const junctionPath = path.join(tmpdir, entry);
       try {
         const target = fsSync.readlinkSync(junctionPath);
-        if (!fsSync.existsSync(target)) {
+        try {
+          fsSync.lstatSync(target);
+        } catch {
           fsSync.rmSync(junctionPath, { recursive: true, force: true });
         }
       } catch {
@@ -149,11 +156,21 @@ export function toNativeSafePath(p: string): string {
   if (process.platform !== 'win32') return p;
   if (!NON_ASCII_RE.test(p)) return p;
 
-  scanOrphanedJunctions();
-  registerCleanupHandlers();
+  if (isMainThread) {
+    scanOrphanedJunctions();
+    registerCleanupHandlers();
+  }
 
   const shortPath = tryShortPath(p);
   if (shortPath) return shortPath;
+
+  if (!isMainThread) {
+    logger.warn(
+      `GitNexus: non-ASCII path in worker thread — junction fallback skipped. ` +
+        `Path: "${p}". 8.3 short names may need to be enabled on this volume.`,
+    );
+    return p;
+  }
 
   const targetDir = path.dirname(p);
   const leaf = path.basename(p);
@@ -523,7 +540,7 @@ export async function openLbugConnection(
   try {
     db = await openWithLockRetry(
       () => createLbugDatabase(lbugModule, safePath, options),
-      databasePath,
+      safePath,
     );
     return { db, conn: new lbugModule.Connection(db) };
   } catch (err) {
