@@ -218,6 +218,7 @@ export function runScopeResolution(
   const preExtracted = input.preExtractedParsedFiles;
   let preExtractedHits = 0;
   const progressInterval = files.length > 0 ? Math.max(1, Math.floor(files.length / 50)) : 1;
+  input.onProgress?.('extracting', 0, files.length);
   for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
     const file = files[fileIdx];
     let parsed: ParsedFile | undefined;

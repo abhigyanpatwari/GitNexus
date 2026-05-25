@@ -265,6 +265,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       }
     }
 
+    if (totalScopeFiles > 0 && anyRan) {
+      ctx.onProgress({
+        phase: 'scopeResolution',
+        percent: SCOPE_PCT_START + SCOPE_PCT_RANGE,
+        message: 'Resolving types',
+        detail: 'complete',
+      });
+    }
+
     // Dispose the cross-phase Tree cache — scope-resolution is the
     // only consumer. Holding Trees past this point is pure memory
     // pressure: downstream phases (mro, community, csv-generator)
