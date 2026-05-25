@@ -25,7 +25,7 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile', 'structure'],
+  deps: ['crossFile', 'scopeResolution', 'structure'],
 
   async execute(
     ctx: PipelineContext,
@@ -35,7 +35,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
 
     ctx.onProgress({
       phase: 'enriching',
-      percent: 83,
+      percent: 95,
       message: 'Computing method resolution order...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });

@@ -32,13 +32,13 @@ export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
 
     ctx.onProgress({
       phase: 'communities',
-      percent: 84,
+      percent: 95,
       message: 'Detecting code communities...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
     const communityResult = await processCommunities(ctx.graph, (message, progress) => {
-      const communityProgress = 84 + progress * 0.09;
+      const communityProgress = 95 + progress * 0.03;
       ctx.onProgress({
         phase: 'communities',
         percent: Math.round(communityProgress),
