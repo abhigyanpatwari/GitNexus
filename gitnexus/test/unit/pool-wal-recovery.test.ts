@@ -35,6 +35,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   createLbugDatabase: vi.fn(),
+  toNativeSafePath: vi.fn((p: string) => p),
   LBUG_MAX_DB_SIZE: 1024,
   WAL_RECOVERY_SUGGESTION:
     'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
