@@ -501,6 +501,7 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           parsedFiles,
+          site,
         );
         if (memberDef === 'ambiguous') {
           // Same-name ambiguity across inline-namespace children (#1564):

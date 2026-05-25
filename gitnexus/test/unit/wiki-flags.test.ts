@@ -1,10 +1,11 @@
 /**
- * Unit tests for wiki CLI flags: --provider cursor, --review, --verbose
+ * Unit tests for wiki CLI flags: --provider cursor/claude/codex, --review, --verbose
  *
  * Tests the new wiki provider infrastructure without requiring an actual
- * Cursor CLI binary or LLM API key. All external dependencies are mocked.
+ * local agent CLI binary or LLM API key. All external dependencies are mocked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
@@ -81,6 +82,51 @@ describe('resolveCursorConfig', () => {
   });
 });
 
+// ─── local agent CLI detection ───────────────────────────────────────
+
+describe('detectLocalCLI', () => {
+  let execFileSyncSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.resetModules();
+    execFileSyncSpy = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('detects and caches Claude CLI', async () => {
+    vi.doMock('child_process', () => ({
+      execFileSync: execFileSyncSpy,
+      spawn: vi.fn(),
+    }));
+    const { detectLocalCLI } = await import('../../src/core/wiki/local-cli-client.js');
+
+    execFileSyncSpy.mockImplementation(() => 'claude 1.0.0');
+
+    expect(detectLocalCLI('claude')).toBe('claude');
+    const callsAfterFirstDetection = execFileSyncSpy.mock.calls.length;
+    expect(detectLocalCLI('claude')).toBe('claude');
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(callsAfterFirstDetection);
+  });
+
+  it('caches null when Codex CLI is not found', async () => {
+    vi.doMock('child_process', () => ({
+      execFileSync: execFileSyncSpy.mockImplementation(() => {
+        throw new Error('not found');
+      }),
+      spawn: vi.fn(),
+    }));
+    const { detectLocalCLI } = await import('../../src/core/wiki/local-cli-client.js');
+
+    expect(detectLocalCLI('codex')).toBeNull();
+    const callsAfterFirstDetection = execFileSyncSpy.mock.calls.length;
+    expect(detectLocalCLI('codex')).toBeNull();
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(callsAfterFirstDetection);
+  });
+});
+
 // ─── resolveLLMConfig provider routing ───────────────────────────────
 
 describe('resolveLLMConfig', () => {
@@ -114,6 +160,51 @@ describe('resolveLLMConfig', () => {
 
     expect(config.provider).toBe('cursor');
     expect(config.model).toBe('claude-4.5-opus-high');
+  });
+
+  it('uses claudeModel when provider is claude', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'claude',
+        claudeModel: 'claude-sonnet-4-6',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'claude' });
+
+    expect(config.provider).toBe('claude');
+    expect(config.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('uses codexModel when provider is codex', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'codex',
+        codexModel: 'gpt-5.4',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'codex' });
+
+    expect(config.provider).toBe('codex');
+    expect(config.model).toBe('gpt-5.4');
+  });
+
+  it('does not inherit HTTP model defaults for local CLI providers', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'openai',
+        model: 'minimax/minimax-m2.5',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'claude' });
+
+    expect(config.provider).toBe('claude');
+    expect(config.model).toBe('');
   });
 
   it('uses default OpenRouter model for openai provider', async () => {
@@ -720,11 +811,15 @@ describe('WikiGenerator invokeLLM routing', () => {
 
   it('routes to callCursorLLM when provider is cursor', async () => {
     const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
     const llmClient = await import('../../src/core/wiki/llm-client.js');
 
     const cursorSpy = vi
       .spyOn(cursorClient, 'callCursorLLM')
       .mockResolvedValue({ content: 'cursor response' });
+    const claudeSpy = vi
+      .spyOn(localClient, 'callClaudeLLM')
+      .mockResolvedValue({ content: 'claude response' });
     const openaiSpy = vi
       .spyOn(llmClient, 'callLLM')
       .mockResolvedValue({ content: 'openai response' });
@@ -751,17 +846,112 @@ describe('WikiGenerator invokeLLM routing', () => {
     const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
 
     expect(cursorSpy).toHaveBeenCalledTimes(1);
+    expect(claudeSpy).not.toHaveBeenCalled();
     expect(openaiSpy).not.toHaveBeenCalled();
     expect(result.content).toBe('cursor response');
   });
 
-  it('routes to callLLM when provider is openai', async () => {
+  it('routes to callClaudeLLM when provider is claude', async () => {
     const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
     const llmClient = await import('../../src/core/wiki/llm-client.js');
 
     const cursorSpy = vi
       .spyOn(cursorClient, 'callCursorLLM')
       .mockResolvedValue({ content: 'cursor response' });
+    const claudeSpy = vi
+      .spyOn(localClient, 'callClaudeLLM')
+      .mockResolvedValue({ content: 'claude response' });
+    const codexSpy = vi
+      .spyOn(localClient, 'callCodexLLM')
+      .mockResolvedValue({ content: 'codex response' });
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
+      .mockResolvedValue({ content: 'openai response' });
+
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const storagePath = path.join(tmpDir, 'storage');
+    const wikiDir = path.join(storagePath, 'wiki');
+    await fs.mkdir(wikiDir, { recursive: true });
+
+    const repoPath = path.join(tmpDir, 'repo');
+    await fs.mkdir(repoPath, { recursive: true });
+
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: '',
+      baseUrl: '',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'claude',
+    });
+
+    const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
+
+    expect(claudeSpy).toHaveBeenCalledTimes(1);
+    expect(codexSpy).not.toHaveBeenCalled();
+    expect(cursorSpy).not.toHaveBeenCalled();
+    expect(openaiSpy).not.toHaveBeenCalled();
+    expect(result.content).toBe('claude response');
+  });
+
+  it('routes to callCodexLLM when provider is codex', async () => {
+    const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
+    const llmClient = await import('../../src/core/wiki/llm-client.js');
+
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
+      .mockResolvedValue({ content: 'cursor response' });
+    const claudeSpy = vi
+      .spyOn(localClient, 'callClaudeLLM')
+      .mockResolvedValue({ content: 'claude response' });
+    const codexSpy = vi
+      .spyOn(localClient, 'callCodexLLM')
+      .mockResolvedValue({ content: 'codex response' });
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
+      .mockResolvedValue({ content: 'openai response' });
+
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const storagePath = path.join(tmpDir, 'storage');
+    const wikiDir = path.join(storagePath, 'wiki');
+    await fs.mkdir(wikiDir, { recursive: true });
+
+    const repoPath = path.join(tmpDir, 'repo');
+    await fs.mkdir(repoPath, { recursive: true });
+
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: '',
+      baseUrl: '',
+      model: 'gpt-5.4',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'codex',
+    });
+
+    const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
+
+    expect(codexSpy).toHaveBeenCalledTimes(1);
+    expect(claudeSpy).not.toHaveBeenCalled();
+    expect(cursorSpy).not.toHaveBeenCalled();
+    expect(openaiSpy).not.toHaveBeenCalled();
+    expect(result.content).toBe('codex response');
+  });
+
+  it('routes to callLLM when provider is openai', async () => {
+    const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
+    const llmClient = await import('../../src/core/wiki/llm-client.js');
+
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
+      .mockResolvedValue({ content: 'cursor response' });
+    const codexSpy = vi
+      .spyOn(localClient, 'callCodexLLM')
+      .mockResolvedValue({ content: 'codex response' });
     const openaiSpy = vi
       .spyOn(llmClient, 'callLLM')
       .mockResolvedValue({ content: 'openai response' });
@@ -788,6 +978,7 @@ describe('WikiGenerator invokeLLM routing', () => {
 
     expect(openaiSpy).toHaveBeenCalledTimes(1);
     expect(cursorSpy).not.toHaveBeenCalled();
+    expect(codexSpy).not.toHaveBeenCalled();
     expect(result.content).toBe('openai response');
   });
 });
@@ -814,6 +1005,98 @@ describe('callCursorLLM', () => {
     const { callCursorLLM } = await import('../../src/core/wiki/cursor-client.js');
 
     await expect(callCursorLLM('hello', {})).rejects.toThrow('Cursor CLI not found');
+  });
+});
+
+// ─── local CLI errors when binaries are not found ────────────────────
+
+describe('local agent CLI calls', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('throws when Claude CLI is not in PATH', async () => {
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockImplementation(() => {
+        throw new Error('not found');
+      }),
+      spawn: vi.fn(),
+    }));
+
+    const { callClaudeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callClaudeLLM('hello', {})).rejects.toThrow('Claude CLI not found');
+  });
+
+  it('throws when Codex CLI is not in PATH', async () => {
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockImplementation(() => {
+        throw new Error('not found');
+      }),
+      spawn: vi.fn(),
+    }));
+
+    const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callCodexLLM('hello', {})).rejects.toThrow('Codex CLI not found');
+  });
+
+  it('uses Codex config overrides instead of removed approval flags', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('codex response'));
+        child.emit('close', 0);
+      });
+    });
+
+    const spawnSpy = vi.fn(() => child);
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('codex-cli 0.132.0'),
+      spawn: spawnSpy,
+    }));
+
+    const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    const response = await callCodexLLM('hello', { workingDirectory: process.cwd() });
+
+    expect(response.content).toBe('codex response');
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).toContain('-c');
+    expect(args).toContain('approval_policy="never"');
+    expect(args).not.toContain('--ask-for-approval');
+  });
+
+  it('reports Codex stderr when the process closes before stdin is fully written', async () => {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stderr.emit('data', Buffer.from("error: unexpected argument '--old-flag' found"));
+        child.stdin.emit('error', new Error('write EOF'));
+        child.emit('close', 2);
+      });
+    });
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('codex-cli 0.132.0'),
+      spawn: vi.fn(() => child),
+    }));
+
+    const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await expect(callCodexLLM('hello', { workingDirectory: process.cwd() })).rejects.toThrow(
+      "codex CLI exited with code 2: error: unexpected argument '--old-flag' found",
+    );
   });
 });
 

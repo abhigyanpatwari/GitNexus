@@ -2288,6 +2288,93 @@ describe('C++ two-phase template lookup — this-> name-hiding arity mismatch', 
   });
 });
 
+describe('C++ two-phase template lookup — dependent-base cross-namespace (nested ns)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-pos'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to inner::Inner<T>::f when Inner is in a nested namespace (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base cross-namespace (negative)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-neg'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS when no Inner<T> exists in the nested namespace', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base inline-namespace variant', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-inline'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() resolves to v1::Base<T>::f when Base is in an inline namespace (1 edge)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const resolved = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(resolved.length).toBe(1);
+    expect(resolved[0].targetFilePath).toContain('lib.h');
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base deep nesting suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-deep'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaks = calls.filter((c) => c.source === 'g' && c.target === 'f');
+    expect(leaks.length).toBe(0);
+  });
+});
+
+describe('C++ two-phase template lookup — dependent-base sibling-namespace suppression', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-two-phase-dependent-base-cross-ns-sibling-suppress'),
+      () => {},
+    );
+  }, 60000);
+
+  it('Derived<T>::g() -> this->f_a() emits zero CALLS when detail::Inner and public_api::Inner are sibling namespaces (ambiguity suppressed)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const suppressed = calls.filter((c) => c.source === 'g' && c.target === 'f_a');
+    expect(suppressed.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U3 cross-file namespace variant: Base lives in a different file AND
 // inside a namespace. The fixture also contains a free function with the
@@ -3044,7 +3131,7 @@ describe('C++ inline namespace — ambiguous same-name across inline children (#
   });
 });
 
-describe('C++ inline namespace — ambiguous distinct signatures (conservative suppress)', () => {
+describe('C++ inline namespace — distinct signatures resolved via call-site types', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -3054,14 +3141,35 @@ describe('C++ inline namespace — ambiguous distinct signatures (conservative s
     );
   }, 60000);
 
-  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(double)', () => {
+  it('outer::foo(42) emits exactly 1 CALLS edge to v1::foo(int) when v1 declares foo(int) and v2 declares foo(double)', () => {
     const calls = getRelationships(result, 'CALLS');
     const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
-    // Even though the two overloads have distinct signatures and a compiler
-    // could disambiguate via argument types, the `resolveQualifiedReceiverMember`
-    // hook lacks call-site arity/argument-type information, so multi-hit cases
-    // are conservatively suppressed. Documents the limitation noted in
-    // inline-namespaces.ts (Finding 1 of Claude review on #1600).
+    // Call-site arity and argument types are now threaded through the
+    // resolveQualifiedReceiverMember contract (#1632). narrowOverloadCandidates
+    // matches the exact type 'int' against v1::foo(int), producing exactly 1 edge.
+    expect(fooCalls).toHaveLength(1);
+    // Verify it resolved to v1::foo(int) at line 4 (0-indexed), not v2::foo(double) at line 7
+    const targetNode = result.graph.getNode(fooCalls[0].rel.targetId);
+    expect(targetNode?.properties.startLine).toBe(4);
+  });
+});
+
+describe('C++ inline namespace — ambiguous normalized signatures', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-inline-namespace-ambiguous-normalized'),
+      () => {},
+    );
+  }, 60000);
+
+  it('outer::foo(42) emits zero CALLS edges when v1 declares foo(int) and v2 declares foo(long) — both normalize to int', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fooCalls = calls.filter((c) => c.source === 'run' && c.target === 'foo');
+    // int and long both normalize to 'int' via normalizeCppParamType, making
+    // the two candidates indistinguishable after normalization. The resolver
+    // must suppress rather than pick arbitrarily (isOverloadAmbiguousAfterNormalization).
     expect(fooCalls.length).toBe(0);
   });
 });

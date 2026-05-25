@@ -275,6 +275,12 @@ export const cppScopeResolver: ScopeResolver = {
   // descends transitively through inline-namespace children when
   // searching for the called member. Returns undefined for non-namespace
   // receivers so receiver-bound-calls Case 2 still gets a chance.
-  resolveQualifiedReceiverMember: (receiverName, memberName, _callerScope, scopes, parsedFiles) =>
-    resolveCppQualifiedNamespaceMember(receiverName, memberName, parsedFiles, scopes),
+  resolveQualifiedReceiverMember: (
+    receiverName,
+    memberName,
+    _callerScope,
+    scopes,
+    parsedFiles,
+    callsite,
+  ) => resolveCppQualifiedNamespaceMember(receiverName, memberName, parsedFiles, scopes, callsite),
 };

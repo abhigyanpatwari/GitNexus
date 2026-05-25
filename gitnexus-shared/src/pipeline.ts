@@ -10,6 +10,7 @@ export type PipelinePhase =
   | 'imports'
   | 'calls'
   | 'heritage'
+  | 'scopeResolution'
   | 'communities'
   | 'processes'
   | 'enriching'
