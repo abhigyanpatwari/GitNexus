@@ -255,6 +255,10 @@ describe('windowsHide regression', () => {
   const HOOK_FILES: Array<readonly [string, string]> = [
     ['gitnexus/hooks/claude/gitnexus-hook.cjs', CJS_HOOK],
     [
+      'gitnexus/hooks/antigravity/gitnexus-antigravity-hook.cjs',
+      path.resolve(__dirname, '..', '..', 'hooks', 'antigravity', 'gitnexus-antigravity-hook.cjs'),
+    ],
+    [
       'gitnexus/hooks/claude/hook-db-lock-probe.cjs',
       path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-db-lock-probe.cjs'),
     ],
