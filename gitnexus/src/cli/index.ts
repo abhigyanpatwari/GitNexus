@@ -146,7 +146,10 @@ program
   .command('wiki [path]')
   .description('Generate repository wiki from knowledge graph')
   .option('-f, --force', 'Force full regeneration even if up to date')
-  .option('--provider <provider>', 'LLM provider: openai or cursor (default: openai)')
+  .option(
+    '--provider <provider>',
+    'LLM provider: openai, openrouter, azure, custom, cursor, claude, or codex (default: openai)',
+  )
   .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
   .option(
     '--base-url <url>',

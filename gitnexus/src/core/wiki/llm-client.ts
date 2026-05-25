@@ -9,7 +9,14 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * Config priority: CLI flags > env vars > defaults
  */
 
-export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+export type LLMProvider =
+  | 'openai'
+  | 'openrouter'
+  | 'azure'
+  | 'custom'
+  | 'cursor'
+  | 'claude'
+  | 'codex';
 
 export interface LLMConfig {
   apiKey: string;
@@ -18,7 +25,7 @@ export interface LLMConfig {
   maxTokens: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  provider?: LLMProvider;
   /** Azure api-version query param (e.g. '2024-10-21'). Appended to URL when set. */
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
@@ -44,6 +51,17 @@ export interface LLMResponse {
 export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<LLMConfig> {
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
+  const savedProvider = overrides?.provider ?? savedConfig.provider;
+  const savedLocalModel =
+    savedProvider === 'cursor'
+      ? savedConfig.cursorModel
+      : savedProvider === 'claude'
+        ? savedConfig.claudeModel
+        : savedProvider === 'codex'
+          ? savedConfig.codexModel
+          : undefined;
+  const localProvider =
+    savedProvider === 'cursor' || savedProvider === 'claude' || savedProvider === 'codex';
 
   const apiKey =
     overrides?.apiKey ||
@@ -61,13 +79,12 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       'https://openrouter.ai/api/v1',
     model:
       overrides?.model ||
-      process.env.GITNEXUS_MODEL ||
-      (savedConfig.provider === 'cursor' ? savedConfig.cursorModel : undefined) ||
-      savedConfig.model ||
-      'minimax/minimax-m2.5',
+      (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
+      savedLocalModel ||
+      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
+    provider: savedProvider ?? 'openai',
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,

@@ -220,6 +220,8 @@ describe('CLI help surface', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--provider <provider>');
+    expect(result.stdout).toContain('claude');
+    expect(result.stdout).toContain('codex');
     expect(result.stdout).toContain('--review');
     expect(result.stdout).toContain('-v, --verbose');
     expect(result.stdout).toContain('--model <model>');
