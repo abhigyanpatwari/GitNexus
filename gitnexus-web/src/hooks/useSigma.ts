@@ -1311,7 +1311,6 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
             const x = attrs.x;
             const y = attrs.y;
-            const r = Math.sqrt(x * x + y * y) || 1;
 
             // Soft-wall gravity (force 1) already handles radial boundary
             // enforcement — no separate resistance decomposition needed.

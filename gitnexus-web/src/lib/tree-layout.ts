@@ -501,7 +501,11 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
 
   // 6. Relax the graph like a constrained spring system. Only X is allowed
   // to move, so node types stay on their original Y layers.
-  const SPRING_ITERATIONS = 14;
+  // For large graphs the spring phase is O(N×E×iterations) and would freeze
+  // the main thread — scale it down proportionally so the initial proportional
+  // layout (already good at large N) is kept without expensive refinement.
+  const nodeCount = graph.nodes.length;
+  const SPRING_ITERATIONS = nodeCount > 10000 ? 0 : nodeCount > 3000 ? 4 : 14;
   for (let iter = 0; iter < SPRING_ITERATIONS; iter++) {
     const deltaXByNode = new Map<string, number>();
 
