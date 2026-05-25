@@ -772,6 +772,28 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       setIsLayoutRunning(true);
 
+      // Adaptive tuning — mirrors the circles layout strategy.
+      // The repulsion pass is O(N × k) after sorting; for large graphs k
+      // can be thousands, making each frame multi-hundred ms → apparent freeze.
+      const treeNodeCount = graph.order;
+      const treeIsLarge = treeNodeCount > 5000;
+      const treeIsMedium = treeNodeCount > 1500;
+      const treeUseRepulsion = !treeIsLarge; // skip O(N×k) repulsion for large graphs
+      const treeUseSpread = !treeIsLarge; // skip O(N log N) spread sort for large graphs
+      const treeDamping = treeIsLarge ? 0.58 : 0.62;
+      const treeVelocityCapX = treeIsLarge ? 12 : treeIsMedium ? 6 : 3;
+      const treeVelocityCapY = treeIsLarge ? 6 : treeIsMedium ? 3 : 2;
+      const treeMaxSimSteps = treeIsLarge ? 1 : 2;
+      const treeEffectiveMaxDuration = treeIsLarge
+        ? 30000
+        : treeIsMedium
+          ? 24000
+          : TREE_LAYOUT_MAX_DURATION;
+      const treeStopMaxVelocity = treeIsLarge ? 0.05 : 0.022;
+      const treeStopAvgVelocity = treeIsLarge ? 0.03 : 0.016;
+      const treeStopActiveNodeFraction = treeIsLarge ? 0.02 : 0.008;
+      const treeStopStabilityFrames = treeIsLarge ? 20 : TREE_LAYOUT_STABILITY_FRAMES;
+
       const step = (timestamp: number) => {
         if (!graphRef.current || graphRef.current !== graph) {
           stopTreeLayout(false);
@@ -798,7 +820,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
 
         const simulationSteps = Math.min(
-          2,
+          treeMaxSimSteps,
           Math.floor(treeAccumulatorRef.current / TREE_TARGET_FRAME_MS),
         );
         treeAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
@@ -868,48 +890,49 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         // 3. Node repulsion in 2D: all pairs within range (cross-layer included)
         // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far.
         //
-        // Cross-layer pairs use reduced repulsion (25 % of same-layer strength).
-        // Full-strength cross-layer repulsion was the main barrier preventing
-        // nodes from moving horizontally to align with their parents — a node
-        // in Layer 2 would block a Layer 1 File from moving toward its Package.
-        const nodeList = graph.nodes().map((id) => {
-          const a = graph.getNodeAttributes(id);
-          return { id, x: a.x, y: a.y, size: a.size ?? 6, layer: a.treeLayer ?? 0 };
-        });
-        nodeList.sort((a, b) => a.x - b.x);
+        // Skipped for large graphs (N > 5 000) — sorting + pair comparisons make each
+        // frame take hundreds of ms, leaving the canvas apparently frozen.  Layer gravity
+        // and edge springs provide sufficient structure without repulsion.
+        if (treeUseRepulsion) {
+          const nodeList = graph.nodes().map((id) => {
+            const a = graph.getNodeAttributes(id);
+            return { id, x: a.x, y: a.y, size: a.size ?? 6, layer: a.treeLayer ?? 0 };
+          });
+          nodeList.sort((a, b) => a.x - b.x);
 
-        for (let i = 0; i < nodeList.length; i++) {
-          const nodeA = nodeList[i];
-          for (let j = i + 1; j < nodeList.length; j++) {
-            const nodeB = nodeList[j];
-            const dx = nodeB.x - nodeA.x;
-            if (dx > TREE_REPULSION_RANGE) break; // X-sorted: all further pairs are also too far
+          for (let i = 0; i < nodeList.length; i++) {
+            const nodeA = nodeList[i];
+            for (let j = i + 1; j < nodeList.length; j++) {
+              const nodeB = nodeList[j];
+              const dx = nodeB.x - nodeA.x;
+              if (dx > TREE_REPULSION_RANGE) break; // X-sorted: all further pairs are also too far
 
-            const dy = nodeB.y - nodeA.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            if (dist > TREE_REPULSION_RANGE) continue;
+              const dy = nodeB.y - nodeA.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              if (dist > TREE_REPULSION_RANGE) continue;
 
-            const sameLayer = nodeA.layer === nodeB.layer;
-            // Same-layer repulsion reduced from 160→100 so the stronger X spring
-            // (0.30) can now overcome collective repulsion from 3-4 nearby nodes.
-            // Cross-layer kept low (28) so intermediate-layer nodes don't block
-            // parent-child X alignment.
-            const repulsionStrength = sameLayer ? 100 : 28;
-            const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
-            let repulsion =
-              (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
-            if (dist < minGap && sameLayer) {
-              repulsion += (minGap - dist) * 0.1 * dtScale;
+              const sameLayer = nodeA.layer === nodeB.layer;
+              // Same-layer repulsion reduced from 160→100 so the stronger X spring
+              // (0.30) can now overcome collective repulsion from 3-4 nearby nodes.
+              // Cross-layer kept low (28) so intermediate-layer nodes don't block
+              // parent-child X alignment.
+              const repulsionStrength = sameLayer ? 100 : 28;
+              const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+              let repulsion =
+                (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
+              if (dist < minGap && sameLayer) {
+                repulsion += (minGap - dist) * 0.1 * dtScale;
+              }
+              if (repulsion <= 0) continue;
+
+              const fx = (dx / dist) * repulsion;
+              const fy = (dy / dist) * repulsion;
+
+              forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+              forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+              forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+              forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
             }
-            if (repulsion <= 0) continue;
-
-            const fx = (dx / dist) * repulsion;
-            const fy = (dy / dist) * repulsion;
-
-            forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
-            forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
-            forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
-            forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
           }
         }
 
@@ -921,21 +944,24 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         // (force ≈ 1–2 units) resist and stay clustered; nodes without a
         // strong spring anchor (isolated or same-layer-only) drift to fill gaps.
         // Net effect: dense centre spreads outward, sparse edges fill in.
-        const spreadByLayer = new Map<number, Array<{ id: string; x: number }>>();
-        graph.forEachNode((nodeId, attrs) => {
-          const layer = attrs.treeLayer ?? 0;
-          if (!spreadByLayer.has(layer)) spreadByLayer.set(layer, []);
-          spreadByLayer.get(layer)!.push({ id: nodeId, x: attrs.x });
-        });
-        for (const [, layerNodes] of spreadByLayer) {
-          if (layerNodes.length < 2) continue;
-          layerNodes.sort((a, b) => a.x - b.x);
-          const count = layerNodes.length;
-          const spacing = (TREE_MAX_X * 2) / count;
-          for (let i = 0; i < count; i++) {
-            const { id, x } = layerNodes[i];
-            const idealX = -TREE_MAX_X + (i + 0.5) * spacing;
-            forceX.set(id, (forceX.get(id) ?? 0) + (idealX - x) * TREE_SPREAD_STRENGTH * dtScale);
+        // Skipped for large graphs — per-layer sort is O(N log N) per frame.
+        if (treeUseSpread) {
+          const spreadByLayer = new Map<number, Array<{ id: string; x: number }>>();
+          graph.forEachNode((nodeId, attrs) => {
+            const layer = attrs.treeLayer ?? 0;
+            if (!spreadByLayer.has(layer)) spreadByLayer.set(layer, []);
+            spreadByLayer.get(layer)!.push({ id: nodeId, x: attrs.x });
+          });
+          for (const [, layerNodes] of spreadByLayer) {
+            if (layerNodes.length < 2) continue;
+            layerNodes.sort((a, b) => a.x - b.x);
+            const count = layerNodes.length;
+            const spacing = (TREE_MAX_X * 2) / count;
+            for (let i = 0; i < count; i++) {
+              const { id, x } = layerNodes[i];
+              const idealX = -TREE_MAX_X + (i + 0.5) * spacing;
+              forceX.set(id, (forceX.get(id) ?? 0) + (idealX - x) * TREE_SPREAD_STRENGTH * dtScale);
+            }
           }
         }
 
@@ -966,16 +992,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const normY = Math.min(1, Math.abs(yOffset) / TREE_LAYER_BAND_HALF);
             const resistY = 1 + normY * normY * TREE_LAYER_BOUNDARY_RESISTANCE;
 
-            const rawVx = (vx0 + fx / resistX) * 0.62;
-            const rawVy = (vy0 + fy / resistY) * 0.62;
+            const rawVx = (vx0 + fx / resistX) * treeDamping;
+            const rawVy = (vy0 + fy / resistY) * treeDamping;
             const newVx =
               Math.abs(fx) < TREE_FORCE_DEADZONE && Math.abs(rawVx) < TREE_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVx, -3, 3);
+                : clamp(rawVx, -treeVelocityCapX, treeVelocityCapX);
             const newVy =
               Math.abs(fy) < TREE_FORCE_DEADZONE && Math.abs(rawVy) < TREE_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVy, -2, 2);
+                : clamp(rawVy, -treeVelocityCapY, treeVelocityCapY);
 
             treeVelocityRef.current.set(nodeId, newVx);
             treeVelocityYRef.current.set(nodeId, newVy);
@@ -1011,9 +1037,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
         if (
           elapsed >= TREE_LAYOUT_MIN_DURATION &&
-          maxVelocity < 0.022 &&
-          activeNodes <= Math.max(2, Math.floor(graph.order * 0.008)) &&
-          averageVelocity < 0.016
+          maxVelocity < treeStopMaxVelocity &&
+          activeNodes <= Math.max(2, Math.floor(graph.order * treeStopActiveNodeFraction)) &&
+          averageVelocity < treeStopAvgVelocity
         ) {
           treeStableFramesRef.current += 1;
         } else {
@@ -1021,8 +1047,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
 
         if (
-          treeStableFramesRef.current >= TREE_LAYOUT_STABILITY_FRAMES ||
-          elapsed >= TREE_LAYOUT_MAX_DURATION
+          treeStableFramesRef.current >= treeStopStabilityFrames ||
+          elapsed >= treeEffectiveMaxDuration
         ) {
           stopTreeLayout(true);
           return;
