@@ -39,6 +39,7 @@ import {
 } from './llm-client.js';
 
 import { callCursorLLM, resolveCursorConfig } from './cursor-client.js';
+import { callClaudeLLM, callCodexLLM, resolveLocalCLIConfig } from './local-cli-client.js';
 
 import {
   GROUPING_SYSTEM_PROMPT,
@@ -203,7 +204,7 @@ export class WikiGenerator {
   }
 
   /**
-   * Route LLM call to the appropriate provider (OpenAI-compatible or Cursor CLI).
+   * Route LLM call to the appropriate provider.
    */
   private async invokeLLM(
     prompt: string,
@@ -216,6 +217,16 @@ export class WikiGenerator {
         workingDirectory: this.repoPath,
       });
       return callCursorLLM(prompt, cursorConfig, systemPrompt, options);
+    }
+    if (this.llmConfig.provider === 'claude' || this.llmConfig.provider === 'codex') {
+      const localConfig = resolveLocalCLIConfig({
+        model: this.llmConfig.model,
+        workingDirectory: this.repoPath,
+        requestTimeoutMs: this.llmConfig.requestTimeoutMs,
+      });
+      return this.llmConfig.provider === 'claude'
+        ? callClaudeLLM(prompt, localConfig, systemPrompt, options)
+        : callCodexLLM(prompt, localConfig, systemPrompt, options);
     }
     return callLLM(prompt, this.llmConfig, systemPrompt, options);
   }

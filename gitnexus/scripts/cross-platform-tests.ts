@@ -82,6 +82,7 @@ const SPAWN_CLI = [
   'test/integration/setup-skills.test.ts',
   'test/integration/setup-antigravity.test.ts',
   'test/integration/antigravity-hook-e2e.test.ts',
+  'test/unit/local-cli-subprocess.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have

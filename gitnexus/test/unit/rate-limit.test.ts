@@ -256,6 +256,11 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.get\('\/api\/health',\s*\(_req,\s*res\)\s*=>/);
   });
 
+  it('does not register a bare wildcard OPTIONS route under Express 5', () => {
+    expect(apiSource).not.toContain("app.options('*'");
+    expect(apiSource).not.toMatch(/app\.options\(\s*'\/\*'/);
+  });
+
   it('createServer wires trust proxy to loopback/linklocal/uniquelocal', () => {
     expect(apiSource).toMatch(
       /app\.set\(\s*'trust proxy'\s*,\s*'loopback,\s*linklocal,\s*uniquelocal'\s*\)/,
