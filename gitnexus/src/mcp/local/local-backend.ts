@@ -2910,14 +2910,12 @@ export class LocalBackend {
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
-    const hasExplicitLimit =
-      typeof opts.limit === 'number' && Number.isFinite(opts.limit);
+    const hasExplicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit);
     const paginationLimit = hasExplicitLimit
       ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
       : Infinity;
-    const rawOffset = typeof opts.offset === 'number' && Number.isFinite(opts.offset)
-      ? opts.offset
-      : 0;
+    const rawOffset =
+      typeof opts.offset === 'number' && Number.isFinite(opts.offset) ? opts.offset : 0;
     const paginationOffset = Math.max(0, Math.trunc(rawOffset));
     const summaryOnly = opts.summaryOnly ?? false;
     const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
