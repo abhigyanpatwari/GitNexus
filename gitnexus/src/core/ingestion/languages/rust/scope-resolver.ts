@@ -5,6 +5,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
+import { populateRustRangeBindings } from './range-binding.js';
 
 export const rustScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Rust,
@@ -24,6 +25,8 @@ export const rustScopeResolver: ScopeResolver = {
   populateOwners: (parsed: ParsedFile) => populateRustOwners(parsed),
 
   isSuperReceiver: () => false,
+
+  populateRangeBindings: populateRustRangeBindings,
 
   fieldFallbackOnMethodLookup: false,
   hoistTypeBindingsToModule: true,

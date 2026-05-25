@@ -76,6 +76,13 @@ const RUST_SCOPE_QUERY = `
   value: (call_expression
     function: (_) @type-binding.type)) @type-binding.call-return
 
+;; Type bindings — call-return inference through .await (let x = foo().await)
+(let_declaration
+  pattern: (identifier) @type-binding.name
+  value: (await_expression
+    (call_expression
+      function: (_) @type-binding.type))) @type-binding.call-return
+
 ;; Type bindings — variable alias (let x = y)
 (let_declaration
   pattern: (identifier) @type-binding.name
