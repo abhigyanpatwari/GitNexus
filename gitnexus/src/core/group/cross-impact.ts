@@ -429,6 +429,7 @@ export async function runGroupImpact(
     relationTypes: relationTypes && relationTypes.length > 0 ? relationTypes : undefined,
     includeTests,
     minConfidence,
+    limit: 10000,
   };
 
   const deadline = Date.now() + Math.max(0, timeoutMs);

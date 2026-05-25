@@ -336,7 +336,7 @@ Output includes:
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
-- byDepth: all affected symbols grouped by traversal depth
+- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; see byDepthCounts for totals per depth, pagination object when truncated)
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
@@ -425,7 +425,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
             'Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out.',
         },
         limit: {
-          type: 'number',
+          type: 'integer',
           description:
             'Max symbols returned in byDepth per depth level (default: 100). Use small values for hub symbols to avoid output truncation.',
           default: 100,
@@ -433,7 +433,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           maximum: 10000,
         },
         offset: {
-          type: 'number',
+          type: 'integer',
           description:
             'Skip this many symbols per depth level before applying limit. Use with limit for pagination.',
           default: 0,

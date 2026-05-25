@@ -2902,7 +2902,7 @@ export class LocalBackend {
       relationTypes: effectiveRelationTypes,
       includeTests,
       minConfidence,
-      limit: params.limit,
+      limit: params.limit ?? 100,
       offset: params.offset,
       summaryOnly: params.summaryOnly,
     });
@@ -2927,8 +2927,11 @@ export class LocalBackend {
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
-    const paginationLimit = Math.max(1, Math.min(opts.limit ?? 100, 10000));
-    const paginationOffset = Math.max(0, opts.offset ?? 0);
+    const hasExplicitLimit = opts.limit != null;
+    const paginationLimit = hasExplicitLimit
+      ? Math.max(1, Math.min(Math.trunc(opts.limit!), 10000))
+      : Infinity;
+    const paginationOffset = Math.max(0, Math.trunc(opts.offset ?? 0));
     const summaryOnly = opts.summaryOnly ?? false;
     const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
@@ -3379,7 +3382,7 @@ export class LocalBackend {
       const total = items.length;
       const sliced = items.slice(paginationOffset, paginationOffset + paginationLimit);
       paginatedGrouped[Number(depth)] = sliced;
-      if (paginationOffset + paginationLimit < total) {
+      if (paginationOffset > 0 || paginationOffset + paginationLimit < total) {
         anyTruncated = true;
       }
     }
@@ -3388,7 +3391,7 @@ export class LocalBackend {
       ...base,
       ...(anyTruncated && {
         pagination: {
-          limit: paginationLimit,
+          limit: paginationLimit === Infinity ? null : paginationLimit,
           offset: paginationOffset,
           truncated: true,
         },

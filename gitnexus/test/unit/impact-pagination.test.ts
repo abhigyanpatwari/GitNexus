@@ -27,6 +27,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
 });
 
 import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { collectImpactSymbolUids } from '../../src/core/group/cross-impact';
 
 function makeBackend() {
   const backend = new LocalBackend();
@@ -43,6 +44,32 @@ function makeBackend() {
   (backend as any).repos.set(repoHandle.id, repoHandle);
   (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
   return { backend, repoHandle };
+}
+
+function setupMultiDepthHub(d1Count: number, d2Count: number) {
+  let depth = 0;
+  executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+    const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+    if (query.includes('STEP_IN_PROCESS')) return [];
+    if (query.includes('MEMBER_OF')) return [];
+    return [{ id: 'hub1', name: 'HubSymbol', filePath: 'hub.ts' }];
+  });
+
+  executeQueryMock.mockImplementation(async () => {
+    depth++;
+    const count = depth === 1 ? d1Count : depth === 2 ? d2Count : 0;
+    const res: any[] = [];
+    for (let i = 0; i < count; i++) {
+      res.push({
+        id: `d${depth}-caller-${i}`,
+        name: `d${depth}caller${i}`,
+        filePath: `src/d${depth}-caller-${i}.ts`,
+        relType: 'CALLS',
+        confidence: null,
+      });
+    }
+    return res;
+  });
 }
 
 function setupHubSymbol(count: number) {
@@ -227,5 +254,132 @@ describe('impact: pagination and summaryOnly (#414)', () => {
       limit: -5,
     });
     expect(resNeg.byDepth[1].length).toBe(1);
+  });
+
+  it('multi-depth: each depth paginates independently', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupMultiDepthHub(150, 50);
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'HubSymbol',
+      direction: 'upstream',
+      maxDepth: 2,
+      limit: 30,
+    });
+
+    expect(res.impactedCount).toBe(200);
+    expect(res.byDepthCounts).toEqual({ 1: 150, 2: 50 });
+    expect(res.byDepth[1].length).toBe(30);
+    expect(res.byDepth[2].length).toBe(30);
+    expect(res.pagination.truncated).toBe(true);
+  });
+
+  it('offset-only truncation: pagination metadata present when offset > 0 even if tail fits', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupHubSymbol(50);
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'HubSymbol',
+      direction: 'upstream',
+      maxDepth: 1,
+      limit: 100,
+      offset: 10,
+    });
+
+    expect(res.byDepth[1].length).toBe(40);
+    expect(res.pagination).toBeDefined();
+    expect(res.pagination.truncated).toBe(true);
+    expect(res.pagination.offset).toBe(10);
+  });
+
+  it('offset past end: returns empty byDepth with pagination metadata', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupHubSymbol(50);
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'HubSymbol',
+      direction: 'upstream',
+      maxDepth: 1,
+      limit: 20,
+      offset: 100,
+    });
+
+    expect(res.impactedCount).toBe(50);
+    expect(res.byDepthCounts).toEqual({ 1: 50 });
+    expect(res.byDepth[1].length).toBe(0);
+    expect(res.pagination).toBeDefined();
+    expect(res.pagination.truncated).toBe(true);
+  });
+
+  it('float limit/offset are truncated to integers', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupHubSymbol(50);
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'HubSymbol',
+      direction: 'upstream',
+      maxDepth: 1,
+      limit: 20.7,
+      offset: 5.9,
+    });
+
+    expect(res.byDepth[1].length).toBe(20);
+    expect(res.byDepth[1][0].name).toBe('caller5');
+    expect(res.pagination.limit).toBe(20);
+    expect(res.pagination.offset).toBe(5);
+  });
+
+  it('_runImpactBFS without limit returns all symbols (internal caller path)', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupHubSymbol(400);
+
+    const sym = { id: 'hub1', name: 'HubSymbol', filePath: 'hub.ts' };
+    const res = await (backend as any)._runImpactBFS(repoHandle, sym, 'Function', 'upstream', {
+      maxDepth: 1,
+      relationTypes: ['CALLS'],
+      includeTests: false,
+      minConfidence: 0,
+    });
+
+    expect(res.impactedCount).toBe(400);
+    expect(res.byDepth[1].length).toBe(400);
+    expect(res.pagination).toBeUndefined();
+  });
+});
+
+describe('collectImpactSymbolUids with paginated results', () => {
+  it('collects all UIDs from complete byDepth', () => {
+    const impact = {
+      target: { id: 'target1', filePath: 'src/target.ts' },
+      byDepth: {
+        1: [
+          { id: 'a', filePath: 'src/a.ts' },
+          { id: 'b', filePath: 'src/b.ts' },
+          { id: 'c', filePath: 'src/c.ts' },
+        ],
+      },
+    };
+    const { uids } = collectImpactSymbolUids(impact, undefined);
+    expect(uids).toContain('target1');
+    expect(uids).toContain('a');
+    expect(uids).toContain('b');
+    expect(uids).toContain('c');
+    expect(uids.length).toBe(4);
+  });
+
+  it('only gets paginated subset when byDepth is capped', () => {
+    const impact = {
+      target: { id: 'target1', filePath: 'src/target.ts' },
+      byDepthCounts: { 1: 300 },
+      byDepth: {
+        1: Array.from({ length: 100 }, (_, i) => ({
+          id: `sym-${i}`,
+          filePath: `src/sym-${i}.ts`,
+        })),
+      },
+      pagination: { limit: 100, offset: 0, truncated: true },
+    };
+    const { uids } = collectImpactSymbolUids(impact, undefined);
+    expect(uids.length).toBe(101);
   });
 });
