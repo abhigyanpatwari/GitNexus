@@ -82,7 +82,14 @@ export function populateRustRangeBindings(
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);
-    processPendingAssignments(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
+    processPendingAssignments(
+      tree.rootNode,
+      parsed,
+      parsedFiles,
+      scopeMap,
+      moduleScope,
+      allReturnTypes,
+    );
   }
 }
 
@@ -336,6 +343,7 @@ function processIdentityMethodBindings(parsed: ParsedFile): void {
 function processPendingAssignments(
   root: SyntaxNode,
   parsed: ParsedFile,
+  allParsedFiles: readonly ParsedFile[],
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
   allReturnTypes: ReadonlyMap<string, string>,
@@ -353,6 +361,14 @@ function processPendingAssignments(
       const valueNode = letNode.childForFieldName('value');
       if (valueNode === null) continue;
 
+      if (valueNode.type === 'identifier') {
+        const rhsType = lookupTypeInScopes(valueNode.text, letNode, parsed, scopeMap, moduleScope);
+        if (rhsType !== null) {
+          injectTypeBinding(targetScope, varName, rhsType);
+          continue;
+        }
+      }
+
       if (valueNode.type === 'field_expression') {
         const receiver = valueNode.childForFieldName('value');
         const field = valueNode.childForFieldName('field');
@@ -365,20 +381,9 @@ function processPendingAssignments(
             moduleScope,
           );
           if (receiverType !== null) {
-            for (const scope of parsed.scopes) {
-              if (scope.kind !== 'Class') continue;
-              const tb = scope.typeBindings.get(field.text);
-              if (tb !== undefined) {
-                const hasDef = scope.ownedDefs.some(
-                  (d) =>
-                    d.qualifiedName === receiverType ||
-                    d.qualifiedName?.endsWith('.' + receiverType),
-                );
-                if (hasDef) {
-                  injectTypeBinding(targetScope, varName, tb.rawName);
-                  break;
-                }
-              }
+            const fieldType = findFieldTypeAcrossFiles(receiverType, field.text, allParsedFiles);
+            if (fieldType !== null) {
+              injectTypeBinding(targetScope, varName, fieldType);
             }
           }
         }
@@ -398,19 +403,13 @@ function processPendingAssignments(
               moduleScope,
             );
             if (receiverType !== null) {
-              for (const scope of parsed.scopes) {
-                if (scope.kind !== 'Class') continue;
-                const hasDef = scope.ownedDefs.some(
-                  (d) =>
-                    d.qualifiedName === receiverType ||
-                    d.qualifiedName?.endsWith('.' + receiverType),
-                );
-                if (!hasDef) continue;
-                const retTb = scope.typeBindings.get(method.text);
-                if (retTb !== undefined && retTb.source === 'return-annotation') {
-                  injectTypeBinding(targetScope, varName, retTb.rawName);
-                  break;
-                }
+              const retType = findMethodReturnTypeAcrossFiles(
+                receiverType,
+                method.text,
+                allParsedFiles,
+              );
+              if (retType !== null) {
+                injectTypeBinding(targetScope, varName, retType);
               }
             }
           }
@@ -466,6 +465,44 @@ function resolveIterableElementType(
     }
   }
 
+  return null;
+}
+
+function findFieldTypeAcrossFiles(
+  structName: string,
+  fieldName: string,
+  allParsedFiles: readonly ParsedFile[],
+): string | null {
+  for (const pf of allParsedFiles) {
+    for (const scope of pf.scopes) {
+      if (scope.kind !== 'Class') continue;
+      const hasDef = scope.ownedDefs.some(
+        (d) => d.qualifiedName === structName || d.qualifiedName?.endsWith('.' + structName),
+      );
+      if (!hasDef) continue;
+      const tb = scope.typeBindings.get(fieldName);
+      if (tb !== undefined) return tb.rawName;
+    }
+  }
+  return null;
+}
+
+function findMethodReturnTypeAcrossFiles(
+  structName: string,
+  methodName: string,
+  allParsedFiles: readonly ParsedFile[],
+): string | null {
+  for (const pf of allParsedFiles) {
+    for (const scope of pf.scopes) {
+      if (scope.kind !== 'Class') continue;
+      const hasDef = scope.ownedDefs.some(
+        (d) => d.qualifiedName === structName || d.qualifiedName?.endsWith('.' + structName),
+      );
+      if (!hasDef) continue;
+      const tb = scope.typeBindings.get(methodName);
+      if (tb !== undefined && tb.source === 'return-annotation') return tb.rawName;
+    }
+  }
   return null;
 }
 

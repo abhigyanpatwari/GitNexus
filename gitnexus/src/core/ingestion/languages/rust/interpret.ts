@@ -2,6 +2,7 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 
 const REF_PREFIX_RE = /^&\s*(mut\s+)?/;
 const PTR_PREFIX_RE = /^\*\s*(const|mut)?\s*/;
+const ENUM_VARIANT_NAMES = new Set(['Some', 'None', 'Ok', 'Err']);
 
 // ─── interpretImport ──────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ export function interpretRustTypeBinding(captures: CaptureMatch): ParsedTypeBind
     source = 'constructor-inferred';
     normalizedType = normalizeRustTypeName(type);
   } else if (captures['@type-binding.call-return'] !== undefined) {
+    if (ENUM_VARIANT_NAMES.has(type)) return null;
     source = 'constructor-inferred';
     normalizedType = normalizeRustCallReturnType(type);
   } else if (captures['@type-binding.return'] !== undefined) {
