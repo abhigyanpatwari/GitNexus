@@ -24,6 +24,27 @@ export function populateRustRangeBindings(
   },
 ): void {
   const parser = getRustParser();
+  const allReturnTypes = new Map<string, string>();
+
+  for (const parsed of parsedFiles) {
+    const sourceText = ctx.fileContents.get(parsed.filePath);
+    if (sourceText === undefined) continue;
+
+    const cachedTree = ctx.treeCache?.get(parsed.filePath);
+    const tree =
+      (cachedTree as ReturnType<typeof parser.parse> | undefined) ??
+      parseSourceSafe(parser, sourceText, undefined, {
+        bufferSize: getTreeSitterBufferSize(sourceText),
+      });
+
+    for (const fn of tree.rootNode.descendantsOfType('function_item')) {
+      const nameNode = fn.childForFieldName('name');
+      const retType = fn.childForFieldName('return_type');
+      if (nameNode !== null && retType !== null) {
+        allReturnTypes.set(nameNode.text, retType.text);
+      }
+    }
+  }
 
   for (const parsed of parsedFiles) {
     const sourceText = ctx.fileContents.get(parsed.filePath);
@@ -41,7 +62,7 @@ export function populateRustRangeBindings(
     if (moduleScope === undefined) continue;
 
     processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
-    processForLoops(tree.rootNode, parsed, scopeMap, moduleScope);
+    processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope);
   }
@@ -105,6 +126,7 @@ function processForLoops(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  allReturnTypes: ReadonlyMap<string, string>,
 ): void {
   for (const forNode of root.descendantsOfType('for_expression')) {
     const patternNode = forNode.childForFieldName('pattern');
@@ -114,7 +136,13 @@ function processForLoops(
     const varName = extractVarName(patternNode);
     if (varName === null) continue;
 
-    const elementType = resolveIterableElementType(valueNode, parsed, scopeMap, moduleScope);
+    const elementType = resolveIterableElementType(
+      valueNode,
+      parsed,
+      scopeMap,
+      moduleScope,
+      allReturnTypes,
+    );
     if (elementType === null) continue;
 
     const targetScope = findEnclosingFunctionScope(forNode, scopeMap) ?? moduleScope;
@@ -266,6 +294,7 @@ function resolveIterableElementType(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  allReturnTypes?: ReadonlyMap<string, string>,
 ): string | null {
   let iterableNode = valueNode;
   if (iterableNode.type === 'reference_expression') {
@@ -290,6 +319,8 @@ function resolveIterableElementType(
     }
 
     if (func.type === 'identifier') {
+      const crossFileReturn = allReturnTypes?.get(func.text);
+      if (crossFileReturn !== undefined) return unwrapGeneric(crossFileReturn);
       const rawReturn = lookupRawFunctionReturnType(func.text, valueNode);
       if (rawReturn !== null) return unwrapGeneric(rawReturn);
       const returnType = lookupReturnTypeInScopes(func.text, parsed, scopeMap, moduleScope);
