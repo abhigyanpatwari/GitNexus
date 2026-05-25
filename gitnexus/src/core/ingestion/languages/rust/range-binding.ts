@@ -25,6 +25,7 @@ export function populateRustRangeBindings(
 ): void {
   const parser = getRustParser();
   const allReturnTypes = new Map<string, string>();
+  const allFieldTypes = new Map<string, Map<string, string>>();
 
   for (const parsed of parsedFiles) {
     const sourceText = ctx.fileContents.get(parsed.filePath);
@@ -43,6 +44,21 @@ export function populateRustRangeBindings(
       if (nameNode !== null && retType !== null) {
         allReturnTypes.set(nameNode.text, retType.text);
       }
+    }
+
+    for (const structNode of tree.rootNode.descendantsOfType('struct_item')) {
+      const nameNode = structNode.childForFieldName('name');
+      const body = structNode.childForFieldName('body');
+      if (nameNode === null || body === null) continue;
+      const fields = new Map<string, string>();
+      for (const field of body.descendantsOfType('field_declaration')) {
+        const fieldName = field.childForFieldName('name');
+        const fieldType = field.childForFieldName('type');
+        if (fieldName !== null && fieldType !== null) {
+          fields.set(fieldName.text, normalizeFieldType(fieldType.text));
+        }
+      }
+      if (fields.size > 0) allFieldTypes.set(nameNode.text, fields);
     }
   }
 
@@ -64,7 +80,7 @@ export function populateRustRangeBindings(
     processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
-    processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope);
+    processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);
   }
 }
 
@@ -256,6 +272,7 @@ function processStructDestructuring(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  allFieldTypes?: ReadonlyMap<string, Map<string, string>>,
 ): void {
   for (const letNode of root.descendantsOfType('let_declaration')) {
     const patternNode = letNode.childForFieldName('pattern');
@@ -270,20 +287,20 @@ function processStructDestructuring(
     const targetScope = findEnclosingFunctionScope(letNode, scopeMap) ?? moduleScope;
 
     for (const fieldNode of patternNode.namedChildren) {
+      let fieldName: string | undefined;
       if (fieldNode.type === 'field_pattern') {
-        const fieldName = fieldNode.childForFieldName('name')?.text;
-        if (fieldName === undefined) continue;
-        const fieldType = lookupFieldType(typeName, fieldName, parsed, scopeMap, moduleScope);
-        if (fieldType !== null) {
-          injectTypeBinding(targetScope, fieldName, fieldType);
-        }
+        fieldName = fieldNode.childForFieldName('name')?.text;
       } else if (fieldNode.type === 'shorthand_field_pattern') {
-        const fieldName = fieldNode.firstNamedChild?.text;
-        if (fieldName === undefined) continue;
-        const fieldType = lookupFieldType(typeName, fieldName, parsed, scopeMap, moduleScope);
-        if (fieldType !== null) {
-          injectTypeBinding(targetScope, fieldName, fieldType);
-        }
+        fieldName = fieldNode.firstNamedChild?.text;
+      }
+      if (fieldName === undefined) continue;
+
+      let fieldType = lookupFieldType(typeName, fieldName, parsed, scopeMap, moduleScope);
+      if (fieldType === null) {
+        fieldType = allFieldTypes?.get(typeName)?.get(fieldName) ?? null;
+      }
+      if (fieldType !== null) {
+        injectTypeBinding(targetScope, fieldName, fieldType);
       }
     }
   }
