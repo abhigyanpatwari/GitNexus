@@ -161,12 +161,33 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
 
         // Multiple classes share the same simple name — prefer the one
         // whose namespace matches the deriving class's namespace.
-        // V1: exact dot-prefix match only. Cross-namespace inheritance
-        // (e.g., `ns::outer::Derived` extending bare `Inner` defined in
-        // `ns::outer::inner`) and inline-namespace cases are deferred to
-        // V2; the conservative skip-on-ambiguity below avoids false
-        // associations in those edge cases.
-        const nsMatch = candidates.find((c) => c.nsPrefix === classEntry.nsPrefix);
+        // V2: filter by prefix-match capped at one level deeper, then
+        // accept only if exactly one candidate survives. This lets
+        // Derived<T> in ns::outer find Inner<T> in ns::outer::inner
+        // (or ns::v1 for inline-namespace variants) while rejecting
+        // sibling collisions (e.g. detail::Inner vs public_api::Inner).
+        //
+        // The one-segment cap limits walk depth: ns → ns.a ✓, ns → ns.a.b ✗.
+        // Global-scope deriving classes match any single-segment namespace.
+        //
+        // LIMITATION: True ISO behavior would use the base specifier's
+        // syntactic qualifier (available at captures.ts:611 as
+        // qualified_identifier scope) to navigate from the current scope,
+        // which would resolve `detail::Inner` vs `public_api::Inner`
+        // unambiguously. Threading the qualifier is tracked in #1815.
+        // Until then, sibling collisions correctly suppress.
+        const nsMatches = candidates.filter((c) => {
+          if (c.nsPrefix === classEntry.nsPrefix) return true;
+          if (classEntry.nsPrefix === '') {
+            return c.nsPrefix !== '' && !c.nsPrefix.includes('.');
+          }
+          if (c.nsPrefix.startsWith(classEntry.nsPrefix + '.')) {
+            const suffix = c.nsPrefix.slice(classEntry.nsPrefix.length + 1);
+            return !suffix.includes('.');
+          }
+          return false;
+        });
+        const nsMatch = nsMatches.length === 1 ? nsMatches[0] : undefined;
         if (nsMatch !== undefined) {
           bases.add(nsMatch.nodeId);
         }

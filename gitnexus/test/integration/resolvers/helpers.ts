@@ -358,6 +358,13 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'records a structured suppression reason for ADL blocker lookup',
     'swap(a,b) resolves to data::swap when inner scope has callable swap and outer has variable',
     'record(e) emits zero CALLS when a block-scope function declaration exists',
+    // PR #1634: sibling-namespace dependent-base suppression. The scope-resolver
+    // correctly suppresses when detail::Inner and public_api::Inner share the
+    // same simple name. The legacy DAG picks an arbitrary match.
+    'Derived<T>::g() -> this->f_a() emits zero CALLS when detail::Inner and public_api::Inner are sibling namespaces (ambiguity suppressed)',
+    // PR #1634: deep-nesting suppression. The scope-resolver enforces a
+    // one-level cap on namespace walking. The legacy DAG picks arbitrarily.
+    'Derived<T>::g() -> this->f() emits zero CALLS when Inner is two levels deep (ns.a.b) — one-level cap enforced',
   ]),
 };
 
