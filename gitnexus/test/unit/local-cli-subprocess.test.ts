@@ -298,9 +298,7 @@ describe('local CLI timeout', () => {
     child.stderr = new EventEmitter();
     child.stdin = new EventEmitter() as any;
     child.pid = 99;
-    child.kill = vi.fn(() => {
-      queueMicrotask(() => child.emit('close', null));
-    });
+    child.kill = vi.fn();
     child.stdin.end = vi.fn();
 
     vi.doMock('child_process', () => ({
@@ -312,8 +310,82 @@ describe('local CLI timeout', () => {
     const promise = callClaudeLLM('prompt', { requestTimeoutMs: 5000 });
 
     vi.advanceTimersByTime(5000);
+    child.emit('close', null);
     await expect(promise).rejects.toThrow('claude CLI timed out after 5s');
-    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it('uses taskkill /T /F /PID on Windows for process-tree kill', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    try {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = new EventEmitter() as any;
+      child.pid = 42;
+      child.kill = vi.fn();
+      child.stdin.end = vi.fn();
+
+      const execFileSyncSpy = vi.fn().mockImplementation((cmd: string, args: string[]) => {
+        if (cmd !== 'taskkill') return 'claude 1.0.0';
+        return '';
+      });
+
+      vi.doMock('child_process', () => ({
+        execFileSync: execFileSyncSpy,
+        spawn: vi.fn(() => child),
+      }));
+      const { callClaudeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+      const promise = callClaudeLLM('prompt', { requestTimeoutMs: 3000 });
+      vi.advanceTimersByTime(3000);
+      // Timeout fires, taskkill runs, but child hasn't emitted close yet.
+      // Emit close now to settle the promise.
+      child.emit('close', null);
+      await expect(promise).rejects.toThrow('claude CLI timed out after 3s');
+
+      const taskkillCalls = execFileSyncSpy.mock.calls.filter(
+        (c: unknown[]) => c[0] === 'taskkill',
+      );
+      expect(taskkillCalls.length).toBe(1);
+      expect(taskkillCalls[0][1]).toEqual(['/T', '/F', '/PID', '42']);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('falls back to child.kill() when taskkill fails on Windows', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    try {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = new EventEmitter() as any;
+      child.pid = 42;
+      child.kill = vi.fn();
+      child.stdin.end = vi.fn();
+
+      vi.doMock('child_process', () => ({
+        execFileSync: vi.fn().mockImplementation((cmd: string) => {
+          if (cmd === 'taskkill') throw new Error('taskkill: process not found');
+          return 'claude 1.0.0';
+        }),
+        spawn: vi.fn(() => child),
+      }));
+      const { callClaudeLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+      const promise = callClaudeLLM('prompt', { requestTimeoutMs: 2000 });
+      vi.advanceTimersByTime(2000);
+      child.emit('close', null);
+      await expect(promise).rejects.toThrow('claude CLI timed out after 2s');
+      expect(child.kill).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
   });
 
   it('does not set a kill timer when requestTimeoutMs is undefined', async () => {
@@ -470,5 +542,84 @@ describe('local CLI onChunk callback', () => {
     await callClaudeLLM('prompt', {}, undefined, { onChunk: (n) => chunks.push(n) });
 
     expect(chunks).toEqual([6, 12]);
+  });
+});
+
+// ─── Codex CLI flag contract snapshot ─────────────────────────────────
+
+describe('Codex CLI flag contract snapshot', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('spawn args match the exact expected contract (flag rename = test failure)', async () => {
+    const fakeChild = makeFakeChild({ stdout: 'codex output' });
+    const spawnSpy = vi.fn(() => fakeChild.child);
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
+      spawn: spawnSpy,
+    }));
+    const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await callCodexLLM('prompt', { workingDirectory: '/repo', model: 'o3' });
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+
+    // The contract flags start at 'exec' — skip any platform argsPrefix
+    // (e.g., ['/d', '/s', '/c', 'codex'] on Windows cmd.exe fallback)
+    const execIdx = args.indexOf('exec');
+    expect(execIdx).toBeGreaterThanOrEqual(0);
+    const contractArgs = args.slice(execIdx);
+
+    // Strip the dynamic temp path for comparison
+    const outputMsgIdx = contractArgs.indexOf('--output-last-message');
+    const normalized = [...contractArgs];
+    if (outputMsgIdx !== -1) {
+      normalized[outputMsgIdx + 1] = '<TEMP_PATH>';
+    }
+
+    expect(normalized).toEqual([
+      'exec',
+      '--cd',
+      '/repo',
+      '--sandbox',
+      'read-only',
+      '-c',
+      'approval_policy="never"',
+      '--color',
+      'never',
+      '--output-last-message',
+      '<TEMP_PATH>',
+      '--model',
+      'o3',
+      '-',
+    ]);
+  });
+
+  it('--model appears before - (stdin marker) and after --output-last-message', async () => {
+    const fakeChild = makeFakeChild({ stdout: 'codex output' });
+    const spawnSpy = vi.fn(() => fakeChild.child);
+
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
+      spawn: spawnSpy,
+    }));
+    const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
+
+    await callCodexLLM('prompt', { workingDirectory: '/repo', model: 'test-model' });
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    const outputIdx = args.indexOf('--output-last-message');
+    const modelIdx = args.indexOf('--model');
+    const stdinIdx = args.lastIndexOf('-');
+
+    expect(outputIdx).toBeLessThan(modelIdx);
+    expect(modelIdx).toBeLessThan(stdinIdx);
+    expect(args[args.length - 1]).toBe('-');
   });
 });

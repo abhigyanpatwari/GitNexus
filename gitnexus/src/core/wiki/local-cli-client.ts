@@ -34,6 +34,21 @@ interface LocalCommand {
   argsPrefix: string[];
 }
 
+function killChildTree(child: import('child_process').ChildProcess): void {
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    try {
+      execFileSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Process may have already exited — fall through to child.kill()
+    }
+  }
+  child.kill();
+}
+
 function isVerbose(): boolean {
   return process.env.GITNEXUS_VERBOSE === '1';
 }
@@ -208,7 +223,7 @@ function runLocalCLI(
 
     if (config.requestTimeoutMs !== undefined && config.requestTimeoutMs > 0) {
       killTimer = setTimeout(() => {
-        child.kill();
+        killChildTree(child);
         const duration =
           config.requestTimeoutMs! >= 60_000
             ? `${Math.round(config.requestTimeoutMs! / 60_000)}m`
