@@ -34,7 +34,7 @@ import type { ParseOutput } from '../../pipeline-phases/parse.js';
 import { isRegistryPrimary } from '../../registry-primary-flag.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
-import { runScopeResolution } from './run.js';
+import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { SCOPE_RESOLVERS } from './registry.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
@@ -213,16 +213,25 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           },
           onProgress:
             totalScopeFiles > 0
-              ? (subPhase, current, total) => {
+              ? (subPhase: ScopeResolutionSubPhase, current, total) => {
                   let langRatio: number;
-                  if (subPhase === 'extracting') {
-                    langRatio = total > 0 ? (current / total) * 0.5 : 0;
-                  } else if (subPhase === 'analyzing types') {
-                    langRatio = 0.5;
-                  } else if (subPhase === 'resolving references') {
-                    langRatio = 0.7;
-                  } else {
-                    langRatio = 0.85;
+                  switch (subPhase) {
+                    case 'extracting':
+                      langRatio = total > 0 ? (current / total) * 0.5 : 0;
+                      break;
+                    case 'analyzing types':
+                      langRatio = 0.5;
+                      break;
+                    case 'resolving references':
+                      langRatio = 0.7;
+                      break;
+                    case 'linking symbols':
+                      langRatio = 0.85;
+                      break;
+                    default: {
+                      const _exhaustive: never = subPhase;
+                      langRatio = 0.85;
+                    }
                   }
                   const overallRatio = Math.min(
                     1,

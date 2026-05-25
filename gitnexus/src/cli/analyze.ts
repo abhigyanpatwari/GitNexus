@@ -33,6 +33,7 @@ import { warnMissingOptionalGrammars } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
+import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -908,14 +909,6 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   // Track elapsed time per phase
   let lastPhaseLabel = 'Initializing...';
   let phaseStart = Date.now();
-
-  const formatElapsed = (secs: number): string => {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    return `${h}h ${m}m`;
-  };
 
   const updateBar = (value: number, phaseLabel: string) => {
     barCurrentValue = value;

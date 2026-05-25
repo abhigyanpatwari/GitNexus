@@ -116,6 +116,12 @@ function preEmitInheritanceEdges(
   return handledSites;
 }
 
+export type ScopeResolutionSubPhase =
+  | 'extracting'
+  | 'analyzing types'
+  | 'resolving references'
+  | 'linking symbols';
+
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   /**
@@ -176,7 +182,7 @@ interface RunScopeResolutionInput {
    * @param current   Files processed so far (during extract) or total files (at phase boundaries)
    * @param total     Total files in this language
    */
-  readonly onProgress?: (subPhase: string, current: number, total: number) => void;
+  readonly onProgress?: (subPhase: ScopeResolutionSubPhase, current: number, total: number) => void;
 }
 
 interface RunScopeResolutionStats {
