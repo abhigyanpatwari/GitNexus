@@ -37,12 +37,14 @@ import { findEnclosingClassDef } from '../../scope-resolution/scope/walkers.js';
 
 /**
  * Capture-time record: for each template class declaration in a file,
- * the simple names of its dependent base classes.
+ * the simple names of its dependent base classes and their syntactic
+ * qualifiers (e.g., `detail` for `detail::Inner<T>`).
  *
  * Key: filePath
- * Value: Map<className, Set<dependentBaseSimpleName>>
+ * Value: Map<className, Map<baseName, qualifier>>
+ *   qualifier is '' when the base was unqualified.
  */
-const dependentBasesByFile = new Map<string, Map<string, Set<string>>>();
+const dependentBasesByFile = new Map<string, Map<string, Map<string, string>>>();
 
 /**
  * Post-`populateOwners` resolution: per-class-nodeId, the set of
@@ -55,12 +57,19 @@ const dependentBaseNodeIds = new Map<string, Set<string>>();
  * Record a dependent-base relationship discovered during scope-capture
  * emission. `className` is the simple name of the template class;
  * `baseName` is the simple name of the dependent base class.
+ * `qualifier` is the syntactic namespace qualifier (e.g. `detail` for
+ * `detail::Inner<T>`), or '' for unqualified bases.
  *
  * The capture-time recorder uses simple names because the registry
  * resolution that maps names → nodeIds runs later (in
  * `populateCppDependentBases`).
  */
-export function markCppDependentBase(filePath: string, className: string, baseName: string): void {
+export function markCppDependentBase(
+  filePath: string,
+  className: string,
+  baseName: string,
+  qualifier = '',
+): void {
   let perFile = dependentBasesByFile.get(filePath);
   if (perFile === undefined) {
     perFile = new Map();
@@ -68,10 +77,10 @@ export function markCppDependentBase(filePath: string, className: string, baseNa
   }
   let bases = perFile.get(className);
   if (bases === undefined) {
-    bases = new Set();
+    bases = new Map();
     perFile.set(className, bases);
   }
-  bases.add(baseName);
+  bases.set(baseName, qualifier);
 }
 
 /** Clear two-phase-lookup state. Called from `clearFileLocalNames`. */
@@ -89,8 +98,10 @@ export function clearCppDependentBases(): void {
  * Disambiguation strategy (multiple classes sharing a simple name):
  *  1. Prefer the candidate whose qualified-name namespace prefix matches
  *     the deriving class's namespace prefix (same-namespace bias).
- *  2. Fall back to accepting a unique simple-name match.
- *  3. Skip when multiple candidates exist and no namespace match is
+ *  2. When a syntactic qualifier is available (`detail` in
+ *     `detail::Inner<T>`), target the exact namespace derived from it.
+ *  3. Fall back to accepting a unique simple-name match.
+ *  4. Skip when multiple candidates exist and no namespace match is
  *     found (conservative: avoids false associations).
  */
 export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): void {
@@ -99,7 +110,13 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
   // Build workspace-wide index: simpleName → {nodeId, nsPrefix}[]
   // nsPrefix is the dot-joined namespace path (qualifiedName without the
   // last segment). Classes at global scope have nsPrefix = ''.
+  // Dedup by nodeId, keeping the LAST occurrence: parsed.localDefs may
+  // list the same class def multiple times — the scope-extractor creates
+  // a def with simple-name qualifiedName first, then the class extractor
+  // replaces it with the correct fully-qualified qualifiedName. Keeping
+  // the later entry ensures we capture the full namespace path.
   const classesBySimpleName = new Map<string, { nodeId: string; nsPrefix: string }[]>();
+  const entryByNodeId = new Map<string, { nodeId: string; nsPrefix: string; simple: string }>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
@@ -108,13 +125,16 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
       const simple = lastDot >= 0 ? qn.slice(lastDot + 1) : qn;
       if (simple === '') continue;
       const nsPrefix = lastDot >= 0 ? qn.slice(0, lastDot) : '';
-      let entries = classesBySimpleName.get(simple);
-      if (entries === undefined) {
-        entries = [];
-        classesBySimpleName.set(simple, entries);
-      }
-      entries.push({ nodeId: def.nodeId, nsPrefix });
+      entryByNodeId.set(def.nodeId, { nodeId: def.nodeId, nsPrefix, simple });
     }
+  }
+  for (const entry of entryByNodeId.values()) {
+    let entries = classesBySimpleName.get(entry.simple);
+    if (entries === undefined) {
+      entries = [];
+      classesBySimpleName.set(entry.simple, entries);
+    }
+    entries.push({ nodeId: entry.nodeId, nsPrefix: entry.nsPrefix });
   }
 
   // Build a filePath → ParsedFile lookup for fast per-file access.
@@ -139,7 +159,12 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
       localClassByName.set(simple, { nodeId: def.nodeId, nsPrefix });
     }
 
-    for (const [className, baseNames] of perFile) {
+    // V3: qualifier-based exact targeting. When the base specifier carries
+    // a syntactic qualifier (e.g., `detail` in `detail::Inner<T>`), compute
+    // the expected namespace prefix and use exact (===) match. Falls back to
+    // the V2 prefix-contains heuristic when the qualifier isn't available or
+    // the exact match fails (absolute qualifier edge cases like `::std`).
+    for (const [className, baseEntries] of perFile) {
       const classEntry = localClassByName.get(className);
       if (classEntry === undefined) continue;
 
@@ -149,33 +174,48 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
         dependentBaseNodeIds.set(classEntry.nodeId, bases);
       }
 
-      for (const baseName of baseNames) {
+      for (const [baseName, baseQualifier] of baseEntries) {
         const candidates = classesBySimpleName.get(baseName);
         if (candidates === undefined || candidates.length === 0) continue;
 
+        // Compute the expected namespace prefix from the qualifier.
+        // Relative qualifier (e.g. `inner`): prepend deriving class's prefix.
+        // Absolute qualifiers (`::std`, `ns::other`) will fail the relative
+        // lookup and fall through to the prefix-heuristic below.
+        const normalizedQualifier = baseQualifier.replace(/::/g, '.');
+        const expectedNs =
+          baseQualifier && classEntry.nsPrefix
+            ? classEntry.nsPrefix + '.' + normalizedQualifier
+            : normalizedQualifier;
+
         if (candidates.length === 1) {
           // Unique simple-name match — accept regardless of namespace.
+          // Even if the namespace doesn't match the qualifier, recording
+          // the candidate as a dependent base is better than skipping it:
+          // isCppDependentBaseMember suppression still works for unqualified
+          // calls. See #1815 discussion on B2 edge cases.
           bases.add(candidates[0].nodeId);
           continue;
         }
 
-        // Multiple classes share the same simple name — prefer the one
-        // whose namespace matches the deriving class's namespace.
-        // V2: filter by prefix-match capped at one level deeper, then
-        // accept only if exactly one candidate survives. This lets
-        // Derived<T> in ns::outer find Inner<T> in ns::outer::inner
-        // (or ns::v1 for inline-namespace variants) while rejecting
-        // sibling collisions (e.g. detail::Inner vs public_api::Inner).
-        //
-        // The one-segment cap limits walk depth: ns → ns.a ✓, ns → ns.a.b ✗.
-        // Global-scope deriving classes match any single-segment namespace.
-        //
-        // LIMITATION: True ISO behavior would use the base specifier's
-        // syntactic qualifier (available at captures.ts:611 as
-        // qualified_identifier scope) to navigate from the current scope,
-        // which would resolve `detail::Inner` vs `public_api::Inner`
-        // unambiguously. Threading the qualifier is tracked in #1815.
-        // Until then, sibling collisions correctly suppress.
+        // V3: qualifier-based exact targeting. When the base specifier
+        // carries a syntactic qualifier, compute the expected namespace
+        // prefix and attempt an exact (===) match using the deduplicated
+        // nsPrefix. Dedup by nodeId removes broken entries from the
+        // classesBySimpleName index, making the surviving nsPrefix reliable.
+        if (baseQualifier) {
+          const qualifierMatch = candidates.find(
+            (c) => c.nsPrefix === expectedNs || c.nsPrefix === normalizedQualifier,
+          );
+          if (qualifierMatch !== undefined) {
+            bases.add(qualifierMatch.nodeId);
+            continue;
+          }
+          // Exact qualifier match failed — fall through to V2 prefix-heuristic.
+        }
+
+        // V2 fallback: filter by prefix-match capped at one level deeper,
+        // then accept only if exactly one candidate survives.
         const nsMatches = candidates.filter((c) => {
           if (c.nsPrefix === classEntry.nsPrefix) return true;
           if (classEntry.nsPrefix === '') {
@@ -196,7 +236,6 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
     }
   }
 }
-
 /**
  * Two-phase lookup predicate: is the candidate def a member of a
  * dependent base of the caller's enclosing template class?
