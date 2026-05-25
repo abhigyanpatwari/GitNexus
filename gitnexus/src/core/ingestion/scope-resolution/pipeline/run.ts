@@ -286,7 +286,7 @@ export function runScopeResolution(
   const tExtract = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 2: finalize → ScopeResolutionIndexes ─────────────────────────
-  input.onProgress?.('building scope model', files.length, files.length);
+  input.onProgress?.('analyzing types', files.length, files.length);
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
   const nodeLookup = buildGraphNodeLookup(graph);
 
@@ -383,7 +383,7 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
-  input.onProgress?.('emitting edges', files.length, files.length);
+  input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
   const receiverExtras = emitReceiverBoundCalls(
     graph,

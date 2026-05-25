@@ -909,6 +909,14 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
   let lastPhaseLabel = 'Initializing...';
   let phaseStart = Date.now();
 
+  const formatElapsed = (secs: number): string => {
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return `${h}h ${m}m`;
+  };
+
   const updateBar = (value: number, phaseLabel: string) => {
     barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
@@ -916,14 +924,14 @@ const analyzeCommandImpl = async (inputPath?: string, options?: AnalyzeOptions):
       phaseStart = Date.now();
     }
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
-    const display = elapsed >= 3 ? `${phaseLabel} (${elapsed}s)` : phaseLabel;
+    const display = elapsed >= 3 ? `${phaseLabel} (${formatElapsed(elapsed)})` : phaseLabel;
     bar.update(value, { phase: display });
   };
 
   const elapsedTimer = setInterval(() => {
     const elapsed = Math.round((Date.now() - phaseStart) / 1000);
     if (elapsed >= 3) {
-      bar.update({ phase: `${lastPhaseLabel} (${elapsed}s)` });
+      bar.update({ phase: `${lastPhaseLabel} (${formatElapsed(elapsed)})` });
     }
   }, 1000);
 

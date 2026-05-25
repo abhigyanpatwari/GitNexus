@@ -41,7 +41,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
 
     ctx.onProgress({
       phase: 'processes',
-      percent: 98,
+      percent: 99,
       message: 'Detecting execution flows...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
@@ -56,7 +56,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       ctx.graph,
       communityResult.memberships,
       (message, progress) => {
-        const processProgress = 98 + progress * 0.02;
+        const processProgress = 99 + progress * 0.01;
         ctx.onProgress({
           phase: 'processes',
           percent: Math.round(processProgress),

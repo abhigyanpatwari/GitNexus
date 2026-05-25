@@ -35,7 +35,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
 
     ctx.onProgress({
       phase: 'enriching',
-      percent: 95,
+      percent: 98,
       message: 'Computing method resolution order...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });

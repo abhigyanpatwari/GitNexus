@@ -130,18 +130,22 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       }
     >();
 
-    // Pre-count files per language for progress reporting. This avoids
+    // Pre-count files and languages for progress reporting. This avoids
     // a frozen progress bar during long scope-resolution runs (#1741).
     let totalScopeFiles = 0;
+    let totalScopeLangs = 0;
     for (const [lang] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
-      totalScopeFiles += scannedFiles.filter(
-        (f) => getLanguageFromFilename(f.path) === lang,
-      ).length;
+      const count = scannedFiles.filter((f) => getLanguageFromFilename(f.path) === lang).length;
+      if (count > 0) {
+        totalScopeLangs++;
+        totalScopeFiles += count;
+      }
     }
     const SCOPE_PCT_START = 90;
-    const SCOPE_PCT_RANGE = 5; // 90-95 internal → 54-57% display
+    const SCOPE_PCT_RANGE = 8; // 90-98 internal → 54-59% display
     let processedScopeFiles = 0;
+    let currentLangIdx = 0;
 
     if (totalScopeFiles > 0) {
       ctx.onProgress({
@@ -176,6 +180,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
 
       const langFileCount = files.length;
       const langLabel = lang.charAt(0).toUpperCase() + lang.slice(1);
+      currentLangIdx++;
+      const langTag =
+        totalScopeLangs > 1 ? `${langLabel} [${currentLangIdx}/${totalScopeLangs}]` : langLabel;
 
       if (totalScopeFiles > 0) {
         const pct =
@@ -184,7 +191,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           phase: 'scopeResolution',
           percent: pct,
           message: 'Resolving types',
-          detail: `${langLabel} (${langFileCount.toLocaleString()} files)`,
+          detail: `${langTag}, ${langFileCount.toLocaleString()} files`,
         });
       }
 
@@ -210,7 +217,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
                   let langRatio: number;
                   if (subPhase === 'extracting') {
                     langRatio = total > 0 ? (current / total) * 0.5 : 0;
-                  } else if (subPhase === 'building scope model') {
+                  } else if (subPhase === 'analyzing types') {
                     langRatio = 0.5;
                   } else if (subPhase === 'resolving references') {
                     langRatio = 0.7;
@@ -228,8 +235,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
                     message: 'Resolving types',
                     detail:
                       subPhase === 'extracting'
-                        ? `${langLabel} — ${subPhase} (${current.toLocaleString()}/${total.toLocaleString()} files)`
-                        : `${langLabel} — ${subPhase}`,
+                        ? `${langTag} — extracting ${current.toLocaleString()}/${total.toLocaleString()} files`
+                        : `${langTag} — ${subPhase}`,
                   });
                 }
               : undefined,
