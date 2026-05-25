@@ -343,6 +343,8 @@ Depth groups:
 - d=2: LIKELY AFFECTED (indirect)
 - d=3: MAY NEED TESTING (transitive)
 
+TIP: For hub symbols (base error classes, shared utilities) with many direct callers, use summaryOnly: true first to see counts and risk, then drill into specific depths with limit/offset. maxDepth alone does not bound output size when most dependents are at depth 1.
+
 TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
 
 Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints.
@@ -421,6 +423,27 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'string',
           description:
             'Optional group subgroup prefix (member repo paths) limiting which repos participate in cross fan-out.',
+        },
+        limit: {
+          type: 'number',
+          description:
+            'Max symbols returned in byDepth per depth level (default: 100). Use small values for hub symbols to avoid output truncation.',
+          default: 100,
+          minimum: 1,
+          maximum: 10000,
+        },
+        offset: {
+          type: 'number',
+          description:
+            'Skip this many symbols per depth level before applying limit. Use with limit for pagination.',
+          default: 0,
+          minimum: 0,
+        },
+        summaryOnly: {
+          type: 'boolean',
+          description:
+            'When true, returns only counts, risk, affected_processes, and affected_modules — omits the full byDepth symbol list. Use for hub symbols to get actionable signal without output explosion.',
+          default: false,
         },
         timeoutMs: {
           type: 'number',

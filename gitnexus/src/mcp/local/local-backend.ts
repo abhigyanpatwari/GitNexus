@@ -2762,6 +2762,9 @@ export class LocalBackend {
       relationTypes?: string[];
       includeTests?: boolean;
       minConfidence?: number;
+      limit?: number;
+      offset?: number;
+      summaryOnly?: boolean;
     },
   ): Promise<any> {
     try {
@@ -2792,6 +2795,9 @@ export class LocalBackend {
       relationTypes?: string[];
       includeTests?: boolean;
       minConfidence?: number;
+      limit?: number;
+      offset?: number;
+      summaryOnly?: boolean;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo.id);
@@ -2896,6 +2902,9 @@ export class LocalBackend {
       relationTypes: effectiveRelationTypes,
       includeTests,
       minConfidence,
+      limit: params.limit,
+      offset: params.offset,
+      summaryOnly: params.summaryOnly,
     });
   }
 
@@ -2912,9 +2921,15 @@ export class LocalBackend {
       relationTypes: string[];
       includeTests: boolean;
       minConfidence: number;
+      limit?: number;
+      offset?: number;
+      summaryOnly?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
+    const paginationLimit = Math.max(1, Math.min(opts.limit ?? 100, 10000));
+    const paginationOffset = Math.max(0, opts.offset ?? 0);
+    const summaryOnly = opts.summaryOnly ?? false;
     const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
@@ -3326,7 +3341,13 @@ export class LocalBackend {
       risk = 'MEDIUM';
     }
 
-    return {
+    // Build per-depth counts (always included, even in summaryOnly mode)
+    const byDepthCounts: Record<number, number> = {};
+    for (const [depth, items] of Object.entries(grouped)) {
+      byDepthCounts[Number(depth)] = items.length;
+    }
+
+    const base = {
       target: {
         id: symId,
         name: sym.name || sym[1],
@@ -3342,9 +3363,37 @@ export class LocalBackend {
         processes_affected: processCount,
         modules_affected: moduleCount,
       },
+      byDepthCounts,
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
-      byDepth: grouped,
+    };
+
+    if (summaryOnly) {
+      return base;
+    }
+
+    // Apply limit/offset pagination per depth level
+    const paginatedGrouped: Record<number, any[]> = {};
+    let anyTruncated = false;
+    for (const [depth, items] of Object.entries(grouped)) {
+      const total = items.length;
+      const sliced = items.slice(paginationOffset, paginationOffset + paginationLimit);
+      paginatedGrouped[Number(depth)] = sliced;
+      if (paginationOffset + paginationLimit < total) {
+        anyTruncated = true;
+      }
+    }
+
+    return {
+      ...base,
+      ...(anyTruncated && {
+        pagination: {
+          limit: paginationLimit,
+          offset: paginationOffset,
+          truncated: true,
+        },
+      }),
+      byDepth: paginatedGrouped,
     };
   }
 
