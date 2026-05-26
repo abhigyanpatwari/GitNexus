@@ -79,7 +79,7 @@ Enterprise includes:
 
 👉 Learn more at [akonlabs.com](https://akonlabs.com)
 
-💬 For commercial licensing or enterprise inquiries, ping us on [Discord](https://discord.gg/AAsRVT6fGb) or drop an email at founders@akonlabs.com
+💬 For commercial licensing or enterprise inquiries, ping us on [Discord](https://discord.gg/MgJrmsqr62) or drop an email at founders@akonlabs.com
 
 ---
 
