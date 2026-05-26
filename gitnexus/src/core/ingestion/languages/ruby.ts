@@ -33,6 +33,15 @@ import { rubyHeritageConfig } from '../heritage-extractors/configs/ruby.js';
 import { maybeRewriteRubyBareCallToSelf } from '../utils/ruby-self-call.js';
 import { findEnclosingClassInfo } from '../utils/ast-helpers.js';
 import type { DispatchDecision, ImplicitReceiverOverride } from '../call-types.js';
+import {
+  emitRubyScopeCaptures,
+  rubyArityCompatibility,
+  rubyBindingScopeFor,
+  rubyImportOwningScope,
+  rubyReceiverBinding,
+  interpretRubyImport,
+  interpretRubyTypeBinding,
+} from './ruby/index.js';
 
 /**
  * Ruby label override. Applied to:
@@ -258,4 +267,12 @@ export const rubyProvider = defineLanguage({
   },
 
   builtInNames: BUILT_INS,
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
+  emitScopeCaptures: emitRubyScopeCaptures,
+  interpretImport: interpretRubyImport,
+  interpretTypeBinding: interpretRubyTypeBinding,
+  bindingScopeFor: rubyBindingScopeFor,
+  importOwningScope: rubyImportOwningScope,
+  receiverBinding: rubyReceiverBinding,
+  arityCompatibility: rubyArityCompatibility,
 });
