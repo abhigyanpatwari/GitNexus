@@ -598,7 +598,14 @@ export const createWorkerPool = (
   const poolOptions = resolveWorkerPoolOptions(options, size);
   const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url));
   const workers: (Worker | undefined)[] = new Array(size);
-  const retiredWorkers = new Set<Worker>();
+  type RetiredWorkerRecord = {
+    worker: Worker;
+    workerIndex: number;
+    reason: string;
+    cleanup: () => void;
+    terminate: () => Promise<void>;
+  };
+  const retiredWorkers = new Set<RetiredWorkerRecord>();
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
   // Layer 3 (quarantine): tracked via the dedicated `quarantine.ts`
@@ -625,6 +632,17 @@ export const createWorkerPool = (
   const slotGenerations: number[] = new Array(size).fill(0);
   let poolBroken = false;
   let poolFailure: Error | undefined;
+
+  const terminateTrackedWorkers = async (
+    liveWorkers: readonly (Worker | undefined)[],
+  ): Promise<void> => {
+    const retired = Array.from(retiredWorkers);
+    await Promise.all([
+      ...liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)),
+      ...retired.map((record) => record.terminate()),
+    ]);
+    retiredWorkers.clear();
+  };
 
   for (let i = 0; i < size; i++) {
     workers[i] = spawnWorker(workerUrl);
@@ -763,28 +781,49 @@ export const createWorkerPool = (
         workerIndex: number,
         reason: string,
       ): void => {
-        retiredWorkers.add(worker);
-        const cleanupRetired = () => {
+        let cleaned = false;
+        let terminateStarted = false;
+
+        function cleanupRetired() {
+          if (cleaned) return;
+          cleaned = true;
           worker.removeListener('message', onRetiredMessage);
           worker.removeListener('error', onRetiredError);
           worker.removeListener('exit', onRetiredExit);
           worker.removeListener('messageerror', onRetiredMessageError);
-          retiredWorkers.delete(worker);
-        };
-        const terminateWhenBackInJs = () => {
+          retiredWorkers.delete(record);
+        }
+
+        async function terminateRetired() {
+          if (terminateStarted) return;
+          terminateStarted = true;
           cleanupRetired();
-          void worker.terminate().catch(() => undefined);
-        };
-        const onRetiredMessage = (raw: unknown) => {
+          await worker.terminate().catch(() => undefined);
+        }
+
+        function terminateWhenBackInJs() {
+          void terminateRetired();
+        }
+
+        function onRetiredMessage(raw: unknown) {
           if (raw === null || typeof raw !== 'object') return;
           const type = (raw as { type?: unknown }).type;
           if (type === 'sub-batch-done' || type === 'result' || type === 'error') {
             terminateWhenBackInJs();
           }
-        };
+        }
+
         const onRetiredError = () => cleanupRetired();
         const onRetiredExit = () => cleanupRetired();
         const onRetiredMessageError = () => terminateWhenBackInJs();
+        const record: RetiredWorkerRecord = {
+          worker,
+          workerIndex,
+          reason,
+          cleanup: cleanupRetired,
+          terminate: terminateRetired,
+        };
+        retiredWorkers.add(record);
         worker.on('message', onRetiredMessage);
         worker.once('error', onRetiredError);
         worker.once('exit', onRetiredExit);
@@ -861,7 +900,7 @@ export const createWorkerPool = (
         const liveWorkers = workers.slice();
         for (let i = 0; i < workers.length; i++) workers[i] = undefined;
         activeSlots.clear();
-        void Promise.all(liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)));
+        void terminateTrackedWorkers(liveWorkers);
       };
 
       const maybeDone = () => {
@@ -1552,7 +1591,7 @@ export const createWorkerPool = (
     // exception when this is called from `runChunkedParseAndResolve`'s
     // finally block — masking the real failure and leaving `workers[]`
     // populated with dead references because the lines below never run.
-    await Promise.all(workers.map((w) => w?.terminate().catch(() => undefined)));
+    await terminateTrackedWorkers(workers);
     workers.length = 0;
     activeSlots.clear();
   };
