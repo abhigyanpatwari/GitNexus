@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ParameterTypeClass, SymbolDefinition } from 'gitnexus-shared';
 import { cppConversionRank } from '../../../../src/core/ingestion/languages/cpp/conversion-rank.js';
+import {
+  clearCppUserDefinedConversions,
+  registerCppUserDefinedConversion,
+} from '../../../../src/core/ingestion/languages/cpp/user-defined-conversions.js';
 import { narrowOverloadCandidates } from '../../../../src/core/ingestion/scope-resolution/passes/overload-narrowing.js';
 
 const value = (base: string): ParameterTypeClass => ({
@@ -57,7 +61,36 @@ describe('cppConversionRank pointer/nullptr/ellipsis ranks (#1637)', () => {
   });
 
   it('ranks ellipsis as the worst viable conversion', () => {
-    expect(cppConversionRank('int', '...', value('int'), ellipsis())).toBe(4);
+    expect(cppConversionRank('int', '...', value('int'), ellipsis())).toBe(5);
+  });
+});
+
+describe('cppConversionRank user-defined conversion ranks (#1631)', () => {
+  it('ranks registered one-step user-defined conversions after standard conversions', () => {
+    clearCppUserDefinedConversions();
+    registerCppUserDefinedConversion('int', 'Wrap');
+
+    expect(cppConversionRank('int', 'Wrap', value('int'), value('Wrap'))).toBe(4);
+    expect(cppConversionRank('int', 'double', value('int'), value('double'))).toBe(2);
+
+    clearCppUserDefinedConversions();
+  });
+
+  it('keeps tied user-defined conversion candidates ambiguous', () => {
+    clearCppUserDefinedConversions();
+    registerCppUserDefinedConversion('int', 'WrapA');
+    registerCppUserDefinedConversion('int', 'WrapB');
+
+    const byWrapA = mkDef('h:WrapA', ['WrapA'], [value('WrapA')]);
+    const byWrapB = mkDef('h:WrapB', ['WrapB'], [value('WrapB')]);
+
+    const result = narrowOverloadCandidates([byWrapA, byWrapB], 1, ['int'], {
+      argumentTypeClasses: [value('int')],
+      conversionRankFn: cppConversionRank,
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual(['h:WrapA', 'h:WrapB']);
+    clearCppUserDefinedConversions();
   });
 });
 

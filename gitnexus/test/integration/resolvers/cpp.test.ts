@@ -1983,6 +1983,42 @@ describe('C++ overload resolution — pointer/nullptr/ellipsis ranks (#1637)', (
   });
 });
 
+describe('C++ overload resolution — user-defined conversion rank (#1631)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-overload-user-defined-conversion'),
+      () => {},
+    );
+  }, 60000);
+
+  it('f(42) resolves to f(double) because standard conversion beats constructor UDC', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fCalls = calls.filter((c) => c.source === 'run' && c.target === 'f');
+
+    expect(fCalls.length).toBe(1);
+    const target = result.graph.getNode(fCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['double']);
+  });
+
+  it('g(42) keeps a single constructor UDC viable when no standard conversion overload exists', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const gCalls = calls.filter((c) => c.source === 'run' && c.target === 'g');
+
+    expect(gCalls.length).toBe(1);
+    const target = result.graph.getNode(gCalls[0].rel.targetId);
+    expect(target?.properties.parameterTypes).toEqual(['Wrap']);
+  });
+
+  it('h(42) emits zero CALLS edges when two single-step constructor UDCs tie', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const hCalls = calls.filter((c) => c.source === 'run' && c.target === 'h');
+
+    expect(hCalls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // U3: anonymous-namespace symbols MUST NOT leak across translation units
 // (full-pipeline integration test; unit-level coverage exists separately)
