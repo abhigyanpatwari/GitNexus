@@ -49,12 +49,12 @@ const cobolScopeResolver: ScopeResolver = {
   mergeBindings: (existing) => [...existing],
 
   // COBOL arity: compare CALL USING param count against def's parameterCount.
+  // COBOL requires exact arity match for CALL USING.
   arityCompatibility: (callsite, def) => {
     if (callsite.arity === undefined) return 'unknown';
     const defParamCount = def.parameterCount;
     if (defParamCount === undefined) return 'unknown';
     if (callsite.arity === defParamCount) return 'compatible';
-    if (callsite.arity < defParamCount) return 'compatible';
     return 'incompatible';
   },
 

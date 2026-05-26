@@ -5,13 +5,6 @@
  * COBOL files (.cbl, .cob, .cobol, .cpy, .copybook) are detected and
  * processed by cobol-processor.ts in pipeline Phase 2.6, not by the
  * tree-sitter pipeline.
-/**
- * COBOL Language Provider
- *
- * Standalone regex-based processor — no tree-sitter grammar.
- * COBOL files (.cbl, .cob, .cobol, .cpy, .copybook) are detected and
- * processed by cobol-processor.ts in pipeline Phase 2.6, not by the
- * tree-sitter pipeline.
  *
  * This provider supports scope-based resolution (RFC #909 Ring 3) via
  * `emitScopeCaptures` which wraps the regex tagger. COPY statements are
