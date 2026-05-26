@@ -614,6 +614,9 @@ export class WikiGenerator {
               break;
             }
           }
+          if (subBatch.length === 1 && this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET) {
+            subBatch[0] = this.trimSymbolsToFit(subBatch[0]);
+          }
           batches.push(subBatch);
         }
         continue;
@@ -647,6 +650,34 @@ export class WikiGenerator {
     return estimateTokens(prompt);
   }
 
+  private trimSymbolsToFit(file: FileWithExports): FileWithExports {
+    const symbols = file.symbols;
+    let lo = 0;
+    let hi = symbols.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >>> 1;
+      const candidate: FileWithExports = {
+        filePath: file.filePath,
+        symbols: [
+          ...symbols.slice(0, mid),
+          { name: `... and ${symbols.length - mid} more`, type: 'truncated' },
+        ],
+      };
+      if (this.estimateGroupingPromptTokens([candidate]) <= GROUPING_TOKEN_BUDGET) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (lo >= symbols.length) return file;
+    return {
+      filePath: file.filePath,
+      symbols: lo > 0
+        ? [...symbols.slice(0, lo), { name: `... and ${symbols.length - lo} more`, type: 'truncated' }]
+        : [{ name: 'no exports (truncated)', type: 'truncated' }],
+    };
+  }
+
   /**
    * Merge partial groupings from multiple batches. Same module name across
    * batches gets file lists concatenated. Deduplicates (first-seen wins).
@@ -654,14 +685,19 @@ export class WikiGenerator {
   private mergeGroupings(partials: Record<string, string[]>[]): Record<string, string[]> {
     const merged: Record<string, string[]> = {};
     const seen = new Set<string>();
+    const slugToCanonical = new Map<string, string>();
 
     for (const partial of partials) {
       for (const [mod, paths] of Object.entries(partial)) {
+        const slug = this.slugify(mod);
+        const canonical = slugToCanonical.get(slug) ?? mod;
+        if (!slugToCanonical.has(slug)) slugToCanonical.set(slug, mod);
+
         for (const fp of paths) {
           if (!seen.has(fp)) {
             seen.add(fp);
-            if (!merged[mod]) merged[mod] = [];
-            merged[mod].push(fp);
+            if (!merged[canonical]) merged[canonical] = [];
+            merged[canonical].push(fp);
           }
         }
       }

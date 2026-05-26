@@ -129,17 +129,57 @@ describe('batchFilesForGrouping', () => {
     expect(batchCount).toBe(batches.length); // deterministic — pin to actual
     expect(batchCount >= 2).toBe(true);
 
-    // Each batch must fit within budget (except possibly a single-file batch)
+    // Every batch must fit within budget (single-file batches are symbol-truncated)
     for (const batch of batches) {
-      if (batch.length > 1) {
-        const tokens = (gen as any).estimateGroupingPromptTokens(batch);
-        expect(tokens <= 100_000).toBe(true);
-      }
+      const tokens = (gen as any).estimateGroupingPromptTokens(batch);
+      expect(tokens <= 100_000).toBe(true);
     }
 
     // Every file still present
     const allBatchedFiles = batches.flat().map((f: any) => f.filePath);
     expect(new Set(allBatchedFiles).size).toBe(files.length);
+  });
+
+  it('truncates symbols on a single-file batch that exceeds budget', async () => {
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const gen = new WikiGenerator('/repo', tmpDir, '/lbug', {
+      apiKey: '',
+      baseUrl: '',
+      model: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'openai',
+    });
+
+    // One file with 10,000 symbols — well over 100k token budget
+    const files = [
+      {
+        filePath: 'giant/barrel.ts',
+        symbols: Array.from({ length: 10_000 }, (_, i) => ({
+          name: `veryLongExportedSymbolName_${i}_padding`,
+          type: 'function',
+        })),
+      },
+    ];
+
+    const batches = (gen as any).batchFilesForGrouping(files);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+    expect(batches[0][0].filePath).toBe('giant/barrel.ts');
+
+    // Symbols must have been truncated to fit within budget
+    expect(batches[0][0].symbols.length).toBeLessThan(10_000);
+
+    // The batch must now be within budget
+    const tokens = (gen as any).estimateGroupingPromptTokens(batches[0]);
+    expect(tokens <= 100_000).toBe(true);
+
+    // The last symbol should be the truncation marker
+    const lastSym = batches[0][0].symbols[batches[0][0].symbols.length - 1];
+    expect(lastSym.type).toBe('truncated');
+    expect(lastSym.name).toContain('... and');
   });
 });
 
@@ -240,6 +280,49 @@ describe('mergeGroupings', () => {
 
     const result = (gen as any).mergeGroupings([]);
     expect(result).toEqual({});
+  });
+
+  it('merges case-variant module names by slug (first-seen wins)', async () => {
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const gen = new WikiGenerator('/repo', tmpDir, '/lbug', {
+      apiKey: '',
+      baseUrl: '',
+      model: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'openai',
+    });
+
+    const result = (gen as any).mergeGroupings([
+      { 'API Routes': ['src/routes.ts'] },
+      { 'API routes': ['src/middleware.ts'], DB: ['src/db.ts'] },
+    ]);
+
+    expect(Object.keys(result)).toEqual(['API Routes', 'DB']);
+    expect(result['API Routes']).toEqual(['src/routes.ts', 'src/middleware.ts']);
+    expect(result['API routes']).toBeUndefined();
+  });
+
+  it('merges punctuation-variant module names by slug', async () => {
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const gen = new WikiGenerator('/repo', tmpDir, '/lbug', {
+      apiKey: '',
+      baseUrl: '',
+      model: 'test',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'openai',
+    });
+
+    const result = (gen as any).mergeGroupings([
+      { 'Database Layer': ['src/db.ts'] },
+      { 'database-layer': ['src/pool.ts'] },
+    ]);
+
+    expect(Object.keys(result)).toEqual(['Database Layer']);
+    expect(result['Database Layer']).toEqual(['src/db.ts', 'src/pool.ts']);
   });
 });
 
