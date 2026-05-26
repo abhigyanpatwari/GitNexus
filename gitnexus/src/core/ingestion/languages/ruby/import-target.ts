@@ -37,6 +37,7 @@ export function resolveRubyImportTarget(
   _resolutionConfig?: unknown,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
+  if (targetRaw.startsWith('__heritage__:') || targetRaw.startsWith('__property__:')) return null;
 
   const fromNormalized = fromFile.replace(/\\/g, '/');
   const fromDir = fromNormalized.includes('/')

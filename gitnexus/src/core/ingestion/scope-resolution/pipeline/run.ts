@@ -308,6 +308,12 @@ export function runScopeResolution(
     },
   });
   const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
+  // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
+  // the heritage declarations are syntactic method calls, not grammar-level
+  // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
+  // the freshly-emitted IMPLEMENTS edges.
+  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup);
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
   const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
 

@@ -12,6 +12,12 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 const FUNCTION_NODE_TYPES = ['method', 'singleton_method'] as const;
+const HERITAGE_CALL_NAMES: ReadonlySet<string> = new Set(['include', 'extend', 'prepend']);
+const ATTR_CALL_NAMES: ReadonlySet<string> = new Set([
+  'attr_accessor',
+  'attr_reader',
+  'attr_writer',
+]);
 
 export function emitRubyScopeCaptures(
   sourceText: string,
@@ -124,6 +130,80 @@ export function emitRubyScopeCaptures(
       continue;
     }
 
+    // Intercept heritage calls (include/extend/prepend) — encode as
+    // special imports so emitHeritageEdges can emit IMPLEMENTS edges.
+    if (grouped['@reference.call.free'] !== undefined && grouped['@reference.name'] !== undefined) {
+      const callName = grouped['@reference.name']!.text;
+      if (HERITAGE_CALL_NAMES.has(callName)) {
+        const callNode = findNodeAtRange(
+          tree.rootNode,
+          grouped['@reference.call.free']!.range,
+          'call',
+        );
+        if (callNode !== null) {
+          const enclosing = findEnclosingClassOrModule(callNode);
+          const ownerName = enclosing?.childForFieldName('name')?.text;
+          if (ownerName) {
+            const argList = callNode.childForFieldName('arguments');
+            if (argList !== null) {
+              for (let ai = 0; ai < argList.namedChildCount; ai++) {
+                const arg = argList.namedChild(ai);
+                if (arg !== null && (arg.type === 'constant' || arg.type === 'scope_resolution')) {
+                  out.push({
+                    '@import.statement': grouped['@reference.call.free']!,
+                    '@import.kind': syntheticCapture('@import.kind', callNode, 'namespace'),
+                    '@import.source': syntheticCapture(
+                      '@import.source',
+                      callNode,
+                      `__heritage__:${callName}:${arg.text}:${ownerName}`,
+                    ),
+                    '@import.name': syntheticCapture('@import.name', callNode, arg.text),
+                  });
+                }
+              }
+            }
+          }
+        }
+        continue;
+      }
+
+      // Intercept attr_accessor/attr_reader/attr_writer — encode as special
+      // imports so emitHeritageEdges can create Property nodes + HAS_PROPERTY.
+      if (ATTR_CALL_NAMES.has(callName)) {
+        const callNode = findNodeAtRange(
+          tree.rootNode,
+          grouped['@reference.call.free']!.range,
+          'call',
+        );
+        if (callNode !== null) {
+          const enclosing = findEnclosingClassOrModule(callNode);
+          const ownerName = enclosing?.childForFieldName('name')?.text;
+          if (ownerName) {
+            const argList = callNode.childForFieldName('arguments');
+            if (argList !== null) {
+              for (let ai = 0; ai < argList.namedChildCount; ai++) {
+                const arg = argList.namedChild(ai);
+                if (arg !== null && (arg.type === 'simple_symbol' || arg.type === 'symbol')) {
+                  const propName = arg.text.replace(/^:/, '');
+                  out.push({
+                    '@import.statement': grouped['@reference.call.free']!,
+                    '@import.kind': syntheticCapture('@import.kind', callNode, 'namespace'),
+                    '@import.source': syntheticCapture(
+                      '@import.source',
+                      callNode,
+                      `__property__:${callName}:${propName}:${ownerName}`,
+                    ),
+                    '@import.name': syntheticCapture('@import.name', callNode, propName),
+                  });
+                }
+              }
+            }
+          }
+        }
+        continue;
+      }
+    }
+
     // Attach call arity for call expressions
     const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
       (t) => grouped[t] !== undefined,
@@ -138,6 +218,86 @@ export function emitRubyScopeCaptures(
     }
 
     out.push(grouped);
+  }
+
+  // Second pass: YARD comment annotations (@param, @return, @type)
+  for (const comment of tree.rootNode.descendantsOfType('comment')) {
+    const text = comment.text;
+
+    // @param name [Type]
+    const paramMatch = text.match(/@param\s+(\w+)\s+\[([^\]]+)\]/);
+    if (paramMatch) {
+      const [, paramName, typeName] = paramMatch;
+      const methodNode = findFollowingMethod(comment);
+      if (methodNode !== null && paramName && typeName) {
+        out.push({
+          '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
+          '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, paramName),
+          '@type-binding.type': syntheticCapture(
+            '@type-binding.type',
+            methodNode,
+            normalizeYardType(typeName),
+          ),
+        });
+      }
+    }
+
+    // @param [Type] name (alternate YARD order)
+    const paramAltMatch = text.match(/@param\s+\[([^\]]+)\]\s+(\w+)/);
+    if (!paramMatch && paramAltMatch) {
+      const [, typeName, paramName] = paramAltMatch;
+      const methodNode = findFollowingMethod(comment);
+      if (methodNode !== null && paramName && typeName) {
+        out.push({
+          '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
+          '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, paramName),
+          '@type-binding.type': syntheticCapture(
+            '@type-binding.type',
+            methodNode,
+            normalizeYardType(typeName),
+          ),
+        });
+      }
+    }
+
+    // @return [Type]
+    const returnMatch = text.match(/@return\s+\[([^\]]+)\]/);
+    if (returnMatch) {
+      const [, typeName] = returnMatch;
+      const methodNode = findFollowingMethod(comment);
+      if (methodNode !== null && typeName) {
+        const methodName = methodNode.childForFieldName('name')?.text;
+        if (methodName) {
+          out.push({
+            '@type-binding.return': syntheticCapture('@type-binding.return', methodNode, text),
+            '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, methodName),
+            '@type-binding.type': syntheticCapture(
+              '@type-binding.type',
+              methodNode,
+              normalizeYardType(typeName),
+            ),
+          });
+        }
+      }
+    }
+
+    // @type [Type]
+    const typeMatch = text.match(/@type\s+\[([^\]]+)\]/);
+    if (typeMatch) {
+      const [, typeName] = typeMatch;
+      const methodNode = findFollowingMethod(comment);
+      if (methodNode !== null && typeName) {
+        out.push({
+          '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
+          '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, ''),
+          '@type-binding.type': syntheticCapture(
+            '@type-binding.type',
+            methodNode,
+            normalizeYardType(typeName),
+          ),
+        });
+      }
+    }
   }
 
   return out;
@@ -264,4 +424,57 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
   return new Error(
     `[ruby] tree-sitter ${stage} failed for ${filePath}: ${reason}; skipping scope extraction for this file`,
   );
+}
+
+/**
+ * Walk forward from a comment node, skipping consecutive comments,
+ * and return the next `method` or `singleton_method` node (if any).
+ */
+function findFollowingMethod(commentNode: SyntaxNode): SyntaxNode | null {
+  let sibling = commentNode.nextNamedSibling;
+  while (sibling !== null && sibling.type === 'comment') {
+    sibling = sibling.nextNamedSibling;
+  }
+  if (sibling === null) return null;
+  if (sibling.type === 'method' || sibling.type === 'singleton_method') return sibling;
+  // In tree-sitter-ruby, YARD comments before a method inside a class body
+  // are children of `class`, while the method is inside `body_statement`.
+  // Walk into body_statement to find the method.
+  if (sibling.type === 'body_statement') {
+    const first = sibling.firstNamedChild;
+    if (first !== null && (first.type === 'method' || first.type === 'singleton_method')) {
+      return first;
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalize a YARD type string: for single-parameter generics like
+ * `Array<User>` or `Array[User]` keep the inner type; for multi-param
+ * generics like `Hash<Symbol, User>` strip the generic and return the
+ * outer type name only.
+ */
+function normalizeYardType(raw: string): string {
+  const trimmed = raw.trim();
+
+  // Check for angle-bracket generics: Type<Inner> or Type<A, B>
+  const angleMatch = trimmed.match(/^(\w+)<(.+)>$/);
+  if (angleMatch) {
+    const inner = angleMatch[2]!;
+    // Single-param generic → return the inner type
+    if (!inner.includes(',')) return inner.trim();
+    // Multi-param generic → return the outer type
+    return angleMatch[1]!;
+  }
+
+  // Check for bracket generics: Type[Inner]  (YARD sometimes uses this)
+  const bracketMatch = trimmed.match(/^(\w+)\[(.+)\]$/);
+  if (bracketMatch) {
+    const inner = bracketMatch[2]!;
+    if (!inner.includes(',')) return inner.trim();
+    return bracketMatch[1]!;
+  }
+
+  return trimmed;
 }

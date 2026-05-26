@@ -6,6 +6,85 @@ import { rubyProvider } from '../ruby.js';
 import { rubyArityCompatibility, rubyMergeBindings, resolveRubyImportTarget } from './index.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
+import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { KnowledgeGraph } from '../../../graph/types.js';
+import { generateId } from '../../../../lib/utils.js';
+
+const HERITAGE_PREFIX = '__heritage__:';
+
+function emitRubyMixinEdges(
+  graph: KnowledgeGraph,
+  parsedFiles: readonly ParsedFile[],
+  nodeLookup: GraphNodeLookup,
+): void {
+  const graphIdByName = new Map<string, string>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (!isClassLike(def.type)) continue;
+      const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
+      if (graphId !== undefined) {
+        const simpleName = def.qualifiedName?.split('.').pop() ?? def.name;
+        graphIdByName.set(simpleName, graphId);
+      }
+    }
+  }
+
+  const emitted = new Set<string>();
+  for (const parsed of parsedFiles) {
+    for (const imp of parsed.parsedImports) {
+      if (!imp.targetRaw.startsWith(HERITAGE_PREFIX)) continue;
+      const parts = imp.targetRaw.slice(HERITAGE_PREFIX.length).split(':');
+      if (parts.length < 3) continue;
+      const [kind, mixinName, className] = parts;
+      const classGraphId = graphIdByName.get(className!);
+      const mixinGraphId = graphIdByName.get(mixinName!);
+      if (classGraphId === undefined || mixinGraphId === undefined) continue;
+      const edgeKey = `${classGraphId}->${mixinGraphId}:${kind}`;
+      if (emitted.has(edgeKey)) continue;
+      emitted.add(edgeKey);
+      graph.addRelationship({
+        id: generateId('IMPLEMENTS', edgeKey),
+        sourceId: classGraphId,
+        targetId: mixinGraphId,
+        type: 'IMPLEMENTS',
+        confidence: 0.85,
+        reason: kind!,
+      });
+    }
+  }
+
+  // Emit Property nodes + HAS_PROPERTY edges from __property__:... imports
+  const PROPERTY_PREFIX = '__property__:';
+  for (const parsed of parsedFiles) {
+    for (const imp of parsed.parsedImports) {
+      if (!imp.targetRaw.startsWith(PROPERTY_PREFIX)) continue;
+      const parts = imp.targetRaw.slice(PROPERTY_PREFIX.length).split(':');
+      if (parts.length < 3) continue;
+      const [_attrKind, propName, className] = parts;
+      const classGraphId = graphIdByName.get(className!);
+      if (classGraphId === undefined || propName === undefined) continue;
+
+      const propId = generateId('Property', `${parsed.filePath}:${className}.${propName}`);
+      const edgeKey = `${classGraphId}->prop:${propName}`;
+      if (emitted.has(edgeKey)) continue;
+      emitted.add(edgeKey);
+
+      graph.addNode({
+        id: propId,
+        label: 'Property',
+        properties: { name: propName, filePath: parsed.filePath },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_PROPERTY', edgeKey),
+        sourceId: classGraphId,
+        targetId: propId,
+        type: 'HAS_PROPERTY',
+        confidence: 0.9,
+        reason: 'attr',
+      });
+    }
+  }
+}
 
 function buildRubyMro(
   graph: Parameters<ScopeResolver['buildMro']>[0],
@@ -96,6 +175,9 @@ export const rubyScopeResolver: ScopeResolver = {
   populateOwners: (parsed) => populateClassOwnedMembers(parsed),
 
   isSuperReceiver: (text) => text.trim() === 'super',
+
+  emitHeritageEdges: (graph, parsedFiles, nodeLookup) =>
+    emitRubyMixinEdges(graph, parsedFiles, nodeLookup),
 
   fieldFallbackOnMethodLookup: true,
   propagatesReturnTypesAcrossImports: true,

@@ -54,10 +54,10 @@ const RUBY_SCOPE_QUERY = `
 (class
   name: (constant) @declaration.name) @declaration.class
 
-;; ── Declarations — module ────────────────────────────────────────────────
+;; ── Declarations — module (labeled Trait for class-like registry lookup) ─
 
 (module
-  name: (constant) @declaration.name) @declaration.module
+  name: (constant) @declaration.name) @declaration.trait
 
 ;; ── Declarations — method (instance) ─────────────────────────────────────
 
@@ -110,6 +110,38 @@ const RUBY_SCOPE_QUERY = `
     method: (identifier) @_new_method2
     (#eq? @_new_method2 "new"))) @type-binding.constructor
 
+;; Constant constructor: SERVICE = UserService.new (left is constant, not identifier)
+
+(assignment
+  left: (constant) @type-binding.name
+  right: (call
+    receiver: (constant) @type-binding.type
+    method: (identifier) @_new_method3
+    (#eq? @_new_method3 "new"))) @type-binding.constructor
+
+(assignment
+  left: (constant) @type-binding.name
+  right: (call
+    receiver: (scope_resolution) @type-binding.type
+    method: (identifier) @_new_method4
+    (#eq? @_new_method4 "new"))) @type-binding.constructor
+
+;; Call-return inference: x = build_service() (factory pattern)
+
+(assignment
+  left: (identifier) @type-binding.name
+  right: (call
+    !receiver
+    method: (identifier) @type-binding.type)) @type-binding.call-return
+
+;; Constant call-return: SERVICE = build_service()
+
+(assignment
+  left: (constant) @type-binding.name
+  right: (call
+    !receiver
+    method: (identifier) @type-binding.type)) @type-binding.call-return
+
 ;; ── Type bindings — variable alias: x = y ────────────────────────────────
 
 (assignment
@@ -121,6 +153,17 @@ const RUBY_SCOPE_QUERY = `
 (call
   !receiver
   method: (identifier) @reference.name) @reference.call.free
+
+;; ── References — bare calls (zero-arity calls without parentheses) ──────
+;;
+;; Ruby allows calling methods without parentheses. When no arguments are
+;; passed, tree-sitter-ruby parses them as plain \`identifier\` nodes inside
+;; \`body_statement\`. This mirrors the legacy query pattern. The scope-
+;; resolution pipeline filters false positives via builtInNames and
+;; arity-based overload narrowing.
+
+(body_statement
+  (identifier) @reference.name) @reference.call.free
 
 ;; ── References — member calls (with receiver): obj.method() ──────────────
 

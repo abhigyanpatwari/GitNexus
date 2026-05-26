@@ -19,6 +19,13 @@ export function interpretRubyImport(captures: CaptureMatch): ParsedImport | null
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
+  // Heritage-encoded imports (__heritage__:include:Serializable:User)
+  // are stored as namespace imports so emitHeritageEdges can read them.
+  if (source.startsWith('__heritage__:') || source.startsWith('__property__:')) {
+    const name = captures['@import.name']?.text ?? source;
+    return { kind: 'namespace', localName: name, importedName: name, targetRaw: source };
+  }
+
   // Ruby imports are always wildcard — everything in the required file
   // becomes visible in the importing scope.
   return { kind: 'wildcard', targetRaw: source };
@@ -48,6 +55,9 @@ export function interpretRubyTypeBinding(captures: CaptureMatch): ParsedTypeBind
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';
     normalizedType = normalizeRubyConstructorType(type);
+  } else if (captures['@type-binding.call-return'] !== undefined) {
+    source = 'constructor-inferred';
+    normalizedType = normalizeRubyTypeName(type);
   } else if (captures['@type-binding.return'] !== undefined) {
     source = 'return-annotation';
     normalizedType = normalizeRubyTypeName(type);
