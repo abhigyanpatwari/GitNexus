@@ -319,6 +319,8 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'f(42) resolves to f(double) because standard conversion beats constructor UDC',
     'g(42) keeps a single constructor UDC viable when no standard conversion overload exists',
     'h(42) emits zero CALLS edges when two single-step constructor UDCs tie',
+    'e(42) ignores the explicit-constructor overload and keeps the implicit UDC viable',
+    'does not let beta::Token(int) tie the valid alpha::Other(int) conversion',
     // The legacy DAG path lacks the SFINAE / `requires`-clause aware
     // overload filter (issue #1579). The two `process<T>` overloads
     // guarded by mutually-exclusive `enable_if_t` predicates collapse
