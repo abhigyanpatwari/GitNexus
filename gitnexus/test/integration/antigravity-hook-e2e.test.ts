@@ -20,6 +20,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
+import { cleanupTempDir, cleanupTempDirSync } from '../helpers/test-db.js';
 import os from 'os';
 import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
@@ -84,8 +85,8 @@ beforeAll(async () => {
 afterAll(async () => {
   process.env.HOME = originalHome;
   process.env.USERPROFILE = originalUserProfile;
-  if (tempHome) await fsp.rm(tempHome, { recursive: true, force: true });
-  if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  if (tempHome) await cleanupTempDir(tempHome);
+  if (tmpDir) cleanupTempDirSync(tmpDir);
 });
 
 describe('antigravity hook adapter e2e', () => {
@@ -402,7 +403,7 @@ describe('antigravity hook adapter e2e', () => {
     });
 
     afterAll(() => {
-      fs.rmSync(cleanupRoot, { recursive: true, force: true });
+      cleanupTempDirSync(cleanupRoot);
     });
 
     it('ignores AfterTool when no .gitnexus exists in cwd or any ancestor', () => {

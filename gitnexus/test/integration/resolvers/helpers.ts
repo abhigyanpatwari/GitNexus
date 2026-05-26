@@ -200,6 +200,12 @@ const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, Readonly
     'useChainTypeBindingCrossover: services.first().build() emits NO CALLS edge to build',
     'useValueReceiverCrossover: l.create("nope") emits NO CALLS edge to create',
   ]),
+  ruby: new Set<string>([
+    // Ruby scope-resolution currently achieves 89/127 parity.
+    // Tests listed here are scope-resolver-only correctness wins
+    // (pass under registry-primary, fail under legacy). Currently
+    // empty — all 127 tests pass under legacy mode.
+  ]),
   cpp: new Set<string>([
     // The legacy DAG path has no scope-aware filtering on the global
     // free-call fallback, so `#include`d headers still leak class

@@ -102,8 +102,15 @@ function resolvedMethodOwners(
 describe('Ruby mixin heritage: sequential vs worker parity', () => {
   let sequential: PipelineResult;
   let workers: PipelineResult;
+  let savedEnv: string | undefined;
 
   beforeAll(async () => {
+    // Force legacy mode — these tests exercise inferImplicitReceiver +
+    // selectDispatch hooks which live in the legacy call-processor.
+    // With Ruby in MIGRATED_LANGUAGES the call-processor is gated off
+    // under registry-primary, so pin legacy for this suite.
+    savedEnv = process.env['REGISTRY_PRIMARY_RUBY'];
+    process.env['REGISTRY_PRIMARY_RUBY'] = '0';
     sequential = await runMode({ skipWorkers: true });
     // Force the worker pool to spawn even though the fixture is tiny.
     // Without this override, the pipeline's MIN_FILES_FOR_WORKERS / MIN_BYTES_FOR_WORKERS
@@ -114,6 +121,11 @@ describe('Ruby mixin heritage: sequential vs worker parity', () => {
       workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
     });
   }, 120000);
+
+  afterAll(() => {
+    if (savedEnv === undefined) delete process.env['REGISTRY_PRIMARY_RUBY'];
+    else process.env['REGISTRY_PRIMARY_RUBY'] = savedEnv;
+  });
 
   it('exercises both pipeline paths (sequential and worker)', () => {
     // If either of these assertions fails, every downstream parity check
