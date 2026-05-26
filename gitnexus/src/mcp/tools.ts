@@ -336,7 +336,7 @@ Output includes:
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
-- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; see byDepthCounts for totals per depth, pagination object when truncated)
+- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated)
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)
@@ -427,7 +427,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         limit: {
           type: 'integer',
           description:
-            'Max symbols returned in byDepth per depth level (default: 100). Use small values for hub symbols to avoid output truncation.',
+            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
           default: 100,
           minimum: 1,
           maximum: 10000,
@@ -435,14 +435,14 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         offset: {
           type: 'integer',
           description:
-            'Skip this many symbols per depth level before applying limit. Use with limit for pagination.',
+            'Skip this many symbols per depth level before applying limit. Single-repo only; ignored in group mode (@groupName). Use with limit for pagination.',
           default: 0,
           minimum: 0,
         },
         summaryOnly: {
           type: 'boolean',
           description:
-            'When true, returns only counts, risk, affected_processes, and affected_modules — omits the full byDepth symbol list. Use for hub symbols to get actionable signal without output explosion.',
+            'When true, returns target, summary, risk, byDepthCounts, affected_processes, and affected_modules — omits byDepth. Single-repo only; ignored in group mode (@groupName). Use for hub symbols to get actionable signal without output explosion.',
           default: false,
         },
         timeoutMs: {

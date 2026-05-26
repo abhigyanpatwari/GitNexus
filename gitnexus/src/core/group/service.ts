@@ -43,9 +43,6 @@ export interface GroupToolPort {
       relationTypes?: string[];
       includeTests?: boolean;
       minConfidence?: number;
-      limit?: number;
-      offset?: number;
-      summaryOnly?: boolean;
     },
   ): Promise<unknown>;
   query(

@@ -129,18 +129,18 @@ export async function impactCommand(
 
   try {
     const backend = await getBackend();
+    const rawLimit = parseInt(options?.limit ?? '', 10);
+    const rawOffset = parseInt(options?.offset ?? '', 10);
+    const parsedLimit = Number.isFinite(rawLimit) ? rawLimit : undefined;
+    const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
     const result = await backend.callTool('impact', {
       target,
       direction: options?.direction || 'upstream',
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
-      limit: Number.isFinite(parseInt(options?.limit, 10))
-        ? parseInt(options.limit, 10)
-        : undefined,
-      offset: Number.isFinite(parseInt(options?.offset, 10))
-        ? parseInt(options.offset, 10)
-        : undefined,
+      limit: parsedLimit,
+      offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
     output(result);
