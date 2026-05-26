@@ -65,7 +65,7 @@ export const doctorCommand = async () => {
     console.log(`  ${padDisplayEnd('native', 10)}✓ lbugjs.node loaded`);
   } else {
     console.log(`  ${padDisplayEnd('native', 10)}✗ lbugjs.node missing`);
-    console.log(`\n${nativeCheck.message?.replace(/^/gm, '  ')}\n`);
+    process.stderr.write(`\n${nativeCheck.message?.replace(/^/gm, '  ')}\n\n`);
   }
   console.log(`  ${label('doctor.labels.onnx', 10)}${fingerprint.onnxruntime ?? 'unknown'}`);
   console.log('');

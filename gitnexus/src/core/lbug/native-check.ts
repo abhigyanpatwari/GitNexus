@@ -31,26 +31,49 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   }
 
   const binaryPath = path.join(pkgDir, 'lbugjs.node');
-  if (fs.existsSync(binaryPath)) {
-    return { ok: true, binaryPath };
+  if (!fs.existsSync(binaryPath)) {
+    return {
+      ok: false,
+      binaryPath,
+      message: [
+        'LadybugDB native binary (lbugjs.node) is missing.',
+        '',
+        'This usually happens when the install lifecycle script was skipped.',
+        '',
+        'To repair:',
+        `  node ${path.join(pkgDir, 'install.js')}`,
+        '',
+        'If using bun, add to package.json and reinstall:',
+        '  "trustedDependencies": ["@ladybugdb/core"]',
+        '',
+        'Also check that npm is not configured with ignore-scripts=true',
+        '(in .npmrc or via --ignore-scripts).',
+      ].join('\n'),
+    };
   }
 
-  return {
-    ok: false,
-    binaryPath,
-    message: [
-      'LadybugDB native binary (lbugjs.node) is missing.',
-      '',
-      'This usually happens when the install lifecycle script was skipped.',
-      '',
-      'To repair:',
-      `  node ${path.join(pkgDir, 'install.js')}`,
-      '',
-      'If using bun, add to package.json and reinstall:',
-      '  "trustedDependencies": ["@ladybugdb/core"]',
-      '',
-      'Also check that npm is not configured with ignore-scripts=true',
-      '(in .npmrc or via --ignore-scripts).',
-    ].join('\n'),
-  };
+  try {
+    const _require = createRequire(import.meta.url);
+    _require(binaryPath);
+  } catch (err: unknown) {
+    const nativeError = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      binaryPath,
+      message: [
+        'LadybugDB native binary (lbugjs.node) exists but failed to load:',
+        `  ${nativeError}`,
+        '',
+        'This can happen with a truncated file, ABI mismatch, or wrong-platform binary.',
+        '',
+        'To repair:',
+        `  node ${path.join(pkgDir, 'install.js')}`,
+        '',
+        'If using bun, add to package.json and reinstall:',
+        '  "trustedDependencies": ["@ladybugdb/core"]',
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true, binaryPath };
 }
