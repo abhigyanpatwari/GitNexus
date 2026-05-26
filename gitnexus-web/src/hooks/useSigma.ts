@@ -1181,156 +1181,6 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         circlesAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
         const dtScale = 0.6;
 
-        // --- Accumulate forces ---
-        const forceX = new Map<string, number>();
-        const forceY = new Map<string, number>();
-
-        // 1. Radial gravity with soft wall.
-        //
-        // Base gravity is weak, allowing repulsion to spread nodes radially
-        // within the band.  The effective rate grows cubically as the node
-        // approaches the band edge so nodes never cross into adjacent rings.
-        // This replaces the previous hard position clamp, which caused nodes
-        // to pile against the boundary instead of distributing within the band.
-        graph.forEachNode((nodeId, attrs) => {
-          const ring = attrs.circlesRing ?? 0;
-          const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
-          const x = attrs.x;
-          const y = attrs.y;
-          const r = Math.sqrt(x * x + y * y) || 1;
-          const stretch = targetR - r; // positive = node inside ring, negative = outside
-          const normR = Math.min(1, Math.abs(stretch) / CIRCLES_BAND_HALF);
-          const k =
-            CIRCLES_RADIAL_GRAVITY *
-            (1 + normR * normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE);
-          forceX.set(nodeId, (x / r) * stretch * k * dtScale);
-          forceY.set(nodeId, (y / r) * stretch * k * dtScale);
-        });
-
-        // 2. Edge springs — radial and tangential components.
-        //
-        // Rest length strategy:
-        //   Hierarchy edges (cross-ring): use the radial gap between the two
-        //     ring centres as rest length.  This means the spring only activates
-        //     when nodes are angularly misaligned — it does NOT fight radial
-        //     gravity (which was the main cause of long edges in previous builds).
-        //   Cross edges (same or different ring): rest length = 30 px so the
-        //     spring activates sooner and pulls connected nodes closer.
-        //
-        // Weight cap removed: all edges use their full weight so cross-ring
-        //   CALLS/IMPORTS springs are strong enough to pull nodes into position.
-        graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
-          const dx = targetAttrs.x - sourceAttrs.x;
-          const dy = targetAttrs.y - sourceAttrs.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-          const rawWeight = CIRCLES_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.2;
-
-          const sourceRing = sourceAttrs.circlesRing ?? 0;
-          const targetRing = targetAttrs.circlesRing ?? 0;
-          const restLength = edgeAttrs.isHierarchyEdge
-            ? Math.abs(
-                ringTargetR[Math.min(sourceRing, CIRCLES_RING_COUNT - 1)] -
-                  ringTargetR[Math.min(targetRing, CIRCLES_RING_COUNT - 1)],
-              )
-            : 30;
-
-          const stretch = dist - restLength;
-          if (stretch > 0) {
-            const f = stretch * rawWeight * 0.55 * dtScale;
-            const fx = (dx / dist) * f;
-            const fy = (dy / dist) * f;
-            forceX.set(source, (forceX.get(source) ?? 0) + fx);
-            forceY.set(source, (forceY.get(source) ?? 0) + fy);
-            forceX.set(target, (forceX.get(target) ?? 0) - fx);
-            forceY.set(target, (forceY.get(target) ?? 0) - fy);
-          }
-        });
-
-        // 3. 2D repulsion — skipped for large graphs (effectiveRepulsionRange = 0).
-        //    For large graphs, gravity + edge springs are sufficient; the O(n×k)
-        //    repulsion sweep is the dominant per-frame cost and not worth the
-        //    quality gain when nodes are already tiny.
-        if (effectiveRepulsionRange > 0) {
-          const nodeList = graph.nodes().map((id) => {
-            const a = graph.getNodeAttributes(id);
-            return { id, x: a.x, y: a.y, size: a.size ?? 6, ring: a.circlesRing ?? 0 };
-          });
-          nodeList.sort((a, b) => a.x - b.x);
-
-          for (let i = 0; i < nodeList.length; i++) {
-            const nodeA = nodeList[i];
-            for (let j = i + 1; j < nodeList.length; j++) {
-              const nodeB = nodeList[j];
-              const dx = nodeB.x - nodeA.x;
-              if (dx > effectiveRepulsionRange) break;
-
-              const dy = nodeB.y - nodeA.y;
-              const dist2 = dx * dx + dy * dy;
-              const distVal = Math.sqrt(dist2) || 1;
-              if (distVal > effectiveRepulsionRange) continue;
-
-              const sameRing = nodeA.ring === nodeB.ring;
-              const repulsionStrength = sameRing ? 100 : 28;
-              const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
-              let repulsion =
-                (1 / (distVal + 8) - 1 / (effectiveRepulsionRange + 8)) *
-                repulsionStrength *
-                dtScale;
-              if (distVal < minGap && sameRing) repulsion += (minGap - distVal) * 0.1 * dtScale;
-              if (repulsion <= 0) continue;
-
-              const fx = (dx / distVal) * repulsion;
-              const fy = (dy / distVal) * repulsion;
-              forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
-              forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
-              forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
-              forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
-            }
-          }
-        }
-
-        // 4. Angular spread — skipped for large graphs.
-        //    Sorting each ring's nodes every frame is O(k log k); for ring 3
-        //    with 15k+ nodes this costs several ms/frame.  For large graphs
-        //    edge springs already provide angular clustering.
-        if (useAngularSpread) {
-          const spreadByRing = new Map<
-            number,
-            Array<{ id: string; angle: number; x: number; y: number }>
-          >();
-          graph.forEachNode((nodeId, attrs) => {
-            const ring = attrs.circlesRing ?? 0;
-            if (!spreadByRing.has(ring)) spreadByRing.set(ring, []);
-            spreadByRing.get(ring)!.push({
-              id: nodeId,
-              angle: Math.atan2(attrs.y, attrs.x),
-              x: attrs.x,
-              y: attrs.y,
-            });
-          });
-
-          for (const [, ringNodes] of spreadByRing) {
-            if (ringNodes.length < 2) continue;
-            ringNodes.sort((a, b) => a.angle - b.angle);
-            const count = ringNodes.length;
-            for (let i = 0; i < count; i++) {
-              const { id, angle, x, y } = ringNodes[i];
-              const idealAngle = ((i + 0.5) / count) * Math.PI * 2 - Math.PI;
-              let dAngle = idealAngle - angle;
-              while (dAngle > Math.PI) dAngle -= Math.PI * 2;
-              while (dAngle < -Math.PI) dAngle += Math.PI * 2;
-              const r = Math.sqrt(x * x + y * y) || 1;
-              // Tangential unit vector: (-y/r, x/r)
-              const tx = -y / r;
-              const ty = x / r;
-              const fMag = dAngle * CIRCLES_ANGULAR_SPREAD * dtScale;
-              forceX.set(id, (forceX.get(id) ?? 0) + tx * fMag);
-              forceY.set(id, (forceY.get(id) ?? 0) + ty * fMag);
-            }
-          }
-        }
-
         // --- Apply forces with radial boundary resistance ---
         let totalVelocity = 0;
         let maxVelocity = 0;
@@ -1340,6 +1190,156 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           totalVelocity = 0;
           maxVelocity = 0;
           activeNodes = 0;
+
+          // --- Accumulate forces (recomputed each sub-step from current positions) ---
+          const forceX = new Map<string, number>();
+          const forceY = new Map<string, number>();
+
+          // 1. Radial gravity with soft wall.
+          //
+          // Base gravity is weak, allowing repulsion to spread nodes radially
+          // within the band.  The effective rate grows cubically as the node
+          // approaches the band edge so nodes never cross into adjacent rings.
+          // This replaces the previous hard position clamp, which caused nodes
+          // to pile against the boundary instead of distributing within the band.
+          graph.forEachNode((nodeId, attrs) => {
+            const ring = attrs.circlesRing ?? 0;
+            const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
+            const x = attrs.x;
+            const y = attrs.y;
+            const r = Math.sqrt(x * x + y * y) || 1;
+            const stretch = targetR - r; // positive = node inside ring, negative = outside
+            const normR = Math.min(1, Math.abs(stretch) / CIRCLES_BAND_HALF);
+            const k =
+              CIRCLES_RADIAL_GRAVITY *
+              (1 + normR * normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE);
+            forceX.set(nodeId, (x / r) * stretch * k * dtScale);
+            forceY.set(nodeId, (y / r) * stretch * k * dtScale);
+          });
+
+          // 2. Edge springs — radial and tangential components.
+          //
+          // Rest length strategy:
+          //   Hierarchy edges (cross-ring): use the radial gap between the two
+          //     ring centres as rest length.  This means the spring only activates
+          //     when nodes are angularly misaligned — it does NOT fight radial
+          //     gravity (which was the main cause of long edges in previous builds).
+          //   Cross edges (same or different ring): rest length = 30 px so the
+          //     spring activates sooner and pulls connected nodes closer.
+          //
+          // Weight cap removed: all edges use their full weight so cross-ring
+          //   CALLS/IMPORTS springs are strong enough to pull nodes into position.
+          graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
+            const dx = targetAttrs.x - sourceAttrs.x;
+            const dy = targetAttrs.y - sourceAttrs.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+            const rawWeight = CIRCLES_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.2;
+
+            const sourceRing = sourceAttrs.circlesRing ?? 0;
+            const targetRing = targetAttrs.circlesRing ?? 0;
+            const restLength = edgeAttrs.isHierarchyEdge
+              ? Math.abs(
+                  ringTargetR[Math.min(sourceRing, CIRCLES_RING_COUNT - 1)] -
+                    ringTargetR[Math.min(targetRing, CIRCLES_RING_COUNT - 1)],
+                )
+              : 30;
+
+            const stretch = dist - restLength;
+            if (stretch > 0) {
+              const f = stretch * rawWeight * 0.55 * dtScale;
+              const fx = (dx / dist) * f;
+              const fy = (dy / dist) * f;
+              forceX.set(source, (forceX.get(source) ?? 0) + fx);
+              forceY.set(source, (forceY.get(source) ?? 0) + fy);
+              forceX.set(target, (forceX.get(target) ?? 0) - fx);
+              forceY.set(target, (forceY.get(target) ?? 0) - fy);
+            }
+          });
+
+          // 3. 2D repulsion — skipped for large graphs (effectiveRepulsionRange = 0).
+          //    For large graphs, gravity + edge springs are sufficient; the O(n×k)
+          //    repulsion sweep is the dominant per-frame cost and not worth the
+          //    quality gain when nodes are already tiny.
+          if (effectiveRepulsionRange > 0) {
+            const nodeList = graph.nodes().map((id) => {
+              const a = graph.getNodeAttributes(id);
+              return { id, x: a.x, y: a.y, size: a.size ?? 6, ring: a.circlesRing ?? 0 };
+            });
+            nodeList.sort((a, b) => a.x - b.x);
+
+            for (let i = 0; i < nodeList.length; i++) {
+              const nodeA = nodeList[i];
+              for (let j = i + 1; j < nodeList.length; j++) {
+                const nodeB = nodeList[j];
+                const dx = nodeB.x - nodeA.x;
+                if (dx > effectiveRepulsionRange) break;
+
+                const dy = nodeB.y - nodeA.y;
+                const dist2 = dx * dx + dy * dy;
+                const distVal = Math.sqrt(dist2) || 1;
+                if (distVal > effectiveRepulsionRange) continue;
+
+                const sameRing = nodeA.ring === nodeB.ring;
+                const repulsionStrength = sameRing ? 100 : 28;
+                const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+                let repulsion =
+                  (1 / (distVal + 8) - 1 / (effectiveRepulsionRange + 8)) *
+                  repulsionStrength *
+                  dtScale;
+                if (distVal < minGap && sameRing) repulsion += (minGap - distVal) * 0.1 * dtScale;
+                if (repulsion <= 0) continue;
+
+                const fx = (dx / distVal) * repulsion;
+                const fy = (dy / distVal) * repulsion;
+                forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+                forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+                forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+                forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+              }
+            }
+          }
+
+          // 4. Angular spread — skipped for large graphs.
+          //    Sorting each ring's nodes every frame is O(k log k); for ring 3
+          //    with 15k+ nodes this costs several ms/frame.  For large graphs
+          //    edge springs already provide angular clustering.
+          if (useAngularSpread) {
+            const spreadByRing = new Map<
+              number,
+              Array<{ id: string; angle: number; x: number; y: number }>
+            >();
+            graph.forEachNode((nodeId, attrs) => {
+              const ring = attrs.circlesRing ?? 0;
+              if (!spreadByRing.has(ring)) spreadByRing.set(ring, []);
+              spreadByRing.get(ring)!.push({
+                id: nodeId,
+                angle: Math.atan2(attrs.y, attrs.x),
+                x: attrs.x,
+                y: attrs.y,
+              });
+            });
+
+            for (const [, ringNodes] of spreadByRing) {
+              if (ringNodes.length < 2) continue;
+              ringNodes.sort((a, b) => a.angle - b.angle);
+              const count = ringNodes.length;
+              for (let i = 0; i < count; i++) {
+                const { id, angle, x, y } = ringNodes[i];
+                const idealAngle = ((i + 0.5) / count) * Math.PI * 2 - Math.PI;
+                let dAngle = idealAngle - angle;
+                while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+                while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+                const r = Math.sqrt(x * x + y * y) || 1;
+                // Tangential unit vector: (-y/r, x/r)
+                const tx = -y / r;
+                const ty = x / r;
+                const fMag = dAngle * CIRCLES_ANGULAR_SPREAD * dtScale;
+                forceX.set(id, (forceX.get(id) ?? 0) + tx * fMag);
+                forceY.set(id, (forceY.get(id) ?? 0) + ty * fMag);
+              }
+            }
+          }
 
           graph.forEachNode((nodeId, attrs) => {
             const fx = forceX.get(nodeId) ?? 0;

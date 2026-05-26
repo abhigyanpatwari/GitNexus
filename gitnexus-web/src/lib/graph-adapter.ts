@@ -95,7 +95,7 @@ export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
   communityMemberships?: Map<string, number>,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
-  const graph = new MultiGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
 
   // Build parent-child map from hierarchy relationships
@@ -314,13 +314,9 @@ export const knowledgeGraphToGraphology = (
   // and cross-edges (CALLS, IMPORTS, EXTENDS) are drawn on top.
   const BACKGROUND_EDGE_TYPES = new Set(['CONTAINS', 'DEFINES', 'HAS_METHOD', 'HAS_PROPERTY']);
 
-  // Dedup by relationship ID, not by node-pair — a node pair can have both a
-  // CONTAINS edge and a CALLS edge (MultiGraph allows multiple edges per pair).
-  const addedRelIds = new Set<string>();
   const addEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
     if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
-    if (addedRelIds.has(rel.id)) return;
-    addedRelIds.add(rel.id);
+    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
     const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
     const curvature = 0.12 + Math.random() * 0.08;
     graph.addEdge(rel.sourceId, rel.targetId, {
