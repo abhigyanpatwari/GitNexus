@@ -112,6 +112,12 @@
     "codeNotAvailable": "内存中没有 {{path}} 的代码内容"
   },
   "canvas": {
+    "viewModes": {
+      "label": "图形视图模式",
+      "force": "力导向图",
+      "tree": "顺序布局",
+      "circles": "径向布局"
+    },
     "zoomIn": "放大",
     "zoomOut": "缩小",
     "fit": "适应屏幕",
