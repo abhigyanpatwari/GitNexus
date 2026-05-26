@@ -142,6 +142,19 @@ const RUBY_SCOPE_QUERY = `
     !receiver
     method: (identifier) @type-binding.type)) @type-binding.call-return
 
+;; ── Type bindings — for-in loop: for x in collection ─────────────────────
+;;
+;; The loop variable \`x\` gets the element type of the collection.
+;; We bind \`x → collection\` as an alias; the chain-follow pass
+;; resolves \`collection → ElementType\` via YARD \`@param\` annotations.
+;; tree-sitter-ruby wraps the collection in an \`in\` node:
+;;   (for pattern: (identifier) value: (in (identifier)))
+
+(for
+  pattern: (identifier) @type-binding.name
+  value: (in
+    (identifier) @type-binding.type)) @type-binding.alias
+
 ;; ── Type bindings — variable alias: x = y ────────────────────────────────
 
 (assignment

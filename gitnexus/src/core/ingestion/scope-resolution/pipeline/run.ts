@@ -314,8 +314,17 @@ export function runScopeResolution(
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
   provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup);
-  const mroByClassDefId = provider.buildMro(graph, parsedFiles, nodeLookup);
-  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, nodeLookup);
+  // Rebuild the node lookup after heritage-edge emission. Languages like
+  // Ruby create Property graph nodes inside `emitHeritageEdges`; those
+  // nodes must be visible to downstream passes (`emitReceiverBoundCalls`
+  // resolves write-access targets via `resolveDefGraphId` which consults
+  // `nodeLookup`). Without this rebuild, Property nodes added by the
+  // heritage hook are invisible and ACCESSES edges silently fail to emit.
+  const postHeritageNodeLookup = provider.emitHeritageEdges !== undefined
+    ? buildGraphNodeLookup(graph)
+    : nodeLookup;
+  const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
+  const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(graph, parsedFiles, postHeritageNodeLookup);
 
   // Replace the empty MethodDispatchIndex that finalizeScopeModel
   // builds by design with the populated one derived from the
@@ -401,7 +410,7 @@ export function runScopeResolution(
     graph,
     indexes,
     parsedFiles,
-    nodeLookup,
+    postHeritageNodeLookup,
     handledSites,
     provider,
     workspaceIndex,
@@ -416,7 +425,7 @@ export function runScopeResolution(
           graph,
           indexes,
           parsedFiles,
-          nodeLookup,
+          postHeritageNodeLookup,
           handledSites,
           readonlyModel,
         )
@@ -425,7 +434,7 @@ export function runScopeResolution(
     graph,
     indexes,
     parsedFiles,
-    nodeLookup,
+    postHeritageNodeLookup,
     referenceIndex,
     handledSites,
     readonlyModel,
@@ -444,7 +453,7 @@ export function runScopeResolution(
     graph,
     indexes,
     referenceIndex,
-    nodeLookup,
+    postHeritageNodeLookup,
     handledSites,
   );
   const importsEmitted = emitImportEdges(

@@ -169,6 +169,9 @@ export function emitRubyScopeCaptures(
 
       // Intercept attr_accessor/attr_reader/attr_writer — encode as special
       // imports so emitHeritageEdges can create Property nodes + HAS_PROPERTY.
+      // Also emit @declaration.property captures so each property ends up in
+      // localDefs and gets reconciled into model.fields, enabling write-access
+      // resolution via receiver-bound-calls (Case 4 → findOwnedMember).
       if (ATTR_CALL_NAMES.has(callName)) {
         const callNode = findNodeAtRange(
           tree.rootNode,
@@ -195,6 +198,16 @@ export function emitRubyScopeCaptures(
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, propName),
                   });
+                  // Emit a property declaration so the property flows into
+                  // localDefs → model.fields for receiver-bound write access.
+                  out.push({
+                    '@declaration.property': syntheticCapture(
+                      '@declaration.property',
+                      arg,
+                      propName,
+                    ),
+                    '@declaration.name': syntheticCapture('@declaration.name', arg, propName),
+                  });
                 }
               }
             }
@@ -220,7 +233,35 @@ export function emitRubyScopeCaptures(
     out.push(grouped);
   }
 
-  // Second pass: YARD comment annotations (@param, @return, @type)
+  // Second pass: member-call-return type bindings
+  // Synthesize compound type bindings for `x = recv.method(...)` assignments.
+  // The query-level @type-binding.call-return pattern only captures free calls
+  // (!receiver). For member calls we need `x → recv.method()` so the compound
+  // receiver resolver can chain-follow through the receiver's class scope.
+  for (const assignNode of tree.rootNode.descendantsOfType('assignment')) {
+    const left = assignNode.childForFieldName('left');
+    const right = assignNode.childForFieldName('right');
+    if (left === null || right === null) continue;
+    if (left.type !== 'identifier' && left.type !== 'constant') continue;
+    if (right.type !== 'call') continue;
+    const recvNode = right.childForFieldName('receiver');
+    const methodNode = right.childForFieldName('method');
+    if (recvNode === null || methodNode === null) continue;
+    // Skip .new calls — already handled by the constructor-inference query patterns
+    if (methodNode.text === 'new') continue;
+    const compoundName = `${recvNode.text}.${methodNode.text}()`;
+    out.push({
+      '@type-binding.call-return': syntheticCapture(
+        '@type-binding.call-return',
+        assignNode,
+        assignNode.text,
+      ),
+      '@type-binding.name': syntheticCapture('@type-binding.name', assignNode, left.text),
+      '@type-binding.type': syntheticCapture('@type-binding.type', assignNode, compoundName),
+    });
+  }
+
+  // Third pass: YARD comment annotations (@param, @return, @type)
   for (const comment of tree.rootNode.descendantsOfType('comment')) {
     const text = comment.text;
 
@@ -278,6 +319,44 @@ export function emitRubyScopeCaptures(
             ),
           });
         }
+      } else if (typeName) {
+        // YARD @return before attr_accessor/attr_reader/attr_writer: the
+        // comment precedes a `call` node (not a method). Extract the
+        // property name from the attr call's arguments and bind it to
+        // the annotated return type. This enables field-type chains
+        // like `user.address.save → Address#save`.
+        const attrNode = findFollowingAttrCall(comment);
+        if (attrNode !== null) {
+          const argList = attrNode.childForFieldName('arguments');
+          if (argList !== null) {
+            for (let ai = 0; ai < argList.namedChildCount; ai++) {
+              const arg = argList.namedChild(ai);
+              if (
+                arg !== null &&
+                (arg.type === 'simple_symbol' || arg.type === 'symbol')
+              ) {
+                const propName = arg.text.replace(/^:/, '');
+                out.push({
+                  '@type-binding.return': syntheticCapture(
+                    '@type-binding.return',
+                    attrNode,
+                    text,
+                  ),
+                  '@type-binding.name': syntheticCapture(
+                    '@type-binding.name',
+                    attrNode,
+                    propName,
+                  ),
+                  '@type-binding.type': syntheticCapture(
+                    '@type-binding.type',
+                    attrNode,
+                    normalizeYardType(typeName),
+                  ),
+                });
+              }
+            }
+          }
+        }
       }
     }
 
@@ -295,6 +374,57 @@ export function emitRubyScopeCaptures(
             methodNode,
             normalizeYardType(typeName),
           ),
+        });
+      }
+    }
+  }
+
+  // Fourth pass: constructor-return inference for methods.
+  // When a method's body ends with `ClassName.new(...)`, synthesize a
+  // return-type binding `methodName → ClassName` on the method node.
+  // This enables cross-file return-type propagation for factory methods
+  // like `def self.get_user; User.new; end` → `get_user → User`.
+  for (const methodNode of [
+    ...tree.rootNode.descendantsOfType('method'),
+    ...tree.rootNode.descendantsOfType('singleton_method'),
+  ]) {
+    const methodName = methodNode.childForFieldName('name')?.text;
+    if (methodName === undefined) continue;
+    // Skip if a YARD @return already created a return binding for this method
+    if (
+      out.some(
+        (m) =>
+          m['@type-binding.return'] !== undefined &&
+          m['@type-binding.name']?.text === methodName &&
+          m['@type-binding.return']?.range.startLine === methodNode.startPosition.row,
+      )
+    ) {
+      continue;
+    }
+    const body = methodNode.childForFieldName('body');
+    if (body === null) continue;
+    // Find the last expression in the method body
+    const lastChild =
+      body.namedChildCount > 0 ? body.namedChild(body.namedChildCount - 1) : null;
+    if (lastChild === null) continue;
+    // Check if the last expression is a `ClassName.new(...)` call
+    if (lastChild.type === 'call') {
+      const recv = lastChild.childForFieldName('receiver');
+      const meth = lastChild.childForFieldName('method');
+      if (
+        recv !== null &&
+        meth !== null &&
+        meth.text === 'new' &&
+        (recv.type === 'constant' || recv.type === 'scope_resolution')
+      ) {
+        out.push({
+          '@type-binding.return': syntheticCapture(
+            '@type-binding.return',
+            methodNode,
+            `constructor-return: ${recv.text}.new`,
+          ),
+          '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, methodName),
+          '@type-binding.type': syntheticCapture('@type-binding.type', methodNode, recv.text),
         });
       }
     }
@@ -444,6 +574,27 @@ function findFollowingMethod(commentNode: SyntaxNode): SyntaxNode | null {
     const first = sibling.firstNamedChild;
     if (first !== null && (first.type === 'method' || first.type === 'singleton_method')) {
       return first;
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk forward from a comment node, skipping consecutive comments,
+ * and return the next `call` node whose method is attr_accessor /
+ * attr_reader / attr_writer (if any). Used to attach YARD `@return`
+ * annotations to property declarations.
+ */
+function findFollowingAttrCall(commentNode: SyntaxNode): SyntaxNode | null {
+  let sibling = commentNode.nextNamedSibling;
+  while (sibling !== null && sibling.type === 'comment') {
+    sibling = sibling.nextNamedSibling;
+  }
+  if (sibling === null) return null;
+  if (sibling.type === 'call') {
+    const methodNode = sibling.childForFieldName('method');
+    if (methodNode !== null && ATTR_CALL_NAMES.has(methodNode.text)) {
+      return sibling;
     }
   }
   return null;

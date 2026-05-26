@@ -1,4 +1,4 @@
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -23,7 +23,7 @@ function emitRubyMixinEdges(
       if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
       if (graphId !== undefined) {
-        const simpleName = def.qualifiedName?.split('.').pop() ?? def.name;
+        const simpleName = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
         graphIdByName.set(simpleName, graphId);
       }
     }
@@ -158,6 +158,36 @@ function buildRubyMro(
   return baseMro;
 }
 
+/**
+ * Enumerate all names exported from a target module scope's file.
+ * Ruby's `require` / `require_relative` are wildcard imports — they bring
+ * every top-level def (class, module, method, constant) from the target
+ * file into the importer's scope. Without this hook the finalize pass
+ * cannot materialize individual bindings from wildcard imports, which
+ * blocks `propagateImportedReturnTypes` from mirroring return-type
+ * typeBindings across files.
+ */
+function expandRubyWildcardNames(
+  targetModuleScope: ScopeId,
+  parsedFiles: readonly ParsedFile[],
+): readonly string[] {
+  const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
+  if (target === undefined) return [];
+
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const def of target.localDefs) {
+    const qn = def.qualifiedName;
+    if (qn === undefined || qn.length === 0) continue;
+    const name = qn.split('.').pop() ?? qn;
+    if (name === '') continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
 export const rubyScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Ruby,
   languageProvider: rubyProvider,
@@ -165,6 +195,9 @@ export const rubyScopeResolver: ScopeResolver = {
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveRubyImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+
+  expandsWildcardTo: (targetModuleScope, parsedFiles) =>
+    expandRubyWildcardNames(targetModuleScope, parsedFiles),
 
   mergeBindings: (existing, incoming, scopeId) => rubyMergeBindings(existing, incoming, scopeId),
 
