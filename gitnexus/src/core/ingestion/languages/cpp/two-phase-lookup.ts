@@ -44,7 +44,7 @@ import { findEnclosingClassDef } from '../../scope-resolution/scope/walkers.js';
  * Value: Map<className, Map<baseName, qualifier>>
  *   qualifier is '' when the base was unqualified.
  */
-const dependentBasesByFile = new Map<string, Map<string, Map<string, string>>>();
+const dependentBasesByFile = new Map<string, Map<string, Map<string, Set<string>>>>();
 
 /**
  * Post-`populateOwners` resolution: per-class-nodeId, the set of
@@ -80,7 +80,12 @@ export function markCppDependentBase(
     bases = new Map();
     perFile.set(className, bases);
   }
-  bases.set(baseName, qualifier);
+  let quals = bases.get(baseName);
+  if (quals === undefined) {
+    quals = new Set();
+    bases.set(baseName, quals);
+  }
+  quals.add(qualifier);
 }
 
 /** Clear two-phase-lookup state. Called from `clearFileLocalNames`. */
@@ -174,64 +179,73 @@ export function populateCppDependentBases(parsedFiles: readonly ParsedFile[]): v
         dependentBaseNodeIds.set(classEntry.nodeId, bases);
       }
 
-      for (const [baseName, baseQualifier] of baseEntries) {
-        const candidates = classesBySimpleName.get(baseName);
-        if (candidates === undefined || candidates.length === 0) continue;
+      for (const [baseName, qualsSet] of baseEntries) {
+        for (const baseQualifier of qualsSet) {
+          const candidates = classesBySimpleName.get(baseName);
+          if (candidates === undefined || candidates.length === 0) continue;
 
-        // Compute the expected namespace prefix from the qualifier.
-        // Relative qualifier (e.g. `inner`): prepend deriving class's prefix.
-        // Absolute qualifiers (`::std`, `ns::other`) will fail the relative
-        // lookup and fall through to the prefix-heuristic below.
-        const normalizedQualifier = baseQualifier.replace(/::/g, '.');
-        const expectedNs =
-          baseQualifier && classEntry.nsPrefix
-            ? classEntry.nsPrefix + '.' + normalizedQualifier
-            : normalizedQualifier;
+          // Compute the expected namespace prefix from the qualifier.
+          // Relative qualifier (e.g. `inner`): prepend deriving class's prefix.
+          // Absolute qualifiers (`::std`, `ns::other`) will fail the relative
+          // lookup and fall through to the prefix-heuristic below.
+          const normalizedQualifier = baseQualifier.replace(/::/g, '.');
+          const expectedNs =
+            baseQualifier && classEntry.nsPrefix
+              ? classEntry.nsPrefix + '.' + normalizedQualifier
+              : normalizedQualifier;
 
-        if (candidates.length === 1) {
-          // Unique simple-name match — accept regardless of namespace.
-          // Even if the namespace doesn't match the qualifier, recording
-          // the candidate as a dependent base is better than skipping it:
-          // isCppDependentBaseMember suppression still works for unqualified
-          // calls. See #1815 discussion on B2 edge cases.
-          bases.add(candidates[0].nodeId);
-          continue;
-        }
-
-        // V3: qualifier-based exact targeting. When the base specifier
-        // carries a syntactic qualifier, compute the expected namespace
-        // prefix and attempt an exact (===) match using the deduplicated
-        // nsPrefix. Dedup by nodeId removes broken entries from the
-        // classesBySimpleName index, making the surviving nsPrefix reliable.
-        if (baseQualifier) {
-          const qualifierMatch = candidates.find(
-            (c) => c.nsPrefix === expectedNs || c.nsPrefix === normalizedQualifier,
-          );
-          if (qualifierMatch !== undefined) {
-            bases.add(qualifierMatch.nodeId);
+          if (candidates.length === 1) {
+            // Unqualified base: accept unique match (pre-existing behavior).
+            if (!baseQualifier) {
+              bases.add(candidates[0].nodeId);
+              continue;
+            }
+            // Qualified base: verify namespace before accepting.
+            if (
+              candidates[0].nsPrefix === expectedNs ||
+              candidates[0].nsPrefix === normalizedQualifier
+            ) {
+              bases.add(candidates[0].nodeId);
+            }
+            // else: suppress — qualifier doesn't match. #1564 policy.
             continue;
           }
-          // Exact qualifier match failed — fall through to V2 prefix-heuristic.
-        }
 
-        // V2 fallback: filter by prefix-match capped at one level deeper,
-        // then accept only if exactly one candidate survives.
-        const nsMatches = candidates.filter((c) => {
-          if (c.nsPrefix === classEntry.nsPrefix) return true;
-          if (classEntry.nsPrefix === '') {
-            return c.nsPrefix !== '' && !c.nsPrefix.includes('.');
+          // V3: qualifier-based exact targeting. When the base specifier
+          // carries a syntactic qualifier, compute the expected namespace
+          // prefix and attempt an exact (===) match using the deduplicated
+          // nsPrefix. Dedup by nodeId removes broken entries from the
+          // classesBySimpleName index, making the surviving nsPrefix reliable.
+          if (baseQualifier) {
+            const qualifierMatch = candidates.find(
+              (c) => c.nsPrefix === expectedNs || c.nsPrefix === normalizedQualifier,
+            );
+            if (qualifierMatch !== undefined) {
+              bases.add(qualifierMatch.nodeId);
+              continue;
+            }
+            continue; // qualifier was explicit but no match — suppress, don't fall through to V2
           }
-          if (c.nsPrefix.startsWith(classEntry.nsPrefix + '.')) {
-            const suffix = c.nsPrefix.slice(classEntry.nsPrefix.length + 1);
-            return !suffix.includes('.');
+
+          // V2 fallback: filter by prefix-match capped at one level deeper,
+          // then accept only if exactly one candidate survives.
+          const nsMatches = candidates.filter((c) => {
+            if (c.nsPrefix === classEntry.nsPrefix) return true;
+            if (classEntry.nsPrefix === '') {
+              return c.nsPrefix !== '' && !c.nsPrefix.includes('.');
+            }
+            if (c.nsPrefix.startsWith(classEntry.nsPrefix + '.')) {
+              const suffix = c.nsPrefix.slice(classEntry.nsPrefix.length + 1);
+              return !suffix.includes('.');
+            }
+            return false;
+          });
+          const nsMatch = nsMatches.length === 1 ? nsMatches[0] : undefined;
+          if (nsMatch !== undefined) {
+            bases.add(nsMatch.nodeId);
           }
-          return false;
-        });
-        const nsMatch = nsMatches.length === 1 ? nsMatches[0] : undefined;
-        if (nsMatch !== undefined) {
-          bases.add(nsMatch.nodeId);
+          // else: ambiguous (multiple candidates, no namespace match) → skip.
         }
-        // else: ambiguous (multiple candidates, no namespace match) → skip.
       }
     }
   }
