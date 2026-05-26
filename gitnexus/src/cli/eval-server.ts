@@ -206,19 +206,39 @@ export function formatImpactResult(result: any): string {
     3: 'MAY NEED TESTING (transitive)',
   };
 
-  for (const depth of [1, 2, 3]) {
-    const items = byDepth[depth];
-    if (!items || items.length === 0) continue;
-
-    lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${items.length})`);
-    for (const item of items.slice(0, 12)) {
-      const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
-      lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
-    }
-    if (items.length > 12) {
-      lines.push(`  ... and ${items.length - 12} more`);
+  if (!result.byDepth && result.byDepthCounts) {
+    lines.push('(summary only — use summaryOnly: false to see symbol lists)');
+    const depthCounts = result.byDepthCounts;
+    for (const depth of [1, 2, 3]) {
+      const count = depthCounts[depth] ?? 0;
+      if (count === 0) continue;
+      lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${count})`);
     }
     lines.push('');
+  } else {
+    const depthCounts = result.byDepthCounts || {};
+    for (const depth of [1, 2, 3]) {
+      const items = byDepth[depth] || [];
+      const trueCount = depthCounts[depth] ?? items.length;
+      if (trueCount === 0) continue;
+
+      lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${trueCount})`);
+      if (items.length === 0) {
+        lines.push(`  (0 items on this page — adjust offset)`);
+      } else {
+        const shown = Math.min(items.length, 12);
+        for (const item of items.slice(0, shown)) {
+          const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
+          lines.push(
+            `  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`,
+          );
+        }
+        if (trueCount > shown) {
+          lines.push(`  ... and ${trueCount - shown} more`);
+        }
+      }
+      lines.push('');
+    }
   }
 
   return lines.join('\n').trim();

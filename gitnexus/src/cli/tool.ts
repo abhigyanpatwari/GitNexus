@@ -117,6 +117,9 @@ export async function impactCommand(
     repo?: string;
     depth?: string;
     includeTests?: boolean;
+    limit?: string;
+    offset?: string;
+    summaryOnly?: boolean;
   },
 ): Promise<void> {
   if (!target?.trim()) {
@@ -126,12 +129,19 @@ export async function impactCommand(
 
   try {
     const backend = await getBackend();
+    const rawLimit = parseInt(options?.limit ?? '', 10);
+    const rawOffset = parseInt(options?.offset ?? '', 10);
+    const parsedLimit = Number.isFinite(rawLimit) ? rawLimit : undefined;
+    const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
     const result = await backend.callTool('impact', {
       target,
       direction: options?.direction || 'upstream',
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      summaryOnly: options?.summaryOnly ?? undefined,
     });
     output(result);
   } catch (err: unknown) {
