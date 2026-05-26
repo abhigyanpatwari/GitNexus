@@ -16,6 +16,8 @@ interface GraphStateContextValue {
   setDepthFilter: (depth: number | null) => void;
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
+  graphViewMode: 'force' | 'tree' | 'circles';
+  setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
 }
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
@@ -27,6 +29,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<EdgeType[]>(DEFAULT_VISIBLE_EDGES);
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
+  const [graphViewMode, setGraphViewMode] = useState<'force' | 'tree' | 'circles'>('force');
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -54,8 +57,18 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setDepthFilter,
       highlightedNodeIds,
       setHighlightedNodeIds,
+      graphViewMode,
+      setGraphViewMode,
     }),
-    [graph, selectedNode, visibleLabels, visibleEdgeTypes, depthFilter, highlightedNodeIds],
+    [
+      graph,
+      selectedNode,
+      visibleLabels,
+      visibleEdgeTypes,
+      depthFilter,
+      highlightedNodeIds,
+      graphViewMode,
+    ],
   );
 
   return <GraphStateContext.Provider value={value}>{children}</GraphStateContext.Provider>;
