@@ -30,6 +30,11 @@ const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
 };
 
 // ─── Provider: Spring class-level @RequestMapping prefix ──────────────
+// Two patterns are needed because the AST shape differs depending on
+// whether the annotation uses a positional argument or a named one:
+//   @RequestMapping("/api")          → (annotation_argument_list (string_literal))
+//   @RequestMapping(path = "/api")   → (annotation_argument_list (element_value_pair value: (string_literal)))
+//   @RequestMapping(value = "/api")  → same as above
 const SPRING_CLASS_PREFIX_PATTERNS = compilePatterns({
   name: 'java-spring-class-prefix',
   language: Java,
@@ -44,10 +49,23 @@ const SPRING_CLASS_PREFIX_PATTERNS = compilePatterns({
               arguments: (annotation_argument_list (string_literal) @prefix)))) @class
       `,
     },
+    {
+      meta: {},
+      query: `
+        (class_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#eq? @ann "RequestMapping")
+              arguments: (annotation_argument_list
+                (element_value_pair
+                  value: (string_literal) @prefix))))) @class
+      `,
+    },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
 // ─── Provider: Spring @(Get|Post|...)Mapping method annotations ───────
+// Same dual-pattern approach: positional vs named argument.
 const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
   name: 'java-spring-method-route',
   language: Java,
@@ -60,6 +78,19 @@ const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
             (annotation
               name: (identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$")
               arguments: (annotation_argument_list (string_literal) @path)))
+          name: (identifier) @method_name) @method
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$")
+              arguments: (annotation_argument_list
+                (element_value_pair
+                  value: (string_literal) @path))))
           name: (identifier) @method_name) @method
       `,
     },
