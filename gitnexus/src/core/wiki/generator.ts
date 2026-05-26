@@ -549,7 +549,11 @@ export class WikiGenerator {
         );
         partials.push(this.parseGroupingResponse(response.content, batch));
       } catch {
-        this.onProgress('grouping', 15, `Batch ${i + 1} failed, falling back to directory grouping`);
+        this.onProgress(
+          'grouping',
+          15,
+          `Batch ${i + 1} failed, falling back to directory grouping`,
+        );
         return this.fallbackGrouping(files);
       }
     }
