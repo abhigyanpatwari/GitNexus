@@ -4,7 +4,7 @@
  * Computes Method Resolution Order (MRO) and creates METHOD_OVERRIDES
  * and METHOD_IMPLEMENTS edges.
  *
- * @deps    crossFile
+ * @deps    crossFile, scopeResolution
  * @reads   graph (all nodes and relationships)
  * @writes  graph (METHOD_OVERRIDES, METHOD_IMPLEMENTS edges)
  */
@@ -25,7 +25,7 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile', 'structure'],
+  deps: ['crossFile', 'scopeResolution', 'structure'],
 
   async execute(
     ctx: PipelineContext,
@@ -35,7 +35,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
 
     ctx.onProgress({
       phase: 'enriching',
-      percent: 83,
+      percent: 98,
       message: 'Computing method resolution order...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });

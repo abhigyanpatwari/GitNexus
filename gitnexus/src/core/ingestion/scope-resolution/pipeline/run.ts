@@ -116,6 +116,12 @@ function preEmitInheritanceEdges(
   return handledSites;
 }
 
+export type ScopeResolutionSubPhase =
+  | 'extracting'
+  | 'analyzing types'
+  | 'resolving references'
+  | 'linking symbols';
+
 interface RunScopeResolutionInput {
   readonly graph: KnowledgeGraph;
   /**
@@ -167,6 +173,16 @@ interface RunScopeResolutionInput {
    * intentionally suppress an edge; the graph remains unchanged.
    */
   readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+  /**
+   * Optional progress callback for UI updates during long-running scope
+   * resolution. Called periodically during the extract loop and at each
+   * sub-phase boundary (finalize, resolve, emit).
+   *
+   * @param subPhase  Current sub-phase name for display
+   * @param current   Files processed so far (during extract) or total files (at phase boundaries)
+   * @param total     Total files in this language
+   */
+  readonly onProgress?: (subPhase: ScopeResolutionSubPhase, current: number, total: number) => void;
 }
 
 interface RunScopeResolutionStats {
@@ -207,7 +223,10 @@ export function runScopeResolution(
   const treeCache = input.treeCache;
   const preExtracted = input.preExtractedParsedFiles;
   let preExtractedHits = 0;
-  for (const file of files) {
+  const progressInterval = files.length > 0 ? Math.max(1, Math.floor(files.length / 50)) : 1;
+  input.onProgress?.('extracting', 0, files.length);
+  for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+    const file = files[fileIdx];
     let parsed: ParsedFile | undefined;
     // Fast path: a worker (during the parse phase) already produced a
     // ParsedFile for this file via `extractParsedFile`. Reuse it
@@ -232,6 +251,12 @@ export function runScopeResolution(
     }
     provider.populateOwners(parsed);
     parsedFiles.push(parsed);
+    if (
+      input.onProgress &&
+      ((fileIdx + 1) % progressInterval === 0 || fileIdx === files.length - 1)
+    ) {
+      input.onProgress('extracting', fileIdx + 1, files.length);
+    }
   }
   if (PROF && preExtracted !== undefined) {
     logger.warn(`[scope-resolution prof] pre-extracted hits: ${preExtractedHits}/${files.length}`);
@@ -267,6 +292,7 @@ export function runScopeResolution(
   const tExtract = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 2: finalize → ScopeResolutionIndexes ─────────────────────────
+  input.onProgress?.('analyzing types', files.length, files.length);
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
   const nodeLookup = buildGraphNodeLookup(graph);
 
@@ -350,6 +376,7 @@ export function runScopeResolution(
   validateBindingsImmutability(indexes, onWarn);
 
   // ── Phase 3: resolve references via Registry.lookup ────────────────────
+  input.onProgress?.('resolving references', files.length, files.length);
   const registryProviders: RegistryProviders = {
     arityCompatibility: provider.arityCompatibility,
   };
@@ -362,6 +389,7 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
 
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
+  input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
   const receiverExtras = emitReceiverBoundCalls(
     graph,

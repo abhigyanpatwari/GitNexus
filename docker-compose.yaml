@@ -30,6 +30,12 @@ services:
     container_name: ${WEB_CONTAINER_NAME:-gitnexus-web}
     ports:
       - '${WEB_HOST_PORT:-4173}:4173'
+    # Override the backend URL served to the browser. The default
+    # (http://localhost:4747) works when both containers run locally.
+    # Set GITNEXUS_BACKEND_URL in your .env or shell for remote/custom setups:
+    #   GITNEXUS_BACKEND_URL=http://<server-ip>:4747
+    environment:
+      - GITNEXUS_BACKEND_URL=${GITNEXUS_BACKEND_URL:-}
     depends_on:
       gitnexus-server:
         condition: service_healthy

@@ -19,6 +19,7 @@ import {
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
+import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
 
 export interface WikiCommandOptions {
@@ -53,6 +54,18 @@ function parsePositiveIntegerOption(
     throw new Error(`${flag} is too large`);
   }
   return parsed;
+}
+
+function isLocalProvider(
+  provider: LLMProvider | undefined,
+): provider is 'cursor' | 'claude' | 'codex' {
+  return provider === 'cursor' || provider === 'claude' || provider === 'codex';
+}
+
+function localModelConfigKey(provider: 'cursor' | 'claude' | 'codex') {
+  if (provider === 'cursor') return 'cursorModel';
+  if (provider === 'claude') return 'claudeModel';
+  return 'codexModel';
 }
 
 /**
@@ -191,10 +204,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.provider) updates.provider = options.provider;
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
-    // Save model to appropriate field based on provider
+    // Save model to appropriate field based on provider.
     if (options.model) {
-      if (options.provider === 'cursor') {
-        updates.cursorModel = options.model;
+      const targetProvider = options.provider ?? existing.provider;
+      if (isLocalProvider(targetProvider)) {
+        updates[localModelConfigKey(targetProvider)] = options.model;
       } else {
         updates.model = options.model;
       }
@@ -205,7 +219,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
   const savedConfig = await loadCLIConfig();
   const hasSavedConfig = !!(
-    savedConfig.provider === 'cursor' ||
+    isLocalProvider(savedConfig.provider) ||
     (savedConfig.apiKey && savedConfig.baseUrl)
   );
   const hasCLIOverrides = !!(
@@ -231,10 +245,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   if (!hasSavedConfig && !hasCLIOverrides) {
     if (!process.stdin.isTTY) {
       // Non-interactive mode — need either API key or Cursor CLI
-      if (!llmConfig.apiKey && llmConfig.provider !== 'cursor') {
+      if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
         console.log('  Set OPENAI_API_KEY or GITNEXUS_API_KEY environment variable,');
-        console.log('  or pass --api-key <key>, or use --provider cursor.\n');
+        console.log('  or pass --api-key <key>, or use --provider cursor|claude|codex.\n');
         process.exitCode = 1;
         return;
       }
@@ -242,23 +256,51 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
       console.log(
-        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, or Cursor CLI.\n',
+        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, Cursor CLI, Claude CLI, or Codex CLI.\n',
       );
 
-      // Check if Cursor CLI is available
+      // Check if local agent CLIs are available.
       const hasCursor = detectCursorCLI();
+      const hasClaude = detectLocalCLI('claude');
+      const hasCodex = detectLocalCLI('codex');
+      const localChoices: Array<{
+        choice: string;
+        provider: 'cursor' | 'claude' | 'codex';
+      }> = [];
 
       // Provider selection
       console.log('  [1] OpenAI (api.openai.com)');
       console.log('  [2] OpenRouter (openrouter.ai)');
       console.log('  [3] Azure OpenAI');
       console.log('  [4] Custom endpoint');
+      let nextChoice = 5;
       if (hasCursor) {
-        console.log('  [5] Cursor CLI (local, uses your Cursor subscription)');
+        const choice = String(nextChoice++);
+        localChoices.push({
+          choice,
+          provider: 'cursor',
+        });
+        console.log(`  [${choice}] Cursor CLI (local, uses your Cursor subscription)`);
+      }
+      if (hasClaude) {
+        const choice = String(nextChoice++);
+        localChoices.push({
+          choice,
+          provider: 'claude',
+        });
+        console.log(`  [${choice}] Claude CLI (local, uses your Claude Code login)`);
+      }
+      if (hasCodex) {
+        const choice = String(nextChoice++);
+        localChoices.push({
+          choice,
+          provider: 'codex',
+        });
+        console.log(`  [${choice}] Codex CLI (local, uses your Codex login)`);
       }
       console.log('');
 
-      const maxChoice = hasCursor ? '5' : '4';
+      const maxChoice = String(nextChoice - 1);
       const choice = await prompt(`  Select provider (1/${maxChoice}): `);
 
       let baseUrl: string;
@@ -266,21 +308,21 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       let provider: LLMProvider = 'openai';
       let key = '';
 
-      if (choice === '5' && hasCursor) {
-        // Cursor CLI selected - model defaults to 'auto' (Cursor's default)
-        provider = 'cursor';
+      const selectedLocal = localChoices.find((item) => item.choice === choice);
+      if (selectedLocal) {
+        // Local CLI selected - model defaults to the CLI's configured default.
+        provider = selectedLocal.provider;
         baseUrl = '';
 
-        const modelInput = await prompt('  Model (leave empty for auto): ');
+        const modelInput = await prompt('  Model (leave empty for CLI default): ');
         const model = modelInput || '';
 
-        // Save config for Cursor
-        const cursorConfig: Record<string, string> = { provider: 'cursor' };
-        if (model) cursorConfig.cursorModel = model;
-        await saveCLIConfig(cursorConfig);
+        const localConfig = { ...savedConfig, provider };
+        if (model) (localConfig as Record<string, unknown>)[localModelConfigKey(provider)] = model;
+        await saveCLIConfig(localConfig);
         console.log('  Config saved to ~/.gitnexus/config.json\n');
 
-        llmConfig = { ...llmConfig, provider: 'cursor', model, apiKey: '', baseUrl: '' };
+        llmConfig = { ...llmConfig, provider, model, apiKey: '', baseUrl: '' };
       } else if (choice === '3') {
         // Azure OpenAI guided setup — minimal prompts
         console.log('\n  Azure OpenAI setup.\n');
@@ -328,6 +370,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         const azureBaseUrl = `${endpoint}/openai/v1`;
 
         await saveCLIConfig({
+          ...savedConfig,
           apiKey: azureKey,
           baseUrl: azureBaseUrl,
           model: deploymentName,

@@ -1130,6 +1130,8 @@ describe('CLI end-to-end', () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('--provider <provider>');
+      expect(result.stdout).toContain('claude');
+      expect(result.stdout).toContain('codex');
       expect(result.stdout).toContain('--review');
       expect(result.stdout).toContain('-v, --verbose');
       expect(result.stdout).toContain('--model <model>');
@@ -1195,6 +1197,22 @@ describe('CLI end-to-end', () => {
 
       const combined = result.stdout + result.stderr;
       // Should NOT ask for API key — cursor provider doesn't need one
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --provider claude without API key does not prompt for key in non-TTY', () => {
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'claude'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --provider codex without API key does not prompt for key in non-TTY', () => {
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'codex'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
       expect(combined).not.toMatch(/API key:/);
     });
 

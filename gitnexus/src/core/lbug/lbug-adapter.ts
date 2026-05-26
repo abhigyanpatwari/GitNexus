@@ -4,6 +4,8 @@ import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
+import os from 'os';
+import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -23,6 +25,7 @@ import {
   isOpenRetryExhausted,
   isWalCorruptionError,
   openLbugConnection,
+  toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
@@ -386,7 +389,8 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
   }
 };
 
-const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+const normalizeCopyPath = (filePath: string): string =>
+  toNativeSafePath(filePath).replace(/\\/g, '/');
 
 const closeQueryResult = async (result: lbug.QueryResult): Promise<void> => {
   try {
@@ -856,7 +860,13 @@ export const loadGraphToLbug = async (
 
   const log = onProgress || (() => {});
 
-  const csvDir = path.join(storagePath, 'csv');
+  let csvDir: string;
+  if (process.platform === 'win32' && /[^\x00-\x7F]/.test(storagePath)) {
+    const hash = crypto.createHash('sha256').update(storagePath).digest('hex').slice(0, 16);
+    csvDir = toNativeSafePath(path.join(os.tmpdir(), `gitnexus-csv-${hash}`));
+  } else {
+    csvDir = path.join(storagePath, 'csv');
+  }
 
   log('Streaming CSVs to disk...');
   const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);

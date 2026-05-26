@@ -19,6 +19,7 @@ import { javaScopeResolver } from '../../languages/java/scope-resolver.js';
 import { cScopeResolver } from '../../languages/c/scope-resolver.js';
 import { cppScopeResolver } from '../../languages/cpp/scope-resolver.js';
 import { phpScopeResolver } from '../../languages/php/scope-resolver.js';
+import { rustScopeResolver } from '../../languages/rust/scope-resolver.js';
 import { javascriptScopeResolver } from '../../languages/javascript/scope-resolver.js';
 import { kotlinScopeResolver } from '../../languages/kotlin/scope-resolver.js';
 
@@ -38,6 +39,7 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.C, cScopeResolver],
   [SupportedLanguages.CPlusPlus, cppScopeResolver],
   [SupportedLanguages.PHP, phpScopeResolver],
+  [SupportedLanguages.Rust, rustScopeResolver],
   [SupportedLanguages.JavaScript, javascriptScopeResolver],
   [SupportedLanguages.Kotlin, kotlinScopeResolver],
 ]);
