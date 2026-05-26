@@ -30,9 +30,14 @@ import {
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
- *  Practical code rarely exceeds 3-4 hops; the cap prevents
- *  pathological recursion if the receiver text is malformed. */
-const COMPOUND_RECEIVER_MAX_DEPTH = 4;
+ *  Practical code rarely exceeds 3-4 _syntactic_ hops, but languages
+ *  with type-binding-mediated chains (Ruby's `x = obj.method()` binds
+ *  `x → obj.method()` and recurses through the compound resolver) can
+ *  triple the depth count because each intermediate step contributes
+ *  two recursions (bare-ident → compound rawName → call-expr parse).
+ *  8 covers 3-level chains with headroom while still capping
+ *  pathological recursion. */
+const COMPOUND_RECEIVER_MAX_DEPTH = 8;
 
 const MAP_TUPLE_SENTINEL_RE = /^__MAP_TUPLE_(\d+)__:(.+)$/;
 
@@ -143,6 +148,23 @@ export function resolveCompoundReceiverClass(
           depth + 1,
         );
         if (callAlias !== undefined) return callAlias;
+      }
+
+      // Compound member-call alias: rawName has both `.` and `()`
+      // (`user = Factory.get_user()` → rawName `Factory.get_user()`).
+      // Recurse into the compound resolver with the raw compound
+      // expression so the mixed-chain parser can split at top-level
+      // `.` and resolve the receiver + method return type.
+      if (tb.rawName.includes('.') && tb.rawName.includes('(')) {
+        const compound = resolveCompoundReceiverClass(
+          tb.rawName,
+          inScope,
+          scopes,
+          index,
+          options,
+          depth + 1,
+        );
+        if (compound !== undefined) return compound;
       }
     }
     return findClassBindingInScope(inScope, text, scopes);
