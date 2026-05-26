@@ -229,7 +229,9 @@ export function formatImpactResult(result: any): string {
         const shown = Math.min(items.length, 12);
         for (const item of items.slice(0, shown)) {
           const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
-          lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
+          lines.push(
+            `  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`,
+          );
         }
         if (trueCount > shown) {
           lines.push(`  ... and ${trueCount - shown} more`);
