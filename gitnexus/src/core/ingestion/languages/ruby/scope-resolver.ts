@@ -30,6 +30,13 @@ function emitRubyMixinEdges(
   }
 
   const emitted = new Set<string>();
+  // Pre-seed with existing IMPLEMENTS edges to avoid duplicates when the
+  // parse-worker path already produced heritage (worker path for repos
+  // with >= 15 files).
+  for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
+    emitted.add(`${rel.sourceId}->${rel.targetId}:${rel.reason}`);
+  }
+
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
       if (!imp.targetRaw.startsWith(HERITAGE_PREFIX)) continue;
@@ -53,7 +60,17 @@ function emitRubyMixinEdges(
     }
   }
 
-  // Emit Property nodes + HAS_PROPERTY edges from __property__:... imports
+  // Emit Property nodes + HAS_PROPERTY edges from __property__:... imports.
+  // Skip if the parse-worker already created the property (worker path merges
+  // Property nodes into the graph before scope-resolution runs).
+  const existingProps = new Set<string>();
+  for (const rel of graph.iterRelationshipsByType('HAS_PROPERTY')) {
+    const targetNode = graph.getNode(rel.targetId);
+    if (targetNode !== undefined) {
+      existingProps.add(`${rel.sourceId}->prop:${targetNode.properties.name}`);
+    }
+  }
+
   const PROPERTY_PREFIX = '__property__:';
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
@@ -64,11 +81,11 @@ function emitRubyMixinEdges(
       const classGraphId = graphIdByName.get(className!);
       if (classGraphId === undefined || propName === undefined) continue;
 
-      const propId = generateId('Property', `${parsed.filePath}:${className}.${propName}`);
       const edgeKey = `${classGraphId}->prop:${propName}`;
-      if (emitted.has(edgeKey)) continue;
+      if (emitted.has(edgeKey) || existingProps.has(edgeKey)) continue;
       emitted.add(edgeKey);
 
+      const propId = generateId('Property', `${parsed.filePath}:${className}.${propName}`);
       graph.addNode({
         id: propId,
         label: 'Property',
