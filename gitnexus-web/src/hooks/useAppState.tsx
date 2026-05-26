@@ -589,6 +589,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Agent state — agent runs on main thread now (I/O-bound, not CPU-bound)
   const agentRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
+  const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
 
   const initializeAgent = useCallback(
     async (overrideProjectName?: string): Promise<void> => {
@@ -647,7 +648,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
-      if (isChatLoading) return;
+      if (chatStateRef.current !== 'idle') return;
 
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
@@ -686,6 +687,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
 
       setIsChatLoading(true);
+      chatStateRef.current = 'streaming';
       setCurrentToolCalls([]);
 
       chatAbortRef.current?.abort();
@@ -747,11 +749,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         });
       };
       let pendingUpdate = false;
+      let rafHandle: number | null = null;
       const scheduleMessageUpdate = () => {
         if (pendingUpdate) return;
         pendingUpdate = true;
-        requestAnimationFrame(() => {
+        rafHandle = requestAnimationFrame(() => {
           pendingUpdate = false;
+          rafHandle = null;
           updateMessage();
         });
       };
@@ -898,7 +902,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                 if (idx < 0) {
                   idx = toolCallsForMessage.findIndex((t) => t.name === tc.name && !t.result);
                 }
-                if (idx >= 0) {
+                if (idx >= 0 && toolCallsForMessage[idx].status !== 'stopped') {
                   toolCallsForMessage[idx] = {
                     ...toolCallsForMessage[idx],
                     result: tc.result,
@@ -914,7 +918,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                     (s.toolCall.id === tc.id ||
                       (s.toolCall.name === tc.name && s.toolCall.status === 'running')),
                 );
-                if (stepIdx >= 0 && stepsForMessage[stepIdx].toolCall) {
+                if (
+                  stepIdx >= 0 &&
+                  stepsForMessage[stepIdx].toolCall &&
+                  stepsForMessage[stepIdx].toolCall!.status !== 'stopped'
+                ) {
                   stepsForMessage[stepIdx] = {
                     ...stepsForMessage[stepIdx],
                     toolCall: {
@@ -935,6 +943,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                     targetIdx = prev.findIndex((t) => t.name === tc.name && !t.result);
                   }
                   if (targetIdx >= 0) {
+                    const target = prev[targetIdx];
+                    if (target.status === 'stopped') return prev;
                     return prev.map((t, i) =>
                       i === targetIdx ? { ...t, result: tc.result, status: 'completed' } : t,
                     );
@@ -1035,10 +1045,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
         })) {
-          onChunk(chunk);
           if (chunk.type === 'cancelled') {
             break;
           }
+          onChunk(chunk);
         }
       } catch (error) {
         if (!chatAbortController.signal.aborted) {
@@ -1046,15 +1056,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           setAgentError(message);
         }
       } finally {
-        if (chatAbortRef.current === chatAbortController) {
-          chatAbortRef.current = null;
-          setIsChatLoading(false);
-          setCurrentToolCalls([]);
-        } else if (!chatAbortRef.current) {
-          // Stopped with no new turn started — safe to clear loading UI
-          setIsChatLoading(false);
-          setCurrentToolCalls([]);
+        if (rafHandle != null) {
+          cancelAnimationFrame(rafHandle);
+          rafHandle = null;
         }
+        chatStateRef.current = 'idle';
+        setIsChatLoading(false);
+        setCurrentToolCalls([]);
       }
     },
     [
@@ -1068,14 +1076,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
-      isChatLoading,
     ],
   );
 
   const stopChatResponse = useCallback(() => {
-    if (!isChatLoading) return;
+    if (!chatAbortRef.current) return;
 
-    chatAbortRef.current?.abort();
+    chatStateRef.current = 'aborting';
+    chatAbortRef.current.abort();
     chatAbortRef.current = null;
 
     const stoppedLabel = i18n.t('chat:stopped');
@@ -1094,14 +1102,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       if (lastAssistantIdx === undefined) return prev;
 
       const message = prev[lastAssistantIdx];
-      const markStopped = markStoppedToolCall;
 
       const updated: ChatMessage = {
         ...message,
-        toolCalls: message.toolCalls?.map(markStopped),
+        toolCalls: message.toolCalls?.map(markStoppedToolCall),
         steps: message.steps?.map((step) =>
           step.type === 'tool_call' && step.toolCall
-            ? { ...step, toolCall: markStopped(step.toolCall) }
+            ? { ...step, toolCall: markStoppedToolCall(step.toolCall) }
             : step,
         ),
       };
@@ -1109,12 +1116,16 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     });
 
     setIsChatLoading(false);
-  }, [isChatLoading]);
+  }, []);
 
   const clearChat = useCallback(() => {
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    chatStateRef.current = 'idle';
     setChatMessages([]);
     setCurrentToolCalls([]);
     setAgentError(null);
+    setIsChatLoading(false);
   }, []);
 
   // Switch to a different repo on the connected server

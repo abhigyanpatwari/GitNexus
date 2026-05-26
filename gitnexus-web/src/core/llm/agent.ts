@@ -368,9 +368,9 @@ export interface AgentRuntimeOptions {
 }
 
 const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
-  if (signal?.aborted) return true;
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof Error && error.name === 'AbortError') return true;
+  if (signal?.aborted) return true;
   return false;
 };
 
@@ -447,7 +447,7 @@ export async function* streamAgentResponse(
       streamMode: ['values', 'messages'] as any,
       // Allow longer tool/reasoning loops (more Cursor-like persistence)
       recursionLimit: 50,
-      ...(options.signal ? { signal: options.signal } : {}),
+      signal: options.signal,
     } as any);
 
     // Track what we've yielded to avoid duplicates
@@ -525,10 +525,11 @@ export async function* streamAgentResponse(
             // - After all tools are done: treat as final content
             const isReasoning =
               !hasSeenToolCallThisTurn || toolCalls.length > 0 || pendingToolCalls > 0;
-            yield {
-              type: isReasoning ? 'reasoning' : 'content',
-              [isReasoning ? 'reasoning' : 'content']: content,
-            };
+            if (isReasoning) {
+              yield { type: 'reasoning', reasoning: content };
+            } else {
+              yield { type: 'content', content };
+            }
           }
 
           // Track tool calls from message chunks

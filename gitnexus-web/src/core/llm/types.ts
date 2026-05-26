@@ -286,22 +286,17 @@ export type AgentHistoryMessage =
     };
 
 /**
- * Streaming chunk from agent
- * Now supports step-based streaming where each step is a distinct message
+ * Streaming chunk from agent (discriminated union).
+ * Each variant carries only its relevant fields, enabling exhaustive switch handling.
  */
-export interface AgentStreamChunk {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done' | 'cancelled';
-  /** LLM's reasoning/thinking text (shown as a step) */
-  reasoning?: string;
-  /** Final answer content (streamed token by token) */
-  content?: string;
-  /** Hidden raw transcript for reconstructing future agent turns */
-  historyMessages?: AgentHistoryMessage[];
-  /** Tool call information */
-  toolCall?: ToolCallInfo;
-  /** Error message */
-  error?: string;
-}
+export type AgentStreamChunk =
+  | { type: 'reasoning'; reasoning: string }
+  | { type: 'tool_call'; toolCall: ToolCallInfo }
+  | { type: 'tool_result'; toolCall: ToolCallInfo }
+  | { type: 'content'; content: string }
+  | { type: 'error'; error: string }
+  | { type: 'done'; historyMessages?: AgentHistoryMessage[] }
+  | { type: 'cancelled' };
 
 /**
  * A single step in the agent's execution

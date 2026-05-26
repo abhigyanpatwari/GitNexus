@@ -41,8 +41,8 @@ describe('streamAgentResponse abort', () => {
       if (chunk.type === 'cancelled') break;
     }
 
-    expect(chunks.some((c) => c.type === 'cancelled')).toBe(true);
-    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+    expect(chunks[chunks.length - 1]).toEqual({ type: 'cancelled' });
+    expect(chunks.filter((c) => c.type === 'error')).toEqual([]);
   });
 
   it('passes AbortSignal to agent.stream config', async () => {
@@ -63,6 +63,21 @@ describe('streamAgentResponse abort', () => {
     }
 
     expect(capturedConfig?.signal).toBe(controller.signal);
+  });
+
+  it('yields cancelled for a plain Error with name AbortError', async () => {
+    const agent = {
+      stream: async () => {
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      },
+    };
+
+    const chunks = [];
+    for await (const chunk of streamAgentResponse(agent as any, userMessage)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual([{ type: 'cancelled' }]);
   });
 
   it('does not treat unrelated errors mentioning abort as cancellation', async () => {
