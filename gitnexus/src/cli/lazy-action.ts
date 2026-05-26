@@ -31,7 +31,7 @@ export function createLbugLazyAction<
   return async (...args: unknown[]): Promise<void> => {
     const check = checkLbugNative();
     if (!check.ok) {
-      console.error(`\n  ${check.message?.replace(/\n/g, '\n  ')}\n`);
+      console.log(`\n  ${check.message?.replace(/\n/g, '\n  ')}\n`);
       process.exitCode = 1;
       return;
     }
