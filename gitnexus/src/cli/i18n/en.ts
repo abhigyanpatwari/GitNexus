@@ -216,6 +216,9 @@ export const en = {
   'help.option.impact.direction': 'upstream (dependants) or downstream (dependencies)',
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
+  'help.option.impact.limit': 'Max symbols per depth level (default: 100)',
+  'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
+  'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
   'help.option.evalServer.host':
