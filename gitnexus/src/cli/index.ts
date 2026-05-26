@@ -120,7 +120,7 @@ program
 program
   .command('status')
   .description('Show index status for current repo')
-  .action(createLbugLazyAction(() => import('./status.js'), 'statusCommand'));
+  .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
 
 program
   .command('doctor')
@@ -256,7 +256,7 @@ program
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
-  .action(createLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
+  .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
 registerGroupCommands(program);
 localizeCliHelp(program);
